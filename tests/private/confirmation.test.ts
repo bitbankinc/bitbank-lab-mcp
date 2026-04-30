@@ -102,7 +102,8 @@ describe('validateToken', () => {
 		const { token, expiresAt } = generateToken('create_order', params, now);
 
 		const error = validateToken(token, 'create_order', params, expiresAt, expiresAt + 1);
-		expect(error).toContain('有効期限');
+		expect(error?.code).toBe('token_expired');
+		expect(error?.message).toContain('有効期限');
 	});
 
 	it('パラメータ改ざん（amount 変更）を検知する', () => {
@@ -113,7 +114,8 @@ describe('validateToken', () => {
 		// amount を改ざん
 		const tampered = { ...params, amount: '100' };
 		const error = validateToken(token, 'create_order', tampered, expiresAt, now + 1000);
-		expect(error).toContain('無効');
+		expect(error?.code).toBe('token_invalid');
+		expect(error?.message).toContain('無効');
 	});
 
 	it('パラメータ改ざん（pair 変更）を検知する', () => {
@@ -123,7 +125,8 @@ describe('validateToken', () => {
 
 		const tampered = { ...params, pair: 'eth_jpy' };
 		const error = validateToken(token, 'create_order', tampered, expiresAt, now + 1000);
-		expect(error).toContain('無効');
+		expect(error?.code).toBe('token_invalid');
+		expect(error?.message).toContain('無効');
 	});
 
 	it('不正トークン（ランダム文字列）を拒否する', () => {
@@ -132,7 +135,7 @@ describe('validateToken', () => {
 		const { expiresAt } = generateToken('create_order', params, now);
 
 		const error = validateToken('deadbeef'.repeat(8), 'create_order', params, expiresAt, now + 1000);
-		expect(error).toContain('無効');
+		expect(error?.code).toBe('token_invalid');
 	});
 
 	it('長さ不一致のトークンを拒否する（タイミングセーフ）', () => {
@@ -141,7 +144,7 @@ describe('validateToken', () => {
 		const { expiresAt } = generateToken('create_order', params, now);
 
 		const error = validateToken('short', 'create_order', params, expiresAt, now + 1000);
-		expect(error).toContain('無効');
+		expect(error?.code).toBe('token_invalid');
 	});
 
 	it('空文字列トークンを拒否する', () => {
@@ -150,7 +153,7 @@ describe('validateToken', () => {
 		const { expiresAt } = generateToken('create_order', params, now);
 
 		const error = validateToken('', 'create_order', params, expiresAt, now + 1000);
-		expect(error).toContain('無効');
+		expect(error?.code).toBe('token_invalid');
 	});
 
 	it('異なる action でのトークン使い回しを拒否する', () => {
@@ -160,7 +163,7 @@ describe('validateToken', () => {
 
 		// cancel_order 用トークンを cancel_orders で使おうとする
 		const error = validateToken(token, 'cancel_orders', params, expiresAt, now + 1000);
-		expect(error).toContain('無効');
+		expect(error?.code).toBe('token_invalid');
 	});
 
 	it('cancel_order の正常系', () => {
@@ -181,7 +184,7 @@ describe('validateToken', () => {
 		expect(error).toBeNull();
 	});
 
-	it('使用済みトークンの再利用を拒否する', () => {
+	it('使用済みトークンの再利用は token_already_used で拒否される', () => {
 		const now = 1700000000000;
 		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit' };
 		const { token, expiresAt } = generateToken('create_order', params, now);
@@ -190,9 +193,10 @@ describe('validateToken', () => {
 		const first = validateToken(token, 'create_order', params, expiresAt, now + 1000);
 		expect(first).toBeNull();
 
-		// 2回目: 使用済みで拒否
+		// 2回目: 使用済みで拒否（コードまで一致を確認）
 		const second = validateToken(token, 'create_order', params, expiresAt, now + 2000);
-		expect(second).toContain('既に使用されています');
+		expect(second?.code).toBe('token_already_used');
+		expect(second?.message).toContain('既に使用されています');
 	});
 
 	it('使用済みトークンは usedTokens に登録される', () => {
@@ -224,9 +228,9 @@ describe('validateToken', () => {
 		expect(validateToken(token, 'create_order', params, expiresAt, now + 1000)).toBeNull();
 		expect(_usedTokenCount()).toBe(1);
 
-		// 期限切れ後に再検証 → 「使用済み」ではなく「有効期限」エラーになる
+		// 期限切れ後に再検証 → token_already_used ではなく token_expired を返す
 		const error = validateToken(token, 'create_order', params, expiresAt, expiresAt + 1);
-		expect(error).toContain('有効期限');
+		expect(error?.code).toBe('token_expired');
 	});
 });
 

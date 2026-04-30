@@ -26,7 +26,7 @@ export default async function cancelOrders(args: {
 	// HITL: 確認トークンの検証
 	const tokenError = validateToken(confirmation_token, 'cancel_orders', { pair, order_ids }, token_expires_at);
 	if (tokenError) {
-		return CancelOrdersOutputSchema.parse(fail(tokenError, 'confirmation_required'));
+		return CancelOrdersOutputSchema.parse(fail(tokenError.message, tokenError.code));
 	}
 
 	const client = getDefaultClient();

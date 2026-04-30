@@ -32,7 +32,7 @@ export default async function cancelOrder(args: {
 	// HITL: 確認トークンの検証
 	const tokenError = validateToken(confirmation_token, 'cancel_order', { pair, order_id }, token_expires_at);
 	if (tokenError) {
-		return CancelOrderOutputSchema.parse(fail(tokenError, 'confirmation_required'));
+		return CancelOrderOutputSchema.parse(fail(tokenError.message, tokenError.code));
 	}
 
 	const client = getDefaultClient();

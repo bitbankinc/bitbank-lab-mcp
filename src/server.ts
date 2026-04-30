@@ -130,7 +130,7 @@ function getRawShape(s: z.ZodTypeAny): z.ZodRawShape {
 function registerToolWithLog(
 	name: string,
 	schema: { description: string; inputSchema: z.ZodTypeAny; _meta?: Record<string, unknown> },
-	handler: (input: Record<string, unknown>) => Promise<unknown>,
+	handler: (input: Record<string, unknown>, extra?: Record<string, unknown>) => Promise<unknown>,
 ) {
 	// Build JSON Schema for listing
 	const inputSchemaJson = zodToInputJsonSchema(schema.inputSchema);
@@ -151,7 +151,7 @@ function registerToolWithLog(
 	(server as unknown as { registerTool: (n: string, s: unknown, h: unknown) => void }).registerTool(
 		name,
 		toolConfig,
-		async (input: Record<string, unknown>) => {
+		async (input: Record<string, unknown>, extra?: Record<string, unknown>) => {
 			const TOOL_TIMEOUT_MS = 60_000;
 			const t0 = Date.now();
 			try {
@@ -162,7 +162,10 @@ function registerToolWithLog(
 						TOOL_TIMEOUT_MS,
 					);
 				});
-				const result = await Promise.race([handler(input), timeoutPromise]).finally(() => {
+				// elicitation 等で server.elicitInput / getClientCapabilities を使うツール向けに、
+				// SDK から渡される extra に McpServer インスタンスを合流させる。
+				const handlerExtra = { ...extra, server };
+				const result = await Promise.race([handler(input, handlerExtra), timeoutPromise]).finally(() => {
 					if (timeoutId) clearTimeout(timeoutId);
 				});
 				const ms = Date.now() - t0;
