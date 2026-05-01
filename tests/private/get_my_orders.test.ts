@@ -190,6 +190,40 @@ describe('get_my_orders', () => {
 		expect(calledUrl).not.toContain('2024-03-10');
 	});
 
+	it('CANCELED_UNFILLED など非アクティブ注文をフィルタする', async () => {
+		setupFetchMock(
+			mockBitbankSuccess({
+				orders: [
+					...rawActiveOrdersResponse.orders,
+					{
+						order_id: 56947594386,
+						pair: 'eth_jpy',
+						side: 'buy',
+						type: 'limit',
+						start_amount: '0.01',
+						remaining_amount: '0.01',
+						executed_amount: '0',
+						price: '400000',
+						average_price: '0',
+						status: 'CANCELED_UNFILLED',
+						ordered_at: 1710000200000,
+					},
+				],
+			}),
+		);
+
+		const { default: getMyOrders } = await import('../../tools/private/get_my_orders.js');
+		const result = await getMyOrders({});
+
+		assertOk(result);
+		// CANCELED_UNFILLED は除外され、UNFILLED と PARTIALLY_FILLED の 2 件のみ
+		expect(result.data.orders).toHaveLength(2);
+		expect(result.data.orders.map((o) => o.order_id)).not.toContain(56947594386);
+		expect(result.summary).toContain('2件');
+		expect(result.summary).not.toContain('CANCELED_UNFILLED');
+		expect(result.meta.orderCount).toBe(2);
+	});
+
 	it('pair 指定なしで「全ペア」ラベルが表示される', async () => {
 		setupFetchMock(mockBitbankSuccess(rawActiveOrdersResponse));
 

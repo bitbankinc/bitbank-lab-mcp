@@ -66,21 +66,28 @@ export default async function getMyOrders(args: { pair?: string; count?: number;
 
 		const timestamp = nowIso();
 
+		// bitbank API の active_orders は稀に CANCELED_UNFILLED 等の非アクティブ
+		// ステータスを含めて返すケースがあるため、サーバー側でも保険として
+		// アクティブ系（UNFILLED / PARTIALLY_FILLED）のみに絞り込む。
+		const ACTIVE_STATUSES = new Set(['UNFILLED', 'PARTIALLY_FILLED']);
+
 		// 注文データの整形
-		const orders = rawData.orders.map((o) => ({
-			order_id: o.order_id,
-			pair: o.pair,
-			side: o.side,
-			type: o.type,
-			start_amount: o.start_amount,
-			remaining_amount: o.remaining_amount,
-			executed_amount: o.executed_amount,
-			price: o.price,
-			average_price: o.average_price,
-			status: o.status,
-			ordered_at: toIsoMs(o.ordered_at) ?? String(o.ordered_at),
-			expire_at: o.expire_at ? (toIsoMs(o.expire_at) ?? String(o.expire_at)) : undefined,
-		}));
+		const orders = rawData.orders
+			.filter((o) => ACTIVE_STATUSES.has(o.status))
+			.map((o) => ({
+				order_id: o.order_id,
+				pair: o.pair,
+				side: o.side,
+				type: o.type,
+				start_amount: o.start_amount,
+				remaining_amount: o.remaining_amount,
+				executed_amount: o.executed_amount,
+				price: o.price,
+				average_price: o.average_price,
+				status: o.status,
+				ordered_at: toIsoMs(o.ordered_at) ?? String(o.ordered_at),
+				expire_at: o.expire_at ? (toIsoMs(o.expire_at) ?? String(o.expire_at)) : undefined,
+			}));
 
 		// サマリー文字列の生成
 		const lines: string[] = [];
