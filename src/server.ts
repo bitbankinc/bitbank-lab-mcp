@@ -7,11 +7,17 @@ import { z } from 'zod';
 import { getErrorMessage } from '../lib/error.js';
 import { logError, logToolRun } from '../lib/logger.js';
 import { type PromptDef, prompts as promptDefs } from './prompts.js';
+import { appResourceRegistry } from './resources/app-resources.js';
 import { allToolDefs } from './tool-registry.js';
 
 const server = new McpServer({ name: 'bitbank-mcp', version: '0.4.2' });
 // Explicit registries for tools/prompts to improve STDIO inspector compatibility
-const registeredTools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> = [];
+const registeredTools: Array<{
+	name: string;
+	description: string;
+	inputSchema: Record<string, unknown>;
+	_meta?: Record<string, unknown>;
+}> = [];
 const registeredPrompts: Array<{ name: string; description: string }> = [];
 
 type TextContent = { type: 'text'; text: string; _meta?: Record<string, unknown> };
@@ -58,9 +64,20 @@ const respond = (result: unknown): ToolReturn => {
 			text = String(result);
 		}
 	}
+	// handler が McpResponse shape (`{ content, structuredContent: Result }`) を返している場合、
+	// 内側の structuredContent をそのまま採用する（二重ネストを防ぐ）。
+	// MCP Apps (SEP-1865) の iframe は `structuredContent` を直接参照するため、
+	// `{ structuredContent: { content, structuredContent: Result } }` のように包んでしまうと
+	// クライアント側で Result を取り出せない。
+	// Result shape (`{ ok, summary, data, meta }`) を直接返している場合は result 自体を採用する。
+	const structured = isPlainObject(result)
+		? isPlainObject(result.structuredContent)
+			? result.structuredContent
+			: result
+		: undefined;
 	return {
 		content: [{ type: 'text', text }],
-		...(isPlainObject(result) ? { structuredContent: result } : {}),
+		...(structured ? { structuredContent: structured } : {}),
 	};
 };
 
@@ -111,19 +128,29 @@ function getRawShape(s: z.ZodTypeAny): z.ZodRawShape {
 
 function registerToolWithLog(
 	name: string,
-	schema: { description: string; inputSchema: z.ZodTypeAny },
-	handler: (input: Record<string, unknown>) => Promise<unknown>,
+	schema: { description: string; inputSchema: z.ZodTypeAny; _meta?: Record<string, unknown> },
+	handler: (input: Record<string, unknown>, extra?: Record<string, unknown>) => Promise<unknown>,
 ) {
 	// Build JSON Schema for listing
 	const inputSchemaJson = zodToInputJsonSchema(schema.inputSchema);
-	registeredTools.push({ name, description: schema.description, inputSchema: inputSchemaJson });
+	registeredTools.push({
+		name,
+		description: schema.description,
+		inputSchema: inputSchemaJson,
+		...(schema._meta ? { _meta: schema._meta } : {}),
+	});
 
 	// SDK の registerTool は第2引数に { inputSchema: ZodRawShape } を要求するが
 	// 型定義が厳密すぎて直接渡せないため、ここでキャストを集約する
+	const toolConfig: Record<string, unknown> = {
+		description: schema.description,
+		inputSchema: getRawShape(schema.inputSchema),
+	};
+	if (schema._meta) toolConfig._meta = schema._meta;
 	(server as unknown as { registerTool: (n: string, s: unknown, h: unknown) => void }).registerTool(
 		name,
-		{ description: schema.description, inputSchema: getRawShape(schema.inputSchema) },
-		async (input: Record<string, unknown>) => {
+		toolConfig,
+		async (input: Record<string, unknown>, extra?: Record<string, unknown>) => {
 			const TOOL_TIMEOUT_MS = 60_000;
 			const t0 = Date.now();
 			try {
@@ -134,7 +161,10 @@ function registerToolWithLog(
 						TOOL_TIMEOUT_MS,
 					);
 				});
-				const result = await Promise.race([handler(input), timeoutPromise]).finally(() => {
+				// elicitation 等で server.elicitInput / getClientCapabilities を使うツール向けに、
+				// SDK から渡される extra に McpServer インスタンスを合流させる。
+				const handlerExtra = { ...extra, server };
+				const result = await Promise.race([handler(input, handlerExtra), timeoutPromise]).finally(() => {
 					if (timeoutId) clearTimeout(timeoutId);
 				});
 				const ms = Date.now() - t0;
@@ -159,7 +189,11 @@ function registerToolWithLog(
 
 // === Auto-register all tools from registry ===
 for (const def of allToolDefs) {
-	registerToolWithLog(def.name, { description: def.description, inputSchema: def.inputSchema }, def.handler);
+	registerToolWithLog(
+		def.name,
+		{ description: def.description, inputSchema: def.inputSchema, ...(def._meta ? { _meta: def._meta } : {}) },
+		def.handler,
+	);
 }
 
 // === Register prompts (SDK 形式に寄せた最小導入) ===
@@ -209,6 +243,38 @@ for (const p of promptDefs) {
 	registerPromptSafe(p.name, p);
 }
 
+// === Register MCP Apps UI resources ===
+// SDK の `registerResource` を使うことで `resources/list` と `resources/read` の
+// JSON-RPC ルーティングが SDK 内部で正しく行われる。
+// （以前の `setHandler('resources/...')` は SDK が要求する Zod スキーマではなく
+//  文字列を渡していたため silently no-op となり、本番で `Method not found` を返していた）
+for (const r of appResourceRegistry) {
+	const config: Record<string, unknown> = {
+		description: r.description,
+		mimeType: r.mimeType,
+		...(r.listMeta ? { _meta: r.listMeta } : {}),
+	};
+	(
+		server as unknown as {
+			registerResource: (
+				name: string,
+				uri: string,
+				config: Record<string, unknown>,
+				cb: (uri: URL) => Promise<unknown> | unknown,
+			) => void;
+		}
+	).registerResource(r.name, r.uri, config, async () => ({
+		contents: [
+			{
+				uri: r.uri,
+				mimeType: r.mimeType,
+				text: await r.read(),
+				...(r.contentMeta ? { _meta: r.contentMeta } : {}),
+			},
+		],
+	}));
+}
+
 // === トランスポート接続 ===
 // SDK の McpServer.connect() は 1:1 でトランスポートを結合する (SDK issue #961)。
 // MCP_ENABLE_HTTP=1 + PORT が設定されている場合は HTTP を優先し、stdio は接続しない。
@@ -237,7 +303,12 @@ function setHandler(method: string, fn: HandlerFn) {
 // Fallback handlers to ensure list operations work over STDIO
 try {
 	setHandler('tools/list', async () => ({
-		tools: registeredTools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
+		tools: registeredTools.map((t) => ({
+			name: t.name,
+			description: t.description,
+			inputSchema: t.inputSchema,
+			...(t._meta ? { _meta: t._meta } : {}),
+		})),
 	}));
 	setHandler('prompts/list', async () => ({
 		prompts: registeredPrompts.map((p) => ({ name: p.name, description: p.description })),

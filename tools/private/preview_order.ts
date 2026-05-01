@@ -11,7 +11,8 @@ import { BITBANK_API_BASE, fetchJson } from '../../lib/http.js';
 import { fail, ok, toStructured } from '../../lib/result.js';
 import { generateToken } from '../../src/private/confirmation.js';
 import { PreviewOrderInputSchema, PreviewOrderOutputSchema } from '../../src/private/schemas.js';
-import type { ToolDefinition } from '../../src/tool-definition.js';
+import type { ToolDefinition, ToolHandlerExtra } from '../../src/tool-definition.js';
+import createOrder from './create_order.js';
 
 /** 注文タイプごとの必須パラメータチェック */
 function validateOrderParams(args: {
@@ -67,7 +68,7 @@ async function validateTriggerPrice(pair: string, side: 'buy' | 'sell', triggerP
 		if (side === 'sell' && triggerPrice >= currentPrice) {
 			return [
 				`stop sell のトリガー価格（${formatPrice(triggerPrice)}）が現在価格（${formatPrice(currentPrice)}）以上のため、即時発動してしまいます。`,
-				'stop sell は「価格がトリガー以下に下落したとき」に発動します（損切り・ストップロス用）。',
+				'stop sell は「価格がトリガー以下に下落したとき」に発動します（損切り用）。',
 				'R1 上抜けで利確したい場合は limit sell を使用してください。',
 			].join('\n');
 		}
@@ -167,7 +168,7 @@ export default async function previewOrder(args: {
 		lines.push('⚠️ 信用取引です。損失が保証金を超える可能性があります。');
 	}
 	lines.push('');
-	lines.push('⚠️ この注文を実行するには、返却された confirmation_token を create_order に渡してください。');
+	lines.push('⚠️ この注文はユーザーの最終確認（ホスト UI または elicitation）を経るまで発注されません。');
 
 	const summary = lines.join('\n');
 
@@ -182,6 +183,25 @@ export default async function previewOrder(args: {
 	);
 }
 
+/**
+ * クライアントが elicitation/create に対応しているかを判定する。
+ * 非対応ホストでは従来挙動（structuredContent でトークンを返す）にフォールバックする。
+ */
+function clientSupportsElicitation(extra: ToolHandlerExtra | undefined): boolean {
+	const server = (extra as { server?: { getClientCapabilities?: () => unknown } } | undefined)?.server;
+	const caps = typeof server?.getClientCapabilities === 'function' ? server.getClientCapabilities() : undefined;
+	const elicitation = (caps as { elicitation?: unknown } | undefined)?.elicitation;
+	return Boolean(elicitation);
+}
+
+/** SDK の elicitInput を呼び出すための最小限の interface */
+interface ElicitCapableServer {
+	elicitInput: (params: {
+		message: string;
+		requestedSchema: Record<string, unknown>;
+	}) => Promise<{ action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }>;
+}
+
 export const toolDef: ToolDefinition = {
 	name: 'preview_order',
 	description: [
@@ -189,23 +209,81 @@ export const toolDef: ToolDefinition = {
 		'create_order を実行するには、まずこのツールで確認トークンを取得する必要がある。',
 		'バリデーション（パラメータチェック、トリガー価格チェック）もここで実施する。',
 		'position_side を指定すると信用注文として扱う（ロング新規=buy+long, ロング決済=sell+long, ショート新規=sell+short, ショート決済=buy+short）。',
+		'⚠️ confirmation_token は LLM 可視テキストには含めない。ホスト UI または elicitation のユーザー確認を経て create_order が呼ばれる前提。LLM が独断でトークンを引用して create_order を呼ぶと二重発注になり得る。',
 	].join(' '),
 	inputSchema: PreviewOrderInputSchema,
-	handler: async (args) => {
-		const result = await previewOrder(
-			args as {
-				pair: string;
-				amount: string;
-				price?: string;
-				side: 'buy' | 'sell';
-				type: 'limit' | 'market' | 'stop' | 'stop_limit';
-				post_only?: boolean;
-				trigger_price?: string;
-				position_side?: 'long' | 'short';
-			},
-		);
+	// MCP Apps (SEP-1865): 対応ホストでは iframe 内に注文確認 UI を表示する。
+	// 非対応ホストでは無視され、従来のテキスト確認フローがそのまま動作する（Progressive Enhancement）。
+	_meta: {
+		ui: {
+			resourceUri: 'ui://order/confirm.html',
+		},
+	},
+	handler: async (args, extra) => {
+		const typedArgs = args as {
+			pair: string;
+			amount: string;
+			price?: string;
+			side: 'buy' | 'sell';
+			type: 'limit' | 'market' | 'stop' | 'stop_limit';
+			post_only?: boolean;
+			trigger_price?: string;
+			position_side?: 'long' | 'short';
+		};
+		const result = await previewOrder(typedArgs);
 		if (!result.ok) return result;
-		const text = `${result.summary}\n${JSON.stringify(result.data, null, 2)}`;
+
+		// elicitation 対応ホストでは preview → ユーザー確認 → create_order までを
+		// このハンドラ内で完結させる（LLM から見ると preview_order 1 回呼び出しで発注完了）。
+		// 非対応ホストでは従来通り structuredContent 経由でトークンを渡しフォールバックする。
+		if (clientSupportsElicitation(extra)) {
+			const server = (extra as { server?: ElicitCapableServer } | undefined)?.server;
+			if (server && typeof server.elicitInput === 'function') {
+				try {
+					const elicit = await server.elicitInput({
+						message: result.summary,
+						requestedSchema: {
+							type: 'object',
+							properties: {
+								confirmed: { type: 'boolean', title: 'この注文を発注する' },
+							},
+							required: ['confirmed'],
+						},
+					});
+					if (elicit.action !== 'accept' || !elicit.content?.confirmed) {
+						return {
+							content: [{ type: 'text', text: 'ユーザーが発注をキャンセルしました（elicitation）' }],
+							structuredContent: toStructured(result),
+						};
+					}
+					// 内部的に create_order を実行。監査ログには route='elicitation' で記録される。
+					const orderResult = await createOrder(
+						{
+							...typedArgs,
+							confirmation_token: result.data.confirmation_token,
+							token_expires_at: result.data.expires_at,
+						},
+						'elicitation',
+					);
+					const orderText = orderResult.ok ? orderResult.summary : `Error: ${orderResult.summary}`;
+					return {
+						content: [{ type: 'text', text: orderText }],
+						structuredContent: toStructured(orderResult),
+					};
+				} catch {
+					// elicitInput が想定外に失敗した場合はフォールバックに進む。
+				}
+			}
+		}
+
+		// フォールバック: confirmation_token は LLM 可視テキストには含めず、
+		// structuredContent 側にだけ残す。SEP-1865 UI ボタンや Inspector はこちらを参照する。
+		const text = [
+			result.summary,
+			'',
+			'※ confirmation_token はホスト UI / structuredContent 経由でのみ受け渡されます。',
+			'  LLM はトークンを引用したり、ユーザー確認なしに create_order を呼ばないでください。',
+		].join('\n');
 		return {
 			content: [{ type: 'text', text }],
 			structuredContent: toStructured(result),

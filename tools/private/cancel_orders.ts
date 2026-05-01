@@ -15,18 +15,21 @@ import type { OrderResponse } from '../../src/private/schemas.js';
 import { CancelOrdersInputSchema, CancelOrdersOutputSchema } from '../../src/private/schemas.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
-export default async function cancelOrders(args: {
-	pair: string;
-	order_ids: number[];
-	confirmation_token: string;
-	token_expires_at: number;
-}) {
+export default async function cancelOrders(
+	args: {
+		pair: string;
+		order_ids: number[];
+		confirmation_token: string;
+		token_expires_at: number;
+	},
+	route: 'elicitation' | 'ui-button' | 'direct-text' = 'direct-text',
+) {
 	const { pair, order_ids, confirmation_token, token_expires_at } = args;
 
 	// HITL: 確認トークンの検証
 	const tokenError = validateToken(confirmation_token, 'cancel_orders', { pair, order_ids }, token_expires_at);
 	if (tokenError) {
-		return CancelOrdersOutputSchema.parse(fail(tokenError, 'confirmation_required'));
+		return CancelOrdersOutputSchema.parse(fail(tokenError.message, tokenError.code));
 	}
 
 	const client = getDefaultClient();
@@ -69,6 +72,7 @@ export default async function cancelOrders(args: {
 			pair,
 			status: `canceled_${orders.length}_of_${order_ids.length}`,
 			confirmed: true,
+			route,
 		});
 
 		return CancelOrdersOutputSchema.parse(

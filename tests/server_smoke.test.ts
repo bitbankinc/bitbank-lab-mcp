@@ -12,10 +12,17 @@ interface FakePromptEntry {
 	options: Record<string, unknown>;
 	handler: () => Record<string, unknown>;
 }
+interface FakeResourceEntry {
+	name: string;
+	uri: string;
+	config: Record<string, unknown>;
+	read: (uri: URL) => Promise<unknown> | unknown;
+}
 interface FakeMcpServerShape {
 	info: Record<string, unknown>;
 	tools: FakeToolEntry[];
 	prompts: FakePromptEntry[];
+	resources: FakeResourceEntry[];
 	requestHandlers: Record<string, (request?: Record<string, unknown>) => Promise<unknown> | unknown>;
 	connections: Array<{ kind: string }>;
 }
@@ -55,6 +62,7 @@ vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => {
 		info: Record<string, unknown>;
 		tools: FakeToolEntry[];
 		prompts: FakePromptEntry[];
+		resources: FakeResourceEntry[];
 		requestHandlers: Record<string, (request?: Record<string, unknown>) => Promise<unknown> | unknown>;
 		connections: Array<{ kind: string }>;
 
@@ -62,6 +70,7 @@ vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => {
 			this.info = info;
 			this.tools = [];
 			this.prompts = [];
+			this.resources = [];
 			this.requestHandlers = {};
 			this.connections = [];
 			runtime.serverInstances.push(this);
@@ -77,6 +86,15 @@ vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => {
 
 		registerPrompt(name: string, options: Record<string, unknown>, handler: () => Record<string, unknown>) {
 			this.prompts.push({ name, options, handler });
+		}
+
+		registerResource(
+			name: string,
+			uri: string,
+			config: Record<string, unknown>,
+			read: (uri: URL) => Promise<unknown> | unknown,
+		) {
+			this.resources.push({ name, uri, config, read });
 		}
 
 		setRequestHandler(name: string, handler: (request?: Record<string, unknown>) => Promise<unknown> | unknown) {
@@ -253,6 +271,8 @@ describe('server.ts smoke', () => {
 		expect(Object.keys(server.requestHandlers)).toEqual(
 			expect.arrayContaining(['tools/list', 'prompts/list', 'prompts/get']),
 		);
+		// Resources は SDK の registerResource 経由で正規ルートに登録される
+		expect(server.resources.map((r) => r.uri)).toEqual(['ui://order/confirm.html', 'ui://cancel/confirm.html']);
 		expect(server.requestHandlers).not.toHaveProperty('resources/list');
 		expect(server.requestHandlers).not.toHaveProperty('resources/read');
 		expect(server.connections).toHaveLength(1);
@@ -260,7 +280,7 @@ describe('server.ts smoke', () => {
 		expect(runtime.stdioTransports).toHaveLength(1);
 	});
 
-	it('tools/list・prompts/list・prompts/get の fallback を返す', async () => {
+	it('tools/list・prompts/list・prompts/get と resources の登録内容を返す', async () => {
 		const { z } = await import('zod');
 		const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
@@ -324,6 +344,24 @@ describe('server.ts smoke', () => {
 			expect(promptGet.messages).toEqual([
 				{ role: 'user', content: { type: 'text', text: 'system instruction' } },
 				{ role: 'assistant', content: { type: 'text', text: 'assistant note' } },
+			]);
+
+			// Resources は SDK の registerResource 経由で登録され、`server.resources` に集約される
+			expect(server.resources.map((r) => ({ uri: r.uri, name: r.name, ...r.config }))).toEqual([
+				{
+					uri: 'ui://order/confirm.html',
+					name: 'Order Confirmation',
+					description:
+						'preview_order の結果をインタラクティブに確認し、create_order を発注するための UI（MCP Apps / SEP-1865）',
+					mimeType: 'text/html;profile=mcp-app',
+				},
+				{
+					uri: 'ui://cancel/confirm.html',
+					name: 'Cancel Confirmation',
+					description:
+						'preview_cancel_order / preview_cancel_orders の結果をインタラクティブに確認し、cancel_order(s) を実行するための UI（MCP Apps / SEP-1865）',
+					mimeType: 'text/html;profile=mcp-app',
+				},
 			]);
 
 			expect(server.requestHandlers['resources/list']).toBeUndefined();

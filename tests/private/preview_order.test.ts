@@ -453,4 +453,101 @@ describe('preview_order', () => {
 			expect(result.data.confirmation_token.length).toBeGreaterThan(0);
 		});
 	});
+
+	describe('handler — トークンを LLM 可視テキストに含めない', () => {
+		it('elicitation 非対応ホストでは confirmation_token を content[0].text に出さない', async () => {
+			const { toolDef } = await import('../../tools/private/preview_order.js');
+			// extra なし（= elicitation 非対応扱い）でハンドラを直接呼ぶ
+			const result = (await toolDef.handler({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'limit',
+				price: '14000000',
+			})) as { content: { text: string }[]; structuredContent: { data?: { confirmation_token?: string } } };
+
+			const text = result.content[0]?.text ?? '';
+			const token = result.structuredContent?.data?.confirmation_token;
+			expect(token).toBeTypeOf('string');
+			expect((token as string).length).toBeGreaterThan(0);
+			// トークン文字列がテキストに混入していないこと（LLM がコピーして create_order を即実行するのを防ぐ）
+			expect(text).not.toContain(token as string);
+			// フォールバック説明文があること
+			expect(text).toContain('confirmation_token');
+			expect(text).toContain('ホスト UI');
+		});
+
+		it('elicitation 対応ホストで accept されると create_order まで実行される', async () => {
+			// limit 注文はトリガー価格検証を行わないので fetch は注文 API の 1 回のみ
+			globalThis.fetch = vi.fn().mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						success: 1,
+						data: {
+							order_id: 99999,
+							pair: 'btc_jpy',
+							side: 'buy',
+							type: 'limit',
+							start_amount: '0.01',
+							remaining_amount: '0.01',
+							executed_amount: '0',
+							average_price: '0',
+							status: 'UNFILLED',
+							ordered_at: 1710000000000,
+						},
+					}),
+					{ status: 200 },
+				),
+			) as unknown as typeof fetch;
+
+			const elicitInput = vi.fn().mockResolvedValue({ action: 'accept', content: { confirmed: true } });
+			const fakeServer = {
+				getClientCapabilities: () => ({ elicitation: {} }),
+				elicitInput,
+			};
+
+			const { toolDef } = await import('../../tools/private/preview_order.js');
+			const result = (await toolDef.handler(
+				{
+					pair: 'btc_jpy',
+					amount: '0.01',
+					side: 'buy',
+					type: 'limit',
+					price: '14000000',
+				},
+				{ server: fakeServer },
+			)) as { content: { text: string }[]; structuredContent: Record<string, unknown> };
+
+			expect(elicitInput).toHaveBeenCalledTimes(1);
+			expect(result.content[0]?.text).toContain('注文発注完了');
+			// structuredContent は create_order の Result が乗る
+			expect(result.structuredContent).toMatchObject({ ok: true });
+		});
+
+		it('elicitation で decline されたらキャンセル扱いで create_order は呼ばれない', async () => {
+			const fetchMock = vi.fn() as unknown as typeof fetch;
+			globalThis.fetch = fetchMock;
+
+			const fakeServer = {
+				getClientCapabilities: () => ({ elicitation: {} }),
+				elicitInput: vi.fn().mockResolvedValue({ action: 'decline' }),
+			};
+
+			const { toolDef } = await import('../../tools/private/preview_order.js');
+			const result = (await toolDef.handler(
+				{
+					pair: 'btc_jpy',
+					amount: '0.01',
+					side: 'buy',
+					type: 'limit',
+					price: '14000000',
+				},
+				{ server: fakeServer },
+			)) as { content: { text: string }[] };
+
+			expect(result.content[0]?.text).toContain('キャンセル');
+			// limit はトリガー価格検証も注文 API も呼ばれない
+			expect((fetchMock as unknown as { mock: { calls: unknown[] } }).mock.calls).toHaveLength(0);
+		});
+	});
 });

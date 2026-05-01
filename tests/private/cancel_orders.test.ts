@@ -87,7 +87,7 @@ describe('cancel_orders', () => {
 		});
 
 		assertFail(result);
-		expect(result.meta.errorType).toBe('confirmation_required');
+		expect(result.meta.errorType).toBe('token_invalid');
 	});
 
 	it('一部の注文がキャンセルできなかった場合に警告メッセージを含む', async () => {

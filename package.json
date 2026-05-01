@@ -17,6 +17,8 @@
     "tools/",
     "lib/",
     "assets/",
+    "ui/order-confirm/dist/",
+    "ui/cancel-confirm/dist/",
     "package.json",
     "tsconfig.json"
   ],
@@ -24,6 +26,8 @@
     "start": "tsx src/server.ts",
     "http": "tsx src/http.ts",
     "dev": "LOG_LEVEL=debug tsx src/server.ts",
+    "build:ui:order": "vite build --config ui/order-confirm/vite.config.ts",
+    "build:ui": "npm run build:ui:order && npm run build:ui:cancel",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "vitest run --config vitest.config.e2e.ts",
@@ -38,11 +42,13 @@
     "lint:fix": "oxlint --fix src/ tools/ lib/",
     "format": "biome format --write src/ tools/ lib/",
     "format:check": "biome check src/ tools/ lib/",
-    "postinstall": "mkdir -p assets && cp node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js assets/lightweight-charts.standalone.js || true"
+    "postinstall": "mkdir -p assets && cp node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js assets/lightweight-charts.standalone.js || true",
+    "build:ui:cancel": "vite build --config ui/cancel-confirm/vite.config.ts"
   },
   "keywords": [],
   "author": "",
   "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.7.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "dayjs": "^1.11.19",
     "dotenv": "^17.4.2",
@@ -50,17 +56,24 @@
     "express-rate-limit": "^8.3.2",
     "lightweight-charts": "^5.1.0",
     "sharp": "^0.34.5",
-    "zod": "^4.3.6",
-    "tsx": "^4.20.6"
+    "tsx": "^4.20.6",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.7",
     "@types/express": "^5.0.4",
     "@types/node": "^24.5.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
     "@vitest/coverage-v8": "^4.1.2",
     "lefthook": "^2.1.4",
     "oxlint": "^1.55.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
     "typescript": "^5.9.3",
+    "vite": "^8.0.10",
+    "vite-plugin-singlefile": "^2.3.3",
     "vitest": "^4.0.18"
   }
 }

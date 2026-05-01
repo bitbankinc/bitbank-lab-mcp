@@ -78,7 +78,7 @@ describe('cancel_order', () => {
 		});
 
 		assertFail(result);
-		expect(result.meta.errorType).toBe('confirmation_required');
+		expect(result.meta.errorType).toBe('token_invalid');
 	});
 
 	it('部分約定済みの注文キャンセル時に約定済み数量を表示', async () => {

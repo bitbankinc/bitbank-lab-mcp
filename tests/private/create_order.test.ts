@@ -78,7 +78,7 @@ describe('create_order — 確認トークン検証', () => {
 		expect(result.summary).toContain('注文発注完了');
 	});
 
-	it('トークンなし（不正トークン）で拒否される', async () => {
+	it('トークンなし（不正トークン）で token_invalid を返す', async () => {
 		const { default: createOrder } = await import('../../tools/private/create_order.js');
 		const result = await createOrder({
 			pair: 'btc_jpy',
@@ -91,10 +91,10 @@ describe('create_order — 確認トークン検証', () => {
 		});
 
 		assertFail(result);
-		expect(result.meta.errorType).toBe('confirmation_required');
+		expect(result.meta.errorType).toBe('token_invalid');
 	});
 
-	it('期限切れトークンで拒否される', async () => {
+	it('期限切れトークンで token_expired を返す', async () => {
 		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
 		const pastTime = Date.now() - 120_000;
 		const { confirmation_token, token_expires_at } = validToken(params, pastTime);
@@ -109,10 +109,11 @@ describe('create_order — 確認トークン検証', () => {
 		});
 
 		assertFail(result);
+		expect(result.meta.errorType).toBe('token_expired');
 		expect(result.summary).toContain('有効期限');
 	});
 
-	it('パラメータ改ざん（amount 変更）で拒否される', async () => {
+	it('パラメータ改ざん（amount 変更）で token_invalid を返す', async () => {
 		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
 		const { confirmation_token, token_expires_at } = validToken(params);
 
@@ -127,7 +128,7 @@ describe('create_order — 確認トークン検証', () => {
 		});
 
 		assertFail(result);
-		expect(result.meta.errorType).toBe('confirmation_required');
+		expect(result.meta.errorType).toBe('token_invalid');
 	});
 
 	it('market 注文も確認トークンで正常に動作する', async () => {
@@ -340,6 +341,41 @@ describe('create_order — handler (toolDef)', () => {
 	});
 });
 
+describe('create_order — トークン再利用拒否（ワンショット）', () => {
+	it('同一 confirmation_token で 2 回叩くと 2 回目は token_already_used で失敗する', async () => {
+		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
+		const { confirmation_token, token_expires_at } = validToken(params);
+
+		// 1 回目用に成功レスポンスをセット。2 回目はトークン検証でブロックされ
+		// fetch は呼ばれない想定。
+		setupFetchMockSequence([{ body: orderSuccessResponse({ side: 'buy', type: 'limit', price: '14000000' }) }]);
+
+		const { default: createOrder } = await import('../../tools/private/create_order.js');
+		const { _resetUsedTokens } = await import('../../src/private/confirmation.js');
+		_resetUsedTokens();
+
+		const first = await createOrder({
+			...params,
+			side: params.side as 'buy' | 'sell',
+			type: params.type as 'limit',
+			confirmation_token,
+			token_expires_at,
+		});
+		assertOk(first);
+
+		const second = await createOrder({
+			...params,
+			side: params.side as 'buy' | 'sell',
+			type: params.type as 'limit',
+			confirmation_token,
+			token_expires_at,
+		});
+		assertFail(second);
+		expect(second.meta.errorType).toBe('token_already_used');
+		expect(second.summary).toContain('既に使用されています');
+	});
+});
+
 describe('create_order — stop_limit / post_only / trigger_price', () => {
 	it('stop_limit 注文で trigger_price がサマリーに含まれる', async () => {
 		const params = {
@@ -520,7 +556,7 @@ describe('create_order — 信用取引（position_side）', () => {
 		});
 
 		assertFail(result);
-		expect(result.meta.errorType).toBe('confirmation_required');
+		expect(result.meta.errorType).toBe('token_invalid');
 	});
 
 	it('position_side を追加する改ざんでトークン検証が失敗する', async () => {
@@ -539,7 +575,7 @@ describe('create_order — 信用取引（position_side）', () => {
 		});
 
 		assertFail(result);
-		expect(result.meta.errorType).toBe('confirmation_required');
+		expect(result.meta.errorType).toBe('token_invalid');
 	});
 
 	it('position_side を含む信用注文で request body に position_side が渡される', async () => {

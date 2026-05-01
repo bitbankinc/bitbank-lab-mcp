@@ -701,6 +701,8 @@ export const PreviewCancelOrderDataSchema = z.object({
 		pair: z.string(),
 		order_id: z.number(),
 	}),
+	/** 注文詳細（get_order で取得できた場合のみ）。UI / サマリ表示用で、トークン検証には使わない */
+	order: OrderResponseSchema.optional(),
 });
 
 export const PreviewCancelOrderMetaSchema = z.object({

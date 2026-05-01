@@ -101,6 +101,8 @@ export function logTradeAction(action: {
 	positionSide?: string | null;
 	status: string;
 	confirmed: boolean;
+	/** どの経路から実行されたかの監査用ラベル（create_order / cancel_order / cancel_orders。二重発注や意図しないキャンセルの原因特定に使う） */
+	route?: 'elicitation' | 'ui-button' | 'direct-text';
 }) {
 	const date = today('YYYY-MM-DD');
 	const file = path.join(LOG_DIR, `${date}.jsonl`);

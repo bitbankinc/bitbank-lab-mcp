@@ -109,6 +109,14 @@ export interface ConfirmationToken {
 	expiresAt: number;
 }
 
+/** validateToken のエラー分類 */
+export type TokenErrorCode = 'token_expired' | 'token_already_used' | 'token_invalid';
+
+export interface TokenValidationError {
+	message: string;
+	code: TokenErrorCode;
+}
+
 /**
  * 確認トークンを生成する。
  *
@@ -131,7 +139,10 @@ export function generateToken(
 /**
  * 確認トークンを検証する。
  *
- * @returns null なら検証成功、文字列ならエラーメッセージ
+ * 検証成功時は usedTokens に登録され、同一トークンの再利用は
+ * `token_already_used` で拒否される（ワンショット制約）。
+ *
+ * @returns null なら検証成功、エラー時はメッセージとコードを返す
  */
 export function validateToken(
 	token: string,
@@ -139,15 +150,21 @@ export function validateToken(
 	params: Record<string, unknown>,
 	expiresAt: number,
 	nowMs: number = Date.now(),
-): string | null {
+): TokenValidationError | null {
 	// 有効期限チェック
 	if (nowMs > expiresAt) {
-		return '確認トークンの有効期限が切れています。preview を再実行してください';
+		return {
+			message: '確認トークンの有効期限が切れています。preview を再実行してください',
+			code: 'token_expired',
+		};
 	}
 
-	// 使用済みチェック
+	// 使用済みチェック（ワンショット）
 	if (usedTokens.has(token)) {
-		return '確認トークンは既に使用されています。preview を再実行してください';
+		return {
+			message: '確認トークンは既に使用されています。preview を再実行してください',
+			code: 'token_already_used',
+		};
 	}
 
 	// HMAC 再計算で検証
@@ -155,10 +172,13 @@ export function validateToken(
 	const expected = hmac(getSecret(), payload);
 
 	if (token.length !== expected.length || !timingSafeEqual(Buffer.from(token), Buffer.from(expected))) {
-		return '確認トークンが無効です。パラメータが変更された可能性があります。preview を再実行してください';
+		return {
+			message: '確認トークンが無効です。パラメータが変更された可能性があります。preview を再実行してください',
+			code: 'token_invalid',
+		};
 	}
 
-	// 検証成功 → 使用済みとして登録
+	// 検証成功 → 使用済みとして登録（ワンショット）
 	usedTokens.set(token, expiresAt);
 
 	return null;

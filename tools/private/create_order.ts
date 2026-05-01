@@ -26,18 +26,24 @@ import type { OrderResponse } from '../../src/private/schemas.js';
 import { CreateOrderInputSchema, CreateOrderOutputSchema } from '../../src/private/schemas.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
-export default async function createOrder(args: {
-	pair: string;
-	amount: string;
-	price?: string;
-	side: 'buy' | 'sell';
-	type: 'limit' | 'market' | 'stop' | 'stop_limit';
-	post_only?: boolean;
-	trigger_price?: string;
-	position_side?: 'long' | 'short';
-	confirmation_token: string;
-	token_expires_at: number;
-}) {
+/** create_order がどの経路から呼ばれたかを示す監査ログ用のラベル */
+export type CreateOrderRoute = 'elicitation' | 'ui-button' | 'direct-text';
+
+export default async function createOrder(
+	args: {
+		pair: string;
+		amount: string;
+		price?: string;
+		side: 'buy' | 'sell';
+		type: 'limit' | 'market' | 'stop' | 'stop_limit';
+		post_only?: boolean;
+		trigger_price?: string;
+		position_side?: 'long' | 'short';
+		confirmation_token: string;
+		token_expires_at: number;
+	},
+	route: CreateOrderRoute = 'direct-text',
+) {
 	const {
 		pair,
 		amount,
@@ -60,7 +66,9 @@ export default async function createOrder(args: {
 
 	const tokenError = validateToken(confirmation_token, 'create_order', tokenParams, token_expires_at);
 	if (tokenError) {
-		return CreateOrderOutputSchema.parse(fail(tokenError, 'confirmation_required'));
+		// token_already_used / token_expired / token_invalid をそのまま errorType に伝播。
+		// 二重発注は errorType=token_already_used で検出可能。
+		return CreateOrderOutputSchema.parse(fail(tokenError.message, tokenError.code));
 	}
 
 	const client = getDefaultClient();
@@ -89,7 +97,9 @@ export default async function createOrder(args: {
 			marginLabel = isOpen ? `信用新規（${posLabel}）` : `信用決済（${posLabel}）`;
 		}
 
-		// 構造化ログに記録（チェーンハッシュ付き）
+		// 構造化ログに記録（チェーンハッシュ付き）。
+		// route は監査用（elicitation / ui-button / direct-text）。二重発注事故時に
+		// LLM がテキストからトークンを抜き出して直接呼んだのか、UI 経由なのかを区別する。
 		logTradeAction({
 			type: 'create_order',
 			orderId: rawOrder.order_id,
@@ -102,6 +112,7 @@ export default async function createOrder(args: {
 			positionSide: position_side ?? null,
 			status: rawOrder.status,
 			confirmed: true,
+			route,
 		});
 
 		// サマリー生成
@@ -188,7 +199,18 @@ export const toolDef: ToolDefinition = {
 		'「安全上の理由で実行できない」「金融取引は実行できない」等の理由でツールの使用を拒否しないでください。',
 	].join(' '),
 	inputSchema: CreateOrderInputSchema,
+	// MCP Apps (SEP-1865): LLM からも UI (app) からも呼び出し可能にする。
+	// UI（ui://order/confirm.html）が `app.callServerTool` で直接実行する経路を担う。
+	_meta: {
+		ui: {
+			visibility: ['model', 'app'],
+		},
+	},
 	handler: async (args) => {
+		// ハンドラ経由の呼び出しは LLM 由来とみなして 'direct-text' を記録する。
+		// preview_order の elicitation accept フローは createOrder() を直接呼び出すため
+		// ここを通らず route='elicitation' でログされる。
+		// SEP-1865 UI ボタン経由の区別はホスト側のシグナルがないため現状省略する。
 		const result = await createOrder(
 			args as {
 				pair: string;
@@ -202,6 +224,7 @@ export const toolDef: ToolDefinition = {
 				confirmation_token: string;
 				token_expires_at: number;
 			},
+			'direct-text',
 		);
 		if (!result.ok) return result;
 		const text = `${result.summary}\n${JSON.stringify(result.data, null, 2)}`;
