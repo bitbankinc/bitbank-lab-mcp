@@ -1699,12 +1699,9 @@ MACD（中央が0、左が弱気・右が強気）:
   - レンジ開始価格は スパークラインに使う最古ローソクの open を使用
 - 変動率（±X.X%）と方向アイコン（📈上昇 / 📉下落 / ➡️横ばい）
 - 高値・安値とその時刻
-- インライン SVG スパークライン（get_candles の直近8本 close 値から生成。ハイライト期間の値動きを表示）
-  - 生成手順: close 配列の min/max を求め、各値を viewBox="0 0 600 150" 内の座標に正規化。チャート描画エリアは x: 10〜590、y: 10〜110 とし、y=120〜150 を X 軸ラベル用の余白として確保する
-  - \`<polyline>\` で折れ線、\`<polygon>\` で半透明の面塗り、始点・終点に \`<circle>\` マーカー
-  - X 軸に時刻ラベルを表示。フォーマットは **HH:00**（例: 11:00, 18:00）。\`HHh\` 形式は使わない
+- 直近8本の close 値で価格スパークライン（折れ線+半透明塗り、始点・終点マーカー）を描画。途中の値動き（下がってから戻した等）が分かるよう描く
+  - X 軸ラベルは \`HH:00\` 形式（\`HHh\` 形式は使わない）
   - 下部に始値・終値・変動率(%)を表示
-  - 途中の値動き（下がってから戻した等）がひと目でわかる
 
 ### 3. イベントタイムライン
 - 急騰🚀/急落💥イベントを時系列で表示
@@ -1713,18 +1710,14 @@ MACD（中央が0、左が弱気・右が強気）:
 
 ### 4. 売買バランス（出来高カード + 売買比率カード）
 
-出来高カードと売買比率カードは**縦積み（それぞれ独立したカード）**で表示する。
-棒グラフは本数が多い（24本）ため、フル幅で表示した方が時間帯ごとの差が読み取りやすい。
+出来高カードと売買比率カードは **縦積み**（独立したカード）で表示する。棒グラフは本数が多い（24本）のでフル幅にすると差が読み取りやすい。
 
 **出来高カード（棒グラフ）**
-- get_candles で取得した24本分だけを棒グラフで表示（データのない未来時間の枠は作らない）
-- 直近8本は色を変えてハイライト（例：緑系 bg-green-500）= スパークラインのハイライト期間と揃える
-- それ以前の16本は薄い色（例：グレー系 bg-gray-600）
-- **重要**: 棒の高さは px 単位で直接指定（例: style="height: 48px"）。パーセント指定は効かないため禁止
-- 棒の間隔は gap-1.5（6px）を使用。gap-1（4px）だと棒同士が近すぎて視認性が悪い
-- 最大出来高の棒を 96px とし、他は比率で計算（例: 出来高が最大の50%なら 48px）
-- ハイライト期間合計: XXX BTC（≈ X.X億円）を明記。JPY換算は get_ticker の現在価格 × BTC数量で算出
-- 突出した時間帯があれば注記（例：「09時台が突出」）
+- 取得した 24 本分のみを棒グラフで表示（未来時間の空枠は作らない）
+- 直近 8 本はハイライト色（緑系）= 価格スパークラインのハイライト期間と揃える。それ以前の 16 本は薄いグレー
+- ハイライト期間合計: XXX BTC（≈ X.X億円）を明記。JPY 換算は get_ticker 現在価格 × BTC 数量
+- 突出した時間帯があれば注記（例: 「09時台が突出」）
+- ※ html モードで Tailwind v2 を使う場合は棒の高さをパーセント指定せず px で指定する（gap も 6px 程度）
 
 **売買比率カード**
 - 見出しメタには get_flow_metrics のレスポンステキスト中の実レンジをそのまま転記する
@@ -1737,24 +1730,10 @@ MACD（中央が0、左が弱気・右が強気）:
 - パーセント表示
 - 判定ラベル（🟢買い優勢 / 🔴売り優勢 / 🟡拮抗）
 
-### 5. 重要ラインとの関係（縦型構造図）
-- **縦型レイアウト**で上から下へ表示（横型は数字が重なるためNG）
-- 構造イメージ:
-  🔴 第3レジスタンス（+17.3%）11,850,000円 ★☆☆
-  │   説明テキスト
-  🔴 第2レジスタンス（+14.8%）11,600,000円 ★☆☆
-  │   説明テキスト
-  🔴 第1レジスタンス（+12.8%）11,400,000円 ★☆☆
-  │
-  │   空白地帯（レジスタンスまで遠い）
-  ────────────────────
-  📍 現在価格: 10,106,297円
-  ────────────────────
-  │   板情報: ±0.5%: 買X.X BTC / 売X.X BTC
-  │
-  🟢 サポート（-7.0%）9,400,000円 ★☆☆
-      説明テキスト
-- 各ラインに強度（★）、距離（%）、説明を併記
+### 5. 重要ラインとの関係
+- **縦型レイアウト**でレジスタンス → 現在価格（中央に強調） → サポートの順に上から下へ並べる（横型は数字が重なるため不可）
+- 各ラインに強度（★）、距離（±%）、説明を併記
+- 現在価格の近傍には板情報の補足（例: ±0.5%: 買X.X / 売X.X BTC）を入れてよい
 - サポートなしの場合は「本日安値 X円 が直近の底」と表示
 
 ### 6. 板状況カード
@@ -1764,19 +1743,15 @@ MACD（中央が0、左が弱気・右が強気）:
 - 判定ラベル（🟢買い圧力優勢 / 🔴売り圧力優勢 / 🟡均衡）
 
 ### 7. トレンド方向チェック（MTF）
-- データ元: analyze_mtf_sma の結果（data.timeframes["1hour" | "4hour" | "1day"]）
-- 3列レイアウト: 1時間足 / 4時間足 / 日足
-- 各列に以下を表示:
-  - SMA配列判定アイコン: 🟢上昇配列 / 🔴下降配列 / 🟡混合（timeframes[tf].alignment）
-  - 価格 vs SMA25: 「価格はSMA25の▲上（+X.X%）」/「価格はSMA25の▼下（-X.X%）」（timeframes[tf].smas["25"].pricePosition, deviationPct）
-  - 価格 vs SMA75: 「価格はSMA75の▲上（+X.X%）」/「価格はSMA75の▼下（-X.X%）」（timeframes[tf].smas["75"].pricePosition, deviationPct）
-  - 直近クロス（timeframes[tf].recentCrosses が空でなければ表示: GC/DC + 何本前）
-- 日足列に追加:
-  - 一目均衡表: 雲の{上/中/下}（assessment.pricePosition）+ 雲の方向（assessment.cloudSlope）
-  - 三役好転/逆転（signals.sanpuku.kouten / gyakuten が true なら表示）
-- 下部に総合判定バー:
-  - data.confluence.aligned === true → 「✅ 全時間軸の方向が一致」+ confluence.summary
-  - data.confluence.aligned === false → 「⚠️ 時間軸間で乖離あり」+ confluence.summary
+analyze_mtf_sma の結果（timeframes の 1hour / 4hour / 1day）を 3 列レイアウトで表示。各列に:
+
+- SMA 配列判定アイコン: 🟢上昇配列 / 🔴下降配列 / 🟡混合
+- 価格 vs SMA25 / SMA75 の位置（▲上 / ▼下）と乖離率
+- 直近クロス（recentCrosses が空でなければ GC/DC + 何本前）
+
+日足列にはさらに analyze_ichimoku_snapshot から雲の位置・方向、三役好転/逆転（該当する場合）を追加。
+
+下部に総合判定バー: \`confluence.aligned\` に応じて「✅ 全時間軸の方向が一致」または「⚠️ 時間軸間で乖離あり」+ \`confluence.summary\` を表示。
 
 ### 8. ポイントセクション
 - 1-2行で今日の判断材料をまとめる（テキスト）
@@ -1861,234 +1836,27 @@ sendPrompt() で飛んだ先の応答も Visualizer で表示する。
 
 ## デザイン要件
 
+### 配色（両モード共通）
+- 緑 #4ade80（ポジティブ/上昇/買い）／ 赤 #f87171（ネガティブ/下落/売り）／ 黄 #fbbf24（中立/注意）／ 青 #60a5fa（情報/イベント）
+
 ### visualizer モード
-- 背景: transparent（ホスト環境に追従）
-- カード背景: var(--color-background-secondary)
-- ボーダー: 0.5px solid var(--color-border-tertiary)
-- 角丸: var(--border-radius-lg)
-- テキスト: var(--color-text-primary), var(--color-text-secondary)
-- フォント: var(--font-sans), var(--font-mono)
-
-- 色の意味（ハードコード OK）
-  - 緑系 (#4ade80): ポジティブ/上昇/買い
-  - 赤系 (#f87171): ネガティブ/下落/売り
-  - 黄系 (#fbbf24): 中立/注意
-
-- ボタン: Visualizer のプリセットスタイル（自動適用）を使用
-  - sendPrompt() を onclick に設定
-  - ラベル末尾に ↗ を付与
+- 背景は transparent（ホスト環境に追従）。カード・ボーダー・角丸・テキスト色・フォントは Visualizer の CSS 変数（\`--color-background-secondary\`, \`--color-border-tertiary\`, \`--border-radius-lg\`, \`--color-text-primary/secondary\`, \`--font-sans/mono\`）に準拠
+- ボタンは Visualizer のプリセットスタイル。\`sendPrompt()\` を onclick に設定し、ラベル末尾に ↗ を付与
 
 ### html モード
-\`\`\`
-- ダークテーマ
-  - 背景: #1a1a2e
-  - カード背景: #16213e
-  - テキスト: #eaeaea
-  - アクセント: #0f3460
-
-- 色の意味
-  - 緑系 (#4ade80): ポジティブ/上昇/買い
-  - 赤系 (#f87171): ネガティブ/下落/売り
-  - 黄系 (#fbbf24): 中立/注意
-  - 青系 (#60a5fa): 情報/イベント
-
-- CSS禁止パターン（pre-built Tailwind v2 で非対応/不安定）
-  - bg-opacity-* / text-opacity-* → style属性で rgba() を直接指定
-  - bg-[#xxx] 等の arbitrary value → <style>ブロックでクラス定義
-  - backdrop-* 系 → 使用禁止
-  - ring-* 系 → border で代替
-
-- レイアウト
-  - 最大幅: 800px
-  - カード: 角丸(8px)、影あり
-  - フォント: システムフォント
-
-- Tailwind CSS（jsdelivr の pre-built CSS）を使用
-  - カスタムカラーは \`<style>\` ブロックで定義（arbitrary value 構文 \`bg-[#xxx]\` は使わない）
-\`\`\`
+- ダークテーマ（背景 #1a1a2e / カード #16213e / アクセント #0f3460 / テキスト #eaeaea）
+- 最大幅 800px、カードは角丸 8px・影あり、フォントはシステムフォント
+- CSS の禁止パターン・Tailwind v2 の使い方は \`.claude/rules/html.md\` に従う
 
 ## Visualizer の制約（visualizer モード）
-- show_widget は 1回の tool call で完結する必要がある（途中編集不可）
-- CSS 変数でダーク/ライトモード両対応にする
-- emoji は使用可（テキストノードとして許容）
-- SVG アイコンや CSS シェイプも使用可
+- show_widget は 1 回の tool call で完結（途中編集不可）。CSS 変数でダーク/ライトモード両対応
+- emoji・SVG・CSS シェイプは使用可
 
-## 出力テンプレート（html モード用）
+## 出力時の補足
 
-\`\`\`html
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-  <style>
-    .bg-dark  { background-color: #1a1a2e; }
-    .bg-card  { background-color: #16213e; }
-    .bg-accent { background-color: #0f3460; }
-  </style>
-  <title>BTC/JPY 直近レポート</title>
-</head>
-<body class="bg-dark text-gray-100 min-h-screen p-6">
-  <div class="max-w-3xl mx-auto space-y-6">
-
-    <!-- ヘッダー -->
-    <header class="text-center">
-      <h1 class="text-3xl font-bold">🌅 BTC/JPY 直近レポート</h1>
-      <p class="text-gray-400 text-base">取得時刻: {timestamp}</p>
-    </header>
-
-    <!-- 価格サマリー -->
-    <section class="bg-card rounded-lg p-6">
-      <h2 class="font-bold mb-1">📊 BTC/JPY 価格の動き</h2>
-      <p class="text-xs text-gray-500 mb-4">出典: get_ticker ({ticker_time}) + get_candles 1h × {candle_count}本 ({candle_range})</p>
-      <div class="flex justify-between items-center mb-4">
-        <div>
-          <p class="text-gray-400 text-base">{range_start_label}</p>
-          <p class="text-2xl">{price_before}円</p>
-        </div>
-        <div class="text-4xl">{direction_icon}</div>
-        <div class="text-right">
-          <p class="text-gray-400 text-base">現在</p>
-          <p class="text-2xl font-bold">{price_now}円</p>
-        </div>
-      </div>
-      <div class="text-center mb-4">
-        <span class="{change_color} text-xl font-bold">{change_pct}%</span>
-      </div>
-      <!-- 価格折れ線チャート（render_chart_svg の data URI を埋め込み） -->
-      <img src="{chart_data_uri}" alt="直近の価格推移" class="w-full rounded" />
-      <div class="flex justify-between text-base text-gray-400 mt-1">
-        <span>安値: {low}円 ({low_time})</span>
-        <span>高値: {high}円 ({high_time})</span>
-      </div>
-    </section>
-
-    <!-- イベントタイムライン -->
-    <section class="bg-card rounded-lg p-6">
-      <h2 class="font-bold mb-1">⚡ 主なイベント</h2>
-      <p class="text-xs text-gray-500 mb-4">出典: get_flow_metrics · 実レンジ {flow_range} ({flow_duration})</p>
-      <!-- {flow_warning} があれば下部に警告ボックスとして表示 -->
-      <div class="space-y-3">
-        <!-- イベント項目 or 「大きな急変動なし」 -->
-      </div>
-    </section>
-
-    <!-- 出来高（棒グラフ: 取得した24本分のみ。未来の空枠は作らない） -->
-    <section class="bg-card rounded-lg p-6">
-      <h2 class="font-bold mb-1">📈 出来高</h2>
-      <p class="text-xs text-gray-500 mb-4">出典: get_candles 1h × {candle_count}本 ({candle_range})</p>
-      <!-- 取得データ24本分の棒グラフ: 高さは必ず px 単位で指定（%は効かない） -->
-      <!-- 各棒は flex:1 でコンテナ幅いっぱいに均等分配。w-3 固定だと右側に空白ができるため -->
-      <div class="flex items-end gap-1.5" style="height: 96px;">
-        <!-- 例: 最大出来高=96px, 50%なら48px, 25%なら24px -->
-        <!-- ハイライト期間: #4ade80(green), それ以前: #4b5563(gray) -->
-        <div class="rounded-t" style="flex:1; min-width:0; height: 24px; background:#4b5563;"></div>
-        <div class="rounded-t" style="flex:1; min-width:0; height: 36px; background:#4b5563;"></div>
-        <!-- ... 残り22本 ... -->
-        <div class="rounded-t" style="flex:1; min-width:0; height: 72px; background:#4ade80;"></div>
-        <div class="rounded-t" style="flex:1; min-width:0; height: 96px; background:#4ade80;"></div>
-      </div>
-      <p class="text-sm text-gray-500 mt-1">※ 時刻はJST。■ ハイライト期間 / ■ それ以前</p>
-      <p class="text-base text-gray-400 mt-2">ハイライト期間合計: XXX BTC</p>
-    </section>
-
-    <!-- 売買比率 -->
-    <section class="bg-card rounded-lg p-6">
-      <h2 class="font-bold mb-1">⚖️ 売買比率</h2>
-      <p class="text-xs text-gray-500 mb-4">出典: get_flow_metrics · 実レンジ {flow_range} ({flow_trade_count}約定)</p>
-      <!-- {flow_warning} があれば警告ボックスとして表示（「短期スナップショット」と判定ラベルに付記） -->
-      <!-- 買い/売りの比率バー -->
-    </section>
-
-    <!-- 重要ライン（縦型構造図） -->
-    <section class="bg-card rounded-lg p-6">
-      <h2 class="font-bold mb-1">📍 重要ラインとの関係</h2>
-      <p class="text-xs text-gray-500 mb-4">出典: analyze_support_resistance (過去{lookback_days}日 lookback)</p>
-      <!-- 縦型で上から下へ: レジスタンス → 現在価格 → サポート -->
-      <div class="font-mono text-base space-y-2">
-        <!-- 各ラインを縦に並べる（横型は数字が重なるためNG） -->
-      </div>
-    </section>
-
-    <!-- 板状況 -->
-    <section class="bg-card rounded-lg p-6">
-      <h2 class="font-bold mb-1">🔮 板状況</h2>
-      <p class="text-xs text-gray-500 mb-4">出典: get_orderbook (スナップショット {orderbook_time})</p>
-      <!-- ±1%帯域の買い/売り圧力バー -->
-    </section>
-
-    <!-- トレンド方向チェック（MTF） -->
-    <section class="bg-card rounded-lg p-6">
-      <h2 class="font-bold mb-1">🔀 トレンド方向チェック（MTF）</h2>
-      <p class="text-xs text-gray-500 mb-1">出典: analyze_mtf_sma (1h / 4h / 1d) + analyze_ichimoku_snapshot (1d)</p>
-      <p class="text-base text-gray-400 mb-4">→ 移動平均線（SMA）を用いて短期〜長期の方向が揃っているかを確認</p>
-      <div class="grid grid-cols-3 gap-4 mb-4">
-        <!-- 1時間足 -->
-        <div class="bg-accent rounded-lg p-4 text-center">
-          <p class="text-sm text-gray-400 mb-1">1時間足</p>
-          <p class="text-3xl mb-1">{1h_alignment_icon}</p>
-          <p class="text-base font-bold mb-2">{1h_alignment_label}</p>
-          <div class="text-sm text-gray-400 space-y-1">
-            <p>価格はSMA25の{1h_sma25_position}</p>
-            <p>価格はSMA75の{1h_sma75_position}</p>
-            <p>{1h_recent_cross}</p>
-          </div>
-        </div>
-        <!-- 4時間足 -->
-        <div class="bg-accent rounded-lg p-4 text-center">
-          <p class="text-sm text-gray-400 mb-1">4時間足</p>
-          <p class="text-3xl mb-1">{4h_alignment_icon}</p>
-          <p class="text-base font-bold mb-2">{4h_alignment_label}</p>
-          <div class="text-sm text-gray-400 space-y-1">
-            <p>価格はSMA25の{4h_sma25_position}</p>
-            <p>価格はSMA75の{4h_sma75_position}</p>
-            <p>{4h_recent_cross}</p>
-          </div>
-        </div>
-        <!-- 日足 -->
-        <div class="bg-accent rounded-lg p-4 text-center">
-          <p class="text-sm text-gray-400 mb-1">日足</p>
-          <p class="text-3xl mb-1">{1d_alignment_icon}</p>
-          <p class="text-base font-bold mb-2">{1d_alignment_label}</p>
-          <div class="text-sm text-gray-400 space-y-1">
-            <p>価格はSMA25の{1d_sma25_position}</p>
-            <p>価格はSMA75の{1d_sma75_position}</p>
-            <p>{1d_recent_cross}</p>
-          </div>
-          <div class="border-t border-gray-600 mt-2 pt-2 text-sm text-gray-400">
-            <p>一目: 雲の{cloud_position}</p>
-            <p>{sanpuku_label}</p>
-          </div>
-        </div>
-      </div>
-      <!-- 総合判定 -->
-      <div class="bg-accent rounded-lg p-3 text-center">
-        <p class="text-base font-bold">{confluence_judgment}</p>
-      </div>
-    </section>
-
-    <!-- ポイント -->
-    <section class="bg-card rounded-lg p-6">
-      <h2 class="font-bold mb-3">💡 ポイント</h2>
-      <p class="text-gray-300">{summary_text}</p>
-    </section>
-
-    <!-- 免責事項 -->
-    <footer class="text-center text-gray-500 text-sm">
-      ⚠️ この分析は参考情報です。投資判断はご自身で行ってください。
-    </footer>
-
-  </div>
-</body>
-</html>
-\`\`\`
-
-**html モードの場合**:
-- \`create_file\` で \`/mnt/user-data/outputs/morning-report-visual.html\` を作成
-- \`present_files\` で提示
-- コードブロックでの出力やテキスト説明は不要
-- Tailwind CSS（jsdelivr pre-built CSS）を使用。\`<script src="https://cdn.tailwindcss.com">\` は本番非推奨の警告が出るため使わない
+- **html モードの場合**: \`create_file\` で \`/mnt/user-data/outputs/morning-report-visual.html\` を作成 → \`present_files\` で提示。html 出力は上記「必須コンポーネント」をそのまま縦並びのカード（最大幅 800px、角丸 8px）にレイアウトし、各セクション見出しの下に「データ由来」メタ表記を入れる。Tailwind v2 の制約は \`.claude/rules/html.md\` に従う
+- **visualizer モードの場合**: show_widget で出力（create_file は不要）
+- 価格折れ線チャートはインライン SVG。Visualizer ならチャートコンポーネント、html では \`render_chart_svg\` の data URI を \`<img>\` で埋め込んでもよい
 
 ---
 
@@ -2308,49 +2076,16 @@ JPY 建て資産総額の推移を折れ線グラフ（インライン SVG）で
 - 年次グラフ: \`yearly_equity_series\`（月次の配列。各点に timestamp と value_jpy）
 - 最終点は現在のリアルタイム評価額。最初の点は期初の復元評価額。
 
-**各グラフの表示要素:**
-- グラフ上部に大きく: 資産増減の **change_jpy** と **change_pct**（プラスは緑、マイナスは赤）
-- 折れ線グラフ: 全データ点をプロット。X 軸=時系列（左=期初、右=現在）、Y 軸=JPY 評価額
-- 終点のみに値ラベル（「現在: XX円」）を表示する。始点（月初/年初）の値は Y 軸と X 軸から読み取れるため不要
-
-**SVG 座標の事前計算ルール（重要 — Y軸ラベル重複防止）:**
-SVG タグを書き始める **前** に、HTMLコメントブロック \`<!-- ... -->\` で以下を列挙すること:
-1. Y 軸の目盛り一覧（値とピクセル座標）
-2. 全データ点の座標（x, y）
-3. clipPath の基準 y 座標
-
-計算が確定してから SVG コードを書き始め、コメント内の確定値を転記するだけにする。
-SVG コード本体の途中で座標を再計算・再出力してはならない。
-
-**デザインゴール（ピクセル座標は指定しない。見た目の品質を優先して自由に設計してよい）:**
-- **余白**: グラフ描画エリアの上下左右に十分なパディングを取り、ラインやラベルが見切れないようにする
-- **ラベル配置（重なり防止 — 重要）**: 終点ラベル（「現在: XX円」）は折れ線・塗りつぶし領域と **必ず離して配置** する。具体的には:
-  - 終点ラベルはグラフ描画エリアの **右上の上部余白**（折れ線より上の固定位置）に配置し、右寄せ（text-anchor: end）にする
-  - ラベルと折れ線の間に **最低 12px 以上の垂直ギャップ** を確保する
-  - Y 軸の値域（min〜max）に対して上下に 10〜15% のマージンを追加し、折れ線が描画エリアの上端・下端に張り付かないようにする。特に **下端** は X 軸ラベル（「月初」「現在」）の表示領域も必要なため、折れ線の最低点から X 軸ラベルまで **最低 20px 以上の余白** を確保する
-- **二色塗り分け**: 基準値（期初の value_jpy）のピクセル y 座標を \`baseY\` とする。塗りつぶしは **折れ線と基準線の間** だけに適用する（基準線より下の全領域ではない）。
-  - **塗りつぶし用パス**: 折れ線のポイントを辿った後、右端→(右端, baseY)→(左端, baseY) で閉じる。これで「折れ線と基準線に囲まれた領域」が定義される
-  - **clipPath で上下分割**: \`clip-above\`（y: 0 → baseY の矩形）と \`clip-below\`（y: baseY → 底辺の矩形）を定義
-  - 同じ塗りつぶしパスを 2 回描画し、\`clip-above\` 適用版を **緑（#4ade80, opacity 0.15）**、\`clip-below\` 適用版を **赤（#f87171, opacity 0.15）** にする
-  - 折れ線自体も同様に clipPath で緑・赤に塗り分ける
-  - 基準値を示す水平の点線（stroke-dasharray）を薄いグレーで描画する
-- **Y 軸**: キリの良い数値（500円刻み or 1,000円刻みなど、値域に応じて適切な間隔）で目盛りを配置する。データの min/max をそのまま使わず、切り下げ・切り上げで丸めた値を軸の端にする。¥XX,XXX 形式でグラフ左側に表示。ピクセル座標を表示してはいけない
-- **X 軸**: 左に「月初」/「年初」、右に「現在」
-
-**SVG 内フォントサイズ（重要）:**
-- Y 軸ラベル（¥XX,XXX）: font-size **12** 以上
-- X 軸ラベル（月初 / 現在）: font-size **12** 以上
-- 終点ラベル（現在: ¥XX,XXX）: font-size **13** 以上
-- 周囲の HTML テキストとの視覚的バランスを保つこと。SVG 内の文字が極端に小さく見えないように注意
+**表示要素:**
+- グラフ上部に **change_jpy** と **change_pct** を強調表示（プラスは緑、マイナスは赤）
+- 全データ点をプロットする折れ線グラフ。X 軸は左=「月初」/「年初」、右=「現在」、Y 軸は JPY 評価額（キリの良い目盛り、¥XX,XXX 形式）
+- 終点に「現在: ¥XX,XXX」ラベル。始点の値は軸から読み取れるため省略可
+- 期初値を基準線（点線・薄いグレー）として表示し、基準線より上の領域を緑、下の領域を赤の半透明（opacity 0.15 程度）で塗り分ける
+- 折れ線・終点ラベル・X 軸ラベルが互いに重ならないよう余白を確保する
 
 **レイアウト:**
-- **visualizer モード**: 「月初比」「年初比」の **タブ切り替え** で表示する。デフォルトは「月初比」タブを選択状態にする。タブの実装は純粋な HTML + CSS（\`<input type="radio">\` + CSS の \`:checked\` セレクタ）で行い、JavaScript は使わない。タブのスタイルはホスト環境の CSS 変数に準拠し、選択中タブは下線 or 背景色で明示する
-  - タブラベルは **font-size: 14px**（0.875rem）、**padding: 8px 16px**、**white-space: nowrap** で折り返さないようにする
-  - **セクションタイトル（📈 資産推移）とタブの間に 16px 以上の余白**（margin-bottom）を確保する
-  - **タブと増減テキスト（月初比資産増減 / change_jpy）の間に 20px 以上の余白**（margin-top or padding-top）を確保する
-  - **増減テキストと SVG グラフの間に 16px 以上の余白**（margin-top or margin-bottom）を確保する
-  - **SVG グラフの最小高さは 180px 以上**を確保し、周囲の要素に押されて縮小されないようにする。SVG に \`min-height: 180px\` または \`height: 200px\` 等を指定すること
-- **html モード**: 2つのグラフを縦に並べて表示する（タブ不要）
+- **visualizer モード**: 「月初比」「年初比」のタブ切り替え（デフォルト月初比）。React の state でも CSS のみ（\`<input type="radio">\` + \`:checked\`）でも、ホスト環境に馴染む方法でよい
+- **html モード**: 2 つのグラフを縦に並べる（タブ不要）
 
 ### 4. 保有銘柄のパフォーマンス（資産推移グラフの直後に配置）
 セクション名: 「📈 保有銘柄のパフォーマンス」
@@ -2413,38 +2148,7 @@ include_technical=true で返ってくる technical 配列を使用する。
   - HTML 上では日本語ラベルに変換してよい（例: strong_uptrend → 「強い上昇トレンド」、sideways → 「横ばい」）
 - 総合判定（signal）— bullish 🟢強気 / bearish 🔴弱気 / overbought 🔴過熱 / oversold 🟢売られすぎ / neutral 🟡中立
 
-**レイアウト（重要・両モード共通）:**
-- 銘柄カードは **1列（縦並び）** で配置する（grid-cols-1）。2列グリッドにしない
-- 各カード内の指標（RSI / SMA乖離 / トレンド / 総合判定）は **横4列（grid-cols-4）** で並べる
-- この「1カード＝1行、指標4列横並び」のレイアウトを必ず守ること
-
-テクニカル分析セクションの HTML 構造（visualizer / html 共通）:
-\`\`\`html
-<div style="display:grid;grid-template-columns:1fr;gap:12px;">
-  <!-- 銘柄ごとに繰り返し -->
-  <div style="background:...;border-radius:8px;padding:16px;">
-    <p style="font-weight:bold;margin-bottom:8px;">{pair_name}</p>
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
-      <div>
-        <p style="color:gray;font-size:14px;">RSI</p>
-        <p>{rsi_icon} {rsi_value}</p>
-      </div>
-      <div>
-        <p style="color:gray;font-size:14px;">SMA乖離</p>
-        <p>{sma_deviation}</p>
-      </div>
-      <div>
-        <p style="color:gray;font-size:14px;">トレンド</p>
-        <p>{trend_icon} {trend_label}</p>
-      </div>
-      <div>
-        <p style="color:gray;font-size:14px;">総合判定</p>
-        <p>{signal_icon} {signal_label}</p>
-      </div>
-    </div>
-  </div>
-</div>
-\`\`\`
+**レイアウト（両モード共通）:** 銘柄カードを縦に並べ、各カード内で 4 指標（RSI / SMA乖離 / トレンド / 総合判定）を横一列に配置する（1カード=1行、指標4列）。
 
 ### 8. 入出金サマリー（available 時のみ）
 **全期間の詳細履歴は不要。** 年次・月次の入出金サマリーをカードで表示する。
@@ -2464,97 +2168,30 @@ include_technical=true で返ってくる technical 配列を使用する。
 全期間の deposit_withdrawal_summary（口座全体リターン等）は表示しない。
 
 ### 9. 注意書き / 免責セクション
-以下の内容を HTML 内に必ず表示する:
-
-**指標の定義:**
-- **月初比資産増減** = 月初時点の JPY 建て資産総額のスナップショットと比較して、現在どれだけ JPY 建てで増減したか
-- **年初比資産増減** = 年初時点の JPY 建て資産総額のスナップショットと比較して、現在どれだけ JPY 建てで増減したか
-- 月初 = 当月 1日 00:00 JST、年初 = 当年 1/1 00:00 JST
-- 期初評価額は約定・入出金を逆算して復元し、期初始値（1dayキャンドル）で評価
-- **入出金調整後** = 入出金元本を除いた実質的な増減
-- **現在の資産残高** = いまこの瞬間の JPY 建て資産総額
-- **資産構成比率** = 現在の資産残高の内訳（BTC が何%、ETH が何%、JPY が何% 等）
-- **保有銘柄のパフォーマンス（月次騰落率/年次騰落率）** = 各銘柄の価格が月初・年初の始値からどれだけ騰落したかの割合（%）。ポートフォリオの増減ではなく、銘柄自体の市場価格の変動率
-
-**データに関する注意:**
-- 暗号資産入庫は現在価格で仮評価しているため、入庫時の価格とは異なります
-- 一部データのみ取得の場合は概算値です（is_complete=false 時）
-
-**免責事項:**
-⚠️ この分析は参考情報です。投資判断はご自身で行ってください。
-⚠️ **本レポートの数値は参考値であり、所得税計算には使用できません。** 税務申告には取引所発行の年間取引報告書をご利用ください。
+- 主要指標（月初比/年初比資産増減・現在の資産残高・資産構成比率・保有銘柄の月次/年次騰落率）の定義を簡潔に記載する。詳細は前述の「指標の定義と優先順位」を参照
+- データに関する注意: 暗号資産入庫は現在価格で仮評価（入庫時価格とは異なる）／ is_complete=false 時は概算値
+- 免責事項:
+  ⚠️ この分析は参考情報です。投資判断はご自身で行ってください。
+  ⚠️ 本レポートの数値は参考値であり、所得税計算には使用できません。税務申告には取引所発行の年間取引報告書をご利用ください。
 
 ## デザイン要件
 
+### 配色（両モード共通）
+- 緑 #4ade80（ポジティブ/利益/上昇）／ 赤 #f87171（ネガティブ/損失/下落）／ 黄 #fbbf24（中立/注意）／ 青 #60a5fa（情報）
+- 銘柄カラー（構成比チャート用）: BTC #f7931a / ETH #627eea / XRP #00aae4 / JPY #60a5fa / SOL #9945ff / その他は適切な色を割り当て
+
 ### visualizer モード
-- 背景: transparent（ホスト環境に追従）
-- カード背景: var(--color-background-secondary)
-- ボーダー: 0.5px solid var(--color-border-tertiary)
-- 角丸: var(--border-radius-lg)
-- テキスト: var(--color-text-primary), var(--color-text-secondary)
-- フォント: var(--font-sans), var(--font-mono)
-- **フォントサイズ（重要）**: 本文・テーブル・ラベル等のテキストは **最低 16px**（1rem）以上にする。補足テキストでも 14px 未満にしない。SVG 内のテキスト（軸ラベル・値ラベル）も **最低 14px** 以上。全体的に読みやすさを最優先する
-
-- 色の意味（ハードコード OK）
-  - 緑系 (#4ade80): ポジティブ/利益/上昇
-  - 赤系 (#f87171): ネガティブ/損失/下落
-  - 黄系 (#fbbf24): 中立/注意
-
-- 銘柄カラー（構成比チャート用・両モード共通）
-  - BTC: #f7931a
-  - ETH: #627eea
-  - XRP: #00aae4
-  - JPY: #60a5fa
-  - SOL: #9945ff
-  - その他: 適切な色を割り当て
-
-- ボタン: Visualizer のプリセットスタイル（自動適用）を使用
-  - sendPrompt() を onclick に設定
-  - ラベル末尾に ↗ を付与
+- 背景は transparent（ホスト環境に追従）。カード・ボーダー・角丸・テキスト色・フォントは Visualizer の CSS 変数（\`--color-background-secondary\`, \`--color-border-tertiary\`, \`--border-radius-lg\`, \`--color-text-primary/secondary\`, \`--font-sans/mono\`）に準拠
+- ボタンは Visualizer のプリセットスタイル。\`sendPrompt()\` を onclick に設定し、ラベル末尾に ↗ を付与
 
 ### html モード
-\`\`\`
-- ダークテーマ
-  - 背景: #1a1a2e
-  - カード背景: #16213e
-  - テキスト: #eaeaea
-  - アクセント: #0f3460
-  - フォントサイズ: 本文・テーブル・ラベル等は最低 16px 以上。補足テキストでも 14px 未満にしない。SVG 内テキストも最低 14px 以上
-
-- 色の意味
-  - 緑系 (#4ade80): ポジティブ/利益/上昇
-  - 赤系 (#f87171): ネガティブ/損失/下落
-  - 黄系 (#fbbf24): 中立/注意
-  - 青系 (#60a5fa): 情報
-
-- 銘柄カラー（構成比チャート用）
-  - BTC: #f7931a
-  - ETH: #627eea
-  - XRP: #00aae4
-  - JPY: #60a5fa
-  - SOL: #9945ff
-  - その他: 適切な色を割り当て
-
-- CSS禁止パターン（pre-built Tailwind v2 で非対応/不安定）
-  - bg-opacity-* / text-opacity-* → style属性で rgba() を直接指定
-  - bg-[#xxx] 等の arbitrary value → <style>ブロックでクラス定義
-  - backdrop-* 系 → 使用禁止
-  - ring-* 系 → border で代替
-
-- レイアウト
-  - 最大幅: 800px
-  - カード: 角丸(8px)、影あり
-  - フォント: システムフォント
-
-- Tailwind CSS（jsdelivr の pre-built CSS）を使用
-  - カスタムカラーは \`<style>\` ブロックで定義（arbitrary value 構文 \`bg-[#xxx]\` は使わない）
-\`\`\`
+- ダークテーマ（背景 #1a1a2e / カード #16213e / アクセント #0f3460 / テキスト #eaeaea）
+- 最大幅 800px、カードは角丸 8px・影あり、フォントはシステムフォント
+- CSS の禁止パターン・Tailwind v2 の使い方は \`.claude/rules/html.md\` に従う
 
 ## Visualizer の制約（visualizer モード）
-- show_widget は 1回の tool call で完結する必要がある（途中編集不可）
-- CSS 変数でダーク/ライトモード両対応にする
-- emoji は使用可（テキストノードとして許容）
-- SVG アイコンや CSS シェイプも使用可
+- show_widget は 1 回の tool call で完結（途中編集不可）。CSS 変数でダーク/ライトモード両対応
+- emoji・SVG・CSS シェイプは使用可
 
 ## sendPrompt 導線定義（visualizer モードのみ）
 
@@ -2607,276 +2244,14 @@ html モードでは sendPrompt 関連の記述をすべて無視する。
 - Claude が質問文から適切なツールを推論できる程度に具体的にする
 - 日本語で記述
 
-## 出力テンプレート（html モード用）
+## 出力時の補足
 
-\`\`\`html
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-  <style>
-    .bg-dark   { background-color: #1a1a2e; }
-    .bg-card   { background-color: #16213e; }
-    .bg-accent { background-color: #0f3460; }
-    .bar-green { background-color: #4ade80; }
-    .bar-red   { background-color: #f87171; }
-    .text-profit  { color: #4ade80; }
-    .text-loss    { color: #f87171; }
-    .text-neutral { color: #fbbf24; }
-    /* 銘柄カラー（構成比チャート用） */
-    .bar-btc   { background-color: #f7931a; }
-    .bar-eth   { background-color: #627eea; }
-    .bar-xrp   { background-color: #00aae4; }
-    .bar-jpy   { background-color: #60a5fa; }
-    .bar-sol   { background-color: #9945ff; }
-    .bar-other { background-color: #8b8b8b; }
-  </style>
-  <title>My資産レポート</title>
-</head>
-<body class="bg-dark text-gray-100 min-h-screen p-6">
-  <div class="max-w-3xl mx-auto space-y-6">
-
-    <!-- 1. ヘッダー -->
-    <header class="text-center">
-      <h1 class="text-3xl font-bold">💼 My資産レポート</h1>
-      <p class="text-gray-400 text-base">取得時刻: {timestamp}</p>
-      <p class="text-base mt-1">
-        入出金分析: <span class="...">{status_badge}</span>
-      </p>
-    </header>
-
-    <!-- 2. 現在の資産残高（最重要セクション） -->
-    <section class="bg-card rounded-lg p-6">
-      <div class="text-center mb-4">
-        <p class="text-gray-400 text-base">現在の資産残高</p>
-        <p class="text-5xl font-bold mt-1">{total_jpy_value}円</p>
-        <p class="text-gray-400 text-sm mt-1">うち JPY: {jpy_balance}円</p>
-      </div>
-      <!-- 前日比を小さめに補助表示 -->
-      <div class="text-center">
-        <p class="text-gray-400 text-sm">前日比</p>
-        <p class="{daily_color} text-xl font-bold">{daily_change_jpy} ({daily_change_pct})</p>
-      </div>
-    </section>
-
-    <!-- 3. 資産推移グラフ（トップ配置） -->
-    <!-- データソース: monthly_equity_series / yearly_equity_series の全点を使って描画 -->
-    <section class="bg-card rounded-lg p-6">
-      <h2 class="font-bold mb-6">📈 資産推移</h2>
-
-      <!-- 月次グラフ: monthly_equity_series 日次折れ線 -->
-      <div class="mb-8">
-        <div class="flex justify-between items-baseline mb-4">
-          <p class="text-gray-400 text-base">月初比資産増減</p>
-          <p class="{monthly_color} text-2xl font-bold">{monthly_change_jpy} ({monthly_change_pct})</p>
-        </div>
-        <!-- セクション3のデザインゴールに従い、余白・ラベル配置・二色塗り分けを適用して SVG を生成 -->
-        <svg viewBox="..." class="w-full" style="min-height: 180px;"><!-- monthly_equity_series の全点を描画 --></svg>
-      </div>
-
-      <!-- 年次グラフ: yearly_equity_series 月次折れ線 -->
-      <div>
-        <div class="flex justify-between items-baseline mb-4">
-          <p class="text-gray-400 text-base">年初比資産増減</p>
-          <p class="{yearly_color} text-2xl font-bold">{yearly_change_jpy} ({yearly_change_pct})</p>
-        </div>
-        <svg viewBox="..." class="w-full" style="min-height: 180px;"><!-- yearly_equity_series の全点を描画 --></svg>
-      </div>
-    </section>
-
-    <!-- 4. 月初比 / 年初比 資産増減カード（2カード横並び） -->
-    <section class="bg-card rounded-lg p-6">
-      <h2 class="font-bold mb-4">📊 月初比 / 年初比 資産増減</h2>
-      <div class="grid grid-cols-2 gap-4">
-        <!-- 月初比カード -->
-        <div class="bg-accent rounded-lg p-4 text-center">
-          <p class="text-gray-400 text-sm mb-1">月初比資産増減</p>
-          <p class="text-gray-500 text-sm">{monthly_start}円 → {monthly_current}円</p>
-          <p class="{monthly_color} text-2xl font-bold mt-1">{monthly_change_jpy}</p>
-          <p class="{monthly_color} text-base">{monthly_change_pct}</p>
-          <!-- 入出金がある場合のみ以下を表示 -->
-          <div class="mt-2 pt-2 border-t border-gray-600 text-sm text-gray-500">
-            <p>入出金調整後</p>
-            <p class="{monthly_adj_color}">{monthly_adjusted}</p>
-            <p>純入出金: {monthly_net_flow}</p>
-          </div>
-        </div>
-        <!-- 年初比カード -->
-        <div class="bg-accent rounded-lg p-4 text-center">
-          <p class="text-gray-400 text-sm mb-1">年初比資産増減</p>
-          <p class="text-gray-500 text-sm">{yearly_start}円 → {yearly_current}円</p>
-          <p class="{yearly_color} text-2xl font-bold mt-1">{yearly_change_jpy}</p>
-          <p class="{yearly_color} text-base">{yearly_change_pct}</p>
-          <div class="mt-2 pt-2 border-t border-gray-600 text-sm text-gray-500">
-            <p>入出金調整後</p>
-            <p class="{yearly_adj_color}">{yearly_adjusted}</p>
-            <p>純入出金: {yearly_net_flow}</p>
-          </div>
-        </div>
-      </div>
-      <p class="text-gray-500 text-sm text-center mt-3">期間基準: JST（日本標準時）</p>
-    </section>
-
-    <!-- 5. 資産構成比率 — 現在の資産残高の内訳 -->
-    <section class="bg-card rounded-lg p-6">
-      <h2 class="font-bold mb-1">📊 資産構成比率</h2>
-      <p class="text-gray-400 text-sm mb-4">現在の資産残高（{total_jpy_value}円）を何で保有しているかの割合</p>
-      <div class="space-y-3">
-        <!-- 銘柄ごとの横棒 -->
-        <div>
-          <div class="flex justify-between text-base mb-1">
-            <span>{asset_name}</span>
-            <span>{jpy_value}円（{composition_pct}%）</span>
-          </div>
-          <div class="bg-accent rounded-full" style="height: 24px;">
-            <div class="bar-btc rounded-full" style="width: {pct}%; height: 24px;"></div>
-            <!-- 銘柄ごとに bar-btc, bar-eth, bar-xrp, bar-jpy, bar-sol, bar-other を使い分ける -->
-          </div>
-        </div>
-        <!-- ... 他の銘柄 ... -->
-      </div>
-    </section>
-
-    <!-- 6. 銘柄別内訳 -->
-    <section class="bg-card rounded-lg p-6">
-      <h2 class="font-bold mb-4">📋 銘柄別内訳</h2>
-      <div class="overflow-x-auto">
-        <table class="w-full text-base">
-          <thead>
-            <tr class="text-gray-400 border-b border-gray-600">
-              <th class="text-left py-2">銘柄</th>
-              <th class="text-right py-2">保有量</th>
-              <th class="text-right py-2">円換算</th>
-              <th class="text-right py-2">評価損益</th>
-              <th class="text-right py-2">損益率</th>
-              <th class="text-right py-2">取得単価</th>
-            </tr>
-          </thead>
-          <tbody>
-            <!-- 銘柄行 -->
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- 7. テクニカル分析 -->
-    <section class="bg-card rounded-lg p-6">
-      <h2 class="font-bold mb-4">📈 テクニカル分析</h2>
-      <div class="grid grid-cols-1 gap-4">
-        <!-- 銘柄ごとのテクニカルカード -->
-        <div class="bg-accent rounded-lg p-4">
-          <p class="font-bold mb-2">{pair_name}</p>
-          <div class="grid grid-cols-4 gap-2 text-base">
-            <div>
-              <p class="text-gray-400 text-sm">RSI</p>
-              <p>{rsi_icon} {rsi_value}</p>
-            </div>
-            <div>
-              <p class="text-gray-400 text-sm">SMA乖離</p>
-              <p>{sma_deviation}</p>
-            </div>
-            <div>
-              <p class="text-gray-400 text-sm">トレンド</p>
-              <p>{trend_icon} {trend_label}</p>
-              <!-- trend: strong_uptrend→強い上昇 / uptrend→上昇 / sideways→横ばい / downtrend→下落 / strong_downtrend→強い下落 -->
-            </div>
-            <div>
-              <p class="text-gray-400 text-sm">総合判定</p>
-              <p>{signal_icon} {signal}</p>
-              <!-- signal: bullish→🟢強気 / bearish→🔴弱気 / overbought→🔴過熱 / oversold→🟢売られすぎ / neutral→🟡中立 -->
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 8. 入出金サマリー（available時のみ、年次・月次カード） -->
-    <section class="bg-card rounded-lg p-6">
-      <h2 class="font-bold mb-4">🏦 入出金サマリー</h2>
-      <div class="grid grid-cols-2 gap-4">
-        <!-- 年初来カード (yearly_dw_summary) -->
-        <div class="bg-accent rounded-lg p-4">
-          <p class="text-gray-400 text-sm mb-2">年初来</p>
-          <div class="space-y-1 text-base">
-            <div class="flex justify-between">
-              <span class="text-gray-400">JPY 入金</span>
-              <span>{yearly_jpy_deposited}</span>
-            </div>
-            <div class="flex justify-between">
-              <span class="text-gray-400">JPY 出金</span>
-              <span>{yearly_jpy_withdrawn}</span>
-            </div>
-            <div class="flex justify-between font-bold pt-1 border-t border-gray-600">
-              <span class="text-gray-400">純入出金</span>
-              <span class="{yearly_net_color}">{yearly_net_jpy}</span>
-            </div>
-            <!-- crypto_deposit_count > 0 の場合のみ -->
-            <div class="flex justify-between text-sm text-gray-500">
-              <span>暗号資産入庫</span>
-              <span>{count}件（概算 {estimated_jpy}）</span>
-            </div>
-            <!-- crypto_withdrawal_count > 0 の場合のみ -->
-            <div class="flex justify-between text-sm text-gray-500">
-              <span>暗号資産出庫</span>
-              <span>{count}件（概算 {estimated_jpy}）</span>
-            </div>
-          </div>
-        </div>
-        <!-- 月初来カード (monthly_dw_summary) — 同じ構造 -->
-        <div class="bg-accent rounded-lg p-4">
-          <p class="text-gray-400 text-sm mb-2">月初来</p>
-          <!-- 同上 -->
-        </div>
-      </div>
-    </section>
-
-    <!-- 9. 注意書き -->
-    <section class="bg-card rounded-lg p-6">
-      <h2 class="font-bold mb-3">📝 注意事項</h2>
-      <div class="text-base text-gray-400 space-y-2">
-        <p><strong>指標の定義:</strong></p>
-        <ul class="list-disc list-inside space-y-1 ml-2">
-          <li><strong>月初比資産増減</strong> = 月初時点のJPY建て資産総額と比較した現在の増減額</li>
-          <li><strong>年初比資産増減</strong> = 年初時点のJPY建て資産総額と比較した現在の増減額</li>
-          <li>月初 = 当月1日 00:00 JST、年初 = 当年1/1 00:00 JST</li>
-          <li>期初評価額は約定・入出金を逆算して復元し、期初始値（1dayキャンドル）で評価</li>
-          <li><strong>入出金調整後</strong> = 入出金元本を除いた実質的な増減</li>
-          <li><strong>現在の資産残高</strong> = いまこの瞬間のJPY建て資産総額</li>
-          <li><strong>資産構成比率</strong> = 現在の資産残高の内訳（各銘柄の割合）</li>
-        </ul>
-        <p class="mt-2"><strong>データについて:</strong></p>
-        <ul class="list-disc list-inside space-y-1 ml-2">
-          <li>暗号資産入庫は現在価格で仮評価（入庫時価格とは異なります）</li>
-          <li>一部データのみ取得の場合は概算値です</li>
-        </ul>
-      </div>
-    </section>
-
-    <!-- 免責事項 -->
-    <footer class="text-center text-gray-500 text-sm space-y-1 pb-4">
-      <p>⚠️ この分析は参考情報です。投資判断はご自身で行ってください。</p>
-      <p>⚠️ <strong>本レポートの数値は参考値であり、所得税計算には使用できません。</strong>税務申告には取引所発行の年間取引報告書をご利用ください。</p>
-    </footer>
-
-  </div>
-</body>
-</html>
-\`\`\`
-
-**重要**:
-- **html モードの場合**: \`create_file\` で \`/mnt/user-data/outputs/portfolio-report.html\` を作成 → \`present_files\` で提示
+- **html モードの場合**: \`create_file\` で \`/mnt/user-data/outputs/portfolio-report.html\` を作成 → \`present_files\` で提示。html 出力は上記「必須コンポーネント」をそのまま縦並びのカード（最大幅 800px、角丸 8px）にレイアウトすればよい。Tailwind v2 の制約は \`.claude/rules/html.md\` に従う
 - **visualizer モードの場合**: show_widget で出力（create_file は不要）
-- コードブロックでの出力やテキスト説明は不要
-- Tailwind CSS（jsdelivr pre-built CSS）を使用。\`<script src="https://cdn.tailwindcss.com">\` は本番非推奨の警告が出るため使わない
 - holdings 配列のうち jpy_value が null や 0 の銘柄は構成比チャートから除外してよい
 - テクニカルデータがない場合（technical が undefined）はテクニカルセクションを省略
 - 入出金分析が available でない場合は入出金詳細カードを省略
-- 全履歴実現損益（realized_pnl）は本レポートでは非表示（データは保持）
-- 構成比チャートの各銘柄バーには、できるだけ銘柄固有のカラーを使用すること
-- 口座全体リターン（account_return）は表示しない
-- 評価損益バーのセクションは不要（銘柄別内訳テーブル内の評価損益列で十分）
+- 全履歴実現損益（realized_pnl）・口座全体リターン（account_return）は表示しない（データは保持）
 
 ---
 
