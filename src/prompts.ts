@@ -1856,7 +1856,7 @@ sendPrompt() で飛んだ先の応答も Visualizer で表示する。
 
 - **html モードの場合**: \`create_file\` で \`/mnt/user-data/outputs/morning-report-visual.html\` を作成 → \`present_files\` で提示。html 出力は上記「必須コンポーネント」をそのまま縦並びのカード（最大幅 800px、角丸 8px）にレイアウトし、各セクション見出しの下に「データ由来」メタ表記を入れる。Tailwind v2 の制約は \`.claude/rules/html.md\` に従う
 - **visualizer モードの場合**: show_widget で出力（create_file は不要）
-- 価格折れ線チャートはインライン SVG。Visualizer ならチャートコンポーネント、html では \`render_chart_svg\` の data URI を \`<img>\` で埋め込んでもよい
+- 価格折れ線チャートはインライン SVG で生成する（このプロンプトで許可した7ツール以外は呼ばない）
 
 ---
 
