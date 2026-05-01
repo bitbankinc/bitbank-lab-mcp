@@ -10,15 +10,46 @@
  * 渡しフォールバックする（Progressive Enhancement）。
  */
 
-import { formatPair } from '../../lib/formatter.js';
+import { formatPair, formatPrice } from '../../lib/formatter.js';
 import { ok, toStructured } from '../../lib/result.js';
 import { generateToken } from '../../src/private/confirmation.js';
+import type { OrderResponse } from '../../src/private/schemas.js';
 import { PreviewCancelOrderInputSchema, PreviewCancelOrderOutputSchema } from '../../src/private/schemas.js';
 import type { ToolDefinition, ToolHandlerExtra } from '../../src/tool-definition.js';
 import cancelOrder from './cancel_order.js';
+import getOrder from './get_order.js';
 
-export default function previewCancelOrder(args: { pair: string; order_id: number }) {
+/** 注文詳細をキャンセルプレビューのサマリ行に整形する */
+function formatOrderDetailLines(order: OrderResponse, pair: string): string[] {
+	const sideLabel = order.side === 'buy' ? '買' : '売';
+	const isJpy = pair.includes('jpy');
+	const price = order.price ? (isJpy ? formatPrice(Number(order.price)) : order.price) : '成行';
+	const amount = order.start_amount ?? order.executed_amount ?? '?';
+	const lines: string[] = [];
+	lines.push(`  方向: ${sideLabel} / タイプ: ${order.type}`);
+	lines.push(`  数量: ${amount}（残: ${order.remaining_amount ?? '0'} / 約定: ${order.executed_amount}）`);
+	lines.push(`  価格: ${price}`);
+	if (order.trigger_price) {
+		lines.push(`  トリガー価格: ${isJpy ? formatPrice(Number(order.trigger_price)) : order.trigger_price}`);
+	}
+	if (order.average_price && order.average_price !== '0') {
+		lines.push(`  平均約定価格: ${isJpy ? formatPrice(Number(order.average_price)) : order.average_price}`);
+	}
+	lines.push(`  ステータス: ${order.status}`);
+	return lines;
+}
+
+export default async function previewCancelOrder(args: { pair: string; order_id: number }) {
 	const { pair, order_id } = args;
+
+	// 注文詳細を取得して preview にも同梱する。失敗してもキャンセル自体は可能なので、
+	// エラーは握りつぶしてフォールバック表示にとどめる（ネットワーク不調や認証異常で
+	// キャンセル不能になる方が UX として悪いため）。
+	let orderDetail: OrderResponse | undefined;
+	const detailResult = await getOrder({ pair, order_id });
+	if (detailResult.ok) {
+		orderDetail = detailResult.data.order;
+	}
 
 	const tokenParams = { pair, order_id };
 	const { token, expiresAt } = generateToken('cancel_order', tokenParams);
@@ -26,18 +57,22 @@ export default function previewCancelOrder(args: { pair: string; order_id: numbe
 	const lines: string[] = [];
 	lines.push(`📋 キャンセルプレビュー: ${formatPair(pair)}`);
 	lines.push(`  注文ID: ${order_id}`);
+	if (orderDetail) {
+		lines.push(...formatOrderDetailLines(orderDetail, pair));
+	}
 	lines.push('');
 	lines.push('⚠️ このキャンセルはユーザーの最終確認（ホスト UI または elicitation）を経るまで実行されません。');
 
 	const summary = lines.join('\n');
 
-	return PreviewCancelOrderOutputSchema.parse(
-		ok(
-			summary,
-			{ confirmation_token: token, expires_at: expiresAt, preview: { pair, order_id } },
-			{ action: 'cancel_order' as const },
-		),
-	);
+	const data: Record<string, unknown> = {
+		confirmation_token: token,
+		expires_at: expiresAt,
+		preview: { pair, order_id },
+	};
+	if (orderDetail) data.order = orderDetail;
+
+	return PreviewCancelOrderOutputSchema.parse(ok(summary, data, { action: 'cancel_order' as const }));
 }
 
 /**
@@ -76,7 +111,7 @@ export const toolDef: ToolDefinition = {
 	},
 	handler: async (args, extra) => {
 		const typedArgs = args as { pair: string; order_id: number };
-		const result = previewCancelOrder(typedArgs);
+		const result = await previewCancelOrder(typedArgs);
 		if (!result.ok) return result;
 
 		// elicitation 対応ホストでは preview → ユーザー確認 → cancel_order までを
