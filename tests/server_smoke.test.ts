@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SYSTEM_PROMPT } from '../src/system-prompt.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
 
 // ── Mock 用ローカル型 ──────────────────────────────────────────
@@ -273,11 +272,9 @@ describe('server.ts smoke', () => {
 			expect.arrayContaining(['tools/list', 'prompts/list', 'prompts/get']),
 		);
 		// Resources は SDK の registerResource 経由で正規ルートに登録される
-		expect(server.resources.map((r) => r.uri)).toEqual([
-			'prompt://system',
-			'ui://order/confirm.html',
-			'ui://cancel/confirm.html',
-		]);
+		expect(server.resources.map((r) => r.uri)).toEqual(['ui://order/confirm.html', 'ui://cancel/confirm.html']);
+		expect(server.requestHandlers).not.toHaveProperty('resources/list');
+		expect(server.requestHandlers).not.toHaveProperty('resources/read');
 		expect(server.connections).toHaveLength(1);
 		expect(server.connections[0].kind).toBe('stdio');
 		expect(runtime.stdioTransports).toHaveLength(1);
@@ -352,12 +349,6 @@ describe('server.ts smoke', () => {
 			// Resources は SDK の registerResource 経由で登録され、`server.resources` に集約される
 			expect(server.resources.map((r) => ({ uri: r.uri, name: r.name, ...r.config }))).toEqual([
 				{
-					uri: 'prompt://system',
-					name: 'test-bb System Prompt',
-					description: 'System-level guidance for using test-bb MCP server',
-					mimeType: 'text/plain',
-				},
-				{
 					uri: 'ui://order/confirm.html',
 					name: 'Order Confirmation',
 					description:
@@ -373,18 +364,8 @@ describe('server.ts smoke', () => {
 				},
 			]);
 
-			const sysPromptResource = server.resources.find((r) => r.uri === 'prompt://system');
-			if (!sysPromptResource) throw new Error('prompt://system resource not registered');
-			const sysPromptRead = (await sysPromptResource.read(new URL('prompt://system'))) as {
-				contents: Array<Record<string, unknown>>;
-			};
-			expect(sysPromptRead.contents).toEqual([
-				{
-					uri: 'prompt://system',
-					mimeType: 'text/plain',
-					text: SYSTEM_PROMPT,
-				},
-			]);
+			expect(server.requestHandlers['resources/list']).toBeUndefined();
+			expect(server.requestHandlers['resources/read']).toBeUndefined();
 
 			await expect(server.requestHandlers['prompts/get']({ params: { name: 'missing_prompt' } })).rejects.toThrow(
 				'Prompt not found: missing_prompt',

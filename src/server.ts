@@ -8,7 +8,6 @@ import { getErrorMessage } from '../lib/error.js';
 import { logError, logToolRun } from '../lib/logger.js';
 import { type PromptDef, prompts as promptDefs } from './prompts.js';
 import { appResourceRegistry } from './resources/app-resources.js';
-import { SYSTEM_PROMPT } from './system-prompt.js';
 import { allToolDefs } from './tool-registry.js';
 
 const server = new McpServer({ name: 'bitbank-mcp', version: '0.4.2' });
@@ -244,30 +243,11 @@ for (const p of promptDefs) {
 	registerPromptSafe(p.name, p);
 }
 
-// === Register resources (system prompt + MCP Apps UI resources) ===
+// === Register MCP Apps UI resources ===
 // SDK の `registerResource` を使うことで `resources/list` と `resources/read` の
 // JSON-RPC ルーティングが SDK 内部で正しく行われる。
 // （以前の `setHandler('resources/...')` は SDK が要求する Zod スキーマではなく
 //  文字列を渡していたため silently no-op となり、本番で `Method not found` を返していた）
-const sysPromptResource = {
-	name: 'test-bb System Prompt',
-	uri: 'prompt://system',
-	mimeType: 'text/plain',
-	description: 'System-level guidance for using test-bb MCP server',
-};
-(
-	server as unknown as {
-		registerResource: (
-			name: string,
-			uri: string,
-			config: Record<string, unknown>,
-			cb: (uri: URL) => Promise<unknown> | unknown,
-		) => void;
-	}
-).registerResource(sysPromptResource.name, sysPromptResource.uri, sysPromptResource, async () => ({
-	contents: [{ uri: sysPromptResource.uri, mimeType: sysPromptResource.mimeType, text: SYSTEM_PROMPT }],
-}));
-
 for (const r of appResourceRegistry) {
 	const config: Record<string, unknown> = {
 		description: r.description,

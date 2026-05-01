@@ -13,7 +13,7 @@
  * セキュリティ:
  * - amount / price / trigger_price のバリデーションをサーバー側で実施
  * - 注文タイプに応じた必須パラメータの事前チェック
- * - LLM は system-prompt のガイドラインに従い、発注前にユーザーへ確認を取る
+ * - HITL: confirmation_token / token_expires_at を必須とし、preview_order を経由しない直接発注を拒否する
  */
 
 import { nowIso } from '../../lib/datetime.js';

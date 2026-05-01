@@ -233,13 +233,14 @@ export BITBANK_API_KEY="your_api_key"
 export BITBANK_API_SECRET="your_api_secret"
 ```
 
-**Claude Desktop の場合** — `claude_desktop_config.json` の `env` に追加:
+**Claude Desktop の場合** — `claude_desktop_config.json` の `env` に追加（[ステップ 2](#2-claude-desktop-に登録最短) で設定した方式A／方式B のいずれかに、以下のように `BITBANK_API_KEY` と `BITBANK_API_SECRET` を追加するだけです）:
 ```json
 {
   "mcpServers": {
     "bitbank": {
-      "command": "/usr/local/bin/node",
-      "args": ["..."],
+      "command": "npx",
+      "args": ["tsx", "/ABS/PATH/to/src/server.ts"],
+      "workingDirectory": "/ABS/PATH/to/project",
       "env": {
         "BITBANK_API_KEY": "your_api_key",
         "BITBANK_API_SECRET": "your_api_secret",
