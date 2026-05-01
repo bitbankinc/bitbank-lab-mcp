@@ -273,7 +273,11 @@ describe('server.ts smoke', () => {
 			expect.arrayContaining(['tools/list', 'prompts/list', 'prompts/get']),
 		);
 		// Resources は SDK の registerResource 経由で正規ルートに登録される
-		expect(server.resources.map((r) => r.uri)).toEqual(['prompt://system', 'ui://order/confirm.html']);
+		expect(server.resources.map((r) => r.uri)).toEqual([
+			'prompt://system',
+			'ui://order/confirm.html',
+			'ui://cancel/confirm.html',
+		]);
 		expect(server.connections).toHaveLength(1);
 		expect(server.connections[0].kind).toBe('stdio');
 		expect(runtime.stdioTransports).toHaveLength(1);
@@ -358,6 +362,13 @@ describe('server.ts smoke', () => {
 					name: 'Order Confirmation',
 					description:
 						'preview_order の結果をインタラクティブに確認し、create_order を発注するための UI（MCP Apps / SEP-1865）',
+					mimeType: 'text/html;profile=mcp-app',
+				},
+				{
+					uri: 'ui://cancel/confirm.html',
+					name: 'Cancel Confirmation',
+					description:
+						'preview_cancel_order / preview_cancel_orders の結果をインタラクティブに確認し、cancel_order(s) を実行するための UI（MCP Apps / SEP-1865）',
 					mimeType: 'text/html;profile=mcp-app',
 				},
 			]);

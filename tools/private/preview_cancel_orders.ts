@@ -65,6 +65,13 @@ export const toolDef: ToolDefinition = {
 		'⚠️ confirmation_token は LLM 可視テキストには含めない。ホスト UI または elicitation のユーザー確認を経て cancel_orders が呼ばれる前提。LLM が独断でトークンを引用して cancel_orders を呼ぶと意図しないキャンセルになり得る。',
 	].join(' '),
 	inputSchema: PreviewCancelOrdersInputSchema,
+	// MCP Apps (SEP-1865): 対応ホストでは iframe 内にキャンセル確認 UI を表示する。
+	// 非対応ホストでは無視され、従来のテキスト確認フローがそのまま動作する（Progressive Enhancement）。
+	_meta: {
+		ui: {
+			resourceUri: 'ui://cancel/confirm.html',
+		},
+	},
 	handler: async (args, extra) => {
 		const typedArgs = args as { pair: string; order_ids: number[] };
 		const result = previewCancelOrders(typedArgs);

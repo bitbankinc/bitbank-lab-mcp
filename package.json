@@ -18,6 +18,7 @@
     "lib/",
     "assets/",
     "ui/order-confirm/dist/",
+    "ui/cancel-confirm/dist/",
     "package.json",
     "tsconfig.json"
   ],
@@ -26,7 +27,7 @@
     "http": "tsx src/http.ts",
     "dev": "LOG_LEVEL=debug tsx src/server.ts",
     "build:ui:order": "vite build --config ui/order-confirm/vite.config.ts",
-    "build:ui": "npm run build:ui:order",
+    "build:ui": "npm run build:ui:order && npm run build:ui:cancel",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "vitest run --config vitest.config.e2e.ts",
@@ -41,7 +42,8 @@
     "lint:fix": "oxlint --fix src/ tools/ lib/",
     "format": "biome format --write src/ tools/ lib/",
     "format:check": "biome check src/ tools/ lib/",
-    "postinstall": "mkdir -p assets && cp node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js assets/lightweight-charts.standalone.js || true"
+    "postinstall": "mkdir -p assets && cp node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js assets/lightweight-charts.standalone.js || true",
+    "build:ui:cancel": "vite build --config ui/cancel-confirm/vite.config.ts"
   },
   "keywords": [],
   "author": "",

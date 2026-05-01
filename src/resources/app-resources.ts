@@ -68,4 +68,12 @@ export const appResourceRegistry: AppResourceDefinition[] = [
 		mimeType: APP_RESOURCE_MIME_TYPE,
 		read: makeHtmlReader('ui/order-confirm/dist/order-confirm.html'),
 	},
+	{
+		uri: 'ui://cancel/confirm.html',
+		name: 'Cancel Confirmation',
+		description:
+			'preview_cancel_order / preview_cancel_orders の結果をインタラクティブに確認し、cancel_order(s) を実行するための UI（MCP Apps / SEP-1865）',
+		mimeType: APP_RESOURCE_MIME_TYPE,
+		read: makeHtmlReader('ui/cancel-confirm/dist/cancel-confirm.html'),
+	},
 ];
