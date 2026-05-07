@@ -1,10 +1,10 @@
 {
-  "name": "@tjackiet/bitbank-mcp",
-  "version": "0.0.0",
-  "description": "MCP server for bitbank cryptocurrency exchange — market data, technical analysis, and trading tools",
+  "name": "bitbank-lab-mcp",
+  "version": "0.1.0",
+  "description": "Experimental MCP server for bitbank — botters lab community edition. Market data, technical analysis, charting, and Private API trading tools.",
   "type": "module",
   "bin": {
-    "bitbank-mcp": "bin/bitbank-mcp.js"
+    "bitbank-lab-mcp": "bin/bitbank-lab-mcp.js"
   },
   "license": "MIT",
   "repository": {

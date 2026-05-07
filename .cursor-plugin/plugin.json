@@ -1,8 +1,8 @@
 {
-  "name": "bitbank-mcp",
-  "displayName": "bitbank MCP",
-  "version": "0.0.0",
-  "description": "MCP server for bitbank cryptocurrency exchange — market data, technical analysis, and trading tools",
+  "name": "bitbank-lab-mcp",
+  "displayName": "bitbank lab MCP",
+  "version": "0.1.0",
+  "description": "Experimental MCP server for bitbank — botters lab community edition. Market data, technical analysis, charting, and Private API trading tools.",
   "author": {
     "name": "tjackiet"
   },
@@ -15,8 +15,14 @@
     "trading",
     "market-data",
     "technical-analysis",
-    "mcp"
+    "mcp",
+    "botters-lab"
   ],
   "category": "data",
-  "mcpServers": "./mcp.json"
+  "mcpServers": {
+    "bitbank": {
+      "command": "npx",
+      "args": ["-y", "bitbank-lab-mcp"]
+    }
+  }
 }

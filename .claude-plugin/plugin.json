@@ -1,7 +1,7 @@
 {
-  "name": "bitbank-mcp",
-  "version": "0.0.0",
-  "description": "MCP server for bitbank cryptocurrency exchange — market data, technical analysis, and trading tools",
+  "name": "bitbank-lab-mcp",
+  "version": "0.1.0",
+  "description": "Experimental MCP server for bitbank — botters lab community edition. Market data, technical analysis, charting, and Private API trading tools.",
   "author": {
     "name": "tjackiet",
     "url": "https://github.com/tjackiet"
@@ -34,7 +34,7 @@
   "mcpServers": {
     "bitbank": {
       "command": "npx",
-      "args": ["-y", "${CLAUDE_PLUGIN_ROOT}"],
+      "args": ["-y", "bitbank-lab-mcp"],
       "env": {
         "BITBANK_API_KEY": "${user_config.api_key}",
         "BITBANK_API_SECRET": "${user_config.api_secret}",

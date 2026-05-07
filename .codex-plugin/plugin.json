@@ -1,7 +1,7 @@
 {
-  "name": "bitbank-mcp",
-  "version": "0.0.0",
-  "description": "MCP server for bitbank cryptocurrency exchange — market data, technical analysis, and trading tools",
+  "name": "bitbank-lab-mcp",
+  "version": "0.1.0",
+  "description": "Experimental MCP server for bitbank — botters lab community edition. Market data, technical analysis, charting, and Private API trading tools.",
   "author": {
     "name": "tjackiet",
     "url": "https://github.com/tjackiet"
@@ -15,17 +15,27 @@
     "trading",
     "market-data",
     "technical-analysis",
-    "mcp"
+    "mcp",
+    "botters-lab"
   ],
-  "mcpServers": "./.mcp.json",
+  "mcpServers": {
+    "bitbank": {
+      "command": "npx",
+      "args": ["-y", "bitbank-lab-mcp"]
+    }
+  },
   "interface": {
-    "displayName": "bitbank MCP",
-    "shortDescription": "bitbank の市場データ取得・テクニカル分析・取引ツールを提供する MCP サーバー",
-    "longDescription": "bitbank の公開 API から価格・板情報・約定履歴・ローソク足を取得し、テクニカル指標 (SMA / RSI / BB / 一目均衡表 / MACD)、フロー分析、ボラティリティ、板圧力、パターン検出、総合スコア判定までを LLM に提供する MCP サーバー。Visualizer 用整形データと SVG/PNG チャート出力に対応。BITBANK_API_KEY / BITBANK_API_SECRET を設定すると、資産確認・注文 (preview→execute の 2 段階確認) 等の Private API ツールが追加で有効化される。",
+    "displayName": "bitbank lab MCP",
+    "shortDescription": "bitbank の市場データ・テクニカル分析・取引ツールを提供する実験版 MCP サーバー（botters lab コミュニティ版）",
+    "longDescription": "bitbank の公開 API から価格・板情報・約定履歴・ローソク足を取得し、テクニカル指標 (SMA / RSI / BB / 一目均衡表 / MACD)、フロー分析、ボラティリティ、板圧力、パターン検出、総合スコア判定までを LLM に提供する MCP サーバー。Visualizer 用整形データと SVG/PNG チャート出力に対応。BITBANK_API_KEY / BITBANK_API_SECRET を設定すると、資産確認・注文 (preview→execute の 2 段階確認) 等の Private API ツールが追加で有効化される。bitbank 公式版（bitbankinc/bitbank-mcp-server）の先行実験版で、botters lab コミュニティ向けに新機能を先行リリースしている。",
     "developerName": "tjackiet",
     "category": "Finance",
     "capabilities": ["Read", "Write", "Interactive"],
     "websiteURL": "https://github.com/tjackiet/bitbank-genesis-mcp-server",
-    "defaultPrompt": "BTC の今の市場状況を analyze_market_signal で総合判定して、根拠と寄与度も教えて。"
+    "defaultPrompt": [
+      "BTC の今の市場状況を analyze_market_signal で総合判定して、根拠と寄与度も教えて。",
+      "おはようレポートを出して。",
+      "直近 1 週間でテクニカル的に上向きの仮想通貨を 3 つ教えて。"
+    ]
   }
 }
