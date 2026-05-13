@@ -27,7 +27,7 @@ fi
 cmd="$(jq -r '.tool_input.command // empty' <<< "$input")"
 
 # 書き込みパターン（リダイレクト・cp・mv・rm・tee・sed -i・install）
-WRITE_RE='(^|[[:space:]])(cp|mv|rm|tee|install)([[:space:]]|$)|sed[[:space:]]+-i|>'
+WRITE_RE='(^|[[:space:]])(cp|mv|rm|tee|install)([[:space:]]|$)|sed[[:space:]]+-i|(^|[^&])[0-9]*>[^&]'
 
 for p in $PROTECTED; do
   case "$cmd" in

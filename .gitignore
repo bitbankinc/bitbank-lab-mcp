@@ -15,6 +15,7 @@ coverage/
 tests/chaos/
 tests/private/security.test.ts
 vitest.security.config.ts
+.claude/commands/security-test.md
 .DS_Store
 src/types/schemas.generated.d.ts
 assets/

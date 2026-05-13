@@ -12,6 +12,6 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src/**/*", "tools/**/*", "lib/**/*", "reports/**/*"],
+  "include": ["src/**/*", "tools/**/*", "lib/**/*"],
   "exclude": ["node_modules", "assets", "cache", "**/*.test.ts"]
 }
