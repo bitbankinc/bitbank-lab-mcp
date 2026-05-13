@@ -27,7 +27,9 @@ fi
 cmd="$(jq -r '.tool_input.command // empty' <<< "$input")"
 
 # 書き込みパターン（リダイレクト・cp・mv・rm・tee・sed -i・install）
-WRITE_RE='(^|[[:space:]])(cp|mv|rm|tee|install)([[:space:]]|$)|sed[[:space:]]+-i|(^|[^&])[0-9]*>[^&]'
+# - `>` / `2>` / `>>`: ファイル書き込み（`2>&1` などの fd 複製は除外）
+# - `&>` / `&>>`: stdout+stderr 統合リダイレクト
+WRITE_RE='(^|[[:space:]])(cp|mv|rm|tee|install)([[:space:]]|$)|sed[[:space:]]+-i|(^|[^&])[0-9]*>>?[^&]|&>>?'
 
 for p in $PROTECTED; do
   case "$cmd" in
