@@ -126,7 +126,7 @@ describe('calculateSummary', () => {
 			equity_pct: 0,
 			confirmed_pct: 0,
 		}));
-		const summary = calculateSummary([], 0, candles, equityCurve);
+		const summary = calculateSummary([], 0, candles, equityCurve, '1D');
 		expect(summary.trade_count).toBe(0);
 		expect(summary.total_pnl_pct).toBe(0);
 		expect(summary.win_rate).toBe(0);
@@ -143,7 +143,7 @@ describe('calculateSummary', () => {
 			equity_pct: 0,
 			confirmed_pct: 0,
 		}));
-		const summary = calculateSummary([], 0, candles, equityCurve);
+		const summary = calculateSummary([], 0, candles, equityCurve, '1D');
 		expect(summary.buy_hold_pnl_pct).toBe(100); // (200-100)/100 * 100
 	});
 
@@ -165,7 +165,7 @@ describe('calculateSummary', () => {
 			equity_pct: 0,
 			confirmed_pct: 0,
 		}));
-		const summary = calculateSummary(trades, 5, candles, equityCurve);
+		const summary = calculateSummary(trades, 5, candles, equityCurve, '1D');
 		expect(summary.trade_count).toBe(1);
 		expect(summary.win_rate).toBe(1);
 		expect(summary.total_pnl_pct).toBe(10);
@@ -199,7 +199,7 @@ describe('calculateSummary', () => {
 			equity_pct: 0,
 			confirmed_pct: 0,
 		}));
-		const summary = calculateSummary(trades, 0, candles, equityCurve);
+		const summary = calculateSummary(trades, 0, candles, equityCurve, '1D');
 		// 複利: 1.1 * 1.1 = 1.21 → 21%
 		expect(summary.total_pnl_pct).toBe(21);
 	});
@@ -231,9 +231,59 @@ describe('calculateSummary', () => {
 			equity_pct: 0,
 			confirmed_pct: 0,
 		}));
-		const summary = calculateSummary(trades, 0, candles, equityCurve);
+		const summary = calculateSummary(trades, 0, candles, equityCurve, '1D');
 		expect(summary.profit_factor).toBe(2); // 10 / 5 = 2
 		expect(summary.win_rate).toBe(0.5);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// sharpe_ratio の timeframe 年率換算
+// ---------------------------------------------------------------------------
+describe('calculateSummary - sharpe_ratio timeframe annualization', () => {
+	// 単調変動するエクイティカーブ（stdev > 0 を担保）
+	function makeEquityCurve(length: number) {
+		return Array.from({ length }, (_, i) => ({
+			time: `t${i}`,
+			equity_pct: i % 2 === 0 ? i * 0.1 : i * 0.1 - 0.05,
+			confirmed_pct: 0,
+		}));
+	}
+
+	const candles = makeCandles(50);
+	const equityCurve = makeEquityCurve(50);
+
+	it('1D / 4H / 1H で Sharpe の値が変わる（同一 equity curve）', () => {
+		const s1D = calculateSummary([], 0, candles, equityCurve, '1D').sharpe_ratio;
+		const s4H = calculateSummary([], 0, candles, equityCurve, '4H').sharpe_ratio;
+		const s1H = calculateSummary([], 0, candles, equityCurve, '1H').sharpe_ratio;
+
+		expect(s1D).not.toBeNull();
+		expect(s4H).not.toBeNull();
+		expect(s1H).not.toBeNull();
+		// 短い足ほど barsPerYear が増えるので |Sharpe| は大きくなる
+		expect(Math.abs(s4H as number)).toBeGreaterThan(Math.abs(s1D as number));
+		expect(Math.abs(s1H as number)).toBeGreaterThan(Math.abs(s4H as number));
+	});
+
+	it('1H は 1D の sqrt(24) ≈ 4.9 倍にスケールする', () => {
+		const s1D = calculateSummary([], 0, candles, equityCurve, '1D').sharpe_ratio as number;
+		const s1H = calculateSummary([], 0, candles, equityCurve, '1H').sharpe_ratio as number;
+		const ratio = s1H / s1D;
+		expect(ratio).toBeCloseTo(Math.sqrt(24), 1);
+	});
+
+	it('4H は 1D の sqrt(6) ≈ 2.45 倍にスケールする', () => {
+		const s1D = calculateSummary([], 0, candles, equityCurve, '1D').sharpe_ratio as number;
+		const s4H = calculateSummary([], 0, candles, equityCurve, '4H').sharpe_ratio as number;
+		const ratio = s4H / s1D;
+		expect(ratio).toBeCloseTo(Math.sqrt(6), 1);
+	});
+
+	it('未知 timeframe は 365（1D 相当）にフォールバックする', () => {
+		const s1D = calculateSummary([], 0, candles, equityCurve, '1D').sharpe_ratio;
+		const sUnknown = calculateSummary([], 0, candles, equityCurve, 'UNKNOWN_TF').sharpe_ratio;
+		expect(sUnknown).toBe(s1D);
 	});
 });
 
