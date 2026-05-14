@@ -102,8 +102,9 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 		// パラメータをマージ
 		const params = { ...strategy.defaultParams, ...strategyConfig.params };
 
-		// 必要なバー数を計算
-		const requiredBars = strategy.requiredBars;
+		// 必要なバー数を params から動的に計算（ユーザーが long / slow / signal 等を
+		// デフォルトより大きく指定した場合でもウォームアップを十分確保するため）
+		const requiredBars = strategy.computeRequiredBars(params);
 
 		// ローソク足を取得
 		const candles = await fetchCandlesForBacktest(pair, timeframe, period, requiredBars);

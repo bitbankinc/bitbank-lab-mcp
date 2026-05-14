@@ -77,11 +77,26 @@ function describeFilters(params: Record<string, number>): string {
 /**
  * SMAクロスオーバー戦略
  */
+/**
+ * SMA Cross の各指標の「初の有効インデックス」を考慮した必要バー数を計算。
+ *   - SMA(long): index >= long-1 で有効。クロス判定で prev/curr 必要 → 最低 long+1 本
+ *   - SMA filter: index >= sma_filter_period - 1 で有効
+ *   - RSI filter: index >= rsi_filter_period + 1 で有効
+ */
+function computeRequiredBarsImpl(params: Record<string, number>): number {
+	const p = { ...DEFAULT_PARAMS, ...params };
+	const base = p.long;
+	const smaF = p.sma_filter_period > 0 ? p.sma_filter_period - 1 : 0;
+	const rsiF = p.rsi_filter_period > 0 ? p.rsi_filter_period + 1 : 0;
+	return Math.max(base, smaF, rsiF) + 10;
+}
+
 export const smaCrossStrategy: Strategy = {
 	name: 'SMA Crossover',
 	type: 'sma_cross',
-	requiredBars: 30, // 最低でもlong期間 + バッファ
+	requiredBars: computeRequiredBarsImpl(DEFAULT_PARAMS),
 	defaultParams: DEFAULT_PARAMS,
+	computeRequiredBars: computeRequiredBarsImpl,
 
 	generate(candles: Candle[], params: Record<string, number>): Signal[] {
 		const p = { ...DEFAULT_PARAMS, ...params };
@@ -96,9 +111,14 @@ export const smaCrossStrategy: Strategy = {
 		const rsi = p.rsi_filter_period > 0 ? calculateRSI(closes, p.rsi_filter_period) : null;
 
 		const signals: Signal[] = [];
-		// SMAフィルターが有効な場合、開始インデックスをその分遅らせる
+		// 各指標の「初の有効インデックス」を基準にウォームアップを揃える
+		// - SMA(long): index >= long-1 有効 → クロス判定で prev/curr 必要 → i >= long
+		// - SMA filter: index >= sma_filter_period - 1 有効
+		// - RSI filter: index >= rsi_filter_period + 1 有効
 		const baseStartIdx = longPeriod;
-		const startIdx = smaFilter ? Math.max(baseStartIdx, p.sma_filter_period) : baseStartIdx;
+		const smaFilterStart = smaFilter ? p.sma_filter_period - 1 : 0;
+		const rsiFilterStart = rsi ? p.rsi_filter_period + 1 : 0;
+		const startIdx = Math.max(baseStartIdx, smaFilterStart, rsiFilterStart);
 
 		for (let i = 0; i < candles.length; i++) {
 			if (i < startIdx) {

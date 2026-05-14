@@ -54,6 +54,13 @@ describe('bbBreakoutStrategy', () => {
 		expect(bbBreakoutStrategy.name).toBe('Bollinger Bands Breakout');
 		expect(bbBreakoutStrategy.type).toBe('bb_breakout');
 		expect(bbBreakoutStrategy.requiredBars).toBe(25);
+		expect(bbBreakoutStrategy.computeRequiredBars({})).toBe(25);
+	});
+
+	describe('computeRequiredBars', () => {
+		it('period を増やすと必要バー数が増える（period=50 → 55）', () => {
+			expect(bbBreakoutStrategy.computeRequiredBars({ period: 50 })).toBe(55);
+		});
 	});
 
 	describe('generate', () => {

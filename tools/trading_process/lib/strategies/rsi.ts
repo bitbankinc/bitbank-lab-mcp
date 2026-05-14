@@ -59,11 +59,22 @@ export function validateParams(params: Record<string, number>): ParamValidationR
 /**
  * RSI戦略
  */
+/**
+ * RSI の必要バー数を計算。
+ *   - RSI(period) は index >= period から有効。エントリー判定は prev/curr 比較で i >= period + 1。
+ *   - 余裕を持たせて period + 6 をデフォルト要求とする。
+ */
+function computeRequiredBarsImpl(params: Record<string, number>): number {
+	const p = { ...DEFAULT_PARAMS, ...params };
+	return p.period + 6;
+}
+
 export const rsiStrategy: Strategy = {
 	name: 'RSI',
 	type: 'rsi',
-	requiredBars: 20,
+	requiredBars: computeRequiredBarsImpl(DEFAULT_PARAMS),
 	defaultParams: DEFAULT_PARAMS,
+	computeRequiredBars: computeRequiredBarsImpl,
 
 	generate(candles: Candle[], params: Record<string, number>): Signal[] {
 		const { period, overbought, oversold } = { ...DEFAULT_PARAMS, ...params };

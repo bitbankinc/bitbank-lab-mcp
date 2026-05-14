@@ -248,6 +248,7 @@ describe('runBacktestEngine', () => {
 			type: 'sma_cross' as const,
 			requiredBars: 5,
 			defaultParams: { short: 3, long: 5 },
+			computeRequiredBars: () => 5,
 			generate: (_c: Candle[], _p: Record<string, number>): Signal[] => {
 				return Array.from({ length: 20 }, (_, i) => {
 					if (i === 2) return { action: 'buy' as const, reason: 'test', time: '' };

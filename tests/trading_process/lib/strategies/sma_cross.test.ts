@@ -70,6 +70,21 @@ describe('smaCrossStrategy', () => {
 		expect(smaCrossStrategy.name).toBe('SMA Crossover');
 		expect(smaCrossStrategy.type).toBe('sma_cross');
 		expect(smaCrossStrategy.requiredBars).toBe(30);
+		expect(smaCrossStrategy.computeRequiredBars({})).toBe(30);
+	});
+
+	describe('computeRequiredBars', () => {
+		it('long を増やすと必要バー数が増える（long=100 → 110）', () => {
+			expect(smaCrossStrategy.computeRequiredBars({ long: 100 })).toBe(110);
+		});
+
+		it('sma_filter_period が long より大きい場合はそちらに支配される', () => {
+			expect(smaCrossStrategy.computeRequiredBars({ sma_filter_period: 200 })).toBe(209);
+		});
+
+		it('rsi_filter_period が支配的なケースは period + 1 + 10', () => {
+			expect(smaCrossStrategy.computeRequiredBars({ short: 3, long: 5, rsi_filter_period: 50 })).toBe(61);
+		});
 	});
 
 	describe('generate', () => {

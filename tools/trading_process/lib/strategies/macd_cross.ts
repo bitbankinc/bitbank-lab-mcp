@@ -102,11 +102,27 @@ function describeFilters(params: Record<string, number>): string {
 /**
  * MACDクロスオーバー戦略
  */
+/**
+ * MACD Cross の必要バー数を計算。
+ *   - signal 線は index >= slow + signal - 2 で有効 → クロス判定で prev/curr 必要 → i >= slow + signal - 1
+ *     よって最低 slow + signal 本必要
+ *   - SMA filter: index >= sma_filter_period - 1 で有効
+ *   - RSI filter: index >= rsi_filter_period + 1 で有効
+ */
+function computeRequiredBarsImpl(params: Record<string, number>): number {
+	const p = { ...DEFAULT_PARAMS, ...params };
+	const base = p.slow + p.signal;
+	const smaF = p.sma_filter_period > 0 ? p.sma_filter_period - 1 : 0;
+	const rsiF = p.rsi_filter_period > 0 ? p.rsi_filter_period + 1 : 0;
+	return Math.max(base, smaF, rsiF);
+}
+
 export const macdCrossStrategy: Strategy = {
 	name: 'MACD Crossover',
 	type: 'macd_cross',
-	requiredBars: 35, // slow(26) + signal(9)
+	requiredBars: computeRequiredBarsImpl(DEFAULT_PARAMS),
 	defaultParams: DEFAULT_PARAMS,
+	computeRequiredBars: computeRequiredBarsImpl,
 
 	generate(candles: Candle[], params: Record<string, number>): Signal[] {
 		const p = { ...DEFAULT_PARAMS, ...params };
@@ -119,9 +135,14 @@ export const macdCrossStrategy: Strategy = {
 		const rsi = p.rsi_filter_period > 0 ? calculateRSI(closes, p.rsi_filter_period) : null;
 
 		const signals: Signal[] = [];
-		// SMAフィルターが有効な場合、開始インデックスをその分遅らせる
-		const baseStartIdx = slow + signalPeriod;
-		const startIdx = sma ? Math.max(baseStartIdx, p.sma_filter_period) : baseStartIdx;
+		// 各指標の「初の有効インデックス」基準でウォームアップを揃える
+		// - signal 線は index >= slow + signal - 2 から有効 → クロス判定可能なのは i >= slow + signal - 1
+		// - SMA filter: index >= sma_filter_period - 1 で有効
+		// - RSI filter: index >= rsi_filter_period + 1 で有効
+		const baseStartIdx = slow + signalPeriod - 1;
+		const smaFilterStart = sma ? p.sma_filter_period - 1 : 0;
+		const rsiFilterStart = rsi ? p.rsi_filter_period + 1 : 0;
+		const startIdx = Math.max(baseStartIdx, smaFilterStart, rsiFilterStart);
 
 		for (let i = 0; i < candles.length; i++) {
 			if (i < startIdx) {

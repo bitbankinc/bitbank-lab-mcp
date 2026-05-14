@@ -103,6 +103,21 @@ describe('macdCrossStrategy', () => {
 		expect(macdCrossStrategy.name).toBe('MACD Crossover');
 		expect(macdCrossStrategy.type).toBe('macd_cross');
 		expect(macdCrossStrategy.requiredBars).toBe(35);
+		expect(macdCrossStrategy.computeRequiredBars({})).toBe(35);
+	});
+
+	describe('computeRequiredBars', () => {
+		it('slow / signal を増やすと必要バー数が増える', () => {
+			expect(macdCrossStrategy.computeRequiredBars({ slow: 100, signal: 20 })).toBe(120);
+		});
+
+		it('sma_filter_period が slow + signal より大きいと sma_filter_period - 1 で支配される', () => {
+			expect(macdCrossStrategy.computeRequiredBars({ sma_filter_period: 200 })).toBe(199);
+		});
+
+		it('rsi_filter_period が支配的なケースは period + 1', () => {
+			expect(macdCrossStrategy.computeRequiredBars({ slow: 5, signal: 3, rsi_filter_period: 50 })).toBe(51);
+		});
 	});
 
 	describe('generate', () => {
@@ -126,11 +141,28 @@ describe('macdCrossStrategy', () => {
 				signal: zeros(N),
 				hist: zeros(N),
 			});
-			// default params: fast=12, slow=26, signal=9 → startIdx = 26 + 9 = 35
+			// default params: fast=12, slow=26, signal=9 → startIdx = slow + signal - 1 = 34
 			const signals = macdCrossStrategy.generate(candles, {});
-			for (let i = 0; i < 35; i++) {
+			for (let i = 0; i < 34; i++) {
 				expect(signals[i].action).toBe('hold');
 			}
+		});
+
+		it('startIdx = slow + signal - 1 でクロスが起きた場合に buy シグナルを生成', () => {
+			const N = 40;
+			const candles = makeCandles(N);
+			const line = zeros(N);
+			const signal = zeros(N);
+			// default params: fast=12, slow=26, signal=9 → startIdx = 34
+			// Golden cross at i=34: prev macd <= signal, curr macd > signal
+			line[33] = -1;
+			signal[33] = 0;
+			line[34] = 1;
+			signal[34] = 0;
+			vi.mocked(mockedMacd).mockReturnValue({ line, signal, hist: zeros(N) });
+			const signals = macdCrossStrategy.generate(candles, {});
+			expect(signals[34].action).toBe('buy');
+			expect(signals[34].reason).toMatch(/Golden Cross/);
 		});
 
 		it('ゴールデンクロスで buy シグナルを生成', () => {

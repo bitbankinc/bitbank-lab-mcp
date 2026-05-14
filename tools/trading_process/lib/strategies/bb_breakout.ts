@@ -41,11 +41,22 @@ export function validateParams(params: Record<string, number>): ParamValidationR
 /**
  * ボリンジャーバンドブレイクアウト戦略
  */
+/**
+ * BB Breakout の必要バー数を計算。
+ *   - BB(period) は index >= period - 1 で有効。prev/curr 比較で i >= period
+ *   - 余裕を持たせて period + 5 をデフォルト要求とする。
+ */
+function computeRequiredBarsImpl(params: Record<string, number>): number {
+	const p = { ...DEFAULT_PARAMS, ...params };
+	return p.period + 5;
+}
+
 export const bbBreakoutStrategy: Strategy = {
 	name: 'Bollinger Bands Breakout',
 	type: 'bb_breakout',
-	requiredBars: 25,
+	requiredBars: computeRequiredBarsImpl(DEFAULT_PARAMS),
 	defaultParams: DEFAULT_PARAMS,
+	computeRequiredBars: computeRequiredBarsImpl,
 
 	generate(candles: Candle[], params: Record<string, number>): Signal[] {
 		const { period, stddev } = { ...DEFAULT_PARAMS, ...params };

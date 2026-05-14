@@ -135,6 +135,7 @@ describe('run_backtest', () => {
 			type: 'rsi',
 			requiredBars: 20,
 			defaultParams: { period: 14, overbought: 70, oversold: 30 },
+			computeRequiredBars: () => 20,
 		});
 		mocks.getPeriodBars.mockReturnValue(90);
 		mocks.fetchCandlesForBacktest.mockResolvedValue(buildCandles(40));
@@ -155,6 +156,7 @@ describe('run_backtest', () => {
 			type: 'rsi',
 			requiredBars: 20,
 			defaultParams: { period: 14, overbought: 70, oversold: 30 },
+			computeRequiredBars: () => 20,
 		});
 		mocks.getPeriodBars.mockReturnValue(90);
 		mocks.fetchCandlesForBacktest.mockResolvedValue(buildCandles(90));

@@ -83,10 +83,16 @@ export interface Strategy {
 	name: string;
 	/** 戦略タイプ */
 	type: StrategyType;
-	/** 計算に必要な最低バー数 */
+	/** デフォルトパラメータ時の必要バー数（参考値） */
 	requiredBars: number;
 	/** デフォルトパラメータ */
 	defaultParams: Record<string, number>;
+	/**
+	 * 指定 params に応じて必要なウォームアップバー数を計算する。
+	 * `long` / `slow` / `signal` 等のパラメータをデフォルトより大きく指定した
+	 * 場合でも、ウォームアップ本数が不足しないようにするため呼び出し側はこちらを使う。
+	 */
+	computeRequiredBars(params: Record<string, number>): number;
 	/**
 	 * シグナル生成
 	 * @param candles ローソク足データ

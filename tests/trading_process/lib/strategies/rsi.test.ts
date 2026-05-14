@@ -92,6 +92,13 @@ describe('rsiStrategy', () => {
 		expect(rsiStrategy.name).toBe('RSI');
 		expect(rsiStrategy.type).toBe('rsi');
 		expect(rsiStrategy.requiredBars).toBe(20);
+		expect(rsiStrategy.computeRequiredBars({})).toBe(20);
+	});
+
+	describe('computeRequiredBars', () => {
+		it('period を増やすと必要バー数が増える（period=50 → 56）', () => {
+			expect(rsiStrategy.computeRequiredBars({ period: 50 })).toBe(56);
+		});
 	});
 
 	describe('generate', () => {
