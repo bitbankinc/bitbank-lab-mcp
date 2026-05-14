@@ -1,11 +1,20 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-inheritance: true
+
+# bitbank-genesis-mcp-server 用 CodeRabbit 設定。
+# inheritance: false は YAML 同士の継承を無効化する設定 (UI 設定とは無関係)。
+# このリポの path_instructions / labeling_instructions / path_filters /
+# Summary format / Profile などは org/account UI 設定 (Settings → Reviews) で
+# MCP リポ向けに定義済み。repo YAML には UI で表現できない項目 (linked_repositories 等)
+# だけを書く運用とする。
+# 仕様: https://docs.coderabbit.ai/guides/configuration-overview
+
+inheritance: false
+
 knowledge_base:
   linked_repositories:
     - repository: "bitbankinc/bitbank-api-docs"
-      instructions: |
+      instructions: |-
         bitbank.cc の公式 API 仕様書。以下の観点で MCP サーバー実装と照合する:
-
         - rest-api.md (Private REST API): create_order / cancel_order /
           cancel_orders / fetch_active_orders / fetch_assets などの
           MCP tool 実装が、公式仕様のエンドポイント・HTTP メソッド・
@@ -17,6 +26,5 @@ knowledge_base:
         - errors.md: エラーコードの扱い、特に MCP tool から返す
           エラーレスポンスの整形が公式エラーコードと整合しているか
         - CHANGELOG.md: 公式 API の最近の変更で MCP 側が追随すべき項目がないか
-
-        HMAC-SHA256 署名対象文字列の構築仕様（ACCESS-NONCE +
-        request_path + query / body）も rest-api.md に従う。
+        HMAC-SHA256 署名対象文字列の構築仕様 (ACCESS-NONCE +
+        request_path + query / body) も rest-api.md に従う。
