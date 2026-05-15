@@ -222,6 +222,162 @@ describe('run_backtest', () => {
 		expect(res.summary).toContain('Buy & Hold:');
 	});
 
+	it('content text の summary に equity_curve / drawdown_curve の JSON が含まれる', async () => {
+		mocks.getStrategy.mockReturnValue({
+			name: 'RSI',
+			type: 'rsi',
+			requiredBars: 14,
+			defaultParams: { period: 14, overbought: 70, oversold: 30 },
+			computeRequiredBars: () => 14,
+		});
+		mocks.fetchCandlesForBacktest.mockResolvedValue(buildCandles(90));
+		const engineResult = buildEngineResult();
+		engineResult.equity_curve = [
+			{ time: '2024-01-01T00:00:00.000Z', equity_pct: 0, confirmed_pct: 0 },
+			{ time: '2024-01-02T00:00:00.000Z', equity_pct: 1.5, confirmed_pct: 0 },
+			{ time: '2024-01-03T00:00:00.000Z', equity_pct: 2.0, confirmed_pct: 2.0 },
+		];
+		engineResult.drawdown_curve = [
+			{ time: '2024-01-01T00:00:00.000Z', drawdown_pct: 0 },
+			{ time: '2024-01-02T00:00:00.000Z', drawdown_pct: 0.5 },
+			{ time: '2024-01-03T00:00:00.000Z', drawdown_pct: 0 },
+		];
+		mocks.runBacktestEngine.mockReturnValue(engineResult);
+
+		const res = await runBacktest({
+			pair: 'btc_jpy',
+			strategy: { type: 'rsi', params: {} },
+			savePng: false,
+			includeSvg: false,
+		});
+
+		assertOk(res);
+		expect(res.summary).toContain('=== Equity Curve');
+		expect(res.summary).toContain('"equity_curve"');
+		expect(res.summary).toContain('"equity_pct"');
+		expect(res.summary).toContain('=== Drawdown Curve');
+		expect(res.summary).toContain('"drawdown_curve"');
+		expect(res.summary).toContain('"drawdown_pct"');
+
+		// JSON が valid に parse できる
+		const eqMatch = res.summary.match(/=== Equity Curve[^\n]*===\n(\{[^\n]*\})/);
+		expect(eqMatch).not.toBeNull();
+		const eqJson = JSON.parse((eqMatch as RegExpMatchArray)[1]) as {
+			equity_curve: Array<{ time: string; equity_pct: number }>;
+		};
+		expect(eqJson.equity_curve).toHaveLength(3);
+		expect(eqJson.equity_curve[0].time).toBe('2024-01-01T00:00:00.000Z');
+		expect(eqJson.equity_curve[2].time).toBe('2024-01-03T00:00:00.000Z');
+	});
+
+	it('chartDetail=default で 200 点超の equity_curve は ≤200 点にサンプリングされる', async () => {
+		mocks.getStrategy.mockReturnValue({
+			name: 'RSI',
+			type: 'rsi',
+			requiredBars: 14,
+			defaultParams: { period: 14, overbought: 70, oversold: 30 },
+			computeRequiredBars: () => 14,
+		});
+		mocks.fetchCandlesForBacktest.mockResolvedValue(buildCandles(1000));
+		const engineResult = buildEngineResult();
+		const N = 1000;
+		engineResult.equity_curve = Array.from({ length: N }, (_, i) => ({
+			time: dayjs.utc('2024-01-01').add(i, 'day').toISOString(),
+			equity_pct: i * 0.01,
+			confirmed_pct: 0,
+		}));
+		engineResult.drawdown_curve = Array.from({ length: N }, (_, i) => ({
+			time: dayjs.utc('2024-01-01').add(i, 'day').toISOString(),
+			drawdown_pct: 0,
+		}));
+		mocks.runBacktestEngine.mockReturnValue(engineResult);
+
+		const res = await runBacktest({
+			pair: 'btc_jpy',
+			strategy: { type: 'rsi', params: {} },
+			savePng: false,
+			includeSvg: false,
+			chartDetail: 'default',
+		});
+
+		assertOk(res);
+		const eqMatch = res.summary.match(/=== Equity Curve[^\n]*===\n(\{[^\n]*\})/);
+		expect(eqMatch).not.toBeNull();
+		const eqJson = JSON.parse((eqMatch as RegExpMatchArray)[1]) as {
+			equity_curve: Array<{ time: string; equity_pct: number }>;
+		};
+		expect(eqJson.equity_curve.length).toBeLessThanOrEqual(200);
+		expect(eqJson.equity_curve.length).toBeGreaterThan(100);
+
+		// 最初と最後の点は必ず含まれる
+		const firstTime = dayjs.utc('2024-01-01').toISOString();
+		const lastTime = dayjs
+			.utc('2024-01-01')
+			.add(N - 1, 'day')
+			.toISOString();
+		expect(eqJson.equity_curve[0].time).toBe(firstTime);
+		expect(eqJson.equity_curve[eqJson.equity_curve.length - 1].time).toBe(lastTime);
+	});
+
+	it('chartDetail=full では equity_curve の全点が含まれる', async () => {
+		mocks.getStrategy.mockReturnValue({
+			name: 'RSI',
+			type: 'rsi',
+			requiredBars: 14,
+			defaultParams: { period: 14, overbought: 70, oversold: 30 },
+			computeRequiredBars: () => 14,
+		});
+		mocks.fetchCandlesForBacktest.mockResolvedValue(buildCandles(500));
+		const engineResult = buildEngineResult();
+		const N = 500;
+		engineResult.equity_curve = Array.from({ length: N }, (_, i) => ({
+			time: dayjs.utc('2024-01-01').add(i, 'day').toISOString(),
+			equity_pct: i * 0.01,
+			confirmed_pct: 0,
+		}));
+		engineResult.drawdown_curve = [];
+		mocks.runBacktestEngine.mockReturnValue(engineResult);
+
+		const res = await runBacktest({
+			pair: 'btc_jpy',
+			strategy: { type: 'rsi', params: {} },
+			savePng: false,
+			includeSvg: false,
+			chartDetail: 'full',
+		});
+
+		assertOk(res);
+		const eqMatch = res.summary.match(/=== Equity Curve[^\n]*===\n(\{[^\n]*\})/);
+		expect(eqMatch).not.toBeNull();
+		const eqJson = JSON.parse((eqMatch as RegExpMatchArray)[1]) as {
+			equity_curve: Array<{ time: string; equity_pct: number }>;
+		};
+		expect(eqJson.equity_curve.length).toBe(N);
+	});
+
+	it('equity_curve が空配列の場合は Equity Curve セクションを出力しない', async () => {
+		mocks.getStrategy.mockReturnValue({
+			name: 'RSI',
+			type: 'rsi',
+			requiredBars: 14,
+			defaultParams: { period: 14, overbought: 70, oversold: 30 },
+			computeRequiredBars: () => 14,
+		});
+		mocks.fetchCandlesForBacktest.mockResolvedValue(buildCandles(90));
+		mocks.runBacktestEngine.mockReturnValue(buildEngineResult());
+
+		const res = await runBacktest({
+			pair: 'btc_jpy',
+			strategy: { type: 'rsi', params: {} },
+			savePng: false,
+			includeSvg: false,
+		});
+
+		assertOk(res);
+		expect(res.summary).not.toContain('=== Equity Curve');
+		expect(res.summary).not.toContain('=== Drawdown Curve');
+	});
+
 	it('includeSvg=false なら PNG 生成失敗時も svg を返すべきではない', async () => {
 		mocks.getStrategy.mockReturnValue({
 			name: 'RSI',

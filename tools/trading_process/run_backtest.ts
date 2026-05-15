@@ -171,15 +171,18 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 
 		// サマリーテキスト生成
 		const summaryText = result
-			? generateSummaryText({
-					candles,
-					overlays: result.overlays,
-					trades: result.trades,
-					equity_curve: result.equity_curve,
-					drawdown_curve: result.drawdown_curve,
-					input: chartInput,
-					summary: result.summary,
-				})
+			? generateSummaryText(
+					{
+						candles,
+						overlays: result.overlays,
+						trades: result.trades,
+						equity_curve: result.equity_curve,
+						drawdown_curve: result.drawdown_curve,
+						input: chartInput,
+						summary: result.summary,
+					},
+					chartDetail,
+				)
 			: '';
 
 		// 結果を構築
@@ -223,11 +226,35 @@ function isoDate(time: string | undefined): string {
 	return time.split('T')[0];
 }
 
+/** content text の equity/drawdown サンプリング上限点数 */
+const DEFAULT_CURVE_SAMPLE_POINTS = 200;
+
+/**
+ * 均等サンプリング。最初と最後の点を必ず含める。
+ * curve.length <= maxPoints の場合はそのまま返す。
+ */
+function sampleCurve<T>(curve: T[], maxPoints: number): T[] {
+	if (curve.length <= maxPoints) return curve;
+	if (maxPoints <= 2) return [curve[0], curve[curve.length - 1]];
+
+	const result: T[] = [];
+	let prevIdx = -1;
+	const step = (curve.length - 1) / (maxPoints - 1);
+	for (let i = 0; i < maxPoints; i++) {
+		const idx = i === maxPoints - 1 ? curve.length - 1 : Math.round(i * step);
+		if (idx !== prevIdx) {
+			result.push(curve[idx]);
+			prevIdx = idx;
+		}
+	}
+	return result;
+}
+
 /**
  * サマリーテキストを生成
  */
-function generateSummaryText(data: GenericBacktestChartData): string {
-	const { candles, input, summary, trades } = data;
+function generateSummaryText(data: GenericBacktestChartData, chartDetail: ChartDetail): string {
+	const { candles, input, summary, trades, equity_curve, drawdown_curve } = data;
 	const lines: string[] = [];
 
 	lines.push(`=== ${input.strategyName} Backtest Result ===`);
@@ -272,6 +299,33 @@ function generateSummaryText(data: GenericBacktestChartData): string {
 			const pnlSign = t.pnl_pct >= 0 ? '+' : '';
 			lines.push(`${entryDate} → ${exitDate}: ${pnlSign}${t.pnl_pct.toFixed(2)}% (×${t.net_return.toFixed(4)})`);
 		}
+	}
+
+	// エクイティ／ドローダウン曲線を content に含めて LLM・呼出側で再描画可能にする
+	if (equity_curve.length > 0) {
+		const sampled = chartDetail === 'full' ? equity_curve : sampleCurve(equity_curve, DEFAULT_CURVE_SAMPLE_POINTS);
+		const lightPoints = sampled.map((p) => ({
+			time: p.time,
+			equity_pct: Number(p.equity_pct.toFixed(4)),
+		}));
+		const label =
+			chartDetail === 'full' ? `full ${lightPoints.length} points` : `sampled to ${lightPoints.length} points`;
+		lines.push('');
+		lines.push(`=== Equity Curve (${label}) ===`);
+		lines.push(JSON.stringify({ equity_curve: lightPoints }));
+	}
+
+	if (drawdown_curve.length > 0) {
+		const sampled = chartDetail === 'full' ? drawdown_curve : sampleCurve(drawdown_curve, DEFAULT_CURVE_SAMPLE_POINTS);
+		const lightPoints = sampled.map((p) => ({
+			time: p.time,
+			drawdown_pct: Number(p.drawdown_pct.toFixed(4)),
+		}));
+		const label =
+			chartDetail === 'full' ? `full ${lightPoints.length} points` : `sampled to ${lightPoints.length} points`;
+		lines.push('');
+		lines.push(`=== Drawdown Curve (${label}) ===`);
+		lines.push(JSON.stringify({ drawdown_curve: lightPoints }));
 	}
 
 	return lines.join('\n');
