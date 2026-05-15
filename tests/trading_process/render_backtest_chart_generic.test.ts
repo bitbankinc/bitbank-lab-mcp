@@ -30,6 +30,10 @@ function makeSummary(overrides: Partial<BacktestEngineSummary> = {}): BacktestEn
 		profit_factor: 1.5,
 		sharpe_ratio: 0.8,
 		avg_pnl_pct: 1.67,
+		evaluation_start: '2024-01-01',
+		evaluation_end: '2024-01-10',
+		evaluation_bars: 10,
+		warmup_bars: 0,
 		...overrides,
 	};
 }
@@ -239,6 +243,69 @@ describe('renderBacktestChartGeneric', () => {
 			// Entry marker (▲) and exit marker (▼)
 			expect(svg).toContain('▲');
 			expect(svg).toContain('▼');
+		});
+	});
+
+	describe('チャート見出しの日付レンジ', () => {
+		it('minimal: evaluation_start ~ evaluation_end の YYYY-MM-DD が見出しに含まれる', () => {
+			const data = makeChartData({
+				input: {
+					pair: 'btc_jpy',
+					timeframe: '1D',
+					period: '3M', // ダミー値: 表示には使われないはず
+					strategyName: 'Test Strategy',
+					strategyParams: { fast: 12, slow: 26 },
+					fee_bp: 12,
+				},
+				summary: makeSummary({
+					evaluation_start: '2025-09-04T00:00:00.000Z',
+					evaluation_end: '2026-05-14T00:00:00.000Z',
+				}),
+			});
+			const svg = renderBacktestChartGeneric(data, 'default');
+			expect(svg).toContain('2025-09-04 ~ 2026-05-14');
+			// "3M" のようなラベルそのものが描画されないこと（period 文字列に依存しない）
+			expect(svg).not.toContain('| 3M |');
+		});
+
+		it('full: evaluation_start ~ evaluation_end が見出しに含まれる', () => {
+			const data = makeChartData({
+				input: {
+					pair: 'btc_jpy',
+					timeframe: '1D',
+					period: '1Y',
+					strategyName: 'Test Strategy',
+					strategyParams: { fast: 12, slow: 26 },
+					fee_bp: 12,
+				},
+				summary: makeSummary({
+					evaluation_start: '2024-06-01T00:00:00.000Z',
+					evaluation_end: '2025-06-01T00:00:00.000Z',
+				}),
+			});
+			const svg = renderBacktestChartGeneric(data, 'full');
+			expect(svg).toContain('2024-06-01 ~ 2025-06-01');
+			expect(svg).not.toContain('| 1Y |');
+		});
+
+		it('絶対レンジ (start_date/end_date) 相当のケースでも実データレンジが表示される', () => {
+			// period がデフォルトの 3M のまま渡ったとしても、表示は evaluation_* に従う
+			const data = makeChartData({
+				input: {
+					pair: 'eth_jpy',
+					timeframe: '4H',
+					period: '3M',
+					strategyName: 'Test Strategy',
+					strategyParams: {},
+					fee_bp: 12,
+				},
+				summary: makeSummary({
+					evaluation_start: '2023-01-15T00:00:00.000Z',
+					evaluation_end: '2023-08-20T00:00:00.000Z',
+				}),
+			});
+			const svg = renderBacktestChartGeneric(data, 'full');
+			expect(svg).toContain('2023-01-15 ~ 2023-08-20');
 		});
 	});
 

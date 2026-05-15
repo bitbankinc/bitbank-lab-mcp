@@ -190,6 +190,38 @@ describe('run_backtest', () => {
 		assertOk(res);
 	});
 
+	it('start_date / end_date 指定時、summary text に Period セクションが含まれる', async () => {
+		mocks.getStrategy.mockReturnValue({
+			name: 'RSI',
+			type: 'rsi',
+			requiredBars: 14,
+			defaultParams: { period: 14, overbought: 70, oversold: 30 },
+			computeRequiredBars: () => 14,
+		});
+		mocks.fetchCandlesForBacktest.mockResolvedValue(buildCandles(90));
+		const engineResult = buildEngineResult();
+		engineResult.summary.evaluation_start = '2024-01-15T00:00:00.000Z';
+		engineResult.summary.evaluation_end = '2024-03-31T00:00:00.000Z';
+		engineResult.summary.evaluation_bars = 76;
+		engineResult.summary.warmup_bars = 14;
+		mocks.runBacktestEngine.mockReturnValue(engineResult);
+
+		const res = await runBacktest({
+			pair: 'btc_jpy',
+			strategy: { type: 'rsi', params: {} },
+			start_date: '2024-01-01',
+			end_date: '2024-03-31',
+			savePng: false,
+			includeSvg: false,
+		});
+
+		assertOk(res);
+		expect(res.summary).toContain('--- Period ---');
+		expect(res.summary).toContain('Evaluation: 2024-01-15 ~ 2024-03-31');
+		expect(res.summary).toContain('warmup: 14 bars');
+		expect(res.summary).toContain('Buy & Hold:');
+	});
+
 	it('includeSvg=false なら PNG 生成失敗時も svg を返すべきではない', async () => {
 		mocks.getStrategy.mockReturnValue({
 			name: 'RSI',

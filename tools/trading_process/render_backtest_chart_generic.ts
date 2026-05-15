@@ -13,6 +13,12 @@ import type { Candle, DrawdownPoint, EquityPoint, Trade } from './types.js';
 
 export type ChartDetail = 'default' | 'full';
 
+function formatRange(summary: BacktestEngineSummary): string {
+	const start = summary.evaluation_start.slice(0, 10);
+	const end = summary.evaluation_end.slice(0, 10);
+	return `${start} ~ ${end}`;
+}
+
 // === 固定配色 ===
 const COLORS = {
 	background: '#1a1a2e',
@@ -211,7 +217,7 @@ function renderMinimalChart(data: GenericBacktestChartData): string {
 
 	svg.push(`<text x="${width / 2}" y="38" fill="${COLORS.textMuted}" font-size="11" text-anchor="middle">`);
 	svg.push(
-		`${input.pair.toUpperCase()} | ${input.period} | Win: ${(summary.win_rate * 100).toFixed(0)}% | MaxDD: -${summary.max_drawdown_pct.toFixed(1)}%</text>`,
+		`${input.pair.toUpperCase()} | ${formatRange(summary)} | Win: ${(summary.win_rate * 100).toFixed(0)}% | MaxDD: -${summary.max_drawdown_pct.toFixed(1)}%</text>`,
 	);
 
 	// 最終確定損益 (Realized P&L)
@@ -420,7 +426,7 @@ function renderFullChart(data: GenericBacktestChartData): string {
 
 	svg.push(`<text x="${width / 2}" y="48" fill="${COLORS.textMuted}" font-size="12" text-anchor="middle">`);
 	svg.push(
-		`${input.pair.toUpperCase()} | ${input.period} | Trades: ${summary.trade_count} | Win Rate: ${(summary.win_rate * 100).toFixed(1)}% | Max DD: -${summary.max_drawdown_pct.toFixed(1)}%</text>`,
+		`${input.pair.toUpperCase()} | ${formatRange(summary)} | Trades: ${summary.trade_count} | Win Rate: ${(summary.win_rate * 100).toFixed(1)}% | Max DD: -${summary.max_drawdown_pct.toFixed(1)}%</text>`,
 	);
 
 	// === 価格チャート ===
