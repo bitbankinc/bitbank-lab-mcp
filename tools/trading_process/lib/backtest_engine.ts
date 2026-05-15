@@ -99,15 +99,24 @@ export interface BacktestEngineResult {
  * @param candles ローソク足データ
  * @param signals シグナル配列
  * @param fee_bp 片道手数料（basis points）
+ * @param warmupBars ウォームアップとして除外するバー本数。`i < warmupBars` のシグナルはスキップする。
+ *   `i = warmupBars` のシグナルは最初に実行可能（B&H の t+1 open 起点と整合）。
  * @returns トレード配列
  */
-export function executeTradesFromSignals(candles: Candle[], signals: Signal[], fee_bp: number): Trade[] {
+export function executeTradesFromSignals(
+	candles: Candle[],
+	signals: Signal[],
+	fee_bp: number,
+	warmupBars: number = 0,
+): Trade[] {
 	const trades: Trade[] = [];
 	let position: 'none' | 'long' = 'none';
 	let entryTime = '';
 	let entryPrice = 0;
 
 	for (let i = 0; i < signals.length - 1; i++) {
+		if (i < warmupBars) continue;
+
 		const signal = signals[i];
 		const nextCandle = candles[i + 1];
 
@@ -304,18 +313,19 @@ export function runBacktestEngine(
 ): BacktestEngineResult {
 	const params = { ...strategy.defaultParams, ...input.strategy.params };
 
+	// ウォームアップ区間（評価対象外）。トレード執行・B&H 起点・メタ情報で共通利用する。
+	const tradableStartIdx = strategy.computeRequiredBars(params);
+
 	// 1. シグナル生成
 	const signals = strategy.generate(candles, params);
 
-	// 2. トレード実行
-	const trades = executeTradesFromSignals(candles, signals, input.fee_bp);
+	// 2. トレード実行（ウォームアップ区間のシグナルは除外）
+	const trades = executeTradesFromSignals(candles, signals, input.fee_bp, tradableStartIdx);
 
 	// 3. エクイティ・ドローダウン計算
 	const { equity_curve, drawdown_curve, max_drawdown } = calculateEquityAndDrawdown(trades, candles);
 
 	// 4. サマリー計算
-	// B&H の起点はウォームアップ終了直後（戦略が最初にシグナル可能なバー）に揃える
-	const tradableStartIdx = strategy.computeRequiredBars(params);
 	const summary = calculateSummary(trades, max_drawdown, candles, equity_curve, input.timeframe, tradableStartIdx);
 
 	// 5. オーバーレイデータ取得

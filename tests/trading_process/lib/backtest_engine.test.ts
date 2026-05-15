@@ -412,9 +412,10 @@ describe('runBacktestEngine', () => {
 			defaultParams: { short: 3, long: 5 },
 			computeRequiredBars: () => 5,
 			generate: (_c: Candle[], _p: Record<string, number>): Signal[] => {
+				// ウォームアップ後（i >= 5）にシグナルを配置
 				return Array.from({ length: 20 }, (_, i) => {
-					if (i === 2) return { action: 'buy' as const, reason: 'test', time: '' };
-					if (i === 5) return { action: 'sell' as const, reason: 'test', time: '' };
+					if (i === 10) return { action: 'buy' as const, reason: 'test', time: '' };
+					if (i === 15) return { action: 'sell' as const, reason: 'test', time: '' };
 					return { action: 'hold' as const, reason: '', time: '' };
 				});
 			},
@@ -434,5 +435,138 @@ describe('runBacktestEngine', () => {
 		expect(result.drawdown_curve).toHaveLength(20);
 		expect(result.summary).toBeDefined();
 		expect(result.summary.trade_count).toBeGreaterThanOrEqual(1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// executeTradesFromSignals - warmupBars 引数（回帰防止）
+// ---------------------------------------------------------------------------
+describe('executeTradesFromSignals - warmupBars', () => {
+	it('warmupBars=5 で signals[2]=buy, signals[4]=sell は除外され trades=[] になる', () => {
+		const candles = makeCandles(10);
+		const signals: Signal[] = Array.from({ length: 10 }, () => ({
+			action: 'hold' as const,
+			reason: '',
+			time: '',
+		}));
+		signals[2] = { action: 'buy', reason: '', time: '' };
+		signals[4] = { action: 'sell', reason: '', time: '' };
+		const trades = executeTradesFromSignals(candles, signals, 0, 5);
+		expect(trades).toEqual([]);
+	});
+
+	it('warmupBars=5 で signals[5]=buy, signals[7]=sell は 1 トレード生成される', () => {
+		const candles = makeCandles(10);
+		const signals: Signal[] = Array.from({ length: 10 }, () => ({
+			action: 'hold' as const,
+			reason: '',
+			time: '',
+		}));
+		signals[5] = { action: 'buy', reason: '', time: '' };
+		signals[7] = { action: 'sell', reason: '', time: '' };
+		const trades = executeTradesFromSignals(candles, signals, 0, 5);
+		expect(trades).toHaveLength(1);
+		expect(trades[0].entry_price).toBe(candles[6].open); // t+1 open
+		expect(trades[0].exit_price).toBe(candles[8].open);
+	});
+
+	it('warmupBars=0（デフォルト）では全 index で執行される', () => {
+		const candles = makeCandles(10);
+		const signals: Signal[] = Array.from({ length: 10 }, () => ({
+			action: 'hold' as const,
+			reason: '',
+			time: '',
+		}));
+		signals[2] = { action: 'buy', reason: '', time: '' };
+		signals[4] = { action: 'sell', reason: '', time: '' };
+		const trades = executeTradesFromSignals(candles, signals, 0);
+		expect(trades).toHaveLength(1);
+		expect(trades[0].entry_price).toBe(candles[3].open);
+		expect(trades[0].exit_price).toBe(candles[5].open);
+	});
+
+	it('境界値: i = warmupBars ちょうどの buy が許容される', () => {
+		const candles = makeCandles(10);
+		const signals: Signal[] = Array.from({ length: 10 }, () => ({
+			action: 'hold' as const,
+			reason: '',
+			time: '',
+		}));
+		signals[5] = { action: 'buy', reason: '', time: '' };
+		signals[7] = { action: 'sell', reason: '', time: '' };
+		const trades = executeTradesFromSignals(candles, signals, 0, 5);
+		expect(trades).toHaveLength(1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// runBacktestEngine - warmup 区間のシグナルがトレードに含まれない（回帰防止）
+// ---------------------------------------------------------------------------
+describe('runBacktestEngine - warmup boundary', () => {
+	it('ウォームアップ区間内 (i<5) のシグナルは除外され、ウォームアップ後 (i>=5) のみトレードになる', () => {
+		const candles = makeCandles(20);
+		const mockStrategy = {
+			name: 'test',
+			type: 'sma_cross' as const,
+			requiredBars: 5,
+			defaultParams: { short: 3, long: 5 },
+			computeRequiredBars: () => 5,
+			generate: (_c: Candle[], _p: Record<string, number>): Signal[] => {
+				return Array.from({ length: 20 }, (_, i) => {
+					// ウォームアップ区間: 除外されるべき
+					if (i === 2) return { action: 'buy' as const, reason: 'warmup-buy', time: '' };
+					if (i === 4) return { action: 'sell' as const, reason: 'warmup-sell', time: '' };
+					// ウォームアップ後: 含まれるべき
+					if (i === 6) return { action: 'buy' as const, reason: 'real-buy', time: '' };
+					if (i === 8) return { action: 'sell' as const, reason: 'real-sell', time: '' };
+					return { action: 'hold' as const, reason: '', time: '' };
+				});
+			},
+			getOverlays: () => [],
+		};
+		const input = {
+			pair: 'btc_jpy',
+			timeframe: '1D',
+			period: '1M',
+			strategy: { type: 'sma_cross' as const, params: {} },
+			fee_bp: 0,
+			execution: 't+1_open' as const,
+		};
+		const result = runBacktestEngine(candles, mockStrategy, input);
+		expect(result.summary.trade_count).toBe(1);
+		expect(result.summary.warmup_bars).toBe(5);
+		// trades は i=6 buy / i=8 sell のもののみ
+		expect(result.trades).toHaveLength(1);
+		expect(result.trades[0].entry_price).toBe(candles[7].open); // t+1 open
+		expect(result.trades[0].exit_price).toBe(candles[9].open);
+	});
+
+	it('境界値: computeRequiredBars=5 で signals[5]=buy, signals[7]=sell は 1 トレード生成される', () => {
+		const candles = makeCandles(20);
+		const mockStrategy = {
+			name: 'test',
+			type: 'sma_cross' as const,
+			requiredBars: 5,
+			defaultParams: { short: 3, long: 5 },
+			computeRequiredBars: () => 5,
+			generate: (_c: Candle[], _p: Record<string, number>): Signal[] => {
+				return Array.from({ length: 20 }, (_, i) => {
+					if (i === 5) return { action: 'buy' as const, reason: 'boundary-buy', time: '' };
+					if (i === 7) return { action: 'sell' as const, reason: 'boundary-sell', time: '' };
+					return { action: 'hold' as const, reason: '', time: '' };
+				});
+			},
+			getOverlays: () => [],
+		};
+		const input = {
+			pair: 'btc_jpy',
+			timeframe: '1D',
+			period: '1M',
+			strategy: { type: 'sma_cross' as const, params: {} },
+			fee_bp: 0,
+			execution: 't+1_open' as const,
+		};
+		const result = runBacktestEngine(candles, mockStrategy, input);
+		expect(result.trades).toHaveLength(1);
 	});
 });
