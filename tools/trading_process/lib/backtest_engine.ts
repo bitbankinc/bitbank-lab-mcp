@@ -5,7 +5,7 @@
  */
 
 import type { Candle, DrawdownPoint, EquityPoint, Trade } from '../types.js';
-import { calculateEquityAndDrawdown } from './equity.js';
+import { calculateEquityAndDrawdown, type OpenPosition } from './equity.js';
 import type { Overlay, Signal, Strategy, StrategyConfig } from './strategies/types.js';
 
 /**
@@ -94,6 +94,15 @@ export interface BacktestEngineResult {
 }
 
 /**
+ * `executeTradesFromSignals` の戻り値。
+ * 末尾で未決済のロングポジションは `trades` には含まれず `open_position` で返る。
+ */
+export interface ExecuteTradesResult {
+	trades: Trade[];
+	open_position: OpenPosition | null;
+}
+
+/**
  * シグナル配列からトレードを実行
  *
  * @param candles ローソク足データ
@@ -101,14 +110,14 @@ export interface BacktestEngineResult {
  * @param fee_bp 片道手数料（basis points）
  * @param warmupBars ウォームアップとして除外するバー本数。`i < warmupBars` のシグナルはスキップする。
  *   `i = warmupBars` のシグナルは最初に実行可能（B&H の t+1 open 起点と整合）。
- * @returns トレード配列
+ * @returns 確定トレード配列と、ループ終了時点の未決済ポジション
  */
 export function executeTradesFromSignals(
 	candles: Candle[],
 	signals: Signal[],
 	fee_bp: number,
 	warmupBars: number = 0,
-): Trade[] {
+): ExecuteTradesResult {
 	const trades: Trade[] = [];
 	let position: 'none' | 'long' = 'none';
 	let entryTime = '';
@@ -161,7 +170,10 @@ export function executeTradesFromSignals(
 		}
 	}
 
-	return trades;
+	const open_position: OpenPosition | null =
+		position === 'long' ? { entry_time: entryTime, entry_price: entryPrice } : null;
+
+	return { trades, open_position };
 }
 
 /**
@@ -255,36 +267,21 @@ export function calculateSummary(
 	const evaluationBars = candles.length > 0 ? candles.length - clampedStartIdx : 0;
 	const warmupBars = clampedStartIdx;
 
-	if (trades.length === 0) {
-		return {
-			total_pnl_pct: 0,
-			trade_count: 0,
-			win_rate: 0,
-			max_drawdown_pct: 0,
-			buy_hold_pnl_pct: Number(buyHoldPnlPct.toFixed(2)),
-			excess_return_pct: Number((-buyHoldPnlPct).toFixed(2)),
-			profit_factor: null,
-			sharpe_ratio: calcSharpeRatio(equityCurve, timeframe),
-			avg_pnl_pct: 0,
-			evaluation_start: evaluationStart,
-			evaluation_end: evaluationEnd,
-			evaluation_bars: evaluationBars,
-			warmup_bars: warmupBars,
-		};
-	}
-
-	// 複利で総損益を計算
-	const totalReturn = trades.reduce((acc, t) => acc * t.net_return, 1.0);
-	const totalPnlPct = (totalReturn - 1) * 100;
-
-	const wins = trades.filter((t) => t.pnl_pct > 0).length;
+	// 総損益は equity_curve 最終値ベース（末尾未決済ポジションの含み損益も反映）。
+	// 確定トレードのみの場合は equity.ts の confirmedEquity 更新が net_return の積算と等価のため
+	// 旧式 Π(net_return) - 1 と数学的に一致する。
+	const totalPnlPct = equityCurve.length > 0 ? equityCurve[equityCurve.length - 1].equity_pct : 0;
 	const excessReturn = totalPnlPct - buyHoldPnlPct;
-	const avgPnl = trades.reduce((s, t) => s + t.pnl_pct, 0) / trades.length;
+
+	// trade-level メトリクスは確定トレードのみを対象とする（未決済は含めない）。
+	const wins = trades.filter((t) => t.pnl_pct > 0).length;
+	const winRate = trades.length > 0 ? wins / trades.length : 0;
+	const avgPnl = trades.length > 0 ? trades.reduce((s, t) => s + t.pnl_pct, 0) / trades.length : 0;
 
 	return {
 		total_pnl_pct: Number(totalPnlPct.toFixed(2)),
 		trade_count: trades.length,
-		win_rate: Number((wins / trades.length).toFixed(4)),
+		win_rate: Number(winRate.toFixed(4)),
 		max_drawdown_pct: Number(maxDrawdown.toFixed(2)),
 		buy_hold_pnl_pct: Number(buyHoldPnlPct.toFixed(2)),
 		excess_return_pct: Number(excessReturn.toFixed(2)),
@@ -320,10 +317,10 @@ export function runBacktestEngine(
 	const signals = strategy.generate(candles, params);
 
 	// 2. トレード実行（ウォームアップ区間のシグナルは除外）
-	const trades = executeTradesFromSignals(candles, signals, input.fee_bp, tradableStartIdx);
+	const { trades, open_position } = executeTradesFromSignals(candles, signals, input.fee_bp, tradableStartIdx);
 
-	// 3. エクイティ・ドローダウン計算
-	const { equity_curve, drawdown_curve, max_drawdown } = calculateEquityAndDrawdown(trades, candles);
+	// 3. エクイティ・ドローダウン計算（末尾未決済ポジションは含み損益で延長）
+	const { equity_curve, drawdown_curve, max_drawdown } = calculateEquityAndDrawdown(trades, candles, open_position);
 
 	// 4. サマリー計算
 	const summary = calculateSummary(trades, max_drawdown, candles, equity_curve, input.timeframe, tradableStartIdx);

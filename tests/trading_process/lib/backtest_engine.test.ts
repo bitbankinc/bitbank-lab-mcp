@@ -26,7 +26,9 @@ function makeCandles(count: number, basePrice: number = 100): Candle[] {
 describe('executeTradesFromSignals', () => {
 	it('空のシグナルはトレードなし', () => {
 		const candles = makeCandles(10);
-		expect(executeTradesFromSignals(candles, [], 0)).toEqual([]);
+		const result = executeTradesFromSignals(candles, [], 0);
+		expect(result.trades).toEqual([]);
+		expect(result.open_position).toBeNull();
 	});
 
 	it('buy → sell の1トレードを生成する', () => {
@@ -37,10 +39,11 @@ describe('executeTradesFromSignals', () => {
 			{ action: 'sell', reason: '', time: '' },
 			...Array.from({ length: 7 }, () => ({ action: 'hold' as const, reason: '', time: '' })),
 		];
-		const trades = executeTradesFromSignals(candles, signals, 0);
+		const { trades, open_position } = executeTradesFromSignals(candles, signals, 0);
 		expect(trades).toHaveLength(1);
 		expect(trades[0].entry_price).toBe(candles[1].open); // t+1 open で執行
 		expect(trades[0].exit_price).toBe(candles[3].open);
+		expect(open_position).toBeNull();
 	});
 
 	it('手数料が正しく反映される', () => {
@@ -57,7 +60,7 @@ describe('executeTradesFromSignals', () => {
 			{ action: 'hold', reason: '', time: '' },
 		];
 		// 同じ価格で売買 → 手数料分だけマイナス
-		const trades = executeTradesFromSignals(candles, signals, 10); // 10bp = 0.1%
+		const { trades } = executeTradesFromSignals(candles, signals, 10); // 10bp = 0.1%
 		expect(trades).toHaveLength(1);
 		expect(trades[0].fee_pct).toBeGreaterThan(0);
 		expect(trades[0].pnl_pct).toBeLessThan(0); // 手数料分マイナス
@@ -71,7 +74,7 @@ describe('executeTradesFromSignals', () => {
 			{ action: 'sell', reason: '', time: '' },
 			...Array.from({ length: 7 }, () => ({ action: 'hold' as const, reason: '', time: '' })),
 		];
-		const trades = executeTradesFromSignals(candles, signals, 0);
+		const { trades } = executeTradesFromSignals(candles, signals, 0);
 		expect(trades).toHaveLength(1);
 	});
 
@@ -84,11 +87,11 @@ describe('executeTradesFromSignals', () => {
 			{ action: 'hold', reason: '', time: '' },
 			{ action: 'hold', reason: '', time: '' },
 		];
-		const trades = executeTradesFromSignals(candles, signals, 0);
+		const { trades } = executeTradesFromSignals(candles, signals, 0);
 		expect(trades).toHaveLength(1);
 	});
 
-	it('未決済ポジションはトレードに含まれない', () => {
+	it('未決済ポジションは trades には含まれず open_position として返る', () => {
 		const candles = makeCandles(5);
 		const signals: Signal[] = [
 			{ action: 'buy', reason: '', time: '' },
@@ -97,8 +100,29 @@ describe('executeTradesFromSignals', () => {
 			{ action: 'hold', reason: '', time: '' },
 			{ action: 'hold', reason: '', time: '' },
 		];
-		const trades = executeTradesFromSignals(candles, signals, 0);
-		expect(trades).toHaveLength(0);
+		const result = executeTradesFromSignals(candles, signals, 0);
+		expect(result.trades).toHaveLength(0);
+		expect(result.open_position).not.toBeNull();
+		expect(result.open_position?.entry_time).toBe(candles[1].time); // t+1
+		expect(result.open_position?.entry_price).toBe(candles[1].open);
+	});
+
+	it('buy → sell → buy の最後の buy が未決済の場合 open_position に入る', () => {
+		const candles = makeCandles(6);
+		const signals: Signal[] = [
+			{ action: 'buy', reason: '', time: '' },
+			{ action: 'sell', reason: '', time: '' },
+			{ action: 'buy', reason: '', time: '' },
+			{ action: 'hold', reason: '', time: '' },
+			{ action: 'hold', reason: '', time: '' },
+			{ action: 'hold', reason: '', time: '' },
+		];
+		const result = executeTradesFromSignals(candles, signals, 0);
+		expect(result.trades).toHaveLength(1);
+		expect(result.open_position).not.toBeNull();
+		// 2回目の buy は i=2、執行は t+1 = candles[3]
+		expect(result.open_position?.entry_time).toBe(candles[3].time);
+		expect(result.open_position?.entry_price).toBe(candles[3].open);
 	});
 
 	it('複数トレードを生成する', () => {
@@ -110,7 +134,7 @@ describe('executeTradesFromSignals', () => {
 			{ action: 'sell', reason: '', time: '' },
 			...Array.from({ length: 6 }, () => ({ action: 'hold' as const, reason: '', time: '' })),
 		];
-		const trades = executeTradesFromSignals(candles, signals, 0);
+		const { trades } = executeTradesFromSignals(candles, signals, 0);
 		expect(trades).toHaveLength(2);
 	});
 });
@@ -199,10 +223,11 @@ describe('calculateSummary', () => {
 				net_return: 1.1,
 			},
 		];
+		// total_pnl_pct は equity_curve 最終値ベース。決済後 +10% を反映。
 		const equityCurve = candles.map((c) => ({
 			time: c.time,
-			equity_pct: 0,
-			confirmed_pct: 0,
+			equity_pct: 10,
+			confirmed_pct: 10,
 		}));
 		const summary = calculateSummary(trades, 5, candles, equityCurve, '1D');
 		expect(summary.trade_count).toBe(1);
@@ -233,10 +258,11 @@ describe('calculateSummary', () => {
 				net_return: 1.1,
 			},
 		];
+		// total_pnl_pct は equity_curve 最終値ベース。1.1 * 1.1 = 1.21 → 21%
 		const equityCurve = candles.map((c) => ({
 			time: c.time,
-			equity_pct: 0,
-			confirmed_pct: 0,
+			equity_pct: 21,
+			confirmed_pct: 21,
 		}));
 		const summary = calculateSummary(trades, 0, candles, equityCurve, '1D');
 		// 複利: 1.1 * 1.1 = 1.21 → 21%
@@ -451,7 +477,7 @@ describe('executeTradesFromSignals - warmupBars', () => {
 		}));
 		signals[2] = { action: 'buy', reason: '', time: '' };
 		signals[4] = { action: 'sell', reason: '', time: '' };
-		const trades = executeTradesFromSignals(candles, signals, 0, 5);
+		const { trades } = executeTradesFromSignals(candles, signals, 0, 5);
 		expect(trades).toEqual([]);
 	});
 
@@ -464,7 +490,7 @@ describe('executeTradesFromSignals - warmupBars', () => {
 		}));
 		signals[5] = { action: 'buy', reason: '', time: '' };
 		signals[7] = { action: 'sell', reason: '', time: '' };
-		const trades = executeTradesFromSignals(candles, signals, 0, 5);
+		const { trades } = executeTradesFromSignals(candles, signals, 0, 5);
 		expect(trades).toHaveLength(1);
 		expect(trades[0].entry_price).toBe(candles[6].open); // t+1 open
 		expect(trades[0].exit_price).toBe(candles[8].open);
@@ -479,7 +505,7 @@ describe('executeTradesFromSignals - warmupBars', () => {
 		}));
 		signals[2] = { action: 'buy', reason: '', time: '' };
 		signals[4] = { action: 'sell', reason: '', time: '' };
-		const trades = executeTradesFromSignals(candles, signals, 0);
+		const { trades } = executeTradesFromSignals(candles, signals, 0);
 		expect(trades).toHaveLength(1);
 		expect(trades[0].entry_price).toBe(candles[3].open);
 		expect(trades[0].exit_price).toBe(candles[5].open);
@@ -494,7 +520,7 @@ describe('executeTradesFromSignals - warmupBars', () => {
 		}));
 		signals[5] = { action: 'buy', reason: '', time: '' };
 		signals[7] = { action: 'sell', reason: '', time: '' };
-		const trades = executeTradesFromSignals(candles, signals, 0, 5);
+		const { trades } = executeTradesFromSignals(candles, signals, 0, 5);
 		expect(trades).toHaveLength(1);
 	});
 });
@@ -568,5 +594,91 @@ describe('runBacktestEngine - warmup boundary', () => {
 		};
 		const result = runBacktestEngine(candles, mockStrategy, input);
 		expect(result.trades).toHaveLength(1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// runBacktestEngine - 末尾未決済ポジションの含み損益反映（回帰防止）
+// ---------------------------------------------------------------------------
+describe('runBacktestEngine - open position carry forward', () => {
+	it('未決済ポジションが equity_pct / total_pnl_pct に反映される', () => {
+		// computeRequiredBars=2 → warmup=2、i=2 で buy → entry は candles[3]
+		// candles[3].open=100, 最終 candles[7].close=200 → 含み益 +100%
+		const candles: Candle[] = [
+			{ time: 't0', open: 90, high: 95, low: 85, close: 90 },
+			{ time: 't1', open: 95, high: 100, low: 90, close: 95 },
+			{ time: 't2', open: 100, high: 105, low: 95, close: 100 },
+			{ time: 't3', open: 100, high: 105, low: 95, close: 100 }, // entry at t+1 open=100
+			{ time: 't4', open: 120, high: 130, low: 110, close: 120 },
+			{ time: 't5', open: 150, high: 160, low: 140, close: 150 },
+			{ time: 't6', open: 180, high: 200, low: 170, close: 180 },
+			{ time: 't7', open: 190, high: 210, low: 180, close: 200 }, // last close=200
+		];
+		const mockStrategy = {
+			name: 'test',
+			type: 'sma_cross' as const,
+			requiredBars: 2,
+			defaultParams: {},
+			computeRequiredBars: () => 2,
+			generate: (_c: Candle[], _p: Record<string, number>): Signal[] => {
+				return Array.from({ length: 8 }, (_, i) => {
+					if (i === 2) return { action: 'buy' as const, reason: 'test', time: '' };
+					return { action: 'hold' as const, reason: '', time: '' };
+				});
+			},
+			getOverlays: () => [],
+		};
+		const input = {
+			pair: 'btc_jpy',
+			timeframe: '1D',
+			period: '1M',
+			strategy: { type: 'sma_cross' as const, params: {} },
+			fee_bp: 0,
+			execution: 't+1_open' as const,
+		};
+		const result = runBacktestEngine(candles, mockStrategy, input);
+		// 未決済ポジションは trades に含まれない（契約維持）
+		expect(result.trades).toHaveLength(0);
+		expect(result.summary.trade_count).toBe(0);
+		// equity_pct[last] / total_pnl_pct は +100% を反映
+		expect(result.equity_curve[result.equity_curve.length - 1].equity_pct).toBeCloseTo(100, 1);
+		expect(result.summary.total_pnl_pct).toBeCloseTo(100, 1);
+	});
+
+	it('未決済ポジションが max_drawdown に反映される', () => {
+		// entry at t3 open=100, ピーク t4 close=200、その後 t5 close=150 → 25% DD
+		const candles: Candle[] = [
+			{ time: 't0', open: 90, high: 95, low: 85, close: 90 },
+			{ time: 't1', open: 95, high: 100, low: 90, close: 95 },
+			{ time: 't2', open: 100, high: 105, low: 95, close: 100 },
+			{ time: 't3', open: 100, high: 105, low: 95, close: 100 }, // entry at t+1 open=100
+			{ time: 't4', open: 150, high: 210, low: 140, close: 200 }, // peak equity = 2.0
+			{ time: 't5', open: 175, high: 180, low: 140, close: 150 }, // equity = 1.5 → DD = 25%
+		];
+		const mockStrategy = {
+			name: 'test',
+			type: 'sma_cross' as const,
+			requiredBars: 2,
+			defaultParams: {},
+			computeRequiredBars: () => 2,
+			generate: (_c: Candle[], _p: Record<string, number>): Signal[] => {
+				return Array.from({ length: 6 }, (_, i) => {
+					if (i === 2) return { action: 'buy' as const, reason: 'test', time: '' };
+					return { action: 'hold' as const, reason: '', time: '' };
+				});
+			},
+			getOverlays: () => [],
+		};
+		const input = {
+			pair: 'btc_jpy',
+			timeframe: '1D',
+			period: '1M',
+			strategy: { type: 'sma_cross' as const, params: {} },
+			fee_bp: 0,
+			execution: 't+1_open' as const,
+		};
+		const result = runBacktestEngine(candles, mockStrategy, input);
+		// (2.0 - 1.5) / 2.0 * 100 = 25%
+		expect(result.summary.max_drawdown_pct).toBeCloseTo(25, 1);
 	});
 });

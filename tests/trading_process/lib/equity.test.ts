@@ -140,3 +140,52 @@ describe('calculateEquityAndDrawdown', () => {
 		expect(result.equity_curve[4].equity_pct).toBeCloseTo(21, 1);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// calculateEquityAndDrawdown - openPosition（末尾未決済ポジションの carry forward）
+// ---------------------------------------------------------------------------
+describe('calculateEquityAndDrawdown - openPosition', () => {
+	it('openPosition を渡すと entry_time 以降が含み損益で延長される', () => {
+		const candles = makeCandles(['t0', 't1', 't2', 't3'], [100, 100, 150, 200]);
+		const openPosition = { entry_time: 't1', entry_price: 100 };
+		const result = calculateEquityAndDrawdown([], candles, openPosition);
+		// t0: ポジションなし → equity_pct = 0
+		// t1: entry at close=100 → 含み損益=0 → equity_pct = 0
+		// t2: close=150 → equity = 1.0 * (150/100) = 1.5 → equity_pct = 50
+		// t3: close=200 → equity = 1.0 * (200/100) = 2.0 → equity_pct = 100
+		expect(result.equity_curve[0].equity_pct).toBeCloseTo(0, 4);
+		expect(result.equity_curve[1].equity_pct).toBeCloseTo(0, 4);
+		expect(result.equity_curve[2].equity_pct).toBeCloseTo(50, 4);
+		expect(result.equity_curve[3].equity_pct).toBeCloseTo(100, 4);
+		// 決済イベントなし → confirmed_pct は全て 0
+		for (const e of result.equity_curve) {
+			expect(e.confirmed_pct).toBeCloseTo(0, 4);
+		}
+	});
+
+	it('trades と openPosition の併存（決済後の再エントリー）', () => {
+		// t1 entry → t2 exit (net_return=1.1)、その後 t3 で openPosition がエントリー
+		const candles = makeCandles(['t0', 't1', 't2', 't3', 't4'], [100, 100, 110, 110, 121]);
+		const trades: Trade[] = [
+			{
+				entry_time: 't1',
+				entry_price: 100,
+				exit_time: 't2',
+				exit_price: 110,
+				pnl_pct: 10,
+				fee_pct: 0,
+				net_return: 1.1,
+			},
+		];
+		const openPosition = { entry_time: 't3', entry_price: 110 };
+		const result = calculateEquityAndDrawdown(trades, candles, openPosition);
+		// t2 決済後 confirmed_pct = 10、以降は維持
+		expect(result.equity_curve[2].confirmed_pct).toBeCloseTo(10, 4);
+		expect(result.equity_curve[3].confirmed_pct).toBeCloseTo(10, 4);
+		expect(result.equity_curve[4].confirmed_pct).toBeCloseTo(10, 4);
+		// t3 entry (close=110) → equity = 1.1 * (110/110) = 1.1 → equity_pct = 10
+		expect(result.equity_curve[3].equity_pct).toBeCloseTo(10, 4);
+		// t4 close=121 → equity = 1.1 * (121/110) = 1.21 → equity_pct = 21
+		expect(result.equity_curve[4].equity_pct).toBeCloseTo(21, 4);
+	});
+});

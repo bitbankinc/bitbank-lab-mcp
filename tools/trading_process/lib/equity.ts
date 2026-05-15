@@ -9,6 +9,8 @@
  * - ポジション保有中: entry_price から current_close までの含み損益を反映
  *   equity = confirmed_equity * (current_close / entry_price)
  * - トレード決済時: confirmed_equity を更新
+ * - 末尾未決済ポジション (openPosition): entry_time 以降を最終バーまでマーク・トゥ・マーケット延長。
+ *   confirmedEquity は更新されないため confirmed_pct には反映されないが、equity_pct には反映される。
  *
  * ■ ドローダウン
  * - 定義: (peak_equity - current_equity) / peak_equity * 100
@@ -29,6 +31,15 @@ export interface EquityResult {
 	max_drawdown: number;
 }
 
+/**
+ * 末尾で未決済のロングポジション。`executeTradesFromSignals` が
+ * sell シグナルなしで終わった場合に返す。
+ */
+export interface OpenPosition {
+	entry_time: string;
+	entry_price: number;
+}
+
 interface PositionInfo {
 	isLong: boolean;
 	entryPrice: number;
@@ -40,9 +51,16 @@ interface PositionInfo {
  *
  * @param trades トレード配列
  * @param candles ローソク足配列
+ * @param openPosition 末尾で未決済のポジション。指定すると entry_time 以降が
+ *   最終バーまでマーク・トゥ・マーケット延長され、equity_pct / drawdown_pct
+ *   に含み損益が反映される。confirmed_pct には反映されない。
  * @returns エクイティカーブ、ドローダウンカーブ、最大ドローダウン
  */
-export function calculateEquityAndDrawdown(trades: Trade[], candles: Candle[]): EquityResult {
+export function calculateEquityAndDrawdown(
+	trades: Trade[],
+	candles: Candle[],
+	openPosition: OpenPosition | null = null,
+): EquityResult {
 	// トレードを entry_time と exit_time でマッピング
 	const tradeByEntryTime = new Map<string, Trade>();
 	const tradeByExitTime = new Map<string, Trade>();
@@ -60,12 +78,23 @@ export function calculateEquityAndDrawdown(trades: Trade[], candles: Candle[]): 
 	let position: PositionInfo | null = null;
 
 	for (const candle of candles) {
-		// エントリーチェック
+		// エントリーチェック（確定トレード）
 		const entryTrade = tradeByEntryTime.get(candle.time);
 		if (entryTrade && !position) {
 			position = {
 				isLong: true,
 				entryPrice: entryTrade.entry_price,
+				entryEquity: confirmedEquity,
+			};
+		}
+
+		// エントリーチェック（末尾未決済ポジション）
+		// exit は持たないので tradeByExitTime には登録されず、以降のバーで
+		// マーク・トゥ・マーケットが続き confirmedEquity は更新されない。
+		if (openPosition && !position && candle.time === openPosition.entry_time) {
+			position = {
+				isLong: true,
+				entryPrice: openPosition.entry_price,
 				entryEquity: confirmedEquity,
 			};
 		}
