@@ -74,20 +74,20 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// JST 基準の年初来・月初来の境界（API フェッチの since パラメータにも使用）
 		const boundaries = getJstPeriodBoundaries();
 
-		// 2. 約定履歴 + 信用約定履歴 + 入出金履歴を並列取得（年初以降のみ）
-		// 年次は年初比、月次は月初比の比較のため、年初以降のデータで十分。
-		// 全履歴を取得しないことで API 呼び出し回数を削減し、pagination 上限の問題も回避。
+		// 2. 約定履歴 + 信用約定履歴 + 入出金履歴を並列取得（全期間）
+		// 損益計算（calcPnl / calcPeriodRealizedPnl / calcDepositWithdrawalSummary）は
+		// 全履歴を入力として移動平均法を回す前提のため、年初前の買い・入金も含めて取得する。
+		// 期間集計（yearly_/monthly_）は calcPeriodRealizedPnl / calcPeriodMarginPnl /
+		// calcPeriodDWSummary 内で executed_at / confirmed_at の sinceMs 比較で絞り込む。
 		const tradePromise = include_pnl
-			? paginateTrades(client, boundaries.yearStartMs)
+			? paginateTrades(client)
 			: Promise.resolve({ trades: [] as RawTrade[], truncated: false });
 
 		const marginTradePromise = include_pnl
-			? paginateMarginTrades(client, boundaries.yearStartMs)
+			? paginateMarginTrades(client)
 			: Promise.resolve({ trades: [] as RawMarginTrade[], truncated: false });
 
-		const dwPromise = include_deposit_withdrawal
-			? fetchDepositWithdrawal(client, boundaries.yearStartMs)
-			: Promise.resolve(null);
+		const dwPromise = include_deposit_withdrawal ? fetchDepositWithdrawal(client) : Promise.resolve(null);
 
 		const [tradeResult, marginTradeResult, dwData] = await Promise.all([tradePromise, marginTradePromise, dwPromise]);
 		const allTrades = tradeResult.trades;
@@ -207,12 +207,14 @@ export default async function analyzeMyPortfolioHandler(args: {
 				boundaries.yearStartMs,
 				boundaries.yearStartIso,
 				boundaries.nowIso,
+				dwData?.withdrawals,
 			);
 			monthlyRealizedPnl = calcPeriodRealizedPnl(
 				allTrades,
 				boundaries.monthStartMs,
 				boundaries.monthStartIso,
 				boundaries.nowIso,
+				dwData?.withdrawals,
 			);
 		}
 
@@ -736,10 +738,10 @@ export default async function analyzeMyPortfolioHandler(args: {
 		if (totalUnrealizedPnl != null) {
 			const sign = totalUnrealizedPnl >= 0 ? '+' : '';
 			lines.push(
-				`合計評価損益（当年約定ベース、参考値）: ${sign}${formatPriceJPY(totalUnrealizedPnl)} (${formatPercent(totalUnrealizedPnlPct, { sign: true })})`,
+				`合計評価損益（全履歴の約定ベース）: ${sign}${formatPriceJPY(totalUnrealizedPnl)} (${formatPercent(totalUnrealizedPnlPct, { sign: true })})`,
 			);
 		}
-		lines.push('※ 評価損益は当年（1/1〜）の約定ベース。年初以前の取得原価は含みません');
+		lines.push('※ 評価損益は全履歴の約定・暗号資産出庫から移動平均法で算出した取得原価ベース');
 		if (tradesTruncated || marginTradesTruncated) {
 			const subjects = [tradesTruncated && '現物', marginTradesTruncated && '信用'].filter(Boolean).join(' / ');
 			lines.push(`※ 約定履歴（${subjects}）が上限に達したため一部のみ取得。損益計算が不正確な可能性があります`);

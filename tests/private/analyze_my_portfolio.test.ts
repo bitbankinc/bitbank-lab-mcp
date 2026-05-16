@@ -299,6 +299,335 @@ describe('analyze_my_portfolio', () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it('全履歴取得: paginate*/fetchDepositWithdrawal に since クエリパラメータを付与しない', async () => {
+		// バグ回帰防止: 旧実装は yearStartMs を since として渡していたため、年初前の買い・入金が
+		// 損益計算から欠落していた。全期間取得に戻したことを URL の since 不在で検証する。
+		const seenUrls: string[] = [];
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			seenUrls.push(urlStr);
+
+			if (urlStr.includes('tickers_jpy')) {
+				return new Response(JSON.stringify(tickersJpy), { status: 200 });
+			}
+			if (urlStr.includes('candlestick')) {
+				return new Response(JSON.stringify(candlesBtcJpy1day120), { status: 200 });
+			}
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(rawTradeHistoryResponse)), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(rawDepositHistoryResponse)), { status: 200 });
+			}
+			if (urlStr.includes('withdrawal_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(rawWithdrawalHistoryResponse)), { status: 200 });
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		// 各 Private API の最初のページ（since 未指定）が含まれること
+		const tradeUrls = seenUrls.filter((u) => u.includes('trade_history'));
+		const depositUrls = seenUrls.filter((u) => u.includes('deposit_history'));
+		const withdrawalUrls = seenUrls.filter((u) => u.includes('withdrawal_history'));
+		expect(tradeUrls.length).toBeGreaterThan(0);
+		expect(depositUrls.length).toBeGreaterThan(0);
+		expect(withdrawalUrls.length).toBeGreaterThan(0);
+		// 初回呼び出しに since= が含まれない（全履歴取得）
+		expect(tradeUrls[0]).not.toMatch(/[?&]since=/);
+		expect(depositUrls[0]).not.toMatch(/[?&]since=/);
+		expect(withdrawalUrls[0]).not.toMatch(/[?&]since=/);
+	});
+
+	it('年初前入金で形成された保有: account_return_jpy は年初前入金も含めた純投入額に対して計算される', async () => {
+		// 固定時刻 2026-05-16 12:00 JST。
+		// 入金: 年初前 1_000_000（2025-06-01）+ 年初後 500_000（2026-02-01）= 1_500_000
+		// 出金: なし
+		// 現在総資産は rawAssetsResponse + tickersJpy から自動計算される（BTC 0.6 + ETH 2 + XRP 1000 + JPY 500_000）
+		const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		try {
+			const beforeYearStartMs = Date.UTC(2025, 5, 1, 0, 0, 0, 0); // 2025-06-01
+			const afterYearStartMs = Date.UTC(2026, 1, 1, 0, 0, 0, 0); // 2026-02-01
+
+			const customDeposits = {
+				deposits: [
+					{
+						uuid: 'd-pre',
+						asset: 'jpy',
+						amount: '1000000',
+						status: 'DONE',
+						found_at: beforeYearStartMs,
+						confirmed_at: beforeYearStartMs,
+					},
+					{
+						uuid: 'd-post',
+						asset: 'jpy',
+						amount: '500000',
+						status: 'DONE',
+						found_at: afterYearStartMs,
+						confirmed_at: afterYearStartMs,
+					},
+				],
+			};
+
+			globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+				const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+				if (urlStr.includes('tickers_jpy')) {
+					return new Response(JSON.stringify(tickersJpy), { status: 200 });
+				}
+				if (urlStr.includes('candlestick')) {
+					return new Response(JSON.stringify(candlesBtcJpy1day120), { status: 200 });
+				}
+				if (urlStr.includes('/v1/user/assets')) {
+					return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
+				}
+				if (urlStr.includes('trade_history')) {
+					return new Response(JSON.stringify(mockBitbankSuccess({ trades: [] })), { status: 200 });
+				}
+				if (urlStr.includes('deposit_history')) {
+					return new Response(JSON.stringify(mockBitbankSuccess(customDeposits)), { status: 200 });
+				}
+				if (urlStr.includes('withdrawal_history')) {
+					return new Response(JSON.stringify(mockBitbankSuccess({ withdrawals: [] })), { status: 200 });
+				}
+				return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+			}) as unknown as typeof fetch;
+
+			const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+			const result = await handler({
+				include_technical: false,
+				include_pnl: true,
+				include_deposit_withdrawal: true,
+			});
+
+			assertOk(result);
+			const dw = result.data.deposit_withdrawal_summary;
+			expect(dw).toBeDefined();
+			// 純投入額は年初前 1_000_000 + 年初後 500_000 = 1_500_000
+			expect(dw.total_jpy_deposited).toBe(1_500_000);
+			expect(dw.net_jpy_invested).toBe(1_500_000);
+			// account_return = 現在総資産 - 純投入額。総資産 > 純投入額なら正値
+			expect(dw.account_return_jpy).toBeDefined();
+			const totalValue = result.data.total_jpy_value;
+			expect(dw.account_return_jpy).toBe(totalValue - 1_500_000);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('年初前買い → 年初後売り: yearly_realized_pnl が「売値 - 平均取得単価」で計算される', async () => {
+		// 固定時刻 2026-05-16 12:00 JST。
+		// 約定: 年初前買い 1 BTC @ 10_000_000（2025-12-01）+ 年初後売り 0.5 BTC @ 12_000_000（2026-03-01）
+		// 旧実装: 年初前買いが欠落 → 売却代金 6_000_000 が realized に積まれる
+		// 新実装: 平均原価 10_000_000 で按分 → realized = 0.5 * (12_000_000 - 10_000_000) = 1_000_000
+		const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		try {
+			const beforeYearStartMs = Date.UTC(2025, 11, 1, 0, 0, 0, 0); // 2025-12-01
+			const afterYearStartMs = Date.UTC(2026, 2, 1, 0, 0, 0, 0); // 2026-03-01
+
+			const customTrades = {
+				trades: [
+					{
+						trade_id: 1,
+						pair: 'btc_jpy',
+						order_id: 1,
+						side: 'buy',
+						type: 'limit',
+						amount: '1',
+						price: '10000000',
+						maker_taker: 'maker',
+						fee_amount_base: '0',
+						fee_amount_quote: '0',
+						executed_at: beforeYearStartMs,
+					},
+					{
+						trade_id: 2,
+						pair: 'btc_jpy',
+						order_id: 2,
+						side: 'sell',
+						type: 'market',
+						amount: '0.5',
+						price: '12000000',
+						maker_taker: 'taker',
+						fee_amount_base: '0',
+						fee_amount_quote: '0',
+						executed_at: afterYearStartMs,
+					},
+				],
+			};
+
+			globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+				const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+				if (urlStr.includes('tickers_jpy')) {
+					return new Response(JSON.stringify(tickersJpy), { status: 200 });
+				}
+				if (urlStr.includes('candlestick')) {
+					return new Response(JSON.stringify(candlesBtcJpy1day120), { status: 200 });
+				}
+				if (urlStr.includes('/v1/user/assets')) {
+					return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
+				}
+				if (urlStr.includes('trade_history')) {
+					const isMargin = urlStr.includes('type=margin');
+					if (isMargin) {
+						return new Response(JSON.stringify(mockBitbankSuccess({ trades: [] })), { status: 200 });
+					}
+					return new Response(JSON.stringify(mockBitbankSuccess(customTrades)), { status: 200 });
+				}
+				if (urlStr.includes('deposit_history')) {
+					return new Response(JSON.stringify(mockBitbankSuccess({ deposits: [] })), { status: 200 });
+				}
+				if (urlStr.includes('withdrawal_history')) {
+					return new Response(JSON.stringify(mockBitbankSuccess({ withdrawals: [] })), { status: 200 });
+				}
+				return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+			}) as unknown as typeof fetch;
+
+			const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+			const result = await handler({
+				include_technical: false,
+				include_pnl: true,
+				include_deposit_withdrawal: false,
+			});
+
+			assertOk(result);
+			// 年初後の sell が yearly に集計される
+			expect(result.data.yearly_realized_pnl).toBeDefined();
+			expect(result.data.yearly_realized_pnl.realized_pnl).toBe(1_000_000);
+			expect(result.data.yearly_realized_pnl.sell_count).toBe(1);
+			// 全履歴の realized_pnl も同じ（年初前 buy のみで sell は 1 件のみ）
+			expect(result.data.total_realized_pnl).toBe(1_000_000);
+			expect(result.data.account_pnl.spot_realized_pnl).toBe(1_000_000);
+			// BTC 残保有 0.5 → cost_basis = 0.5 * 10_000_000 = 5_000_000
+			const btcHolding = result.data.holdings.find((h: { asset: string }) => h.asset === 'btc');
+			expect(btcHolding).toBeDefined();
+			expect(btcHolding.cost_basis).toBe(5_000_000);
+			expect(btcHolding.avg_buy_price).toBe(10_000_000);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('年初前出庫 + 年初後売却: yearly_realized_pnl が出庫後の平均原価を使う', async () => {
+		// バグ回帰防止 (Medium): 旧 calcPeriodRealizedPnl は出庫を無視していたため、
+		// 出庫後の売却で残数量・平均原価が calcPnl とズレていた。
+		// 買い 1 BTC @ 10_000_000（2025-12-01）→ 出庫 0.3 BTC（2025-12-15, fee 0.001）→ 売り 0.5 BTC @ 12_000_000（2026-03-01）
+		// 出庫後: qty=0.699, cost=6_990_000, avgCost=10_000_000
+		// 売り 0.5: sellCost=5_000_000, sellRev=6_000_000, realized=1_000_000
+		const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		try {
+			const buyMs = Date.UTC(2025, 11, 1, 0, 0, 0, 0);
+			const wdMs = Date.UTC(2025, 11, 15, 0, 0, 0, 0);
+			const sellMs = Date.UTC(2026, 2, 1, 0, 0, 0, 0);
+
+			const customTrades = {
+				trades: [
+					{
+						trade_id: 1,
+						pair: 'btc_jpy',
+						order_id: 1,
+						side: 'buy',
+						type: 'limit',
+						amount: '1',
+						price: '10000000',
+						maker_taker: 'maker',
+						fee_amount_base: '0',
+						fee_amount_quote: '0',
+						executed_at: buyMs,
+					},
+					{
+						trade_id: 2,
+						pair: 'btc_jpy',
+						order_id: 2,
+						side: 'sell',
+						type: 'market',
+						amount: '0.5',
+						price: '12000000',
+						maker_taker: 'taker',
+						fee_amount_base: '0',
+						fee_amount_quote: '0',
+						executed_at: sellMs,
+					},
+				],
+			};
+			const customWithdrawals = {
+				withdrawals: [
+					{
+						uuid: 'wd-btc',
+						asset: 'btc',
+						amount: '0.3',
+						fee: '0.001',
+						status: 'DONE',
+						requested_at: wdMs,
+					},
+				],
+			};
+
+			globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+				const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+				if (urlStr.includes('tickers_jpy')) {
+					return new Response(JSON.stringify(tickersJpy), { status: 200 });
+				}
+				if (urlStr.includes('candlestick')) {
+					return new Response(JSON.stringify(candlesBtcJpy1day120), { status: 200 });
+				}
+				if (urlStr.includes('/v1/user/assets')) {
+					return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
+				}
+				if (urlStr.includes('trade_history')) {
+					const isMargin = urlStr.includes('type=margin');
+					if (isMargin) {
+						return new Response(JSON.stringify(mockBitbankSuccess({ trades: [] })), { status: 200 });
+					}
+					return new Response(JSON.stringify(mockBitbankSuccess(customTrades)), { status: 200 });
+				}
+				if (urlStr.includes('deposit_history')) {
+					return new Response(JSON.stringify(mockBitbankSuccess({ deposits: [] })), { status: 200 });
+				}
+				if (urlStr.includes('withdrawal_history')) {
+					const isJpy = urlStr.includes('asset=jpy');
+					if (isJpy) {
+						return new Response(JSON.stringify(mockBitbankSuccess({ withdrawals: [] })), { status: 200 });
+					}
+					return new Response(JSON.stringify(mockBitbankSuccess(customWithdrawals)), { status: 200 });
+				}
+				return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+			}) as unknown as typeof fetch;
+
+			const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+			const result = await handler({
+				include_technical: false,
+				include_pnl: true,
+				include_deposit_withdrawal: true,
+			});
+
+			assertOk(result);
+			// yearly_realized_pnl: 出庫を反映した平均原価で計算
+			expect(result.data.yearly_realized_pnl).toBeDefined();
+			expect(result.data.yearly_realized_pnl.realized_pnl).toBe(1_000_000);
+			// total_realized_pnl も同じ（calcPnl と calcPeriodRealizedPnl の整合）
+			expect(result.data.total_realized_pnl).toBe(1_000_000);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
 
 describe('analyze_my_portfolio — toolDef handler', () => {

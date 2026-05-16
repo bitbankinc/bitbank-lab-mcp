@@ -329,7 +329,7 @@ export const AnalyzeMyPortfolioDataSchema = z.object({
 	yearly_realized_pnl: PeriodRealizedPnlSchema.describe('年初来実現損益（現物単独、補助指標）'),
 	monthly_realized_pnl: PeriodRealizedPnlSchema.describe('月初来実現損益（現物単独、補助指標）'),
 	account_pnl: AccountPnlSchema.optional().describe(
-		'当年1/1以降の口座全体 PnL（現物実現損益 + 信用決済損益 - 信用支払利息）の約定ベース集計',
+		'全履歴の口座全体 PnL（現物実現損益 + 信用決済損益 - 信用支払利息）の約定ベース集計',
 	),
 	yearly_account_pnl: PeriodAccountPnlSchema.optional().describe('年初来の口座全体 PnL（現物 + 信用決済損益 - 利息）'),
 	monthly_account_pnl: PeriodAccountPnlSchema.optional().describe('月初来の口座全体 PnL（現物 + 信用決済損益 - 利息）'),
