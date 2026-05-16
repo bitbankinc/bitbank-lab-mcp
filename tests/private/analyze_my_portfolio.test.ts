@@ -185,9 +185,9 @@ describe('analyze_my_portfolio', () => {
 
 		assertOk(result);
 		expect(result.data.account_pnl).toBeDefined();
-		expect(result.data.account_pnl!.margin_realized_pnl).toBe(0);
-		expect(result.data.account_pnl!.margin_interest).toBe(0);
-		expect(result.data.account_pnl!.total).toBe(result.data.account_pnl!.spot_realized_pnl);
+		expect(result.data.account_pnl.margin_realized_pnl).toBe(0);
+		expect(result.data.account_pnl.margin_interest).toBe(0);
+		expect(result.data.account_pnl.total).toBe(result.data.account_pnl.spot_realized_pnl);
 	});
 
 	it('信用約定あり: account_pnl.total が spot + margin - interest と一致', async () => {
@@ -204,9 +204,9 @@ describe('analyze_my_portfolio', () => {
 		assertOk(result);
 		const pnl = result.data.account_pnl;
 		expect(pnl).toBeDefined();
-		expect(pnl!.margin_realized_pnl).toBe(5000);
-		expect(pnl!.margin_interest).toBe(30);
-		expect(pnl!.total).toBe(pnl!.spot_realized_pnl + 5000 - 30);
+		expect(pnl.margin_realized_pnl).toBe(5000);
+		expect(pnl.margin_interest).toBe(30);
+		expect(pnl.total).toBe(pnl.spot_realized_pnl + 5000 - 30);
 	});
 
 	it('paginateMarginTrades 失敗時のフォールバック: margin_realized_pnl=0 / margin_interest=0 で ok を返す', async () => {
@@ -221,8 +221,8 @@ describe('analyze_my_portfolio', () => {
 
 		assertOk(result);
 		expect(result.data.account_pnl).toBeDefined();
-		expect(result.data.account_pnl!.margin_realized_pnl).toBe(0);
-		expect(result.data.account_pnl!.margin_interest).toBe(0);
+		expect(result.data.account_pnl.margin_realized_pnl).toBe(0);
+		expect(result.data.account_pnl.margin_interest).toBe(0);
 	});
 
 	it('yearly_account_pnl / monthly_account_pnl の期間フィルターが正しく効く', async () => {
@@ -280,15 +280,15 @@ describe('analyze_my_portfolio', () => {
 		assertOk(result);
 		// yearly: 両方含む（1000 + 500, 10 + 5）
 		expect(result.data.yearly_account_pnl).toBeDefined();
-		expect(result.data.yearly_account_pnl!.margin_realized_pnl).toBe(1500);
-		expect(result.data.yearly_account_pnl!.margin_interest).toBe(15);
+		expect(result.data.yearly_account_pnl.margin_realized_pnl).toBe(1500);
+		expect(result.data.yearly_account_pnl.margin_interest).toBe(15);
 		// monthly: 10日前のみ（500, 5）。1か月前は月初境界次第だが、当月内の 10 日前は必ず含まれる
 		expect(result.data.monthly_account_pnl).toBeDefined();
-		expect(result.data.monthly_account_pnl!.margin_realized_pnl).toBeGreaterThanOrEqual(500);
-		expect(result.data.monthly_account_pnl!.margin_interest).toBeGreaterThanOrEqual(5);
+		expect(result.data.monthly_account_pnl.margin_realized_pnl).toBeGreaterThanOrEqual(500);
+		expect(result.data.monthly_account_pnl.margin_interest).toBeGreaterThanOrEqual(5);
 		// monthly は yearly 以下
-		expect(result.data.monthly_account_pnl!.margin_realized_pnl).toBeLessThanOrEqual(
-			result.data.yearly_account_pnl!.margin_realized_pnl,
+		expect(result.data.monthly_account_pnl.margin_realized_pnl).toBeLessThanOrEqual(
+			result.data.yearly_account_pnl.margin_realized_pnl,
 		);
 	});
 });
