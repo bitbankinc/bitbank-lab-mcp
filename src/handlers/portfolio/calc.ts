@@ -140,67 +140,104 @@ export function calcPnl(trades: RawTrade[], asset: string, withdrawals?: RawWith
 /**
  * 指定期間内の実現損益を算出する。
  *
- * 移動平均法の avg_cost は全履歴から計算し（期間開始前の買いも含む）、
- * 期間内の売り約定のみ実現損益として集計する。
+ * 入力は全履歴（trades / withdrawals とも）が前提。
+ * 移動平均法の avg_cost は全履歴から積み上げ（期間開始前の買い・出庫も含む）、
+ * 期間内 (executed_at >= sinceMs) の売り約定のみ実現損益として集計する。
+ *
+ * 暗号資産出庫は calcPnl と同じく原価の按分減少として扱い、realized_pnl には計上しない。
+ * これにより出庫を挟んだ売却でも残数量・平均原価が calcPnl と整合する。
  */
 export function calcPeriodRealizedPnl(
 	trades: RawTrade[],
 	sinceMs: number,
 	periodStart: string,
 	periodEnd: string,
+	withdrawals?: RawWithdrawal[],
 ): PeriodRealizedPnl {
-	// 全通貨の約定を古い順にソート
-	const sorted = [...trades].sort((a, b) => a.executed_at - b.executed_at);
+	// 約定と出庫を時系列順に統合（通貨を超えて単一タイムラインで処理）
+	type TradeEvent = { type: 'trade'; ts: number; trade: RawTrade };
+	type WithdrawalEvent = { type: 'withdrawal'; ts: number; asset: string; amount: number };
+	type Event = TradeEvent | WithdrawalEvent;
+
+	const events: Event[] = [];
+	for (const t of trades) {
+		const asset = t.pair.replace('_jpy', '');
+		if (asset === 'jpy') continue;
+		events.push({ type: 'trade', ts: t.executed_at, trade: t });
+	}
+	for (const w of withdrawals ?? []) {
+		if (w.asset === 'jpy') continue;
+		if (w.status !== 'DONE') continue;
+		const wdQty = Number(w.amount) + (Number(w.fee) || 0); // 出庫量 + 出庫手数料 = 口座から減った総量
+		if (!Number.isFinite(wdQty) || wdQty <= 0) continue;
+		events.push({ type: 'withdrawal', ts: w.requested_at, asset: w.asset, amount: wdQty });
+	}
+	events.sort((a, b) => a.ts - b.ts);
 
 	// 通貨ごとに移動平均法で avg_cost を追跡し、期間内の sell のみ realized に計上
 	const holdings = new Map<string, { qty: number; cost: number }>();
 	let periodRealized = 0;
 	let periodSellCount = 0;
 
-	for (const t of sorted) {
-		const asset = t.pair.replace('_jpy', '');
-		if (asset === 'jpy') continue;
+	for (const event of events) {
+		if (event.type === 'trade') {
+			const t = event.trade;
+			const asset = t.pair.replace('_jpy', '');
+			const qty = Number(t.amount);
+			const price = Number(t.price);
+			if (!Number.isFinite(qty) || !Number.isFinite(price)) continue;
 
-		const qty = Number(t.amount);
-		const price = Number(t.price);
-		if (!Number.isFinite(qty) || !Number.isFinite(price)) continue;
+			const feeQuote = Number(t.fee_amount_quote) || 0;
+			const feeBase = Number(t.fee_amount_base) || 0;
+			const h = holdings.get(asset) ?? { qty: 0, cost: 0 };
 
-		const feeQuote = Number(t.fee_amount_quote) || 0;
-		const feeBase = Number(t.fee_amount_base) || 0;
-		const h = holdings.get(asset) ?? { qty: 0, cost: 0 };
+			if (t.side === 'buy') {
+				// 買い: JPY 出 = qty * price + feeQuote、base 入 = qty - feeBase
+				h.cost += qty * price + feeQuote;
+				h.qty += qty - feeBase;
+			} else {
+				// sell
+				let sellRealized = 0;
+				if (h.qty > 0) {
+					const avgCost = h.cost / h.qty;
+					// 保有量を超える売りの場合、原価は保有分のみ按分
+					const coveredQty = Math.min(qty, h.qty);
+					const sellCost = coveredQty * avgCost;
+					const sellRevenue = qty * price - feeQuote;
+					sellRealized = sellRevenue - sellCost;
+					h.cost -= sellCost;
+					h.qty -= coveredQty;
+					if (h.qty < 1e-12) {
+						h.qty = 0;
+						h.cost = 0;
+					}
+				} else {
+					sellRealized = qty * price - feeQuote;
+				}
 
-		if (t.side === 'buy') {
-			// 買い: JPY 出 = qty * price + feeQuote、base 入 = qty - feeBase
-			h.cost += qty * price + feeQuote;
-			h.qty += qty - feeBase;
+				// 期間内の売りのみ集計
+				if (t.executed_at >= sinceMs) {
+					periodRealized += sellRealized;
+					periodSellCount++;
+				}
+			}
+
+			holdings.set(asset, h);
 		} else {
-			// sell
-			let sellRealized = 0;
-			if (h.qty > 0) {
+			// Crypto withdrawal: 原価を按分減少。realized_pnl には計上しない
+			const h = holdings.get(event.asset) ?? { qty: 0, cost: 0 };
+			if (h.qty > 0 && event.amount > 0) {
 				const avgCost = h.cost / h.qty;
-				// 保有量を超える売りの場合、原価は保有分のみ按分
-				const coveredQty = Math.min(qty, h.qty);
-				const sellCost = coveredQty * avgCost;
-				const sellRevenue = qty * price - feeQuote;
-				sellRealized = sellRevenue - sellCost;
-				h.cost -= sellCost;
-				h.qty -= coveredQty;
+				const removedQty = Math.min(event.amount, h.qty);
+				h.cost -= removedQty * avgCost;
+				h.qty -= removedQty;
 				if (h.qty < 1e-12) {
 					h.qty = 0;
 					h.cost = 0;
 				}
-			} else {
-				sellRealized = qty * price - feeQuote;
-			}
-
-			// 期間内の売りのみ集計
-			if (t.executed_at >= sinceMs) {
-				periodRealized += sellRealized;
-				periodSellCount++;
+				holdings.set(event.asset, h);
 			}
 		}
-
-		holdings.set(asset, h);
 	}
 
 	return {
