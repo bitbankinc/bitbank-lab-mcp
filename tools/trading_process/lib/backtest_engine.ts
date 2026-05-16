@@ -292,6 +292,11 @@ export function calculateSummary(
 	const winRate = trades.length > 0 ? wins / trades.length : 0;
 	const avgPnl = trades.length > 0 ? trades.reduce((s, t) => s + t.pnl_pct, 0) / trades.length : 0;
 
+	// Sharpe は評価範囲（ウォームアップ除外）のバーリターンで算出する。
+	// warmup 区間は equity_pct=0 が連続するため、含めると stdev が小さく評価され
+	// Sharpe が過大評価される。
+	const evaluationEquityCurve = equityCurve.slice(clampedStartIdx);
+
 	return {
 		total_pnl_pct: Number(totalPnlPct.toFixed(2)),
 		trade_count: trades.length,
@@ -300,7 +305,7 @@ export function calculateSummary(
 		buy_hold_pnl_pct: Number(buyHoldPnlPct.toFixed(2)),
 		excess_return_pct: Number(excessReturn.toFixed(2)),
 		profit_factor: calcProfitFactor(trades),
-		sharpe_ratio: calcSharpeRatio(equityCurve, timeframe),
+		sharpe_ratio: calcSharpeRatio(evaluationEquityCurve, timeframe),
 		avg_pnl_pct: Number(avgPnl.toFixed(2)),
 		evaluation_start: evaluationStart,
 		evaluation_end: evaluationEnd,

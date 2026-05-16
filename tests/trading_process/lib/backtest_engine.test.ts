@@ -354,6 +354,29 @@ describe('calculateSummary - sharpe_ratio timeframe annualization', () => {
 		const sUnknown = calculateSummary([], 0, candles, equityCurve, 'UNKNOWN_TF').sharpe_ratio;
 		expect(sUnknown).toBe(s1D);
 	});
+
+	it('warmup 区間の equity_pct=0 連続は Sharpe 計算から除外される', () => {
+		// warmup 100 本 + 評価 2 本（i=100, 101）。warmup は equity_pct=0 のフラット、
+		// 評価範囲のみで変動するケース。slice(warmupBars) しないと、warmup の
+		// ゼロリターンが平均/分散を歪めて非 null の Sharpe が返ってしまう。
+		// 評価範囲だけならバーリターン数 < 2 で calcSharpeRatio は null を返す。
+		const length = 102;
+		const warmupBars = 100;
+		const c = makeCandles(length);
+		const curve = Array.from({ length }, (_, i) => ({
+			time: `t${i}`,
+			equity_pct: i < warmupBars ? 0 : (i - warmupBars + 1) * 0.5,
+			confirmed_pct: 0,
+		}));
+
+		// バグ再現（参考）: warmup を含む全期間で計算するとサンプル不足にならず非 null が返る
+		const sharpeWithWarmup = calculateSummary([], 0, c, curve, '1D').sharpe_ratio;
+		expect(sharpeWithWarmup).not.toBeNull();
+
+		// 修正後: warmup を slice すると評価範囲はバー 2 本 → リターン 1 本 → null
+		const sharpeEvalOnly = calculateSummary([], 0, c, curve, '1D', warmupBars).sharpe_ratio;
+		expect(sharpeEvalOnly).toBeNull();
+	});
 });
 
 // ---------------------------------------------------------------------------
