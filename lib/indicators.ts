@@ -418,14 +418,20 @@ export function stochastic(
 	for (let i = kPeriod - 1; i < n; i++) {
 		let hi = -Infinity;
 		let lo = Infinity;
+		let hasInvalid = false;
 		for (let j = i - kPeriod + 1; j <= i; j++) {
 			const high = highs[j];
 			const low = lows[j];
-			if (Number.isFinite(high) && high > hi) hi = high;
-			if (Number.isFinite(low) && low < lo) lo = low;
+			if (!Number.isFinite(high) || !Number.isFinite(low)) {
+				hasInvalid = true;
+				break;
+			}
+			if (high > hi) hi = high;
+			if (low < lo) lo = low;
 		}
+		if (hasInvalid) continue;
 		const close = closes[i];
-		if (!Number.isFinite(close) || !Number.isFinite(hi) || !Number.isFinite(lo)) continue;
+		if (!Number.isFinite(close)) continue;
 		const range = hi - lo;
 		rawK[i] = range === 0 ? 50 : ((close - lo) / range) * 100;
 	}

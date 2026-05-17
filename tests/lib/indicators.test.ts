@@ -664,6 +664,69 @@ describe('stochastic', () => {
 		expect(result.kSeries).toEqual([]);
 		expect(result.dSeries).toEqual([]);
 	});
+
+	it('窓内に NaN が 1 本でもあれば rawK は NaN になる（14 本窓の末尾 NaN）', () => {
+		const n = 30;
+		const highs = Array.from({ length: n }, (_, i) => 110 + Math.sin(i) * 5);
+		const lows = Array.from({ length: n }, (_, i) => 90 + Math.sin(i) * 5);
+		const closes = Array.from({ length: n }, (_, i) => 100 + Math.sin(i) * 5);
+		// index 20 の high を NaN にする → 窓 [7..20] (i=20) の rawK は NaN
+		highs[20] = NaN;
+		const result = stochastic(highs, lows, closes, 14, 3, 3);
+		// kSeries は rawK の SMA(3) なので、index 20 が NaN なら少なくとも 20,21,22 は NaN
+		expect(result.kSeries[20]).toBeNaN();
+		expect(result.kSeries[21]).toBeNaN();
+		expect(result.kSeries[22]).toBeNaN();
+	});
+
+	it('窓中央に Infinity が混入したら対応 index の rawK が NaN になる', () => {
+		const n = 30;
+		const highs = Array.from({ length: n }, (_, i) => 110 + Math.sin(i) * 5);
+		const lows = Array.from({ length: n }, (_, i) => 90 + Math.sin(i) * 5);
+		const closes = Array.from({ length: n }, (_, i) => 100 + Math.sin(i) * 5);
+		// index 17 の low を Infinity にする → 窓 [4..17]..[17..30] に含む間 rawK は NaN
+		lows[17] = Infinity;
+		const result = stochastic(highs, lows, closes, 14, 3, 3);
+		// index 17 を含む窓 (i = 17..30) のうち、データ範囲内の rawK が NaN
+		// → kSeries は SMA(3) なので index 17,18,19 で必ず NaN
+		expect(result.kSeries[17]).toBeNaN();
+		expect(result.kSeries[18]).toBeNaN();
+		expect(result.kSeries[19]).toBeNaN();
+	});
+
+	it('欠損が窓から外れた以降の index では正常な値が復帰する', () => {
+		const n = 40;
+		const highs = Array.from({ length: n }, (_, i) => 110 + Math.sin(i) * 5);
+		const lows = Array.from({ length: n }, (_, i) => 90 + Math.sin(i) * 5);
+		const closes = Array.from({ length: n }, (_, i) => 100 + Math.sin(i) * 5);
+		highs[10] = NaN;
+		const result = stochastic(highs, lows, closes, 14, 3, 3);
+		// index 10 を含む窓は i = 10..23 (kPeriod=14)
+		// その後 i >= 24 では窓に NaN が含まれないので rawK は有限
+		// kSeries は rawK の SMA(3) → i >= 26 で smoothK 分の rawK が有限になり kSeries も有限
+		// dSeries は kSeries の SMA(3) → i >= 28 で有限
+		for (let i = 28; i < n; i++) {
+			expect(Number.isFinite(result.kSeries[i])).toBe(true);
+			expect(Number.isFinite(result.dSeries[i])).toBe(true);
+		}
+	});
+
+	it('欠損なしの通常ケースの値は変化しない（リグレッション）', () => {
+		// 単調増加で hi - lo = 15 で固定、close - lo = 14 で固定 → rawK = 14/15*100
+		const n = 20;
+		const highs = Array.from({ length: n }, (_, i) => 11 + i);
+		const lows = Array.from({ length: n }, (_, i) => 9 + i);
+		const closes = Array.from({ length: n }, (_, i) => 10 + i);
+		const result = stochastic(highs, lows, closes, 14, 3, 3);
+		const expected = (14 / 15) * 100;
+		// rawK は i >= 13 で一定 → kSeries は i >= 15、dSeries は i >= 17 で一定
+		for (let i = 15; i < n; i++) {
+			expect(result.kSeries[i]).toBeCloseTo(expected, 10);
+		}
+		for (let i = 17; i < n; i++) {
+			expect(result.dSeries[i]).toBeCloseTo(expected, 10);
+		}
+	});
 });
 
 // --- Stochastic RSI ---
