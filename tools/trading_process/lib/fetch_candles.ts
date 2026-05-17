@@ -192,16 +192,23 @@ async function fetchByAbsoluteRange(
 
 	const uniqueCandles = await fetchRawCandles(pair, timeframe, fetchLimit);
 
-	// 取得上限に達した状態で、最古ローソク足が start_date より新しい → 容量制約による不足
+	// 最古ローソク足が start_date より新しい → 要求レンジのデータ不足
 	const fetchHitCap = fetchLimit >= maxBars;
 	const earliestFetchedMs =
 		uniqueCandles.length > 0 ? dayjs(uniqueCandles[0].time).valueOf() : Number.POSITIVE_INFINITY;
-	if (fetchHitCap && earliestFetchedMs > startMs) {
-		const earliest = uniqueCandles[0].time.slice(0, 10);
+	if (earliestFetchedMs > startMs) {
+		const earliest = uniqueCandles.length > 0 ? uniqueCandles[0].time.slice(0, 10) : 'N/A';
+		if (fetchHitCap) {
+			throw new Error(
+				`Insufficient historical data: requested start_date=${start} but earliest available is ${earliest} ` +
+					`(hit API fetch cap of ${maxBars} bars for ${timeframe}). ` +
+					`Use a more recent start_date, switch to a coarser timeframe, or use period (1M~3Y) instead.`,
+			);
+		}
 		throw new Error(
 			`Insufficient historical data: requested start_date=${start} but earliest available is ${earliest} ` +
-				`(hit API fetch cap of ${maxBars} bars for ${timeframe}). ` +
-				`Use a more recent start_date, switch to a coarser timeframe, or use period (1M~3Y) instead.`,
+				`(API returned ${uniqueCandles.length} bars, did not extend to ${start}). ` +
+				`Use a more recent start_date or check if data exists for this pair/timeframe at that period.`,
 		);
 	}
 
