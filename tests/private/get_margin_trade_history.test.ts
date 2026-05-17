@@ -584,6 +584,42 @@ describe('get_margin_trade_history — ページネーション', () => {
 		expect(secondUrl).toContain(`since=${expectedSince}`);
 	});
 
+	it('ページネーション: 最終ページが短くても limit 超過分を捨てたら isComplete=false', async () => {
+		// バグ回帰防止 (CodeRabbit #458): 旧実装は batch.length < PAGE_SIZE を見ただけで
+		// isComplete=true を返していたため、page1=1000+page2=800 で count=1500 を求めると
+		// all=1800 → slice(0,1500) で 300 件捨てているのに isComplete=true と誤報していた。
+		// スキーマ仕様「count 制限で打ち切られた場合は false」に合わせ、limit 超過時は
+		// 必ず false を返すよう修正された。
+		const page1 = generateMarginTrades(1000, 1, 1710000000000);
+		const page2 = generateMarginTrades(800, 1001, 1710001000000);
+
+		setupSequentialFetchMock([mockBitbankSuccess({ trades: page1 }), mockBitbankSuccess({ trades: page2 })]);
+
+		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
+		const result = await getMarginTradeHistory({ count: 1500 });
+
+		assertOk(result);
+		expect(result.data.trades).toHaveLength(1500);
+		expect(result.meta.isComplete).toBe(false);
+		expect(result.summary).toContain('全件ではなく一部のみ取得されています');
+	});
+
+	it('ページネーション: 最終ページが短く all=limit ちょうどなら isComplete=true', async () => {
+		// 境界条件: page1=1000 + page2=500 で count=1500 を完全充当（exhausted=true && all===limit）。
+		// 捨てたレコードは無く、API 窓も使い切ったので isComplete=true。
+		const page1 = generateMarginTrades(1000, 1, 1710000000000);
+		const page2 = generateMarginTrades(500, 1001, 1710001000000);
+
+		setupSequentialFetchMock([mockBitbankSuccess({ trades: page1 }), mockBitbankSuccess({ trades: page2 })]);
+
+		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
+		const result = await getMarginTradeHistory({ count: 1500 });
+
+		assertOk(result);
+		expect(result.data.trades).toHaveLength(1500);
+		expect(result.meta.isComplete).toBe(true);
+	});
+
 	it('ページネーション: limit 到達で打ち切り（isComplete=false）', async () => {
 		// page1: 1000 件全 margin, page2: 1000 件全 margin → all=2000 が limit=1500 を超えるので slice
 		const page1 = generateMarginTrades(1000, 1, 1710000000000);

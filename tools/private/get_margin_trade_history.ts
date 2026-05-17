@@ -84,13 +84,16 @@ async function paginateMarginTrades(
 
 		// 終了判定はフィルタ前の生 batch.length を使う。フィルタ後の長さで判定すると、
 		// 現物比率が高いとき早期終了して次ページの margin 約定を取り逃がす。
-		if (batch.length < PAGE_SIZE) {
-			return { trades: all.slice(0, limit), isComplete: true };
-		}
-
-		// limit に達したら打ち切り。count を満たしただけで、期間内に未取得レコードがある可能性があるため isComplete=false
+		// 「期間内全件取得」(isComplete=true) を返せるのは、API 窓を使い切った
+		// (batch.length < PAGE_SIZE) かつ limit 超過で切り捨てが発生していない場合だけ。
+		// 例: count=1500 / page1=1000 全 margin + page2=800 全 margin の場合、
+		// all.length=1800 を slice(0, 1500) で 300 件捨てているので isComplete=false が正しい。
+		const exhausted = batch.length < PAGE_SIZE;
 		if (all.length >= limit) {
-			return { trades: all.slice(0, limit), isComplete: false };
+			return { trades: all.slice(0, limit), isComplete: exhausted && all.length === limit };
+		}
+		if (exhausted) {
+			return { trades: all.slice(0, limit), isComplete: true };
 		}
 
 		// 次ページ: 最後の約定の executed_at を since に（同一 ts のレコードを次ページに含めて再取得し、dedup する）
