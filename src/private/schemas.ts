@@ -543,7 +543,7 @@ export const GetMarginPositionsOutputSchema = z.union([
 
 export const GetMarginTradeHistoryInputSchema = z.object({
 	pair: z.string().optional().describe('通貨ペア（例: btc_jpy）。省略で全ペア'),
-	count: z.number().max(100).default(20).describe('取得件数（最大100）'),
+	count: z.number().max(10000).default(20).describe('取得件数（最大10000、1000超は自動ページネーション）'),
 	order: z.enum(['asc', 'desc']).default('desc').describe('ソート順（asc: 古い順, desc: 新しい順）'),
 	since: z.string().optional().describe('開始日時（ISO8601、例: 2025-01-01T00:00:00+09:00）'),
 	end: z.string().optional().describe('終了日時（ISO8601、例: 2025-12-31T23:59:59+09:00）'),
@@ -579,6 +579,10 @@ export const GetMarginTradeHistoryMetaSchema = z.object({
 	fetchedAt: z.string(),
 	tradeCount: z.number().int(),
 	pair: z.string().optional(),
+	isComplete: z
+		.boolean()
+		.optional()
+		.describe('期間内全件を取得できたか。count 制限で打ち切られた場合や MAX_PAGES 到達時、cursor 進捗停止時は false'),
 });
 
 export const GetMarginTradeHistoryOutputSchema = z.union([
