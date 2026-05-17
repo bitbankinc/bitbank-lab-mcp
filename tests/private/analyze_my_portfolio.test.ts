@@ -212,6 +212,68 @@ describe('analyze_my_portfolio', () => {
 		expect(pnl.total).toBe(pnl.spot_realized_pnl + 5000 - 30 - 155);
 	});
 
+	it('信用約定レスポンスに現物 (position_side 欠損) が混入しても margin_fee は信用のみから集計', async () => {
+		// 公式 docs に type=margin パラメータの記載がなく、API がそれを無視して
+		// 現物約定も返してしまった場合の防御。フィルタが効いていれば、現物の
+		// fee_occurred_amount_quote は margin_fee に加算されない（過剰控除を防ぐ）。
+		const mixedMargin = {
+			trades: [
+				// 信用決済: PL=5000, interest=30, fee=155 → これらだけが集計対象
+				{
+					trade_id: 1001,
+					pair: 'btc_jpy',
+					order_id: 11001,
+					side: 'sell',
+					position_side: 'long',
+					type: 'market',
+					amount: '0.01',
+					price: '15500000',
+					maker_taker: 'taker',
+					fee_amount_base: '0',
+					fee_amount_quote: '155',
+					fee_occurred_amount_quote: '155',
+					profit_loss: '5000',
+					interest: '30',
+					executed_at: 1710000100000,
+				},
+				// 現物約定（position_side なし）— fee_occurred_amount_quote=9999 だが
+				// margin_fee に加算されてはいけない
+				{
+					trade_id: 1002,
+					pair: 'btc_jpy',
+					order_id: 11002,
+					side: 'buy',
+					type: 'limit',
+					amount: '0.01',
+					price: '15000000',
+					maker_taker: 'maker',
+					fee_amount_base: '0.00001',
+					fee_amount_quote: '9999',
+					fee_occurred_amount_quote: '9999',
+					executed_at: 1710000000000,
+				},
+			],
+		};
+		setupFetchMock({ marginTrades: mixedMargin });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		const pnl = result.data.account_pnl;
+		expect(pnl).toBeDefined();
+		// 信用約定 1 件のみが集計対象
+		expect(pnl.margin_realized_pnl).toBe(5000);
+		expect(pnl.margin_interest).toBe(30);
+		// 現物の 9999 が混入していたら 9999+155=10154 になるはずだが、フィルタで除外されて 155 のみ
+		expect(pnl.margin_fee).toBe(155);
+		expect(pnl.total).toBe(pnl.spot_realized_pnl + 5000 - 30 - 155);
+	});
+
 	it('paginateMarginTrades 失敗時のフォールバック: margin_realized_pnl=0 / interest=0 / fee=0 で ok を返す', async () => {
 		setupFetchMock({ marginTradesFail: true });
 

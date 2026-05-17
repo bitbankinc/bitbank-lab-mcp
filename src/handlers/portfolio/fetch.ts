@@ -120,6 +120,12 @@ export async function paginateTrades(
 /**
  * ページネーション付きで信用約定履歴を取得（type=margin、最大 MAX_PAGES ページ、古い順）。
  * 信用未利用や API 失敗時でも空配列で安全に返し、analyze_my_portfolio が落ちないようにする。
+ *
+ * 公式 docs (bitbankinc/bitbank-api-docs) の trade_history パラメータには `type=margin`
+ * が記載されておらず、API が未知パラメータを無視する可能性がある。その場合は現物約定が
+ * 混入し、calcMarginPnl が現物の fee_occurred_amount_quote まで margin_fee として控除して
+ * account_pnl を過小表示してしまう。docs では position_side が「信用取引の時のみ」と
+ * 明記されているため、position_side != null で margin 約定のみに絞る防御フィルタを掛ける。
  */
 export async function paginateMarginTrades(
 	client: BitbankPrivateClient,
@@ -134,11 +140,15 @@ export async function paginateMarginTrades(
 		const result = await tryGet<{ trades: RawMarginTrade[] }>(client, '/v1/user/spot/trade_history', params);
 		if (!result.ok) break;
 		const batch = result.data.trades || [];
-		const newRecords = batch.filter((t) => !seenIds.has(t.trade_id));
+		// type=margin が無視された場合に備え、position_side != null で margin 約定のみに絞る。
+		const marginOnly = batch.filter((t) => t.position_side != null);
+		const newRecords = marginOnly.filter((t) => !seenIds.has(t.trade_id));
 		for (const t of newRecords) seenIds.add(t.trade_id);
 		all.push(...newRecords);
+		// truncated 判定はフィルタ前の batch.length を使う。フィルタ後の長さで判定すると
+		// 現物比率が高いとき早期終了し、次ページの margin 約定を取り逃がす。
 		if (batch.length < TRADE_PAGE_SIZE) return { trades: all, truncated: false };
-		// 同一タイムスタンプが TRADE_PAGE_SIZE 件以上連続して進捗しない場合の保険
+		// 信用が含まれない満杯ページが連続するケースの無限ループ防止（marginOnly ベースで判定）。
 		if (newRecords.length === 0) return { trades: all, truncated: true };
 		const lastTs = batch[batch.length - 1]?.executed_at;
 		if (!lastTs) break;

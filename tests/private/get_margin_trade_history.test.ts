@@ -336,6 +336,108 @@ describe('get_margin_trade_history', () => {
 		expect(result.summary).toContain('0件');
 	});
 
+	it('現物 (position_side 欠損) が混在しても信用のみを返し集計もフィルタ後の値', async () => {
+		// 公式 docs に type=margin パラメータの記載がなく、API が無視した場合の防御。
+		// position_side == null の現物約定が混入しても、フィルタで信用のみが残ること、
+		// および「ロング X件 / ショート Y件」の集計もフィルタ後の値であることを検証する。
+		const mixed = {
+			trades: [
+				{
+					trade_id: 701,
+					pair: 'btc_jpy',
+					order_id: 7001,
+					side: 'buy',
+					position_side: 'long',
+					type: 'limit',
+					amount: '0.01',
+					price: '15000000',
+					maker_taker: 'maker',
+					fee_amount_base: '0.00001',
+					fee_amount_quote: '0',
+					executed_at: 1710000000000,
+				},
+				// 現物約定（position_side なし）。フィルタで除外されるべき
+				{
+					trade_id: 702,
+					pair: 'btc_jpy',
+					order_id: 7002,
+					side: 'buy',
+					type: 'limit',
+					amount: '0.01',
+					price: '15000000',
+					maker_taker: 'maker',
+					fee_amount_base: '0.00001',
+					fee_amount_quote: '0',
+					fee_occurred_amount_quote: '500', // 現物の手数料が margin_fee に混入してはいけない
+					executed_at: 1710000001000,
+				},
+				{
+					trade_id: 703,
+					pair: 'eth_jpy',
+					order_id: 7003,
+					side: 'sell',
+					position_side: 'short',
+					type: 'limit',
+					amount: '1.0',
+					price: '400000',
+					maker_taker: 'maker',
+					fee_amount_base: '0.001',
+					fee_amount_quote: '0',
+					executed_at: 1710000002000,
+				},
+			],
+		};
+		setupFetchMock(mockBitbankSuccess(mixed));
+
+		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
+		const result = await getMarginTradeHistory({});
+
+		assertOk(result);
+		// 現物が除外され信用 2 件のみ
+		expect(result.data.trades).toHaveLength(2);
+		expect(result.meta.tradeCount).toBe(2);
+		const ids = result.data.trades.map((t) => t.trade_id);
+		expect(ids).toEqual([701, 703]);
+		// 全レコードに position_side が付与されている
+		for (const t of result.data.trades) {
+			expect(t.position_side).toBeDefined();
+		}
+		// 集計はフィルタ後の数（ロング 1 / ショート 1）
+		expect(result.summary).toContain('信用約定履歴');
+		expect(result.summary).toContain('2件');
+		expect(result.summary).toContain('ロング 1件');
+		expect(result.summary).toContain('ショート 1件');
+	});
+
+	it('全件現物（position_side 欠損）のレスポンスは 0 件メッセージを返す', async () => {
+		const spotOnly = {
+			trades: [
+				{
+					trade_id: 801,
+					pair: 'btc_jpy',
+					order_id: 8001,
+					side: 'buy',
+					type: 'limit',
+					amount: '0.01',
+					price: '15000000',
+					maker_taker: 'maker',
+					fee_amount_base: '0.00001',
+					fee_amount_quote: '0',
+					executed_at: 1710000000000,
+				},
+			],
+		};
+		setupFetchMock(mockBitbankSuccess(spotOnly));
+
+		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
+		const result = await getMarginTradeHistory({});
+
+		assertOk(result);
+		expect(result.data.trades).toHaveLength(0);
+		expect(result.meta.tradeCount).toBe(0);
+		expect(result.summary).toContain('0件');
+	});
+
 	it('PrivateApiError で fail を返す', async () => {
 		setupFetchMock(mockBitbankError(20001), 400);
 

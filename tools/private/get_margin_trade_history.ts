@@ -72,8 +72,12 @@ export default async function getMarginTradeHistory(args: {
 
 		const timestamp = nowIso();
 
+		// 公式 docs に type=margin パラメータの記載がなく、API が無視する可能性に備える。
+		// position_side は docs 上「信用取引の時のみ」付与されるため、これで margin 約定のみに絞る。
+		const marginOnly = rawData.trades.filter((t) => t.position_side != null);
+
 		// 約定データの整形
-		const trades = rawData.trades.map((t) => ({
+		const trades = marginOnly.map((t) => ({
 			trade_id: t.trade_id,
 			pair: t.pair,
 			order_id: t.order_id,
