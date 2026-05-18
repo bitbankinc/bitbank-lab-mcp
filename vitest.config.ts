@@ -4,8 +4,9 @@ export default defineConfig({
   test: {
     // テストファイルのパターン
     include: ['tests/**/*.test.ts'],
-    // Security/chaos tests are local-only (not in public CI)
-    exclude: ['tests/chaos/**', 'tests/private/security.test.ts', 'node_modules/**'],
+    // - chaos / security: ローカル専用 (public CI には載せない)
+    // - e2e: サブプロセス + tsx 起動が必要。`npm run test:e2e` (vitest.config.e2e.ts) で実行
+    exclude: ['tests/chaos/**', 'tests/e2e/**', 'tests/private/security.test.ts', 'node_modules/**'],
     // タイムアウト（ネットワーク系テストがある場合を考慮）
     testTimeout: 10_000,
     // ESM 対応

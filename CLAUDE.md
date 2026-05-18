@@ -3,12 +3,16 @@
 ## コマンド
 
 ```bash
-npm test                    # vitest で全テスト実行
+npm test                    # unit / integration（vitest）。tests/e2e/** は除外
+npm run test:e2e            # stdio サブプロセス E2E（手動 / nightly。PR では走らせない）
 npm run lint:fix            # Oxlint で自動修正
 npm run format              # Biome でフォーマット
 npm run gen:types           # Zod スキーマから型定義を生成
 npm run typecheck           # tsc --noEmit
 ```
+
+サンドボックス等で 127.0.0.1 への bind が制限されている環境では
+`SKIP_NETWORK_TESTS=1 npm test` で `tests/src/http-rate-limit.test.ts` を skip できる。
 
 ## コード品質
 

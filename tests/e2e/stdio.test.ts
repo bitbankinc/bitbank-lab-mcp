@@ -4,7 +4,12 @@
  * 実際にサーバーをサブプロセスで起動し、MCP クライアントから
  * tools/list, tools/call を送って応答を検証する。
  * 外部 API は mock-server-entry.ts 経由でモック。
+ *
+ * サブプロセスが起動直後に異常終了すると、connect() は opaque な
+ * "Connection closed" を投げる。原因特定のため stderr をテスト側で
+ * 収集し、connect 失敗時にエラーメッセージへ畳み込む。
  */
+import { existsSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -21,11 +26,17 @@ import {
 import { assertDescriptionQuality, assertFailQuality, assertOkQuality } from './_qualityAssertions.js';
 
 const ENTRY = new URL('./mock-server-entry.ts', import.meta.url).pathname;
+const TSX_BIN = new URL('../../node_modules/.bin/tsx', import.meta.url).pathname;
+
+if (!existsSync(TSX_BIN)) {
+	throw new Error(
+		`tsx バイナリが見つかりません: ${TSX_BIN}\n\`npm install\` を実行してから E2E を再実行してください。`,
+	);
+}
 
 function createTransport(mockResponses: Record<string, unknown> = {}, env: Record<string, string> = {}) {
-	const tsxBin = new URL('../../node_modules/.bin/tsx', import.meta.url).pathname;
 	return new StdioClientTransport({
-		command: tsxBin,
+		command: TSX_BIN,
 		args: [ENTRY],
 		env: {
 			...process.env,
@@ -34,6 +45,39 @@ function createTransport(mockResponses: Record<string, unknown> = {}, env: Recor
 		},
 		stderr: 'pipe',
 	});
+}
+
+/**
+ * transport.stderr の Readable を購読し、累積した文字列を返すクロージャを返す。
+ * 子プロセスが initialize を返す前に死んだ場合、Client.connect() は
+ * "Connection closed" としか言わないため、stderr バッファを必ず捕捉してエラーに添える。
+ */
+function captureStderr(transport: StdioClientTransport): () => string {
+	const chunks: string[] = [];
+	const stream = transport.stderr;
+	if (stream) {
+		stream.setEncoding?.('utf8');
+		stream.on('data', (chunk: string | Buffer) => {
+			chunks.push(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+		});
+	}
+	return () => chunks.join('');
+}
+
+async function connectWithDiagnostics(client: Client, transport: StdioClientTransport): Promise<void> {
+	const readStderr = captureStderr(transport);
+	try {
+		await client.connect(transport);
+	} catch (err) {
+		const stderr = readStderr().trim();
+		const detail = stderr
+			? `\n--- subprocess stderr ---\n${stderr}\n--------------------------`
+			: '\n(stderr is empty)';
+		throw new Error(
+			`MCP stdio client.connect() に失敗しました: ${(err as Error).message}\n` +
+				`command=${TSX_BIN} entry=${ENTRY}${detail}`,
+		);
+	}
 }
 
 /** content からテキストを抽出するヘルパー */
@@ -53,7 +97,7 @@ describe('MCP stdio E2E', () => {
 
 		beforeAll(async () => {
 			client = new Client({ name: 'e2e-test', version: '0.0.1' });
-			await client.connect(createTransport());
+			await connectWithDiagnostics(client, createTransport());
 		}, 30_000);
 		afterAll(async () => {
 			await client.close();
@@ -86,7 +130,7 @@ describe('MCP stdio E2E', () => {
 
 		beforeAll(async () => {
 			client = new Client({ name: 'e2e-test', version: '0.0.1' });
-			await client.connect(createTransport({ 'btc_jpy/ticker': tickerBtcJpy }));
+			await connectWithDiagnostics(client, createTransport({ 'btc_jpy/ticker': tickerBtcJpy }));
 		}, 30_000);
 		afterAll(async () => {
 			await client.close();
@@ -111,7 +155,7 @@ describe('MCP stdio E2E', () => {
 
 		beforeAll(async () => {
 			client = new Client({ name: 'e2e-test', version: '0.0.1' });
-			await client.connect(createTransport({ 'btc_jpy/ticker': tickerError }));
+			await connectWithDiagnostics(client, createTransport({ 'btc_jpy/ticker': tickerError }));
 		}, 30_000);
 		afterAll(async () => {
 			await client.close();
@@ -131,7 +175,7 @@ describe('MCP stdio E2E', () => {
 
 		beforeAll(async () => {
 			client = new Client({ name: 'e2e-test', version: '0.0.1' });
-			await client.connect(createTransport({ 'btc_jpy/depth': depthBtcJpy }));
+			await connectWithDiagnostics(client, createTransport({ 'btc_jpy/depth': depthBtcJpy }));
 		}, 30_000);
 		afterAll(async () => {
 			await client.close();
@@ -167,7 +211,7 @@ describe('MCP stdio E2E', () => {
 
 		beforeAll(async () => {
 			client = new Client({ name: 'e2e-test', version: '0.0.1' });
-			await client.connect(createTransport({ 'btc_jpy/candlestick': candlesBtcJpy1day }));
+			await connectWithDiagnostics(client, createTransport({ 'btc_jpy/candlestick': candlesBtcJpy1day }));
 		}, 30_000);
 		afterAll(async () => {
 			await client.close();
@@ -210,7 +254,7 @@ describe('MCP stdio E2E', () => {
 
 		beforeAll(async () => {
 			client = new Client({ name: 'e2e-test', version: '0.0.1' });
-			await client.connect(createTransport({ 'btc_jpy/transactions': transactionsBtcJpy }));
+			await connectWithDiagnostics(client, createTransport({ 'btc_jpy/transactions': transactionsBtcJpy }));
 		}, 30_000);
 		afterAll(async () => {
 			await client.close();
@@ -247,7 +291,7 @@ describe('MCP stdio E2E', () => {
 
 		beforeAll(async () => {
 			client = new Client({ name: 'e2e-test', version: '0.0.1' });
-			await client.connect(createTransport({ tickers_jpy: tickersJpy }));
+			await connectWithDiagnostics(client, createTransport({ tickers_jpy: tickersJpy }));
 		}, 30_000);
 		afterAll(async () => {
 			await client.close();
@@ -270,7 +314,7 @@ describe('MCP stdio E2E', () => {
 
 		beforeAll(async () => {
 			client = new Client({ name: 'e2e-test', version: '0.0.1' });
-			await client.connect(createTransport({ 'btc_jpy/transactions': transactionsBtcJpy }));
+			await connectWithDiagnostics(client, createTransport({ 'btc_jpy/transactions': transactionsBtcJpy }));
 		}, 30_000);
 		afterAll(async () => {
 			await client.close();
@@ -297,7 +341,7 @@ describe('MCP stdio E2E', () => {
 
 		beforeAll(async () => {
 			client = new Client({ name: 'e2e-test', version: '0.0.1' });
-			await client.connect(createTransport({ 'btc_jpy/candlestick': candlesBtcJpy1day }));
+			await connectWithDiagnostics(client, createTransport({ 'btc_jpy/candlestick': candlesBtcJpy1day }));
 		}, 30_000);
 		afterAll(async () => {
 			await client.close();
@@ -325,7 +369,7 @@ describe('MCP stdio E2E', () => {
 
 		beforeAll(async () => {
 			client = new Client({ name: 'e2e-test', version: '0.0.1' });
-			await client.connect(createTransport({ 'btc_jpy/candlestick': candlesBtcJpy1day120 }));
+			await connectWithDiagnostics(client, createTransport({ 'btc_jpy/candlestick': candlesBtcJpy1day120 }));
 		}, 30_000);
 		afterAll(async () => {
 			await client.close();
@@ -352,7 +396,7 @@ describe('MCP stdio E2E', () => {
 
 		beforeAll(async () => {
 			client = new Client({ name: 'e2e-test', version: '0.0.1' });
-			await client.connect(createTransport({ 'btc_jpy/candlestick': candlesBtcJpy1day120 }));
+			await connectWithDiagnostics(client, createTransport({ 'btc_jpy/candlestick': candlesBtcJpy1day120 }));
 		}, 30_000);
 		afterAll(async () => {
 			await client.close();
@@ -378,7 +422,7 @@ describe('MCP stdio E2E', () => {
 
 		beforeAll(async () => {
 			client = new Client({ name: 'e2e-test', version: '0.0.1' });
-			await client.connect(createTransport({ 'btc_jpy/candlestick': candlesBtcJpy1day120 }));
+			await connectWithDiagnostics(client, createTransport({ 'btc_jpy/candlestick': candlesBtcJpy1day120 }));
 		}, 30_000);
 		afterAll(async () => {
 			await client.close();
@@ -404,7 +448,8 @@ describe('MCP stdio E2E', () => {
 
 		beforeAll(async () => {
 			client = new Client({ name: 'e2e-test', version: '0.0.1' });
-			await client.connect(
+			await connectWithDiagnostics(
+				client,
 				createTransport({
 					'btc_jpy/depth': depthBtcJpy,
 					'btc_jpy/candlestick': candlesBtcJpy5min,
@@ -435,7 +480,8 @@ describe('MCP stdio E2E', () => {
 
 		beforeAll(async () => {
 			client = new Client({ name: 'e2e-test', version: '0.0.1' });
-			await client.connect(
+			await connectWithDiagnostics(
+				client,
 				createTransport({
 					'btc_jpy/candlestick': candlesBtcJpy1day120,
 					'btc_jpy/transactions': transactionsBtcJpy,
