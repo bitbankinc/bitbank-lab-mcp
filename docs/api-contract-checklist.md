@@ -26,7 +26,7 @@
 |---|---|---|---|---|
 | Public Base URL | `https://public.bitbank.cc` | `BITBANK_API_BASE` 定数 | `lib/http.ts:2` | ✅ |
 | Private Base URL | `https://api.bitbank.cc/v1` | `BitbankPrivateClient.BASE_URL = 'https://api.bitbank.cc'`（パスは `/v1/...` を都度付与） | `src/private/client.ts:56` | ✅ |
-| Public レスポンス封筒 | `{ success: 0\|1, data: ... }` | `get_ticker` / `get_tickers_jpy` のみ `success !== 1` を upstream として分類。`get_candles` / `get_transactions` / `get_orderbook` は `data?.candlestick?.[0]?.ohlcv ?? []` 等の optional chaining + 空配列フォールバックで間接的に弾いており、`success:0` を明示分類していない | `tools/get_ticker.ts:89`, `tools/get_tickers_jpy.ts:199` | 🟡 |
+| Public レスポンス封筒 | `{ success: 0\|1, data: ... }` | 全 Public 取得系で `success !== 1` を upstream として明示分類。`get_candles` は multi-year / multi-day の全チャンク失敗時も `UpstreamApiError` でラップし outer catch（network 分類）に流さず upstream を維持する | `tools/get_ticker.ts:89`, `tools/get_tickers_jpy.ts:199`, `tools/get_transactions.ts:104`, `tools/get_orderbook.ts:479`, `tools/get_candles.ts:83,113,322` | ✅ |
 | Private レスポンス封筒 | 同上 | `BitbankPrivateClient.request` 内で `json.success !== 1` を分類 | `src/private/client.ts:177` | ✅ |
 | Result パターン | ➖ | 全ツールで `ok()` / `fail()` を返却 | `lib/result.ts` | ✅ |
 
@@ -123,14 +123,14 @@
 | 実装ファイル | `tools/get_transactions.ts` |
 | 入力スキーマ | `GetTransactionsInputSchema` — `src/schema/market-data.ts:129` |
 | 出力スキーマ | `GetTransactionsOutputSchema` — `src/schema/market-data.ts:127` |
-| テスト | `tests/get_transactions.test.ts`（6 describe/it、81 行） |
+| テスト | `tests/get_transactions.test.ts`（24 describe/it、281 行） |
 | 状態 | 🟡 |
 
 **レスポンスフィールド対応:**
 
 | 公式 | 型 | 実装 |
 |---|---|---|
-| `transaction_id` | number | ❌ 捨てている（normalized に含まれない） |
+| `transaction_id` | number | ✅ `transaction_id` (number, optional)。`TransactionItemSchema`（`src/schema/market-data.ts:116`）に optional 追加済み。上流に欠損する場合は normalized 項目から落とさず、id のみ undefined にして残す |
 | `side` | "buy" \| "sell" | ✅ `side` |
 | `price` | string | ✅ `price` (number) |
 | `amount` | string | ✅ `amount` (number)（`size` フォールバック付き） |
@@ -138,9 +138,7 @@
 
 **注記**
 - `t.amount ?? t.size` / `t.executed_at ?? t.timestamp ?? t.date` といったフォールバックは公式 spec にないキーまでサポートしているが、実害は無く upstream の表記揺れに対する保険。
-- `transaction_id` を捨てているため重複検出や上流との突合が不可能。最新60件 vs YYYYMMDD 指定の境界で重複しうる。
-- 入力スキーマの `limit` は max=1000 だが、公式 API はデフォルト 60 件 or 日付指定で日次分のみ返す。1000 件を要求しても 60 件しか得られない可能性あり、ユーザーへのヒントが summary に出ない。
-- テストカバレッジが薄い（81 行・6 ケース）: API 異常系、空配列、日付フォーマット境界、フィルタ未指定/指定の summary 差し替えロジックがほぼ未検証。
+- 入力スキーマの `limit` は max=1000 だが、公式 API はデフォルト 60 件 or 日付指定で日次分のみ返す。1000 件を要求しても 60 件しか得られない可能性あり、ユーザーへのヒントが summary に出ない（残課題、§5 Medium）。
 
 ### 2.6 GET `/{pair}/candlestick/{candle-type}/{YYYYMMDD|YYYY}`
 
@@ -644,7 +642,7 @@
 
 - [x] **`transaction_id` を `get_transactions` の normalized に含める** — 重複検出 / 突合が不可能な現状を解消。✅ PR #462 で実装済み（`TransactionItemSchema` に optional 追加）。
 - [x] **`get_transactions` テスト拡充** — 81 行・6 ケースは薄い。日付フォーマット境界、空配列、API 異常系、`maxAmount` / `maxPrice` フィルタ未検証。✅ PR #462 で 24 ケースに拡充済み。
-- [ ] **Public 全取得系で `success:0` fixture テスト追加** — `get_candles` / `get_orderbook` は `data` 構造で間接的に弾いているのみ。fixture でレスポンス封筒 `success:0` を返した時の挙動を検証する必要あり（`get_transactions` は PR #462 で対応済み）。
+- [x] **Public 全取得系で `success:0` fixture テスト追加** — ✅ PR #463 で `get_candles` / `get_orderbook` に `success !== 1` の明示分類を実装し、fixture テストを追加。`get_candles` は multi-year / multi-day 全チャンク失敗時も `UpstreamApiError` でラップして upstream 分類を維持（`tools/get_candles.ts:83,113,322`、`tests/get_candles.test.ts` の `success:0` describe 群で検証）。`get_orderbook` も `tools/get_orderbook.ts:479` で同等の明示分類を行い `tests/get_orderbook.test.ts:424,432` で検証。`get_transactions` は PR #462 で対応済み。
 - [x] **`get_candles` multi-year の起点を `date` パラメータ基準に修正、または明示的に「current year 起点」と仕様化** — ✅ `date` 指定時は YYYY 部分を起点、未指定時は現在年起点に修正。`tools/get_candles.ts` の `anchorYear` で分岐し、`tests/get_candles.test.ts` の `multi-year: date パラメータを起点に取得する` describe で 1day / 4hour / 1week / 1month / YYYYMMDD 入力 / multi-day 非干渉を検証済み。
 - [x] **`70020`（circuit break 中の market 拒否）のエラーマッピング** — ✅ `create_order` の `codeMessages` に追加済み。`tests/private/create_order.test.ts` の「サーキットブレイク中の成行注文制限（70020）」で検証。
 - [x] **`OrderStatusEnum` に `REJECTED` / `TRIGGERED` を追加し `OrderResponseSchema.status` を enum 化** — ✅ `OrderStatusEnum` を 8 値（公式 spec 完全準拠）に拡張し、`OrderResponseSchema.status` を strict enum 化。未知ステータスは `parse()` が ZodError → catch ブロックで `upstream_error` を返す（loud failure）。`OrderItemSchema`（`get_my_orders`）の `status` は ACTIVE_STATUSES フィルタを通った後の出力スキーマのため `z.string()` のまま維持。
