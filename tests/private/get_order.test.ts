@@ -197,6 +197,39 @@ describe('get_order', () => {
 		assertOk(result);
 		expect(result.summary).toContain('45000.5');
 	});
+
+	it('REJECTED ステータスを受け付けてサマリーに反映する', async () => {
+		setupFetchMock(mockBitbankSuccess(orderResponse({ status: 'REJECTED' })));
+
+		const { default: getOrder } = await import('../../tools/private/get_order.js');
+		const result = await getOrder({ pair: 'btc_jpy', order_id: 2001 });
+
+		assertOk(result);
+		expect(result.data.order.status).toBe('REJECTED');
+		expect(result.summary).toContain('REJECTED');
+	});
+
+	it('TRIGGERED ステータスを受け付けてサマリーに反映する', async () => {
+		setupFetchMock(mockBitbankSuccess(orderResponse({ type: 'stop', status: 'TRIGGERED', trigger_price: '13000000' })));
+
+		const { default: getOrder } = await import('../../tools/private/get_order.js');
+		const result = await getOrder({ pair: 'btc_jpy', order_id: 2001 });
+
+		assertOk(result);
+		expect(result.data.order.status).toBe('TRIGGERED');
+		expect(result.summary).toContain('TRIGGERED');
+	});
+
+	it('未知のステータスは Zod 検証で弾かれて upstream_error を返す', async () => {
+		setupFetchMock(mockBitbankSuccess(orderResponse({ status: 'UNKNOWN_FUTURE_STATUS' })));
+
+		const { default: getOrder } = await import('../../tools/private/get_order.js');
+		// status を strict enum で受けているため、未知の値は ZodError → catch ブロックで upstream_error にフォールバック
+		const result = await getOrder({ pair: 'btc_jpy', order_id: 2001 });
+
+		assertFail(result);
+		expect(result.meta.errorType).toBe('upstream_error');
+	});
 });
 
 describe('get_order — 非 PrivateApiError の generic catch', () => {

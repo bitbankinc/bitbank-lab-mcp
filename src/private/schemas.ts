@@ -597,7 +597,18 @@ export const GetMarginTradeHistoryOutputSchema = z.union([
 
 // ── Trading: 注文レスポンス共通スキーマ ──
 
-/** bitbank 注文ステータス */
+/**
+ * bitbank 注文ステータス（公式 REST API spec 準拠）
+ *
+ * - INACTIVE: stop / stop_limit のトリガー前
+ * - UNFILLED: 未約定
+ * - PARTIALLY_FILLED: 部分約定
+ * - FULLY_FILLED: 全量約定（終端）
+ * - CANCELED_UNFILLED: 未約定のままキャンセル（終端）
+ * - CANCELED_PARTIALLY_FILLED: 部分約定後にキャンセル（終端）
+ * - REJECTED: システムに拒否された（終端、例: 信用取引のリスク制限超過）
+ * - TRIGGERED: stop がトリガー発動済みで後続注文の処理待ち
+ */
 export const OrderStatusEnum = z.enum([
 	'INACTIVE',
 	'UNFILLED',
@@ -605,6 +616,8 @@ export const OrderStatusEnum = z.enum([
 	'FULLY_FILLED',
 	'CANCELED_UNFILLED',
 	'CANCELED_PARTIALLY_FILLED',
+	'REJECTED',
+	'TRIGGERED',
 ]);
 
 /** 注文タイプ（現物・信用共通） */
@@ -631,7 +644,7 @@ const OrderResponseSchema = z.object({
 	triggered_at: z.union([z.number(), z.string()]).optional().describe('トリガー発動日時（unix ms or ISO 8601）'),
 	trigger_price: z.string().optional().describe('トリガー価格'),
 	canceled_at: z.number().optional().describe('キャンセル日時（unix ms）'),
-	status: z.string().describe('注文ステータス'),
+	status: OrderStatusEnum.describe('注文ステータス'),
 });
 
 export type OrderResponse = z.infer<typeof OrderResponseSchema>;

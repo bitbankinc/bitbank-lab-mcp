@@ -167,6 +167,17 @@ describe('cancel_order', () => {
 		expect(result.summary).toContain('Connection reset');
 	});
 
+	it('REJECTED ステータスの注文もキャンセル結果として受け付ける', async () => {
+		setupFetchMock(mockBitbankSuccess(canceledOrderResponse({ status: 'REJECTED' })));
+		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_id: 2001 });
+
+		const { default: cancelOrder } = await import('../../tools/private/cancel_order.js');
+		const result = await cancelOrder({ pair: 'btc_jpy', order_id: 2001, confirmation_token, token_expires_at });
+
+		assertOk(result);
+		expect(result.data.order.status).toBe('REJECTED');
+	});
+
 	it('キャンセル不可エラー（50010）に適切なメッセージ', async () => {
 		setupFetchMock(mockBitbankError(50010), 400);
 		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_id: 2001 });

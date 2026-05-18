@@ -186,6 +186,29 @@ describe('cancel_orders', () => {
 		expect(result.summary).toContain('Socket hang up');
 	});
 
+	it('REJECTED / TRIGGERED ステータスの注文も結果として受け付ける', async () => {
+		setupFetchMock(
+			mockBitbankSuccess({
+				orders: [
+					canceledOrder(3001, 'buy', { status: 'REJECTED' }),
+					canceledOrder(3002, 'sell', { status: 'TRIGGERED', type: 'stop', trigger_price: '13000000' }),
+				],
+			}),
+		);
+		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_ids: [3001, 3002] });
+
+		const { default: cancelOrders } = await import('../../tools/private/cancel_orders.js');
+		const result = await cancelOrders({
+			pair: 'btc_jpy',
+			order_ids: [3001, 3002],
+			confirmation_token,
+			token_expires_at,
+		});
+
+		assertOk(result);
+		expect(result.data.orders.map((o) => o.status)).toEqual(['REJECTED', 'TRIGGERED']);
+	});
+
 	it('成行注文のキャンセル時に価格が「成行」と表示される', async () => {
 		const marketOrder = canceledOrder(3001, 'buy', { type: 'market', price: undefined });
 		delete (marketOrder as Record<string, unknown>).price;

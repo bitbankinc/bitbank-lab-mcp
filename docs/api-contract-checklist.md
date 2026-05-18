@@ -277,15 +277,15 @@
 | `triggered_at` | number \| undef | ✅（`number \| string` を許容） |
 | `trigger_price` | string \| undef | ✅ |
 | `canceled_at` | number(ms) | ✅ |
-| `status` | enum | 🟡 `z.string()` で受けている（後述） |
+| `status` | enum | ✅ `OrderStatusEnum` で受ける（8 値を網羅） |
 
 **注記**:
-- `OrderStatusEnum` は `src/private/schemas.ts:601` で定義済み（`INACTIVE` / `UNFILLED` / `PARTIALLY_FILLED` / `FULLY_FILLED` / `CANCELED_UNFILLED` / `CANCELED_PARTIALLY_FILLED`）だが、`OrderResponseSchema` 内では `z.string()` を採用。公式 spec の `REJECTED` ステータスが `OrderStatusEnum` に含まれていないことが理由と推測。
-- 公式 spec の `TRIGGERED`（active_orders で記載されるステータス）も `OrderStatusEnum` に含まれていない。
+- `OrderStatusEnum` は `src/private/schemas.ts` で定義済み（`INACTIVE` / `UNFILLED` / `PARTIALLY_FILLED` / `FULLY_FILLED` / `CANCELED_UNFILLED` / `CANCELED_PARTIALLY_FILLED` / `REJECTED` / `TRIGGERED`）で、`OrderResponseSchema.status` も `OrderStatusEnum` を採用。`MarginAccountStatus` と同じ strict enum 方式。
+- `get_my_orders` の `ACTIVE_STATUSES`（`INACTIVE` / `UNFILLED` / `PARTIALLY_FILLED` / `TRIGGERED`）は `OrderStatusEnum` の部分集合として整合。
+- bitbank が将来未知のステータスを追加すると `parse()` が ZodError を投げて `upstream_error` を返す。誤値検出を強める設計（loud failure）として意図的に許容。tests/private/get_order.test.ts に未知ステータスの fail を検証するケースあり。
 - 3 ヶ月以上前の注文は `50009` エラーで取得不可。ドキュコメントあり (`tools/private/get_order.ts:8`)。
 
 **TODO**:
-- `OrderStatusEnum` に `REJECTED` と `TRIGGERED` を追加し、`OrderResponseSchema.status` を enum に締める検討。
 - `OrderResponseSchema` に `position_side` を追加（信用取引時の取得結果対応）。
 
 ### 3.4 POST `/v1/user/spot/order` (注文発注)
@@ -613,7 +613,7 @@
 - [ ] **Public 全取得系で `success:0` fixture テスト追加** — `get_candles` / `get_orderbook` は `data` 構造で間接的に弾いているのみ。fixture でレスポンス封筒 `success:0` を返した時の挙動を検証する必要あり（`get_transactions` は PR #462 で対応済み）。
 - [x] **`get_candles` multi-year の起点を `date` パラメータ基準に修正、または明示的に「current year 起点」と仕様化** — ✅ `date` 指定時は YYYY 部分を起点、未指定時は現在年起点に修正。`tools/get_candles.ts` の `anchorYear` で分岐し、`tests/get_candles.test.ts` の `multi-year: date パラメータを起点に取得する` describe で 1day / 4hour / 1week / 1month / YYYYMMDD 入力 / multi-day 非干渉を検証済み。
 - [x] **`70020`（circuit break 中の market 拒否）のエラーマッピング** — ✅ `create_order` の `codeMessages` に追加済み。`tests/private/create_order.test.ts` の「サーキットブレイク中の成行注文制限（70020）」で検証。
-- [ ] **`OrderStatusEnum` に `REJECTED` / `TRIGGERED` を追加し `OrderResponseSchema.status` を enum 化** — 現状 `z.string()` で受けているため誤値検出が弱い。
+- [x] **`OrderStatusEnum` に `REJECTED` / `TRIGGERED` を追加し `OrderResponseSchema.status` を enum 化** — ✅ `OrderStatusEnum` を 8 値（公式 spec 完全準拠）に拡張し、`OrderResponseSchema.status` を strict enum 化。未知ステータスは `parse()` が ZodError → catch ブロックで `upstream_error` を返す（loud failure）。`OrderItemSchema`（`get_my_orders`）の `status` は ACTIVE_STATUSES フィルタを通った後の出力スキーマのため `z.string()` のまま維持。
 - [ ] **`SpotOrderTypeEnum` に `take_profit` / `stop_loss` 入力サポート可否を再検討** — 公式 spec の `POST /user/spot/order` に列挙されているが実装は 4 種のみ。bitbank が現物で本当に受け付けるか動作確認の上、対応 or 「意図的に未対応」として明文化。
 
 ### Medium（機能拡張・将来の堅牢性）

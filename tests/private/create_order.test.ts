@@ -267,6 +267,43 @@ describe('create_order — エラーコード別ハンドリング', () => {
 		expect(result.summary).toContain('Network failure');
 	});
 
+	it('REJECTED ステータスのレスポンスを受け付ける（信用取引のリスク制限超過など）', async () => {
+		const params = {
+			pair: 'btc_jpy',
+			amount: '0.001',
+			side: 'buy',
+			type: 'limit',
+			price: '14000000',
+			position_side: 'long',
+		};
+		const { confirmation_token, token_expires_at } = validToken(params);
+
+		setupFetchMockSequence([
+			{
+				body: orderSuccessResponse({
+					side: 'buy',
+					type: 'limit',
+					price: '14000000',
+					status: 'REJECTED',
+				}),
+			},
+		]);
+
+		const { default: createOrder } = await import('../../tools/private/create_order.js');
+		const result = await createOrder({
+			...params,
+			side: params.side as 'buy' | 'sell',
+			type: params.type as 'limit',
+			position_side: params.position_side as 'long' | 'short',
+			confirmation_token,
+			token_expires_at,
+		});
+
+		assertOk(result);
+		expect(result.data.order.status).toBe('REJECTED');
+		expect(result.summary).toContain('REJECTED');
+	});
+
 	it('価格上限超過エラー（60006）に適切なメッセージ', async () => {
 		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '999999999' };
 		const { confirmation_token, token_expires_at } = validToken(params);

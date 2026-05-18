@@ -191,6 +191,25 @@ describe('get_orders_info', () => {
 		expect(result.data.orders).toHaveLength(0);
 		expect(result.meta.orderCount).toBe(0);
 	});
+
+	it('REJECTED / TRIGGERED ステータスを受け付けて返す', async () => {
+		setupFetchMock(
+			mockBitbankSuccess({
+				orders: [
+					orderData(4001, 'buy', { status: 'REJECTED' }),
+					orderData(4002, 'sell', { status: 'TRIGGERED', type: 'stop', trigger_price: '13000000' }),
+				],
+			}),
+		);
+
+		const { default: getOrdersInfo } = await import('../../tools/private/get_orders_info.js');
+		const result = await getOrdersInfo({ pair: 'btc_jpy', order_ids: [4001, 4002] });
+
+		assertOk(result);
+		expect(result.data.orders.map((o) => o.status)).toEqual(['REJECTED', 'TRIGGERED']);
+		expect(result.summary).toContain('REJECTED');
+		expect(result.summary).toContain('TRIGGERED');
+	});
 });
 
 describe('get_orders_info — 非 PrivateApiError の generic catch', () => {

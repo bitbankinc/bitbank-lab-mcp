@@ -287,6 +287,37 @@ describe('get_my_orders', () => {
 		expect(result.data.orders[0].status).toBe('TRIGGERED');
 	});
 
+	it('REJECTED は終端状態としてフィルタされる', async () => {
+		setupFetchMock(
+			mockBitbankSuccess({
+				orders: [
+					...rawActiveOrdersResponse.orders,
+					{
+						order_id: 56975061099,
+						pair: 'eth_jpy',
+						side: 'buy',
+						type: 'limit',
+						start_amount: '0.01',
+						remaining_amount: '0.01',
+						executed_amount: '0',
+						price: '400000',
+						average_price: '0',
+						status: 'REJECTED',
+						ordered_at: 1710000600000,
+					},
+				],
+			}),
+		);
+
+		const { default: getMyOrders } = await import('../../tools/private/get_my_orders.js');
+		const result = await getMyOrders({});
+
+		assertOk(result);
+		// REJECTED は終端ステータスなので ACTIVE_STATUSES から除外される
+		expect(result.data.orders).toHaveLength(2);
+		expect(result.data.orders.map((o) => o.order_id)).not.toContain(56975061099);
+	});
+
 	it('FULLY_FILLED は終端状態として除外する', async () => {
 		setupFetchMock(
 			mockBitbankSuccess({
