@@ -177,6 +177,8 @@ export default async function createOrder(
 				70005: '現在、売り注文が制限されています',
 				70006: '現在、この通貨ペアの取引が制限されています',
 				70009: '現在、成行注文が制限されています。指値注文をお試しください',
+				70020:
+					'サーキットブレイク中または板寄せ中のため、成行注文は制限されています。指値注文を使うか、再開後に再試行してください',
 			};
 			const msg = (err.bitbankCode && codeMessages[err.bitbankCode]) || err.message;
 			return CreateOrderOutputSchema.parse(fail(msg, err.errorType));

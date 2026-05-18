@@ -227,6 +227,26 @@ describe('create_order — エラーコード別ハンドリング', () => {
 		expect(result.summary).toContain('成行注文が制限');
 	});
 
+	it('サーキットブレイク中の成行注文制限（70020）に適切なメッセージ', async () => {
+		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'market' };
+		const { confirmation_token, token_expires_at } = validToken(params);
+
+		setupFetchMockSequence([{ body: { success: 0, data: { code: 70020 } }, status: 400 }]);
+
+		const { default: createOrder } = await import('../../tools/private/create_order.js');
+		const result = await createOrder({
+			...params,
+			side: params.side as 'buy' | 'sell',
+			type: params.type as 'market',
+			confirmation_token,
+			token_expires_at,
+		});
+
+		assertFail(result);
+		expect(result.summary).toContain('サーキットブレイク');
+		expect(result.summary).toContain('指値注文');
+	});
+
 	it('非 PrivateApiError の例外で upstream_error を返す', async () => {
 		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
 		const { confirmation_token, token_expires_at } = validToken(params);

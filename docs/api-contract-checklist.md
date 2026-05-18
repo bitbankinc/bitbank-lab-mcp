@@ -314,7 +314,7 @@
 **追加機能（公式 spec の範囲外）:**
 - 2 段階確認（preview → create）。HMAC-SHA256 確認トークンで改ざん検知。
 - 注文監査ログ（チェーンハッシュ付き）。
-- bitbank エラーコード補足メッセージ: 50058〜50078（信用）/ 60001〜60016（数量制限）/ 70004〜70009（取引制限）。
+- bitbank エラーコード補足メッセージ: 50058〜50078（信用）/ 60001〜60016（数量制限）/ 70004〜70020（取引制限）。
 
 **注記**:
 - 公式 spec の `POST /user/spot/order` は注文 `type` として `limit` / `market` / `stop` / `stop_limit` に加え **`take_profit` / `stop_loss` / `losscut`** も列挙している（`losscut` はシステム発生だが `take_profit` / `stop_loss` はユーザー入力可）。実装の `SpotOrderTypeEnum` は前 4 種のみで、`take_profit` / `stop_loss` を意図せず受け付けない。`losscut` は明らかにシステム側のみだが、`take_profit` / `stop_loss` は入力サポート可否を要再検討。
@@ -588,10 +588,9 @@
 | パラメータ不正 | 40000 番台 | デフォルト分類 | 🟡 |
 | データ | 50000 番台 | 50009 / 50010 / 50026 / 50027 / 50058〜50078 個別メッセージ | ✅ |
 | 数値制限 | 60000 番台 | 60001 / 60002 / 60003 / 60004 / 60005 / 60006 / 60011 / 60016 個別メッセージ | ✅ |
-| 取引制限 | 70000 番台 | 70004 / 70005 / 70006 / 70009 個別メッセージ。`70020`（market 制限）はマッピング無し | 🟡 |
+| 取引制限 | 70000 番台 | 70004 / 70005 / 70006 / 70009 / 70020 個別メッセージ | ✅ |
 
 **TODO**:
-- `70020`（circuit break 中の market order 拒否）を `create_order` のエラーマッピングに追加。
 - 30000 / 40000 番台のうち頻出するコード（例: 30001=parameter required, 40001=invalid type）に人間可読メッセージを追加。
 
 ### 4.3 機密情報の取り扱い
@@ -613,7 +612,7 @@
 - [x] **`get_transactions` テスト拡充** — 81 行・6 ケースは薄い。日付フォーマット境界、空配列、API 異常系、`maxAmount` / `maxPrice` フィルタ未検証。✅ PR #462 で 24 ケースに拡充済み。
 - [ ] **Public 全取得系で `success:0` fixture テスト追加** — `get_candles` / `get_orderbook` は `data` 構造で間接的に弾いているのみ。fixture でレスポンス封筒 `success:0` を返した時の挙動を検証する必要あり（`get_transactions` は PR #462 で対応済み）。
 - [x] **`get_candles` multi-year の起点を `date` パラメータ基準に修正、または明示的に「current year 起点」と仕様化** — ✅ `date` 指定時は YYYY 部分を起点、未指定時は現在年起点に修正。`tools/get_candles.ts` の `anchorYear` で分岐し、`tests/get_candles.test.ts` の `multi-year: date パラメータを起点に取得する` describe で 1day / 4hour / 1week / 1month / YYYYMMDD 入力 / multi-day 非干渉を検証済み。
-- [ ] **`70020`（circuit break 中の market 拒否）のエラーマッピング** — `create_order` の `codeMessages` に追加。
+- [x] **`70020`（circuit break 中の market 拒否）のエラーマッピング** — ✅ `create_order` の `codeMessages` に追加済み。`tests/private/create_order.test.ts` の「サーキットブレイク中の成行注文制限（70020）」で検証。
 - [ ] **`OrderStatusEnum` に `REJECTED` / `TRIGGERED` を追加し `OrderResponseSchema.status` を enum 化** — 現状 `z.string()` で受けているため誤値検出が弱い。
 - [ ] **`SpotOrderTypeEnum` に `take_profit` / `stop_loss` 入力サポート可否を再検討** — 公式 spec の `POST /user/spot/order` に列挙されているが実装は 4 種のみ。bitbank が現物で本当に受け付けるか動作確認の上、対応 or 「意図的に未対応」として明文化。
 
