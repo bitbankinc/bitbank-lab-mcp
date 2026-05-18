@@ -337,6 +337,50 @@ export default async function getCandles(
 
 		const rows = ohlcvs.slice(-limitCheck.value) as Array<[unknown, unknown, unknown, unknown, unknown, unknown]>;
 
+		// 各行を fail-fast で検証する。Number() 変換失敗（NaN）は後続の Zod parse で拒否され、
+		// 同じ try ブロックの catch に落ちて 'network' 分類されてしまう。実態は上流データ品質の
+		// 問題なので、ここで明示的に 'upstream' として分類する。
+		for (let i = 0; i < rows.length; i++) {
+			const row = rows[i];
+			if (!Array.isArray(row) || row.length < 6) {
+				return parseAsResult<GetCandlesData, GetCandlesMeta>(
+					GetCandlesOutputSchema,
+					fail(
+						`上流レスポンスに不正な OHLCV 行が含まれています (行 ${i}: 行長 ${Array.isArray(row) ? (row as unknown[]).length : 'non-array'})`,
+						'upstream',
+					),
+				);
+			}
+			const [o, h, l, c, v, ts] = row;
+			const oNum = Number(o);
+			const hNum = Number(h);
+			const lNum = Number(l);
+			const cNum = Number(c);
+			const vNum = Number(v);
+			if (
+				!Number.isFinite(oNum) ||
+				!Number.isFinite(hNum) ||
+				!Number.isFinite(lNum) ||
+				!Number.isFinite(cNum) ||
+				!Number.isFinite(vNum)
+			) {
+				return parseAsResult<GetCandlesData, GetCandlesMeta>(
+					GetCandlesOutputSchema,
+					fail(
+						`上流レスポンスに不正な OHLCV 行が含まれています (行 ${i}: o=${String(o)} h=${String(h)} l=${String(l)} c=${String(c)} v=${String(v)})`,
+						'upstream',
+					),
+				);
+			}
+			const tsNum = Number(ts);
+			if (!Number.isFinite(tsNum) || tsNum <= 0) {
+				return parseAsResult<GetCandlesData, GetCandlesMeta>(
+					GetCandlesOutputSchema,
+					fail(`上流レスポンスに不正な OHLCV 行が含まれています (行 ${i}: ts=${String(ts)})`, 'upstream'),
+				);
+			}
+		}
+
 		// volume (v): base 通貨建ての合算取引量（買い+売り区別なし）
 		// bitbank /candlestick API の OHLCV[4] をそのまま使用
 		const useTz = typeof tz === 'string' && tz.length > 0;
@@ -346,6 +390,7 @@ export default async function getCandles(
 			low: Number(l),
 			close: Number(c),
 			volume: Number(v),
+			timestamp: Number(ts),
 			isoTime: toIsoTime(ts) ?? undefined,
 			...(useTz ? { isoTimeLocal: toIsoWithTz(Number(ts), tz) ?? undefined } : {}),
 		}));

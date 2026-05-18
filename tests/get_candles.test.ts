@@ -461,6 +461,106 @@ describe('getCandles', () => {
 		expect(res.summary).toContain('code: 10000');
 	});
 
+	// ── OHLCV データ品質（不正行検出 + timestamp 保持） ──
+
+	describe('OHLCV データ品質', () => {
+		it('D-1: OHLCV 行に NaN になる値が含まれる場合 upstream として fail する', async () => {
+			const fetchMock = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				statusText: 'OK',
+				json: async () => ({
+					success: 1,
+					data: {
+						candlestick: [
+							{
+								ohlcv: [['foo', '100', '90', '95', '1.5', 1700000000000]],
+							},
+						],
+					},
+				}),
+			});
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			const res = await getCandles('btc_jpy', '1day', '2024', 10);
+			assertFail(res);
+			expect(res.meta?.errorType).toBe('upstream');
+			expect(res.summary).toContain('不正な OHLCV');
+		});
+
+		it('D-2: OHLCV 行長が 6 未満の場合 upstream として fail する', async () => {
+			const fetchMock = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				statusText: 'OK',
+				json: async () => ({
+					success: 1,
+					data: {
+						candlestick: [
+							{
+								ohlcv: [[100, 110, 90, 95, 1.5]],
+							},
+						],
+					},
+				}),
+			});
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			const res = await getCandles('btc_jpy', '1day', '2024', 10);
+			assertFail(res);
+			expect(res.meta?.errorType).toBe('upstream');
+			expect(res.summary).toContain('不正な OHLCV');
+		});
+
+		it('D-3: OHLCV 行の ts が非数値の場合 upstream として fail する', async () => {
+			const fetchMock = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				statusText: 'OK',
+				json: async () => ({
+					success: 1,
+					data: {
+						candlestick: [
+							{
+								ohlcv: [['1000', '1100', '900', '1050', '0.5', 'not-a-number']],
+							},
+						],
+					},
+				}),
+			});
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			const res = await getCandles('btc_jpy', '1day', '2024', 10);
+			assertFail(res);
+			expect(res.meta?.errorType).toBe('upstream');
+			expect(res.summary).toContain('不正な OHLCV');
+		});
+
+		it('E: 正常系では公式 candle の ms timestamp が normalized に保持される', async () => {
+			const ts = 1700000000000;
+			const fetchMock = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				statusText: 'OK',
+				json: async () => ({
+					success: 1,
+					data: {
+						candlestick: [
+							{
+								ohlcv: [['100', '110', '90', '105', '1.5', ts]],
+							},
+						],
+					},
+				}),
+			});
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			const res = await getCandles('btc_jpy', '1day', '2024', 10);
+			assertOk(res);
+			expect(res.data.normalized[0].timestamp).toBe(ts);
+		});
+	});
+
 	it('tz が空文字列の場合 isoTimeLocal を含めないべき', async () => {
 		const fetchMock = vi.fn().mockResolvedValue({
 			ok: true,
