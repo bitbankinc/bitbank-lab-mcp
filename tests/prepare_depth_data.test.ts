@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PrepareDepthDataOutputSchema } from '../src/schemas.js';
 import prepareDepthData, { toolDef } from '../tools/prepare_depth_data.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
 
@@ -281,6 +282,181 @@ describe('prepare_depth_data', () => {
 		expect(res.data.totalBidVolume).toBeCloseTo(1.0);
 	});
 
+	// ── NaN ガード（崩れた string 値の drop） ─────────────
+
+	it('NaN ガード: bids に "abc" 等の崩れた string が混入 → NaN 行が drop され、有効行で累積', async () => {
+		mockedGetDepth.mockResolvedValueOnce(
+			asMockResult(
+				depthOk({
+					bids: [
+						['9900', '0.3'],
+						['abc', '0.5'], // price NaN → drop
+						['9800', 'xyz'], // size NaN → drop
+						['9700', '0.7'],
+					],
+					asks: [
+						['10100', '0.4'],
+						['10200', '0.6'],
+					],
+				}),
+			),
+		);
+		const res = await prepareDepthData({ pair: 'btc_jpy' });
+		assertOk(res);
+
+		// 有効行 (9900, 9700) のみが累積に含まれる
+		expect(res.data.bids).toHaveLength(2);
+		expect(res.data.bids[0]).toEqual([9900, 0.3]);
+		expect(res.data.bids[1]).toEqual([9700, 1.0]); // 累積 0.3 + 0.7
+		expect(res.data.totalBidVolume).toBeCloseTo(1.0);
+
+		// drop 件数が meta.droppedRows に記録される
+		expect(res.meta.droppedRows).toEqual({ bids: 2, asks: 0 });
+		expect(typeof res.meta.warning).toBe('string');
+		expect(res.meta.warning).toContain('2件');
+	});
+
+	it('NaN ガード: 出力に NaN / Infinity / -Infinity が一切混入しない', async () => {
+		mockedGetDepth.mockResolvedValueOnce(
+			asMockResult(
+				depthOk({
+					bids: [
+						['9900', '0.3'],
+						['', '0.5'], // price empty → Number('') = 0 だが Number.isFinite(0) = true なので残る
+						['9800', null], // size null → Number(null) = 0 → 残る
+						['NaN', '0.7'], // Number('NaN') = NaN → drop
+						['9700', undefined], // Number(undefined) = NaN → drop
+					],
+					asks: [
+						['10100', 'Infinity'], // Number('Infinity') = Infinity → drop
+						['10200', '0.6'],
+					],
+				}),
+			),
+		);
+		const res = await prepareDepthData({ pair: 'btc_jpy' });
+		assertOk(res);
+
+		// 再帰的に値を検査
+		const hasNonFinite = (v: unknown): boolean => {
+			if (typeof v === 'number') return !Number.isFinite(v);
+			if (Array.isArray(v)) return v.some(hasNonFinite);
+			if (v && typeof v === 'object') return Object.values(v).some(hasNonFinite);
+			return false;
+		};
+		expect(hasNonFinite(res.data)).toBe(false);
+	});
+
+	it('NaN ガード: drop 件数が summary（content テキスト）に出力される', async () => {
+		mockedGetDepth.mockResolvedValueOnce(
+			asMockResult(
+				depthOk({
+					bids: [
+						['9900', '0.3'],
+						['abc', '0.5'],
+					],
+					asks: [
+						['10100', '0.4'],
+						['xyz', '0.5'],
+						['fail', '0.6'],
+					],
+				}),
+			),
+		);
+		const res = await prepareDepthData({ pair: 'btc_jpy' });
+		assertOk(res);
+		// summary に warning が含まれる（合計 3 件）
+		expect(res.summary).toContain('3件');
+		expect(res.summary).toContain('bids: 1件');
+		expect(res.summary).toContain('asks: 2件');
+		expect(res.meta.droppedRows).toEqual({ bids: 1, asks: 2 });
+	});
+
+	it('NaN ガード: 全件 NaN（片側でも）→ upstream fail', async () => {
+		mockedGetDepth.mockResolvedValueOnce(
+			asMockResult(
+				depthOk({
+					bids: [
+						['abc', 'def'],
+						['NaN', 'NaN'],
+					],
+					asks: [['10100', '1.0']],
+				}),
+			),
+		);
+		const res = await prepareDepthData({ pair: 'btc_jpy' });
+		assertFail(res);
+		expect(res.meta?.errorType).toBe('upstream');
+		expect(res.summary).toContain('数値変換');
+	});
+
+	it('NaN ガード: 全件 NaN（両側）→ upstream fail', async () => {
+		mockedGetDepth.mockResolvedValueOnce(
+			asMockResult(
+				depthOk({
+					bids: [['abc', 'def']],
+					asks: [['xyz', 'foo']],
+				}),
+			),
+		);
+		const res = await prepareDepthData({ pair: 'btc_jpy' });
+		assertFail(res);
+		expect(res.meta?.errorType).toBe('upstream');
+	});
+
+	it('NaN ガード: 正常データでは droppedRows / warning は省略される', async () => {
+		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
+		const res = await prepareDepthData({ pair: 'btc_jpy' });
+		assertOk(res);
+		expect(res.meta.droppedRows).toBeUndefined();
+		expect(res.meta.warning).toBeUndefined();
+		// summary に warning マークが付かない
+		expect(res.summary).not.toContain('⚠️');
+	});
+
+	// ── 出力スキーマ検証 ─────────────────────────────────
+
+	it('スキーマ検証: 正常データの出力が PrepareDepthDataOutputSchema.parse() を通る', async () => {
+		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
+		const res = await prepareDepthData({ pair: 'btc_jpy' });
+		expect(() => PrepareDepthDataOutputSchema.parse(res)).not.toThrow();
+	});
+
+	it('スキーマ検証: drop 発生時の出力が PrepareDepthDataOutputSchema.parse() を通る', async () => {
+		mockedGetDepth.mockResolvedValueOnce(
+			asMockResult(
+				depthOk({
+					bids: [
+						['9900', '0.3'],
+						['abc', '0.5'],
+					],
+					asks: [['10100', '0.4']],
+				}),
+			),
+		);
+		const res = await prepareDepthData({ pair: 'btc_jpy' });
+		expect(() => PrepareDepthDataOutputSchema.parse(res)).not.toThrow();
+	});
+
+	it('スキーマ検証: 空配列 fail の出力が PrepareDepthDataOutputSchema.parse() を通る', async () => {
+		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk({ asks: [], bids: [] })));
+		const res = await prepareDepthData({ pair: 'btc_jpy' });
+		expect(() => PrepareDepthDataOutputSchema.parse(res)).not.toThrow();
+	});
+
+	it('スキーマ検証: 全件 NaN fail の出力が PrepareDepthDataOutputSchema.parse() を通る', async () => {
+		mockedGetDepth.mockResolvedValueOnce(
+			asMockResult(
+				depthOk({
+					bids: [['abc', 'def']],
+					asks: [['xyz', 'foo']],
+				}),
+			),
+		);
+		const res = await prepareDepthData({ pair: 'btc_jpy' });
+		expect(() => PrepareDepthDataOutputSchema.parse(res)).not.toThrow();
+	});
+
 	// ── 入力バリデーション ───────────────────────────────
 
 	it('不正な pair → fail', async () => {
@@ -327,5 +503,29 @@ describe('prepare_depth_data', () => {
 		);
 		const res = (await toolDef.handler({ pair: 'btc_jpy' })) as { ok: boolean };
 		expect(res.ok).toBe(false);
+	});
+
+	it('handler: drop 発生時、content テキストに警告メッセージが含まれる', async () => {
+		mockedGetDepth.mockResolvedValueOnce(
+			asMockResult(
+				depthOk({
+					bids: [
+						['9900', '0.3'],
+						['abc', '0.5'],
+					],
+					asks: [['10100', '0.4']],
+				}),
+			),
+		);
+		const res = (await toolDef.handler({ pair: 'btc_jpy' })) as {
+			content: Array<{ text: string }>;
+			structuredContent: { ok: boolean; meta: { droppedRows?: { bids: number; asks: number }; warning?: string } };
+		};
+		// content テキスト（LLM が読める部分）に drop 件数の警告が出る
+		expect(res.content[0].text).toContain('⚠️');
+		expect(res.content[0].text).toContain('1件');
+		// structuredContent.meta にも残る（プログラム読み取り用）
+		expect(res.structuredContent.meta.droppedRows).toEqual({ bids: 1, asks: 0 });
+		expect(typeof res.structuredContent.meta.warning).toBe('string');
 	});
 });

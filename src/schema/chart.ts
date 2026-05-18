@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { CandleSchema, CandleTypeEnum, NumericSeriesSchema } from './base.js';
+import { BaseMetaSchema, CandleSchema, CandleTypeEnum, NumericSeriesSchema, toolResultSchema } from './base.js';
 
 // ChartIndicators shape
 export const IchimokuSeriesSchema = z.object({
@@ -224,35 +224,39 @@ export const PrepareDepthDataInputSchema = z.object({
 /** [price, cumulativeVolume] のタプル */
 const DepthStepTupleSchema = z.tuple([z.number(), z.number()]);
 
-export const PrepareDepthDataOutputSchema = z.object({
-	ok: z.literal(true),
-	summary: z.string(),
-	data: z.object({
-		bids: z.array(DepthStepTupleSchema),
-		asks: z.array(DepthStepTupleSchema),
-		bestBid: z.number().nullable(),
-		bestAsk: z.number().nullable(),
-		mid: z.number().nullable(),
-		spread: z.number().nullable(),
-		spreadPct: z.number().nullable(),
-		totalBidVolume: z.number(),
-		totalAskVolume: z.number(),
-		band: z.object({
-			pct: z.number(),
-			bidVolume: z.number(),
-			askVolume: z.number(),
-			ratio: z.number().nullable(),
-		}),
-		timestamp: z.number(),
-		isoTime: z.string().nullable(),
+export const PrepareDepthDataDataSchemaOut = z.object({
+	bids: z.array(DepthStepTupleSchema),
+	asks: z.array(DepthStepTupleSchema),
+	bestBid: z.number().nullable(),
+	bestAsk: z.number().nullable(),
+	mid: z.number().nullable(),
+	spread: z.number().nullable(),
+	spreadPct: z.number().nullable(),
+	totalBidVolume: z.number(),
+	totalAskVolume: z.number(),
+	band: z.object({
+		pct: z.number(),
+		bidVolume: z.number(),
+		askVolume: z.number(),
+		ratio: z.number().nullable(),
 	}),
-	meta: z.object({
-		pair: z.string(),
-		fetchedAt: z.string(),
-		levels: z.object({ bids: z.number().int(), asks: z.number().int() }),
-		volumeUnit: z.string(),
-	}),
+	timestamp: z.number(),
+	isoTime: z.string().nullable(),
 });
+
+export const PrepareDepthDataMetaSchemaOut = BaseMetaSchema.extend({
+	levels: z.object({ bids: z.number().int(), asks: z.number().int() }),
+	volumeUnit: z.string(),
+	/** Number() 変換で NaN/非有限になった行数。0 の場合は省略可。 */
+	droppedRows: z.object({ bids: z.number().int(), asks: z.number().int() }).optional(),
+	/** drop が発生した場合の警告メッセージ */
+	warning: z.string().optional(),
+});
+
+export const PrepareDepthDataOutputSchema = toolResultSchema(
+	PrepareDepthDataDataSchemaOut,
+	PrepareDepthDataMetaSchemaOut,
+);
 
 /** render_chart_svg で使用可能なインジケーター */
 export const RenderChartSvgIndicatorEnum = z.enum([

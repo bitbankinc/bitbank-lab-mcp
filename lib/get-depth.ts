@@ -64,8 +64,14 @@ export default async function getDepth(pair: string, { timeoutMs = 3000, maxLeve
 		}
 
 		const d = jsonObj?.data ?? {};
-		const asks = Array.isArray(d.asks) ? d.asks.slice(0, maxLevels) : [];
-		const bids = Array.isArray(d.bids) ? d.bids.slice(0, maxLevels) : [];
+		// 上流レスポンスに bids/asks が含まれない場合は upstream エラーとして明示分類する。
+		// 空配列フォールバックで握りつぶすと downstream（prepare_depth_data, render_depth_svg）で
+		// 「両側が必要」エラーになり、原因の特定が困難になる。get_orderbook と挙動を揃える。
+		if (!Array.isArray(d.asks) || !Array.isArray(d.bids)) {
+			return GetDepthOutputSchema.parse(fail('上流レスポンスに bids/asks が含まれていません', 'upstream'));
+		}
+		const asks = (d.asks as Array<[unknown, unknown]>).slice(0, maxLevels);
+		const bids = (d.bids as Array<[unknown, unknown]>).slice(0, maxLevels);
 
 		// 簡易サマリ（最良気配と件数）
 		const bestAsk = asks[0]?.[0] ?? null;

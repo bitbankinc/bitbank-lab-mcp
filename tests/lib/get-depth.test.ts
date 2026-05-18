@@ -155,6 +155,50 @@ describe('getDepth', () => {
 		expect(res.meta?.errorType).toBe('upstream');
 	});
 
+	it('API異常系: success:1 だが asks フィールドが欠損 → upstream fail', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ success: 1, data: { bids: [['100', '1']], timestamp: 1_700_000_000_000 } }), {
+				status: 200,
+				headers: { 'Content-Type': 'application/json' },
+			}),
+		);
+
+		const res = await getDepth('btc_jpy');
+		assertFail(res);
+		expect(res.meta?.errorType).toBe('upstream');
+		expect(res.summary).toContain('bids/asks');
+	});
+
+	it('API異常系: success:1 だが bids が配列でない（オブジェクト）→ upstream fail', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					success: 1,
+					data: { asks: [['100', '1']], bids: { broken: true }, timestamp: 1_700_000_000_000 },
+				}),
+				{ status: 200, headers: { 'Content-Type': 'application/json' } },
+			),
+		);
+
+		const res = await getDepth('btc_jpy');
+		assertFail(res);
+		expect(res.meta?.errorType).toBe('upstream');
+		expect(res.summary).toContain('bids/asks');
+	});
+
+	it('API異常系: success:1 だが asks/bids 両方欠損 → upstream fail', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ success: 1, data: { timestamp: 1_700_000_000_000 } }), {
+				status: 200,
+				headers: { 'Content-Type': 'application/json' },
+			}),
+		);
+
+		const res = await getDepth('btc_jpy');
+		assertFail(res);
+		expect(res.meta?.errorType).toBe('upstream');
+	});
+
 	it('API エラー（HTTP 500）で fail を返す', async () => {
 		globalThis.fetch = vi
 			.fn()

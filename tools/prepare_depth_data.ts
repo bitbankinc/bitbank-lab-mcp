@@ -12,10 +12,10 @@
 import { toIsoTime } from '../lib/datetime.js';
 import { buildCumulativeSteps } from '../lib/depth-analysis.js';
 import getDepth from '../lib/get-depth.js';
-import { fail, failFromError, failFromValidation, ok, toStructured } from '../lib/result.js';
+import { fail, failFromError, failFromValidation, ok, parseAsResult, toStructured } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import type { FailResult, OkResult, Pair } from '../src/schemas.js';
-import { PrepareDepthDataInputSchema } from '../src/schemas.js';
+import { PrepareDepthDataInputSchema, PrepareDepthDataOutputSchema } from '../src/schemas.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
 
 /** 価格を「JPY ペアなら整数、それ以外は小数2桁」で丸める */
@@ -26,6 +26,32 @@ function roundPrice(p: number, jpyPair: boolean): number {
 /** Volume は固定小数桁に丸める */
 function roundVolume(v: number): number {
 	return Number(v.toFixed(6));
+}
+
+/**
+ * raw tuple 配列を Number() 変換しつつ、NaN/非有限値の行を除外する。
+ *
+ * bitbank /depth API は値を string で返すため Number() に通す必要があるが、
+ * 上流が壊れた値（"abc" 等）を返した場合は NaN が累積計算・band 集計・bestBid/bestAsk
+ * まで伝播し、最終的に JSON wire 経由で null 化される。
+ * 早期に drop することで、structuredContent.data に NaN/Infinity を一切混入させない。
+ */
+function toFiniteTuples(raw: Array<[unknown, unknown]>): {
+	rows: Array<[number, number]>;
+	dropped: number;
+} {
+	let dropped = 0;
+	const rows: Array<[number, number]> = [];
+	for (const [p, s] of raw) {
+		const pn = Number(p);
+		const sn = Number(s);
+		if (Number.isFinite(pn) && Number.isFinite(sn)) {
+			rows.push([pn, sn]);
+		} else {
+			dropped++;
+		}
+	}
+	return { rows, dropped };
 }
 
 interface PrepareDepthDataResult {
@@ -64,6 +90,10 @@ interface PrepareDepthDataMeta {
 	levels: { bids: number; asks: number };
 	/** 出来高の単位（ペアのベース通貨。例: btc_jpy → "BTC"） */
 	volumeUnit: string;
+	/** Number() 変換で NaN/非有限になった行数。0 件の場合は省略。 */
+	droppedRows?: { bids: number; asks: number };
+	/** drop が発生した場合の警告メッセージ */
+	warning?: string;
 }
 
 export interface PrepareDepthDataParams {
@@ -89,15 +119,21 @@ export default async function prepareDepthData(
 		const depth = await getDepth(chk.pair, { maxLevels });
 		if (!depth.ok) return fail(depth.summary.replace(/^Error: /, ''), depth.meta?.errorType || 'internal');
 
-		const asksRaw: Array<[string, string]> = depth.data.asks || [];
-		const bidsRaw: Array<[string, string]> = depth.data.bids || [];
+		const asksRaw: Array<[unknown, unknown]> = depth.data.asks || [];
+		const bidsRaw: Array<[unknown, unknown]> = depth.data.bids || [];
 
 		if (!asksRaw.length || !bidsRaw.length) {
 			return fail('板データが不足しています（asks/bids の両方が必要です）', 'upstream');
 		}
 
-		const bidsNum = bidsRaw.map(([p, s]) => [Number(p), Number(s)] as [number, number]);
-		const asksNum = asksRaw.map(([p, s]) => [Number(p), Number(s)] as [number, number]);
+		// NaN/非有限を drop しつつ Number() 変換する。
+		// 全件 drop された場合は upstream エラーとして倒す。
+		const { rows: bidsNum, dropped: bidsDropped } = toFiniteTuples(bidsRaw);
+		const { rows: asksNum, dropped: asksDropped } = toFiniteTuples(asksRaw);
+
+		if (!bidsNum.length || !asksNum.length) {
+			return fail('板データの数値変換に失敗しました（有効な bids/asks が存在しません）', 'upstream');
+		}
 
 		const bidStepsRaw = buildCumulativeSteps(bidsNum, 'bid');
 		const askStepsRaw = buildCumulativeSteps(asksNum, 'ask');
@@ -148,15 +184,27 @@ export default async function prepareDepthData(
 		};
 
 		const volumeUnit = chk.pair.split('_')[0].toUpperCase();
+		const totalDropped = bidsDropped + asksDropped;
+		const warning =
+			totalDropped > 0
+				? `⚠️ 上流レスポンスから ${totalDropped}件 の不正な板レベルを除外しました（bids: ${bidsDropped}件 / asks: ${asksDropped}件、price/size が数値変換不能）`
+				: undefined;
+
 		const meta: PrepareDepthDataMeta = {
 			...createMeta(chk.pair),
 			levels: { bids: bidSteps.length, asks: askSteps.length },
 			volumeUnit,
+			...(totalDropped > 0 ? { droppedRows: { bids: bidsDropped, asks: asksDropped } } : {}),
+			...(warning ? { warning } : {}),
 		} as PrepareDepthDataMeta;
 
 		const ratioText = bandRatio == null ? 'n/a' : bandRatio.toFixed(2);
-		const summary = `${chk.pair} depth data (bids: ${bidSteps.length}, asks: ${askSteps.length}, mid: ${data.mid ?? 'n/a'}, ±${(bandPct * 100).toFixed(2)}% ratio: ${ratioText})`;
-		return ok<PrepareDepthDataResult, PrepareDepthDataMeta>(summary, data, meta);
+		const baseSummary = `${chk.pair} depth data (bids: ${bidSteps.length}, asks: ${askSteps.length}, mid: ${data.mid ?? 'n/a'}, ±${(bandPct * 100).toFixed(2)}% ratio: ${ratioText})`;
+		const summary = warning ? `${baseSummary}\n${warning}` : baseSummary;
+		return parseAsResult<PrepareDepthDataResult, PrepareDepthDataMeta>(
+			PrepareDepthDataOutputSchema,
+			ok(summary, data, meta),
+		);
 	} catch (err: unknown) {
 		return failFromError(err, { defaultMessage: '板深度データの整形に失敗しました' });
 	}
