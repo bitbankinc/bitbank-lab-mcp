@@ -101,7 +101,9 @@ export const toolDef: ToolDefinition = {
 						? Number((((lastN - openN) / openN) * 100).toFixed(2))
 						: null;
 			const volN = toNum(it?.vol);
-			const volumeInJPY = volN != null && lastN != null ? volN * lastN : null;
+			// 有限数同士の積でも 1e308 * 1e308 のように Infinity へオーバーフローし得るため、結果側も明示的に弾く。
+			const product = volN != null && lastN != null ? volN * lastN : null;
+			const volumeInJPY = product != null && Number.isFinite(product) ? product : null;
 			return { ...it, lastN, openN, highN, lowN, buyN, sellN, changeN, volN, volumeInJPY };
 		});
 

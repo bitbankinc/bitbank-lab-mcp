@@ -395,6 +395,30 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 		expect(() => GetTickersJpyHandlerOutputSchema.parse(sc)).not.toThrow();
 	});
 
+	it('有限数同士の積がオーバーフローしても volumeInJPY は null になる', async () => {
+		mockedGetTickersJpy.mockResolvedValueOnce(
+			makeMockedRes([
+				{
+					pair: 'huge_jpy',
+					last: '1e308',
+					open: '1e308',
+					high: '1e308',
+					low: '1e308',
+					buy: '1e308',
+					sell: '1e308',
+					vol: '1e308',
+				},
+			]) as never,
+		);
+		const res = await toolDef.handler({ view: 'items' });
+		const sc = (res as { structuredContent: { data: { items: Array<Record<string, unknown>> } } }).structuredContent;
+		const item = sc.data.items[0];
+		// 1e308 * 1e308 = Infinity → null に正規化されている
+		expect(item.lastN).toBe(1e308);
+		expect(item.volN).toBe(1e308);
+		expect(item.volumeInJPY).toBeNull();
+	});
+
 	it('structuredContent に NaN / Infinity が混入しない', async () => {
 		mockedGetTickersJpy.mockResolvedValueOnce(
 			makeMockedRes([
