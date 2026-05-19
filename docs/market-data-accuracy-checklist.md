@@ -415,4 +415,4 @@ fixture ベースで検証する。
 | #496 | §9（総合シグナルとデータ品質）+ §パターン検出 を契約として追加 | ✅ Merged |
 | #497 | `analyze_market_signal` 上流 warning 集約 + confidence 降格 | ✅ Merged |
 | #498 | パターン検出の横断不変条件テスト追加 | ✅ Merged |
-| #501 | §9.2–9.4 を実装済みに同期 + invariants テスト修正 | ✅ Merged |
+| #501 | §9.2–9.4 を実装済みに同期 + invariants テスト修正 | 🔄 Open |
