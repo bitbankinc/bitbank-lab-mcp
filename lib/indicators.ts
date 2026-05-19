@@ -585,6 +585,7 @@ export function trueRange(highs: number[], lows: number[], closes: number[]): nu
  * @returns ATR 配列（NaN 埋め、先頭 period 個は NaN）
  */
 export function atr(highs: number[], lows: number[], closes: number[], period: number = 14): number[] {
+	// SMA-ATR（population 窓の単純平均）。`get_volatility_metrics` と同系。Wilder 版が必要なら別関数で追加。
 	const tr = trueRange(highs, lows, closes);
 	const n = tr.length;
 	const result: number[] = nanArray(n);
