@@ -510,7 +510,10 @@ describe('patterns invariants — 横断契約', () => {
 				includeCompleted: true,
 			});
 			assertOk(res);
-			const completed = res.data.patterns.filter((p) => p.status === 'completed');
+			// baseline: 対象パターンが少なくとも 1 件検出されている（vacuous pass 防止）
+			const targets = res.data.patterns.filter((p) => p.type === 'double_bottom');
+			expect(targets.length).toBeGreaterThan(0);
+			const completed = targets.filter((p) => p.status === 'completed');
 			expect(completed).toHaveLength(0);
 		});
 
@@ -523,7 +526,10 @@ describe('patterns invariants — 横断契約', () => {
 				includeCompleted: true,
 			});
 			assertOk(res);
-			const completed = res.data.patterns.filter((p) => p.status === 'completed');
+			// baseline: 対象パターンが少なくとも 1 件検出されている（vacuous pass 防止）
+			const targets = res.data.patterns.filter((p) => p.type === 'rising_wedge');
+			expect(targets.length).toBeGreaterThan(0);
+			const completed = targets.filter((p) => p.status === 'completed');
 			expect(completed).toHaveLength(0);
 		});
 	});
@@ -542,11 +548,12 @@ describe('patterns invariants — 横断契約', () => {
 				includeCompleted: true,
 			});
 			assertOk(res);
-			const triangleCompleted = res.data.patterns.filter(
-				(p) =>
-					(p.type === 'triangle_symmetrical' || p.type === 'triangle_ascending' || p.type === 'triangle_descending') &&
-					p.status === 'completed',
+			// baseline: 三角形パターンが少なくとも 1 件検出されている（vacuous pass 防止）
+			const triangles = res.data.patterns.filter(
+				(p) => p.type === 'triangle_symmetrical' || p.type === 'triangle_ascending' || p.type === 'triangle_descending',
 			);
+			expect(triangles.length).toBeGreaterThan(0);
+			const triangleCompleted = triangles.filter((p) => p.status === 'completed');
 			expect(triangleCompleted).toHaveLength(0);
 		});
 
@@ -559,9 +566,10 @@ describe('patterns invariants — 横断契約', () => {
 				includeCompleted: true,
 			});
 			assertOk(res);
-			const doublesCompleted = res.data.patterns.filter(
-				(p) => (p.type === 'double_top' || p.type === 'double_bottom') && p.status === 'completed',
-			);
+			// baseline: doubles 系パターンが少なくとも 1 件検出されている（vacuous pass 防止）
+			const doubles = res.data.patterns.filter((p) => p.type === 'double_top' || p.type === 'double_bottom');
+			expect(doubles.length).toBeGreaterThan(0);
+			const doublesCompleted = doubles.filter((p) => p.status === 'completed');
 			expect(doublesCompleted).toHaveLength(0);
 		});
 	});
@@ -572,6 +580,21 @@ describe('patterns invariants — 横断契約', () => {
 	describe('includeForming=false で forming / near_completion 除外', () => {
 		it('forming fixture + includeForming=false → forming / near_completion が結果から除外される', async () => {
 			const candles = buildFormingRisingWedgeCandles();
+
+			// baseline: includeForming=true なら同じ fixture から forming/near_completion が出る
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
+			const baseline = await detectPatterns('btc_jpy', '1day', candles.length, {
+				patterns: ['rising_wedge'],
+				includeForming: true,
+				includeCompleted: true,
+			});
+			assertOk(baseline);
+			const baselineFormingLike = baseline.data.patterns.filter(
+				(p) => p.status === 'forming' || p.status === 'near_completion',
+			);
+			expect(baselineFormingLike.length).toBeGreaterThan(0);
+
+			// includeForming=false → 上記が除外される
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
 			const res = await detectPatterns('btc_jpy', '1day', candles.length, {
 				patterns: ['rising_wedge'],
@@ -598,6 +621,21 @@ describe('patterns invariants — 横断契約', () => {
 
 		it('forming fixture（symmetrical triangle）+ includeForming=false → forming / near_completion が結果から除外される', async () => {
 			const candles = buildFormingSymmetricalTriangleCandles();
+
+			// baseline: includeForming=true なら同じ fixture から forming/near_completion が出る
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
+			const baseline = await detectPatterns('btc_jpy', '1day', candles.length, {
+				patterns: ['triangle_symmetrical'],
+				includeForming: true,
+				includeCompleted: true,
+			});
+			assertOk(baseline);
+			const baselineFormingLike = baseline.data.patterns.filter(
+				(p) => p.status === 'forming' || p.status === 'near_completion',
+			);
+			expect(baselineFormingLike.length).toBeGreaterThan(0);
+
+			// includeForming=false → 上記が除外される
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
 			const res = await detectPatterns('btc_jpy', '1day', candles.length, {
 				patterns: ['triangle_symmetrical'],
@@ -617,6 +655,7 @@ describe('patterns invariants — 横断契約', () => {
 	// ──────────────────────────────────────────────
 	describe('allow_partial_patterns=false で uses_partial_candle スキップ', () => {
 		it('最新ローソク足が「今日」かつ allow_partial_patterns=false → uses_partial_candle=true なパターンなし', async () => {
+			// 最新ローソク足は「今日」(=未確定 partial)。中身は body=0.1/range=20 で doji 検出対象。
 			const candles: Candle[] = [
 				mc(2, 100, 106, 94, 103),
 				mc(1, 103, 108, 95, 105),
@@ -629,10 +668,26 @@ describe('patterns invariants — 横断契約', () => {
 					volume: 100,
 				},
 			];
+
+			// baseline: allow_partial=true なら uses_partial_candle=true なパターン (doji/forming) が出る
+			mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
+			const baseline = await analyzeCandlePatterns({
+				window_days: 3,
+				focus_last_n: 3,
+				patterns: ['doji'],
+				allow_partial_patterns: true,
+				history_lookback_days: 30,
+			});
+			assertOk(baseline);
+			const baselinePartials = baseline.data.recent_patterns.filter((p) => p.uses_partial_candle);
+			expect(baselinePartials.length).toBeGreaterThan(0);
+
+			// allow_partial=false → 上記の partial パターンがスキップされる
 			mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
 			const res = await analyzeCandlePatterns({
 				window_days: 3,
 				focus_last_n: 3,
+				patterns: ['doji'],
 				allow_partial_patterns: false,
 				history_lookback_days: 30,
 			});
