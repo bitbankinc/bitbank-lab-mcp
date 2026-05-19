@@ -2,7 +2,7 @@ import type { z } from 'zod';
 import { toNum } from '../lib/conversions.js';
 import { nowIso } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
-import { trueRange } from '../lib/indicators.js';
+import { atr } from '../lib/indicators.js';
 import { slidingMean, slidingStddev, stddev } from '../lib/math.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair, validateLimit } from '../lib/validate.js';
@@ -194,11 +194,6 @@ export default async function getVolatilityMetrics(
 		const gkSeries = garmanKlassComponents(open, high, low, close);
 		const rsSeries = rogersSatchellComponents(open, high, low, close);
 
-		// True Range（lib/indicators.ts に委譲）
-		const trRaw = trueRange(high, low, close);
-		// trRaw[0] は NaN なので、互換性のため先頭を h-l で埋める
-		const trSeries = trRaw.map((v, i) => (Number.isFinite(v) ? v : Math.max(0, high[i] - low[i])));
-
 		// Aggregates over whole sample (use returns length for rv)
 		const rvStd = stddev(ret);
 		// Parkinson/GK/RS are per-candle estimators (not return-based), so use full series
@@ -211,8 +206,8 @@ export default async function getVolatilityMetrics(
 
 		// ATR aggregate: use first window (default 14) SMA on TR, take last
 		const primaryWindow = Math.max(2, windows?.[0] || 14);
-		const atrSeries = slidingMean(trSeries, primaryWindow);
-		const atrAgg = atrSeries.length > 0 ? atrSeries[atrSeries.length - 1] : 0;
+		const atrAggLatest = atr(high, low, close, primaryWindow).at(-1);
+		const atrAgg = Number.isFinite(atrAggLatest) ? (atrAggLatest as number) : 0;
 
 		const annFactor = withAnn ? Math.sqrt(periodsPerYear(type)) : 1;
 		const rvStdAnn = withAnn ? rvStd * annFactor : undefined;
@@ -236,16 +231,16 @@ export default async function getVolatilityMetrics(
 			const pkRoll = slidingMean(pkSeries, w);
 			const gkRoll = slidingMean(gkSeries, w);
 			const rsRoll = slidingMean(rsSeries, w);
-			const atrRoll = slidingMean(trSeries, w);
+			const atrRollLatest = atr(high, low, close, w).at(-1);
 			const p = pkRoll.length ? componentMeanToVol(pkRoll.at(-1) as number, 'parkinson') : undefined;
 			const gk = gkRoll.length ? componentMeanToVol(gkRoll.at(-1) as number, 'garmanKlass') : undefined;
 			const rs = rsRoll.length ? componentMeanToVol(rsRoll.at(-1) as number, 'rogersSatchell') : undefined;
-			const atr = atrRoll.length ? (atrRoll.at(-1) as number) : undefined;
+			const atrValue = Number.isFinite(atrRollLatest) ? (atrRollLatest as number) : undefined;
 			rollingOut.push({
 				window: w,
 				rv_std: rvStdLatest,
 				rv_std_ann: rvStdAnnLatest,
-				atr,
+				atr: atrValue,
 				parkinson: p,
 				garmanKlass: gk,
 				rogersSatchell: rs,

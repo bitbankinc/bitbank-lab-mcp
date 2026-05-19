@@ -226,6 +226,33 @@ describe('get_volatility_metrics', () => {
 			assertOk(res);
 			expect(res.data.aggregates.atr).toBeCloseTo(0, 2);
 		});
+
+		// 数値契約: aggregate ATR は「直近 period 本の True Range の SMA」と一致する。
+		// lib/indicators.ts atr() への統合後も同じ数式であることを保証する回帰テスト。
+		it('aggregate ATR は手計算した直近 period 本の TR SMA と一致する', async () => {
+			const rows = makeOhlcvRows(30);
+			mockFetchWithOhlcv(rows);
+			const res = await getVolatilityMetrics('btc_jpy', '1day', 30, [14]);
+			assertOk(res);
+
+			// rows: [open, high, low, close, volume, ts]（古い順）
+			const highs = rows.map((r) => r[1]);
+			const lows = rows.map((r) => r[2]);
+			const closes = rows.map((r) => r[3]);
+			const period = 14;
+			const n = highs.length;
+
+			// 手計算: TR[i] = max(h-l, |h-prevClose|, |l-prevClose|) for i >= 1
+			// 直近 period 本（index n-period..n-1）を平均
+			let sum = 0;
+			for (let i = n - period; i < n; i++) {
+				const tr = Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1]));
+				sum += tr;
+			}
+			const expectedAtr = sum / period;
+
+			expect(res.data.aggregates.atr).toBeCloseTo(expectedAtr, 6);
+		});
 	});
 
 	// === 7. Tags =========================================================
