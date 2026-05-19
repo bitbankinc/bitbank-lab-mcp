@@ -508,6 +508,43 @@ describe('bollingerBands', () => {
 		expect(upper[6]).toBeCloseTo(6 + 2 * std, 10);
 		expect(lower[6]).toBeCloseTo(6 - 2 * std, 10);
 	});
+
+	// 参照実装: pandas-ta.bbands(length=20, std=2)（population σ、除数 N。pandas の ddof=1 ではない）
+	// 入力配列: EMA golden と同一の 40 本合成終値（前半上昇 → 後半下降）。
+	// 中央線 = SMA(20)、帯 = mean ± 2 * σ。
+	// 参照: docs/market-data-accuracy-checklist.md §8.3
+	const BB_GOLDEN_CLOSES = [
+		100.0, 101.5, 102.3, 103.1, 102.8, 104.2, 105.0, 104.6, 103.9, 105.5, 106.8, 107.2, 106.5, 108.0, 109.3, 108.7,
+		110.1, 111.4, 110.8, 112.2, 113.5, 112.9, 114.3, 115.6, 114.0, 113.2, 112.5, 111.8, 110.5, 109.7, 108.4, 107.6,
+		106.3, 105.5, 104.2, 103.4, 102.1, 101.3, 100.0, 99.2,
+	];
+
+	it('golden: Bollinger(20, 2) 数値固定（pandas-ta.bbands(length=20, std=2) 参照、ε=1e-4）', () => {
+		const { upper, middle, lower } = bollingerBands(BB_GOLDEN_CLOSES, 20, 2);
+		expect(upper).toHaveLength(40);
+		expect(middle).toHaveLength(40);
+		expect(lower).toHaveLength(40);
+		// 先頭 19 個（period-1 個）は upper/middle/lower すべて NaN
+		for (let i = 0; i < 19; i++) {
+			expect(upper[i]).toBeNaN();
+			expect(middle[i]).toBeNaN();
+			expect(lower[i]).toBeNaN();
+		}
+		// pandas-ta 出力値（population σ、ddof=0）
+		expect(middle[19]).toBeCloseTo(106.195, 4);
+		expect(upper[19]).toBeCloseTo(112.9869, 4);
+		expect(lower[19]).toBeCloseTo(99.4031, 4);
+		expect(middle[25]).toBeCloseTo(109.675, 4);
+		expect(upper[25]).toBeCloseTo(116.7491, 4);
+		expect(lower[25]).toBeCloseTo(102.6009, 4);
+		expect(middle[39]).toBeCloseTo(108.3, 4);
+		expect(upper[39]).toBeCloseTo(118.5272, 4);
+		expect(lower[39]).toBeCloseTo(98.0728, 4);
+		// 恒等式: 全有限 index で upper - middle === middle - lower === stdDev * σ
+		for (let i = 19; i < 40; i++) {
+			expect(upper[i] - middle[i]).toBeCloseTo(middle[i] - lower[i], 10);
+		}
+	});
 });
 
 // --- MACD ---
@@ -927,6 +964,69 @@ describe('stochastic', () => {
 		}
 		for (let i = 17; i < n; i++) {
 			expect(result.dSeries[i]).toBeCloseTo(expected, 10);
+		}
+	});
+
+	// 参照実装: lib/indicators.ts::stochastic()（自己整合性確認後に固定）
+	// fixture: 40 本合成 OHLC（4 桁丸めで literal 化）
+	//   close[i] = 100 + i*0.8 + sin(i*0.4)*2
+	//   high[i]  = close[i] + 1.5
+	//   low[i]   = close[i] - 1.5
+	// 期待値は %K = (close - lowestLow) / (highestHigh - lowestLow) * 100、
+	// %D = SMA(%K, 3) の定義に従う（実装値で固定 → リグレッション検出）。
+	// 参照: docs/market-data-accuracy-checklist.md §8.4
+	const STOCH_GOLDEN_CLOSES = [
+		100, 101.5788, 103.0347, 104.2641, 105.1991, 105.8186, 106.1509, 106.27, 106.2833, 106.315, 106.4864, 106.8968,
+		107.6077, 108.6331, 109.9375, 111.4412, 113.0331, 114.5882, 115.9873, 117.1358, 117.9787, 118.5092, 118.7698,
+		118.8458, 118.8513, 118.912, 119.1443, 119.6381, 120.4416, 121.5543, 122.9269, 124.4688, 126.063, 127.5841,
+		128.9183, 129.9812, 130.7313, 131.1765, 131.3728, 131.4155,
+	];
+	const STOCH_GOLDEN_HIGHS = [
+		101.5, 103.0788, 104.5347, 105.7641, 106.6991, 107.3186, 107.6509, 107.77, 107.7833, 107.815, 107.9864, 108.3968,
+		109.1077, 110.1331, 111.4375, 112.9412, 114.5331, 116.0882, 117.4873, 118.6358, 119.4787, 120.0092, 120.2698,
+		120.3458, 120.3513, 120.412, 120.6443, 121.1381, 121.9416, 123.0543, 124.4269, 125.9688, 127.563, 129.0841,
+		130.4183, 131.4812, 132.2313, 132.6765, 132.8728, 132.9155,
+	];
+	const STOCH_GOLDEN_LOWS = [
+		98.5, 100.0788, 101.5347, 102.7641, 103.6991, 104.3186, 104.6509, 104.77, 104.7833, 104.815, 104.9864, 105.3968,
+		106.1077, 107.1331, 108.4375, 109.9412, 111.5331, 113.0882, 114.4873, 115.6358, 116.4787, 117.0092, 117.2698,
+		117.3458, 117.3513, 117.412, 117.6443, 118.1381, 118.9416, 120.0543, 121.4269, 122.9688, 124.563, 126.0841,
+		127.4183, 128.4812, 129.2313, 129.6765, 129.8728, 129.9155,
+	];
+
+	it('golden: Stochastic(14, 3, 3) 数値固定（高/低/終値 40 本合成、ε=1e-4）', () => {
+		const { kSeries, dSeries } = stochastic(STOCH_GOLDEN_HIGHS, STOCH_GOLDEN_LOWS, STOCH_GOLDEN_CLOSES, 14, 3, 3);
+		expect(kSeries).toHaveLength(40);
+		expect(dSeries).toHaveLength(40);
+		// kSeries の有効先頭 index は kPeriod-1 + smoothK-1 = 13 + 2 = 15
+		const kFirstFinite = kSeries.findIndex((v) => Number.isFinite(v));
+		expect(kFirstFinite).toBe(15);
+		for (let i = 0; i < 15; i++) {
+			expect(kSeries[i]).toBeNaN();
+		}
+		// dSeries の有効先頭 index は kFirstFinite + smoothD-1 = 15 + 2 = 17
+		const dFirstFinite = dSeries.findIndex((v) => Number.isFinite(v));
+		expect(dFirstFinite).toBe(17);
+		for (let i = 0; i < 17; i++) {
+			expect(dSeries[i]).toBeNaN();
+		}
+		// 実装値（自己整合性確認済み）
+		expect(kSeries[20]).toBeCloseTo(89.2285, 4);
+		expect(dSeries[20]).toBeCloseTo(88.5798, 4);
+		expect(kSeries[25]).toBeCloseTo(89.9057, 4);
+		expect(dSeries[25]).toBeCloseTo(90.0991, 4);
+		expect(kSeries[30]).toBeCloseTo(87.084, 4);
+		expect(dSeries[30]).toBeCloseTo(87.6123, 4);
+		expect(kSeries[39]).toBeCloseTo(90.2293, 4);
+		expect(dSeries[39]).toBeCloseTo(90.0779, 4);
+		// 範囲: 全有限値が 0..100 に収まる
+		for (let i = kFirstFinite; i < 40; i++) {
+			expect(kSeries[i]).toBeGreaterThanOrEqual(0);
+			expect(kSeries[i]).toBeLessThanOrEqual(100);
+		}
+		for (let i = dFirstFinite; i < 40; i++) {
+			expect(dSeries[i]).toBeGreaterThanOrEqual(0);
+			expect(dSeries[i]).toBeLessThanOrEqual(100);
 		}
 	});
 });
