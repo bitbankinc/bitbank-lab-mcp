@@ -91,7 +91,12 @@ function daysAgoIso(n: number): string {
 }
 
 function todayIso(): string {
-	return dayjs().startOf('day').toISOString();
+	// tool 側は today('YYYY-MM-DD')（ローカル TZ）と isoTime.split('T')[0] を比較する
+	// （analyze_candle_patterns.ts:663-665）。dayjs().startOf('day').toISOString() は
+	// 非 UTC 環境でローカル深夜を UTC に変換すると前日 15:00Z 等になり、split('T')[0]
+	// が前日日付になって lastCandleTime !== todayStr → isLastPartial=false で
+	// partial 検出が外れる。日付部分が必ず一致するようローカル日付 + Z で組み立てる。
+	return `${dayjs().format('YYYY-MM-DD')}T00:00:00.000Z`;
 }
 
 function mc(daysAgo: number, o: number, h: number, l: number, c: number, v = 100): Candle {
