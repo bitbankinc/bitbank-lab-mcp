@@ -6,8 +6,6 @@
  * `analyze_candle_patterns` と `detect_patterns` 系列について、
  * 全パターンタイプ横断で守られるべき不変条件を fixture ベースで検証する。
  *
- * 参照契約: docs/market-data-accuracy-checklist.md §10「パターン検出」
- *
  * カバーする 7 つの不変条件:
  *   1. barIndex 整合
  *   2. 決定性（同一入力に対する deep equal）

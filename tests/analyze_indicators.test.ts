@@ -720,7 +720,6 @@ describe('padSeriesLengths: createChartData 経由で検証', () => {
 	// 契約: 戻り値の全系列の長さが normalized (chart.candles) と一致する。
 	// padSeriesLengths が対象外とする macd_series も、計算時点で normalized から
 	// 直接生成されるため一致する。落とすと描画層で index ずれが起きる。
-	// 参照: docs/market-data-accuracy-checklist.md §8.5, §8.12
 	it('normalized.length と chart.indicators の各系列長が一致する（macd_series 含む）', async () => {
 		// 60 行: SMA_25/EMA_26 等の主要指標が有効になる十分なバー数
 		const rows = makeOhlcvRows(60);
