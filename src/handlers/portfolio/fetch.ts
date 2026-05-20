@@ -142,19 +142,28 @@ export async function paginateTrades(
  * 混入し、calcMarginPnl が現物の fee_occurred_amount_quote まで margin_fee として控除して
  * account_pnl を過小表示してしまう。docs では position_side が「信用取引の時のみ」と
  * 明記されているため、position_side != null で margin 約定のみに絞る防御フィルタを掛ける。
+ *
+ * 戻り値の `truncated` は MAX_PAGES 到達 / lastTs 欠損などの「データ不完全」全般のシグナル
+ * （現状の意味を維持）。`fetchFailed` は API エラーで途中終了した場合のみ true で、
+ * 「信用未使用 (trades=[], 完了)」と「fetch 失敗で取得不能 (trades=[], 失敗)」を上位で
+ * 区別できるようにするための独立フラグ。
  */
 export async function paginateMarginTrades(
 	client: BitbankPrivateClient,
 	sinceMs?: number,
-): Promise<{ trades: RawMarginTrade[]; truncated: boolean }> {
+): Promise<{ trades: RawMarginTrade[]; truncated: boolean; fetchFailed: boolean }> {
 	const all: RawMarginTrade[] = [];
 	const seenIds = new Set<number>();
 	let since: string | undefined = sinceMs != null ? String(sinceMs) : undefined;
+	let fetchFailed = false;
 	for (let page = 0; page < MAX_PAGES; page++) {
 		const params: Record<string, string> = { type: 'margin', count: String(TRADE_PAGE_SIZE), order: 'asc' };
 		if (since) params.since = since;
 		const result = await tryGet<{ trades: RawMarginTrade[] }>(client, '/v1/user/spot/trade_history', params);
-		if (!result.ok) break;
+		if (!result.ok) {
+			fetchFailed = true;
+			break;
+		}
 		const batch = result.data.trades || [];
 		// type=margin が無視された場合に備え、position_side != null で margin 約定のみに絞る。
 		const marginOnly = batch.filter((t) => t.position_side != null);
@@ -163,7 +172,7 @@ export async function paginateMarginTrades(
 		all.push(...newRecords);
 		// truncated 判定はフィルタ前の batch.length を使う。フィルタ後の長さで判定すると
 		// 現物比率が高いとき早期終了し、次ページの margin 約定を取り逃がす。
-		if (batch.length < TRADE_PAGE_SIZE) return { trades: all, truncated: false };
+		if (batch.length < TRADE_PAGE_SIZE) return { trades: all, truncated: false, fetchFailed: false };
 		const lastTs = batch[batch.length - 1]?.executed_at;
 		if (!lastTs) break;
 		// 同一タイムスタンプ満杯ループの保険はカーソルベース（marginOnly 件数ではなく
@@ -171,11 +180,11 @@ export async function paginateMarginTrades(
 		// 「初期は現物のみ → 途中から信用利用開始」の口座で満杯現物ページに当たった瞬間に
 		// 後続の信用約定を取り逃がしてしまう。
 		const nextSince = String(lastTs);
-		if (nextSince === since) return { trades: all, truncated: true };
+		if (nextSince === since) return { trades: all, truncated: true, fetchFailed: false };
 		since = nextSince;
 	}
 	// ループ脱出は全て未完了（MAX_PAGES 到達 / API エラー / lastTs 欠損）。paginateTrades と同じ扱い。
-	return { trades: all, truncated: true };
+	return { trades: all, truncated: true, fetchFailed };
 }
 
 /**

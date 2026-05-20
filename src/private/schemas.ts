@@ -371,6 +371,21 @@ export const AnalyzeMyPortfolioMetaSchema = z.object({
 			'入出金分析の状態: available=入出金データ取得成功で分析実行（deposit_withdrawal_summaryあり）, fallback=API取得失敗またはpartial failureにより約定ベースにフォールバック（deposit_withdrawal_summaryはtrade_only placeholder）, no_history=API取得成功・警告なし・履歴0件（deposit_withdrawal_summaryはundefined）, not_requested=未リクエスト（deposit_withdrawal_summaryはundefined）',
 		),
 	periodBasis: z.enum(['jst']).default('jst').describe('年次・月次の期間基準タイムゾーン（jst = Asia/Tokyo）'),
+	tradesTruncated: z
+		.boolean()
+		.describe(
+			'現物約定履歴の取得が不完全（paginateTrades が MAX_PAGES / API エラー / lastTs 欠損などで途中終了）。true のとき損益計算が不正確な可能性。',
+		),
+	marginTradesTruncated: z
+		.boolean()
+		.describe(
+			'信用約定履歴の取得が不完全（paginateMarginTrades が MAX_PAGES / API エラー / lastTs 欠損などで途中終了）。true のとき信用 PnL が不正確な可能性。',
+		),
+	marginFetchFailed: z
+		.boolean()
+		.describe(
+			'信用約定 API（type=margin）が途中で失敗した。true のとき margin_realized_pnl=0 が「信用未使用」ではなく「取得失敗による欠落」を意味する点に注意。',
+		),
 });
 
 export const AnalyzeMyPortfolioOutputSchema = z.union([

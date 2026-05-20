@@ -85,7 +85,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 
 		const marginTradePromise = include_pnl
 			? paginateMarginTrades(client)
-			: Promise.resolve({ trades: [] as RawMarginTrade[], truncated: false });
+			: Promise.resolve({ trades: [] as RawMarginTrade[], truncated: false, fetchFailed: false });
 
 		const dwPromise = include_deposit_withdrawal ? fetchDepositWithdrawal(client) : Promise.resolve(null);
 
@@ -94,6 +94,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 		const tradesTruncated = tradeResult.truncated;
 		const allMarginTrades = marginTradeResult.trades;
 		const marginTradesTruncated = marginTradeResult.truncated;
+		const marginFetchFailed = marginTradeResult.fetchFailed;
 
 		// 期間パフォーマンス用: 全関連ペアのキャンドルデータを早期フェッチ開始
 		const allRelevantPairs = new Set<string>();
@@ -533,6 +534,18 @@ export default async function analyzeMyPortfolioHandler(args: {
 
 		// 6. サマリー文字列の生成
 		const lines: string[] = [];
+
+		// 取得層の不完全性（fetch 失敗 / 上限到達）を先頭に出して LLM が見落とさないようにする。
+		// 信用 fetch 失敗時は truncated と内容が重複するため、信用側の truncated 警告は抑止する。
+		if (marginFetchFailed) {
+			lines.push('⚠️ 信用約定の取得に失敗。信用 PnL は実態を反映しない可能性');
+		}
+		const showMarginTruncated = marginTradesTruncated && !marginFetchFailed;
+		if (tradesTruncated || showMarginTruncated) {
+			const subjects = [tradesTruncated && '現物', showMarginTruncated && '信用'].filter(Boolean).join(' / ');
+			lines.push(`※ 約定履歴（${subjects}）が上限に達したため一部のみ取得。損益計算が不正確な可能性があります`);
+		}
+
 		lines.push(`ポートフォリオ分析: 暗号資産 ${cryptoHoldings.length}銘柄${jpyHolding ? ' + JPY' : ''}`);
 		lines.push(`取得時刻: ${timestamp}`);
 		if (totalJpyValue > 0) {
@@ -743,10 +756,6 @@ export default async function analyzeMyPortfolioHandler(args: {
 			);
 		}
 		lines.push('※ 評価損益は全履歴の約定・暗号資産出庫から移動平均法で算出した取得原価ベース');
-		if (tradesTruncated || marginTradesTruncated) {
-			const subjects = [tradesTruncated && '現物', marginTradesTruncated && '信用'].filter(Boolean).join(' / ');
-			lines.push(`※ 約定履歴（${subjects}）が上限に達したため一部のみ取得。損益計算が不正確な可能性があります`);
-		}
 		lines.push('');
 
 		// 保有銘柄のパフォーマンス（月次・年次の価格騰落率）
@@ -857,6 +866,9 @@ export default async function analyzeMyPortfolioHandler(args: {
 			hasTechnical: include_technical && (technical?.length ?? 0) > 0,
 			depositWithdrawalStatus,
 			periodBasis: 'jst' as const,
+			tradesTruncated,
+			marginTradesTruncated,
+			marginFetchFailed,
 		};
 
 		return AnalyzeMyPortfolioOutputSchema.parse(ok(summary, data, meta));

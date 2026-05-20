@@ -534,6 +534,8 @@ describe('paginateMarginTrades — ページネーション境界', () => {
 		const result = await paginateMarginTrades(client);
 		expect(result.trades).toHaveLength(1000);
 		expect(result.truncated).toBe(true);
+		// API エラーで break したパスを区別するフラグ（PR #2: 不完全性伝播）
+		expect(result.fetchFailed).toBe(true);
 		expect(callIndex).toBe(2);
 	});
 
@@ -563,6 +565,8 @@ describe('paginateMarginTrades — ページネーション境界', () => {
 		const result = await paginateMarginTrades(client);
 		expect(result.trades).toHaveLength(1000);
 		expect(result.truncated).toBe(true);
+		// lastTs 欠損は API エラーではないので fetchFailed=false
+		expect(result.fetchFailed).toBe(false);
 		expect(calls.length).toBe(1);
 	});
 

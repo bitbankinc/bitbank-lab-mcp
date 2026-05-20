@@ -291,6 +291,222 @@ describe('analyze_my_portfolio', () => {
 		expect(result.data.account_pnl.margin_fee).toBe(0);
 	});
 
+	it('信用 fetch 失敗時: summary に ⚠️ 信用約定の取得に失敗 が含まれ、meta.marginFetchFailed === true', async () => {
+		// Cursor レビュー B: paginateMarginTrades が API エラーで break した場合に
+		// 「信用未使用」と区別できない結果を返してしまう問題のリグレ防止。
+		setupFetchMock({ marginTradesFail: true });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		expect(result.summary).toContain('⚠️ 信用約定の取得に失敗');
+		expect(result.meta.marginFetchFailed).toBe(true);
+		// 信用 fetch 失敗時は信用側 truncated 警告を抑止（メッセージ重複回避）
+		expect(result.summary).not.toContain('※ 約定履歴（信用）');
+		expect(result.summary).not.toContain('※ 約定履歴（現物 / 信用）');
+	});
+
+	it('打ち切り (現物): summary に ※ 約定履歴（現物） が含まれ、meta.tradesTruncated === true', async () => {
+		// Cursor レビュー C/E: 打ち切り警告の文字列 assertion を追加してリグレ検知する。
+		// paginateTrades が満杯ページ × 同一カーソルで進捗ゼロを検出 → truncated=true で打ち切る。
+		const SAME_TS = 1710000000000;
+		const fullSpotPage = Array.from({ length: 1000 }, (_, i) => ({
+			trade_id: i + 1,
+			pair: 'btc_jpy',
+			order_id: 5000 + i,
+			side: 'buy',
+			type: 'limit',
+			amount: '0.001',
+			price: '15000000',
+			maker_taker: 'maker',
+			fee_amount_base: '0',
+			fee_amount_quote: '0',
+			executed_at: SAME_TS,
+		}));
+
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			if (urlStr.includes('tickers_jpy')) return new Response(JSON.stringify(tickersJpy), { status: 200 });
+			if (urlStr.includes('candlestick')) return new Response(JSON.stringify(candlesBtcJpy1day120), { status: 200 });
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				const isMargin = urlStr.includes('type=margin');
+				if (isMargin) return new Response(JSON.stringify(mockBitbankSuccess({ trades: [] })), { status: 200 });
+				return new Response(JSON.stringify(mockBitbankSuccess({ trades: fullSpotPage })), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ deposits: [] })), { status: 200 });
+			}
+			if (urlStr.includes('withdrawal_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ withdrawals: [] })), { status: 200 });
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		expect(result.summary).toContain('※ 約定履歴（現物）');
+		expect(result.meta.tradesTruncated).toBe(true);
+		expect(result.meta.marginTradesTruncated).toBe(false);
+		expect(result.meta.marginFetchFailed).toBe(false);
+	});
+
+	it('打ち切り (信用): summary に ※ 約定履歴（信用） が含まれ、meta.marginTradesTruncated === true', async () => {
+		const SAME_TS = 1710000000000;
+		const fullMarginPage = Array.from({ length: 1000 }, (_, i) => ({
+			trade_id: 9000 + i,
+			pair: 'btc_jpy',
+			order_id: 6000 + i,
+			side: 'sell',
+			position_side: 'long',
+			type: 'limit',
+			amount: '0.001',
+			price: '15500000',
+			maker_taker: 'maker',
+			fee_amount_base: '0',
+			fee_amount_quote: '0',
+			fee_occurred_amount_quote: '0',
+			profit_loss: '0',
+			executed_at: SAME_TS,
+		}));
+
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			if (urlStr.includes('tickers_jpy')) return new Response(JSON.stringify(tickersJpy), { status: 200 });
+			if (urlStr.includes('candlestick')) return new Response(JSON.stringify(candlesBtcJpy1day120), { status: 200 });
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				const isMargin = urlStr.includes('type=margin');
+				if (isMargin) {
+					return new Response(JSON.stringify(mockBitbankSuccess({ trades: fullMarginPage })), { status: 200 });
+				}
+				return new Response(JSON.stringify(mockBitbankSuccess({ trades: [] })), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ deposits: [] })), { status: 200 });
+			}
+			if (urlStr.includes('withdrawal_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ withdrawals: [] })), { status: 200 });
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		expect(result.summary).toContain('※ 約定履歴（信用）');
+		expect(result.summary).not.toContain('※ 約定履歴（現物 / 信用）');
+		expect(result.meta.marginTradesTruncated).toBe(true);
+		expect(result.meta.tradesTruncated).toBe(false);
+		expect(result.meta.marginFetchFailed).toBe(false);
+	});
+
+	it('打ち切り (両方): summary に ※ 約定履歴（現物 / 信用） が含まれ、両 meta フラグが true', async () => {
+		const SAME_TS = 1710000000000;
+		const fullSpotPage = Array.from({ length: 1000 }, (_, i) => ({
+			trade_id: i + 1,
+			pair: 'btc_jpy',
+			order_id: 5000 + i,
+			side: 'buy',
+			type: 'limit',
+			amount: '0.001',
+			price: '15000000',
+			maker_taker: 'maker',
+			fee_amount_base: '0',
+			fee_amount_quote: '0',
+			executed_at: SAME_TS,
+		}));
+		const fullMarginPage = Array.from({ length: 1000 }, (_, i) => ({
+			trade_id: 9000 + i,
+			pair: 'btc_jpy',
+			order_id: 6000 + i,
+			side: 'sell',
+			position_side: 'long',
+			type: 'limit',
+			amount: '0.001',
+			price: '15500000',
+			maker_taker: 'maker',
+			fee_amount_base: '0',
+			fee_amount_quote: '0',
+			fee_occurred_amount_quote: '0',
+			profit_loss: '0',
+			executed_at: SAME_TS,
+		}));
+
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			if (urlStr.includes('tickers_jpy')) return new Response(JSON.stringify(tickersJpy), { status: 200 });
+			if (urlStr.includes('candlestick')) return new Response(JSON.stringify(candlesBtcJpy1day120), { status: 200 });
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				const isMargin = urlStr.includes('type=margin');
+				if (isMargin) {
+					return new Response(JSON.stringify(mockBitbankSuccess({ trades: fullMarginPage })), { status: 200 });
+				}
+				return new Response(JSON.stringify(mockBitbankSuccess({ trades: fullSpotPage })), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ deposits: [] })), { status: 200 });
+			}
+			if (urlStr.includes('withdrawal_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ withdrawals: [] })), { status: 200 });
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		expect(result.summary).toContain('※ 約定履歴（現物 / 信用）');
+		expect(result.meta.tradesTruncated).toBe(true);
+		expect(result.meta.marginTradesTruncated).toBe(true);
+		expect(result.meta.marginFetchFailed).toBe(false);
+	});
+
+	it('警告行が summary 先頭付近に出る（タイトル前または直後）— LLM の見落とし防止', async () => {
+		// .claude/rules/tools.md: content[0].text の先頭に warning 行が含まれているか目視確認。
+		// ハンドラ summary がそのまま content text になるため、先頭付近に warning が出ることを検証。
+		setupFetchMock({ marginTradesFail: true });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		const firstFiveLines = result.summary.split('\n').slice(0, 5).join('\n');
+		expect(firstFiveLines).toContain('⚠️ 信用約定の取得に失敗');
+	});
+
 	it('yearly_account_pnl / monthly_account_pnl の期間フィルターが正しく効く', async () => {
 		// 固定の現在時刻（JST 2026-05-16 12:00）を基準に、当月内 / 当月外 / 当年内を確実に振り分ける。
 		// vi.useFakeTimers でクロックを固定し、Date.now() ベースの境界計算（getJstPeriodBoundaries）も決定論化する。
