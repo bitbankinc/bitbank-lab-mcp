@@ -23,6 +23,7 @@ import { nowIso } from '../../lib/datetime.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
 import { logTradeAction } from '../../lib/logger.js';
 import { fail, ok, toStructured } from '../../lib/result.js';
+import { getBitbankErrorMessage } from '../../src/lib/bitbank-errors.js';
 import { getDefaultClient, PrivateApiError } from '../../src/private/client.js';
 import { validateToken } from '../../src/private/confirmation.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
@@ -158,33 +159,11 @@ export default async function createOrder(
 		);
 	} catch (err) {
 		if (err instanceof PrivateApiError) {
-			// 取引固有エラーの補足メッセージ
-			const codeMessages: Record<number, string> = {
-				// 信用取引固有エラー
-				50058: '信用取引の審査が完了していません。bitbank の管理画面から申込・審査を行ってください',
-				50059: '新規建注文を一時的に制限しています。しばらく時間を空けてから再試行してください',
-				50060: '新規建注文を一時的に制限しています。しばらく時間を空けてから再試行してください',
-				50061: '新規建可能額を上回っています。保証金を追加するか、建玉を決済してください',
-				50062: '建玉数量を上回っています。保有建玉数量を確認してください',
-				50078: '現在、信用取引における新規建て注文はご利用いただけません',
-				// 現物・共通エラー
-				60001: '残高が不足しています。保有資産を確認してください',
-				60002: '成行買い注文の数量上限を超えています',
-				60003: '注文数量が最小数量を下回っています',
-				60004: '注文数量が最大数量を超えています',
-				60005: '注文価格が下限を下回っています',
-				60006: '注文価格が上限を超えています',
-				60011: '同時注文数の上限（30件）に達しています。既存注文をキャンセルしてください',
-				60016: 'トリガー価格が不正です',
-				70004: '現在、買い注文が制限されています',
-				70005: '現在、売り注文が制限されています',
-				70006: '現在、この通貨ペアの取引が制限されています',
-				70009: '現在、成行注文が制限されています。指値注文をお試しください',
-				70020:
-					'サーキットブレイク中または板寄せ中のため、成行注文は制限されています。指値注文を使うか、再開後に再試行してください',
-			};
-			const msg = (err.bitbankCode && codeMessages[err.bitbankCode]) || err.message;
-			return CreateOrderOutputSchema.parse(fail(msg, err.errorType));
+			// 取引固有エラーの文言は src/lib/bitbank-errors.ts に集約済み。
+			// client.ts も同テーブルを参照するため err.message には既にローカライズ文言が乗るが、
+			// 未登録コードを client が素通ししたケースに備えてここでも lookup する。
+			const mapped = err.bitbankCode != null ? getBitbankErrorMessage(err.bitbankCode) : undefined;
+			return CreateOrderOutputSchema.parse(fail(mapped ?? err.message, err.errorType));
 		}
 		return CreateOrderOutputSchema.parse(
 			fail(err instanceof Error ? err.message : '注文発注中に予期しないエラーが発生しました', 'upstream_error'),
