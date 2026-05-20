@@ -7,7 +7,7 @@
 
 import { nowIso, parseIso8601, toIsoMs } from '../../lib/datetime.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
-import { fail, ok } from '../../lib/result.js';
+import { fail, ok, toStructured } from '../../lib/result.js';
 import { getDefaultClient, PrivateApiError } from '../../src/private/client.js';
 import { GetMyOrdersInputSchema, GetMyOrdersOutputSchema } from '../../src/private/schemas.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
@@ -156,5 +156,13 @@ export const toolDef: ToolDefinition = {
 		'[My Orders / Open Orders / Active Orders] 自分の未約定注文一覧（my orders / open orders / active orders / pending）を取得。通貨ペア・期間でフィルタ可能。Private API。' +
 		'※ 本ツールは現物注文専用。信用注文の照会は `get_margin_positions` / 信用系ツールを使う。',
 	inputSchema: GetMyOrdersInputSchema,
-	handler: async (args: { pair?: string; count?: number; since?: string; end?: string }) => getMyOrders(args),
+	handler: async (args) => {
+		const result = await getMyOrders(args as { pair?: string; count?: number; since?: string; end?: string });
+		if (!result.ok) return result;
+		const text = `${result.summary}\n${JSON.stringify(result.data, null, 2)}`;
+		return {
+			content: [{ type: 'text', text }],
+			structuredContent: toStructured(result),
+		};
+	},
 };

@@ -221,10 +221,26 @@ describe('get_my_trade_history', () => {
 		expect(result.data.trades[0].fee_occurred_amount_quote).not.toBe(result.data.trades[0].fee_amount_quote);
 	});
 
-	it('position_side が API レスポンスに含まれる場合、出力に伝播する（信用約定混入の可視化）', async () => {
-		// 本ツールは現物専用だが、API 仕様変更や信用約定混入を検知できるよう、
-		// position_side フィールドが返ってきた場合は出力にマップする。
+	it('単発リクエスト経路で position_side != null の信用約定は除外される（paginateTrades と対称）', async () => {
+		// 公式 docs は position_side を「信用取引の時のみ」と明記しているが、API 挙動変更や
+		// 信用約定の混入に備え、単発経路でも paginateTrades と同様に position_side == null で
+		// 防御フィルタする。これにより calcPnl 等の下流での二重計上を防ぐ。
 		const trades = [
+			// 現物約定（保持）
+			{
+				trade_id: 800,
+				pair: 'btc_jpy',
+				order_id: 8000,
+				side: 'buy',
+				type: 'limit',
+				amount: '0.01',
+				price: '15000000',
+				maker_taker: 'maker',
+				fee_amount_base: '0.00001',
+				fee_amount_quote: '0',
+				executed_at: 1710000000000,
+			},
+			// 信用 long（除外）
 			{
 				trade_id: 801,
 				pair: 'btc_jpy',
@@ -237,7 +253,22 @@ describe('get_my_trade_history', () => {
 				maker_taker: 'maker',
 				fee_amount_base: '0',
 				fee_amount_quote: '0',
-				executed_at: 1710000000000,
+				executed_at: 1710000001000,
+			},
+			// 信用 short（除外）
+			{
+				trade_id: 802,
+				pair: 'btc_jpy',
+				order_id: 8002,
+				side: 'buy',
+				position_side: 'short',
+				type: 'limit',
+				amount: '0.01',
+				price: '15400000',
+				maker_taker: 'maker',
+				fee_amount_base: '0',
+				fee_amount_quote: '0',
+				executed_at: 1710000002000,
 			},
 		];
 		setupFetchMock(mockBitbankSuccess({ trades }));
@@ -246,7 +277,9 @@ describe('get_my_trade_history', () => {
 		const result = await getMyTradeHistory({});
 
 		assertOk(result);
-		expect(result.data.trades[0].position_side).toBe('long');
+		expect(result.data.trades).toHaveLength(1);
+		expect(result.data.trades[0].trade_id).toBe(800);
+		expect(result.data.trades[0].position_side).toBeUndefined();
 	});
 
 	it('position_side が API レスポンスに含まれない場合、undefined を伝播する（通常の現物約定）', async () => {

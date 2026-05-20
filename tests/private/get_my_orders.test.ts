@@ -432,13 +432,34 @@ describe('get_my_orders', () => {
 });
 
 describe('get_my_orders — handler (toolDef)', () => {
-	it('handler がデフォルト引数で動作する', async () => {
+	it('handler が成功時に content + structuredContent を返す', async () => {
 		setupFetchMock(mockBitbankSuccess(rawActiveOrdersResponse));
 
 		const { toolDef } = await import('../../tools/private/get_my_orders.js');
 		const result = await toolDef.handler({});
 
-		expect((result as { ok: boolean }).ok).toBe(true);
+		expect(result).toHaveProperty('content');
+		expect(result).toHaveProperty('structuredContent');
+	});
+
+	it('handler が失敗時に result をそのまま返す', async () => {
+		globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('fail')) as unknown as typeof fetch;
+
+		const { toolDef } = await import('../../tools/private/get_my_orders.js');
+		const result = await toolDef.handler({});
+
+		expect((result as { ok: boolean }).ok).toBe(false);
+	});
+
+	it('content[0].text に summary と data JSON が含まれ、LLM が orders 配列にアクセスできる', async () => {
+		setupFetchMock(mockBitbankSuccess(rawActiveOrdersResponse));
+
+		const { toolDef } = await import('../../tools/private/get_my_orders.js');
+		const result = (await toolDef.handler({})) as { content: { text: string }[] };
+
+		expect(result.content[0].text).toContain('アクティブ注文');
+		expect(result.content[0].text).toContain('"orders"');
+		expect(result.content[0].text).toContain('"timestamp"');
 	});
 });
 

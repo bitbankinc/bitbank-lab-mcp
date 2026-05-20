@@ -6,7 +6,8 @@
  *
  * - 自動ページネーション: count > PAGE_SIZE (1000) の場合、`portfolio/fetch.paginateTrades`
  *   経由で cursor ベースに複数回リクエストし全件取得を試みる（最大 MAX_PAGES ページ）。
- *   現物専用のため `position_side != null`（信用約定）の混入は防御的に除外する。
+ * - 単発・ページネーション両経路とも、現物専用のため `position_side != null`（信用約定）の
+ *   混入は防御的に除外する（paginateTrades と対称化）。
  * - isComplete フラグ: 全件取得できたかどうかを meta に含める。
  */
 
@@ -64,9 +65,12 @@ export default async function getMyTradeHistory(args: {
 				'/v1/user/spot/trade_history',
 				Object.keys(params).length > 0 ? params : undefined,
 			);
-			rawTrades = rawData.trades;
-			// 取得件数が count 未満なら全件取得済み
-			isComplete = rawTrades.length < count;
+			const rawBatch = rawData.trades ?? [];
+			// 信用約定（position_side 付き）の混入を防御的に除外（paginateTrades と対称）。
+			rawTrades = rawBatch.filter((t) => t.position_side == null);
+			// isComplete はフィルタ前の API レスポンス件数で判定する。フィルタ後を使うと
+			// 信用比率が高いときに「全件取得済み」と誤判定する（paginateTrades と同じ理由）。
+			isComplete = rawBatch.length < count;
 		} else {
 			// 自動ページネーション（order に応じて asc + since / desc + end カーソルで取得）。
 			// `position_side != null` の信用約定は paginateTrades 側で防御的に除外される。
@@ -83,8 +87,8 @@ export default async function getMyTradeHistory(args: {
 			pair: t.pair,
 			order_id: t.order_id,
 			side: t.side,
-			// 現物エンドポイントは通常 position_side を返さないが、信用約定混入を可視化するため
-			// 値があればそのまま伝播する（呼び出し側で現物 / 信用を識別できるようにする）。
+			// 上流で position_side != null の信用約定はフィルタ済みのため通常は undefined。
+			// 型整合のためフィールドは残し、`position_side` の存在で現物 / 信用を識別する下流契約を維持する。
 			position_side: t.position_side,
 			type: t.type,
 			amount: t.amount,
