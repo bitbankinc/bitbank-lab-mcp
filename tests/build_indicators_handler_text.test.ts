@@ -14,6 +14,8 @@ function makeInput(overrides?: Partial<BuildIndicatorsTextInput>): BuildIndicato
 		rsi: 55,
 		recentRsiFormatted: ['48.0', '50.5', '52.3', '55.0'],
 		rsiUnitLabel: '日',
+		macdLine: 10000,
+		macdSignal: 5000,
 		macdHist: 5000,
 		lastMacdCross: { type: 'golden', barsAgo: 10 },
 		divergence: 'なし',
@@ -104,9 +106,9 @@ describe('buildIndicatorsText', () => {
 		expect(text).toContain('買われすぎ圏（反落の可能性）');
 	});
 
-	it('MACD セクション: ヒストグラムとクロス情報', () => {
+	it('MACD セクション: line / signal / hist とクロス情報', () => {
 		const text = buildIndicatorsText(makeInput());
-		expect(text).toContain('MACD: hist=5,000');
+		expect(text).toContain('MACD(12,26,9): line=10,000 signal=5,000 hist=5,000');
 		expect(text).toContain('ゴールデンクロス: 10本前');
 	});
 

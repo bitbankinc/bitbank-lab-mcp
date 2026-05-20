@@ -26,6 +26,8 @@ function baseInput(overrides?: Partial<BuildIndicatorsTextInput>): BuildIndicato
 		rsi: 55,
 		recentRsiFormatted: ['50.0', '52.0', '55.0'],
 		rsiUnitLabel: '日',
+		macdLine: 10000,
+		macdSignal: 5000,
 		macdHist: 5000,
 		lastMacdCross: { type: 'golden', barsAgo: 3 },
 		divergence: 'なし',
@@ -150,6 +152,36 @@ describe('buildIndicatorsText', () => {
 	});
 
 	// ── MACD ─────────────────────────────────────────────
+
+	it('MACD line / signal / hist の3数値がテキストに含まれる', () => {
+		const text = buildIndicatorsText(baseInput({ macdLine: 12345, macdSignal: 6789, macdHist: 5556 }));
+		expect(text).toContain('line=12,345');
+		expect(text).toContain('signal=6,789');
+		expect(text).toContain('hist=5,556');
+	});
+
+	it('MACD line / signal null → n/a', () => {
+		const text = buildIndicatorsText(baseInput({ macdLine: null, macdSignal: null }));
+		expect(text).toContain('line=n/a');
+		expect(text).toContain('signal=n/a');
+	});
+
+	it('MACD line / signal が NaN / Infinity → n/a（NaN を出さない）', () => {
+		const text = buildIndicatorsText(
+			baseInput({ macdLine: Number.NaN, macdSignal: Number.POSITIVE_INFINITY, macdHist: Number.NEGATIVE_INFINITY }),
+		);
+		expect(text).toContain('line=n/a');
+		expect(text).toContain('signal=n/a');
+		expect(text).toContain('hist=n/a');
+		expect(text).not.toContain('NaN');
+		expect(text).not.toContain('Infinity');
+	});
+
+	it('MACD 負値も整数 + toLocaleString で表示される', () => {
+		const text = buildIndicatorsText(baseInput({ macdLine: -1234, macdSignal: -567 }));
+		expect(text).toContain('line=-1,234');
+		expect(text).toContain('signal=-567');
+	});
 
 	it('MACD hist > 0 → 強気継続', () => {
 		const text = buildIndicatorsText(baseInput({ macdHist: 5000 }));
@@ -426,6 +458,8 @@ describe('buildIndicatorsText', () => {
 				deltaPrev: null,
 				rsi: null,
 				recentRsiFormatted: [],
+				macdLine: null,
+				macdSignal: null,
 				macdHist: null,
 				lastMacdCross: null,
 				divergence: null,
@@ -623,6 +657,20 @@ describe('toolDef.handler', () => {
 			content: Array<{ text: string }>;
 		};
 		expect(res.content[0].text).toContain('雲の下');
+	});
+
+	it('handler が ind.MACD_line / MACD_signal を content text に渡す', async () => {
+		const m = mockResult();
+		(m.data.indicators as Record<string, unknown>).MACD_line = 12345;
+		(m.data.indicators as Record<string, unknown>).MACD_signal = 6789;
+		(m.data.indicators as Record<string, unknown>).MACD_hist = 5556;
+		mockedAnalyze.mockResolvedValueOnce(m as never);
+		const res = (await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 200 })) as {
+			content: Array<{ text: string }>;
+		};
+		expect(res.content[0].text).toContain('line=12,345');
+		expect(res.content[0].text).toContain('signal=6,789');
+		expect(res.content[0].text).toContain('hist=5,556');
 	});
 
 	it('MACD クロス検出', async () => {

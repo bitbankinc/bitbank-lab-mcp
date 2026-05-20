@@ -25,6 +25,8 @@ export interface BuildIndicatorsTextInput {
 	recentRsiFormatted: string[];
 	rsiUnitLabel: string;
 	// MACD
+	macdLine: number | null;
+	macdSignal: number | null;
 	macdHist: number | null;
 	lastMacdCross: { type: 'golden' | 'dead'; barsAgo: number } | null;
 	divergence: string | null;
@@ -86,6 +88,8 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 		rsi,
 		recentRsiFormatted,
 		rsiUnitLabel,
+		macdLine,
+		macdSignal,
 		macdHist,
 		lastMacdCross,
 		divergence,
@@ -173,10 +177,14 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 		lines.push('');
 		lines.push(`    ${recentRsiFormatted.join(' → ')}`);
 	}
-	const macdHistFmt = macdHist == null ? 'n/a' : `${Math.round(Number(macdHist)).toLocaleString('ja-JP')}`;
+	const fmtMacd = (v: number | null) =>
+		v == null || !Number.isFinite(v) ? 'n/a' : Math.round(v).toLocaleString('ja-JP');
+	const macdLineFmt = fmtMacd(macdLine);
+	const macdSignalFmt = fmtMacd(macdSignal);
+	const macdHistFmt = fmtMacd(macdHist);
 	const macdHint =
 		macdHist == null ? '—' : Number(macdHist) >= 0 ? '強気継続（プラス＝上昇圧力）' : '弱気継続（マイナス＝下落圧力）';
-	lines.push(`  MACD: hist=${macdHistFmt} → ${macdHint}`);
+	lines.push(`  MACD(12,26,9): line=${macdLineFmt} signal=${macdSignalFmt} hist=${macdHistFmt} → ${macdHint}`);
 	const crossStr = lastMacdCross
 		? `${lastMacdCross.type === 'golden' ? 'ゴールデン' : 'デッド'}クロス: ${lastMacdCross.barsAgo}本前`
 		: '直近クロス: なし';
@@ -546,6 +554,8 @@ export const toolDef: ToolDefinition = {
 				: null;
 		const bandWidthPct =
 			bbUp != null && bbLo != null && bbMid ? Number((((bbUp - bbLo) / bbMid) * 100).toFixed(2)) : null;
+		const macdLine = ind.MACD_line ?? null;
+		const macdSignal = ind.MACD_signal ?? null;
 		const macdHist = ind.MACD_hist ?? null;
 		// 🚨 「今日の雲」は ichi_series.spanA/B の末尾 ICHIMOKU_SHIFT(26) 本前を参照する。
 		// ind.ICHIMOKU_spanA/B は「今日計算された先行スパン」＝ 26 本後にプロットされる雲なので、
@@ -653,6 +663,8 @@ export const toolDef: ToolDefinition = {
 			rsi,
 			recentRsiFormatted,
 			rsiUnitLabel,
+			macdLine,
+			macdSignal,
 			macdHist,
 			lastMacdCross,
 			divergence,
