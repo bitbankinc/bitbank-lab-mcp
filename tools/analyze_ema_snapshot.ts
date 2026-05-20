@@ -17,6 +17,7 @@ import {
 } from '../lib/ma-snapshot-utils.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
+import { extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
 import {
 	type AnalyzeEmaSnapshotDataSchemaOut,
 	AnalyzeEmaSnapshotInputSchema,
@@ -68,6 +69,11 @@ export default async function analyzeEmaSnapshot(
 		let candles: Array<{ isoTime?: string | null }> = [];
 		let normalizedLen = 0;
 		const map: Record<string, number | null> = {};
+		// 上流 warning（取得層）と warnings（計算層）は path ごとに別ソースから抽出する。
+		// - hasCustomPeriods=true: getCandles の meta.warning のみ（warnings は出ない）
+		// - hasCustomPeriods=false: analyzeIndicators の meta.warning / meta.warnings 両方
+		let warning: string | undefined;
+		let warnings: string[] | undefined;
 
 		if (hasCustomPeriods) {
 			const candlesResult = await getCandles(chk.pair, type, undefined, fetchLimit);
@@ -75,6 +81,10 @@ export default async function analyzeEmaSnapshot(
 				return AnalyzeEmaSnapshotOutputSchema.parse(
 					fail(candlesResult.summary || 'candles failed', candlesResult.meta.errorType || 'internal'),
 				);
+			const upstream = extractUpstreamWarning(candlesResult.meta);
+			warning = upstream.warning;
+			// getCandles path は取得層のみ。計算層 warnings は contract 上出ないため明示的に undefined にする。
+			warnings = undefined;
 			const normalized = candlesResult.data.normalized;
 			const allCloses = normalized.map((c) => c.close);
 			close = allCloses.at(-1) ?? null;
@@ -93,6 +103,9 @@ export default async function analyzeEmaSnapshot(
 				return AnalyzeEmaSnapshotOutputSchema.parse(
 					fail(indRes.summary || 'indicators failed', indRes.meta.errorType || 'internal'),
 				);
+			const upstream = extractUpstreamWarning(indRes.meta);
+			warning = upstream.warning;
+			warnings = upstream.warnings;
 			close = indRes.data.normalized.at(-1)?.close ?? null;
 			chartInd = indRes?.data?.chart?.indicators ?? {};
 			candles = Array.isArray(indRes?.data?.chart?.candles)
@@ -135,7 +148,7 @@ export default async function analyzeEmaSnapshot(
 		}
 
 		const maLines = buildMaLines(periods, emasExt);
-		const summaryText = buildEmaSnapshotText({
+		const baseSummaryText = buildEmaSnapshotText({
 			baseSummary: formatSummary({
 				pair: chk.pair,
 				latest: close ?? undefined,
@@ -146,6 +159,7 @@ export default async function analyzeEmaSnapshot(
 			crossStatuses: crosses,
 			recentCrosses,
 		});
+		const summaryText = prependWarnings(baseSummaryText, { warning, warnings }, { separator: '\n' });
 
 		const data: z.infer<typeof AnalyzeEmaSnapshotDataSchemaOut> = {
 			latest: { close },
@@ -157,7 +171,13 @@ export default async function analyzeEmaSnapshot(
 			emas: emasExt,
 			recentCrosses,
 		};
-		const meta = createMeta(chk.pair, { type, count: normalizedLen, periods });
+		const meta = createMeta(chk.pair, {
+			type,
+			count: normalizedLen,
+			periods,
+			...(warning ? { warning } : {}),
+			...(warnings && warnings.length > 0 ? { warnings } : {}),
+		});
 		return AnalyzeEmaSnapshotOutputSchema.parse(ok(summaryText, data, meta));
 	} catch (e: unknown) {
 		return failFromError(e, { schema: AnalyzeEmaSnapshotOutputSchema });

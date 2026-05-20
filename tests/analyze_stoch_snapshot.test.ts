@@ -298,4 +298,124 @@ describe('analyze_stoch_snapshot', () => {
 		assertOk(res);
 		expect(res.data.recentCrosses.length).toBeGreaterThan(0);
 	});
+
+	// ── 上流 warning の伝播（取得層 meta.warning / 計算層 meta.warnings） ──
+
+	describe('上流 warning の伝播', () => {
+		it('analyzeIndicators path（default params）: meta.warning（取得層）が tool の meta.warning と summary 先頭に伝播する', async () => {
+			const ind = buildIndicatorsOk();
+			ind.meta = {
+				...ind.meta,
+				warning: '⚠️ partial fetch (3日中1日の取得に失敗)',
+			} as typeof ind.meta;
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(ind));
+
+			const res = await analyzeStochSnapshot('btc_jpy', '1day', 120);
+
+			assertOk(res);
+			expect(res.meta.warning).toBe('⚠️ partial fetch (3日中1日の取得に失敗)');
+			expect(res.meta.warnings).toBeUndefined();
+			expect(res.summary.split('\n')[0]).toContain('⚠️ partial fetch');
+		});
+
+		it('analyzeIndicators path（default params）: meta.warnings（計算層）が tool の meta.warnings に継承される', async () => {
+			const ind = buildIndicatorsOk();
+			ind.meta = {
+				...ind.meta,
+				warnings: ['Stochastic: データ不足', 'SMA_200: データ不足'],
+			} as typeof ind.meta;
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(ind));
+
+			const res = await analyzeStochSnapshot('btc_jpy', '1day', 120);
+
+			assertOk(res);
+			expect(res.meta.warnings).toEqual(['Stochastic: データ不足', 'SMA_200: データ不足']);
+			expect(res.meta.warning).toBeUndefined();
+			expect(res.summary).toContain('⚠️ Stochastic: データ不足');
+			expect(res.summary).toContain('⚠️ SMA_200: データ不足');
+		});
+
+		it('analyzeIndicators path（default params）: 取得層 warning と計算層 warnings は別フィールドで保持される（混入 NG）', async () => {
+			const ind = buildIndicatorsOk();
+			ind.meta = {
+				...ind.meta,
+				warning: '⚠️ partial fetch (multi-year)',
+				warnings: ['Stochastic: データ不足'],
+			} as typeof ind.meta;
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(ind));
+
+			const res = await analyzeStochSnapshot('btc_jpy', '1day', 120);
+
+			assertOk(res);
+			expect(res.meta.warning).toBe('⚠️ partial fetch (multi-year)');
+			expect(res.meta.warnings).toEqual(['Stochastic: データ不足']);
+			expect(res.meta.warnings).not.toContain('partial fetch (multi-year)');
+			const lines = res.summary.split('\n');
+			expect(lines[0]).toContain('⚠️ partial fetch (multi-year)');
+			expect(lines[1]).toContain('⚠️ Stochastic: データ不足');
+		});
+
+		it('analyzeIndicators path（default params）: 上流 warning なしなら meta.warning / meta.warnings は付与されない', async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(buildIndicatorsOk()));
+
+			const res = await analyzeStochSnapshot('btc_jpy', '1day', 120);
+
+			assertOk(res);
+			expect(res.meta.warning).toBeUndefined();
+			expect(res.meta.warnings).toBeUndefined();
+			expect(res.summary.startsWith('⚠️')).toBe(false);
+		});
+
+		it('getCandles path（custom params）: meta.warning が tool の meta.warning と summary 先頭に伝播する', async () => {
+			mockedGetCandles.mockResolvedValueOnce(
+				asMockResult({
+					ok: true,
+					summary: 'ok',
+					data: {
+						normalized: makeFlatCandles(17, 100),
+						raw: {},
+					},
+					meta: { pair: 'btc_jpy', type: '1day', count: 17, warning: '⚠️ partial fetch (3日中1日の取得に失敗)' },
+				}),
+			);
+
+			const res = await analyzeStochSnapshot('btc_jpy', '1day', 40, 14, 3, 2);
+
+			assertOk(res);
+			expect(res.meta.warning).toBe('⚠️ partial fetch (3日中1日の取得に失敗)');
+			// getCandles path では計算層 warnings は出ない
+			expect(res.meta.warnings).toBeUndefined();
+			expect(res.summary.split('\n')[0]).toContain('⚠️ partial fetch');
+		});
+
+		it('getCandles path（custom params）: 上流 meta.warnings が紛れ込んでも drop されて meta.warnings は undefined のまま', async () => {
+			// getCandles は本来 warnings を出さないが、契約レベルでの回帰防止として
+			// 上流 meta に warnings が混入していても tool 出力には載らないことを保証する。
+			mockedGetCandles.mockResolvedValueOnce(
+				asMockResult({
+					ok: true,
+					summary: 'ok',
+					data: {
+						normalized: makeFlatCandles(17, 100),
+						raw: {},
+					},
+					meta: {
+						pair: 'btc_jpy',
+						type: '1day',
+						count: 17,
+						warning: '⚠️ partial fetch (multi-year)',
+						warnings: ['不正な計算層 warning（leak すべきでない）'],
+					},
+				}),
+			);
+
+			const res = await analyzeStochSnapshot('btc_jpy', '1day', 40, 14, 3, 2);
+
+			assertOk(res);
+			expect(res.meta.warning).toBe('⚠️ partial fetch (multi-year)');
+			// getCandles path は取得層のみ。計算層 warnings は契約上 drop される。
+			expect(res.meta.warnings).toBeUndefined();
+			expect(res.summary).not.toContain('不正な計算層 warning');
+		});
+	});
 });

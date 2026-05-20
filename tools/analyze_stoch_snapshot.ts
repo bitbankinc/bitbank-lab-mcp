@@ -3,6 +3,7 @@ import { today } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
+import { extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
 import {
 	type AnalyzeStochSnapshotDataSchemaOut,
 	AnalyzeStochSnapshotInputSchema,
@@ -97,6 +98,11 @@ export default async function analyzeStochSnapshot(
 		let prevD: number | null = null;
 		let candles: Array<{ isoTime?: string | null; close: number }> = [];
 		let normalizedLen = 0;
+		// 上流 warning（取得層）と warnings（計算層）は path ごとに別ソースから抽出する。
+		// - isDefault=true: analyzeIndicators の meta.warning / meta.warnings 両方
+		// - isDefault=false: getCandles の meta.warning のみ（warnings は出ない）
+		let warning: string | undefined;
+		let warnings: string[] | undefined;
 
 		if (isDefault) {
 			const indRes = await analyzeIndicators(chk.pair, type, limit);
@@ -104,6 +110,9 @@ export default async function analyzeStochSnapshot(
 				return AnalyzeStochSnapshotOutputSchema.parse(
 					fail(indRes.summary || 'indicators failed', indRes.meta.errorType || 'internal'),
 				);
+			const upstream = extractUpstreamWarning(indRes.meta);
+			warning = upstream.warning;
+			warnings = upstream.warnings;
 			const ind = indRes.data.indicators;
 			close = indRes.data.normalized.at(-1)?.close ?? null;
 			stochK = ind.STOCH_K ?? null;
@@ -124,6 +133,10 @@ export default async function analyzeStochSnapshot(
 				return AnalyzeStochSnapshotOutputSchema.parse(
 					fail(candlesResult.summary || 'candles failed', candlesResult.meta.errorType || 'internal'),
 				);
+			const upstream = extractUpstreamWarning(candlesResult.meta);
+			warning = upstream.warning;
+			// getCandles path は取得層のみ。計算層 warnings は contract 上出ないため明示的に undefined にする。
+			warnings = undefined;
 			const normalized = candlesResult.data.normalized;
 			const highs = normalized.map((c) => c.high);
 			const lows = normalized.map((c) => c.low);
@@ -219,7 +232,7 @@ export default async function analyzeStochSnapshot(
 		const dStr = stochD != null ? stochD.toFixed(2) : 'n/a';
 		const zoneJp =
 			zone === 'overbought' ? '買われすぎ (>80)' : zone === 'oversold' ? '売られすぎ (<20)' : 'ニュートラル';
-		const summaryText = buildStochSnapshotText({
+		const baseSummaryText = buildStochSnapshotText({
 			baseSummary: formatSummary({
 				pair: chk.pair,
 				latest: close ?? undefined,
@@ -236,6 +249,7 @@ export default async function analyzeStochSnapshot(
 			divDesc,
 			recentCrosses,
 		});
+		const summaryText = prependWarnings(baseSummaryText, { warning, warnings }, { separator: '\n' });
 
 		const data: z.infer<typeof AnalyzeStochSnapshotDataSchemaOut> = {
 			latest: { close },
@@ -246,7 +260,13 @@ export default async function analyzeStochSnapshot(
 			divergence: { type: divType, description: divDesc },
 			tags,
 		};
-		const meta = createMeta(chk.pair, { type, count: normalizedLen, params: { kPeriod, smoothK, smoothD } });
+		const meta = createMeta(chk.pair, {
+			type,
+			count: normalizedLen,
+			params: { kPeriod, smoothK, smoothD },
+			...(warning ? { warning } : {}),
+			...(warnings && warnings.length > 0 ? { warnings } : {}),
+		});
 		return AnalyzeStochSnapshotOutputSchema.parse(ok(summaryText, data, meta));
 	} catch (e: unknown) {
 		return failFromError(e, { schema: AnalyzeStochSnapshotOutputSchema });

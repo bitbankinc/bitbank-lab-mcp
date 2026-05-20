@@ -281,4 +281,74 @@ describe('analyze_sma_snapshot', () => {
 		// null pair should be excluded from crosses
 		expect(res.data.crosses.length).toBe(0);
 	});
+
+	// ── 上流 warning の伝播（取得層 meta.warning / 計算層 meta.warnings） ──────
+
+	it('上流 meta.warning（取得層）が tool の meta.warning と summary 先頭に伝播する', async () => {
+		const ind = buildIndicatorsOk();
+		ind.meta = {
+			...ind.meta,
+			warning: '⚠️ partial fetch (3日中1日の取得に失敗)',
+		} as typeof ind.meta;
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(ind));
+
+		const res = await analyzeSmaSnapshot('btc_jpy', '1day', 220, [5, 20, 50]);
+
+		assertOk(res);
+		expect(res.meta.warning).toBe('⚠️ partial fetch (3日中1日の取得に失敗)');
+		expect(res.meta.warnings).toBeUndefined();
+		expect(res.summary.split('\n')[0]).toContain('⚠️ partial fetch');
+	});
+
+	it('上流 meta.warnings（計算層）が tool の meta.warnings に継承される', async () => {
+		const ind = buildIndicatorsOk();
+		ind.meta = {
+			...ind.meta,
+			warnings: ['SMA_200: データ不足', 'Ichimoku: データ不足'],
+		} as typeof ind.meta;
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(ind));
+
+		const res = await analyzeSmaSnapshot('btc_jpy', '1day', 220, [5, 20, 50]);
+
+		assertOk(res);
+		expect(res.meta.warnings).toEqual(['SMA_200: データ不足', 'Ichimoku: データ不足']);
+		expect(res.meta.warning).toBeUndefined();
+		// 計算層 warnings は summary 先頭に並ぶ
+		expect(res.summary).toContain('⚠️ SMA_200: データ不足');
+		expect(res.summary).toContain('⚠️ Ichimoku: データ不足');
+	});
+
+	it('上流の取得層 warning と計算層 warnings は別フィールドで保持される（混入 NG）', async () => {
+		const ind = buildIndicatorsOk();
+		ind.meta = {
+			...ind.meta,
+			warning: '⚠️ partial fetch (multi-year)',
+			warnings: ['SMA_200: データ不足'],
+		} as typeof ind.meta;
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(ind));
+
+		const res = await analyzeSmaSnapshot('btc_jpy', '1day', 220, [5, 20, 50]);
+
+		assertOk(res);
+		// 取得層 warning は meta.warning
+		expect(res.meta.warning).toBe('⚠️ partial fetch (multi-year)');
+		// 計算層 warnings は meta.warnings に（取得層メッセージが混入していない）
+		expect(res.meta.warnings).toEqual(['SMA_200: データ不足']);
+		expect(res.meta.warnings).not.toContain('partial fetch (multi-year)');
+		// summary 先頭の 2 行に取得層 warning と計算層 warnings がそれぞれ出る
+		const lines = res.summary.split('\n');
+		expect(lines[0]).toContain('⚠️ partial fetch (multi-year)');
+		expect(lines[1]).toContain('⚠️ SMA_200: データ不足');
+	});
+
+	it('上流 warning なしなら meta.warning / meta.warnings は付与されない', async () => {
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(buildIndicatorsOk()));
+
+		const res = await analyzeSmaSnapshot('btc_jpy', '1day', 220, [5, 20, 50]);
+
+		assertOk(res);
+		expect(res.meta.warning).toBeUndefined();
+		expect(res.meta.warnings).toBeUndefined();
+		expect(res.summary.startsWith('⚠️')).toBe(false);
+	});
 });

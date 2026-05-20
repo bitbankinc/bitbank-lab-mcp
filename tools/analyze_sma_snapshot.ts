@@ -17,6 +17,7 @@ import {
 } from '../lib/ma-snapshot-utils.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
+import { extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
 import {
 	type AnalyzeSmaSnapshotDataSchemaOut,
 	AnalyzeSmaSnapshotInputSchema,
@@ -61,6 +62,9 @@ export default async function analyzeSmaSnapshot(
 				fail(indRes.summary || 'indicators failed', indRes.meta.errorType || 'internal'),
 			);
 
+		// 上流 analyze_indicators の meta.warning（取得層）と meta.warnings（計算層）を別系統で伝播する。
+		const { warning, warnings } = extractUpstreamWarning(indRes.meta);
+
 		const close = indRes.data.normalized.at(-1)?.close ?? null;
 		const map: Record<string, number | null> = {};
 		const indRecord = indRes.data.indicators as Record<string, number[] | number | null>;
@@ -97,7 +101,7 @@ export default async function analyzeSmaSnapshot(
 		}
 
 		const maLines = buildMaLines(periods, smasExt);
-		const summaryText = buildSmaSnapshotText({
+		const baseSummaryText = buildSmaSnapshotText({
 			baseSummary: formatSummary({
 				pair: chk.pair,
 				latest: close ?? undefined,
@@ -108,6 +112,7 @@ export default async function analyzeSmaSnapshot(
 			crossStatuses: crosses,
 			recentCrosses,
 		});
+		const summaryText = prependWarnings(baseSummaryText, { warning, warnings }, { separator: '\n' });
 
 		const data: z.infer<typeof AnalyzeSmaSnapshotDataSchemaOut> = {
 			latest: { close },
@@ -119,7 +124,13 @@ export default async function analyzeSmaSnapshot(
 			smas: smasExt,
 			recentCrosses,
 		};
-		const meta = createMeta(chk.pair, { type, count: indRes.data.normalized.length, periods });
+		const meta = createMeta(chk.pair, {
+			type,
+			count: indRes.data.normalized.length,
+			periods,
+			...(warning ? { warning } : {}),
+			...(warnings && warnings.length > 0 ? { warnings } : {}),
+		});
 		return AnalyzeSmaSnapshotOutputSchema.parse(ok(summaryText, data, meta));
 	} catch (e: unknown) {
 		return failFromError(e, { schema: AnalyzeSmaSnapshotOutputSchema });

@@ -1,7 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { asMockResult, assertFail, assertOk } from './_assertResult.js';
+
+// 既存のテストは fetch モックで analyze_indicators の全フローを通すため、
+// default export は actual 実装の passthrough にする。warning 伝播テストでは
+// mockResolvedValueOnce で 1 回だけ上書きする（次回呼び出しから actual に戻る）。
+vi.mock('../tools/analyze_indicators.js', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('../tools/analyze_indicators.js')>();
+	return {
+		...actual,
+		default: vi.fn(actual.default),
+	};
+});
+
 import analyzeBbSnapshot, { buildBbDefaultText, toolDef } from '../tools/analyze_bb_snapshot.js';
-import { clearIndicatorCache } from '../tools/analyze_indicators.js';
-import { assertFail, assertOk } from './_assertResult.js';
+import analyzeIndicators, { clearIndicatorCache } from '../tools/analyze_indicators.js';
 
 type OhlcvRow = [string, string, string, string, string, string];
 
@@ -1015,6 +1027,115 @@ describe('analyze_bb_snapshot', () => {
 		expect(text).toContain('BB推移');
 		expect(text).toContain('2024-01-01');
 		expect(text).toContain('2024-01-02');
+	});
+
+	// ── 上流 warning の伝播（取得層 meta.warning / 計算層 meta.warnings） ──
+	describe('上流 warning の伝播', () => {
+		const mockedAnalyzeIndicators = vi.mocked(analyzeIndicators);
+
+		/**
+		 * BB が最小限に動くだけのモック応答を生成する。
+		 * fetch 経由ではなく analyzeIndicators を直接モックすることで、
+		 * meta.warning / meta.warnings の伝播だけを検証する。
+		 */
+		function buildBbIndicatorsMock(metaExtra: Record<string, unknown> = {}) {
+			const len = 60;
+			const normalized = Array.from({ length: len }, (_, i) => ({
+				close: 10_000_000,
+				isoTime: `2024-01-${String((i % 28) + 1).padStart(2, '0')}T00:00:00.000Z`,
+			}));
+			const middleSeries = Array.from({ length: len }, () => 10_000_000);
+			const upperSeries = Array.from({ length: len }, () => 10_100_000);
+			const lowerSeries = Array.from({ length: len }, () => 9_900_000);
+			return {
+				ok: true as const,
+				summary: 'ok',
+				data: {
+					normalized,
+					indicators: {
+						BB2_middle: 10_000_000,
+						BB2_upper: 10_100_000,
+						BB2_lower: 9_900_000,
+						bb2_series: { upper: upperSeries, middle: middleSeries, lower: lowerSeries },
+					},
+				},
+				meta: { pair: 'btc_jpy', type: '1day', count: len, ...metaExtra },
+			};
+		}
+
+		it('default mode: 上流 meta.warning（取得層）が tool の meta.warning と summary 先頭に伝播する', async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(
+				asMockResult(buildBbIndicatorsMock({ warning: '⚠️ partial fetch (3日中1日の取得に失敗)' })),
+			);
+
+			const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'default');
+			assertOk(res);
+			expect(res.meta.warning).toBe('⚠️ partial fetch (3日中1日の取得に失敗)');
+			expect(res.meta.warnings).toBeUndefined();
+			expect(res.summary.split('\n')[0]).toContain('⚠️ partial fetch');
+		});
+
+		it('default mode: 上流 meta.warnings（計算層）が tool の meta.warnings に継承される', async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(
+				asMockResult(buildBbIndicatorsMock({ warnings: ['SMA_200: データ不足', 'Ichimoku: データ不足'] })),
+			);
+
+			const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'default');
+			assertOk(res);
+			expect(res.meta.warnings).toEqual(['SMA_200: データ不足', 'Ichimoku: データ不足']);
+			expect(res.meta.warning).toBeUndefined();
+			expect(res.summary).toContain('⚠️ SMA_200: データ不足');
+			expect(res.summary).toContain('⚠️ Ichimoku: データ不足');
+		});
+
+		it('default mode: 取得層 warning と計算層 warnings は別フィールドで保持される（混入 NG）', async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(
+				asMockResult(
+					buildBbIndicatorsMock({
+						warning: '⚠️ partial fetch (multi-year)',
+						warnings: ['SMA_200: データ不足'],
+					}),
+				),
+			);
+
+			const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'default');
+			assertOk(res);
+			expect(res.meta.warning).toBe('⚠️ partial fetch (multi-year)');
+			expect(res.meta.warnings).toEqual(['SMA_200: データ不足']);
+			expect(res.meta.warnings).not.toContain('partial fetch (multi-year)');
+			const lines = res.summary.split('\n');
+			expect(lines[0]).toContain('⚠️ partial fetch (multi-year)');
+			expect(lines[1]).toContain('⚠️ SMA_200: データ不足');
+		});
+
+		it('default mode: 上流 warning なしなら meta.warning / meta.warnings は付与されない', async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(buildBbIndicatorsMock()));
+
+			const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'default');
+			assertOk(res);
+			expect(res.meta.warning).toBeUndefined();
+			expect(res.meta.warnings).toBeUndefined();
+			expect(res.summary.startsWith('⚠️')).toBe(false);
+		});
+
+		it('extended mode: 上流 meta.warning（取得層）と meta.warnings（計算層）が両方伝播する', async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(
+				asMockResult(
+					buildBbIndicatorsMock({
+						warning: '⚠️ partial fetch (multi-year)',
+						warnings: ['SMA_200: データ不足'],
+					}),
+				),
+			);
+
+			const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'extended');
+			assertOk(res);
+			expect(res.meta.warning).toBe('⚠️ partial fetch (multi-year)');
+			expect(res.meta.warnings).toEqual(['SMA_200: データ不足']);
+			const lines = res.summary.split('\n');
+			expect(lines[0]).toContain('⚠️ partial fetch (multi-year)');
+			expect(lines[1]).toContain('⚠️ SMA_200: データ不足');
+		});
 	});
 
 	// ── Year-aware mock: specific zone / position branches ──────────────

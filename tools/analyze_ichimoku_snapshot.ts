@@ -3,6 +3,7 @@ import { formatSummary } from '../lib/formatter.js';
 import { avg } from '../lib/math.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
+import { extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
 import {
 	type AnalyzeIchimokuSnapshotDataSchemaOut,
 	AnalyzeIchimokuSnapshotInputSchema,
@@ -253,6 +254,9 @@ export default async function analyzeIchimokuSnapshot(
 			return AnalyzeIchimokuSnapshotOutputSchema.parse(
 				fail(indRes?.summary || 'indicators failed', (indRes?.meta as { errorType?: string })?.errorType || 'internal'),
 			) as ReturnType<typeof fail>;
+
+		// 上流 analyze_indicators の meta.warning（取得層）と meta.warnings（計算層）を別系統で伝播する。
+		const { warning, warnings } = extractUpstreamWarning(indRes.meta);
 
 		const latest = indRes.data.indicators;
 		const close = indRes.data.normalized.at(-1)?.close ?? null;
@@ -537,8 +541,13 @@ export default async function analyzeIchimokuSnapshot(
 			tags,
 		};
 
-		const meta = createMeta(chk.pair, { type, count: indRes.data.normalized.length });
-		const text = buildIchimokuSnapshotText({
+		const meta = createMeta(chk.pair, {
+			type,
+			count: indRes.data.normalized.length,
+			...(warning ? { warning } : {}),
+			...(warnings && warnings.length > 0 ? { warnings } : {}),
+		});
+		const baseText = buildIchimokuSnapshotText({
 			pair: chk.pair,
 			type,
 			close,
@@ -574,6 +583,7 @@ export default async function analyzeIchimokuSnapshot(
 			futureSpanB,
 			tkDistPct,
 		});
+		const text = prependWarnings(baseText, { warning, warnings }, { separator: '\n' });
 		return AnalyzeIchimokuSnapshotOutputSchema.parse(
 			ok(
 				text,

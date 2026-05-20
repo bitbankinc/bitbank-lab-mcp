@@ -312,6 +312,10 @@ export const AnalyzeIchimokuSnapshotDataSchemaOut = z.object({
 export const AnalyzeIchimokuSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number().int(),
+	/** 取得層の不完全性（上流 get_candles / analyze_indicators の meta.warning を継承）。 */
+	warning: z.string().optional(),
+	/** 計算層の不完全性（analyze_indicators の meta.warnings を継承）。 */
+	warnings: z.array(z.string()).optional(),
 });
 
 export const AnalyzeIchimokuSnapshotOutputSchema = toolResultSchema(
@@ -379,6 +383,10 @@ export const AnalyzeBbSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	mode: z.enum(['default', 'extended']),
 	// allow additional meta injected by implementation
 	extra: z.object({}).passthrough().optional(),
+	/** 取得層の不完全性（上流 get_candles / analyze_indicators の meta.warning を継承）。 */
+	warning: z.string().optional(),
+	/** 計算層の不完全性（analyze_indicators の meta.warnings を継承）。 */
+	warnings: z.array(z.string()).optional(),
 });
 
 export const AnalyzeBbSnapshotOutputSchema = toolResultSchema(
@@ -440,6 +448,10 @@ export const AnalyzeSmaSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number().int(),
 	periods: z.array(z.number().int()),
+	/** 取得層の不完全性（上流 get_candles / analyze_indicators の meta.warning を継承）。 */
+	warning: z.string().optional(),
+	/** 計算層の不完全性（analyze_indicators の meta.warnings を継承）。 */
+	warnings: z.array(z.string()).optional(),
 });
 
 export const AnalyzeSmaSnapshotOutputSchema = toolResultSchema(
@@ -500,6 +512,10 @@ export const AnalyzeEmaSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number().int(),
 	periods: z.array(z.number().int()),
+	/** 取得層の不完全性（上流 get_candles / analyze_indicators の meta.warning を継承）。 */
+	warning: z.string().optional(),
+	/** 計算層の不完全性（analyze_indicators の meta.warnings を継承）。getCandles 直叩き path では undefined。 */
+	warnings: z.array(z.string()).optional(),
 });
 
 export const AnalyzeEmaSnapshotOutputSchema = toolResultSchema(
@@ -550,6 +566,10 @@ export const AnalyzeStochSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number().int(),
 	params: z.object({ kPeriod: z.number().int(), smoothK: z.number().int(), smoothD: z.number().int() }),
+	/** 取得層の不完全性（上流 get_candles / analyze_indicators の meta.warning を継承）。 */
+	warning: z.string().optional(),
+	/** 計算層の不完全性（analyze_indicators の meta.warnings を継承）。getCandles 直叩き path では undefined。 */
+	warnings: z.array(z.string()).optional(),
 });
 
 export const AnalyzeStochSnapshotOutputSchema = toolResultSchema(

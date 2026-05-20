@@ -224,4 +224,70 @@ describe('analyze_ichimoku_snapshot', () => {
 		expect(res.data.assessment.cloudSlope).toBe('unknown');
 		expect(res.data.cloud!.direction).toBeNull();
 	});
+
+	// ── 上流 warning の伝播（取得層 meta.warning / 計算層 meta.warnings） ──────
+
+	it('上流 meta.warning（取得層）が tool の meta.warning と summary 先頭に伝播する', async () => {
+		const ind = buildMockIndicatorSuccess();
+		ind.meta = {
+			...ind.meta,
+			warning: '⚠️ partial fetch (3日中1日の取得に失敗)',
+		} as typeof ind.meta;
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(ind));
+
+		const res = await analyzeIchimokuSnapshot('btc_jpy', '1day', 120, 10);
+
+		assertOk(res);
+		expect(res.meta.warning).toBe('⚠️ partial fetch (3日中1日の取得に失敗)');
+		expect(res.meta.warnings).toBeUndefined();
+		expect(res.summary.split('\n')[0]).toContain('⚠️ partial fetch');
+	});
+
+	it('上流 meta.warnings（計算層）が tool の meta.warnings に継承される', async () => {
+		const ind = buildMockIndicatorSuccess();
+		ind.meta = {
+			...ind.meta,
+			warnings: ['Ichimoku: データ不足', 'SMA_200: データ不足'],
+		} as typeof ind.meta;
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(ind));
+
+		const res = await analyzeIchimokuSnapshot('btc_jpy', '1day', 120, 10);
+
+		assertOk(res);
+		expect(res.meta.warnings).toEqual(['Ichimoku: データ不足', 'SMA_200: データ不足']);
+		expect(res.meta.warning).toBeUndefined();
+		expect(res.summary).toContain('⚠️ Ichimoku: データ不足');
+		expect(res.summary).toContain('⚠️ SMA_200: データ不足');
+	});
+
+	it('上流の取得層 warning と計算層 warnings は別フィールドで保持される（混入 NG）', async () => {
+		const ind = buildMockIndicatorSuccess();
+		ind.meta = {
+			...ind.meta,
+			warning: '⚠️ partial fetch (multi-year)',
+			warnings: ['Ichimoku: データ不足'],
+		} as typeof ind.meta;
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(ind));
+
+		const res = await analyzeIchimokuSnapshot('btc_jpy', '1day', 120, 10);
+
+		assertOk(res);
+		expect(res.meta.warning).toBe('⚠️ partial fetch (multi-year)');
+		expect(res.meta.warnings).toEqual(['Ichimoku: データ不足']);
+		expect(res.meta.warnings).not.toContain('partial fetch (multi-year)');
+		const lines = res.summary.split('\n');
+		expect(lines[0]).toContain('⚠️ partial fetch (multi-year)');
+		expect(lines[1]).toContain('⚠️ Ichimoku: データ不足');
+	});
+
+	it('上流 warning なしなら meta.warning / meta.warnings は付与されない', async () => {
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(buildMockIndicatorSuccess()));
+
+		const res = await analyzeIchimokuSnapshot('btc_jpy', '1day', 120, 10);
+
+		assertOk(res);
+		expect(res.meta.warning).toBeUndefined();
+		expect(res.meta.warnings).toBeUndefined();
+		expect(res.summary.startsWith('⚠️')).toBe(false);
+	});
 });

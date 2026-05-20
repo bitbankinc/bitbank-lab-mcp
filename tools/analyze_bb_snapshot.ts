@@ -3,6 +3,7 @@ import { nowIso } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
+import { extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
 import {
 	type AnalyzeBbSnapshotDataSchemaOut,
 	AnalyzeBbSnapshotInputSchema,
@@ -104,6 +105,9 @@ export default async function analyzeBbSnapshot(
 			return AnalyzeBbSnapshotOutputSchema.parse(
 				fail(indRes?.summary || 'indicators failed', (indRes?.meta as { errorType?: string })?.errorType || 'internal'),
 			) as ReturnType<typeof fail>;
+
+		// 上流 analyze_indicators の meta.warning（取得層）と meta.warnings（計算層）を別系統で伝播する。
+		const { warning, warnings } = extractUpstreamWarning(indRes.meta);
 
 		const close = indRes.data.normalized.at(-1)?.close ?? null;
 		const mid = indRes.data.indicators.BB2_middle ?? indRes.data.indicators.BB_middle ?? null;
@@ -272,7 +276,7 @@ export default async function analyzeBbSnapshot(
 				next_steps,
 			};
 			// content 強化用: LLM が本文だけ見ても要点が掴めるように複数行の要約を生成
-			const summaryLines = buildBbDefaultText({
+			const baseSummaryLines = buildBbDefaultText({
 				baseSummary: summaryBase,
 				position: interpretation.position,
 				bandwidth_state: interpretation.bandwidth_state,
@@ -288,6 +292,7 @@ export default async function analyzeBbSnapshot(
 				bandWidthPct,
 				timeseries,
 			});
+			const summaryLines = prependWarnings(baseSummaryLines, { warning, warnings }, { separator: '\n' });
 			const meta = createMeta(chk.pair, {
 				type,
 				count: indRes.data.normalized.length,
@@ -300,6 +305,8 @@ export default async function analyzeBbSnapshot(
 						last_updated: nowIso(),
 					},
 				},
+				...(warning ? { warning } : {}),
+				...(warnings && warnings.length > 0 ? { warnings } : {}),
 			});
 			return AnalyzeBbSnapshotOutputSchema.parse(ok(summaryLines, data, meta));
 		}
@@ -350,12 +357,15 @@ export default async function analyzeBbSnapshot(
 					last_updated: nowIso(),
 				},
 			},
+			...(warning ? { warning } : {}),
+			...(warnings && warnings.length > 0 ? { warnings } : {}),
 		});
-		const extSummary =
+		const baseExtSummary =
 			summaryBase +
 			`\n\n---\n📌 含まれるもの: ボリンジャーバンド拡張（±1σ/±2σ/±3σ）、Zスコア、バンド幅` +
 			`\n📌 含まれないもの: 他のテクニカル指標（RSI・MACD・一目均衡表）、出来高フロー、板情報` +
 			`\n📌 補完ツール: analyze_indicators（他指標）, get_flow_metrics（出来高）, get_volatility_metrics（ボラ詳細）`;
+		const extSummary = prependWarnings(baseExtSummary, { warning, warnings }, { separator: '\n' });
 		return AnalyzeBbSnapshotOutputSchema.parse(ok(extSummary, data, meta));
 	} catch (e: unknown) {
 		return failFromError(e, { schema: AnalyzeBbSnapshotOutputSchema });
