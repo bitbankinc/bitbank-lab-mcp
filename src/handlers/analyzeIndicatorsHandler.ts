@@ -177,7 +177,8 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 		lines.push('');
 		lines.push(`    ${recentRsiFormatted.join(' → ')}`);
 	}
-	const fmtMacd = (v: number | null) => (v == null ? 'n/a' : `${Math.round(Number(v)).toLocaleString('ja-JP')}`);
+	const fmtMacd = (v: number | null) =>
+		v == null || !Number.isFinite(v) ? 'n/a' : Math.round(v).toLocaleString('ja-JP');
 	const macdLineFmt = fmtMacd(macdLine);
 	const macdSignalFmt = fmtMacd(macdSignal);
 	const macdHistFmt = fmtMacd(macdHist);

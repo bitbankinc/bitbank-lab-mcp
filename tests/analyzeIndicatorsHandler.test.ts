@@ -166,6 +166,17 @@ describe('buildIndicatorsText', () => {
 		expect(text).toContain('signal=n/a');
 	});
 
+	it('MACD line / signal が NaN / Infinity → n/a（NaN を出さない）', () => {
+		const text = buildIndicatorsText(
+			baseInput({ macdLine: Number.NaN, macdSignal: Number.POSITIVE_INFINITY, macdHist: Number.NEGATIVE_INFINITY }),
+		);
+		expect(text).toContain('line=n/a');
+		expect(text).toContain('signal=n/a');
+		expect(text).toContain('hist=n/a');
+		expect(text).not.toContain('NaN');
+		expect(text).not.toContain('Infinity');
+	});
+
 	it('MACD 負値も整数 + toLocaleString で表示される', () => {
 		const text = buildIndicatorsText(baseInput({ macdLine: -1234, macdSignal: -567 }));
 		expect(text).toContain('line=-1,234');
