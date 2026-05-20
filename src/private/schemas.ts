@@ -945,7 +945,7 @@ export const GetOrderOutputSchema = z.union([
 
 export const GetOrdersInfoInputSchema = z.object({
 	pair: z.string().describe('通貨ペア（例: btc_jpy）'),
-	order_ids: z.array(z.number()).min(1).describe('照会する注文IDの配列'),
+	order_ids: z.array(z.number()).min(1).max(30).describe('照会する注文IDの配列（最大30件）'),
 });
 
 export const GetOrdersInfoDataSchema = z.object({

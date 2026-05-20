@@ -241,6 +241,16 @@ describe('get_orders_info', () => {
 		expect(result.data.orders[0].position_side).toBeUndefined();
 		expect(result.summary).not.toMatch(/\b(long|short)\b/);
 	});
+
+	it('order_ids が 31 件で validation_error を返す（cancel_orders と同じ上限 30 件）', async () => {
+		const orderIds = Array.from({ length: 31 }, (_, i) => 4000 + i);
+
+		const { default: getOrdersInfo } = await import('../../tools/private/get_orders_info.js');
+		const result = await getOrdersInfo({ pair: 'btc_jpy', order_ids: orderIds });
+
+		assertFail(result);
+		expect(result.meta.errorType).toBe('validation_error');
+	});
 });
 
 describe('get_orders_info — 非 PrivateApiError の generic catch', () => {

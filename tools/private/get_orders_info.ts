@@ -16,7 +16,15 @@ import { GetOrdersInfoInputSchema, GetOrdersInfoOutputSchema } from '../../src/p
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
 export default async function getOrdersInfo(args: { pair: string; order_ids: number[] }) {
-	const { pair, order_ids } = args;
+	// 入力スキーマで弾けるケース（order_ids の上限 30 件など）を validation_error として返す。
+	// MCP 経由では SDK が自動検証するが、ツールを直接呼び出す経路でも単一ソースの Zod 制約を効かせる。
+	const parsed = GetOrdersInfoInputSchema.safeParse(args);
+	if (!parsed.success) {
+		return GetOrdersInfoOutputSchema.parse(
+			fail(parsed.error.issues[0]?.message ?? '入力が不正です', 'validation_error'),
+		);
+	}
+	const { pair, order_ids } = parsed.data;
 	const client = getDefaultClient();
 
 	try {
@@ -77,7 +85,7 @@ export default async function getOrdersInfo(args: { pair: string; order_ids: num
 export const toolDef: ToolDefinition = {
 	name: 'get_orders_info',
 	description:
-		'[Orders Info / Bulk Order Status] 複数の注文IDの詳細情報を一括取得。ステータス・約定状況を一度に確認できる。Private API。',
+		'[Orders Info / Bulk Order Status] 複数の注文IDの詳細情報を一括取得（最大30件）。ステータス・約定状況を一度に確認できる。Private API。',
 	inputSchema: GetOrdersInfoInputSchema,
 	handler: async (args) => {
 		const result = await getOrdersInfo(args as { pair: string; order_ids: number[] });

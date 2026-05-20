@@ -153,7 +153,8 @@ export default async function getMyOrders(args: { pair?: string; count?: number;
 export const toolDef: ToolDefinition = {
 	name: 'get_my_orders',
 	description:
-		'[My Orders / Open Orders / Active Orders] 自分の未約定注文一覧（my orders / open orders / active orders / pending）を取得。通貨ペア・期間でフィルタ可能。Private API。',
+		'[My Orders / Open Orders / Active Orders] 自分の未約定注文一覧（my orders / open orders / active orders / pending）を取得。通貨ペア・期間でフィルタ可能。Private API。' +
+		'※ 本ツールは現物注文専用。信用注文の照会は `get_margin_positions` / 信用系ツールを使う。',
 	inputSchema: GetMyOrdersInputSchema,
 	handler: async (args: { pair?: string; count?: number; since?: string; end?: string }) => getMyOrders(args),
 };
