@@ -23,6 +23,24 @@ export function formatPair(pair: string): string {
 }
 
 /**
+ * 注文表示用の position_side ラベル。
+ * 信用注文の 4 パターン（ロング新規 / ロング決済 / ショート新規 / ショート決済）を
+ * side ラベル（買 / 売）と組み合わせて LLM が判別できるようにするための prefix。
+ *
+ * - `'long'`  → `'long '`（末尾スペース付き。後続の sideLabel と連結する前提）
+ * - `'short'` → `'short '`
+ * - その他（現物注文・undefined）→ `''`
+ *
+ * ⚠️ 信用建玉表示（get_margin_positions / analyzeMyPortfolio）は
+ * 「ロング / ショート」を使うため本ヘルパは流用しない。
+ */
+export function formatOrderPositionLabel(positionSide: string | null | undefined): string {
+	if (positionSide === 'long') return 'long ';
+	if (positionSide === 'short') return 'short ';
+	return '';
+}
+
+/**
  * タイムスタンプをJST表示形式に変換
  * @param ts タイムスタンプ（ミリ秒）。未指定時は現在時刻
  * @param tz タイムゾーン（デフォルト: 'Asia/Tokyo'）

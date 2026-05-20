@@ -12,7 +12,7 @@
  */
 
 import { nowIso, toIsoMs } from '../../lib/datetime.js';
-import { formatPair, formatPrice } from '../../lib/formatter.js';
+import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
 import { logTradeAction } from '../../lib/logger.js';
 import { fail, ok, toStructured } from '../../lib/result.js';
 import { getBitbankErrorMessage } from '../../src/lib/bitbank-errors.js';
@@ -50,13 +50,14 @@ export default async function cancelOrder(
 		const timestamp = nowIso();
 		const isJpy = pair.includes('jpy');
 		const sideLabel = rawOrder.side === 'buy' ? '買' : '売';
+		const posLabel = formatOrderPositionLabel(rawOrder.position_side);
 		const price = rawOrder.price ? (isJpy ? formatPrice(Number(rawOrder.price)) : rawOrder.price) : '成行';
 		const amount = rawOrder.start_amount ?? rawOrder.executed_amount;
 
 		const lines: string[] = [];
 		lines.push(`注文キャンセル完了: ${formatPair(pair)}`);
 		lines.push(`  注文ID: ${order_id}`);
-		lines.push(`  ${sideLabel} ${rawOrder.type} ${amount} @ ${price}`);
+		lines.push(`  ${posLabel}${sideLabel} ${rawOrder.type} ${amount} @ ${price}`);
 		lines.push(`  ステータス: ${rawOrder.status}`);
 		if (rawOrder.executed_amount && rawOrder.executed_amount !== '0') {
 			lines.push(`  約定済み数量: ${rawOrder.executed_amount}`);

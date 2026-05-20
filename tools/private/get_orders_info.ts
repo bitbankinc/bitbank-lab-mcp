@@ -8,7 +8,7 @@
  */
 
 import { nowIso, toIsoMs } from '../../lib/datetime.js';
-import { formatPair, formatPrice } from '../../lib/formatter.js';
+import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
 import { fail, ok, toStructured } from '../../lib/result.js';
 import { getDefaultClient, PrivateApiError } from '../../src/private/client.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
@@ -44,7 +44,7 @@ export default async function getOrdersInfo(args: { pair: string; order_ids: num
 			lines.push('');
 			for (const o of orders) {
 				const sideLabel = o.side === 'buy' ? '買' : '売';
-				const posLabel = o.position_side === 'long' ? 'long ' : o.position_side === 'short' ? 'short ' : '';
+				const posLabel = formatOrderPositionLabel(o.position_side);
 				const price = o.price ? (isJpy ? formatPrice(Number(o.price)) : o.price) : '成行';
 				const amount = o.start_amount ?? o.executed_amount;
 				lines.push(

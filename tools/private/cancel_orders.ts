@@ -6,7 +6,7 @@
  */
 
 import { nowIso } from '../../lib/datetime.js';
-import { formatPair, formatPrice } from '../../lib/formatter.js';
+import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
 import { logTradeAction } from '../../lib/logger.js';
 import { fail, ok, toStructured } from '../../lib/result.js';
 import { getDefaultClient, PrivateApiError } from '../../src/private/client.js';
@@ -51,9 +51,10 @@ export default async function cancelOrders(
 			lines.push('');
 			for (const o of orders) {
 				const sideLabel = o.side === 'buy' ? '買' : '売';
+				const posLabel = formatOrderPositionLabel(o.position_side);
 				const price = o.price ? (isJpy ? formatPrice(Number(o.price)) : o.price) : '成行';
 				const amount = o.start_amount ?? o.executed_amount;
-				lines.push(`#${o.order_id} ${sideLabel}${o.type} ${amount} @ ${price} [${o.status}]`);
+				lines.push(`#${o.order_id} ${posLabel}${sideLabel}${o.type} ${amount} @ ${price} [${o.status}]`);
 			}
 		}
 

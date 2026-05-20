@@ -173,6 +173,61 @@ describe('preview_cancel_order', () => {
 			expect(result.summary).toContain('INACTIVE');
 		});
 
+		it('信用 long 注文（ロング新規=buy+long）の summary に long 表記が出る', async () => {
+			mockGetOrderOnce(mockOrder({ side: 'buy', position_side: 'long' }));
+			const previewCancelOrder = await loadPreviewCancelOrder();
+			const result = await previewCancelOrder({ pair: 'btc_jpy', order_id: 2001 });
+
+			assertOk(result);
+			expect(result.summary).toContain('long');
+			expect(result.summary).toContain('買');
+			expect(result.summary).not.toContain('short');
+			expect(result.data.order?.position_side).toBe('long');
+		});
+
+		it('信用 short 注文（ショート新規=sell+short）の summary に short 表記が出る', async () => {
+			mockGetOrderOnce(mockOrder({ side: 'sell', position_side: 'short' }));
+			const previewCancelOrder = await loadPreviewCancelOrder();
+			const result = await previewCancelOrder({ pair: 'btc_jpy', order_id: 2001 });
+
+			assertOk(result);
+			expect(result.summary).toContain('short');
+			expect(result.summary).toContain('売');
+			expect(result.data.order?.position_side).toBe('short');
+		});
+
+		it('ロング決済（sell+long）の summary に long と 売 が出る', async () => {
+			mockGetOrderOnce(mockOrder({ side: 'sell', position_side: 'long' }));
+			const previewCancelOrder = await loadPreviewCancelOrder();
+			const result = await previewCancelOrder({ pair: 'btc_jpy', order_id: 2001 });
+
+			assertOk(result);
+			expect(result.summary).toContain('long');
+			expect(result.summary).toContain('売');
+			expect(result.data.order?.position_side).toBe('long');
+		});
+
+		it('ショート決済（buy+short）の summary に short と 買 が出る', async () => {
+			mockGetOrderOnce(mockOrder({ side: 'buy', position_side: 'short' }));
+			const previewCancelOrder = await loadPreviewCancelOrder();
+			const result = await previewCancelOrder({ pair: 'btc_jpy', order_id: 2001 });
+
+			assertOk(result);
+			expect(result.summary).toContain('short');
+			expect(result.summary).toContain('買');
+			expect(result.data.order?.position_side).toBe('short');
+		});
+
+		it('現物注文（position_side なし）の summary に long/short ラベルは出ない', async () => {
+			mockGetOrderOnce(mockOrder());
+			const previewCancelOrder = await loadPreviewCancelOrder();
+			const result = await previewCancelOrder({ pair: 'btc_jpy', order_id: 2001 });
+
+			assertOk(result);
+			expect(result.data.order?.position_side).toBeUndefined();
+			expect(result.summary).not.toMatch(/\b(long|short)\b/);
+		});
+
 		it('get_order 失敗時もキャンセルプレビューは ok を返す（フォールバック）', async () => {
 			// get_order が API エラーを返す（既にキャンセル済み等）
 			globalThis.fetch = vi

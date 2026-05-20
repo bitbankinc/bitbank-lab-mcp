@@ -111,6 +111,71 @@ describe('cancel_order', () => {
 		expect(result.summary).toContain('売');
 	});
 
+	it('信用 long 注文（ロング新規=buy+long）の summary に long ラベルが出る', async () => {
+		setupFetchMock(mockBitbankSuccess(canceledOrderResponse({ side: 'buy', position_side: 'long' })));
+		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_id: 2001 });
+
+		const { default: cancelOrder } = await import('../../tools/private/cancel_order.js');
+		const result = await cancelOrder({ pair: 'btc_jpy', order_id: 2001, confirmation_token, token_expires_at });
+
+		assertOk(result);
+		expect(result.summary).toContain('long');
+		expect(result.summary).toContain('買');
+		expect(result.summary).not.toContain('short');
+		expect(result.data.order.position_side).toBe('long');
+	});
+
+	it('信用 short 注文（ショート新規=sell+short）の summary に short ラベルが出る', async () => {
+		setupFetchMock(mockBitbankSuccess(canceledOrderResponse({ side: 'sell', position_side: 'short' })));
+		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_id: 2001 });
+
+		const { default: cancelOrder } = await import('../../tools/private/cancel_order.js');
+		const result = await cancelOrder({ pair: 'btc_jpy', order_id: 2001, confirmation_token, token_expires_at });
+
+		assertOk(result);
+		expect(result.summary).toContain('short');
+		expect(result.summary).toContain('売');
+		expect(result.data.order.position_side).toBe('short');
+	});
+
+	it('ロング決済（sell+long）の summary に long ラベルと 売 が出る', async () => {
+		setupFetchMock(mockBitbankSuccess(canceledOrderResponse({ side: 'sell', position_side: 'long' })));
+		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_id: 2001 });
+
+		const { default: cancelOrder } = await import('../../tools/private/cancel_order.js');
+		const result = await cancelOrder({ pair: 'btc_jpy', order_id: 2001, confirmation_token, token_expires_at });
+
+		assertOk(result);
+		expect(result.summary).toContain('long');
+		expect(result.summary).toContain('売');
+		expect(result.data.order.position_side).toBe('long');
+	});
+
+	it('ショート決済（buy+short）の summary に short ラベルと 買 が出る', async () => {
+		setupFetchMock(mockBitbankSuccess(canceledOrderResponse({ side: 'buy', position_side: 'short' })));
+		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_id: 2001 });
+
+		const { default: cancelOrder } = await import('../../tools/private/cancel_order.js');
+		const result = await cancelOrder({ pair: 'btc_jpy', order_id: 2001, confirmation_token, token_expires_at });
+
+		assertOk(result);
+		expect(result.summary).toContain('short');
+		expect(result.summary).toContain('買');
+		expect(result.data.order.position_side).toBe('short');
+	});
+
+	it('現物注文（position_side なし）の summary に long/short ラベルは出ない', async () => {
+		setupFetchMock(mockBitbankSuccess(canceledOrderResponse()));
+		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_id: 2001 });
+
+		const { default: cancelOrder } = await import('../../tools/private/cancel_order.js');
+		const result = await cancelOrder({ pair: 'btc_jpy', order_id: 2001, confirmation_token, token_expires_at });
+
+		assertOk(result);
+		expect(result.data.order.position_side).toBeUndefined();
+		expect(result.summary).not.toMatch(/\b(long|short)\b/);
+	});
+
 	it('注文が見つからない場合（50009）に lib の専用文言を返す', async () => {
 		setupFetchMock(mockBitbankError(50009), 400);
 		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_id: 99999 });

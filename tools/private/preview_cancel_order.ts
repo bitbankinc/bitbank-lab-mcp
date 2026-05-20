@@ -10,7 +10,7 @@
  * 渡しフォールバックする（Progressive Enhancement）。
  */
 
-import { formatPair, formatPrice } from '../../lib/formatter.js';
+import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
 import { ok, toStructured } from '../../lib/result.js';
 import { generateToken } from '../../src/private/confirmation.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
@@ -22,11 +22,12 @@ import getOrder from './get_order.js';
 /** 注文詳細をキャンセルプレビューのサマリ行に整形する */
 function formatOrderDetailLines(order: OrderResponse, pair: string): string[] {
 	const sideLabel = order.side === 'buy' ? '買' : '売';
+	const posLabel = formatOrderPositionLabel(order.position_side);
 	const isJpy = pair.includes('jpy');
 	const price = order.price ? (isJpy ? formatPrice(Number(order.price)) : order.price) : '成行';
 	const amount = order.start_amount ?? order.executed_amount ?? '?';
 	const lines: string[] = [];
-	lines.push(`  方向: ${sideLabel} / タイプ: ${order.type}`);
+	lines.push(`  方向: ${posLabel}${sideLabel} / タイプ: ${order.type}`);
 	lines.push(`  数量: ${amount}（残: ${order.remaining_amount ?? '0'} / 約定: ${order.executed_amount}）`);
 	lines.push(`  価格: ${price}`);
 	if (order.trigger_price) {

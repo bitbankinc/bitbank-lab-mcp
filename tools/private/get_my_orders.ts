@@ -6,7 +6,7 @@
  */
 
 import { nowIso, parseIso8601, toIsoMs } from '../../lib/datetime.js';
-import { formatPair, formatPrice } from '../../lib/formatter.js';
+import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
 import { fail, ok, toStructured } from '../../lib/result.js';
 import { getDefaultClient, PrivateApiError } from '../../src/private/client.js';
 import { GetMyOrdersInputSchema, GetMyOrdersOutputSchema } from '../../src/private/schemas.js';
@@ -106,7 +106,7 @@ export default async function getMyOrders(args: { pair?: string; count?: number;
 
 			for (const o of orders) {
 				const sideLabel = o.side === 'buy' ? '買' : '売';
-				const posLabel = o.position_side === 'long' ? 'long ' : o.position_side === 'short' ? 'short ' : '';
+				const posLabel = formatOrderPositionLabel(o.position_side);
 				const isJpy = o.pair.includes('jpy');
 				const price = o.price ? (isJpy ? formatPrice(Number(o.price)) : o.price) : '成行';
 				const remaining = o.remaining_amount ?? '?';

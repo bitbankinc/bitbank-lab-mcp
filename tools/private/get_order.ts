@@ -8,7 +8,7 @@
  */
 
 import { nowIso, toIsoMs } from '../../lib/datetime.js';
-import { formatPair, formatPrice } from '../../lib/formatter.js';
+import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
 import { fail, ok, toStructured } from '../../lib/result.js';
 import { getDefaultClient, PrivateApiError } from '../../src/private/client.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
@@ -18,7 +18,7 @@ import type { ToolDefinition } from '../../src/tool-definition.js';
 /** 注文情報を人間可読な文字列に整形 */
 function formatOrderSummary(o: OrderResponse, pair: string): string {
 	const sideLabel = o.side === 'buy' ? '買' : '売';
-	const posLabel = o.position_side === 'long' ? 'long ' : o.position_side === 'short' ? 'short ' : '';
+	const posLabel = formatOrderPositionLabel(o.position_side);
 	const isJpy = pair.includes('jpy');
 	const price = o.price ? (isJpy ? formatPrice(Number(o.price)) : o.price) : '成行';
 	const amount = o.start_amount ?? o.executed_amount;

@@ -136,6 +136,73 @@ describe('cancel_orders', () => {
 		expect(result.summary).toContain('売');
 	});
 
+	it('信用 4 パターン（long/short × buy/sell）の混在を summary 各行から判別可能', async () => {
+		setupFetchMock(
+			mockBitbankSuccess({
+				orders: [
+					// ロング新規: buy + long
+					canceledOrder(3001, 'buy', { position_side: 'long' }),
+					// ロング決済: sell + long
+					canceledOrder(3002, 'sell', { position_side: 'long' }),
+					// ショート新規: sell + short
+					canceledOrder(3003, 'sell', { position_side: 'short' }),
+					// ショート決済: buy + short
+					canceledOrder(3004, 'buy', { position_side: 'short' }),
+				],
+			}),
+		);
+		const { confirmation_token, token_expires_at } = validToken({
+			pair: 'btc_jpy',
+			order_ids: [3001, 3002, 3003, 3004],
+		});
+
+		const { default: cancelOrders } = await import('../../tools/private/cancel_orders.js');
+		const result = await cancelOrders({
+			pair: 'btc_jpy',
+			order_ids: [3001, 3002, 3003, 3004],
+			confirmation_token,
+			token_expires_at,
+		});
+
+		assertOk(result);
+		// 各行が #order_id ${posLabel}${sideLabel}${type} ... 形式（posLabel 末尾スペース付き）
+		expect(result.summary).toContain('#3001 long 買');
+		expect(result.summary).toContain('#3002 long 売');
+		expect(result.summary).toContain('#3003 short 売');
+		expect(result.summary).toContain('#3004 short 買');
+		expect(result.data.orders.map((o) => o.position_side)).toEqual(['long', 'long', 'short', 'short']);
+	});
+
+	it('現物注文（position_side なし）混在時、信用注文のみに long/short ラベルが出る', async () => {
+		setupFetchMock(
+			mockBitbankSuccess({
+				orders: [
+					canceledOrder(3001, 'buy'), // 現物
+					canceledOrder(3002, 'sell', { position_side: 'short' }), // 信用ショート新規
+				],
+			}),
+		);
+		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_ids: [3001, 3002] });
+
+		const { default: cancelOrders } = await import('../../tools/private/cancel_orders.js');
+		const result = await cancelOrders({
+			pair: 'btc_jpy',
+			order_ids: [3001, 3002],
+			confirmation_token,
+			token_expires_at,
+		});
+
+		assertOk(result);
+		// 現物行は posLabel なし
+		expect(result.summary).toContain('#3001 買');
+		expect(result.summary).not.toContain('#3001 long');
+		expect(result.summary).not.toContain('#3001 short');
+		// 信用ショート行は short プレフィックス付き
+		expect(result.summary).toContain('#3002 short 売');
+		expect(result.data.orders[0].position_side).toBeUndefined();
+		expect(result.data.orders[1].position_side).toBe('short');
+	});
+
 	it('PrivateApiError で fail を返す', async () => {
 		setupFetchMock(mockBitbankError(20001), 400);
 		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_ids: [3001] });
