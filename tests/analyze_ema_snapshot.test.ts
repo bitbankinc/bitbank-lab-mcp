@@ -778,6 +778,27 @@ describe('analyze_ema_snapshot', () => {
 			expect(res.meta.warnings).toBeUndefined();
 			expect(res.summary.split('\n')[0]).toContain('⚠️ partial fetch');
 		});
+
+		it('getCandles path（custom periods）: 上流 meta.warnings が紛れ込んでも drop されて meta.warnings は undefined のまま', async () => {
+			// getCandles は本来 warnings を出さないが、契約レベルでの回帰防止として
+			// 上流 meta に warnings が混入していても tool 出力には載らないことを保証する。
+			const candlesResult = buildCandlesOk();
+			candlesResult.meta = {
+				...candlesResult.meta,
+				warning: '⚠️ partial fetch (multi-year)',
+				// biome-ignore lint/suspicious/noExplicitAny: 契約違反パターンを意図的に注入するためのキャスト
+				warnings: ['不正な計算層 warning（leak すべきでない）'] as any,
+			} as typeof candlesResult.meta;
+			mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesResult));
+
+			const res = await analyzeEmaSnapshot('btc_jpy', '1day', 220, [5, 15]);
+
+			assertOk(res);
+			expect(res.meta.warning).toBe('⚠️ partial fetch (multi-year)');
+			// getCandles path は取得層のみ。計算層 warnings は契約上 drop される。
+			expect(res.meta.warnings).toBeUndefined();
+			expect(res.summary).not.toContain('不正な計算層 warning');
+		});
 	});
 
 	describe('buildEmaSnapshotText', () => {

@@ -83,7 +83,8 @@ export default async function analyzeEmaSnapshot(
 				);
 			const upstream = extractUpstreamWarning(candlesResult.meta);
 			warning = upstream.warning;
-			warnings = upstream.warnings;
+			// getCandles path は取得層のみ。計算層 warnings は contract 上出ないため明示的に undefined にする。
+			warnings = undefined;
 			const normalized = candlesResult.data.normalized;
 			const allCloses = normalized.map((c) => c.close);
 			close = allCloses.at(-1) ?? null;

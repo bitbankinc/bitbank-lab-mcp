@@ -135,7 +135,8 @@ export default async function analyzeStochSnapshot(
 				);
 			const upstream = extractUpstreamWarning(candlesResult.meta);
 			warning = upstream.warning;
-			warnings = upstream.warnings;
+			// getCandles path は取得層のみ。計算層 warnings は contract 上出ないため明示的に undefined にする。
+			warnings = undefined;
 			const normalized = candlesResult.data.normalized;
 			const highs = normalized.map((c) => c.high);
 			const lows = normalized.map((c) => c.low);

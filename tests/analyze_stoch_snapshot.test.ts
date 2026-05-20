@@ -387,5 +387,35 @@ describe('analyze_stoch_snapshot', () => {
 			expect(res.meta.warnings).toBeUndefined();
 			expect(res.summary.split('\n')[0]).toContain('⚠️ partial fetch');
 		});
+
+		it('getCandles path（custom params）: 上流 meta.warnings が紛れ込んでも drop されて meta.warnings は undefined のまま', async () => {
+			// getCandles は本来 warnings を出さないが、契約レベルでの回帰防止として
+			// 上流 meta に warnings が混入していても tool 出力には載らないことを保証する。
+			mockedGetCandles.mockResolvedValueOnce(
+				asMockResult({
+					ok: true,
+					summary: 'ok',
+					data: {
+						normalized: makeFlatCandles(17, 100),
+						raw: {},
+					},
+					meta: {
+						pair: 'btc_jpy',
+						type: '1day',
+						count: 17,
+						warning: '⚠️ partial fetch (multi-year)',
+						warnings: ['不正な計算層 warning（leak すべきでない）'],
+					},
+				}),
+			);
+
+			const res = await analyzeStochSnapshot('btc_jpy', '1day', 40, 14, 3, 2);
+
+			assertOk(res);
+			expect(res.meta.warning).toBe('⚠️ partial fetch (multi-year)');
+			// getCandles path は取得層のみ。計算層 warnings は契約上 drop される。
+			expect(res.meta.warnings).toBeUndefined();
+			expect(res.summary).not.toContain('不正な計算層 warning');
+		});
 	});
 });
