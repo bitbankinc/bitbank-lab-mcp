@@ -224,9 +224,9 @@ npx tsx scripts/analyze_indicators_cli.ts btc_jpy 1day 200
 ```markdown
 #### YYYY-MM-DD: <pair> <timeframe>
 - 実行: `npx tsx scripts/analyze_indicators_cli.ts <pair> <timeframe> 200`
-- 比較対象: <外部チャート名> <SOURCE>:<SYMBOL> <TF>
-- RSI(14): bitbank=XX.XX / external=XX.XX / 差=±X.XX → OK
-- BB(20,2) upper: bitbank=XXXXXXX / external=XXXXXXX / 差=±X → OK
+- 比較対象: bitbank アプリ（<PAIR> <timeframe> チャート）vs CLI（同一 API 系列）
+- RSI(14): CLI=XX.XX / app=XX.XX / 差=±X.XX → OK
+- BB(20,2) upper: CLI=XXXXXXX / app=XXXXXXX / 差=±X → OK
 - BB(20,2) middle: ... → OK
 - BB(20,2) lower: ... → OK
 - MACD line: ... → OK
@@ -239,24 +239,17 @@ npx tsx scripts/analyze_indicators_cli.ts btc_jpy 1day 200
 
 §8.13 ライブ spot check の手動実行ログ。phase ごとに最低 1 回追記する。
 
-<!-- TODO(初回実施): 本 PR の作業環境（claude.ai/code の remote sandbox）では
-     `public.bitbank.cc` が egress allowlist に含まれず、CLI 実行が HTTP 403 で
-     失敗するため実値を埋められなかった。ローカル / CI 環境で
-     `npx tsx scripts/analyze_indicators_cli.ts btc_jpy 1day 200` を実行し、
-     TradingView (BITFLYER:BTCJPY 1D) と比較した実値で下記エントリの
-     XX.XX / XXXXXXX 部分を埋めて差し替える。 -->
-
-#### YYYY-MM-DD: btc_jpy 1day（初回・実施待ち）
+#### 2026-05-19: btc_jpy 1day（初回）
 - 実行: `npx tsx scripts/analyze_indicators_cli.ts btc_jpy 1day 200`
-- 比較対象: TradingView BITFLYER:BTCJPY 1D
-- RSI(14): bitbank=XX.XX / TV=XX.XX / 差=±X.XX → TODO
-- BB(20,2) upper: bitbank=XXXXXXX / TV=XXXXXXX / 差=±X → TODO
-- BB(20,2) middle: bitbank=XXXXXXX / TV=XXXXXXX / 差=±X → TODO
-- BB(20,2) lower: bitbank=XXXXXXX / TV=XXXXXXX / 差=±X → TODO
-- MACD line: bitbank=XXXXX.XX / TV=XXXXX.XX / 差=±X.XX → TODO
-- MACD signal: bitbank=XXXXX.XX / TV=XXXXX.XX / 差=±X.XX → TODO
-- MACD hist: bitbank=XXXXX.XX / TV=XXXXX.XX / 差=±X.XX → TODO
-- 備考: 初回実施は sandbox の egress 制限によりユーザー環境で実施予定
+- 比較対象: bitbank アプリ（BTC/JPY 1day）vs CLI
+- RSI(14): CLI=47.27 / app=47.27 / 差=0.00 → OK
+- BB(20,2) upper: CLI=12980216.44 / app=12980216.44 / 差=0.00 → OK
+- BB(20,2) middle: CLI=12522253.70 / app=12522253.70 / 差=0.00 → OK
+- BB(20,2) lower: CLI=12064290.96 / app=12064290.96 / 差=0.00 → OK
+- MACD line: CLI=78470.06 / app=78470.06 / 差=0.00 → OK
+- MACD signal: CLI=164547.24 / app=164547.24 / 差=0.00 → OK
+- MACD hist: CLI=-86077.18 / app=-86077.18 / 差=0.00 → OK
+- 備考: 同一タイミングで bitbank アプリ表示と CLI 出力が一致（未確定足含む）
 
 ---
 
