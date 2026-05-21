@@ -47,6 +47,22 @@ const BARS_PER_DAY: Record<string, number> = {
 	'1hour': 24,
 };
 
+// fetch タイムアウト・並列度・バッチ間ディレイ
+// 日次 chunk は bitbank API のレート制限に配慮し、3 並列 + バッチ間 500ms（≒6 req/s）に抑える。
+const CANDLE_FETCH = {
+	singleTimeoutMs: 5_000,
+	chunkTimeoutMs: 8_000,
+	dailyConcurrency: 3,
+	dailyBatchDelayMs: 500,
+} as const;
+
+// limit 上限（複数年/複数日取得時は緩和）
+const CANDLE_LIMIT = {
+	default: 1_000,
+	multiYear: 5_000,
+	multiDay: 10_000,
+} as const;
+
 function todayYyyymmdd(): string {
 	return today('YYYYMMDD');
 }
@@ -72,7 +88,10 @@ class UpstreamApiError extends Error {
 async function fetchSingleYear(pair: string, type: string, year: number): Promise<FetchChunkResult> {
 	const url = `${BITBANK_API_BASE}/${pair}/candlestick/${type}/${year}`;
 	try {
-		const { data: json, rateLimit } = await fetchJsonWithRateLimit(url, { timeoutMs: 8000, retries: DEFAULT_RETRIES });
+		const { data: json, rateLimit } = await fetchJsonWithRateLimit(url, {
+			timeoutMs: CANDLE_FETCH.chunkTimeoutMs,
+			retries: DEFAULT_RETRIES,
+		});
 		const jsonObj = json as {
 			success?: number;
 			data?: { candlestick?: Array<{ ohlcv?: unknown[] }>; code?: number };
@@ -102,7 +121,10 @@ async function fetchSingleDay(
 ): Promise<FetchChunkResult> {
 	const url = `${BITBANK_API_BASE}/${pair}/candlestick/${type}/${dateStr}`;
 	try {
-		const { data: json, rateLimit } = await fetchJsonWithRateLimit(url, { timeoutMs: 8000, retries: DEFAULT_RETRIES });
+		const { data: json, rateLimit } = await fetchJsonWithRateLimit(url, {
+			timeoutMs: CANDLE_FETCH.chunkTimeoutMs,
+			retries: DEFAULT_RETRIES,
+		});
 		const jsonObj = json as {
 			success?: number;
 			data?: { candlestick?: Array<{ ohlcv?: unknown[] }>; code?: number };
@@ -176,7 +198,11 @@ export default async function getCandles(
 	const needsMultiDay = isDailyType && daysNeeded > 1;
 
 	// 複数年/複数日取得の場合は上限を緩和
-	const maxLimit = needsMultiYear ? 5000 : needsMultiDay ? 10000 : 1000;
+	const maxLimit = needsMultiYear
+		? CANDLE_LIMIT.multiYear
+		: needsMultiDay
+			? CANDLE_LIMIT.multiDay
+			: CANDLE_LIMIT.default;
 	const limitCheck = validateLimit(limit, 1, maxLimit);
 	if (!limitCheck.ok) return failFromValidation(limitCheck);
 
@@ -243,8 +269,8 @@ export default async function getCandles(
 			// 最大同時リクエスト数を制限（API負荷対策）
 			// bitbank API: レート制限があるため、控えめな設定に
 			// 3並列 + バッチ間500ms遅延 → 約6リクエスト/秒
-			const maxConcurrent = 3;
-			const batchDelayMs = 500;
+			const maxConcurrent = CANDLE_FETCH.dailyConcurrency;
+			const batchDelayMs = CANDLE_FETCH.dailyBatchDelayMs;
 			const baseDate = dayjs(dateCheck.value, 'YYYYMMDD');
 			const dates = Array.from({ length: daysNeeded }, (_, i) => baseDate.subtract(i, 'day').format('YYYYMMDD'));
 
@@ -304,7 +330,10 @@ export default async function getCandles(
 		} else {
 			// 従来の単一リクエスト
 			const url = `${BITBANK_API_BASE}/${chk.pair}/candlestick/${type}/${dateCheck.value}`;
-			const fetchResult = await fetchJsonWithRateLimit(url, { timeoutMs: 5000, retries: DEFAULT_RETRIES });
+			const fetchResult = await fetchJsonWithRateLimit(url, {
+				timeoutMs: CANDLE_FETCH.singleTimeoutMs,
+				retries: DEFAULT_RETRIES,
+			});
 			json = fetchResult.data;
 			lastRateLimit = fetchResult.rateLimit;
 			const jsonObj = json as {
