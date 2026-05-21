@@ -153,6 +153,14 @@ function findRelaxedDoubleTop(
 			});
 			continue;
 		}
+		if (trend.classification === 'insufficient_data') {
+			pcand({
+				type: 'double_top',
+				accepted: true,
+				reason: 'prior_trend_insufficient_data',
+				idxs: [a.idx, b.idx, c.idx],
+			});
+		}
 
 		const start = candles[a.idx].isoTime,
 			end = candles[breakoutIdx].isoTime;
@@ -282,6 +290,14 @@ function findRelaxedDoubleBottom(
 			});
 			continue;
 		}
+		if (trend.classification === 'insufficient_data') {
+			pcand({
+				type: 'double_bottom',
+				accepted: true,
+				reason: 'prior_trend_insufficient_data',
+				idxs: [a.idx, b.idx, c.idx],
+			});
+		}
 
 		const start = candles[a.idx].isoTime,
 			end = candles[breakoutIdx].isoTime;
@@ -374,6 +390,14 @@ function tryFormingDoubleTop(ctx: DetectContext): PatternEntry | null {
 		});
 		return null;
 	}
+	if (trend.classification === 'insufficient_data') {
+		ctx.debugCandidates.push({
+			type: 'double_top',
+			accepted: true,
+			reason: 'prior_trend_insufficient_data',
+			indices: [leftPeak.idx, valley.idx, lastIdx],
+		});
+	}
 
 	const neckline = [
 		{ x: leftPeak.idx, y: valley.price },
@@ -463,6 +487,14 @@ function tryFormingDoubleBottom(ctx: DetectContext): PatternEntry | null {
 				],
 			});
 			continue;
+		}
+		if (trend.classification === 'insufficient_data') {
+			ctx.debugCandidates.push({
+				type: 'double_bottom',
+				accepted: true,
+				reason: 'prior_trend_insufficient_data',
+				indices: [leftValley.idx, midPeak.idx, rightValley.idx, lastIdx],
+			});
 		}
 
 		const neckline = [
@@ -583,6 +615,14 @@ export function detectDoubles(ctx: DetectContext): DetectResult {
 						],
 					});
 					continue;
+				}
+				if (trend.classification === 'insufficient_data') {
+					pcand({
+						type: 'double_top',
+						accepted: true,
+						reason: 'prior_trend_insufficient_data',
+						idxs: [a.idx, b.idx, c.idx],
+					});
 				}
 				const start = candles[a.idx].isoTime;
 				const end = candles[breakoutIdx].isoTime;
@@ -710,6 +750,14 @@ export function detectDoubles(ctx: DetectContext): DetectResult {
 						],
 					});
 					continue;
+				}
+				if (trend.classification === 'insufficient_data') {
+					pcand({
+						type: 'double_bottom',
+						accepted: true,
+						reason: 'prior_trend_insufficient_data',
+						idxs: [a.idx, b.idx, c.idx],
+					});
 				}
 				const start = candles[a.idx].isoTime;
 				const end = candles[breakoutIdx].isoTime;

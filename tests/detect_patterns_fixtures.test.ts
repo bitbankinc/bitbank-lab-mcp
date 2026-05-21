@@ -1019,6 +1019,40 @@ describe('detect_patterns fixtures', () => {
 				(c) => c.accepted === false && typeof c.reason === 'string' && c.reason.startsWith('prior_trend_mismatch'),
 			);
 			expect(priorTrendRejects).toHaveLength(0);
+
+			// 棄却ではなく「accepted: true, reason: prior_trend_insufficient_data」を debug に残す
+			const insufficientEntry = debugCands.find(
+				(c) => c.accepted === true && c.reason === 'prior_trend_insufficient_data',
+			);
+			expect(insufficientEntry).toBeDefined();
+		});
+
+		// double_bottom 側でも同等にデータ先頭付近の場合は insufficient_data を debug に残す
+		it('double_bottom でも pattern 開始がデータ先頭付近の場合、insufficient_data を debug に残す', async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildFormingDoubleBottomCandles())));
+
+			const res = await detectPatterns('btc_jpy', '1day', 24, {
+				patterns: ['double_bottom'],
+				swingDepth: 2,
+				tolerancePct: 0.03,
+				includeForming: true,
+				includeCompleted: false,
+			});
+
+			assertOk(res);
+
+			const debugCands =
+				(res.meta?.debug as { candidates?: Array<{ accepted?: boolean; reason?: string }> } | undefined)?.candidates ??
+				[];
+			const priorTrendRejects = debugCands.filter(
+				(c) => c.accepted === false && typeof c.reason === 'string' && c.reason.startsWith('prior_trend_mismatch'),
+			);
+			expect(priorTrendRejects).toHaveLength(0);
+
+			const insufficientEntry = debugCands.find(
+				(c) => c.accepted === true && c.reason === 'prior_trend_insufficient_data',
+			);
+			expect(insufficientEntry).toBeDefined();
 		});
 	});
 

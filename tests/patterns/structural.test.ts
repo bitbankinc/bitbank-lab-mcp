@@ -127,6 +127,18 @@ describe('validatePriorTrend', () => {
 			expect(result.ok).toBe(true);
 			expect(result.classification).toBe('insufficient_data');
 		});
+
+		// patternBars が大きく lookbackBars=30 にクランプされる場合、
+		// startIdx=15 では startIdx - lookbackBars = -15 < 0 なので
+		// 旧条件（startIdx < PRIOR_TREND_LOOKBACK_MIN=10）では拾えなかった。
+		it('startIdx < lookbackBars (max クランプ後) は insufficient_data', () => {
+			// startIdx=15, patternBars=120 → lookbackBars=30, 15 < 30 で insufficient
+			const closes = Array.from({ length: 16 }, () => 100);
+			const result = validatePriorTrend(makeCandles(closes), 15, 120, 'down_or_sideways');
+			expect(result.ok).toBe(true);
+			expect(result.classification).toBe('insufficient_data');
+			expect(result.lookbackBars).toBe(30);
+		});
 	});
 
 	describe('lookbackBars の clamp 動作', () => {

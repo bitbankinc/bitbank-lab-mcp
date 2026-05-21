@@ -90,7 +90,7 @@ export interface PriorTrendResult {
  *
  * - `expected='up_or_sideways'`  は `priorReturn >= -PRIOR_TREND_SIDEWAYS_PCT` を OK
  * - `expected='down_or_sideways'` は `priorReturn <=  PRIOR_TREND_SIDEWAYS_PCT` を OK
- * - データ不足（`priorStart === 0` かつ `startIdx < PRIOR_TREND_LOOKBACK_MIN`）は
+ * - データ不足（`startIdx - lookbackBars < 0`、すなわち `startIdx < lookbackBars`）は
  *   `ok=true`, `classification='insufficient_data'` で返す（hard reject しない）
  *
  * 将来 R² やレンジ性判定を追加するため、結果はメタ情報付きの object を返す。
@@ -110,13 +110,13 @@ export function validatePriorTrend(
 	const priorClose = candles[priorStart]?.close ?? 0;
 	const priorReturn = priorClose === 0 ? 0 : (startClose - priorClose) / priorClose;
 
-	if (priorStart === 0 && startIdx < PRIOR_TREND_LOOKBACK_MIN) {
+	if (startIdx < lookbackBars) {
 		return {
 			ok: true,
 			priorReturn,
 			lookbackBars,
 			classification: 'insufficient_data',
-			reason: 'startIdx < PRIOR_TREND_LOOKBACK_MIN',
+			reason: 'startIdx < lookbackBars',
 		};
 	}
 

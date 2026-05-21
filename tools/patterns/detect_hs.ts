@@ -64,6 +64,14 @@ function findStrictInverseHS(ctx: DetectContext): { patterns: DeduplicablePatter
 					});
 					continue;
 				}
+				if (trend.classification === 'insufficient_data') {
+					debugCandidates.push({
+						type: 'inverse_head_and_shoulders',
+						accepted: true,
+						reason: 'prior_trend_insufficient_data',
+						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
+					});
+				}
 				const neckline = [
 					{ x: p1.idx, y: p1.price },
 					{ x: p3.idx, y: p3.price },
@@ -184,6 +192,14 @@ function findStrictHS(ctx: DetectContext): { patterns: DeduplicablePattern[]; fo
 						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
 					});
 					continue;
+				}
+				if (trend.classification === 'insufficient_data') {
+					debugCandidates.push({
+						type: 'head_and_shoulders',
+						accepted: true,
+						reason: 'prior_trend_insufficient_data',
+						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
+					});
 				}
 				const neckline = [
 					{ x: p1.idx, y: p1.price },
@@ -326,6 +342,14 @@ function findRelaxedHS(ctx: DetectContext): DeduplicablePattern | null {
 				});
 				continue;
 			}
+			if (trend.classification === 'insufficient_data') {
+				debugCandidates.push({
+					type: 'head_and_shoulders',
+					accepted: true,
+					reason: 'prior_trend_insufficient_data',
+					indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
+				});
+			}
 			const valleyBetween = allValleys.filter((v: { idx: number }) => v.idx > p0.idx && v.idx < p4.idx);
 			const postValleys = allValleys.filter((v: { idx: number }) => v.idx > p2.idx);
 			const minValley = valleyBetween.length
@@ -437,6 +461,14 @@ function findRelaxedInverseHS(ctx: DetectContext): DeduplicablePattern | null {
 					indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
 				});
 				continue;
+			}
+			if (trend.classification === 'insufficient_data') {
+				debugCandidates.push({
+					type: 'inverse_head_and_shoulders',
+					accepted: true,
+					reason: 'prior_trend_insufficient_data',
+					indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
+				});
 			}
 			const peaksBetween = allPeaks.filter((v: { idx: number }) => v.idx > p0.idx && v.idx < p4.idx);
 			const postPeaks = allPeaks.filter((v: { idx: number }) => v.idx > p2.idx);
@@ -559,6 +591,14 @@ function tryFormingHS(ctx: DetectContext): DeduplicablePattern | null {
 		});
 		return null;
 	}
+	if (trend.classification === 'insufficient_data') {
+		ctx.debugCandidates.push({
+			type: 'head_and_shoulders',
+			accepted: true,
+			reason: 'prior_trend_insufficient_data',
+			indices: [left.idx, head.idx, postHeadValley.idx, rightShoulder.idx],
+		});
+	}
 
 	// ネックライン
 	const preHeadValleys = allValleys.filter((v) => v.idx > left.idx && v.idx < head.idx);
@@ -670,6 +710,14 @@ function tryFormingInverseHS(ctx: DetectContext): DeduplicablePattern | null {
 			indices: [left.idx, head.idx, postHeadPeak.idx, rightShoulder.idx],
 		});
 		return null;
+	}
+	if (trend.classification === 'insufficient_data') {
+		ctx.debugCandidates.push({
+			type: 'inverse_head_and_shoulders',
+			accepted: true,
+			reason: 'prior_trend_insufficient_data',
+			indices: [left.idx, head.idx, postHeadPeak.idx, rightShoulder.idx],
+		});
 	}
 
 	// ネックライン
