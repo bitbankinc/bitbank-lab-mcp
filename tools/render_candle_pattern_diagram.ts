@@ -56,21 +56,23 @@ const COLORS = {
 };
 
 // ----- レイアウト定数 -----
-// descBox 下端 = descBoxY + descBoxHeight、その下に最低 30px のバッファを確保し、
+// descBox 下端 = descBoxY + descBoxHeight、その下に最低 60px のバッファを確保し、
 // コンテナがアスペクト比で多少クリップしても説明文が切れないようにする。
+// candleSpacing / startX は candles 本数に応じて runtime で再計算する
+// （N<5 で右側余白が膨らむ / N=10 で右側にはみ出る問題を防ぐ）。
 const LAYOUT = {
 	width: 800,
 	height: 480,
 	plotTop: 60,
-	plotBottom: 340,
+	plotBottom: 320,
 	plotLeft: 100,
 	plotRight: 750,
 	candleWidth: 40,
 	candleSpacing: 110,
-	startX: 140,
-	dateLabelY: 365,
-	descBoxY: 385,
+	dateLabelY: 345,
+	descBoxY: 365,
 	descBoxHeight: 55,
+	plotSideMargin: 30,
 };
 
 // ----- ヘルパー関数 -----
@@ -143,6 +145,17 @@ export default async function renderCandlePatternDiagram(opts: {
 			return plotTop + ((yMax - price) / ySpan) * plotHeight;
 		};
 
+		// === X軸の動的レイアウト ===
+		// candles 本数に応じて spacing を縮め、plot area 内で水平方向に中央寄せする。
+		// これにより N<5 で右側余白が膨らむ / N=10 で右にはみ出る問題を同時に解消する。
+		const usablePlotWidth = LAYOUT.plotRight - LAYOUT.plotLeft - 2 * LAYOUT.plotSideMargin;
+		const candleCount = candles.length;
+		const candleSpacing =
+			candleCount > 1 ? Math.min(LAYOUT.candleSpacing, usablePlotWidth / (candleCount - 1)) : LAYOUT.candleSpacing;
+		const totalCandleSpan = (candleCount - 1) * candleSpacing;
+		const plotCenterX = (LAYOUT.plotLeft + LAYOUT.plotRight) / 2;
+		const startX = plotCenterX - totalCandleSpan / 2;
+
 		// === SVG生成開始 ===
 		const parts: string[] = [];
 
@@ -192,7 +205,7 @@ export default async function renderCandlePatternDiagram(opts: {
 		// === ローソク足の描画 ===
 		for (let i = 0; i < candles.length; i++) {
 			const candle = candles[i];
-			const x = LAYOUT.startX + i * LAYOUT.candleSpacing;
+			const x = startX + i * candleSpacing;
 
 			// ヒゲ（高値〜安値）
 			const highY = priceToY(candle.high);
@@ -230,7 +243,7 @@ export default async function renderCandlePatternDiagram(opts: {
 
 			// 「前日」ラベル
 			if (prevIndex >= 0 && prevIndex < candles.length) {
-				const prevX = LAYOUT.startX + prevIndex * LAYOUT.candleSpacing;
+				const prevX = startX + prevIndex * candleSpacing;
 				const prevY = priceToY(candles[prevIndex].high) - 20;
 				parts.push(
 					`<text x="${prevX}" y="${prevY}" text-anchor="middle" font-size="16" font-weight="bold" fill="${colors.highlight}">前日</text>`,
@@ -239,7 +252,7 @@ export default async function renderCandlePatternDiagram(opts: {
 
 			// 「確定日」ラベル
 			if (confirmedIndex >= 0 && confirmedIndex < candles.length) {
-				const confX = LAYOUT.startX + confirmedIndex * LAYOUT.candleSpacing;
+				const confX = startX + confirmedIndex * candleSpacing;
 				const confY = priceToY(candles[confirmedIndex].high) - 20;
 				parts.push(
 					`<text x="${confX}" y="${confY}" text-anchor="middle" font-size="16" font-weight="bold" fill="${colors.highlight}">確定日</text>`,
@@ -250,8 +263,8 @@ export default async function renderCandlePatternDiagram(opts: {
 			// 「包む」の矢印は大きい方（確定日）から小さい方（前日）へ向かう
 			// 矢印は両方のローソク足の「間」（内側）に配置
 			if (pattern.name.includes('包み線') && prevIndex >= 0 && confirmedIndex >= 0) {
-				const prevX = LAYOUT.startX + prevIndex * LAYOUT.candleSpacing;
-				const confX = LAYOUT.startX + confirmedIndex * LAYOUT.candleSpacing;
+				const prevX = startX + prevIndex * candleSpacing;
+				const confX = startX + confirmedIndex * candleSpacing;
 
 				// 矢印のY位置: 両方のローソク足の実体の下端の下に配置（重ならないように）
 				const prevBodyBottom = Math.max(priceToY(candles[prevIndex].open), priceToY(candles[prevIndex].close));

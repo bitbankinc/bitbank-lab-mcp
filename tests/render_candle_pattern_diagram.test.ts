@@ -99,4 +99,44 @@ describe('render_candle_pattern_diagram', () => {
 		assertOk(res);
 		expect(res.data.svg).not.toMatch(/NaN|Infinity/);
 	});
+
+	it('ローソク足は plot area 内に水平方向で中央寄せされる（右側余白が膨らまない）', async () => {
+		// N=4 candles, plot area = 100..750 (中心 425)
+		const res = await renderCandlePatternDiagram({
+			candles: [
+				makeCandle('05/17', 100, 110, 95, 98, 'bearish'),
+				makeCandle('05/18', 97, 112, 96, 109, 'bearish'),
+				makeCandle('05/19', 109, 115, 105, 111, 'bearish'),
+				makeCandle('05/20', 111, 120, 108, 118, 'bullish'),
+			],
+			pattern: { name: '明けの明星', confirmedDate: '05/20', involvedIndices: [1, 3] },
+		});
+
+		assertOk(res);
+		// 日付ラベルの x 座標を抽出。<text x="N" ... > の date が見える形式から拾う
+		const xs = [...(res.data.svg ?? '').matchAll(/<text x="([\d.]+)"[^>]*>05\/\d{2}<\/text>/g)].map((m) =>
+			Number(m[1]),
+		);
+		expect(xs).toHaveLength(4);
+		// 4 本の中央値が plot area の中央 (425) になっていること（±1px 許容）
+		const mid = (xs[0] + xs[xs.length - 1]) / 2;
+		expect(Math.abs(mid - 425)).toBeLessThan(1);
+	});
+
+	it('N=10 でも候補がプロット領域の右端を超えない（候補数に応じて spacing を縮める）', async () => {
+		const candles = Array.from({ length: 10 }, (_, i) =>
+			makeCandle(`01/${String(i + 1).padStart(2, '0')}`, 100, 110, 95, 105, 'bullish'),
+		);
+		const res = await renderCandlePatternDiagram({ candles });
+
+		assertOk(res);
+		const xs = [...(res.data.svg ?? '').matchAll(/<text x="([\d.]+)"[^>]*>01\/\d{2}<\/text>/g)].map((m) =>
+			Number(m[1]),
+		);
+		expect(xs).toHaveLength(10);
+		// 最右の候補が plotRight (750) を超えない
+		expect(xs[xs.length - 1]).toBeLessThan(750);
+		// 最左が plotLeft (100) を下回らない
+		expect(xs[0]).toBeGreaterThan(100);
+	});
 });
