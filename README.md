@@ -397,8 +397,10 @@ npx @modelcontextprotocol/inspector -- npx -y bitbank-lab-mcp
 ```bash
 git clone https://github.com/tjackiet/bitbank-genesis-mcp-server.git
 cd bitbank-genesis-mcp-server
-npm install
+npm ci
 ```
+
+`package-lock.json` 通りに依存をインストールするため、ローカル開発でも `npm install` ではなく `npm ci` を推奨します（CI も `npm ci` を使用）。
 
 ビルドステップは不要です（tsx で TypeScript を直接実行します）。
 
