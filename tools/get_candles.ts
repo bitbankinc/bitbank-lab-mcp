@@ -48,6 +48,24 @@ const BARS_PER_DAY: Record<string, number> = {
 	'1hour': 24,
 };
 
+// 時間足ごとの bar 間隔（ms）— 現在年の利用可能本数を経過時間ベースで見積もる用。
+// 日数ベースだと 4hour/8hour/12hour で「形成中の今日 1 日分の足がすべて確定済」と過大評価し、
+// 年初に小 limit で前年取得が漏れる問題が起きる。
+// 1month は近似値（30日）でよい — 推定の上限キャップ用途で厳密性は不要。
+const INTERVAL_MS: Record<string, number> = {
+	'1min': 60_000,
+	'5min': 5 * 60_000,
+	'15min': 15 * 60_000,
+	'30min': 30 * 60_000,
+	'1hour': 3_600_000,
+	'4hour': 4 * 3_600_000,
+	'8hour': 8 * 3_600_000,
+	'12hour': 12 * 3_600_000,
+	'1day': 86_400_000,
+	'1week': 7 * 86_400_000,
+	'1month': 30 * 86_400_000,
+};
+
 // fetch タイムアウト・並列度・バッチ間ディレイ
 // 日次 chunk は bitbank API のレート制限に配慮し、3 並列 + バッチ間 500ms（≒6 req/s）に抑える。
 const CANDLE_FETCH = {
@@ -166,11 +184,15 @@ export default async function getCandles(
 	const anchorYear = dateProvided && isYearlyType ? Number(dateCheck.value) : currentYear;
 	const isCurrentYearAnchor = anchorYear === currentYear;
 
-	// 現在年は経過日数で利用可能本数が制限される。
+	// 現在年は経過時間で利用可能本数が制限される。
+	// floor(elapsedMs / intervalMs) + 1 は「確定済み本数 + 現在形成中の足」。
+	// 日数ベース（floor(dayOfYear * barsPerYear/365)）だと 4hour/8hour/12hour で
+	// 今日 1 日分の足がすべて確定済と過大評価され、年初の小 limit で前年取得が漏れる。
 	const now = dayjs();
 	const startOfYear = now.startOf('year');
-	const dayOfYear = now.diff(startOfYear, 'day') + 1;
-	const estimatedBarsThisYear = Math.floor(dayOfYear * (barsPerYear / 365));
+	const intervalMs = INTERVAL_MS[String(type)] ?? 86_400_000;
+	const elapsedThisYearMs = Math.max(0, now.valueOf() - startOfYear.valueOf());
+	const estimatedBarsThisYear = Math.floor(elapsedThisYearMs / intervalMs) + 1;
 
 	// anchor 年内で「利用可能な本数」を見積もる（multi-year yearsNeeded の上振れ防止用）。
 	// - date 未指定: 現在年なら経過日数ベース、過去年（事実上 anchorYear=currentYear なのでこのケースは起きない）ならフル年

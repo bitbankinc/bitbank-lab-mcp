@@ -1119,6 +1119,49 @@ describe('getCandles', () => {
 			expect(res.data.normalized.at(-1)?.timestamp).toBe(dayMs('2025-01-10'));
 		});
 
+		it('4hour 年初早朝 + 小 limit: 経過時間ベース見積もりで前年まで取得する', async () => {
+			// バグ修正前は estimatedBarsThisYear が dayOfYear=1 から 6 bars と過大評価し、
+			// limit=5 だと 6>=5 で yearsNeeded=1 となり前年が取得されなかった。
+			// 経過時間ベースなら 03:00 UTC で floor(10800000/14400000)+1=1 となり前年取得が走る。
+			vi.useFakeTimers();
+			vi.setSystemTime(dayjs.utc('2026-01-01T03:00:00Z').valueOf());
+			try {
+				vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+					const urlStr = String(url);
+					const m = urlStr.match(/\/4hour\/(\d{4})$/);
+					const year = m ? Number(m[1]) : 2026;
+					// 2025 年は通年分、2026 年は形成中で空配列を返す（実 API 挙動を模倣）
+					const ohlcv =
+						year === 2025
+							? Array.from({ length: 100 }, (_, i) => [
+									'100',
+									'110',
+									'90',
+									'105',
+									'1.0',
+									String(Date.UTC(2025, 0, 1) + i * 4 * 3_600_000),
+								])
+							: [];
+					return {
+						ok: true,
+						status: 200,
+						statusText: 'OK',
+						json: async () => ({ success: 1, data: { candlestick: [{ ohlcv }] } }),
+					} as Response;
+				});
+
+				const res = await getCandles('btc_jpy', '4hour', undefined, 5);
+				assertOk(res);
+
+				const calledUrls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0]));
+				expect(calledUrls.some((u) => u.endsWith('/4hour/2026'))).toBe(true);
+				expect(calledUrls.some((u) => u.endsWith('/4hour/2025'))).toBe(true);
+				expect(res.data.normalized).toHaveLength(5);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
 		it('指定日以前のデータが存在しない場合は user エラーを返す', async () => {
 			// year=2025 を fetch すると 2025-06 以降の足だけが返る mock。
 			// date=20250105 → anchor=2025-01-05 23:59:59 → 全 row が anchor より後 → 空。
