@@ -4,7 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { getErrorMessage } from '../lib/error.js';
+import { getErrorMessage, toPublicError } from '../lib/error.js';
 import { logError, logToolRun } from '../lib/logger.js';
 import { createBearerAuthMiddleware, createMcpRateLimiter, requireMcpHttpToken } from '../lib/mcp-http-security.js';
 import { type PromptDef, prompts as promptDefs } from './prompts.js';
@@ -173,14 +173,15 @@ function registerToolWithLog(
 				return respond(result);
 			} catch (err: unknown) {
 				const ms = Date.now() - t0;
+				// ログには元のエラー詳細を残し、応答層は toPublicError で正規化する。
 				logError(name, err, input);
-				const message = getErrorMessage(err);
+				const publicErr = toPublicError(err);
 				return {
-					content: [{ type: 'text', text: `内部エラー: ${message || '不明なエラー'}` }],
+					content: [{ type: 'text', text: publicErr.summary }],
 					structuredContent: {
 						ok: false,
-						summary: `内部エラー: ${message || '不明なエラー'}`,
-						meta: { ms, errorType: 'internal' },
+						summary: publicErr.summary,
+						meta: { ms, errorType: publicErr.errorType },
 					},
 				};
 			}

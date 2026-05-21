@@ -425,18 +425,103 @@ describe('server.ts smoke', () => {
 
 		const errorResult = await server.tools[1].handler({ pair: 'eth_jpy' });
 		expect(errorResult).toEqual({
-			content: [{ type: 'text', text: '内部エラー: boom' }],
+			content: [{ type: 'text', text: '内部エラーが発生しました。ログを確認してください' }],
 			structuredContent: {
 				ok: false,
-				summary: '内部エラー: boom',
+				summary: '内部エラーが発生しました。ログを確認してください',
 				meta: {
 					ms: expect.any(Number),
 					errorType: 'internal',
 				},
 			},
 		});
+		// 元のエラー message ('boom') は応答層に漏らさないが、ログには full message を渡す。
+		const errorTextOut = (errorResult as { content: Array<{ text: string }> }).content[0].text;
+		expect(errorTextOut).not.toContain('boom');
 		expect(runtime.logError).toHaveBeenCalledTimes(1);
 		expect(runtime.logError).toHaveBeenCalledWith('error_tool', expect.any(Error), { pair: 'eth_jpy' });
+		expect((runtime.logError.mock.calls[0][1] as Error).message).toBe('boom');
+	});
+
+	it('応答層は内部エラー本文・ZodError 詳細を漏らさず PrivateApiError は素通しする', async () => {
+		const { z } = await import('zod');
+		const { ZodError } = await import('zod');
+
+		const pathLeakHandler = vi.fn(async () => {
+			throw new Error("ENOENT: no such file or directory, open '/home/user/secret/path.ts'");
+		});
+		const zodHandler = vi.fn(async () => {
+			// Zod のバリデーション失敗を模した ZodError を投げる
+			const schema = z.object({ pair: z.string() });
+			schema.parse({ pair: 123 });
+			throw new Error('unreachable');
+		});
+		const privateApiHandler = vi.fn(async () => {
+			class PrivateApiError extends Error {
+				errorType: string;
+				constructor(message: string, errorType: string) {
+					super(message);
+					this.name = 'PrivateApiError';
+					this.errorType = errorType;
+				}
+			}
+			throw new PrivateApiError('数量が最低取引量を下回っています', 'invalid_amount');
+		});
+
+		runtime.toolDefs = [
+			{
+				name: 'path_leak_tool',
+				description: 'tool that throws an error containing a local path',
+				inputSchema: z.object({}),
+				handler: pathLeakHandler as unknown as ToolDefinition['handler'],
+			},
+			{
+				name: 'zod_tool',
+				description: 'tool that throws ZodError',
+				inputSchema: z.object({}),
+				handler: zodHandler as unknown as ToolDefinition['handler'],
+			},
+			{
+				name: 'private_api_tool',
+				description: 'tool that throws PrivateApiError',
+				inputSchema: z.object({}),
+				handler: privateApiHandler as unknown as ToolDefinition['handler'],
+			},
+		];
+
+		const server = await importServer();
+
+		// 1) 一般 Error 由来のローカルパスがユーザ応答に含まれないこと
+		const pathLeakResult = (await server.tools[0].handler({})) as {
+			content: Array<{ text: string }>;
+			structuredContent: { summary: string; meta: { errorType: string } };
+		};
+		expect(pathLeakResult.content[0].text).not.toContain('/home/user/secret/path.ts');
+		expect(pathLeakResult.content[0].text).not.toContain('ENOENT');
+		expect(pathLeakResult.structuredContent.summary).not.toContain('/home/user/secret/path.ts');
+		expect(pathLeakResult.structuredContent.meta.errorType).toBe('internal');
+
+		// 2) ZodError の詳細メッセージがユーザ応答に含まれないこと
+		const zodResult = (await server.tools[1].handler({})) as {
+			content: Array<{ text: string }>;
+			structuredContent: { summary: string; meta: { errorType: string } };
+		};
+		expect(zodResult.content[0].text).not.toContain('Expected');
+		expect(zodResult.content[0].text).not.toContain('pair');
+		expect(zodResult.content[0].text).toContain('入力形式が不正です');
+		expect(zodResult.structuredContent.meta.errorType).toBe('validation_error');
+		// logError には ZodError がそのまま渡る（運用デバッグ性は維持）
+		const loggedErr = runtime.logError.mock.calls.find((c) => c[0] === 'zod_tool')?.[1] as Error;
+		expect(loggedErr).toBeInstanceOf(ZodError);
+
+		// 3) PrivateApiError の業務メッセージは素通し
+		const privateResult = (await server.tools[2].handler({})) as {
+			content: Array<{ text: string }>;
+			structuredContent: { summary: string; meta: { errorType: string } };
+		};
+		expect(privateResult.content[0].text).toBe('数量が最低取引量を下回っています');
+		expect(privateResult.structuredContent.summary).toBe('数量が最低取引量を下回っています');
+		expect(privateResult.structuredContent.meta.errorType).toBe('invalid_amount');
 	});
 
 	it('HTTP 有効時は HTTP transport と express を初期化する', async () => {
