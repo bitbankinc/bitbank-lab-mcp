@@ -16,14 +16,18 @@
 import { describe, expect, it } from 'vitest';
 import {
 	buildAccountPnl,
+	buildPeriodPerformance,
 	calcDepositWithdrawalSummary,
 	calcMarginPnl,
 	calcPeriodMarginPnl,
 	calcPeriodRealizedPnl,
 	calcPnl,
+	PERFORMANCE_NOTE,
+	type PortfolioPerformanceContext,
 	reconstructHoldingsAtDate,
 } from '../../../src/handlers/portfolio/calc.js';
 import type {
+	CandlePriceData,
 	DepositWithdrawalData,
 	RawDeposit,
 	RawMarginTrade,
@@ -746,5 +750,259 @@ describe('calcDepositWithdrawalSummary', () => {
 		const result = calcDepositWithdrawalSummary(dw, 1_000_000, new Map());
 		expect(result.total_jpy_deposited).toBe(0);
 		expect(result.net_jpy_invested).toBe(0);
+	});
+});
+
+// ── 期間別パフォーマンス（評価額比較） ──
+
+describe('buildPeriodPerformance', () => {
+	/** boundaryPrices を 3 期間まとめて生成 */
+	function makeBoundaryPrices(
+		entries: Array<[string, { yearStart?: number; monthStart?: number; dayStart?: number }]>,
+	): CandlePriceData['boundaryPrices'] {
+		return new Map(entries);
+	}
+
+	function makeEmptyDw(): DepositWithdrawalData {
+		return { deposits: [], withdrawals: [], warnings: [], allFailed: false, isComplete: true };
+	}
+
+	function makeCtx(overrides: Partial<PortfolioPerformanceContext> = {}): PortfolioPerformanceContext {
+		return {
+			currentHoldings: [],
+			trades: [],
+			dwData: null,
+			candlePriceData: { boundaryPrices: new Map(), dailyPrices: new Map() },
+			currentPrices: new Map(),
+			currentValue: 0,
+			nowIso: '2026-05-16T12:00:00+09:00',
+			...overrides,
+		};
+	}
+
+	it('入出金なし: change_jpy = currentValue - startValue, adjusted_change_jpy == change_jpy', () => {
+		// 期初保有 1 BTC @ 10_000_000 = 10_000_000、現在 12_000_000
+		// 期間内に売買・入出金なし → 期初保有はそのまま現在保有と一致する
+		const ctx = makeCtx({
+			currentHoldings: [{ asset: 'btc', amount: '1' }],
+			candlePriceData: {
+				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
+				dailyPrices: new Map(),
+			},
+			currentPrices: new Map([['btc', 12_000_000]]),
+			currentValue: 12_000_000,
+		});
+		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: '2026-01-01T00:00:00+09:00' }, ctx);
+		expect(result.start_value_jpy).toBe(10_000_000);
+		expect(result.current_value_jpy).toBe(12_000_000);
+		expect(result.change_jpy).toBe(2_000_000);
+		expect(result.change_pct).toBe(20); // 2_000_000 / 10_000_000 = 0.2
+		expect(result.net_flow_jpy).toBe(0);
+		expect(result.withdrawal_fee_jpy).toBe(0);
+		expect(result.adjusted_change_jpy).toBe(2_000_000); // change - 0
+		expect(result.adjusted_change_pct).toBe(20);
+		expect(result.period_start).toBe('2026-01-01T00:00:00+09:00');
+		expect(result.period_end).toBe('2026-05-16T12:00:00+09:00');
+		expect(result.note).toBe(PERFORMANCE_NOTE);
+	});
+
+	it('入出金あり: net_flow を差し引いた adjusted_change が算出される', () => {
+		// 期初保有 1 BTC @ 10_000_000 = 10_000_000、現在 12_500_000
+		// 期間内に JPY 入金 500_000 → 単純増減 2_500_000 のうち 500_000 は入金由来。
+		// 調整後増減 = 2_500_000 - 500_000 = 2_000_000（市場由来）
+		const dw: DepositWithdrawalData = {
+			deposits: [{ uuid: 'd-jpy', asset: 'jpy', amount: '500000', status: 'DONE', found_at: 1500, confirmed_at: 1500 }],
+			withdrawals: [],
+			warnings: [],
+			allFailed: false,
+			isComplete: true,
+		};
+		const ctx = makeCtx({
+			currentHoldings: [{ asset: 'btc', amount: '1' }],
+			dwData: dw,
+			candlePriceData: {
+				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
+				dailyPrices: new Map(),
+			},
+			currentPrices: new Map([['btc', 12_500_000]]),
+			currentValue: 12_500_000,
+		});
+		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: '2026-01-01T00:00:00+09:00' }, ctx);
+		expect(result.start_value_jpy).toBe(10_000_000);
+		expect(result.change_jpy).toBe(2_500_000);
+		expect(result.net_flow_jpy).toBe(500_000);
+		expect(result.adjusted_change_jpy).toBe(2_000_000);
+		expect(result.change_pct).toBe(25); // 2_500_000 / 10_000_000
+		expect(result.adjusted_change_pct).toBe(20); // 2_000_000 / 10_000_000
+	});
+
+	it('出金手数料: withdrawal_fee_jpy に集計され adjusted_change にコストとして残る', () => {
+		// 現在保有: JPY 900_000（市場変動なし、純粋に出金のみの口座を想定）
+		// 期間内 (t=1500): JPY 出金 100_000 + fee 1_000 → 口座から減ったのは 101_000
+		// reconstructHoldingsAtDate は完了出金を逆算: 期初 JPY = 900_000 + 100_000 + 1_000 = 1_001_000
+		// 単純増減 = 900_000 - 1_001_000 = -101_000
+		// net_flow = -100_000（元本のみ、fee 除外）
+		// 調整後増減 = -101_000 - (-100_000) = -1_000（fee がコストとして残る）
+		const dw: DepositWithdrawalData = {
+			deposits: [],
+			withdrawals: [{ uuid: 'w-jpy', asset: 'jpy', amount: '100000', fee: '1000', status: 'DONE', requested_at: 1500 }],
+			warnings: [],
+			allFailed: false,
+			isComplete: true,
+		};
+		const ctx = makeCtx({
+			currentHoldings: [{ asset: 'jpy', amount: '900000' }],
+			dwData: dw,
+			candlePriceData: { boundaryPrices: new Map(), dailyPrices: new Map() },
+			currentPrices: new Map(),
+			currentValue: 900_000,
+		});
+		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
+		expect(result.start_value_jpy).toBe(1_001_000);
+		expect(result.change_jpy).toBe(-101_000);
+		expect(result.net_flow_jpy).toBe(-100_000);
+		expect(result.withdrawal_fee_jpy).toBe(1_000);
+		expect(result.adjusted_change_jpy).toBe(-1_000); // fee 分のみがコストとして残る
+	});
+
+	it('保有 0 ケース: start_value=0 で change_pct / adjusted_change_pct が undefined', () => {
+		// 期初保有なし、現在は入金 1_000_000 のみで保有形成
+		// → start_value_jpy = 0、change_pct / adjusted_change_pct は undefined（0 除算回避）
+		const dw: DepositWithdrawalData = {
+			deposits: [
+				{ uuid: 'd-jpy', asset: 'jpy', amount: '1000000', status: 'DONE', found_at: 1500, confirmed_at: 1500 },
+			],
+			withdrawals: [],
+			warnings: [],
+			allFailed: false,
+			isComplete: true,
+		};
+		const ctx = makeCtx({
+			currentHoldings: [{ asset: 'jpy', amount: '1000000' }],
+			dwData: dw,
+			candlePriceData: { boundaryPrices: new Map(), dailyPrices: new Map() },
+			currentPrices: new Map(),
+			currentValue: 1_000_000,
+		});
+		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: '2026-01-01T00:00:00+09:00' }, ctx);
+		expect(result.start_value_jpy).toBe(0);
+		expect(result.change_jpy).toBe(1_000_000);
+		expect(result.net_flow_jpy).toBe(1_000_000);
+		expect(result.adjusted_change_jpy).toBe(0);
+		expect(result.change_pct).toBeUndefined();
+		expect(result.adjusted_change_pct).toBeUndefined();
+	});
+
+	it('期間内に売買あり: reconstructHoldingsAtDate で期初保有が逆算される', () => {
+		// 現在保有 0.5 BTC、期間内 (t=2000) に 0.5 BTC 売却 → 期初は 1.0 BTC
+		// 期初評価 1.0 * 10_000_000 = 10_000_000、現在 0.5 * 12_000_000 = 6_000_000
+		// 売却で得た JPY が現在 JPY に乗っていない前提（保有テストの簡略化）
+		const trades: RawTrade[] = [
+			{
+				trade_id: 1,
+				pair: 'btc_jpy',
+				order_id: 1,
+				side: 'sell',
+				type: 'market',
+				amount: '0.5',
+				price: '11000000',
+				maker_taker: 'taker',
+				fee_amount_base: '0',
+				fee_amount_quote: '0',
+				executed_at: 2000,
+			},
+		];
+		const ctx = makeCtx({
+			currentHoldings: [{ asset: 'btc', amount: '0.5' }],
+			trades,
+			dwData: makeEmptyDw(),
+			candlePriceData: {
+				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
+				dailyPrices: new Map(),
+			},
+			currentPrices: new Map([['btc', 12_000_000]]),
+			currentValue: 6_000_000, // 0.5 BTC @ 12M
+		});
+		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: '2026-01-01T00:00:00+09:00' }, ctx);
+		// 期初は売却前なので 1 BTC @ yearStart 10M = 10M
+		expect(result.start_value_jpy).toBe(10_000_000);
+		expect(result.current_value_jpy).toBe(6_000_000);
+		expect(result.change_jpy).toBe(-4_000_000);
+		expect(result.net_flow_jpy).toBe(0); // 入出金なし
+		expect(result.adjusted_change_jpy).toBe(-4_000_000);
+	});
+
+	it('key="monthly" / "daily" は対応する boundaryPrice フィールドを選択する', () => {
+		// 同一資産で 3 期間の始値を変えて、key に応じた値が選ばれることを検証
+		const boundaryPrices = makeBoundaryPrices([
+			['btc', { yearStart: 8_000_000, monthStart: 9_000_000, dayStart: 11_000_000 }],
+		]);
+		const baseCtx = makeCtx({
+			currentHoldings: [{ asset: 'btc', amount: '1' }],
+			candlePriceData: { boundaryPrices, dailyPrices: new Map() },
+			currentPrices: new Map([['btc', 12_000_000]]),
+			currentValue: 12_000_000,
+		});
+
+		const yearly = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 'y' }, baseCtx);
+		const monthly = buildPeriodPerformance({ key: 'monthly', startMs: 1000, startIso: 'm' }, baseCtx);
+		const daily = buildPeriodPerformance({ key: 'daily', startMs: 1000, startIso: 'd' }, baseCtx);
+
+		expect(yearly.start_value_jpy).toBe(8_000_000);
+		expect(monthly.start_value_jpy).toBe(9_000_000);
+		expect(daily.start_value_jpy).toBe(11_000_000);
+		expect(yearly.period_start).toBe('y');
+		expect(monthly.period_start).toBe('m');
+		expect(daily.period_start).toBe('d');
+	});
+
+	it('boundaryPrice が未取得の資産は期初評価から除外される（calcPortfolioValue が price 不在をスキップ）', () => {
+		// BTC は boundary 取得済み、ETH は未取得 → ETH 分は startValue に乗らない
+		const ctx = makeCtx({
+			currentHoldings: [
+				{ asset: 'btc', amount: '1' },
+				{ asset: 'eth', amount: '5' },
+			],
+			candlePriceData: {
+				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
+				dailyPrices: new Map(),
+			},
+			currentPrices: new Map([
+				['btc', 12_000_000],
+				['eth', 300_000],
+			]),
+			currentValue: 13_500_000, // 1 BTC @ 12M + 5 ETH @ 300k
+		});
+		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
+		// ETH は boundary 不在で評価から除外 → 期初は BTC 分のみ
+		expect(result.start_value_jpy).toBe(10_000_000);
+		expect(result.change_jpy).toBe(3_500_000);
+	});
+
+	it('出力フィールド順は仕様（JSON.stringify 結果が安定）', () => {
+		// ハンドラ出力 JSON が変更前後で完全一致するため、key の挿入順を固定する。
+		const ctx = makeCtx({
+			currentHoldings: [{ asset: 'btc', amount: '1' }],
+			candlePriceData: {
+				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
+				dailyPrices: new Map(),
+			},
+			currentPrices: new Map([['btc', 12_000_000]]),
+			currentValue: 12_000_000,
+		});
+		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
+		expect(Object.keys(result)).toEqual([
+			'start_value_jpy',
+			'current_value_jpy',
+			'change_jpy',
+			'change_pct',
+			'net_flow_jpy',
+			'withdrawal_fee_jpy',
+			'adjusted_change_jpy',
+			'adjusted_change_pct',
+			'period_start',
+			'period_end',
+			'note',
+		]);
 	});
 });

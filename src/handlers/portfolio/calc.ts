@@ -9,12 +9,14 @@
 import { dayjs } from '../../../lib/datetime.js';
 import type {
 	AccountPnl,
+	CandlePriceData,
 	DepositWithdrawalData,
 	DepositWithdrawalSummary,
 	EquityPoint,
 	PeriodAccountPnl,
 	PeriodDWSummary,
 	PeriodNetFlowResult,
+	PeriodPerformance,
 	PeriodRealizedPnl,
 	PnlResult,
 	RawMarginTrade,
@@ -713,5 +715,81 @@ export function calcPeriodNetFlow(
 	return {
 		net_flow_jpy: Math.round(netFlow),
 		withdrawal_fee_jpy: Math.round(withdrawalFee),
+	};
+}
+
+// ── 期間別パフォーマンス（評価額比較） ──
+
+export const PERFORMANCE_NOTE =
+	'期初評価額は現在の保有状態から約定・入出金を逆算して復元し、期初時点の始値（1day candle open）で評価。暗号資産の入出庫は現在価格で仮評価。純入出金は元本移動のみ（出金手数料を含まない）。調整後増減 = 単純増減 - 純入出金（市場変動 + 出金手数料コスト）。';
+
+export type PeriodPerformanceKey = 'daily' | 'monthly' | 'yearly';
+
+export interface PeriodSpec {
+	key: PeriodPerformanceKey;
+	startMs: number;
+	startIso: string;
+}
+
+export interface PortfolioPerformanceContext {
+	currentHoldings: Array<{ asset: string; amount: string }>;
+	trades: RawTrade[];
+	dwData: DepositWithdrawalData | null;
+	candlePriceData: CandlePriceData;
+	currentPrices: Map<string, number>;
+	currentValue: number;
+	nowIso: string;
+}
+
+function pickBoundaryPrice(
+	key: PeriodPerformanceKey,
+	pp: { yearStart?: number; monthStart?: number; dayStart?: number },
+): number | undefined {
+	switch (key) {
+		case 'yearly':
+			return pp.yearStart;
+		case 'monthly':
+			return pp.monthStart;
+		case 'daily':
+			return pp.dayStart;
+	}
+}
+
+/**
+ * 期間開始時点の保有を復元し、期初始値で評価したうえで現在評価額との差分・
+ * 入出金調整後の差分を含む `PeriodPerformance` を構築する。
+ *
+ * 3 期間（daily / monthly / yearly）で挙動が同一だった以下の処理を一本化する:
+ *   - `reconstructHoldingsAtDate` で期初の保有を復元
+ *   - `candlePriceData.boundaryPrices` から期初始値を取り出して評価
+ *   - `calcPeriodNetFlow` で期間内の純入出金を算出
+ *   - `change` / `adjusted_change` / `pct` を `Math.round` で丸めて返す
+ *
+ * 出力フィールド順・桁丸めは旧インライン実装と完全一致させている
+ * （JSON.stringify 結果が変わらないよう注意）。
+ */
+export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerformanceContext): PeriodPerformance {
+	const startHoldings = reconstructHoldingsAtDate(ctx.currentHoldings, ctx.trades, spec.startMs, ctx.dwData);
+	const priceMap = new Map<string, number>();
+	for (const [asset, pp] of ctx.candlePriceData.boundaryPrices) {
+		const v = pickBoundaryPrice(spec.key, pp);
+		if (v != null) priceMap.set(asset, v);
+	}
+	const startValue = Math.round(calcPortfolioValue(startHoldings, priceMap));
+	const flow = calcPeriodNetFlow(ctx.dwData, spec.startMs, ctx.currentPrices);
+	const change = ctx.currentValue - startValue;
+	const adjusted = change - flow.net_flow_jpy;
+	return {
+		start_value_jpy: startValue,
+		current_value_jpy: ctx.currentValue,
+		change_jpy: change,
+		change_pct: startValue > 0 ? Math.round((change / startValue) * 10000) / 100 : undefined,
+		net_flow_jpy: flow.net_flow_jpy,
+		withdrawal_fee_jpy: flow.withdrawal_fee_jpy,
+		adjusted_change_jpy: adjusted,
+		adjusted_change_pct: startValue > 0 ? Math.round((adjusted / startValue) * 10000) / 100 : undefined,
+		period_start: spec.startIso,
+		period_end: ctx.nowIso,
+		note: PERFORMANCE_NOTE,
 	};
 }

@@ -16,16 +16,16 @@ import {
 	buildAccountPnl,
 	buildEquitySeries,
 	buildPeriodAccountPnl,
+	buildPeriodPerformance,
 	calcDepositWithdrawalSummary,
 	calcMarginPnl,
 	calcPeriodDWSummary,
 	calcPeriodMarginPnl,
-	calcPeriodNetFlow,
 	calcPeriodRealizedPnl,
 	calcPnl,
-	calcPortfolioValue,
 	getJstPeriodBoundaries,
-	reconstructHoldingsAtDate,
+	type PeriodSpec,
+	type PortfolioPerformanceContext,
 } from './portfolio/calc.js';
 import {
 	fetchCandlePriceData,
@@ -319,98 +319,25 @@ export default async function analyzeMyPortfolioHandler(args: {
 		let yearlyEquitySeries: EquityPoint[] | undefined;
 		if (include_pnl) {
 			const candlePriceData = await candlePricePromise;
-			const periodPrices = candlePriceData.boundaryPrices;
 			const currentJpyValueRounded = Math.round(totalJpyValue);
-			const performanceNote =
-				'期初評価額は現在の保有状態から約定・入出金を逆算して復元し、期初時点の始値（1day candle open）で評価。暗号資産の入出庫は現在価格で仮評価。純入出金は元本移動のみ（出金手数料を含まない）。調整後増減 = 単純増減 - 純入出金（市場変動 + 出金手数料コスト）。';
 
-			// 年初比パフォーマンス
-			const yearStartHoldings = reconstructHoldingsAtDate(
-				nonZeroAssets.map((a) => ({ asset: a.asset, amount: a.onhand_amount })),
-				allTrades,
-				boundaries.yearStartMs,
+			const performanceCtx: PortfolioPerformanceContext = {
+				currentHoldings: nonZeroAssets.map((a) => ({ asset: a.asset, amount: a.onhand_amount })),
+				trades: allTrades,
 				dwData,
-			);
-			const yearStartPriceMap = new Map<string, number>();
-			for (const [asset, pp] of periodPrices) {
-				if (pp.yearStart != null) yearStartPriceMap.set(asset, pp.yearStart);
-			}
-			const yearStartValue = Math.round(calcPortfolioValue(yearStartHoldings, yearStartPriceMap));
-			const yearFlow = calcPeriodNetFlow(dwData, boundaries.yearStartMs, prices);
-			const yearChange = currentJpyValueRounded - yearStartValue;
-			const yearAdjusted = yearChange - yearFlow.net_flow_jpy;
-			yearlyPerformance = {
-				start_value_jpy: yearStartValue,
-				current_value_jpy: currentJpyValueRounded,
-				change_jpy: yearChange,
-				change_pct: yearStartValue > 0 ? Math.round((yearChange / yearStartValue) * 10000) / 100 : undefined,
-				net_flow_jpy: yearFlow.net_flow_jpy,
-				withdrawal_fee_jpy: yearFlow.withdrawal_fee_jpy,
-				adjusted_change_jpy: yearAdjusted,
-				adjusted_change_pct: yearStartValue > 0 ? Math.round((yearAdjusted / yearStartValue) * 10000) / 100 : undefined,
-				period_start: boundaries.yearStartIso,
-				period_end: boundaries.nowIso,
-				note: performanceNote,
+				candlePriceData,
+				currentPrices: prices,
+				currentValue: currentJpyValueRounded,
+				nowIso: boundaries.nowIso,
 			};
-
-			// 月初比パフォーマンス
-			const monthStartHoldings = reconstructHoldingsAtDate(
-				nonZeroAssets.map((a) => ({ asset: a.asset, amount: a.onhand_amount })),
-				allTrades,
-				boundaries.monthStartMs,
-				dwData,
+			const performanceSpecs: PeriodSpec[] = [
+				{ key: 'yearly', startMs: boundaries.yearStartMs, startIso: boundaries.yearStartIso },
+				{ key: 'monthly', startMs: boundaries.monthStartMs, startIso: boundaries.monthStartIso },
+				{ key: 'daily', startMs: boundaries.dayStartMs, startIso: boundaries.dayStartIso },
+			];
+			[yearlyPerformance, monthlyPerformance, dailyPerformance] = performanceSpecs.map((s) =>
+				buildPeriodPerformance(s, performanceCtx),
 			);
-			const monthStartPriceMap = new Map<string, number>();
-			for (const [asset, pp] of periodPrices) {
-				if (pp.monthStart != null) monthStartPriceMap.set(asset, pp.monthStart);
-			}
-			const monthStartValue = Math.round(calcPortfolioValue(monthStartHoldings, monthStartPriceMap));
-			const monthFlow = calcPeriodNetFlow(dwData, boundaries.monthStartMs, prices);
-			const monthChange = currentJpyValueRounded - monthStartValue;
-			const monthAdjusted = monthChange - monthFlow.net_flow_jpy;
-			monthlyPerformance = {
-				start_value_jpy: monthStartValue,
-				current_value_jpy: currentJpyValueRounded,
-				change_jpy: monthChange,
-				change_pct: monthStartValue > 0 ? Math.round((monthChange / monthStartValue) * 10000) / 100 : undefined,
-				net_flow_jpy: monthFlow.net_flow_jpy,
-				withdrawal_fee_jpy: monthFlow.withdrawal_fee_jpy,
-				adjusted_change_jpy: monthAdjusted,
-				adjusted_change_pct:
-					monthStartValue > 0 ? Math.round((monthAdjusted / monthStartValue) * 10000) / 100 : undefined,
-				period_start: boundaries.monthStartIso,
-				period_end: boundaries.nowIso,
-				note: performanceNote,
-			};
-
-			// 前日比（当日 00:00 JST）パフォーマンス
-			const dayStartHoldings = reconstructHoldingsAtDate(
-				nonZeroAssets.map((a) => ({ asset: a.asset, amount: a.onhand_amount })),
-				allTrades,
-				boundaries.dayStartMs,
-				dwData,
-			);
-			const dayStartPriceMap = new Map<string, number>();
-			for (const [asset, pp] of periodPrices) {
-				if (pp.dayStart != null) dayStartPriceMap.set(asset, pp.dayStart);
-			}
-			const dayStartValue = Math.round(calcPortfolioValue(dayStartHoldings, dayStartPriceMap));
-			const dayFlow = calcPeriodNetFlow(dwData, boundaries.dayStartMs, prices);
-			const dayChange = currentJpyValueRounded - dayStartValue;
-			const dayAdjusted = dayChange - dayFlow.net_flow_jpy;
-			dailyPerformance = {
-				start_value_jpy: dayStartValue,
-				current_value_jpy: currentJpyValueRounded,
-				change_jpy: dayChange,
-				change_pct: dayStartValue > 0 ? Math.round((dayChange / dayStartValue) * 10000) / 100 : undefined,
-				net_flow_jpy: dayFlow.net_flow_jpy,
-				withdrawal_fee_jpy: dayFlow.withdrawal_fee_jpy,
-				adjusted_change_jpy: dayAdjusted,
-				adjusted_change_pct: dayStartValue > 0 ? Math.round((dayAdjusted / dayStartValue) * 10000) / 100 : undefined,
-				period_start: boundaries.dayStartIso,
-				period_end: boundaries.nowIso,
-				note: performanceNote,
-			};
 
 			// 6.7. 資産推移時系列データの構築（月次: 日次点、年次: 月次点）
 			if (candlePriceData.dailyPrices.size > 0) {
