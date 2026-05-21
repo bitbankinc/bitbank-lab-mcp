@@ -69,6 +69,50 @@ function todayYyyymmdd(): string {
 }
 
 /**
+ * date 指定時の「これ以下の足だけ返す」上限 timestamp (ms, UTC) を返す。
+ *
+ * - YYYYMMDD: その日の終端 23:59:59.999 UTC
+ * - YYYY: その年の終端 12-31 23:59:59.999 UTC（YEARLY_TYPES でのみ用いる）
+ * - 形式不一致: null（validateDate 通過後を前提に呼ぶため通常は起きない）
+ */
+function computeAnchorEndMs(rawDate: string, type: string): number | null {
+	if (/^\d{8}$/.test(rawDate)) {
+		const year = rawDate.slice(0, 4);
+		const month = rawDate.slice(4, 6);
+		const day = rawDate.slice(6, 8);
+		const d = dayjs.utc(`${year}-${month}-${day}`);
+		return d.isValid() ? d.endOf('day').valueOf() : null;
+	}
+	if (YEARLY_TYPES.has(type) && /^\d{4}$/.test(rawDate)) {
+		const d = dayjs.utc(`${rawDate}-01-01`);
+		return d.isValid() ? d.endOf('year').valueOf() : null;
+	}
+	return null;
+}
+
+/**
+ * anchor 年内で利用可能な本数を見積もる（multi-year yearsNeeded 計算用）。
+ *
+ * - YYYY 指定: フル年 (barsPerYear)
+ * - YYYYMMDD 指定: 1/1 から anchor 日までの本数を日数比で按分
+ *
+ * 年初に anchor を指定された場合（例: 1/10）に「フル年使える」と誤判定すると
+ * 多年取得が不足し、filter 後の件数が limit を満たさない問題を防ぐ。
+ */
+function estimateBarsAvailableInAnchorYear(rawDate: string, type: string, barsPerYear: number): number {
+	if (!YEARLY_TYPES.has(type)) return barsPerYear;
+	if (!/^\d{8}$/.test(rawDate)) return barsPerYear;
+	const year = rawDate.slice(0, 4);
+	const month = rawDate.slice(4, 6);
+	const day = rawDate.slice(6, 8);
+	const anchor = dayjs.utc(`${year}-${month}-${day}`);
+	if (!anchor.isValid()) return barsPerYear;
+	const startOfYear = dayjs.utc(`${year}-01-01`).startOf('year');
+	const daysFromStart = anchor.diff(startOfYear, 'day') + 1;
+	return Math.max(1, Math.floor(daysFromStart * (barsPerYear / 365)));
+}
+
+/**
  * 全 chunk 失敗時に first error を分類する。
  * - UpstreamApiError（success:0 由来）→ upstream として明示分類した FailResult
  * - その他（ネットワーク等）→ throw（outer catch で network 分類）
@@ -108,6 +152,12 @@ export default async function getCandles(
 	const barsPerYear = BARS_PER_YEAR[type] || 365;
 	const barsPerDay = BARS_PER_DAY[type] || 24;
 
+	// date 指定時に「これ以下の足だけ返す」アンカー timestamp を計算する。
+	// 単一 fetch（YEARLY_TYPES）では API が年単位で返すため slice(-limit) のみだと
+	// 「指定日以前 limit 件」ではなく「年末側 limit 件」を返してしまう問題への対処。
+	const anchorEndMs = dateProvided ? computeAnchorEndMs(effectiveDate, String(type)) : null;
+	const anchorActive = anchorEndMs != null;
+
 	// 起点年（multi-year のみ参照）:
 	//   - date 指定時 → その年（過去年は丸ごと利用可能）
 	//   - date 未指定 → 現在年（部分年であり経過日数を考慮）
@@ -116,17 +166,30 @@ export default async function getCandles(
 	const anchorYear = dateProvided && isYearlyType ? Number(dateCheck.value) : currentYear;
 	const isCurrentYearAnchor = anchorYear === currentYear;
 
-	// 現在年起点のときだけ「経過日数で利用可能本数が制限される」ガードが必要。
-	// 過去年起点なら anchorYear は丸ごと使える前提で ceil(limit / barsPerYear) のみで足りる。
+	// 現在年は経過日数で利用可能本数が制限される。
 	const now = dayjs();
 	const startOfYear = now.startOf('year');
 	const dayOfYear = now.diff(startOfYear, 'day') + 1;
 	const estimatedBarsThisYear = Math.floor(dayOfYear * (barsPerYear / 365));
 
+	// anchor 年内で「利用可能な本数」を見積もる（multi-year yearsNeeded の上振れ防止用）。
+	// - date 未指定: 現在年なら経過日数ベース、過去年（事実上 anchorYear=currentYear なのでこのケースは起きない）ならフル年
+	// - date 指定 + YYYYMMDD: 1/1 から anchor までの按分
+	// - date 指定 + YYYY: フル年
+	// - 現在年 anchor は「今日より先のデータは無い」ため estimatedBarsThisYear で頭打ち
+	const barsInAnchorYear = (() => {
+		if (!isYearlyType) return barsPerYear;
+		const fromAnchor = dateProvided
+			? estimateBarsAvailableInAnchorYear(effectiveDate, String(type), barsPerYear)
+			: barsPerYear;
+		const usable = isCurrentYearAnchor ? Math.min(fromAnchor, estimatedBarsThisYear) : fromAnchor;
+		return Math.max(1, usable);
+	})();
+
 	const yearsNeeded = isYearlyType
-		? isCurrentYearAnchor
-			? Math.max(Math.ceil(limit / barsPerYear), limit > estimatedBarsThisYear ? 2 : 1)
-			: Math.ceil(limit / barsPerYear)
+		? barsInAnchorYear >= limit
+			? 1
+			: 1 + Math.ceil((limit - barsInAnchorYear) / barsPerYear)
 		: 1;
 	const needsMultiYear = isYearlyType && yearsNeeded > 1;
 
@@ -252,7 +315,31 @@ export default async function getCandles(
 			return fail(`ローソク足データが見つかりません (${chk.pair} / ${type} / ${dateCheck.value})`, 'user');
 		}
 
-		const rows = ohlcvs.slice(-limitCheck.value) as Array<[unknown, unknown, unknown, unknown, unknown, unknown]>;
+		// timestamp 昇順でソート（mergeChunks 経路は既にソート済だが、単一fetch経路も含めて統一）。
+		// ts が無効な行はソート時に 0 として扱い、後続の row validation に判定を委ねる。
+		const sortedOhlcvs = [...ohlcvs].sort((a, b) => {
+			const aTs = Number((a as [unknown, unknown, unknown, unknown, unknown, unknown])[5]) || 0;
+			const bTs = Number((b as [unknown, unknown, unknown, unknown, unknown, unknown])[5]) || 0;
+			return aTs - bTs;
+		});
+
+		// date 指定時はアンカー以下の足だけに絞り込む。
+		// ts が非数値の行は filter で除外せず後段の row validation で upstream として弾く。
+		const anchoredOhlcvs = anchorActive
+			? sortedOhlcvs.filter((r) => {
+					const ts = Number((r as [unknown, unknown, unknown, unknown, unknown, unknown])[5]);
+					if (!Number.isFinite(ts)) return true;
+					return ts <= (anchorEndMs as number);
+				})
+			: sortedOhlcvs;
+
+		if (anchorActive && anchoredOhlcvs.length === 0) {
+			return fail(`指定日（${effectiveDate}）以前のローソク足データが見つかりません (${chk.pair} / ${type})`, 'user');
+		}
+
+		const rows = anchoredOhlcvs.slice(-limitCheck.value) as Array<
+			[unknown, unknown, unknown, unknown, unknown, unknown]
+		>;
 
 		// 各行を fail-fast で検証する。Number() 変換失敗（NaN）は後続の Zod parse で拒否され、
 		// 同じ try ブロックの catch に落ちて 'network' 分類されてしまう。実態は上流データ品質の

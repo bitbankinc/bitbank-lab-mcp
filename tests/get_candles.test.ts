@@ -977,4 +977,172 @@ describe('getCandles', () => {
 			expect(res.meta.warning).toBeUndefined();
 		});
 	});
+
+	// ── date アンカーによる絞り込み（指定日「以前」の limit 件を返す） ──
+
+	describe('date アンカー絞り込み: 指定日以前の limit 件を返す', () => {
+		/** YYYY-MM-DD UTC start-of-day を ms に（Date.UTC は月が 0-indexed なので -1） */
+		const dayMs = (iso: string) => {
+			const [y, m, d] = iso.split('-').map(Number);
+			return Date.UTC(y, m - 1, d);
+		};
+
+		it('1day + date=YYYYMMDD + limit=3: 指定日を含む過去3本を返し、未来の足は含めない', async () => {
+			// API は year=2025 を URL から受け取ったら 2025 年全体の足を返す体で mock する。
+			// 9/30, 10/1, 10/2, 10/3, 10/4 の 5 本を返却 → 期待結果は 9/30, 10/1, 10/2 の 3 本。
+			const ohlcv = [
+				['100', '110', '90', '105', '1.0', dayMs('2025-09-30')],
+				['101', '111', '91', '106', '1.0', dayMs('2025-10-01')],
+				['102', '112', '92', '107', '1.0', dayMs('2025-10-02')],
+				['103', '113', '93', '108', '1.0', dayMs('2025-10-03')],
+				['104', '114', '94', '109', '1.0', dayMs('2025-10-04')],
+			];
+			const fetchMock = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				statusText: 'OK',
+				json: async () => ({ success: 1, data: { candlestick: [{ ohlcv }] } }),
+			});
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			const res = await getCandles('btc_jpy', '1day', '20251002', 3);
+			assertOk(res);
+
+			expect(res.data.normalized).toHaveLength(3);
+			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			expect(tsList).toEqual([dayMs('2025-09-30'), dayMs('2025-10-01'), dayMs('2025-10-02')]);
+			// 10/3, 10/4 は含まれない
+			expect(tsList).not.toContain(dayMs('2025-10-03'));
+			expect(tsList).not.toContain(dayMs('2025-10-04'));
+		});
+
+		it('date 未指定: 従来通り末尾 limit 件（最新側）を返す', async () => {
+			// 5 本の足を返す。date 未指定なので anchor フィルタなし → slice(-3) で末尾 3 本。
+			const baseTs = dayMs('2025-09-30');
+			const ohlcv = Array.from({ length: 5 }, (_, i) => [
+				String(100 + i),
+				String(110 + i),
+				String(90 + i),
+				String(105 + i),
+				'1.0',
+				String(baseTs + i * 86400000),
+			]);
+			const fetchMock = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				statusText: 'OK',
+				json: async () => ({ success: 1, data: { candlestick: [{ ohlcv }] } }),
+			});
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			const res = await getCandles('btc_jpy', '1day', undefined, 3);
+			assertOk(res);
+			expect(res.data.normalized).toHaveLength(3);
+			// 末尾 3 本: 10/2, 10/3, 10/4
+			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			expect(tsList).toEqual([dayMs('2025-10-02'), dayMs('2025-10-03'), dayMs('2025-10-04')]);
+		});
+
+		it('1hour + date=YYYYMMDD + limit=5: 指定日終端 23:59:59 以前のみ返し、翌日の足は含めない', async () => {
+			// multi-day 経路は本来 /20251003 を fetch しないが、防御的に anchor 後の足を返す mock を
+			// 全リクエストに当てて、filter が確実に切り落とすことを検証する。
+			const hourMs = (iso: string, h: number) => dayMs(iso) + h * 3600000;
+			const ohlcv = [
+				...Array.from({ length: 6 }, (_, i) => [
+					'100',
+					'110',
+					'90',
+					'105',
+					'1.0',
+					String(hourMs('2025-10-02', 18 + i)),
+				]), // 10/2 18:00..23:00
+				...Array.from({ length: 3 }, (_, i) => ['200', '210', '190', '205', '1.0', String(hourMs('2025-10-03', i))]), // 10/3 00:00..02:00
+			];
+			const fetchMock = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				statusText: 'OK',
+				json: async () => ({ success: 1, data: { candlestick: [{ ohlcv }] } }),
+			});
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			const res = await getCandles('btc_jpy', '1hour', '20251002', 5);
+			assertOk(res);
+
+			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			// すべて 10/2 終端以前であること
+			const anchor = dayMs('2025-10-03') - 1; // 10/2 23:59:59.999
+			for (const ts of tsList) expect(ts).toBeLessThanOrEqual(anchor);
+			// 10/3 の足は含まれない
+			expect(tsList.find((ts: number) => ts >= dayMs('2025-10-03'))).toBeUndefined();
+		});
+
+		it('1day + date=20250110 + limit 年跨ぎ: 2025年と2024年の両方を取得し、anchor 以前の limit 件を返す', async () => {
+			// 各年 365 本のフィクスチャを返す。年ごとに baseTs を切り替える。
+			vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+				const urlStr = String(url);
+				const m = urlStr.match(/\/1day\/(\d{4})$/);
+				const year = m ? Number(m[1]) : 2025;
+				const baseTs = Date.UTC(year, 0, 1);
+				const ohlcv = Array.from({ length: 365 }, (_, i) => [
+					'100',
+					'110',
+					'90',
+					'105',
+					'1.0',
+					String(baseTs + i * 86400000),
+				]);
+				return {
+					ok: true,
+					status: 200,
+					statusText: 'OK',
+					json: async () => ({ success: 1, data: { candlestick: [{ ohlcv }] } }),
+				} as Response;
+			});
+
+			// daysFromStart(20250110)=10 → barsInAnchorYear=10
+			// yearsNeeded = 1 + ceil((50-10)/365) = 2 → fetch [2025, 2024]
+			const res = await getCandles('btc_jpy', '1day', '20250110', 50);
+			assertOk(res);
+
+			const calledUrls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0]));
+			expect(calledUrls.some((u) => u.endsWith('/1day/2025'))).toBe(true);
+			expect(calledUrls.some((u) => u.endsWith('/1day/2024'))).toBe(true);
+
+			// 結果は 50 本、すべて anchor=2025-01-10 23:59:59 以前
+			expect(res.data.normalized).toHaveLength(50);
+			const anchor = dayMs('2025-01-11') - 1;
+			for (const c of res.data.normalized as Array<{ timestamp: number }>) {
+				expect(c.timestamp).toBeLessThanOrEqual(anchor);
+			}
+			// 末尾は 2025-01-10
+			expect(res.data.normalized.at(-1)?.timestamp).toBe(dayMs('2025-01-10'));
+		});
+
+		it('指定日以前のデータが存在しない場合は user エラーを返す', async () => {
+			// year=2025 を fetch すると 2025-06 以降の足だけが返る mock。
+			// date=20250105 → anchor=2025-01-05 23:59:59 → 全 row が anchor より後 → 空。
+			const baseTs = dayMs('2025-06-01');
+			const ohlcv = Array.from({ length: 3 }, (_, i) => [
+				'100',
+				'110',
+				'90',
+				'105',
+				'1.0',
+				String(baseTs + i * 86400000),
+			]);
+			const fetchMock = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				statusText: 'OK',
+				json: async () => ({ success: 1, data: { candlestick: [{ ohlcv }] } }),
+			});
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			const res = await getCandles('btc_jpy', '1day', '20250105', 10);
+			assertFail(res);
+			expect(res.meta?.errorType).toBe('user');
+			expect(res.summary).toContain('20250105');
+		});
+	});
 });
