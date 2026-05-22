@@ -861,3 +861,211 @@ describe('formatDetailedView', () => {
 		expect(sc['usage_example']).toBeDefined();
 	});
 });
+
+// ── tz 表示（PR-4: 表示日付の tz 整形） ──
+//
+// 構造化データ（range.start/end 等）は UTC ISO のまま不変。
+// 表示テキストのみ tz で整形される。
+// 検証点: tz=Asia/Tokyo（既定）/ tz=UTC / tz='' で表示日付が切り替わる。
+//
+// timezone-sensitive な timestamp として 23:30Z 系を使う:
+//   2026-10-01T23:30:00.000Z → JST: 2026-10-02 08:30、UTC: 2026-10-01
+
+describe('表示日付の tz 整形（範囲・期間）', () => {
+	const startUtcLate = '2026-10-01T23:30:00.000Z'; // UTC=10/01, JST=10/02
+	const endUtcLate = '2026-10-10T23:30:00.000Z'; // UTC=10/10, JST=10/11
+
+	it('buildPeriodLine: tz 既定（Asia/Tokyo）で JST 暦日を表示する', () => {
+		const pats = [makePattern({ range: { start: startUtcLate, end: endUtcLate } })];
+		const result = buildPeriodLine(pats);
+		expect(result).toContain('2026-10-02');
+		expect(result).toContain('2026-10-11');
+	});
+
+	it("buildPeriodLine: tz='Asia/Tokyo' 明示で JST 暦日を表示する", () => {
+		const pats = [makePattern({ range: { start: startUtcLate, end: endUtcLate } })];
+		const result = buildPeriodLine(pats, 'Asia/Tokyo');
+		expect(result).toContain('2026-10-02');
+		expect(result).toContain('2026-10-11');
+	});
+
+	it("buildPeriodLine: tz='UTC' のとき UTC 暦日を表示する", () => {
+		const pats = [makePattern({ range: { start: startUtcLate, end: endUtcLate } })];
+		const result = buildPeriodLine(pats, 'UTC');
+		expect(result).toContain('2026-10-01');
+		expect(result).toContain('2026-10-10');
+	});
+
+	it("buildPeriodLine: tz='' は Asia/Tokyo にフォールバックする", () => {
+		const pats = [makePattern({ range: { start: startUtcLate, end: endUtcLate } })];
+		const result = buildPeriodLine(pats, '');
+		expect(result).toContain('2026-10-02');
+		expect(result).toContain('2026-10-11');
+	});
+
+	it('formatPatternLine: tz 既定で legacy 期間行が JST 暦日になる', () => {
+		const p = makePattern({ range: { start: startUtcLate, end: endUtcLate } });
+		const result = formatPatternLine(p, 0, 'summary', emptyMeta);
+		expect(result).toContain('期間: 2026-10-02 ~ 2026-10-11');
+		// UTC 日付は出ない（tz=Asia/Tokyo 既定）
+		expect(result).not.toContain('2026-10-01');
+		expect(result).not.toContain('2026-10-10');
+	});
+
+	it("formatPatternLine: tz='UTC' のとき legacy 期間行が UTC 暦日になる", () => {
+		const p = makePattern({ range: { start: startUtcLate, end: endUtcLate } });
+		const result = formatPatternLine(p, 0, 'summary', emptyMeta, 'UTC');
+		expect(result).toContain('期間: 2026-10-01 ~ 2026-10-10');
+	});
+
+	it('formatPatternLine: structureRange が tz 既定で JST 暦日になる', () => {
+		const p = makePattern({
+			structureRange: { start: startUtcLate, end: endUtcLate },
+		});
+		const result = formatPatternLine(p, 0, 'summary', emptyMeta);
+		expect(result).toContain('形成期間: 2026-10-02 ~ 2026-10-11（構成点）');
+	});
+
+	it("formatPatternLine: structureRange が tz='UTC' のとき UTC 暦日になる", () => {
+		const p = makePattern({
+			structureRange: { start: startUtcLate, end: endUtcLate },
+		});
+		const result = formatPatternLine(p, 0, 'summary', emptyMeta, 'UTC');
+		expect(result).toContain('形成期間: 2026-10-01 ~ 2026-10-10（構成点）');
+	});
+
+	it('formatPatternLine: confirmation.date が tz 既定で JST 暦日になる', () => {
+		const p = makePattern({
+			structureRange: { start: '2026-09-01T00:00:00.000Z', end: '2026-09-26T00:00:00.000Z' },
+			confirmation: { type: 'neckline_breakout', date: startUtcLate, idx: 31, price: 12345 },
+		});
+		const result = formatPatternLine(p, 0, 'summary', emptyMeta);
+		expect(result).toContain('ブレイク確認: 2026-10-02');
+	});
+
+	it("formatPatternLine: confirmation.date が tz='UTC' のとき UTC 暦日になる", () => {
+		const p = makePattern({
+			structureRange: { start: '2026-09-01T00:00:00.000Z', end: '2026-09-26T00:00:00.000Z' },
+			confirmation: { type: 'neckline_breakout', date: startUtcLate, idx: 31, price: 12345 },
+		});
+		const result = formatPatternLine(p, 0, 'summary', emptyMeta, 'UTC');
+		expect(result).toContain('ブレイク確認: 2026-10-01');
+	});
+
+	it('formatPatternLine: precedingTrend が tz 既定で JST 暦日になる', () => {
+		const p = makePattern({
+			precedingTrend: {
+				start: startUtcLate,
+				end: endUtcLate,
+				direction: 'down',
+				returnPct: -5,
+				lookbackBars: 10,
+			},
+		});
+		const result = formatPatternLine(p, 0, 'summary', emptyMeta);
+		expect(result).toContain('先行トレンド: 2026-10-02 ~ 2026-10-11');
+	});
+
+	it("formatPatternLine: precedingTrend が tz='UTC' のとき UTC 暦日になる", () => {
+		const p = makePattern({
+			precedingTrend: {
+				start: startUtcLate,
+				end: endUtcLate,
+				direction: 'down',
+				returnPct: -5,
+				lookbackBars: 10,
+			},
+		});
+		const result = formatPatternLine(p, 0, 'summary', emptyMeta, 'UTC');
+		expect(result).toContain('先行トレンド: 2026-10-01 ~ 2026-10-10');
+	});
+
+	it('formatPatternLine: pivot 日付（double_top）が tz 既定で JST 暦日になる', () => {
+		const meta = {
+			debug: {
+				swings: [
+					{ kind: 'peak', idx: 0, price: 100000, isoTime: startUtcLate },
+					{ kind: 'valley', idx: 5, price: 90000, isoTime: '2026-10-05T23:30:00.000Z' },
+					{ kind: 'peak', idx: 10, price: 100000, isoTime: endUtcLate },
+				],
+			},
+		};
+		const p = makePattern({ type: 'double_top' });
+		const result = formatPatternLine(p, 0, 'full', meta);
+		expect(result).toContain('山1: 2026-10-02');
+		expect(result).toContain('谷: 2026-10-06');
+		expect(result).toContain('山2: 2026-10-11');
+	});
+
+	it("formatPatternLine: pivot 日付（double_top）が tz='UTC' のとき UTC 暦日になる", () => {
+		const meta = {
+			debug: {
+				swings: [
+					{ kind: 'peak', idx: 0, price: 100000, isoTime: startUtcLate },
+					{ kind: 'valley', idx: 5, price: 90000, isoTime: '2026-10-05T23:30:00.000Z' },
+					{ kind: 'peak', idx: 10, price: 100000, isoTime: endUtcLate },
+				],
+			},
+		};
+		const p = makePattern({ type: 'double_top' });
+		const result = formatPatternLine(p, 0, 'full', meta, 'UTC');
+		expect(result).toContain('山1: 2026-10-01');
+		expect(result).toContain('谷: 2026-10-05');
+		expect(result).toContain('山2: 2026-10-10');
+	});
+
+	it('formatPatternLine: breakout 日付が tz 既定で JST 暦日になる', () => {
+		const meta = {
+			debug: {
+				swings: [{ kind: 'peak', idx: 10, price: 95000, isoTime: startUtcLate }],
+			},
+		};
+		const p = makePattern({ breakout: { idx: 10, price: 95000 } });
+		const result = formatPatternLine(p, 0, 'full', meta);
+		expect(result).toContain('ブレイク: 2026-10-02');
+	});
+
+	it("formatPatternLine: breakout 日付が tz='UTC' のとき UTC 暦日になる", () => {
+		const meta = {
+			debug: {
+				swings: [{ kind: 'peak', idx: 10, price: 95000, isoTime: startUtcLate }],
+			},
+		};
+		const p = makePattern({ breakout: { idx: 10, price: 95000 } });
+		const result = formatPatternLine(p, 0, 'full', meta, 'UTC');
+		expect(result).toContain('ブレイク: 2026-10-01');
+	});
+
+	it('formatDebugView: swing isoTime が tz 既定で JST 暦日になる', () => {
+		const meta = {
+			debug: {
+				swings: [{ kind: 'peak', idx: 0, price: 100000, isoTime: startUtcLate }],
+				candidates: [],
+			},
+		};
+		const res = formatDebugView('hdr', meta, [], {
+			ok: true,
+			summary: 'debug',
+			data: { patterns: [], overlays: null },
+			meta: {},
+		});
+		expect(res.content[0].text).toContain('(2026-10-02)');
+	});
+
+	it("formatDebugView: swing isoTime が tz='UTC' のとき UTC 暦日になる", () => {
+		const meta = {
+			debug: {
+				swings: [{ kind: 'peak', idx: 0, price: 100000, isoTime: startUtcLate }],
+				candidates: [],
+			},
+		};
+		const res = formatDebugView(
+			'hdr',
+			meta,
+			[],
+			{ ok: true, summary: 'debug', data: { patterns: [], overlays: null }, meta: {} },
+			'UTC',
+		);
+		expect(res.content[0].text).toContain('(2026-10-01)');
+	});
+});

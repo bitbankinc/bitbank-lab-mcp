@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { dayjs } from '../lib/datetime.js';
 import { asMockResult, assertOk } from './_assertResult.js';
 
 vi.mock('../tools/analyze_indicators.js', () => ({
@@ -1171,6 +1172,178 @@ describe('detect_patterns fixtures', () => {
 			expect(res.meta.warning).toBeUndefined();
 			expect(res.meta.warnings).toBeUndefined();
 			expect(res.summary.startsWith('⚠️')).toBe(false);
+		});
+	});
+
+	// ── tz 表示（PR-4: 表示日付の tz 整形） ──
+	describe('表示日付の tz 整形', () => {
+		// 23:30 UTC の足を含む fixture を作る（UTC 暦日と JST 暦日が 1 日ずれる）。
+		function makeIsoAt(year: number, month: number, day: number, hour: number): string {
+			return dayjs
+				.utc()
+				.year(year)
+				.month(month - 1)
+				.date(day)
+				.hour(hour)
+				.minute(30)
+				.second(0)
+				.millisecond(0)
+				.toISOString();
+		}
+
+		function buildDoubleTopAt2330Z(): Candle[] {
+			// 既存 buildCompletedDoubleTopCandles と同じ close 列だが、isoTime を 23:30Z 系に振り直す。
+			// idx 0 → 2026-10-01T23:30Z (UTC=10/01, JST=10/02)。1 日刻みで進める。
+			const closes = [
+				100, 102, 105, 110, 118, 130, 126, 122, 118, 114, 112, 110, 114, 118, 122, 126, 128, 129, 123, 116, 104, 100,
+				95, 100, 99, 98,
+			];
+			return closes.map((close, index) => ({
+				isoTime: makeIsoAt(2026, 10, 1 + index, 23),
+				open: close,
+				high: close + 3,
+				low: close - 3,
+				close,
+				volume: 100,
+			}));
+		}
+
+		it('tz 既定（Asia/Tokyo）: detect_patterns の summary 表示が JST 暦日になる', async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildDoubleTopAt2330Z())));
+
+			const res = await detectPatterns('btc_jpy', '1day', 26, {
+				patterns: ['double_top'],
+				swingDepth: 2,
+				tolerancePct: 0.02,
+				includeCompleted: true,
+				includeForming: false,
+			});
+
+			assertOk(res);
+			expect(res.data.patterns).toHaveLength(1);
+			// idx 5 (= 2026-10-06T23:30Z → JST 10/07) ~ idx 20 (= 2026-10-21T23:30Z → JST 10/22)
+			expect(res.summary).toContain('2026-10-07');
+			expect(res.summary).toContain('2026-10-22');
+			// UTC 暦日（10-06 / 10-21）は出ない
+			expect(res.summary).not.toContain('2026-10-06');
+			expect(res.summary).not.toContain('2026-10-21');
+		});
+
+		it("tz='UTC': detect_patterns の summary 表示が UTC 暦日になる", async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildDoubleTopAt2330Z())));
+
+			const res = await detectPatterns('btc_jpy', '1day', 26, {
+				patterns: ['double_top'],
+				swingDepth: 2,
+				tolerancePct: 0.02,
+				includeCompleted: true,
+				includeForming: false,
+				tz: 'UTC',
+			});
+
+			assertOk(res);
+			expect(res.data.patterns).toHaveLength(1);
+			// idx 5 = 2026-10-06、idx 20 = 2026-10-21（UTC 暦日）
+			expect(res.summary).toContain('2026-10-06');
+			expect(res.summary).toContain('2026-10-21');
+		});
+
+		it('構造化データ data.patterns[*].range.start/end は UTC ISO 文字列のまま不変（後方互換）', async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildDoubleTopAt2330Z())));
+
+			// tz=Asia/Tokyo（既定）でも data 値は UTC ISO
+			const res1 = await detectPatterns('btc_jpy', '1day', 26, {
+				patterns: ['double_top'],
+				swingDepth: 2,
+				tolerancePct: 0.02,
+				includeCompleted: true,
+				includeForming: false,
+			});
+			assertOk(res1);
+			expect(res1.data.patterns[0].range.start).toBe('2026-10-06T23:30:00.000Z');
+			expect(res1.data.patterns[0].range.end).toBe('2026-10-21T23:30:00.000Z');
+
+			// tz='UTC' でも同じ値（表示のみ変わる）
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildDoubleTopAt2330Z())));
+			const res2 = await detectPatterns('btc_jpy', '1day', 26, {
+				patterns: ['double_top'],
+				swingDepth: 2,
+				tolerancePct: 0.02,
+				includeCompleted: true,
+				includeForming: false,
+				tz: 'UTC',
+			});
+			assertOk(res2);
+			expect(res2.data.patterns[0].range.start).toBe('2026-10-06T23:30:00.000Z');
+			expect(res2.data.patterns[0].range.end).toBe('2026-10-21T23:30:00.000Z');
+
+			// overlays も同様に UTC ISO のまま
+			expect(res1.data.overlays?.ranges?.[0]?.start).toBe('2026-10-06T23:30:00.000Z');
+			expect(res2.data.overlays?.ranges?.[0]?.start).toBe('2026-10-06T23:30:00.000Z');
+		});
+
+		it("tz 省略時は detect_patterns 内部で 'Asia/Tokyo' にデフォルトされる（summary が JST 暦日）", async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildDoubleTopAt2330Z())));
+
+			const res = await detectPatterns('btc_jpy', '1day', 26, {
+				patterns: ['double_top'],
+				swingDepth: 2,
+				tolerancePct: 0.02,
+				includeCompleted: true,
+				includeForming: false,
+				// tz 未指定
+			});
+
+			assertOk(res);
+			expect(res.summary).toContain('2026-10-07');
+			expect(res.summary).toContain('2026-10-22');
+		});
+
+		it("tz='' は Asia/Tokyo にフォールバックされる", async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildDoubleTopAt2330Z())));
+
+			const res = await detectPatterns('btc_jpy', '1day', 26, {
+				patterns: ['double_top'],
+				swingDepth: 2,
+				tolerancePct: 0.02,
+				includeCompleted: true,
+				includeForming: false,
+				tz: '',
+			});
+
+			assertOk(res);
+			expect(res.summary).toContain('2026-10-07');
+			expect(res.summary).toContain('2026-10-22');
+		});
+
+		it('検出対象期間（detectionPeriodText）も tz で整形される', async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildDoubleTopAt2330Z())));
+
+			const res = await detectPatterns('btc_jpy', '1day', 26, {
+				patterns: ['double_top'],
+				swingDepth: 2,
+				tolerancePct: 0.02,
+				includeCompleted: true,
+				includeForming: false,
+				tz: 'Asia/Tokyo',
+			});
+
+			assertOk(res);
+			expect(res.summary).toContain('検出対象期間: 2026-10-07 ~ 2026-10-22');
+
+			// UTC のとき
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildDoubleTopAt2330Z())));
+			const resUtc = await detectPatterns('btc_jpy', '1day', 26, {
+				patterns: ['double_top'],
+				swingDepth: 2,
+				tolerancePct: 0.02,
+				includeCompleted: true,
+				includeForming: false,
+				tz: 'UTC',
+			});
+
+			assertOk(resUtc);
+			expect(resUtc.summary).toContain('検出対象期間: 2026-10-06 ~ 2026-10-21');
 		});
 	});
 });

@@ -1,8 +1,13 @@
 /**
  * detectPatternsHandler のビュー別フォーマッタ
  * debug / summary / full / detailed の4モードを分離
+ *
+ * 表示日付の TZ:
+ * - すべての日付表示は呼び出し側が渡す `tz` 引数で整形する（既定 'Asia/Tokyo'）。
+ * - 構造化データ（PatternEntry.range / structureRange / precedingTrend / confirmation.date 等）は
+ *   後方互換のため UTC ISO 文字列のまま不変。
  */
-import { toIsoTime } from '../../lib/datetime.js';
+import { formatDateInTz } from '../../lib/datetime.js';
 import { formatFixed, formatInt, formatPctFromRatio, formatRounded } from '../../lib/formatter.js';
 import { toStructured } from '../../lib/result.js';
 import type { PatternEntry } from '../../tools/patterns/types.js';
@@ -66,16 +71,19 @@ const fmtPointList = (arr: unknown): string =>
 
 // ── shared ──
 
-/** 検出対象期間の1行テキスト */
-export function buildPeriodLine(pats: PatternEntry[]): string {
+/**
+ * 検出対象期間の1行テキスト
+ * @param tz 表示 TZ（既定 'Asia/Tokyo'）。空文字 / 不正値は formatDateInTz が Asia/Tokyo にフォールバック。
+ */
+export function buildPeriodLine(pats: PatternEntry[], tz: string = 'Asia/Tokyo'): string {
 	try {
 		const ends = pats.map((p) => toTs(p?.range?.end)).filter(Number.isFinite);
 		const starts = pats.map((p) => toTs(p?.range?.start)).filter(Number.isFinite);
 		if (starts.length && ends.length) {
-			const startIso = (toIsoTime(Math.min(...starts)) ?? '').slice(0, 10);
-			const endIso = (toIsoTime(Math.max(...ends)) ?? '').slice(0, 10);
+			const startDate = formatDateInTz(Math.min(...starts), tz) ?? '';
+			const endDate = formatDateInTz(Math.max(...ends), tz) ?? '';
 			const days = Math.max(1, Math.round((Math.max(...ends) - Math.min(...starts)) / 86400000));
-			return `検出対象期間: ${startIso} ~ ${endIso}（${days}日間）`;
+			return `検出対象期間: ${startDate} ~ ${endDate}（${days}日間）`;
 		}
 	} catch {
 		/* noop */
@@ -83,8 +91,11 @@ export function buildPeriodLine(pats: PatternEntry[]): string {
 	return '';
 }
 
-/** 種別別件数集計 */
-export function buildTypeSummary(pats: PatternEntry[]): string {
+/**
+ * 種別別件数集計
+ * @param _tz 現状の集計ロジックでは TZ を使わないが、view formatter 群と signature を揃える。
+ */
+export function buildTypeSummary(pats: PatternEntry[], _tz: string = 'Asia/Tokyo'): string {
 	const byType = pats.reduce(
 		(m: Record<string, number>, p: PatternEntry) => {
 			const k = String(p?.type || 'unknown');
@@ -185,14 +196,16 @@ export function formatDebugView(
 	meta: PatternMeta,
 	_pats: PatternEntry[],
 	res: PatternResult,
+	tz: string = 'Asia/Tokyo',
 ): McpResponse {
 	const swings: SwingDebug[] = Array.isArray(meta?.debug?.swings) ? meta.debug.swings : [];
 	const cands: CandidateDebug[] = Array.isArray(meta?.debug?.candidates) ? meta.debug.candidates : [];
 
-	const swingLines = swings.map(
-		(s) =>
-			`- ${s.kind} idx=${s.idx} price=${Math.round(Number(s.price)).toLocaleString('ja-JP')} (${s.isoTime || 'n/a'})`,
-	);
+	const swingLines = swings.map((s) => {
+		// swing は日付のみで十分（任意の足の高安特定が用途）。時刻表示が必要なら toIsoWithTz に変更する。
+		const dateStr = s.isoTime ? (formatDateInTz(Date.parse(s.isoTime), tz) ?? 'n/a') : 'n/a';
+		return `- ${s.kind} idx=${s.idx} price=${Math.round(Number(s.price)).toLocaleString('ja-JP')} (${dateStr})`;
+	});
 
 	const candLines = cands.map((c, i: number) => {
 		const tag = c.accepted ? '✅' : '❌';
@@ -249,10 +262,14 @@ function buildIdxToIso(meta: PatternMeta): Record<number, string> {
 	return map;
 }
 
-/** ISO 文字列を YYYY-MM-DD に切り詰める（不正値は元の文字列をそのまま返す） */
-function toDateOnly(iso?: string): string {
+/**
+ * UTC ISO 文字列を、指定 tz の暦日 YYYY-MM-DD として整形する。
+ * 値が空 / parse 失敗時は 'n/a' を返す。
+ */
+function toDateOnly(iso: string | undefined, tz: string): string {
 	if (!iso) return 'n/a';
-	return iso.length >= 10 ? iso.slice(0, 10) : iso;
+	const ms = Date.parse(iso);
+	return formatDateInTz(ms, tz) ?? 'n/a';
 }
 
 /**
@@ -260,7 +277,7 @@ function toDateOnly(iso?: string): string {
  * 文脈期間 / 形成期間 / ブレイク確認 / 先行トレンド の行を組み立てる。
  * いずれも未設定の場合は legacy「期間」行をフォールバックとして返す。
  */
-function buildPeriodLines(p: PatternEntry, legacyRange: string): string[] {
+function buildPeriodLines(p: PatternEntry, legacyRange: string, tz: string): string[] {
 	const hasNew = !!(p?.structureRange || p?.confirmation || p?.precedingTrend);
 	if (!hasNew) return [`   - 期間: ${legacyRange}`];
 
@@ -275,18 +292,20 @@ function buildPeriodLines(p: PatternEntry, legacyRange: string): string[] {
 			: p.precedingTrend
 				? '（先行トレンド〜構成終了）'
 				: '';
-		lines.push(`   - 文脈期間: ${toDateOnly(ctxStart)} ~ ${toDateOnly(ctxEnd)}${suffix}`);
+		lines.push(`   - 文脈期間: ${toDateOnly(ctxStart, tz)} ~ ${toDateOnly(ctxEnd, tz)}${suffix}`);
 	}
 
 	if (p.structureRange) {
-		lines.push(`   - 形成期間: ${toDateOnly(p.structureRange.start)} ~ ${toDateOnly(p.structureRange.end)}（構成点）`);
+		lines.push(
+			`   - 形成期間: ${toDateOnly(p.structureRange.start, tz)} ~ ${toDateOnly(p.structureRange.end, tz)}（構成点）`,
+		);
 	}
 
 	if (p.confirmation?.type === 'neckline_breakout') {
 		const priceStr = Number.isFinite(p.confirmation.price)
 			? `${Math.round(p.confirmation.price).toLocaleString('ja-JP')}円`
 			: 'n/a';
-		lines.push(`   - ブレイク確認: ${toDateOnly(p.confirmation.date)}（${priceStr}）`);
+		lines.push(`   - ブレイク確認: ${toDateOnly(p.confirmation.date, tz)}（${priceStr}）`);
 	} else if (p.confirmation?.type === 'not_confirmed') {
 		lines.push('   - ブレイク確認: なし（検出器ではネックライン突破を確認していません）');
 	}
@@ -301,18 +320,25 @@ function buildPeriodLines(p: PatternEntry, legacyRange: string): string[] {
 		const t = p.precedingTrend;
 		const sign = t.returnPct > 0 ? '+' : '';
 		lines.push(
-			`   - 先行トレンド: ${toDateOnly(t.start)} ~ ${toDateOnly(t.end)}（${dirJa[t.direction] || t.direction}、${sign}${t.returnPct}%、lookback=${t.lookbackBars}本）`,
+			`   - 先行トレンド: ${toDateOnly(t.start, tz)} ~ ${toDateOnly(t.end, tz)}（${dirJa[t.direction] || t.direction}、${sign}${t.returnPct}%、lookback=${t.lookbackBars}本）`,
 		);
 	}
 
 	return lines.length > 0 ? lines : [`   - 期間: ${legacyRange}`];
 }
 
-export function formatPatternLine(p: PatternEntry, idx: number, view: string, meta: PatternMeta): string {
+export function formatPatternLine(
+	p: PatternEntry,
+	idx: number,
+	view: string,
+	meta: PatternMeta,
+	tz: string = 'Asia/Tokyo',
+): string {
 	const name = String(p?.type || 'unknown');
 	const conf = p?.confidence != null ? Number(p.confidence).toFixed(2) : 'n/a';
-	const range = p?.range ? `${p.range.start} ~ ${p.range.end}` : 'n/a';
-	const periodLines = buildPeriodLines(p, range);
+	// range.start/end は UTC ISO のまま構造化データに残す。表示のみ tz で整形する。
+	const range = p?.range ? `${toDateOnly(p.range.start, tz)} ~ ${toDateOnly(p.range.end, tz)}` : 'n/a';
+	const periodLines = buildPeriodLines(p, range, tz);
 
 	// price range
 	let priceRange: string | null = null;
@@ -349,7 +375,7 @@ export function formatPatternLine(p: PatternEntry, idx: number, view: string, me
 				const pv = pivs[i];
 				if (!pv) continue;
 				const d = idxToIso[Number(pv.idx)] || '';
-				const date = d ? d.slice(0, 10) : 'n/a';
+				const date = toDateOnly(d || undefined, tz);
 				pivotLines.push(`   - ${roleLabels[i]}: ${date} (${Math.round(Number(pv.price)).toLocaleString('ja-JP')}円)`);
 			}
 		}
@@ -361,7 +387,8 @@ export function formatPatternLine(p: PatternEntry, idx: number, view: string, me
 		if ((view === 'full' || view === 'debug') && p?.breakout?.idx != null) {
 			const bidx = Number(p.breakout.idx);
 			const bpx = Number(p.breakout.price);
-			const bdate = idxToIso[bidx] ? String(idxToIso[bidx]).slice(0, 10) : 'n/a';
+			const bIso = idxToIso[bidx];
+			const bdate = bIso ? toDateOnly(String(bIso), tz) : 'n/a';
 			const bprice = Number.isFinite(bpx) ? Math.round(bpx).toLocaleString('ja-JP') : 'n/a';
 			breakoutLine = `   - ブレイク: ${bdate} (${bprice}円)`;
 		}
@@ -500,6 +527,7 @@ export function formatSummaryView(
 	patterns: string[] | undefined,
 	includeForming: boolean | undefined,
 	res: PatternResult,
+	_tz: string = 'Asia/Tokyo',
 ): McpResponse {
 	const now = Date.now();
 	const within = (ms: number) =>
@@ -520,8 +548,9 @@ export function formatFullView(
 	typeSummary: string,
 	meta: PatternMeta,
 	res: PatternResult,
+	tz: string = 'Asia/Tokyo',
 ): McpResponse {
-	const body = pats.map((p, i) => formatPatternLine(p, i, 'full', meta)).join('\n\n');
+	const body = pats.map((p, i) => formatPatternLine(p, i, 'full', meta, tz)).join('\n\n');
 	const overlayNote = res?.data?.overlays
 		? '\n\nチャート連携: structuredContent.data.overlays を render_chart_svg.overlays に渡すと注釈/範囲を描画できます。'
 		: '';
@@ -542,9 +571,10 @@ export function formatDetailedView(
 	tolerancePct: number | undefined,
 	patterns: string[] | undefined,
 	res: PatternResult,
+	tz: string = 'Asia/Tokyo',
 ): McpResponse {
 	const top = pats.slice(0, 5);
-	const body = top.length ? top.map((p, i) => formatPatternLine(p, i, 'detailed', meta)).join('\n\n') : '';
+	const body = top.length ? top.map((p, i) => formatPatternLine(p, i, 'detailed', meta, tz)).join('\n\n') : '';
 
 	let none = '';
 	if (!top.length) {

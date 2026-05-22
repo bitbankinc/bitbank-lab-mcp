@@ -55,9 +55,11 @@ export const toolDef: ToolDefinition = {
 		includeForming,
 		includeCompleted,
 		includeInvalid,
+		tz,
 	}: DetectPatternsInput) => {
 		const chk = ensurePair(pair);
 		if (!chk.ok) return failFromValidation(chk);
+		const effectiveTz = tz ?? 'Asia/Tokyo';
 		const out = await detectPatterns(chk.pair, type, limit, {
 			patterns,
 			swingDepth,
@@ -68,6 +70,7 @@ export const toolDef: ToolDefinition = {
 			includeForming,
 			includeCompleted,
 			includeInvalid,
+			tz: effectiveTz,
 		});
 		const res: DetectPatternsOutput = DetectPatternsOutputSchema.parse(out);
 		if (!res.ok) return res;
@@ -79,24 +82,27 @@ export const toolDef: ToolDefinition = {
 		const upstream = { warning: meta.warning, warnings: meta.warnings };
 
 		if (view === 'debug') {
-			return prependWarningToResponse(formatDebugView(hdr, meta, pats, res), upstream);
+			return prependWarningToResponse(formatDebugView(hdr, meta, pats, res, effectiveTz), upstream);
 		}
 
-		const periodLine = buildPeriodLine(pats);
-		const typeSummary = buildTypeSummary(pats);
+		const periodLine = buildPeriodLine(pats, effectiveTz);
+		const typeSummary = buildTypeSummary(pats, effectiveTz);
 
 		if ((view || 'detailed') === 'summary') {
 			return prependWarningToResponse(
-				formatSummaryView(hdr, pats, periodLine, typeSummary, patterns, includeForming, res),
+				formatSummaryView(hdr, pats, periodLine, typeSummary, patterns, includeForming, res, effectiveTz),
 				upstream,
 			);
 		}
 		if ((view || 'detailed') === 'full') {
-			return prependWarningToResponse(formatFullView(hdr, pats, periodLine, typeSummary, meta, res), upstream);
+			return prependWarningToResponse(
+				formatFullView(hdr, pats, periodLine, typeSummary, meta, res, effectiveTz),
+				upstream,
+			);
 		}
 		// detailed (default)
 		return prependWarningToResponse(
-			formatDetailedView(hdr, pats, periodLine, typeSummary, meta, tolerancePct, patterns, res),
+			formatDetailedView(hdr, pats, periodLine, typeSummary, meta, tolerancePct, patterns, res, effectiveTz),
 			upstream,
 		);
 	},

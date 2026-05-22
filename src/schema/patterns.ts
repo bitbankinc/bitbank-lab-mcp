@@ -50,6 +50,16 @@ export const DetectPatternsInputSchema = BasePairInputSchema.extend({
 	includeForming: z.boolean().optional().default(false).describe('形成中パターンを含める'),
 	includeCompleted: z.boolean().optional().default(true).describe('完成済みパターンを含める'),
 	includeInvalid: z.boolean().optional().default(false).describe('無効化済みパターンを含める'),
+	tz: z
+		.string()
+		.optional()
+		.default('Asia/Tokyo')
+		.describe(
+			'表示日時のタイムゾーン（既定: Asia/Tokyo）。get_candles の tz と揃える。' +
+				'pattern の表示日付（期間 / 形成期間 / 文脈期間 / ブレイク確認 / 先行トレンド / pivot / 検出対象期間 等）に適用される。' +
+				'構造化データ（data.patterns[*].range.start/end 等）は後方互換のため UTC ISO 文字列のまま不変。' +
+				'空文字も Asia/Tokyo にフォールバック。',
+		),
 });
 
 export const DetectedPatternSchema = z.object({
@@ -59,14 +69,30 @@ export const DetectedPatternSchema = z.object({
 	timeframe: CandleTypeEnum.optional(),
 	/** 人間可読な時間足ラベル（例: '日足', '4時間足', '週足'） */
 	timeframeLabel: z.string().optional(),
-	range: z.object({ start: z.string(), end: z.string() }),
+	range: z.object({
+		start: z
+			.string()
+			.describe('UTC ISO 文字列。表示は呼び出し側 tz（既定 Asia/Tokyo）で整形される（後方互換のため値自体は不変）。'),
+		end: z
+			.string()
+			.describe('UTC ISO 文字列。表示は呼び出し側 tz（既定 Asia/Tokyo）で整形される（後方互換のため値自体は不変）。'),
+	}),
 	/**
 	 * パターン構成点のみで張る期間（誤読防止のための追加フィールド）。
 	 * double_top: peak1 → peak2 / double_bottom: valley1 → valley2 /
 	 * H&S・inverse H&S: 左肩 → 右肩。range はブレイク確認日まで含むことがあるが
 	 * こちらは構成点だけで閉じる。
 	 */
-	structureRange: z.object({ start: z.string(), end: z.string() }).optional(),
+	structureRange: z
+		.object({
+			start: z
+				.string()
+				.describe('UTC ISO 文字列。表示は呼び出し側 tz（既定 Asia/Tokyo）で整形される（後方互換のため値自体は不変）。'),
+			end: z
+				.string()
+				.describe('UTC ISO 文字列。表示は呼び出し側 tz（既定 Asia/Tokyo）で整形される（後方互換のため値自体は不変）。'),
+		})
+		.optional(),
 	/**
 	 * 検出器自身が確認したブレイク（ネックライン突破等）。
 	 * - double_top / double_bottom completed: type='neckline_breakout' を設定
@@ -95,8 +121,12 @@ export const DetectedPatternSchema = z.object({
 	 */
 	precedingTrend: z
 		.object({
-			start: z.string(),
-			end: z.string(),
+			start: z
+				.string()
+				.describe('UTC ISO 文字列。表示は呼び出し側 tz（既定 Asia/Tokyo）で整形される（後方互換のため値自体は不変）。'),
+			end: z
+				.string()
+				.describe('UTC ISO 文字列。表示は呼び出し側 tz（既定 Asia/Tokyo）で整形される（後方互換のため値自体は不変）。'),
 			direction: z.enum(['up', 'down', 'sideways', 'insufficient_data']),
 			returnPct: z.number(),
 			lookbackBars: z.number().int(),

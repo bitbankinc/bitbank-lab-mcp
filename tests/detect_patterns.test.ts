@@ -326,4 +326,164 @@ describe('detect_patterns handler', () => {
 		expect(sc.data.warnings).toEqual(warnings);
 		expect(sc.data.statistics).toEqual(statistics);
 	});
+
+	// ── tz 引数の伝搬（PR-4: 表示日付の tz 整形） ──
+
+	it('tz 既定（Asia/Tokyo）: pattern range の表示が JST 暦日になる', async () => {
+		// 2026-10-01T23:30Z は UTC=10/01、JST=10/02。
+		mockedDetectPatterns.mockResolvedValueOnce(
+			asMockResult(
+				okResult({
+					data: {
+						patterns: [
+							{
+								type: 'triangle_symmetrical',
+								confidence: 0.82,
+								timeframe: '1day',
+								timeframeLabel: '日足',
+								range: {
+									start: '2026-10-01T23:30:00.000Z',
+									end: '2026-10-10T23:30:00.000Z',
+								},
+								status: 'completed',
+							},
+						],
+						overlays: { ranges: [] },
+						warnings: [],
+						statistics: {},
+					},
+					meta: {
+						pair: 'btc_jpy',
+						type: '1day',
+						count: 1,
+						visualization_hints: { preferred_style: 'line', highlight_patterns: [] },
+						debug: { swings: [], candidates: [] },
+					},
+				}),
+			),
+		);
+
+		const res = await toolDef.handler({
+			pair: 'btc_jpy',
+			type: '1day',
+			limit: 90,
+			view: 'detailed',
+		});
+
+		const text = (res as { content: Array<{ text: string }> }).content[0].text;
+		// 表示は JST 暦日（既定 Asia/Tokyo）
+		expect(text).toContain('2026-10-02');
+		expect(text).toContain('2026-10-11');
+	});
+
+	it("tz='UTC': pattern range の表示が UTC 暦日になる", async () => {
+		mockedDetectPatterns.mockResolvedValueOnce(
+			asMockResult(
+				okResult({
+					data: {
+						patterns: [
+							{
+								type: 'triangle_symmetrical',
+								confidence: 0.82,
+								timeframe: '1day',
+								timeframeLabel: '日足',
+								range: {
+									start: '2026-10-01T23:30:00.000Z',
+									end: '2026-10-10T23:30:00.000Z',
+								},
+								status: 'completed',
+							},
+						],
+						overlays: { ranges: [] },
+						warnings: [],
+						statistics: {},
+					},
+					meta: {
+						pair: 'btc_jpy',
+						type: '1day',
+						count: 1,
+						visualization_hints: { preferred_style: 'line', highlight_patterns: [] },
+						debug: { swings: [], candidates: [] },
+					},
+				}),
+			),
+		);
+
+		const res = await toolDef.handler({
+			pair: 'btc_jpy',
+			type: '1day',
+			limit: 90,
+			view: 'detailed',
+			tz: 'UTC',
+		});
+
+		const text = (res as { content: Array<{ text: string }> }).content[0].text;
+		expect(text).toContain('2026-10-01');
+		expect(text).toContain('2026-10-10');
+	});
+
+	it('tz は detectPatterns 呼び出しに伝搬する', async () => {
+		mockedDetectPatterns.mockResolvedValueOnce(asMockResult(okResult()));
+
+		await toolDef.handler({
+			pair: 'btc_jpy',
+			type: '1day',
+			limit: 90,
+			view: 'detailed',
+			tz: 'UTC',
+		});
+
+		// detectPatterns(pair, type, limit, opts) の opts.tz に伝搬している
+		expect(mockedDetectPatterns).toHaveBeenCalledWith('btc_jpy', '1day', 90, expect.objectContaining({ tz: 'UTC' }));
+	});
+
+	it("tz='' は Asia/Tokyo にフォールバックして detectPatterns に渡される", async () => {
+		// schema の default('Asia/Tokyo') により tz 省略時は 'Asia/Tokyo' が入る。
+		// 明示的に空文字を渡した場合は formatDateInTz 側でフォールバックされるため
+		// 表示は同等に JST 暦日になる。
+		mockedDetectPatterns.mockResolvedValueOnce(
+			asMockResult(
+				okResult({
+					data: {
+						patterns: [
+							{
+								type: 'triangle_symmetrical',
+								confidence: 0.82,
+								timeframe: '1day',
+								timeframeLabel: '日足',
+								range: {
+									start: '2026-10-01T23:30:00.000Z',
+									end: '2026-10-10T23:30:00.000Z',
+								},
+								status: 'completed',
+							},
+						],
+						overlays: { ranges: [] },
+						warnings: [],
+						statistics: {},
+					},
+					meta: {
+						pair: 'btc_jpy',
+						type: '1day',
+						count: 1,
+						visualization_hints: { preferred_style: 'line', highlight_patterns: [] },
+						debug: { swings: [], candidates: [] },
+					},
+				}),
+			),
+		);
+
+		const res = await toolDef.handler({
+			pair: 'btc_jpy',
+			type: '1day',
+			limit: 90,
+			view: 'detailed',
+			tz: '',
+		});
+
+		const text = (res as { content: Array<{ text: string }> }).content[0].text;
+		// 空文字 → Asia/Tokyo フォールバック
+		expect(text).toContain('2026-10-02');
+		expect(text).toContain('2026-10-11');
+	});
 });

@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import { dayjs } from '../lib/datetime.js';
+import { formatDateInTz } from '../lib/datetime.js';
 import { fail, failFromError, ok } from '../lib/result.js';
 import { extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
 import { DetectPatternsOutputSchema, type PatternTypeEnum } from '../src/schemas.js';
@@ -72,6 +72,8 @@ export default async function detectPatterns(
 		includeCompleted: boolean;
 		includeInvalid: boolean;
 		view: 'summary' | 'detailed' | 'full' | 'debug';
+		/** 表示日付のタイムゾーン（既定: 'Asia/Tokyo'）。空文字も Asia/Tokyo にフォールバック。*/
+		tz: string;
 	}> = {},
 ) {
 	try {
@@ -82,6 +84,8 @@ export default async function detectPatterns(
 		const includeForming = opts.includeForming ?? false;
 		const includeCompleted = opts.includeCompleted ?? true;
 		const includeInvalid = opts.includeInvalid ?? false;
+		// 表示日付の TZ（既定: Asia/Tokyo）。formatDateInTz が空文字 / 不正値を Asia/Tokyo にフォールバックする。
+		const tz = opts.tz ?? 'Asia/Tokyo';
 		const want = new Set(opts.patterns || []);
 		// 'triangle' が指定された場合は3種を含む互換挙動
 		if (want.has('triangle')) {
@@ -266,8 +270,11 @@ export default async function detectPatterns(
 		// summary 生成: LLM が content から読み取れるように詳細を含める
 		const patternSummaries = summaryPatterns
 			.map((p, idx) => {
-				const startDate = p.range?.start?.substring(0, 10) || '?';
-				const endDate = p.range?.end?.substring(0, 10) || '?';
+				// range.start/end は UTC ISO 文字列。表示は呼び出し側 tz（既定 Asia/Tokyo）で整形する。
+				const startMs = p.range?.start ? Date.parse(p.range.start) : NaN;
+				const endMs = p.range?.end ? Date.parse(p.range.end) : NaN;
+				const startDate = formatDateInTz(startMs, tz) ?? '?';
+				const endDate = formatDateInTz(endMs, tz) ?? '?';
 				let detail = `${idx + 1}. ${p.type}【${tfLabel}】(パターン整合度: ${p.confidence})\n   - 時間足: ${tfLabel}（${type}）\n   - 期間: ${startDate} ~ ${endDate}`;
 
 				// status（全パターン共通）
@@ -384,12 +391,9 @@ export default async function detectPatterns(
 				.map((s) => Date.parse(s))
 				.filter(Number.isFinite);
 			if (allStarts.length && allEnds.length) {
-				const s = dayjs(Math.min(...allStarts))
-					.toISOString()
-					.slice(0, 10);
-				const e = dayjs(Math.max(...allEnds))
-					.toISOString()
-					.slice(0, 10);
+				// 検出対象期間も tz で表示（構造化データは UTC ISO のまま）
+				const s = formatDateInTz(Math.min(...allStarts), tz) ?? '';
+				const e = formatDateInTz(Math.max(...allEnds), tz) ?? '';
 				const days = Math.max(1, Math.round((Math.max(...allEnds) - Math.min(...allStarts)) / 86400000));
 				detectionPeriodText = `\n検出対象期間: ${s} ~ ${e}（${days}日間）`;
 			}
