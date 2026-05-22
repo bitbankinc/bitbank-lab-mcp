@@ -1156,20 +1156,22 @@ describe('getCandles', () => {
 			expect(tsList).toEqual([dayMs('2025-10-02'), dayMs('2025-10-03'), dayMs('2025-10-04')]);
 		});
 
-		it('1hour + date=YYYYMMDD + limit=5: 指定日終端 23:59:59 以前のみ返し、翌日の足は含めない', async () => {
-			// multi-day 経路は本来 /20251003 を fetch しないが、防御的に anchor 後の足を返す mock を
-			// 全リクエストに当てて、filter が確実に切り落とすことを検証する。
+		it('1hour + date=YYYYMMDD + limit=5: 指定日終端 (tz=Asia/Tokyo) 23:59:59 以前のみ返し、JST 翌日の足は含めない', async () => {
+			// anchor は JST 暦日終端で切る（PR-3 以降）。JST 10/2 23:59 = UTC 10/2 14:59 のため、
+			// 防御的に「JST 10/3 に入る足」（UTC 10/2 15:00 以降）を mock に混ぜ、filter で確実に切り落とされることを検証する。
 			const hourMs = (iso: string, h: number) => dayMs(iso) + h * 3600000;
 			const ohlcv = [
-				...Array.from({ length: 6 }, (_, i) => [
-					'100',
-					'110',
-					'90',
-					'105',
+				// JST 10/2 18:00..23:00 = UTC 10/2 09:00..14:00（6 本）
+				...Array.from({ length: 6 }, (_, i) => ['100', '110', '90', '105', '1.0', String(hourMs('2025-10-02', 9 + i))]),
+				// JST 10/3 00:00..02:00 = UTC 10/2 15:00..17:00（3 本、anchor の外側）
+				...Array.from({ length: 3 }, (_, i) => [
+					'200',
+					'210',
+					'190',
+					'205',
 					'1.0',
-					String(hourMs('2025-10-02', 18 + i)),
-				]), // 10/2 18:00..23:00
-				...Array.from({ length: 3 }, (_, i) => ['200', '210', '190', '205', '1.0', String(hourMs('2025-10-03', i))]), // 10/3 00:00..02:00
+					String(hourMs('2025-10-02', 15 + i)),
+				]),
 			];
 			const fetchMock = vi.fn().mockResolvedValue({
 				ok: true,
@@ -1183,11 +1185,11 @@ describe('getCandles', () => {
 			assertOk(res);
 
 			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
-			// すべて 10/2 終端以前であること
-			const anchor = dayMs('2025-10-03') - 1; // 10/2 23:59:59.999
-			for (const ts of tsList) expect(ts).toBeLessThanOrEqual(anchor);
-			// 10/3 の足は含まれない
-			expect(tsList.find((ts: number) => ts >= dayMs('2025-10-03'))).toBeUndefined();
+			// すべて JST 10/2 終端（= UTC 10/2 14:59:59.999）以前であること
+			const jstEndOfDayMs = dayMs('2025-10-02') + 15 * 3600000 - 1; // JST 10/2 23:59:59.999
+			for (const ts of tsList) expect(ts).toBeLessThanOrEqual(jstEndOfDayMs);
+			// JST 10/3（= UTC 10/2 15:00 以降）の足は含まれない
+			expect(tsList.find((ts: number) => ts >= hourMs('2025-10-02', 15))).toBeUndefined();
 		});
 
 		it('1day + date=20250110 + limit 年跨ぎ: 2025年と2024年の両方を取得し、anchor 以前の limit 件を返す', async () => {
@@ -1299,6 +1301,213 @@ describe('getCandles', () => {
 			assertFail(res);
 			expect(res.meta?.errorType).toBe('user');
 			expect(res.summary).toContain('20250105');
+		});
+	});
+
+	// ── PR-3: anchor を tz 起点で解釈する ──
+
+	describe('anchor は tz 引数の暦日終端で切る（PR-3）', () => {
+		/** YYYY-MM-DD UTC start-of-day を ms に */
+		const dayMs = (iso: string) => {
+			const [y, m, d] = iso.split('-').map(Number);
+			return Date.UTC(y, m - 1, d);
+		};
+		const hourMs = (iso: string, h: number) => dayMs(iso) + h * 3600000;
+
+		it("tz='Asia/Tokyo' × date=20251002 × 1hour × limit=24: normalized の timestamp は JST 10/2 (UTC 10/1 15:00..10/2 14:00) 内に収まる", async () => {
+			// bitbank API は UTC 暦日でグルーピング（docs/internal/bitbank-candle-tz.md）。
+			// /20251001 と /20251002 の 48 本のうち、anchor=JST 10/2 23:59:59=UTC 10/2 14:59:59
+			// 以前の 24 本が選ばれる → JST 10/2 0:00..23:00 (UTC 10/1 15:00..10/2 14:00) 24 本。
+			vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+				const urlStr = String(url);
+				const m = urlStr.match(/\/1hour\/(\d{8})$/);
+				const dateKey = m ? m[1] : '20251002';
+				const y = Number(dateKey.slice(0, 4));
+				const mo = Number(dateKey.slice(4, 6));
+				const d = Number(dateKey.slice(6, 8));
+				// 各 UTC 日について 0:00..23:00 の 24 本を返す
+				const baseTs = Date.UTC(y, mo - 1, d);
+				const ohlcv = Array.from({ length: 24 }, (_, i) => [
+					'100',
+					'110',
+					'90',
+					'105',
+					'1.0',
+					String(baseTs + i * 3600000),
+				]);
+				return {
+					ok: true,
+					status: 200,
+					statusText: 'OK',
+					json: async () => ({ success: 1, data: { candlestick: [{ ohlcv }] } }),
+				} as Response;
+			});
+
+			const res = await getCandles('btc_jpy', '1hour', '20251002', 24, 'Asia/Tokyo');
+			assertOk(res);
+
+			expect(res.data.normalized).toHaveLength(24);
+			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			// 最古 = JST 10/2 0:00 = UTC 10/1 15:00
+			expect(tsList[0]).toBe(hourMs('2025-10-01', 15));
+			// 最新 = JST 10/2 23:00 = UTC 10/2 14:00
+			expect(tsList.at(-1)).toBe(hourMs('2025-10-02', 14));
+			// すべて anchor (JST 10/2 23:59:59 = UTC 10/2 14:59:59) 以前
+			const jstAnchor = dayMs('2025-10-02') + 15 * 3600000 - 1;
+			for (const ts of tsList) expect(ts).toBeLessThanOrEqual(jstAnchor);
+		});
+
+		it("tz='UTC' 明示時は UTC anchor が使われる (date=20251002 × 1hour × limit=24 → UTC 10/2 0:00..23:00)", async () => {
+			vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+				const urlStr = String(url);
+				const m = urlStr.match(/\/1hour\/(\d{8})$/);
+				const dateKey = m ? m[1] : '20251002';
+				const y = Number(dateKey.slice(0, 4));
+				const mo = Number(dateKey.slice(4, 6));
+				const d = Number(dateKey.slice(6, 8));
+				const baseTs = Date.UTC(y, mo - 1, d);
+				const ohlcv = Array.from({ length: 24 }, (_, i) => [
+					'100',
+					'110',
+					'90',
+					'105',
+					'1.0',
+					String(baseTs + i * 3600000),
+				]);
+				return {
+					ok: true,
+					status: 200,
+					statusText: 'OK',
+					json: async () => ({ success: 1, data: { candlestick: [{ ohlcv }] } }),
+				} as Response;
+			});
+
+			const res = await getCandles('btc_jpy', '1hour', '20251002', 24, 'UTC');
+			assertOk(res);
+
+			expect(res.data.normalized).toHaveLength(24);
+			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			// UTC anchor: UTC 10/2 0:00..23:00 ぴったり
+			expect(tsList[0]).toBe(hourMs('2025-10-02', 0));
+			expect(tsList.at(-1)).toBe(hourMs('2025-10-02', 23));
+			const utcAnchor = dayMs('2025-10-03') - 1; // UTC 10/2 23:59:59.999
+			for (const ts of tsList) expect(ts).toBeLessThanOrEqual(utcAnchor);
+		});
+
+		it('未来日 (date=20991231) でも anchor は有効な finite ms を返す（エラー分類は PR-5 のスコープ）', async () => {
+			// API 側は HTTP 404 + success:0 を返すが、anchor 計算自体は date 文字列のみに依存するため
+			// 未来日でも valid な ms（finite, 0 < ms）を計算できることを検証する。
+			const fetchMock = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				statusText: 'OK',
+				json: async () => ({ success: 0, data: { code: 10000 } }),
+			});
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			// 1day → YYYY 形式に丸められる: '2099'。anchor=JST 2099-12-31 23:59:59
+			const res = await getCandles('btc_jpy', '1day', '20991231', 10, 'Asia/Tokyo');
+			// success:0 は upstream として fail するが、anchor 計算がクラッシュしないこと自体が
+			// PR-3 の関心事（filter 適用は fetch 後に走るため、anchor が NaN だと filter で落ちる）。
+			expect(res.ok).toBe(false);
+			expect(res.meta?.errorType).toBe('upstream');
+		});
+
+		it("tz='' (空文字) は Asia/Tokyo にフォールバックし JST anchor になる", async () => {
+			vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+				const urlStr = String(url);
+				const m = urlStr.match(/\/1hour\/(\d{8})$/);
+				const dateKey = m ? m[1] : '20251002';
+				const y = Number(dateKey.slice(0, 4));
+				const mo = Number(dateKey.slice(4, 6));
+				const d = Number(dateKey.slice(6, 8));
+				const baseTs = Date.UTC(y, mo - 1, d);
+				const ohlcv = Array.from({ length: 24 }, (_, i) => [
+					'100',
+					'110',
+					'90',
+					'105',
+					'1.0',
+					String(baseTs + i * 3600000),
+				]);
+				return {
+					ok: true,
+					status: 200,
+					statusText: 'OK',
+					json: async () => ({ success: 1, data: { candlestick: [{ ohlcv }] } }),
+				} as Response;
+			});
+
+			const res = await getCandles('btc_jpy', '1hour', '20251002', 24, '');
+			assertOk(res);
+			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			// JST anchor の結果 (= 上の Asia/Tokyo ケースと同じ)
+			expect(tsList[0]).toBe(hourMs('2025-10-01', 15));
+			expect(tsList.at(-1)).toBe(hourMs('2025-10-02', 14));
+		});
+
+		it("不正な tz (例: 'Invalid/Zone') は Asia/Tokyo にフォールバックする", async () => {
+			vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+				const urlStr = String(url);
+				const m = urlStr.match(/\/1hour\/(\d{8})$/);
+				const dateKey = m ? m[1] : '20251002';
+				const y = Number(dateKey.slice(0, 4));
+				const mo = Number(dateKey.slice(4, 6));
+				const d = Number(dateKey.slice(6, 8));
+				const baseTs = Date.UTC(y, mo - 1, d);
+				const ohlcv = Array.from({ length: 24 }, (_, i) => [
+					'100',
+					'110',
+					'90',
+					'105',
+					'1.0',
+					String(baseTs + i * 3600000),
+				]);
+				return {
+					ok: true,
+					status: 200,
+					statusText: 'OK',
+					json: async () => ({ success: 1, data: { candlestick: [{ ohlcv }] } }),
+				} as Response;
+			});
+
+			const res = await getCandles('btc_jpy', '1hour', '20251002', 24, 'Invalid/Zone');
+			assertOk(res);
+			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			// Asia/Tokyo フォールバックの結果
+			expect(tsList[0]).toBe(hourMs('2025-10-01', 15));
+			expect(tsList.at(-1)).toBe(hourMs('2025-10-02', 14));
+		});
+
+		it('1day (YYYY anchor) + tz=Asia/Tokyo: 年末は JST 12/31 終端で切る (= UTC 12/31 14:59:59)', async () => {
+			// UTC 12/31 00:00 (= JST 12/31 09:00) の daily candle は anchor 内、
+			// UTC 12/31 23:00 のような次年の足は anchor 外（仮にあれば）。
+			// 365 本 + ダミー次年バー 1 本を mock し、365 本残ることを検証する。
+			vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+				const urlStr = String(url);
+				const m = urlStr.match(/\/1day\/(\d{4})$/);
+				const year = m ? Number(m[1]) : 2025;
+				const baseTs = Date.UTC(year, 0, 1);
+				const ohlcv = [
+					...Array.from({ length: 365 }, (_, i) => ['100', '110', '90', '105', '1.0', String(baseTs + i * 86400000)]),
+					// 次年 1/1 00:00 UTC = JST 1/1 09:00（anchor 外）
+					['200', '210', '190', '205', '1.0', String(Date.UTC(year + 1, 0, 1))],
+				];
+				return {
+					ok: true,
+					status: 200,
+					statusText: 'OK',
+					json: async () => ({ success: 1, data: { candlestick: [{ ohlcv }] } }),
+				} as Response;
+			});
+
+			const res = await getCandles('btc_jpy', '1day', '2025', 1000, 'Asia/Tokyo');
+			assertOk(res);
+			// 翌年 1/1 の足は除外、365 本のみ
+			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			expect(tsList.find((ts: number) => ts >= Date.UTC(2026, 0, 1))).toBeUndefined();
+			// 末尾は UTC 2025-12-31 00:00（= JST 12/31 09:00）
+			expect(tsList.at(-1)).toBe(Date.UTC(2025, 11, 31));
 		});
 	});
 });

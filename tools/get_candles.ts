@@ -94,22 +94,46 @@ function todayYyyymmdd(): string {
 }
 
 /**
- * date 指定時の「これ以下の足だけ返す」上限 timestamp (ms, UTC) を返す。
+ * tz 引数を正規化する。空文字・undefined・不正値は Asia/Tokyo にフォールバック。
  *
- * - YYYYMMDD: その日の終端 23:59:59.999 UTC
- * - YYYY: その年の終端 12-31 23:59:59.999 UTC（YEARLY_TYPES でのみ用いる）
- * - 形式不一致: null（validateDate 通過後を前提に呼ぶため通常は起きない）
+ * dayjs.tz は不正な timezone 文字列を渡すと throw する実装系もあるため、
+ * 呼び出し側で safe な値に揃えてから渡す。
  */
-function computeAnchorEndMs(rawDate: string, type: string): number | null {
+function normalizeAnchorTz(tz: string | undefined): string {
+	if (typeof tz !== 'string' || tz.length === 0) return 'Asia/Tokyo';
+	try {
+		// dummy timestamp で tz が dayjs に認識されるか検証
+		if (dayjs(0).tz(tz).isValid()) return tz;
+	} catch {
+		// fallthrough
+	}
+	return 'Asia/Tokyo';
+}
+
+/**
+ * date 指定時の「これ以下の足だけ返す」上限 timestamp (ms since epoch) を返す。
+ *
+ * tz 引数の暦日基準で解釈する（既定 Asia/Tokyo、空文字・不正 tz は Asia/Tokyo にフォールバック）:
+ * - YYYYMMDD: その日の終端 23:59:59.999 (in tz)
+ * - YYYY: その年の終端 12-31 23:59:59.999 (in tz)（YEARLY_TYPES でのみ用いる）
+ * - 形式不一致: null（validateDate 通過後を前提に呼ぶため通常は起きない）
+ *
+ * bitbank /candlestick API は UTC 暦日でグルーピングする（docs/internal/bitbank-candle-tz.md）。
+ * 「API は UTC キーで fetch、anchor は tz 暦日終端で filter」という二段構えとし、
+ * tz=Asia/Tokyo の場合に anchor を JST 終端に取ることで、UTC anchor で起きていた
+ * 「JST date を指定したのに UTC で切られて結果が 9 時間ズレる」問題を回避する。
+ */
+function computeAnchorEndMs(rawDate: string, type: string, tz: string = 'Asia/Tokyo'): number | null {
+	const safeTz = normalizeAnchorTz(tz);
 	if (/^\d{8}$/.test(rawDate)) {
 		const year = rawDate.slice(0, 4);
 		const month = rawDate.slice(4, 6);
 		const day = rawDate.slice(6, 8);
-		const d = dayjs.utc(`${year}-${month}-${day}`);
+		const d = dayjs.tz(`${year}-${month}-${day}`, safeTz);
 		return d.isValid() ? d.endOf('day').valueOf() : null;
 	}
 	if (YEARLY_TYPES.has(type) && /^\d{4}$/.test(rawDate)) {
-		const d = dayjs.utc(`${rawDate}-01-01`);
+		const d = dayjs.tz(`${rawDate}-01-01`, safeTz);
 		return d.isValid() ? d.endOf('year').valueOf() : null;
 	}
 	return null;
@@ -118,21 +142,29 @@ function computeAnchorEndMs(rawDate: string, type: string): number | null {
 /**
  * anchor 年内で利用可能な本数を見積もる（multi-year yearsNeeded 計算用）。
  *
+ * tz 引数の暦日基準で 1/1 から anchor までの日数を数える（既定 Asia/Tokyo）:
  * - YYYY 指定: フル年 (barsPerYear)
  * - YYYYMMDD 指定: 1/1 から anchor 日までの本数を日数比で按分
  *
  * 年初に anchor を指定された場合（例: 1/10）に「フル年使える」と誤判定すると
  * 多年取得が不足し、filter 後の件数が limit を満たさない問題を防ぐ。
  */
-function estimateBarsAvailableInAnchorYear(rawDate: string, type: string, barsPerYear: number): number {
+function estimateBarsAvailableInAnchorYear(
+	rawDate: string,
+	type: string,
+	barsPerYear: number,
+	tz: string = 'Asia/Tokyo',
+): number {
 	if (!YEARLY_TYPES.has(type)) return barsPerYear;
 	if (!/^\d{8}$/.test(rawDate)) return barsPerYear;
+	const safeTz = normalizeAnchorTz(tz);
 	const year = rawDate.slice(0, 4);
 	const month = rawDate.slice(4, 6);
 	const day = rawDate.slice(6, 8);
-	const anchor = dayjs.utc(`${year}-${month}-${day}`);
+	const anchor = dayjs.tz(`${year}-${month}-${day}`, safeTz);
 	if (!anchor.isValid()) return barsPerYear;
-	const startOfYear = dayjs.utc(`${year}-01-01`).startOf('year');
+	const startOfYear = dayjs.tz(`${year}-01-01`, safeTz).startOf('year');
+	if (!startOfYear.isValid()) return barsPerYear;
 	const daysFromStart = anchor.diff(startOfYear, 'day') + 1;
 	return Math.max(1, Math.floor(daysFromStart * (barsPerYear / 365)));
 }
@@ -177,10 +209,15 @@ export default async function getCandles(
 	const barsPerYear = BARS_PER_YEAR[type] || 365;
 	const barsPerDay = BARS_PER_DAY[type] || 24;
 
+	// anchor / fetch 範囲計算で参照する tz。空文字・不正値は Asia/Tokyo にフォールバックする
+	// （PR-2 の displayTz と同じフォールバック規則）。
+	const anchorTz = normalizeAnchorTz(tz);
+
 	// date 指定時に「これ以下の足だけ返す」アンカー timestamp を計算する。
 	// 単一 fetch（YEARLY_TYPES）では API が年単位で返すため slice(-limit) のみだと
 	// 「指定日以前 limit 件」ではなく「年末側 limit 件」を返してしまう問題への対処。
-	const anchorEndMs = dateProvided ? computeAnchorEndMs(effectiveDate, String(type)) : null;
+	// anchor は anchorTz の暦日終端で切る（既定 Asia/Tokyo）。
+	const anchorEndMs = dateProvided ? computeAnchorEndMs(effectiveDate, String(type), anchorTz) : null;
 	const anchorActive = anchorEndMs != null;
 
 	// 起点年（multi-year のみ参照）:
@@ -209,7 +246,7 @@ export default async function getCandles(
 	const barsInAnchorYear = (() => {
 		if (!isYearlyType) return barsPerYear;
 		const fromAnchor = dateProvided
-			? estimateBarsAvailableInAnchorYear(effectiveDate, String(type), barsPerYear)
+			? estimateBarsAvailableInAnchorYear(effectiveDate, String(type), barsPerYear, anchorTz)
 			: barsPerYear;
 		const usable = isCurrentYearAnchor ? Math.min(fromAnchor, estimatedBarsThisYear) : fromAnchor;
 		return Math.max(1, usable);
@@ -222,8 +259,14 @@ export default async function getCandles(
 		: 1;
 	const needsMultiYear = isYearlyType && yearsNeeded > 1;
 
-	// 日単位タイプの場合、複数日取得が必要かどうかを判定
-	const daysNeeded = isDailyType ? Math.ceil(limit / barsPerDay) + 1 : 1; // +1 for buffer
+	// 日単位タイプの場合、複数日取得が必要かどうかを判定。
+	// bitbank API は UTC 暦日でグルーピングするため、anchorTz != 'UTC'（典型は JST）の場合は
+	// 「tz 暦日」と「UTC 暦日」が最大 1 日ずれる。例: JST 10/2 は UTC 10/1 15:00〜10/2 14:59 に
+	// またがるため、JST 10/2 の 24 本（1hour）を完全に取得するには UTC 10/1 + UTC 10/2 の 2 日を fetch する必要がある。
+	// 既存の Math.ceil(limit / barsPerDay) + 1 はちょうど境界 1 日分を吸収するバッファとして機能する
+	// （barsPerDay 本ぴったり要求しても +1 で前日まで fetch される）。tz=UTC の場合は +1 が常に過剰 fetch になるが、
+	// 安全側に倒した動作として許容する。
+	const daysNeeded = isDailyType ? Math.ceil(limit / barsPerDay) + 1 : 1;
 	const needsMultiDay = isDailyType && daysNeeded > 1;
 
 	// 複数年/複数日取得の場合は上限を緩和
@@ -421,8 +464,8 @@ export default async function getCandles(
 
 		// volume (v): base 通貨建ての合算取引量（買い+売り区別なし）
 		// bitbank /candlestick API の OHLCV[4] をそのまま使用
-		// 表示用 TZ: 空文字も含めて未指定なら Asia/Tokyo にフォールバック（既存ツール引数の慣例に合わせる）。
-		const displayTz = typeof tz === 'string' && tz.length > 0 ? tz : 'Asia/Tokyo';
+		// 表示用 TZ は anchorTz と同じ（既に normalize 済み）。
+		const displayTz = anchorTz;
 		const normalized = rows.map(([o, h, l, c, v, ts]) => ({
 			open: Number(o),
 			high: Number(h),
@@ -603,6 +646,7 @@ export default async function getCandles(
 export const toolDef: ToolDefinition = {
 	name: 'get_candles',
 	description: `[Candles / OHLCV / Candlestick] ローソク足（candles / OHLCV / chart data）を取得。1min〜1monthの各時間足に対応。
+date は tz（既定 Asia/Tokyo）の暦日として解釈し、その終端以前の limit 本を返す。
 
 【重要】バックテストには run_backtest を使用（データ取得〜チャート描画を一括実行）。`,
 	inputSchema: GetCandlesInputSchema,

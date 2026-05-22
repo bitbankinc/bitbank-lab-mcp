@@ -222,7 +222,9 @@ export const GetCandlesInputSchema = z.object({
 			'type により形式が異なる:\n' +
 				'- 1min/5min/15min/30min/1hour → YYYYMMDD（例: 20251022）\n' +
 				'- 4hour/8hour/12hour/1day/1week/1month → YYYY（例: 2025）\n' +
-				'指定した日付/年を起点に limit 件の直近ローソク足を返す。省略時は最新。\n' +
+				'date=YYYYMMDD は tz（既定 Asia/Tokyo）の暦日として解釈します。指定日の終端（23:59:59.999 in tz）以前の limit 本を返します。' +
+				'limit は日数ではなくローソク足本数です（例: 1hour, date=20251002, limit=24 は指定 tz の 10/2 24 本）。\n' +
+				'省略時は最新。\n' +
 				'（互換: 年足系で YYYYMMDD を渡した場合は先頭4桁を年として使用）',
 		),
 	limit: z
