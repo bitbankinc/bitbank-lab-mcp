@@ -720,7 +720,9 @@ export function detectTriangles(ctx: DetectContext): DetectResult {
 				filteredValleys[filteredValleys.length - 1].idx,
 			);
 
-			const scanStart = winStart + Math.max(3, Math.floor(barsSpan * 0.5));
+			// Scan for breakout only AFTER the last valid touch point on either trendline.
+			// Scanning earlier picks up normal in-pattern oscillations as fake breakouts.
+			const scanStart = patternEndIdx + 1;
 			let { breakoutIdx, breakoutDirection } = findTriangleBreakout(
 				candles,
 				upperLine,

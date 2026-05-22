@@ -242,7 +242,9 @@ export function detectPennantsFlags(ctx: DetectContext): DetectResult {
 		let breakoutIdx = -1;
 		let breakoutDirection: 'up' | 'down' | null = null;
 
-		const scanStart = consStart + Math.max(3, Math.floor((consEndIdx - consStart) * 0.3));
+		// Scan for breakout only AFTER consolidation ends.
+		// Scanning earlier picks up normal in-pattern oscillations as fake breakouts.
+		const scanStart = consEndIdx + 1;
 		for (let i = scanStart; i <= lastIdx; i++) {
 			const close = candles[i].close;
 			const uVal = upperLine.valueAt(i);

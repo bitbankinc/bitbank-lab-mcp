@@ -308,6 +308,64 @@ describe('detectTriangles — whipsaw boundary tests', () => {
 		expect(validStatuses).toContain(syms[0]?.status);
 	});
 
+	// ────────────────────────────────────────────────────────
+	// 5. 形成中の途中足がライン外に出ても completed にならない
+	//    （PR3: scanStart = patternEndIdx + 1 への修正検証）
+	// ────────────────────────────────────────────────────────
+	it('形成中の途中足がライン外に出ても completed にならない', () => {
+		// i=20 で一時的に upper line を大きく上抜けする close を設定（false breakout）。
+		// upper(20) ≈ 110 - 0.3*20 = 104。close=130 → upper + ATR*0.3 を大きく超える。
+		// 後続足は通常パターンに戻り、保ち合い終端後にラインを抜けない。
+		// → 中間の振れは breakout 扱いされず completed にならない。
+		const candles = buildSymTriangleBase(40);
+		candles[20] = mkCandle(20 + 40 - 20, 100, 132, 99, 130);
+
+		const ctx = buildCtx({
+			candles,
+			want: new Set(['triangle_symmetrical']),
+			includeForming: true,
+		});
+		const result = detectTriangles(ctx);
+
+		const syms = result.patterns.filter((p) => p.type === 'triangle_symmetrical');
+		// パターンは検出されるが、中間の振れによる completed は存在しない
+		const completed = syms.filter((p) => p.status === 'completed');
+		expect(completed).toHaveLength(0);
+	});
+
+	it('真のブレイクは保ち合い終端後の位置で検出される（中間の false breakout は採用されない）', () => {
+		// 中間 i=20 で false breakout、その後保ち合い終端を過ぎてから本物のブレイクアウト。
+		// PR3 修正により breakoutBarIndex は i=20 ではなく終端後の位置（>=38）になる。
+		const base = buildSymTriangleBase(40);
+
+		// 中間で upper を上抜け（false breakout）。
+		base[20] = mkCandle(20 + 40 - 20, 100, 132, 99, 130);
+
+		// 保ち合い終端後に本物のブレイクアウト。直近足も外側維持で whipsaw 不発。
+		base.push(mkCandle(20, 100, 116, 99, 115)); // i=40
+		base.push(mkCandle(19, 115, 121, 113, 119)); // i=41
+		base.push(mkCandle(18, 119, 125, 117, 123)); // i=42
+
+		const ctx = buildCtx({
+			candles: base,
+			want: new Set(['triangle_symmetrical']),
+			includeForming: true,
+		});
+		const result = detectTriangles(ctx);
+
+		const syms = result.patterns.filter((p) => p.type === 'triangle_symmetrical');
+		const completed = syms.filter((p) => p.status === 'completed');
+
+		expect(completed.length).toBeGreaterThan(0);
+		for (const p of completed) {
+			expect(p.breakoutBarIndex).toBeDefined();
+			// 形成期間中の false breakout (i=20) が採用されていないこと
+			expect(p.breakoutBarIndex).not.toBe(20);
+			// 保ち合い終端後（>=38）のブレイク位置であること
+			expect(p.breakoutBarIndex!).toBeGreaterThanOrEqual(38);
+		}
+	});
+
 	it('deduplicatePatterns で同一 range の重複が除去される', () => {
 		const candles = buildWithBreakoutAndTail([118, 119, 120, 121]);
 		const ctx = buildCtx({ candles, want: new Set() });
