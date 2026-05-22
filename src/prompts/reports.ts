@@ -42,23 +42,18 @@ ${VISUALIZER_OUTPUT_BLOCK}
 【ツール（1つのみ）】
 analyze_my_portfolio(include_pnl=true, include_technical=true, include_deposit_withdrawal=true)
 
-【データ】summary と structuredContent の両方を参照。主指標は:
-- 現在の資産残高（total_jpy_value）— 最も目立つ位置
-- 月初比・年初比の change_jpy / change_pct（入出金調整は補助）
-- 前日比は小さめ
-- monthly_equity_series / yearly_equity_series / holdings_performance
+【データ】ツール content テキストのみ参照（structuredContent は見えない）。末尾 JSON の data を使う:
+- グラフ: **monthly_equity_series**（月次タブ・日次全点）/ **yearly_equity_series**（年次タブ・月次全点）
+- 月初比/年初比の2点（monthly_performance / yearly_performance の start→current）だけで折れ線を描かない
+- 現在の資産残高（total_jpy_value）、holdings_performance、technical
 - トップに含み損・account_return・全履歴実現損益は出さない
 
 【資産推移グラフ（重要）】
-visualizer は「月次推移」「年次推移」2タブ。**同じ図・同じデータの使い回し禁止。** 2つのチャート領域を用意し、タブで表示を切り替える。
+visualizer は「月次推移」「年次推移」2タブ。**同じ図の使い回し禁止。** JSON 配列をタブごとに別チャートへ全点プロット。
 
-| タブ | 系列データ | 増減（グラフ上） | X軸 |
-| 月次推移 | summary の「月次資産推移」= monthly_equity_series（日次・全点プロット） | monthly_performance の change_jpy / change_pct | 左「月初」→ 右「現在」 |
-| 年次推移 | summary の「年次資産推移」= yearly_equity_series（月次・全点プロット） | yearly_performance の change_jpy / change_pct | 左「年初」→ 右「現在」 |
-
-- 年次タブで「月初」ラベルや月次系列を使わない。月次タブで「年初」や年次系列を使わない
-- 点が2つでも、タブごとに **別配列の value_jpy** を折れ線にする（ラベルだけ変えない）
-- 先頭点を期初基準線、終点に「現在: ¥XX,XXX」。html モードは2グラフを縦並び（タブ不要）
+| タブ | 配列（content JSON） | 増減表示 | X軸 |
+| 月次推移 | monthly_equity_series[] | monthly_performance.change_jpy / change_pct | 月初→現在 |
+| 年次推移 | yearly_equity_series[] | yearly_performance.change_jpy / change_pct | 年初→現在 |
 
 【セクション】
 1. ヘッダー（取得時刻・入出金分析バッジ）

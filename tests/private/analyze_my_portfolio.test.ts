@@ -1146,8 +1146,29 @@ describe('analyze_my_portfolio — toolDef handler', () => {
 		}) as unknown as typeof fetch;
 
 		const { toolDef } = await import('../../tools/private/analyze_my_portfolio.js');
-		const result = await toolDef.handler({});
+		const result = await toolDef.handler({
+			include_pnl: true,
+			include_technical: false,
+			include_deposit_withdrawal: true,
+		});
 
-		expect((result as { ok: boolean }).ok).toBe(true);
+		expect('content' in result).toBe(true);
+		const structured = (
+			result as {
+				content: Array<{ type: string; text: string }>;
+				structuredContent: { ok: boolean; summary: string; data: Record<string, unknown> };
+			}
+		).structuredContent;
+		expect(structured.ok).toBe(true);
+		const text = (result as { content: Array<{ type: string; text: string }> }).content[0].text;
+		expect(text.startsWith(structured.summary)).toBe(true);
+		const jsonStart = text.indexOf('\n{');
+		expect(jsonStart).toBeGreaterThan(0);
+		const dataInContent = JSON.parse(text.slice(jsonStart + 1)) as Record<string, unknown>;
+		expect(dataInContent).toEqual(structured.data);
+		if (Array.isArray(structured.data.monthly_equity_series) && structured.data.monthly_equity_series.length > 0) {
+			expect(text).toContain('monthly_equity_series');
+			expect(text).toContain('yearly_equity_series');
+		}
 	});
 });
