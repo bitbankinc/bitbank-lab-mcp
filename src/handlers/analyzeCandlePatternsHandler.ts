@@ -4,7 +4,7 @@
  */
 
 import type { z } from 'zod';
-import { formatDateWithDayOfWeek } from '../../lib/datetime.js';
+import { calendarDateFromIso, formatDateWithDayOfWeek } from '../../lib/datetime.js';
 import { formatPrice as fmtPrice } from '../../lib/formatter.js';
 import type { CandlePatternTypeEnum } from '../schemas.js';
 
@@ -300,7 +300,7 @@ export function generateContent(
 	lines.push('【ローソク足パターン分析結果】');
 	lines.push('');
 	lines.push(
-		`分析期間: ${windowCandles[0]?.timestamp?.split('T')[0] || '?'} 〜 ${windowCandles[windowCandles.length - 1]?.timestamp?.split('T')[0] || '?'}`,
+		`分析期間: ${calendarDateFromIso(windowCandles[0]?.timestamp) ?? '?'} 〜 ${calendarDateFromIso(windowCandles[windowCandles.length - 1]?.timestamp) ?? '?'}`,
 	);
 	lines.push('');
 

@@ -1,4 +1,4 @@
-import { dayjs } from '../lib/datetime.js';
+import { calendarDateFromIso, dayjs } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
@@ -37,7 +37,20 @@ export interface SupportResistanceLevel {
 	note?: string; // 補足説明
 }
 
-type SrCandle = { isoTime?: string | null; open: number; high: number; low: number; close: number; volume?: number };
+type SrCandle = {
+	isoTime?: string | null;
+	timestamp?: number;
+	open: number;
+	high: number;
+	low: number;
+	close: number;
+	volume?: number;
+};
+
+/** 表示・集計用の暦日（既定 JST）。isoTime の UTC 日付切り出しは使わない。 */
+function srCalendarDate(c: SrCandle): string {
+	return calendarDateFromIso(c.timestamp ?? c.isoTime) ?? '';
+}
 
 /** スイングポイント（ピボット）を検出: 左右 depth 本より高値/安値が突出した足 */
 function detectSwingPoints(
@@ -63,7 +76,7 @@ function detectSwingPoints(
 		if (isSwingHigh) {
 			swingHighs.push({
 				index: i,
-				date: (candles[i].isoTime ?? '').split('T')[0],
+				date: srCalendarDate(candles[i]),
 				price: candles[i].high,
 				bounceStrength: ((candles[i].high - candles[i].close) / candles[i].high) * 100,
 			});
@@ -81,7 +94,7 @@ function detectSwingPoints(
 		if (isSwingLow) {
 			swingLows.push({
 				index: i,
-				date: (candles[i].isoTime ?? '').split('T')[0],
+				date: srCalendarDate(candles[i]),
 				price: candles[i].low,
 				bounceStrength: ((candles[i].close - candles[i].low) / candles[i].low) * 100,
 			});
@@ -151,7 +164,7 @@ function findPriceLevels(
 		const seenDates = new Set<string>();
 
 		for (const candle of candles) {
-			const date = (candle.isoTime ?? '').split('T')[0];
+			const date = srCalendarDate(candle);
 			if (seenDates.has(date)) continue;
 			if (candle.low >= zoneMin && candle.low <= zoneMax && candle.close > candle.low) {
 				touches.push({
@@ -175,7 +188,7 @@ function findPriceLevels(
 		const seenDates = new Set<string>();
 
 		for (const candle of candles) {
-			const date = (candle.isoTime ?? '').split('T')[0];
+			const date = srCalendarDate(candle);
 			if (seenDates.has(date)) continue;
 			if (candle.high >= zoneMin && candle.high <= zoneMax && candle.close < candle.high) {
 				touches.push({
@@ -220,7 +233,7 @@ function detectRecentBreak(
 
 		const breakPct = ((candle.close - level) / level) * 100;
 		return {
-			date: (candle.isoTime ?? '').split('T')[0],
+			date: srCalendarDate(candle),
 			price: candle.close,
 			breakPct,
 		};
@@ -269,7 +282,7 @@ function detectNewSupport(
 
 				newSupports.push({
 					price: current.low,
-					date: (current.isoTime ?? '').split('T')[0],
+					date: srCalendarDate(current),
 					volumeBoost,
 					note,
 				});
@@ -325,7 +338,7 @@ function hasPullbackConfirmation(
 	candles: SrCandle[],
 	tolerance: number,
 ): boolean {
-	const breakIdx = candles.findIndex((c) => (c.isoTime ?? '').split('T')[0] >= breakDate);
+	const breakIdx = candles.findIndex((c) => srCalendarDate(c) >= breakDate);
 	if (breakIdx < 0) return false;
 	const afterBreak = candles.slice(breakIdx + 1);
 
@@ -461,7 +474,7 @@ export default async function analyzeSupportResistance(
 			if (recentBreak) continue; // 直近7日で崩壊したものは除外
 
 			const volumeBoost = touches.some((t) => {
-				const c = analysisCandles.find((c: SrCandle) => (c.isoTime ?? '').split('T')[0] === t.date);
+				const c = analysisCandles.find((c: SrCandle) => srCalendarDate(c) === t.date);
 				return c && (c.volume || 0) > avgVolume * 1.5;
 			});
 
@@ -574,7 +587,7 @@ export default async function analyzeSupportResistance(
 			if (recentBreak) continue; // 直近7日で突破されたものは除外
 
 			const volumeBoost = touches.some((t) => {
-				const c = analysisCandles.find((c: SrCandle) => (c.isoTime ?? '').split('T')[0] === t.date);
+				const c = analysisCandles.find((c: SrCandle) => srCalendarDate(c) === t.date);
 				return c && (c.volume || 0) > avgVolume * 1.5;
 			});
 
@@ -728,7 +741,7 @@ export default async function analyzeSupportResistance(
 		const displayPair = chk.pair.replace('_', '/').toUpperCase();
 		let contentText = `${displayPair} サポート・レジスタンス分析（過去${lookbackDays}日）\n`;
 		contentText += `現在価格: ${currentPrice.toLocaleString('ja-JP')}円\n`;
-		contentText += `分析日時: ${(currentCandle.isoTime ?? '').split('T')[0]}\n\n`;
+		contentText += `分析日時: ${srCalendarDate(currentCandle)}\n\n`;
 
 		contentText += `【サポートライン】\n`;
 		if (topSupports.length === 0) {

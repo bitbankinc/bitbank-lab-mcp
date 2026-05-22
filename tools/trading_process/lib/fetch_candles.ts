@@ -7,7 +7,7 @@
  * - 数値 NaN / time欠損は除外
  */
 
-import { dayjs } from '../../../lib/datetime.js';
+import { calendarDateFromIso, dayjs } from '../../../lib/datetime.js';
 import getCandles from '../../get_candles.js';
 import type { BacktestRange, Candle, Period, Timeframe } from '../types.js';
 
@@ -201,7 +201,7 @@ async function fetchByAbsoluteRange(
 	const earliestFetchedMs =
 		uniqueCandles.length > 0 ? dayjs(uniqueCandles[0].time).valueOf() : Number.POSITIVE_INFINITY;
 	if (earliestFetchedMs > startMs) {
-		const earliest = uniqueCandles.length > 0 ? uniqueCandles[0].time.slice(0, 10) : 'N/A';
+		const earliest = uniqueCandles.length > 0 ? (calendarDateFromIso(uniqueCandles[0].time) ?? 'N/A') : 'N/A';
 		if (fetchHitCap) {
 			throw new Error(
 				`Insufficient historical data: requested start_date=${start} but earliest available is ${earliest} ` +

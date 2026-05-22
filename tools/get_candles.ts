@@ -128,9 +128,9 @@ function normalizeAnchorTz(tz: string | undefined): string {
  * - 形式不一致: null（validateDate 通過後を前提に呼ぶため通常は起きない）
  *
  * bitbank /candlestick API は UTC 暦日でグルーピングする（docs/internal/bitbank-candle-tz.md）。
- * 「API は UTC キーで fetch、anchor は tz 暦日終端で filter」という二段構えとし、
- * tz=Asia/Tokyo の場合に anchor を JST 終端に取ることで、UTC anchor で起きていた
- * 「JST date を指定したのに UTC で切られて結果が 9 時間ズレる」問題を回避する。
+ * 「API は UTC キーで fetch、anchor は tz 暦日終端で filter」という二段構え（tz anchor 仕様）。
+ * 旧実装（date を UTC 暦日終端のみで解釈）では、JST で date を指定したときに
+ * 結果が最大 9 時間ズレる問題があった。
  */
 function computeAnchorEndMs(rawDate: string, type: string, tz: string = 'Asia/Tokyo'): number | null {
 	const safeTz = normalizeAnchorTz(tz);
@@ -146,6 +146,25 @@ function computeAnchorEndMs(rawDate: string, type: string, tz: string = 'Asia/To
 		return d.isValid() ? d.endOf('year').valueOf() : null;
 	}
 	return null;
+}
+
+/**
+ * [windowStartMs, windowEndMs] と交差する UTC 暦年 (YYYY) を昇順で返す。
+ * YEARLY_TYPES の fetch key 導出に使う（bitbank API は UTC 年 chunk）。
+ */
+function enumerateUtcYearsIntersectingWindow(windowStartMs: number, windowEndMs: number): string[] {
+	const keys: string[] = [];
+	let y = dayjs.utc(windowStartMs).year();
+	const endY = dayjs.utc(windowEndMs).year();
+	while (y <= endY) {
+		const yearStartMs = Date.UTC(y, 0, 1);
+		const yearEndMs = Date.UTC(y + 1, 0, 1) - 1;
+		if (yearStartMs <= windowEndMs && yearEndMs >= windowStartMs) {
+			keys.push(String(y));
+		}
+		y += 1;
+	}
+	return keys;
 }
 
 /**
@@ -327,12 +346,37 @@ export default async function getCandles(
 	// 防御的に OR で評価する。
 	const needsMultiDay = isDailyType && (multiDayUtcKeys.length >= 2 || limit > barsPerDay);
 
+	// YEARLY_TYPES + date 指定: tz 暦 window と交差する UTC 年 key set（sub-day の UTC 日 key と同型の考え方）。
+	// 例: tz=America/New_York, date=2025, 4hour → NY 2025-12-31 夜の足は UTC 2026 年 chunk に入る。
+	const yearlyTzWindowActive = isYearlyType && dateProvided && anchorActive;
+	const multiYearUtcKeys: string[] = [];
+	if (yearlyTzWindowActive) {
+		const intervalMsYearly = INTERVAL_MS[String(type)] ?? 86_400_000;
+		const year = effectiveDate.slice(0, 4);
+		let periodStartMs: number;
+		if (/^\d{8}$/.test(effectiveDate)) {
+			const month = effectiveDate.slice(4, 6);
+			const day = effectiveDate.slice(6, 8);
+			periodStartMs = dayjs.tz(`${year}-${month}-${day}`, anchorTz).startOf('year').valueOf();
+		} else {
+			periodStartMs = dayjs.tz(`${year}-01-01`, anchorTz).startOf('year').valueOf();
+		}
+		const lookbackStartMs = (anchorEndMs as number) - (limit - 1) * intervalMsYearly;
+		const windowStartMs = Math.min(periodStartMs, lookbackStartMs);
+		const windowEndMs = anchorEndMs as number;
+		multiYearUtcKeys.push(...enumerateUtcYearsIntersectingWindow(windowStartMs, windowEndMs));
+	}
+	// date 未指定時は従来どおり anchorYear から過去方向に yearsNeeded 分だけ fetch。
+	const useLegacyMultiYear = isYearlyType && needsMultiYear && !yearlyTzWindowActive;
+	const useYearlyMultiFetch = yearlyTzWindowActive && multiYearUtcKeys.length > 1;
+
 	// 複数年/複数日取得の場合は上限を緩和
-	const maxLimit = needsMultiYear
-		? CANDLE_LIMIT.multiYear
-		: needsMultiDay
-			? CANDLE_LIMIT.multiDay
-			: CANDLE_LIMIT.default;
+	const maxLimit =
+		needsMultiYear || useYearlyMultiFetch || useLegacyMultiYear
+			? CANDLE_LIMIT.multiYear
+			: needsMultiDay
+				? CANDLE_LIMIT.multiDay
+				: CANDLE_LIMIT.default;
 	const limitCheck = validateLimit(limit, 1, maxLimit);
 	if (!limitCheck.ok) return failFromValidation(limitCheck);
 
@@ -342,10 +386,10 @@ export default async function getCandles(
 	let lastRateLimit: RateLimitInfo | null = null;
 
 	try {
-		if (needsMultiYear) {
-			// 複数年の並列取得（起点は anchorYear＝date 指定時はその年、未指定時は現在年）
-			const years = Array.from({ length: yearsNeeded }, (_, i) => anchorYear - i);
-			const yearKeys = years.map(String);
+		if (useYearlyMultiFetch || useLegacyMultiYear) {
+			const yearKeys = yearlyTzWindowActive
+				? multiYearUtcKeys
+				: Array.from({ length: yearsNeeded }, (_, i) => String(anchorYear - i));
 
 			const merged = await mergeChunks(yearKeys, (key) =>
 				fetchCandleChunk(chk.pair, type, key, { timeoutMs: CANDLE_FETCH.chunkTimeoutMs }),
@@ -371,6 +415,7 @@ export default async function getCandles(
 			}
 
 			ohlcvs = merged.rows;
+			const years = yearKeys.map(Number);
 			json = { data: { candlestick: [{ ohlcv: ohlcvs }] }, _multiYear: { years, totalFetched: ohlcvs.length } };
 		} else if (needsMultiDay) {
 			// 複数日の並列取得（1hour, 30min, etc.）
@@ -413,8 +458,10 @@ export default async function getCandles(
 				_multiDay: { daysRequested: multiDayUtcKeys.length, totalFetched: ohlcvs.length },
 			};
 		} else {
-			// 従来の単一リクエスト
-			const url = `${BITBANK_API_BASE}/${chk.pair}/candlestick/${type}/${dateCheck.value}`;
+			// 単一リクエスト（YEARLY tz window で 1 UTC 年のみ交差する場合はその年 key）
+			const singleYearKey =
+				yearlyTzWindowActive && multiYearUtcKeys.length === 1 ? multiYearUtcKeys[0] : dateCheck.value;
+			const url = `${BITBANK_API_BASE}/${chk.pair}/candlestick/${type}/${singleYearKey}`;
 			const fetchResult = await fetchJsonWithRateLimit(url, {
 				timeoutMs: CANDLE_FETCH.singleTimeoutMs,
 				retries: DEFAULT_RETRIES,

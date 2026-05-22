@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	calendarDateFromIso,
 	dayjs,
 	daysAgo,
 	formatDateInTz,
@@ -91,6 +92,19 @@ describe('today', () => {
 	});
 	it('dayjs と一致する', () => {
 		expect(today('YYYY-MM-DD')).toBe(dayjs().format('YYYY-MM-DD'));
+	});
+});
+
+describe('calendarDateFromIso', () => {
+	const ms = Date.UTC(2025, 8, 30, 20, 0, 0); // 2025-09-30T20:00:00Z = JST 2025-10-01
+
+	it('UTC ISO から tz 暦日を返す（split(T)[0] とは異なる）', () => {
+		expect(calendarDateFromIso('2025-09-30T20:00:00.000Z', 'Asia/Tokyo')).toBe('2025-10-01');
+		expect(calendarDateFromIso('2025-09-30T20:00:00.000Z', 'UTC')).toBe('2025-09-30');
+	});
+
+	it('ms でも受け付ける', () => {
+		expect(calendarDateFromIso(ms, 'Asia/Tokyo')).toBe('2025-10-01');
 	});
 });
 

@@ -1358,7 +1358,7 @@ describe('getCandles', () => {
 			for (const ts of tsList) expect(ts).toBeLessThanOrEqual(jstAnchor);
 		});
 
-		it("tz='UTC' 明示時は UTC anchor が使われる (date=20251002 × 1hour × limit=24 → UTC 10/2 0:00..23:00)", async () => {
+		it("tz='UTC' 明示時は UTC 暦日終端 anchor（date=20251002 × 1hour × limit=24 → UTC 10/2 0:00..23:00）", async () => {
 			vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
 				const urlStr = String(url);
 				const m = urlStr.match(/\/1hour\/(\d{8})$/);
@@ -1388,7 +1388,7 @@ describe('getCandles', () => {
 
 			expect(res.data.normalized).toHaveLength(24);
 			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
-			// UTC anchor: UTC 10/2 0:00..23:00 ぴったり
+			// tz=UTC の暦日 anchor: UTC 10/2 0:00..23:00 ぴったり
 			expect(tsList[0]).toBe(hourMs('2025-10-02', 0));
 			expect(tsList.at(-1)).toBe(hourMs('2025-10-02', 23));
 			const utcAnchor = dayMs('2025-10-03') - 1; // UTC 10/2 23:59:59.999
@@ -1479,6 +1479,37 @@ describe('getCandles', () => {
 			// Asia/Tokyo フォールバックの結果
 			expect(tsList[0]).toBe(hourMs('2025-10-01', 15));
 			expect(tsList.at(-1)).toBe(hourMs('2025-10-02', 14));
+		});
+
+		it('4hour + date=2025 + tz=America/New_York: tz 年末の足が UTC 次年 chunk にある場合も fetch する', async () => {
+			// NY 2025-12-31 23:00 (EST) = UTC 2026-01-01T04:00:00Z。旧実装は /2025 のみ fetch して欠落。
+			const nyYearEndBarTs = Date.UTC(2026, 0, 1, 4, 0, 0, 0);
+			vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+				const urlStr = String(url);
+				const m = urlStr.match(/\/4hour\/(\d{4})$/);
+				const year = m ? Number(m[1]) : 2025;
+				const ohlcv =
+					year === 2026
+						? [['100', '110', '90', '105', '1.0', String(nyYearEndBarTs)]]
+						: [
+								['100', '110', '90', '105', '1.0', String(Date.UTC(2025, 11, 31, 12, 0, 0, 0))],
+								['100', '110', '90', '105', '1.0', String(Date.UTC(2025, 11, 31, 16, 0, 0, 0))],
+							];
+				return {
+					ok: true,
+					status: 200,
+					statusText: 'OK',
+					json: async () => ({ success: 1, data: { candlestick: [{ ohlcv }] } }),
+				} as Response;
+			});
+
+			const res = await getCandles('btc_jpy', '4hour', '2025', 6, 'America/New_York');
+			assertOk(res);
+
+			const calledUrls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0]));
+			expect(calledUrls.some((u) => u.endsWith('/4hour/2025'))).toBe(true);
+			expect(calledUrls.some((u) => u.endsWith('/4hour/2026'))).toBe(true);
+			expect(res.data.normalized.at(-1)?.timestamp).toBe(nyYearEndBarTs);
 		});
 
 		it('1day (YYYY anchor) + tz=Asia/Tokyo: 年末は JST 12/31 終端で切る (= UTC 12/31 14:59:59)', async () => {

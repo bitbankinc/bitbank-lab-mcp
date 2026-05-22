@@ -29,7 +29,7 @@ import {
 	totalRange,
 	upperShadow,
 } from '../lib/candle-utils.js';
-import { dayjs, nowIso, today, toIsoTime } from '../lib/datetime.js';
+import { calendarDateFromIso, dayjs, nowIso, toIsoTime } from '../lib/datetime.js';
 import { fail, failFromError, failFromValidation } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
@@ -666,9 +666,11 @@ export default async function analyzeCandlePatterns(
 		// 日足確定判定:
 		// - 過去日付指定時: すべて確定済み（is_partial = false）
 		// - 最新データ時: 最新の日足が今日のデータなら未確定
-		const todayStr = today('YYYY-MM-DD');
-		const lastCandleTime = windowCandles[windowCandles.length - 1]?.isoTime?.split('T')[0];
-		const isLastPartial = !isHistoricalQuery && lastCandleTime === todayStr;
+		const displayTz = 'Asia/Tokyo';
+		const todayStr = dayjs().tz(displayTz).format('YYYY-MM-DD');
+		const lastCandle = windowCandles[windowCandles.length - 1];
+		const lastCandleDate = calendarDateFromIso(lastCandle?.isoTime ?? lastCandle?.time) ?? '';
+		const isLastPartial = !isHistoricalQuery && lastCandleDate === todayStr;
 
 		// WindowCandle形式に変換
 		const formattedWindowCandles: WindowCandle[] = windowCandles.map((c, idx) => ({
@@ -772,8 +774,8 @@ export default async function analyzeCandlePatterns(
 			timeframe,
 			snapshot_time: nowIso(),
 			window: {
-				from: formattedWindowCandles[0]?.timestamp?.split('T')[0] || '',
-				to: formattedWindowCandles[formattedWindowCandles.length - 1]?.timestamp?.split('T')[0] || '',
+				from: calendarDateFromIso(formattedWindowCandles[0]?.timestamp) ?? '',
+				to: calendarDateFromIso(formattedWindowCandles[formattedWindowCandles.length - 1]?.timestamp) ?? '',
 				candles: formattedWindowCandles,
 			},
 			recent_patterns: filteredPatterns, // 強度50%以上のパターンのみ

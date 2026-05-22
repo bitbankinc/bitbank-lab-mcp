@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import { today } from '../lib/datetime.js';
+import { calendarDateFromIso, dayjs } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
@@ -193,7 +193,7 @@ export default async function analyzeStochSnapshot(
 				if ((prev <= 0 && curr > 0) || (prev >= 0 && curr < 0)) {
 					const ct = curr > 0 ? 'bullish_cross' : 'bearish_cross';
 					const barsAgo = n - 1 - i;
-					const date = String(candles[i]?.isoTime || '').slice(0, 10) || today('YYYY-MM-DD');
+					const date = calendarDateFromIso(candles[i]?.isoTime) ?? dayjs().tz('Asia/Tokyo').format('YYYY-MM-DD');
 					recentCrosses.push({ type: ct, barsAgo, date, zone: zoneOf(cK) });
 				}
 			}

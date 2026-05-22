@@ -1,3 +1,4 @@
+import { calendarDateFromIso } from '../lib/datetime.js';
 import { formatPair, formatPercent, formatPrice, timeframeLabel } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
@@ -24,6 +25,7 @@ interface NormalizedCandle {
 	close: number;
 	volume?: number;
 	isoTime?: string | null;
+	timestamp?: number;
 }
 
 interface SwingPoint {
@@ -71,13 +73,13 @@ function detectSignificantSwings(candles: NormalizedCandle[]): {
 
 	const swingHigh: SwingPoint = {
 		price: candles[highestIdx].high,
-		date: candles[highestIdx].isoTime?.split('T')[0] ?? '',
+		date: calendarDateFromIso(candles[highestIdx].timestamp ?? candles[highestIdx].isoTime) ?? '',
 		index: highestIdx,
 	};
 
 	const swingLow: SwingPoint = {
 		price: candles[lowestIdx].low,
-		date: candles[lowestIdx].isoTime?.split('T')[0] ?? '',
+		date: calendarDateFromIso(candles[lowestIdx].timestamp ?? candles[lowestIdx].isoTime) ?? '',
 		index: lowestIdx,
 	};
 

@@ -1,4 +1,4 @@
-import { today } from './datetime.js';
+import { calendarDateFromIso, dayjs } from './datetime.js';
 
 export type MaPrefix = 'SMA' | 'EMA';
 
@@ -147,7 +147,7 @@ export function detectRecentCrosses(
 			if ((prev <= 0 && curr > 0) || (prev >= 0 && curr < 0)) {
 				const type = curr > 0 ? 'golden_cross' : 'dead_cross';
 				const barsAgo = n - 1 - i;
-				const date = String(candles[i]?.isoTime || '').slice(0, 10) || today('YYYY-MM-DD');
+				const date = calendarDateFromIso(candles[i]?.isoTime) ?? dayjs().tz('Asia/Tokyo').format('YYYY-MM-DD');
 				recentCrosses.push({ type, pair: [a, b], barsAgo, date });
 			}
 		}

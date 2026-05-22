@@ -69,6 +69,20 @@ export function formatDateInTz(ms: number | undefined | null, tz: string = 'Asia
 }
 
 /**
+ * UTC ISO 文字列または ms から、指定 tz の暦日 YYYY-MM-DD を返す（表示・比較用）。
+ * isoTime.split('T')[0] は UTC 暦日になるため、JST 表示には使わない。
+ */
+export function calendarDateFromIso(
+	isoOrMs: string | number | null | undefined,
+	tz: string = 'Asia/Tokyo',
+): string | null {
+	if (isoOrMs == null) return null;
+	const ms = typeof isoOrMs === 'number' ? isoOrMs : dayjs(isoOrMs).valueOf();
+	if (!Number.isFinite(ms)) return null;
+	return formatDateInTz(ms, tz);
+}
+
+/**
  * タイムスタンプを日本語表示形式に変換
  * @param ts ミリ秒タイムスタンプ（未指定時は現在時刻）
  * @param tz タイムゾーン（デフォルト: 'Asia/Tokyo'）

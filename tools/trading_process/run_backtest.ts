@@ -6,6 +6,7 @@
 
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { dayjs, formatDateInTz } from '../../lib/datetime.js';
 import { type BacktestEngineInput, type BacktestEngineResult, runBacktestEngine } from './lib/backtest_engine.js';
 import { fetchCandlesForBacktest } from './lib/fetch_candles.js';
 import { getAvailableStrategies, getStrategy, type StrategyConfig, type StrategyType } from './lib/strategies/index.js';
@@ -228,9 +229,11 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 	}
 }
 
-function isoDate(time: string | undefined): string {
+/** summary 表示用の暦日（JST）。trade/candle の time フィールド自体は UTC ISO のまま。 */
+function isoDateForDisplay(time: string | undefined): string {
 	if (!time) return '';
-	return time.split('T')[0];
+	const ms = dayjs(time).valueOf();
+	return formatDateInTz(ms, 'Asia/Tokyo') ?? time.split('T')[0];
 }
 
 /** content text の equity/drawdown サンプリング上限点数 */
@@ -272,19 +275,19 @@ function generateSummaryText(data: GenericBacktestChartData, chartDetail: ChartD
 	lines.push(`Fee: ${input.fee_bp} bp (round-trip: ${input.fee_bp * 2} bp)`);
 	lines.push('');
 	lines.push(`--- Period ---`);
-	const fetchedStart = isoDate(candles[0]?.time);
-	const fetchedEnd = isoDate(candles[candles.length - 1]?.time);
+	const fetchedStart = isoDateForDisplay(candles[0]?.time);
+	const fetchedEnd = isoDateForDisplay(candles[candles.length - 1]?.time);
 	lines.push(`Fetched: ${fetchedStart} ~ ${fetchedEnd} (${candles.length} bars, incl. warmup)`);
 	lines.push(
-		`Evaluation: ${isoDate(summary.evaluation_start)} ~ ${isoDate(summary.evaluation_end)} (${summary.evaluation_bars} bars, warmup: ${summary.warmup_bars} bars)`,
+		`Evaluation: ${isoDateForDisplay(summary.evaluation_start)} ~ ${isoDateForDisplay(summary.evaluation_end)} (${summary.evaluation_bars} bars, warmup: ${summary.warmup_bars} bars)`,
 	);
 	lines.push('');
 	lines.push(`--- Summary (Compound) ---`);
 	lines.push(`Total P&L: ${summary.total_pnl_pct >= 0 ? '+' : ''}${summary.total_pnl_pct.toFixed(2)}%`);
 	// B&H 起点は tradable 区間の t+1 open（= warmup 終了直後の翌バー）
 	const bhStartIdx = summary.warmup_bars + 1;
-	const bhStartDate = isoDate(candles[bhStartIdx]?.time);
-	const bhEndDate = isoDate(summary.evaluation_end);
+	const bhStartDate = isoDateForDisplay(candles[bhStartIdx]?.time);
+	const bhEndDate = isoDateForDisplay(summary.evaluation_end);
 	lines.push(
 		`Buy & Hold: ${summary.buy_hold_pnl_pct >= 0 ? '+' : ''}${summary.buy_hold_pnl_pct.toFixed(2)}% (${bhStartDate} open → ${bhEndDate} close)`,
 	);
@@ -301,8 +304,8 @@ function generateSummaryText(data: GenericBacktestChartData, chartDetail: ChartD
 		lines.push(`--- Recent Trades (last 5) ---`);
 		const recentTrades = trades.slice(-5);
 		for (const t of recentTrades) {
-			const entryDate = t.entry_time.split('T')[0];
-			const exitDate = t.exit_time.split('T')[0];
+			const entryDate = isoDateForDisplay(t.entry_time);
+			const exitDate = isoDateForDisplay(t.exit_time);
 			const pnlSign = t.pnl_pct >= 0 ? '+' : '';
 			lines.push(`${entryDate} → ${exitDate}: ${pnlSign}${t.pnl_pct.toFixed(2)}% (×${t.net_return.toFixed(4)})`);
 		}

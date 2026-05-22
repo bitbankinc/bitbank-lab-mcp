@@ -6,7 +6,7 @@
  * - full: 4段チャート（価格 + オーバーレイ + シグナル / エクイティ / ドローダウン / ポジション）
  */
 
-import { dayjs } from '../../lib/datetime.js';
+import { calendarDateFromIso, dayjs } from '../../lib/datetime.js';
 import type { BacktestEngineSummary } from './lib/backtest_engine.js';
 import type { Overlay } from './lib/strategies/types.js';
 import type { Candle, DrawdownPoint, EquityPoint, Trade } from './types.js';
@@ -14,8 +14,8 @@ import type { Candle, DrawdownPoint, EquityPoint, Trade } from './types.js';
 export type ChartDetail = 'default' | 'full';
 
 function formatRange(summary: BacktestEngineSummary): string {
-	const start = summary.evaluation_start.slice(0, 10);
-	const end = summary.evaluation_end.slice(0, 10);
+	const start = calendarDateFromIso(summary.evaluation_start) ?? summary.evaluation_start.slice(0, 10);
+	const end = calendarDateFromIso(summary.evaluation_end) ?? summary.evaluation_end.slice(0, 10);
 	return `${start} ~ ${end}`;
 }
 
