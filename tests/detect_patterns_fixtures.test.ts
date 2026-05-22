@@ -711,6 +711,35 @@ describe('detect_patterns fixtures', () => {
 		);
 	});
 
+	// PR1: includeForming=false でも完成済み wedge が forming 候補に潰されないこと
+	it('includeCompleted=true / includeForming=false でも completed wedge は検出される', async () => {
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildCompletedFallingWedgeCandles())));
+
+		const res = await detectPatterns('btc_jpy', '1day', 37, {
+			patterns: ['falling_wedge'],
+			includeCompleted: true,
+			includeForming: false,
+		});
+
+		assertOk(res);
+		// completed wedge が残っている（forming 候補に dedup で潰されていない）
+		expect(res.data.patterns.length).toBeGreaterThan(0);
+		expect(res.data.patterns).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: 'falling_wedge',
+					timeframe: '1day',
+					timeframeLabel: '日足',
+				}),
+			]),
+		);
+		// 残ったパターンは completed 系であって、forming / near_completion は混ざらない
+		// （includeForming=false の段階で forming と near_completion を弾いているため）
+		for (const p of res.data.patterns) {
+			expect(['completed', 'invalid', undefined]).toContain(p.status);
+		}
+	});
+
 	it('synthetic fixture から forming の triangle_ascending を検出できる', async () => {
 		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildFormingAscendingTriangleCandles())));
 

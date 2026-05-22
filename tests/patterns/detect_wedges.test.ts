@@ -184,7 +184,7 @@ describe('detectWedges', () => {
 	it('Rising Wedge 形状のデータ → rising_wedge が検出される（4d forming）', () => {
 		const candles = buildRisingWedgeCandles(80);
 		const pivots: Pivot[] = [];
-		const ctx = buildCtx({ candles, pivots, want: new Set() });
+		const ctx = buildCtx({ candles, pivots, want: new Set(), includeForming: true });
 		const result = detectWedges(ctx);
 
 		const rw = result.patterns.filter((p) => p.type === 'rising_wedge');
@@ -198,7 +198,7 @@ describe('detectWedges', () => {
 	it('Rising Wedge の status は forming または near_completion', () => {
 		const candles = buildRisingWedgeCandles(80);
 		const pivots: Pivot[] = [];
-		const ctx = buildCtx({ candles, pivots });
+		const ctx = buildCtx({ candles, pivots, includeForming: true });
 		const result = detectWedges(ctx);
 
 		const rw = result.patterns.filter((p) => p.type === 'rising_wedge');
@@ -213,7 +213,7 @@ describe('detectWedges', () => {
 	it('Falling Wedge 形状のデータ → falling_wedge が検出される（4d forming）', () => {
 		const candles = buildFallingWedgeCandles(80);
 		const pivots: Pivot[] = [];
-		const ctx = buildCtx({ candles, pivots, want: new Set() });
+		const ctx = buildCtx({ candles, pivots, want: new Set(), includeForming: true });
 		const result = detectWedges(ctx);
 
 		const fw = result.patterns.filter((p) => p.type === 'falling_wedge');
@@ -225,7 +225,7 @@ describe('detectWedges', () => {
 	it('Falling Wedge の daysToApex は正の整数', () => {
 		const candles = buildFallingWedgeCandles(80);
 		const pivots: Pivot[] = [];
-		const ctx = buildCtx({ candles, pivots });
+		const ctx = buildCtx({ candles, pivots, includeForming: true });
 		const result = detectWedges(ctx);
 
 		const fw = result.patterns.filter((p) => p.type === 'falling_wedge');
@@ -239,7 +239,7 @@ describe('detectWedges', () => {
 	it('breakout が検出された場合、breakoutTarget と targetMethod が設定される', () => {
 		const candles = buildFallingWedgeCandles(80);
 		const pivots: Pivot[] = [];
-		const ctx = buildCtx({ candles, pivots });
+		const ctx = buildCtx({ candles, pivots, includeForming: true });
 		const result = detectWedges(ctx);
 
 		const withTarget = result.patterns.filter((p) => p.breakoutTarget !== undefined);
@@ -253,7 +253,7 @@ describe('detectWedges', () => {
 	it('検出試行後 debugCandidates に情報が記録される', () => {
 		const candles = buildRisingWedgeCandles(80);
 		const pivots: Pivot[] = [];
-		const ctx = buildCtx({ candles, pivots });
+		const ctx = buildCtx({ candles, pivots, includeForming: true });
 		detectWedges(ctx);
 		// 4d では formingWedgeDebug を debugCandidates に unshift する
 		expect(ctx.debugCandidates.length).toBeGreaterThanOrEqual(0);
@@ -264,7 +264,7 @@ describe('detectWedges', () => {
 	it('deduplicatePatterns を経て同一タイプ・同一レンジの重複は除去される', () => {
 		const candles = buildRisingWedgeCandles(80);
 		const pivots: Pivot[] = [];
-		const ctx = buildCtx({ candles, pivots });
+		const ctx = buildCtx({ candles, pivots, includeForming: true });
 		const result = detectWedges(ctx);
 
 		// 同タイプ×同 range.start の重複がないことを確認
@@ -281,7 +281,7 @@ describe('detectWedges', () => {
 	it('4d パスで検出されたパターンの _method は forming_relaxed', () => {
 		const candles = buildRisingWedgeCandles(80);
 		const pivots: Pivot[] = [];
-		const ctx = buildCtx({ candles, pivots });
+		const ctx = buildCtx({ candles, pivots, includeForming: true });
 		const result = detectWedges(ctx);
 
 		const fromFormingPath = result.patterns.filter((p) => (p as { _method?: string })._method === 'forming_relaxed');
@@ -296,13 +296,56 @@ describe('detectWedges', () => {
 		// apex ≈ i=80, endIdx=79 → barsToApex=1 ≤ 10 → near_completion
 		const candles = buildFallingWedgeCandles(80);
 		const pivots: Pivot[] = [];
-		const ctx = buildCtx({ candles, pivots });
+		const ctx = buildCtx({ candles, pivots, includeForming: true });
 		const result = detectWedges(ctx);
 
 		const fw = result.patterns.filter((p) => p.type === 'falling_wedge');
 		if (fw.length > 0) {
 			const validStatuses = ['near_completion', 'completed', 'forming'];
 			expect(validStatuses).toContain(fw[0]?.status);
+		}
+	});
+
+	// ── includeForming=false で forming/near_completion を dedup 競合から外す（PR1）─────────
+
+	it('includeForming=false のとき forming / near_completion 状態のパターンは返らない', () => {
+		// forming パスは走るが、未ブレイクの forming/near_completion は dedup 前に除外される。
+		// ブレイク検出済みで status=completed になったものだけが残る。
+		const candles = buildRisingWedgeCandles(80);
+		const pivots: Pivot[] = [];
+		const ctx = buildCtx({ candles, pivots, includeForming: false });
+		const result = detectWedges(ctx);
+
+		for (const p of result.patterns) {
+			expect(p.status).not.toBe('forming');
+			expect(p.status).not.toBe('near_completion');
+		}
+	});
+
+	it('includeForming=true / false で前者だけが forming / near_completion を含む', () => {
+		const candles = buildRisingWedgeCandles(80);
+		const pivots: Pivot[] = [];
+		const ctxOn = buildCtx({ candles, pivots, includeForming: true });
+		const ctxOff = buildCtx({ candles, pivots, includeForming: false });
+		const on = detectWedges(ctxOn).patterns;
+		const off = detectWedges(ctxOff).patterns;
+		const onHasForming = on.some((p) => p.status === 'forming' || p.status === 'near_completion');
+		const offHasForming = off.some((p) => p.status === 'forming' || p.status === 'near_completion');
+		expect(onHasForming).toBe(true);
+		expect(offHasForming).toBe(false);
+	});
+
+	it('includeForming=false でも forming パス由来で completed 判定になったものは残る', () => {
+		// 形成中ウィンドウ内でブレイクが検出された場合、forming パスは status=completed を返す。
+		// それは dedup 競合用フィルタを通過すべき（下流 includeCompleted=true で消えないため）。
+		const candles = buildRisingWedgeCandles(80);
+		const pivots: Pivot[] = [];
+		const ctxOff = buildCtx({ candles, pivots, includeForming: false });
+		const result = detectWedges(ctxOff);
+
+		for (const p of result.patterns) {
+			const validStatuses = ['completed', 'invalid'];
+			expect(validStatuses).toContain(p.status);
 		}
 	});
 });
