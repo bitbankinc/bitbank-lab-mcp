@@ -55,6 +55,15 @@ const BARS_PER_DAY: Record<string, number> = {
 	'1hour': 24,
 };
 
+// bitbank サービス開始日のヒューリスティック閾値 (2017-01-01T00:00:00Z = 1483228800000)。
+// 公式の bitbank.cc リリースは 2017-03-01 (https://prtimes.jp/main/html/rd/p/000000002.000024344.html)
+// だが、ここでは保守的に 2 ヶ月手前の 2017-01-01 を採用する:
+// - 2017-01-02〜2017-02-28 を指定した場合は早期 fail せず、後段の上流レスポンス (404 / 空配列)
+//   経由でエラーになる（メッセージは弱まるが false positive は避けられる）。
+// - ペアごとの厳密な listing 日は持たない（保守困難）ため、閾値はあくまで「明らかに昔すぎる」
+//   anchor を fetch 前に弾くための簡易チェック用途。
+const BITBANK_SERVICE_START_MS = 1483228800000;
+
 // 時間足ごとの bar 間隔（ms）— 現在年の利用可能本数を経過時間ベースで見積もる用。
 // 日数ベースだと 4hour/8hour/12hour で「形成中の今日 1 日分の足がすべて確定済」と過大評価し、
 // 年初に小 limit で前年取得が漏れる問題が起きる。
@@ -219,6 +228,23 @@ export default async function getCandles(
 	// anchor は anchorTz の暦日終端で切る（既定 Asia/Tokyo）。
 	const anchorEndMs = dateProvided ? computeAnchorEndMs(effectiveDate, String(type), anchorTz) : null;
 	const anchorActive = anchorEndMs != null;
+
+	// anchor 計算後の早期 fail（fetch 前に明らかに無効な範囲を弾く）:
+	// - 未来日: anchor が現在時刻より先 → データはまだ存在しない
+	// - サービス開始前: anchor が BITBANK_SERVICE_START_MS より前 → ヒューリスティックに無効と推定
+	// 上流 404 / 空配列として返すより user 向け原因を明示する方が調査が早い。
+	if (anchorEndMs != null) {
+		if (anchorEndMs > Date.now()) {
+			const isoLocal = toIsoWithTz(anchorEndMs, anchorTz) ?? String(anchorEndMs);
+			return fail(
+				`No candle data available for date=${effectiveDate} (date is in the future, anchor=${isoLocal})`,
+				'user',
+			);
+		}
+		if (anchorEndMs < BITBANK_SERVICE_START_MS) {
+			return fail(`No candle data available for date=${effectiveDate} (before bitbank service start)`, 'user');
+		}
+	}
 
 	// 起点年（multi-year のみ参照）:
 	//   - date 指定時 → その年（過去年は丸ごと利用可能）
@@ -415,7 +441,7 @@ export default async function getCandles(
 		}
 
 		if (ohlcvs.length === 0) {
-			return fail(`ローソク足データが見つかりません (${chk.pair} / ${type} / ${dateCheck.value})`, 'user');
+			return fail(`No candle data returned from bitbank API for ${chk.pair} / ${type} / ${dateCheck.value}`, 'user');
 		}
 
 		// timestamp 昇順でソート（mergeChunks 経路は既にソート済だが、単一fetch経路も含めて統一）。
@@ -442,7 +468,10 @@ export default async function getCandles(
 			: dedupedOhlcvs;
 
 		if (anchorActive && anchoredOhlcvs.length === 0) {
-			return fail(`指定日（${effectiveDate}）以前のローソク足データが見つかりません (${chk.pair} / ${type})`, 'user');
+			return fail(
+				`No candle data available for ${chk.pair} / ${type} on or before date=${effectiveDate} (data range exists but does not include this date)`,
+				'user',
+			);
 		}
 
 		const rows = anchoredOhlcvs.slice(-limitCheck.value) as Array<
@@ -658,11 +687,20 @@ export default async function getCandles(
 	} catch (e: unknown) {
 		const rawMsg = getErrorMessage(e);
 		const t = String(type);
-		if (/404/.test(rawMsg) && ['4hour', '8hour', '12hour'].includes(t)) {
-			const hint = `${t} は YYYY 形式（例: 2025）が必要です。なお、現在この時間足がAPIで提供されていない可能性もあります。1hour または 1day での取得もお試しください。`;
+		if (/404/.test(rawMsg)) {
+			if (['4hour', '8hour', '12hour'].includes(t)) {
+				const hint = `${t} は YYYY 形式（例: 2025）が必要です。なお、現在この時間足がAPIで提供されていない可能性もあります。1hour または 1day での取得もお試しください。`;
+				return parseAsResult<GetCandlesData, GetCandlesMeta>(
+					GetCandlesOutputSchema,
+					fail(`HTTP 404 Not Found (${chk.pair}/${t}). ${hint}`, 'user'),
+				);
+			}
 			return parseAsResult<GetCandlesData, GetCandlesMeta>(
 				GetCandlesOutputSchema,
-				fail(`HTTP 404 Not Found (${chk.pair}/${t}). ${hint}`, 'user'),
+				fail(
+					`HTTP 404 from bitbank API for ${chk.pair} / ${type} / ${dateCheck.value} (unknown reason; check pair/type/date validity)`,
+					'user',
+				),
 			);
 		}
 		return failFromError(e, {

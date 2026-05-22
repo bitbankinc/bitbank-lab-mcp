@@ -1395,9 +1395,9 @@ describe('getCandles', () => {
 			for (const ts of tsList) expect(ts).toBeLessThanOrEqual(utcAnchor);
 		});
 
-		it('未来日 (date=20991231) でも anchor は有効な finite ms を返す（エラー分類は PR-5 のスコープ）', async () => {
-			// API 側は HTTP 404 + success:0 を返すが、anchor 計算自体は date 文字列のみに依存するため
-			// 未来日でも valid な ms（finite, 0 < ms）を計算できることを検証する。
+		it('未来日 (date=20991231) は PR-5 で user エラー (future) として早期 fail する', async () => {
+			// PR-5: anchor 計算後の早期 fail で fetch 前に未来日を弾く。
+			// mock は fetch されないが安全のため設定しておく。
 			const fetchMock = vi.fn().mockResolvedValue({
 				ok: true,
 				status: 200,
@@ -1408,10 +1408,11 @@ describe('getCandles', () => {
 
 			// 1day → YYYY 形式に丸められる: '2099'。anchor=JST 2099-12-31 23:59:59
 			const res = await getCandles('btc_jpy', '1day', '20991231', 10, 'Asia/Tokyo');
-			// success:0 は upstream として fail するが、anchor 計算がクラッシュしないこと自体が
-			// PR-3 の関心事（filter 適用は fetch 後に走るため、anchor が NaN だと filter で落ちる）。
-			expect(res.ok).toBe(false);
-			expect(res.meta?.errorType).toBe('upstream');
+			assertFail(res);
+			expect(res.meta?.errorType).toBe('user');
+			expect(res.summary).toContain('future');
+			// 早期 fail により fetch は呼ばれない
+			expect(fetchMock).not.toHaveBeenCalled();
 		});
 
 		it("tz='' (空文字) は Asia/Tokyo にフォールバックし JST anchor になる", async () => {
@@ -1669,6 +1670,100 @@ describe('getCandles', () => {
 			const res = await getCandles('btc_jpy', '1hour', '20251102', 24, 'America/New_York');
 			assertOk(res);
 			expect(res.data.normalized.length).toBeGreaterThan(0);
+		});
+	});
+
+	// ── PR-5: エラー分類の細分化 ──
+	// 未来日 / 取引開始前 / 上流 404 / データなし を区別できるメッセージに変更。
+	// errorType ('user'/'upstream'/'network') の使い分けは維持し、メッセージのみ user 向けに改善。
+
+	describe('PR-5: エラー分類の細分化', () => {
+		it('取引開始前 (date=20100101) は fetch 前に user エラー (before bitbank service start) として早期 fail する', async () => {
+			const fetchMock = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				statusText: 'OK',
+				json: async () => ({ success: 1, data: { candlestick: [{ ohlcv: [] }] } }),
+			});
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			const res = await getCandles('btc_jpy', '1day', '20100101', 10);
+			assertFail(res);
+			expect(res.meta?.errorType).toBe('user');
+			expect(res.summary).toContain('before bitbank service start');
+			expect(res.summary).toContain('20100101');
+			// fetch 前に弾くので呼ばれない
+			expect(fetchMock).not.toHaveBeenCalled();
+		});
+
+		it('anchor 適用前の空配列 (ohlcv: []) は user エラー (No candle data returned) を返す', async () => {
+			const fetchMock = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				statusText: 'OK',
+				json: async () => ({ success: 1, data: { candlestick: [{ ohlcv: [] }] } }),
+			});
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			// 1day + date=2024 → anchor=JST 2024-12-31 終端（過去・サービス開始後）→ 早期 fail を通り抜ける
+			const res = await getCandles('btc_jpy', '1day', '2024', 10);
+			assertFail(res);
+			expect(res.meta?.errorType).toBe('user');
+			expect(res.summary).toContain('No candle data returned');
+			expect(res.summary).toContain('btc_jpy');
+			expect(res.summary).toContain('1day');
+		});
+
+		it('anchor filter 後 0 件 (data はあるが anchor がそれより前) は user エラー (on or before) を返す', async () => {
+			// year=2025 fetch で 2025-06 以降のデータのみ返す mock。
+			// date=20250105 → anchor=2025-01-05 23:59:59 → 全行が anchor より後 → filter 後 0 件。
+			const baseTs = Date.UTC(2025, 5, 1); // 2025-06-01
+			const ohlcv = Array.from({ length: 3 }, (_, i) => [
+				'100',
+				'110',
+				'90',
+				'105',
+				'1.0',
+				String(baseTs + i * 86400000),
+			]);
+			const fetchMock = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				statusText: 'OK',
+				json: async () => ({ success: 1, data: { candlestick: [{ ohlcv }] } }),
+			});
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			const res = await getCandles('btc_jpy', '1day', '20250105', 10);
+			assertFail(res);
+			expect(res.meta?.errorType).toBe('user');
+			expect(res.summary).toContain('on or before');
+			expect(res.summary).toContain('20250105');
+		});
+
+		it('4hour × 404: 既存のヒント付きメッセージが残る', async () => {
+			const fetchMock = vi.fn().mockRejectedValue(new Error('HTTP 404 Not Found'));
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			const res = await getCandles('btc_jpy', '4hour', '2024', 10);
+			assertFail(res);
+			expect(res.meta?.errorType).toBe('user');
+			// 既存のヒント文言
+			expect(res.summary).toContain('HTTP 404 Not Found');
+			expect(res.summary).toContain('YYYY 形式');
+		});
+
+		it('1day × 404: 新メッセージ "HTTP 404 from bitbank API" 形式を返す', async () => {
+			const fetchMock = vi.fn().mockRejectedValue(new Error('HTTP 404 Not Found'));
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			const res = await getCandles('btc_jpy', '1day', '2024', 10);
+			assertFail(res);
+			expect(res.meta?.errorType).toBe('user');
+			expect(res.summary).toContain('HTTP 404 from bitbank API');
+			expect(res.summary).toContain('btc_jpy');
+			expect(res.summary).toContain('1day');
+			expect(res.summary).toContain('check pair/type/date validity');
 		});
 	});
 });
