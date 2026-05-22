@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+	dedupeByTimestamp,
 	type FetchChunkResult,
 	fetchCandleChunk,
 	mergeChunks,
+	type OhlcvRow,
 	parseCandleChunk,
 	UpstreamApiError,
 } from '../../lib/candle-fetch.js';
@@ -351,5 +353,112 @@ describe('mergeChunks', () => {
 			// Promise.all のため start-a/b/c が連続で呼ばれる
 			expect(order).toEqual(['start-a', 'start-b', 'start-c']);
 		});
+	});
+});
+
+describe('dedupeByTimestamp', () => {
+	/** OHLCV 行を生成するヘルパー */
+	const row = (o: number, h: number, l: number, c: number, v: number, ts: number): OhlcvRow => [
+		String(o),
+		String(h),
+		String(l),
+		String(c),
+		String(v),
+		String(ts),
+	];
+
+	it('空配列 → 空配列', () => {
+		expect(dedupeByTimestamp([])).toEqual([]);
+	});
+
+	it('重複なし → そのまま返す', () => {
+		const rows: OhlcvRow[] = [row(100, 110, 90, 105, 1, 1000), row(101, 111, 91, 106, 2, 2000)];
+		expect(dedupeByTimestamp(rows)).toEqual(rows);
+	});
+
+	it('単一要素 → そのまま返す', () => {
+		const rows: OhlcvRow[] = [row(100, 110, 90, 105, 1, 1000)];
+		expect(dedupeByTimestamp(rows)).toEqual(rows);
+	});
+
+	it('同一 ts × 2 件、一方が volume=0 → 非ゼロ volume の行が残る (priority b)', () => {
+		// 両方 OHLC は正常値、片方の volume が 0 → priority b で v>0 の行を採用
+		const r0 = row(100, 110, 90, 105, 0, 1000);
+		const r1 = row(100, 110, 90, 105, 1.5, 1000);
+		expect(dedupeByTimestamp([r0, r1])).toEqual([r1]);
+	});
+
+	it('同一 ts × 2 件、片方が全 0 OHLC のプレースホルダ → 非プレースホルダ行が残る (priority a)', () => {
+		// 全 0 OHLC（プレースホルダ）を除外する。priority a の検証。
+		const placeholder = row(0, 0, 0, 0, 0, 1000);
+		const real = row(100, 110, 90, 105, 1.5, 1000);
+		expect(dedupeByTimestamp([placeholder, real])).toEqual([real]);
+		// 順序逆でも同じ結果
+		expect(dedupeByTimestamp([real, placeholder])).toEqual([real]);
+	});
+
+	it('同一 ts × 2 件、両方非ゼロかつ volume 異なる → 大きい方が残る (priority b)', () => {
+		const r0 = row(100, 110, 90, 105, 3, 1000);
+		const r1 = row(100, 110, 90, 105, 5, 1000);
+		expect(dedupeByTimestamp([r0, r1])).toEqual([r1]);
+		// 順序逆でも同じ結果
+		expect(dedupeByTimestamp([r1, r0])).toEqual([r1]);
+	});
+
+	it('同一 ts × 2 件、全フィールド同値 → 後勝ち (priority c)', () => {
+		const r0 = row(100, 110, 90, 105, 1, 1000);
+		const r1 = row(100, 110, 90, 105, 1, 1000);
+		const result = dedupeByTimestamp([r0, r1]);
+		expect(result).toHaveLength(1);
+		expect(result[0]).toBe(r1);
+	});
+
+	it('同一 ts × 3 件で a→b→c が連鎖する → 最終 1 件', () => {
+		// r0: 全 0 OHLC（priority a で除外）
+		// r1: 非ゼロ OHLC, v=3（priority b で r2 に負ける）
+		// r2: 非ゼロ OHLC, v=5（最終勝者）
+		const r0 = row(0, 0, 0, 0, 10, 1000);
+		const r1 = row(100, 110, 90, 105, 3, 1000);
+		const r2 = row(100, 110, 90, 105, 5, 1000);
+		const result = dedupeByTimestamp([r0, r1, r2]);
+		expect(result).toHaveLength(1);
+		expect(result[0]).toBe(r2);
+	});
+
+	it('隣接しない同一 ts（robustness）→ どちらか 1 件残る', () => {
+		// sort 前提では発生しない想定だが、Map ベースの実装で堅牢に処理することを検証する。
+		const r0 = row(100, 110, 90, 105, 1, 1000);
+		const r1 = row(200, 210, 190, 205, 1, 2000);
+		const r2 = row(101, 111, 91, 106, 5, 1000); // r0 と同一 ts, v が大きい
+		const result = dedupeByTimestamp([r0, r1, r2]);
+		expect(result).toHaveLength(2);
+		const tsList = result.map((r) => Number(r[5]));
+		expect(tsList.filter((t) => t === 1000)).toHaveLength(1);
+		expect(tsList.filter((t) => t === 2000)).toHaveLength(1);
+		// priority b で v=5 の行（r2）が残る
+		const kept1000 = result.find((r) => Number(r[5]) === 1000);
+		expect(kept1000).toBe(r2);
+	});
+
+	it('timestamp が NaN/<=0 の行は dedupe 対象外でそのまま素通しする', () => {
+		// 無効 ts の 2 行は同一値でも dedupe されない
+		const invalidNaN = row(100, 110, 90, 105, 1, Number.NaN);
+		const invalidZero = row(100, 110, 90, 105, 1, 0);
+		const invalidNeg = row(100, 110, 90, 105, 1, -1);
+		const valid = row(101, 111, 91, 106, 1, 1000);
+		const result = dedupeByTimestamp([invalidNaN, invalidZero, invalidNeg, valid]);
+		expect(result).toEqual([invalidNaN, invalidZero, invalidNeg, valid]);
+	});
+
+	it('valid-ts 行はソート順を保つ（先頭位置に揃える）', () => {
+		// dedupe 後も timestamp 昇順を保つ（後段の anchor filter / slice が機能する前提）
+		const r0 = row(100, 110, 90, 105, 1, 1000);
+		const r1 = row(200, 210, 190, 205, 1, 2000);
+		const r2 = row(300, 310, 290, 305, 1, 3000);
+		const dup = row(100, 110, 90, 105, 2, 1000); // r0 と同一 ts, v が大きい
+		const result = dedupeByTimestamp([r0, dup, r1, r2]);
+		expect(result).toHaveLength(3);
+		expect(result.map((r) => Number(r[5]))).toEqual([1000, 2000, 3000]);
+		expect(result[0]).toBe(dup);
 	});
 });

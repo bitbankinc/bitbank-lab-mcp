@@ -556,6 +556,42 @@ describe('getCandles', () => {
 		});
 	});
 
+	it('同一 timestamp の重複行は dedupe され normalized に 1 件のみ残る', async () => {
+		// /candlestick レスポンスで同一 ts の重複（一方は全 0 OHLC のプレースホルダ）が
+		// 観測される。pipeline (sort → dedupe → anchor filter → slice) で dedupe される。
+		const ts = 1704067200000;
+		const ohlcv = [
+			// 同一 ts の重複: priority a で除外される全 0 プレースホルダ
+			['0', '0', '0', '0', '0', String(ts)],
+			// 同一 ts の正常行（残るべき）
+			['100', '110', '90', '105', '1.5', String(ts)],
+			// 別 ts の正常行
+			['101', '111', '91', '106', '2.0', String(ts + 86400000)],
+		];
+		const fetchMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: 'OK',
+			json: async () => ({
+				success: 1,
+				data: { candlestick: [{ ohlcv }] },
+			}),
+		});
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+		const res = await getCandles('btc_jpy', '1day', '2024', 10);
+		assertOk(res);
+
+		// dedupe により ts=ts の行は 1 件のみ
+		expect(res.data.normalized).toHaveLength(2);
+		const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+		expect(tsList.filter((t: number) => t === ts)).toHaveLength(1);
+		// 残ったのは非プレースホルダ行
+		const kept = res.data.normalized.find((c: { timestamp: number }) => c.timestamp === ts);
+		expect(kept?.open).toBe(100);
+		expect(kept?.volume).toBe(1.5);
+	});
+
 	it('priceRange を正しく計算するべき', async () => {
 		const baseTs = 1704067200000;
 		const ohlcv = [

@@ -159,3 +159,65 @@ export async function mergeChunks(
 	const failedKeys = keys.filter((_, i) => results[i].error != null);
 	return { rows, results, lastRateLimit, failedKeys };
 }
+
+function isOhlcAllZero(row: OhlcvRow): boolean {
+	return Number(row[0]) === 0 && Number(row[1]) === 0 && Number(row[2]) === 0 && Number(row[3]) === 0;
+}
+
+/**
+ * 同一 ts 内で curr を採用すべきかを判定する。
+ * - a) 全 0 OHLC プレースホルダを除外
+ * - b) volume が大きい行を優先
+ * - c) タイなら後勝ち（配列上で後の行）
+ */
+function shouldPreferCurr(prev: OhlcvRow, curr: OhlcvRow): boolean {
+	const prevAllZero = isOhlcAllZero(prev);
+	const currAllZero = isOhlcAllZero(curr);
+	if (prevAllZero && !currAllZero) return true;
+	if (!prevAllZero && currAllZero) return false;
+	const prevV = Number(prev[4]);
+	const currV = Number(curr[4]);
+	const prevVN = Number.isFinite(prevV) ? prevV : 0;
+	const currVN = Number.isFinite(currV) ? currV : 0;
+	if (currVN > prevVN) return true;
+	if (currVN < prevVN) return false;
+	return true;
+}
+
+/**
+ * 同一 timestamp の重複行を排除する純関数。
+ *
+ * /candlestick レスポンスで観測される同一 ts 重複（一方は全 0 OHLC のプレースホルダ）を排除し、
+ * インジケーター・パターン検出・バックテストへの副作用を防ぐ。
+ *
+ * 前提: 入力は timestamp 昇順ソート済み。
+ *
+ * 採用ルール（上から順に評価）:
+ *   a) OHLC の全てが 0 ではない行を優先（全 0 プレースホルダ行を除外）
+ *   b) 上記タイで残ったら volume が大きい行を優先
+ *   c) さらにタイなら後勝ち（配列上で後の行を採用）
+ *
+ * timestamp が NaN/<=0 の行は dedupe 対象外で素通し（後段の row validation で upstream 分類される）。
+ */
+export function dedupeByTimestamp(rows: OhlcvRow[]): OhlcvRow[] {
+	if (rows.length === 0) return [];
+	const result: OhlcvRow[] = [];
+	const tsToIndex = new Map<number, number>();
+	for (const row of rows) {
+		const ts = Number(row[5]);
+		if (!Number.isFinite(ts) || ts <= 0) {
+			result.push(row);
+			continue;
+		}
+		const existingIdx = tsToIndex.get(ts);
+		if (existingIdx === undefined) {
+			tsToIndex.set(ts, result.length);
+			result.push(row);
+			continue;
+		}
+		if (shouldPreferCurr(result[existingIdx], row)) {
+			result[existingIdx] = row;
+		}
+	}
+	return result;
+}

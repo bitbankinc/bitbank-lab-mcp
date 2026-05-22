@@ -1,4 +1,11 @@
-import { type FetchChunkResult, fetchCandleChunk, mergeChunks, UpstreamApiError } from '../lib/candle-fetch.js';
+import {
+	dedupeByTimestamp,
+	type FetchChunkResult,
+	fetchCandleChunk,
+	mergeChunks,
+	type OhlcvRow,
+	UpstreamApiError,
+} from '../lib/candle-fetch.js';
 import { dayjs, today, toIsoTime, toIsoWithTz } from '../lib/datetime.js';
 import { getErrorMessage } from '../lib/error.js';
 import { formatSummary } from '../lib/formatter.js';
@@ -345,15 +352,20 @@ export default async function getCandles(
 			return aTs - bTs;
 		});
 
+		// 同一 timestamp の重複行を排除する。/candlestick レスポンスで同一 ts の重複行
+		// （一方は全 0 OHLC のプレースホルダ）が観測されており、インジケーター・パターン検出・
+		// バックテストへの副作用を防ぐため anchor filter の前に挟む。
+		const dedupedOhlcvs = dedupeByTimestamp(sortedOhlcvs as OhlcvRow[]);
+
 		// date 指定時はアンカー以下の足だけに絞り込む。
 		// ts が非数値の行は filter で除外せず後段の row validation で upstream として弾く。
 		const anchoredOhlcvs = anchorActive
-			? sortedOhlcvs.filter((r) => {
+			? dedupedOhlcvs.filter((r) => {
 					const ts = Number((r as [unknown, unknown, unknown, unknown, unknown, unknown])[5]);
 					if (!Number.isFinite(ts)) return true;
 					return ts <= (anchorEndMs as number);
 				})
-			: sortedOhlcvs;
+			: dedupedOhlcvs;
 
 		if (anchorActive && anchoredOhlcvs.length === 0) {
 			return fail(`指定日（${effectiveDate}）以前のローソク足データが見つかりません (${chk.pair} / ${type})`, 'user');
