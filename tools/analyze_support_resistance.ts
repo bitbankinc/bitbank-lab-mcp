@@ -70,9 +70,9 @@ function isSrCandleAfter(c: SrCandle, cutoff: dayjs.Dayjs): boolean {
 
 /** 構造化出力用 ISO（timestamp 優先で導出）。 */
 function srCandleIso(c: SrCandle): string {
-	if (c.isoTime) return c.isoTime;
 	const ms = srCandleMs(c);
-	return ms != null ? dayjs(ms).toISOString() : '';
+	if (ms != null) return dayjs(ms).toISOString();
+	return c.isoTime ?? '';
 }
 
 /** スイングポイント（ピボット）を検出: 左右 depth 本より高値/安値が突出した足 */
