@@ -33,9 +33,6 @@ const FORMING_NECKLINE_SPREAD_FACTOR = 1.0; // tolerancePct × 1.0
 // 形成中トリプル: 完全に単調な切り上がり / 切り下がり（peak1 < peak2 < current 等）
 // は triple ではなく上昇継続 / 下降継続として扱うため、累積ステップがこれを超えると弾く。
 const FORMING_STAIR_STEP_LIMIT = 0.02;
-// 形成中トリプル: ネックライン構成に最低 2 つの確定 valley / peak を要求する。
-// 1 個だけで平均してネックラインを引くと、片側の極端値に引きずられて誤検出する。
-const FORMING_MIN_NECKLINE_POINTS = 2;
 // ネックラインブレイク判定（detect_doubles と同じ値）
 const BREAKOUT_BUFFER_PCT = 0.015;
 const MAX_BARS_FROM_EXTREMUM = 20;
@@ -684,12 +681,13 @@ function tryFormingTripleTop(ctx: DetectContext): DeduplicablePattern | null {
 		const patternDays = Math.round(formationBars * dpb);
 		if (patternDays < FORMING_MIN_DAYS || patternDays > FORMING_MAX_DAYS) continue;
 
-		// ネックライン: peak1 〜 現在足の間の確定 valley から構成する。
-		// 旧実装は valleys.length が 1 でも、もしくは 0 でも
-		// `Math.min(peak1.price, peak2.price) * 0.95` のフォールバックで
-		// ネックラインを作っており、構造が成立していないケースを通していた。
-		const valleysBetween = allValleys.filter((v: { idx: number }) => v.idx > peak1.idx && v.idx < lastIdx);
-		if (valleysBetween.length < FORMING_MIN_NECKLINE_POINTS) {
+		// ネックライン構成点: H-L-H-L-(現在足) という構造を強制するため、
+		// 谷を peak1-peak2 区間と peak2-現在足 区間にそれぞれ 1 つ以上要求する。
+		// 区間別に縛らず合計数だけ見ると、2 谷が両方 peak1-peak2 間にあって peak2
+		// 以降に谷がない「H-L-L-H-」のようなケースが通ってしまう。
+		const v1Cands = allValleys.filter((v: { idx: number }) => v.idx > peak1.idx && v.idx < peak2.idx);
+		const v2Cands = allValleys.filter((v: { idx: number }) => v.idx > peak2.idx && v.idx < lastIdx);
+		if (v1Cands.length === 0 || v2Cands.length === 0) {
 			pcand({
 				type: 'triple_top',
 				accepted: false,
@@ -698,12 +696,13 @@ function tryFormingTripleTop(ctx: DetectContext): DeduplicablePattern | null {
 			});
 			continue;
 		}
+		// strict triple_top と同じ方針で、各区間の最安値を採用する。
+		const v1 = v1Cands.reduce((m, v) => (v.price < m.price ? v : m));
+		const v2 = v2Cands.reduce((m, v) => (v.price < m.price ? v : m));
 
-		// ネックライン水平性: valley 群の max-min spread が大きい場合は、
-		// 水平ネックラインとして引くこと自体が不自然なので reject。
-		const valleyPrices = valleysBetween.map((v: { price: number }) => v.price);
-		const valleyMax = Math.max(...valleyPrices);
-		const valleyMin = Math.min(...valleyPrices);
+		// ネックライン水平性: 採用した 2 谷の price 差をネックライン傾きとして見る。
+		const valleyMax = Math.max(v1.price, v2.price);
+		const valleyMin = Math.min(v1.price, v2.price);
 		const valleySpread = (valleyMax - valleyMin) / Math.max(1, valleyMax);
 		if (valleySpread > necklineSpreadLimit) {
 			pcand({
@@ -723,12 +722,7 @@ function tryFormingTripleTop(ctx: DetectContext): DeduplicablePattern | null {
 
 		if (completion < FORMING_MIN_COMPLETION || confidence < FORMING_MIN_CONFIDENCE) continue;
 
-		// ネックラインは最安値 2 点の平均で引く（strict triple_top と同じ方針）。
-		// 単純平均（valleysBetween 全件）だと無関係な小さい谷に引きずられるため、
-		// 最安値 2 点に限定して安定させる。
-		const sortedByPrice = [...valleysBetween].sort((a, b) => a.price - b.price);
-		const v1 = sortedByPrice[0];
-		const v2 = sortedByPrice[1];
+		// ネックラインは v1, v2 の平均で引く（strict triple_top と同じ方針）。
 		const avgValley = (v1.price + v2.price) / 2;
 		const neckline = [
 			{ x: peak1.idx, y: avgValley },
@@ -782,9 +776,11 @@ function tryFormingTripleBottom(ctx: DetectContext): DeduplicablePattern | null 
 
 		const avgValleyPrice = (valley1.price + valley2.price) / 2;
 
-		// ネックライン（ピークの平均）
-		const peaksBetween = allPeaks.filter((p: { idx: number }) => p.idx > valley1.idx && p.idx < lastIdx);
-		if (peaksBetween.length < FORMING_MIN_NECKLINE_POINTS) {
+		// ネックライン構成点: L-H-L-H-(現在足) という構造を強制するため、
+		// 山を valley1-valley2 区間と valley2-現在足 区間にそれぞれ 1 つ以上要求する。
+		const p1Cands = allPeaks.filter((p: { idx: number }) => p.idx > valley1.idx && p.idx < valley2.idx);
+		const p2Cands = allPeaks.filter((p: { idx: number }) => p.idx > valley2.idx && p.idx < lastIdx);
+		if (p1Cands.length === 0 || p2Cands.length === 0) {
 			pcand({
 				type: 'triple_bottom',
 				accepted: false,
@@ -793,12 +789,13 @@ function tryFormingTripleBottom(ctx: DetectContext): DeduplicablePattern | null 
 			});
 			continue;
 		}
+		// strict triple_bottom と同じ方針で、各区間の最高値を採用する。
+		const pTop1 = p1Cands.reduce((m, p) => (p.price > m.price ? p : m));
+		const pTop2 = p2Cands.reduce((m, p) => (p.price > m.price ? p : m));
 
-		// ネックライン水平性: peak 群の max-min spread が大きい場合は、
-		// 水平ネックラインとして引くこと自体が不自然なので reject。
-		const peakPrices = peaksBetween.map((p: { price: number }) => p.price);
-		const peakMaxN = Math.max(...peakPrices);
-		const peakMinN = Math.min(...peakPrices);
+		// ネックライン水平性: 採用した 2 山の price 差をネックライン傾きとして見る。
+		const peakMaxN = Math.max(pTop1.price, pTop2.price);
+		const peakMinN = Math.min(pTop1.price, pTop2.price);
 		const peakSpread = (peakMaxN - peakMinN) / Math.max(1, peakMaxN);
 		if (peakSpread > necklineSpreadLimit) {
 			pcand({
@@ -810,10 +807,6 @@ function tryFormingTripleBottom(ctx: DetectContext): DeduplicablePattern | null 
 			continue;
 		}
 
-		// ネックラインは最高値 2 点の平均で引く（strict triple_bottom と同じ方針）。
-		const sortedByPrice = [...peaksBetween].sort((a, b) => b.price - a.price);
-		const pTop1 = sortedByPrice[0];
-		const pTop2 = sortedByPrice[1];
 		const avgPeakPrice = (pTop1.price + pTop2.price) / 2;
 
 		// 現在価格は 3 谷目候補として valley 水準に近いことを要求する

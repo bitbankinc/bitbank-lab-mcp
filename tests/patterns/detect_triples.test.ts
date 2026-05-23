@@ -688,6 +688,128 @@ describe('detectTriples', () => {
 		expect(rejected).toBeDefined();
 	});
 
+	it('forming triple_top: 2 谷が両方 peak1-peak2 間にあり peak2-現在足 間に谷がない場合は reject', () => {
+		// 谷の合計数は 2 だが構造的に H-L-L-H- となっており、H-L-H-L-(現在足) ではない。
+		// peak1-peak2 区間内に v 2 つ、peak2-現在足 区間に v 0 つ。
+		const total = 51;
+		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 85, 90, 80, 85));
+		candles[0] = mkCandle(total, 99, 100, 97, 99);
+		candles[6] = mkCandle(total - 6, 79, 81, 79, 80);
+		candles[14] = mkCandle(total - 14, 80, 82, 80, 81);
+		candles[20] = mkCandle(total - 20, 100, 101, 99, 100);
+		// peak2(20) と lastIdx(50) の間には valley を置かない
+		for (let i = 45; i < total; i++) {
+			candles[i] = mkCandle(total - i, 98, 100, 97, 99);
+		}
+
+		const allPeaks: Pivot[] = [
+			{ idx: 0, price: 100, kind: 'H' },
+			{ idx: 20, price: 101, kind: 'H' },
+		];
+		const allValleys: Pivot[] = [
+			{ idx: 6, price: 80, kind: 'L' },
+			{ idx: 14, price: 81, kind: 'L' },
+		];
+
+		const ctx = buildCtx({
+			candles,
+			pivots: [...allPeaks, ...allValleys],
+			allPeaks,
+			allValleys,
+			includeForming: true,
+		});
+		const result = detectTriples(ctx);
+
+		const forming = result.patterns.filter((p) => p.type === 'triple_top' && p.status === 'forming');
+		expect(forming).toHaveLength(0);
+
+		const rejected = ctx.debugCandidates.find(
+			(d) => d.type === 'triple_top' && d.accepted === false && d.reason === 'forming_neckline_points_insufficient',
+		);
+		expect(rejected).toBeDefined();
+	});
+
+	it('forming triple_top: 2 谷が両方 peak2-現在足 間にあり peak1-peak2 間に谷がない場合も reject', () => {
+		// 対称ケース: peak1-peak2 区間に v 0 つ、peak2-現在足 区間に v 2 つ。
+		const total = 51;
+		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 85, 90, 80, 85));
+		candles[0] = mkCandle(total, 99, 100, 97, 99);
+		candles[20] = mkCandle(total - 20, 100, 101, 99, 100);
+		candles[28] = mkCandle(total - 28, 79, 81, 79, 80);
+		candles[36] = mkCandle(total - 36, 80, 82, 80, 81);
+		for (let i = 45; i < total; i++) {
+			candles[i] = mkCandle(total - i, 98, 100, 97, 99);
+		}
+
+		const allPeaks: Pivot[] = [
+			{ idx: 0, price: 100, kind: 'H' },
+			{ idx: 20, price: 101, kind: 'H' },
+		];
+		const allValleys: Pivot[] = [
+			{ idx: 28, price: 80, kind: 'L' },
+			{ idx: 36, price: 81, kind: 'L' },
+		];
+
+		const ctx = buildCtx({
+			candles,
+			pivots: [...allPeaks, ...allValleys],
+			allPeaks,
+			allValleys,
+			includeForming: true,
+		});
+		const result = detectTriples(ctx);
+
+		const forming = result.patterns.filter((p) => p.type === 'triple_top' && p.status === 'forming');
+		expect(forming).toHaveLength(0);
+
+		const rejected = ctx.debugCandidates.find(
+			(d) => d.type === 'triple_top' && d.accepted === false && d.reason === 'forming_neckline_points_insufficient',
+		);
+		expect(rejected).toBeDefined();
+	});
+
+	it('forming triple_top: 2 valley が両方とも peak1〜peak2 区間に偏ると forming_neckline_points_insufficient で reject', () => {
+		// 合計 2 valley あるが、peak2〜現在足 区間に 1 つも valley が無い「H-L-L-H-」構造。
+		// triple_top は H-L-H-L-H が必要なので、区間別に最低 1 つを要求して reject されることを検証。
+		// 旧実装（valleysBetween.length >= 2 のみ）はこの構造を通してしまっていた。
+		const total = 51;
+		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 85, 90, 80, 85));
+		candles[0] = mkCandle(total, 99, 100, 97, 99);
+		candles[5] = mkCandle(total - 5, 79, 81, 79, 80);
+		candles[15] = mkCandle(total - 15, 80, 82, 80, 81);
+		candles[20] = mkCandle(total - 20, 100, 101, 99, 100);
+		for (let i = 45; i < total; i++) {
+			candles[i] = mkCandle(total - i, 98, 100, 97, 99);
+		}
+
+		const allPeaks: Pivot[] = [
+			{ idx: 0, price: 100, kind: 'H' },
+			{ idx: 20, price: 101, kind: 'H' },
+		];
+		// 2 valley とも peak1(idx=0) と peak2(idx=20) の間に存在し、peak2 以降には無い
+		const allValleys: Pivot[] = [
+			{ idx: 5, price: 80, kind: 'L' },
+			{ idx: 15, price: 81, kind: 'L' },
+		];
+
+		const ctx = buildCtx({
+			candles,
+			pivots: [...allPeaks, ...allValleys],
+			allPeaks,
+			allValleys,
+			includeForming: true,
+		});
+		const result = detectTriples(ctx);
+
+		const forming = result.patterns.filter((p) => p.type === 'triple_top' && p.status === 'forming');
+		expect(forming).toHaveLength(0);
+
+		const rejected = ctx.debugCandidates.find(
+			(d) => d.type === 'triple_top' && d.accepted === false && d.reason === 'forming_neckline_points_insufficient',
+		);
+		expect(rejected).toBeDefined();
+	});
+
 	it('forming triple_top: 確定 pivot は 2 個（pivots.length === 2）で 3 点目は未確定であることを示す', () => {
 		// LLM が pivots だけ見て 3 山構造と誤読しないよう、forming は 2 確定 pivot のみ返す。
 		const total = 51;
@@ -821,6 +943,85 @@ describe('detectTriples', () => {
 			{ idx: 20, price: 101, kind: 'L' },
 		];
 		const allPeaks: Pivot[] = [{ idx: 10, price: 120, kind: 'H' }];
+
+		const ctx = buildCtx({
+			candles,
+			pivots: [...allPeaks, ...allValleys],
+			allPeaks,
+			allValleys,
+			includeForming: true,
+		});
+		const result = detectTriples(ctx);
+
+		const forming = result.patterns.filter((p) => p.type === 'triple_bottom' && p.status === 'forming');
+		expect(forming).toHaveLength(0);
+
+		const rejected = ctx.debugCandidates.find(
+			(d) => d.type === 'triple_bottom' && d.accepted === false && d.reason === 'forming_neckline_points_insufficient',
+		);
+		expect(rejected).toBeDefined();
+	});
+
+	it('forming triple_bottom: 2 山が両方 valley1-valley2 間にあり valley2-現在足 間に山がない場合は reject', () => {
+		// 山の合計数は 2 だが構造的に L-H-H-L- となっており、L-H-L-H-(現在足) ではない。
+		const total = 51;
+		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 105, 115, 100, 110));
+		candles[0] = mkCandle(total, 100, 102, 99, 101);
+		candles[6] = mkCandle(total - 6, 119, 120, 118, 119);
+		candles[14] = mkCandle(total - 14, 118, 119, 117, 118);
+		candles[20] = mkCandle(total - 20, 100, 102, 100, 101);
+		// valley2(20) と lastIdx(50) の間には peak を置かない
+		for (let i = 45; i < total; i++) {
+			candles[i] = mkCandle(total - i, 101, 103, 99, 100);
+		}
+
+		const allValleys: Pivot[] = [
+			{ idx: 0, price: 100, kind: 'L' },
+			{ idx: 20, price: 101, kind: 'L' },
+		];
+		const allPeaks: Pivot[] = [
+			{ idx: 6, price: 120, kind: 'H' },
+			{ idx: 14, price: 119, kind: 'H' },
+		];
+
+		const ctx = buildCtx({
+			candles,
+			pivots: [...allPeaks, ...allValleys],
+			allPeaks,
+			allValleys,
+			includeForming: true,
+		});
+		const result = detectTriples(ctx);
+
+		const forming = result.patterns.filter((p) => p.type === 'triple_bottom' && p.status === 'forming');
+		expect(forming).toHaveLength(0);
+
+		const rejected = ctx.debugCandidates.find(
+			(d) => d.type === 'triple_bottom' && d.accepted === false && d.reason === 'forming_neckline_points_insufficient',
+		);
+		expect(rejected).toBeDefined();
+	});
+
+	it('forming triple_bottom: 2 山が両方 valley2-現在足 間にあり valley1-valley2 間に山がない場合も reject', () => {
+		// 対称ケース: valley1-valley2 区間に p 0 つ、valley2-現在足 区間に p 2 つ。
+		const total = 51;
+		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 105, 115, 100, 110));
+		candles[0] = mkCandle(total, 100, 102, 99, 101);
+		candles[20] = mkCandle(total - 20, 100, 102, 100, 101);
+		candles[28] = mkCandle(total - 28, 119, 120, 118, 119);
+		candles[36] = mkCandle(total - 36, 118, 119, 117, 118);
+		for (let i = 45; i < total; i++) {
+			candles[i] = mkCandle(total - i, 101, 103, 99, 100);
+		}
+
+		const allValleys: Pivot[] = [
+			{ idx: 0, price: 100, kind: 'L' },
+			{ idx: 20, price: 101, kind: 'L' },
+		];
+		const allPeaks: Pivot[] = [
+			{ idx: 28, price: 120, kind: 'H' },
+			{ idx: 36, price: 119, kind: 'H' },
+		];
 
 		const ctx = buildCtx({
 			candles,
