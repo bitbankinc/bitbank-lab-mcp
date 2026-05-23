@@ -6,7 +6,7 @@
  * `analyze_candle_patterns` と `detect_patterns` 系列について、
  * 全パターンタイプ横断で守られるべき不変条件を fixture ベースで検証する。
  *
- * カバーする 7 つの不変条件:
+ * カバーする 8 つの不変条件:
  *   1. barIndex 整合
  *   2. 決定性（同一入力に対する deep equal）
  *   3. status enum の許容値
@@ -14,6 +14,7 @@
  *   5. whipsaw fixture で completed にならない
  *   6. includeForming=false で forming / near_completion 除外
  *   7. allow_partial_patterns=false で uses_partial_candle スキップ
+ *   8. statistics と data.patterns の対象集合が一致する
  *
  * 設計方針:
  *   - 既存 fixture テスト（tests/patterns/*.test.ts, tests/analyze_candle_patterns.test.ts,
@@ -203,6 +204,18 @@ function buildFormingSymmetricalTriangleCandles(year = 2026): Candle[] {
 	const closes = [
 		120, 126, 132, 137, 130, 122, 116, 110, 104, 100, 106, 114, 120, 128, 134, 128, 120, 115, 108, 104, 110, 118, 124,
 		130, 126, 120, 116, 112, 108, 114, 120, 126, 124, 120, 117, 114,
+	];
+	return closes.map((close, index) => makeCandle(index, close, year));
+}
+
+/**
+ * descending triangle + 逆方向（上方）ブレイク → status='invalid' を生成する fixture。
+ * tests/detect_patterns_fixtures.test.ts の同名関数と等価の価格列。
+ */
+function buildDescendingTriangleInvalidBreakoutCandles(year = 2026): Candle[] {
+	const closes = [
+		120, 130, 124, 116, 100, 112, 125, 118, 101, 110, 120, 114, 100, 108, 115, 110, 101, 107, 128, 132, 130, 128, 126,
+		124,
 	];
 	return closes.map((close, index) => makeCandle(index, close, year));
 }
@@ -746,6 +759,122 @@ describe('patterns invariants — 横断契約', () => {
 			for (const p of res.data.recent_patterns) {
 				expect(p.uses_partial_candle).toBe(false);
 				expect(p.status).toBe('confirmed');
+			}
+		});
+	});
+
+	// ──────────────────────────────────────────────
+	// 8. statistics と data.patterns の対象集合が一致する
+	//    （includeForming / includeCompleted / includeInvalid で除外されたパターンが
+	//      statistics に紛れ込まないこと）
+	// ──────────────────────────────────────────────
+	describe('statistics と data.patterns の対象集合一致', () => {
+		it('statistics の各 type.detected が data.patterns 内の同 type 件数と一致する', async () => {
+			const fixtures: Array<{ name: string; candles: Candle[]; opts: Parameters<typeof detectPatterns>[3] }> = [
+				{
+					name: 'triangle_symmetrical + forming',
+					candles: buildFormingSymmetricalTriangleCandles(),
+					opts: { patterns: ['triangle_symmetrical'], includeForming: true, includeCompleted: true },
+				},
+				{
+					name: 'rising_wedge + forming',
+					candles: buildFormingRisingWedgeCandles(),
+					opts: { patterns: ['rising_wedge'], includeForming: true, includeCompleted: true },
+				},
+				{
+					name: 'bull pennant + completed',
+					candles: buildBullPennantSuccessCandles(),
+					opts: { patterns: ['pennant'], includeCompleted: true, includeInvalid: true },
+				},
+				{
+					name: 'double_top + completed',
+					candles: buildCompletedDoubleTopCandles(),
+					opts: { patterns: ['double_top'], swingDepth: 2, tolerancePct: 0.02 },
+				},
+			];
+
+			for (const fx of fixtures) {
+				mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(fx.candles)));
+				const res = await detectPatterns('btc_jpy', '1day', fx.candles.length, fx.opts);
+				assertOk(res);
+
+				const patternCounts: Record<string, number> = {};
+				for (const p of res.data.patterns) {
+					patternCounts[p.type] = (patternCounts[p.type] || 0) + 1;
+				}
+
+				const stats = (res.data.statistics ?? {}) as Record<string, { detected: number }>;
+				for (const [type, stat] of Object.entries(stats)) {
+					expect(stat.detected, `${fx.name}: statistics.${type}.detected vs data.patterns count`).toBe(
+						patternCounts[type] ?? 0,
+					);
+				}
+				for (const type of Object.keys(patternCounts)) {
+					expect(stats, `${fx.name}: statistics has key for type ${type}`).toHaveProperty(type);
+				}
+			}
+		});
+
+		it('includeInvalid=false で invalid パターンが除外されたとき statistics にも残らない', async () => {
+			// baseline: includeInvalid=true で invalid な triangle_descending が data.patterns / statistics 両方に出る
+			const candles = buildDescendingTriangleInvalidBreakoutCandles();
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
+			const baseline = await detectPatterns('btc_jpy', '1day', candles.length, {
+				patterns: ['triangle_descending'],
+				includeCompleted: true,
+				includeInvalid: true,
+			});
+			assertOk(baseline);
+			const baselineInvalid = baseline.data.patterns.filter((p) => p.status === 'invalid');
+			expect(baselineInvalid.length).toBeGreaterThan(0);
+			expect(baseline.data.statistics).toHaveProperty('triangle_descending');
+
+			// includeInvalid=false → data.patterns から除外されると同時に statistics からも消える
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
+			const res = await detectPatterns('btc_jpy', '1day', candles.length, {
+				patterns: ['triangle_descending'],
+				includeCompleted: true,
+				includeInvalid: false,
+			});
+			assertOk(res);
+			expect(res.data.patterns).toEqual([]);
+			expect(res.data.statistics ?? {}).toEqual({});
+		});
+
+		it('includeForming=false で forming パターンが除外されたとき statistics にも残らない', async () => {
+			// baseline: includeForming=true で forming な rising_wedge が statistics に含まれる
+			const candles = buildFormingRisingWedgeCandles();
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
+			const baseline = await detectPatterns('btc_jpy', '1day', candles.length, {
+				patterns: ['rising_wedge'],
+				includeForming: true,
+				includeCompleted: true,
+			});
+			assertOk(baseline);
+			const baselineFormingTypes = new Set(
+				baseline.data.patterns
+					.filter((p) => p.status === 'forming' || p.status === 'near_completion')
+					.map((p) => p.type),
+			);
+			expect(baselineFormingTypes.size).toBeGreaterThan(0);
+
+			// includeForming=false → forming 除外後の data.patterns と statistics が一致する
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
+			const res = await detectPatterns('btc_jpy', '1day', candles.length, {
+				patterns: ['rising_wedge'],
+				includeForming: false,
+				includeCompleted: true,
+			});
+			assertOk(res);
+
+			const patternCounts: Record<string, number> = {};
+			for (const p of res.data.patterns) {
+				patternCounts[p.type] = (patternCounts[p.type] || 0) + 1;
+			}
+			const statsTypes = Object.keys(res.data.statistics ?? {});
+			expect(new Set(statsTypes)).toEqual(new Set(Object.keys(patternCounts)));
+			for (const [type, stat] of Object.entries((res.data.statistics ?? {}) as Record<string, { detected: number }>)) {
+				expect(stat.detected).toBe(patternCounts[type] ?? 0);
 			}
 		});
 	});

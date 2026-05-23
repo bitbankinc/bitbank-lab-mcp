@@ -198,9 +198,6 @@ export default async function detectPatterns(
 			}
 		}
 
-		// Aftermath analysis + statistics（patterns/aftermath.ts へ抽出済み）
-		const { statistics } = buildStatistics(patterns, candles);
-
 		// includeForming / includeCompleted に基づくフィルタリング
 		let filteredPatterns = patterns;
 		if (!includeForming || !includeCompleted) {
@@ -217,6 +214,9 @@ export default async function detectPatterns(
 			filteredPatterns = filteredPatterns.filter((p) => p.status !== 'invalid');
 		}
 		patterns = filteredPatterns;
+
+		// statistics と data.patterns の対象集合を一致させるため、フィルタ後の patterns に対して実行する。
+		const { statistics } = buildStatistics(patterns, candles);
 
 		// 時間足ラベル（各パターンに注入 + summary 用）
 		const tfMap: Record<string, string> = {
