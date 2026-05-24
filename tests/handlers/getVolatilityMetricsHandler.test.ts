@@ -254,8 +254,8 @@ describe('toolDef handler - view routing', () => {
 			'aggregates: rv_std:0.022 rv_std_ann:0.38 parkinson:0.018 garmanKlass:0.016 rogersSatchell:0.012 atr:200000',
 			'',
 			'📊 ローリング分析:',
-			'w=7 rv:0.022000 ann:0.420000 atr:200000.00',
-			'w=30 rv:0.019000 ann:0.360000 atr:200000.00',
+			'w=7 rv:0.022000 ann:0.420000 pk:0.018000',
+			'w=30 rv:0.019000 ann:0.360000 pk:0.016000',
 			'',
 			'---',
 			'📌 含まれるもの: ボラティリティ指標（RV・Parkinson・GK・RS・ATR）、ローリング分析',
@@ -303,15 +303,17 @@ describe('toolDef handler - view routing', () => {
 		expect(text).toContain('📊 ローリング分析:');
 	});
 
-	it('view=summary (default) で rolling window 別 RV と ATR が content に含まれる', async () => {
+	it('view=summary (default) で rolling window 別 RV / Parkinson が content に含まれる', async () => {
 		mockedGetVolatilityMetrics.mockResolvedValueOnce(mockOkRes() as never);
 		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 50, view: 'summary' });
 		const text = (res as { content: Array<{ text: string }> }).content[0].text;
 		// rolling window 行（複数 window）
 		expect(text).toContain('w=7 rv:');
 		expect(text).toContain('w=30 rv:');
-		// rolling 行に ATR も含む
-		expect(text).toMatch(/w=\d+.*atr:[\d.]+/);
+		// rolling 行は Parkinson を含み、ATR は含まない
+		expect(text).toMatch(/w=\d+.*pk:[\d.]+/);
+		const rollingSection = text.split('📊 ローリング分析:')[1] ?? '';
+		expect(rollingSection).not.toMatch(/w=\d+.*atr:/);
 	});
 
 	it('view=detailed のテキストには Rolling Trends が含まれる', async () => {
@@ -346,8 +348,8 @@ describe('toolDef handler - meta.warning propagation', () => {
 			'aggregates: rv_std:0.022 rv_std_ann:0.38 parkinson:0.018 garmanKlass:0.016 rogersSatchell:0.012 atr:200000',
 			'',
 			'📊 ローリング分析:',
-			'w=7 rv:0.022000 ann:0.420000 atr:200000.00',
-			'w=30 rv:0.019000 ann:0.360000 atr:200000.00',
+			'w=7 rv:0.022000 ann:0.420000 pk:0.018000',
+			'w=30 rv:0.019000 ann:0.360000 pk:0.016000',
 		].join('\n');
 		const summary = warning ? `${warning}\n${body}` : body;
 		return {

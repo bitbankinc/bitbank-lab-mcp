@@ -11,7 +11,7 @@
 | `get_candles` | ローソク足（candles / OHLCV / chart data）を取得。1min〜1monthの各時間足に対応。date は tz（既定 Asia/Tokyo）の暦日として解釈し、その終端以前の limit 本を返す。 |
 | `get_transactions` | 市場の約定履歴（transactions / recent trades）を取得。直近60件 or 日付指定。金額・価格でフィルタ可能。 |
 | `get_flow_metrics` | 資金フロー分析（flow / CVD / aggressor ratio / buy-sell pressure）。約定データからCVD・アグレッサー比・スパイクを検出。hours（推奨）で時間範囲指定、または limit で件数指定。 |
-| `get_volatility_metrics` | ボラティリティ指標（volatility / ATR / realized vol）を算出。RV・ATR・Parkinson・Garman-Klass・Rogers-Satchell。年率換算対応。aggregates.atr は Wilder ATR（RMA ベース、period=14、TradingView・MT4 標準と一致）、rolling[].atr は SMA-ATR。 |
+| `get_volatility_metrics` | ボラティリティ指標（volatility / ATR / realized vol）を算出。RV・ATR・Parkinson・Garman-Klass・Rogers-Satchell。年率換算対応。aggregates.atr は Wilder ATR（RMA ベース、period=14、TradingView・MT4 標準と一致）。ローリングではボラ変化を RV / Parkinson で追跡してください。 |
 | `get_tickers_jpy` | 全JPYペアのティッカー一覧（tickers / ranking / market overview）を取得。変化率・出来高でランキング表示可能。 |
 
 ## Technical Analysis（テクニカル分析）

@@ -13,8 +13,8 @@ function makeInput(overrides?: Partial<BuildVolatilityMetricsTextInput>): BuildV
 			atr: 250000.12345678,
 		},
 		rolling: [
-			{ window: 14, rv_std: 0.025, rv_std_ann: 0.47759999, atr: 260000, parkinson: 0.02 },
-			{ window: 20, rv_std: 0.023, rv_std_ann: 0.4394, atr: 240000, parkinson: 0.018 },
+			{ window: 14, rv_std: 0.025, rv_std_ann: 0.47759999, parkinson: 0.02 },
+			{ window: 20, rv_std: 0.023, rv_std_ann: 0.4394, parkinson: 0.018 },
 		],
 		...overrides,
 	};
@@ -55,16 +55,22 @@ describe('buildVolatilityMetricsText', () => {
 		expect(text).toContain('rv_std:0.023');
 	});
 
-	it('ローリング行に window・rv・ann・atr・pk が含まれる', () => {
+	it('ローリング行に window・rv・ann・pk が含まれる', () => {
 		const text = buildVolatilityMetricsText(makeInput());
-		expect(text).toContain('w=14 rv:0.025000 ann:0.477600 atr:260000.00 pk:0.020000');
-		expect(text).toContain('w=20 rv:0.023000 ann:0.439400 atr:240000.00 pk:0.018000');
+		expect(text).toContain('w=14 rv:0.025000 ann:0.477600 pk:0.020000');
+		expect(text).toContain('w=20 rv:0.023000 ann:0.439400 pk:0.018000');
+	});
+
+	it('ローリング行に atr フィールドが含まれない', () => {
+		const text = buildVolatilityMetricsText(makeInput());
+		const rollingSection = text.split('📊 ローリング分析:')[1]?.split('---')[0] ?? '';
+		expect(rollingSection).not.toContain('atr:');
 	});
 
 	it('ローリングで rv_std_ann が undefined の場合はローリング行に ann: を含まない', () => {
 		const text = buildVolatilityMetricsText(
 			makeInput({
-				rolling: [{ window: 14, rv_std: 0.025, atr: 260000, parkinson: 0.02 }],
+				rolling: [{ window: 14, rv_std: 0.025, parkinson: 0.02 }],
 			}),
 		);
 		expect(text).toContain('w=14 rv:0.025000');

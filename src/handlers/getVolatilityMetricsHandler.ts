@@ -42,7 +42,6 @@ export interface VolViewInput {
 		window: number;
 		rv_std: number;
 		rv_std_ann?: number;
-		atr?: number;
 		parkinson?: number;
 		garmanKlass?: number;
 		rogersSatchell?: number;
@@ -129,7 +128,7 @@ export function buildVolatilityDetailedText(input: VolDetailedInput, view: 'deta
 
 export const toolDef: ToolDefinition = {
 	name: 'get_volatility_metrics',
-	description: `[Volatility / ATR / RV] ボラティリティ指標（volatility / ATR / realized vol）を算出。RV・ATR・Parkinson・Garman-Klass・Rogers-Satchell。年率換算対応。aggregates.atr は Wilder ATR（RMA ベース、period=${WILDER_ATR_PERIOD}、TradingView・MT4 標準と一致）、rolling[].atr は SMA-ATR。`,
+	description: `[Volatility / ATR / RV] ボラティリティ指標（volatility / ATR / realized vol）を算出。RV・ATR・Parkinson・Garman-Klass・Rogers-Satchell。年率換算対応。aggregates.atr は Wilder ATR（RMA ベース、period=${WILDER_ATR_PERIOD}、TradingView・MT4 標準と一致）。ローリングではボラ変化を RV / Parkinson で追跡してください。`,
 	inputSchema: GetVolMetricsInputSchema,
 	handler: async ({
 		pair,

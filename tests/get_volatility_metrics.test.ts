@@ -270,46 +270,15 @@ describe('get_volatility_metrics', () => {
 			expect(res14.data.aggregates.atr).toBeCloseTo(res20.data.aggregates.atr, 8);
 		});
 
-		// 回帰テスト: rolling[].atr は SMA-ATR のまま（仕様変更なし）。
-		it('rolling[].atr は SMA-ATR（直近 window 本の TR 平均）と一致する', async () => {
+		// 回帰テスト: rolling[].atr は削除済み（aggregates.atr の Wilder ATR を使う）
+		it('rolling 各要素に atr フィールドが含まれない', async () => {
 			const rows = makeOhlcvRows(60);
 			mockFetchWithOhlcv(rows);
 			const res = await getVolatilityMetrics('btc_jpy', '1day', 60, [14, 20, 30]);
 			assertOk(res);
-
-			const highs = rows.map((r) => r[1]);
-			const lows = rows.map((r) => r[2]);
-			const closes = rows.map((r) => r[3]);
-			const n = highs.length;
-
 			for (const r of res.data.rolling) {
-				const period = r.window;
-				let sum = 0;
-				for (let i = n - period; i < n; i++) {
-					const trv = Math.max(
-						highs[i] - lows[i],
-						Math.abs(highs[i] - closes[i - 1]),
-						Math.abs(lows[i] - closes[i - 1]),
-					);
-					sum += trv;
-				}
-				const expectedSmaAtr = sum / period;
-				expect(r.atr).toBeCloseTo(expectedSmaAtr, 6);
+				expect(r).not.toHaveProperty('atr');
 			}
-		});
-
-		// 回帰テスト: Wilder ATR ≠ SMA-ATR （前提が違うため値が異なる）
-		it('aggregate ATR (Wilder) は rolling w=14 の atr (SMA-ATR) と一般に異なる', async () => {
-			// drift を入れてボラティリティを変化させ Wilder と SMA で値が分かれるようにする
-			const rows = makeOhlcvRows(60, { drift: 0.001, noise: 0.04 });
-			mockFetchWithOhlcv(rows);
-			const res = await getVolatilityMetrics('btc_jpy', '1day', 60, [14]);
-			assertOk(res);
-			const wilder = res.data.aggregates.atr;
-			const sma14 = res.data.rolling.find((r) => r.window === 14)?.atr ?? null;
-			expect(sma14).not.toBeNull();
-			// 値は別の指標になっているはず（完全一致は仕様上発生しない）
-			expect(wilder).not.toBeCloseTo(sma14 as number, 6);
 		});
 	});
 

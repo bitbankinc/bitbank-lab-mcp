@@ -2,7 +2,7 @@ import type { z } from 'zod';
 import { toNum } from '../lib/conversions.js';
 import { nowIso } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
-import { atr, wilderAtr } from '../lib/indicators.js';
+import { wilderAtr } from '../lib/indicators.js';
 import { slidingMean, slidingStddev, stddev } from '../lib/math.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair, validateLimit } from '../lib/validate.js';
@@ -32,7 +32,6 @@ export interface RollingEntry {
 	window: number;
 	rv_std: number;
 	rv_std_ann?: number;
-	atr?: number;
 	parkinson?: number;
 	garmanKlass?: number;
 	rogersSatchell?: number;
@@ -67,7 +66,6 @@ export function buildVolatilityMetricsText(input: BuildVolatilityMetricsTextInpu
 	const rollLines = rolling.map((r) => {
 		const parts = [`w=${r.window} rv:${r.rv_std.toFixed(6)}`];
 		if (r.rv_std_ann != null) parts.push(`ann:${r.rv_std_ann.toFixed(6)}`);
-		if (r.atr != null) parts.push(`atr:${r.atr.toFixed(2)}`);
 		if (r.parkinson != null) parts.push(`pk:${r.parkinson.toFixed(6)}`);
 		return parts.join(' ');
 	});
@@ -78,7 +76,7 @@ export function buildVolatilityMetricsText(input: BuildVolatilityMetricsTextInpu
 		rollLines.join('\n') +
 		`\n\n---\n📌 含まれるもの: ボラティリティ指標（RV・Parkinson・GK・RS・ATR）、ローリング分析` +
 		`\n📌 含まれないもの: 価格の方向性・トレンド、出来高フロー、板情報、テクニカル指標` +
-		`\n📌 ATR の定義: aggregates.atr は Wilder ATR（RMA ベース、period=${WILDER_ATR_PERIOD}、TradingView・MT4 標準と一致）。rolling[].atr は SMA-ATR。` +
+		`\n📌 ATR の定義: aggregates.atr は Wilder ATR（RMA ベース、period=${WILDER_ATR_PERIOD}、TradingView・MT4 標準と一致）。ローリングではボラ変化を RV / Parkinson で追跡してください。` +
 		`\n📌 補完ツール: get_candles（価格OHLCV）, analyze_indicators（方向性指標）, get_flow_metrics（出来高フロー）`
 	);
 }
@@ -212,7 +210,6 @@ export default async function getVolatilityMetrics(
 		const rogersSatchell = componentMeanToVol(rsMean, 'rogersSatchell');
 
 		// ATR aggregate: Wilder ATR (RMA-based, period=WILDER_ATR_PERIOD 固定、TradingView/MT4 標準)。
-		// rolling[].atr は別系統で SMA-ATR を残す（下記 atr() 呼び出し）。
 		const atrAggLatest = wilderAtr(high, low, close, WILDER_ATR_PERIOD).at(-1);
 		const atrAgg = Number.isFinite(atrAggLatest) ? (atrAggLatest as number) : 0;
 
@@ -224,7 +221,6 @@ export default async function getVolatilityMetrics(
 			window: number;
 			rv_std: number;
 			rv_std_ann?: number;
-			atr?: number;
 			parkinson?: number;
 			garmanKlass?: number;
 			rogersSatchell?: number;
@@ -238,16 +234,13 @@ export default async function getVolatilityMetrics(
 			const pkRoll = slidingMean(pkSeries, w);
 			const gkRoll = slidingMean(gkSeries, w);
 			const rsRoll = slidingMean(rsSeries, w);
-			const atrRollLatest = atr(high, low, close, w).at(-1);
 			const p = pkRoll.length ? componentMeanToVol(pkRoll.at(-1) as number, 'parkinson') : undefined;
 			const gk = gkRoll.length ? componentMeanToVol(gkRoll.at(-1) as number, 'garmanKlass') : undefined;
 			const rs = rsRoll.length ? componentMeanToVol(rsRoll.at(-1) as number, 'rogersSatchell') : undefined;
-			const atrValue = Number.isFinite(atrRollLatest) ? (atrRollLatest as number) : undefined;
 			rollingOut.push({
 				window: w,
 				rv_std: rvStdLatest,
 				rv_std_ann: rvStdAnnLatest,
-				atr: atrValue,
 				parkinson: p,
 				garmanKlass: gk,
 				rogersSatchell: rs,
@@ -284,7 +277,6 @@ export default async function getVolatilityMetrics(
 				window: r.window,
 				rv_std: Number(r.rv_std.toFixed(8)),
 				rv_std_ann: r.rv_std_ann != null ? Number(r.rv_std_ann.toFixed(8)) : undefined,
-				atr: r.atr != null ? Number(r.atr.toFixed(8)) : undefined,
 				parkinson: r.parkinson != null ? Number(r.parkinson.toFixed(8)) : undefined,
 				garmanKlass: r.garmanKlass != null ? Number(r.garmanKlass.toFixed(8)) : undefined,
 				rogersSatchell: r.rogersSatchell != null ? Number(r.rogersSatchell.toFixed(8)) : undefined,

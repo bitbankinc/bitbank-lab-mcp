@@ -49,7 +49,6 @@ export const GetVolMetricsDataSchemaOut = z.object({
 			window: z.number(),
 			rv_std: z.number(),
 			rv_std_ann: z.number().optional(),
-			atr: z.number().optional(),
 			parkinson: z.number().optional(),
 			garmanKlass: z.number().optional(),
 			rogersSatchell: z.number().optional(),
