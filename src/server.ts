@@ -163,8 +163,10 @@ function registerToolWithLog(
 					);
 				});
 				// elicitation 等で server.elicitInput / getClientCapabilities を使うツール向けに、
-				// SDK から渡される extra に McpServer インスタンスを合流させる。
-				const handlerExtra = { ...extra, server };
+				// SDK の RequestHandlerExtra に内部 Server インスタンスを合流させる。
+				// （elicitInput / getClientCapabilities は McpServer 直下ではなく
+				// McpServer.server (= 内部 Server) 上にあるため、wrapper ではなく中身を渡す）
+				const handlerExtra = { ...extra, server: server.server };
 				const result = await Promise.race([handler(input, handlerExtra), timeoutPromise]).finally(() => {
 					if (timeoutId) clearTimeout(timeoutId);
 				});
