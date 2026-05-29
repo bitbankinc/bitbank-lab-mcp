@@ -7,7 +7,7 @@
  * 動作確認は引き続き `tests/private/preview_*.test.ts` で行う。
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fail, ok } from '../../lib/result.js';
 import { clientSupportsElicitation, withElicitedConfirmation } from '../../src/private/elicitation.js';
 
@@ -343,6 +343,116 @@ describe('withElicitedConfirmation', () => {
 			expect(result.structuredContent.confirmation_token).toBeUndefined();
 			expect(result.structuredContent.expires_at).toBeUndefined();
 			expect(result.structuredContent.other).toBe('kept');
+		});
+	});
+
+	// BITBANK_TRUST_HOST_APPROVAL=1 のオプトイン妥協モード。
+	// elicitation 非対応 + フラグ ON + trustHostFallback 指定の三者揃いで、
+	// structuredContent から token を剥がさず caller のレスポンスをそのまま返す。
+	// 詳細は docs/adr/0002-hitl-confirmation-token-delivery.md。
+	describe('trust-host-approval モード（BITBANK_TRUST_HOST_APPROVAL=1）', () => {
+		const tokenStructured = {
+			ok: true,
+			summary: 'preview',
+			data: {
+				confirmation_token: 'KEPT-TOKEN',
+				expires_at: 1_700_000_000_000,
+				preview: { pair: 'btc_jpy' },
+			},
+			meta: { action: 'create_order' },
+		} as Record<string, unknown>;
+
+		const makeTrustHostFallback = () => ({
+			content: [{ type: 'text', text: 'IFRAME_BUTTON_GUIDE' }],
+			structuredContent: tokenStructured,
+		});
+
+		afterEach(() => {
+			delete process.env.BITBANK_TRUST_HOST_APPROVAL;
+		});
+
+		it('フラグ OFF（未設定）のときは trustHostFallback を渡しても従来の fallback（token strip）が返る', async () => {
+			const trustHostFallback = makeTrustHostFallback();
+			const fallback = makeFallback();
+			const result = await withElicitedConfirmation({
+				...baseOpts,
+				extra: { server: makeServer({ supportsElicitation: false }) },
+				onConfirmed: vi.fn(),
+				fallback,
+				trustHostFallback,
+			});
+
+			expect(result.content[0]?.text).toBe('FALLBACK_TEXT');
+			expect(result.structuredContent).toEqual({ fallback: true });
+		});
+
+		it('フラグ ON + 非対応ホスト + trustHostFallback 指定で token が strip されずに返る', async () => {
+			process.env.BITBANK_TRUST_HOST_APPROVAL = '1';
+			const trustHostFallback = makeTrustHostFallback();
+			const result = await withElicitedConfirmation({
+				...baseOpts,
+				extra: { server: makeServer({ supportsElicitation: false }) },
+				onConfirmed: vi.fn(),
+				fallback: makeFallback(),
+				trustHostFallback,
+			});
+
+			expect(result.content[0]?.text).toBe('IFRAME_BUTTON_GUIDE');
+			const data = (result.structuredContent as { data?: Record<string, unknown> }).data;
+			expect(data?.confirmation_token).toBe('KEPT-TOKEN');
+			expect(data?.expires_at).toBe(1_700_000_000_000);
+		});
+
+		it('フラグ ON でも trustHostFallback 未指定なら従来の fallback（strip）が返る', async () => {
+			process.env.BITBANK_TRUST_HOST_APPROVAL = '1';
+			const result = await withElicitedConfirmation({
+				...baseOpts,
+				extra: { server: makeServer({ supportsElicitation: false }) },
+				onConfirmed: vi.fn(),
+				fallback: {
+					content: [{ type: 'text', text: 'FALLBACK_TEXT' }],
+					structuredContent: tokenStructured,
+				},
+			});
+
+			expect(result.content[0]?.text).toBe('FALLBACK_TEXT');
+			const data = (result.structuredContent as { data?: Record<string, unknown> }).data;
+			expect(data?.confirmation_token).toBeUndefined();
+			expect(data?.expires_at).toBeUndefined();
+		});
+
+		it('フラグ ON + elicitation 対応ホストでは通常の elicit 経路が優先される（trustHostFallback は無視）', async () => {
+			process.env.BITBANK_TRUST_HOST_APPROVAL = '1';
+			const elicitInput = vi.fn().mockResolvedValue({ action: 'accept', content: { confirmed: true } });
+			const onConfirmed = vi.fn().mockResolvedValue(ok('executed', { order: 'OK' }, { fetchedAt: 'now' }));
+
+			const result = await withElicitedConfirmation({
+				...baseOpts,
+				extra: { server: makeServer({ elicitInput }) },
+				onConfirmed,
+				fallback: makeFallback(),
+				trustHostFallback: makeTrustHostFallback(),
+			});
+
+			expect(elicitInput).toHaveBeenCalledTimes(1);
+			expect(onConfirmed).toHaveBeenCalledTimes(1);
+			expect(result.content[0]?.text).toBe('executed');
+		});
+
+		it('フラグ ON + elicitInput が例外で失敗した場合も trustHostFallback が返る', async () => {
+			process.env.BITBANK_TRUST_HOST_APPROVAL = '1';
+			const elicitInput = vi.fn().mockRejectedValue(new Error('boom'));
+			const trustHostFallback = makeTrustHostFallback();
+
+			const result = await withElicitedConfirmation({
+				...baseOpts,
+				extra: { server: makeServer({ elicitInput }) },
+				onConfirmed: vi.fn(),
+				fallback: makeFallback(),
+				trustHostFallback,
+			});
+
+			expect(result.content[0]?.text).toBe('IFRAME_BUTTON_GUIDE');
 		});
 	});
 });

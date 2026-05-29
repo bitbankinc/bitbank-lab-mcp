@@ -157,11 +157,11 @@ MCP 仕様（SEP-1624 の整理）では `CallToolResult.content` と `structure
 
 #### `confirmation_token` の受け渡し
 
-`confirmation_token` は本来「ユーザーの最終確認を経たことの証拠」であり、LLM が独断で引用して `create_order` を呼べる文字列にしてはならない。実装は次の階層で扱う:
+`confirmation_token` は本来「ユーザーの最終確認を経たことの証拠」であり、LLM が独断で引用して `create_order` を呼べる文字列にしてはならない。実装は次の階層で扱う（設計判断の背景と SEP-2322 への移行計画は `docs/adr/0002-hitl-confirmation-token-delivery.md` を参照）:
 
 1. **第一選択（elicitation 対応ホスト）** — `preview_order` ハンドラ内で `server.elicitInput` によりユーザー確認 → 同一ハンドラ内で `create_order` を呼び出して完結。**トークンはサーバープロセス内に閉じ、LLM/クライアントには返らない**。Claude Desktop / Claude Code のうち elicitation 対応版はこの経路。
-2. **第二選択（MCP Apps / SEP-1865 対応ホスト）** — `_meta.ui.resourceUri` 経由で iframe UI を表示する。ただし本 PR 時点では UI 側からの execute 経路は未実装であり、pending action store と UI origin 検証を別 PR で整備するまでトークンを UI にも渡さない。
-3. **フォールバック（elicitation も SEP-1865 も非対応のホスト）** — `content` / `structuredContent` / `_meta` のいずれにも `confirmation_token` / `expires_at` を返さない。プレビュー内容だけを返し、「このホストでは取引実行に対応していない」旨を `content[0].text` に明記する。LLM が `create_order` / `cancel_order` / `cancel_orders` を直接呼んでも、トークン検証で拒否される。
+2. **第二選択（SEP-1865 対応ホスト + `BITBANK_TRUST_HOST_APPROVAL=1` オプトイン）** — iframe (`_meta.ui.resourceUri`) に `confirmation_token` / `expires_at` を含む `structuredContent` を返し、iframe ボタン → `app.callServerTool` の経路で `create_order` を実行する。`structuredContent` は LLM にも見えうるため、「ホスト（Claude Desktop / claude-ai 等）のツール承認 UI を最終 gate として信頼する」という前提を受け入れたユーザーがオプトインで有効化する。詳細は `docs/adr/0002-hitl-confirmation-token-delivery.md`。
+3. **フォールバック（上記いずれも非該当のホスト）** — `content` / `structuredContent` / `_meta` のいずれにも `confirmation_token` / `expires_at` を返さない。プレビュー内容だけを返し、「このホストでは取引実行に対応していない」旨を `content[0].text` に明記する。LLM が `create_order` / `cancel_order` / `cancel_orders` を直接呼んでも、トークン検証で拒否される。
 
 なお `content[0].text` には常に以下を載せる（LLM のハルシネーション防止）:
 
@@ -171,13 +171,33 @@ MCP 仕様（SEP-1624 の整理）では `CallToolResult.content` と `structure
 
 これにより、LLM が `structuredContent` をまったく見られないクライアント（Cursor / Windsurf 系）でも、ユーザー確認の必要性と概要を理解した上で対話を継続できる。
 
-#### 将来の代替案
+#### `BITBANK_TRUST_HOST_APPROVAL=1` オプトインモード
 
-elicitation 非対応ホストでも安全に HITL 実行できるようにするには、下記を別 PR で検討する:
+elicitation を advertise していないが SEP-1865 iframe をサポートするホスト（Claude Desktop / claude-ai 等、2026-05 時点の実装）で取引 UX を取り戻すための妥協モード。
 
-- **サーバー側 pending action store** — `preview_*` がサーバー内 Map に pending entry を作り、短い不透明 ID（HMAC ではない）を返す。`create_order` 等は ID と「独立したユーザー合意シグナル」の両方を要求する。LLM が ID 単体を引用しても発注に至らない。
-- **`_meta` 経由の UI 専用チャネル** — MCP Apps 対応ホストでは `_meta` をコンポーネント側にだけ転送する仕様（OpenAI Apps SDK ドキュメント参照）を利用する。ただし MCP 基本仕様としては「`_meta` は LLM 非可視」を保証しないため、これ単体で安全境界とはしない。
-- **elicitation 非対応ホストの明示的サポート縮退** — 「HITL 強制が必要なホストは elicitation か SEP-1865 のどちらかを要求する」とする方針も選択肢。
+有効化条件:
+- 環境変数 `BITBANK_TRUST_HOST_APPROVAL=1` を MCP サーバープロセスに渡す
+- クライアントが elicitation を advertise していない
+- `withElicitedConfirmation` の caller が `trustHostFallback` を指定している（3 つの preview ツールはすべて指定済み）
+
+このモードでは:
+- `structuredContent.data.confirmation_token` / `expires_at` が返る
+- iframe (`ui/order-confirm` / `ui/cancel-confirm`) がボタンを描画し、ユーザークリックで `app.callServerTool('create_order' | 'cancel_order' | 'cancel_orders', ...)` を呼ぶ
+- `content[0].text` には「iframe ボタンを押してください」と明示
+
+セキュリティ前提（これらを受け入れないなら有効化しない）:
+- LLM が `structuredContent` 経由で token を見られる
+- ホスト（Claude Desktop 等）のツール承認 UI が "Allow always" されていない
+- LLM が `create_order` 等を直接呼ばないことを description 等で促す（強制力は無い）
+
+長期的には MCP SEP-2322 (`InputRequiredResult` / `requestState`) に置き換えて撤去する。
+
+#### 将来の代替案 / 移行計画
+
+- **SEP-2322 (Multi Round-Trip Requests)** — 2026-07-28 release candidate で導入。`InputRequiredResult` + 不透明 `requestState` 文字列で「LLM 不可視のままサーバーがユーザー確認を取る」を仕様内で実現できる。`BITBANK_TRUST_HOST_APPROVAL` モードの構造的後継。TypeScript SDK 対応待ち。詳細は `docs/adr/0002-hitl-confirmation-token-delivery.md`
+- **サーバー側 pending action store** — SEP-2322 が来る前の中間案。`preview_*` がサーバー内 Map に pending entry を作り、短い不透明 ID を返す。`create_order` 等は ID + 独立した同意シグナルを要求する。ただし SEP-1865 では「独立した同意シグナル」を仕様化していないので、現状では「ホスト承認 UI を信頼する」前提を回避できない
+- **`_meta` 経由の UI 専用チャネル** — OpenAI Apps SDK 慣習。MCP 基本仕様としては「`_meta` は LLM 非可視」を保証しないため、これ単体で安全境界とはしない
+- **elicitation 非対応ホストの明示的サポート縮退** — 「HITL 強制が必要なホストは elicitation か SEP-2322 のどちらかを要求する」とする方針
 
 ### 検証の責務分担（preview と create）
 

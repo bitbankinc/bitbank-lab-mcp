@@ -234,6 +234,17 @@ export const toolDef: ToolDefinition = {
 			'  実際に発注するには、elicitation 対応クライアント（Claude Desktop など）で同じ操作を実行してください。',
 		].join('\n');
 
+		// BITBANK_TRUST_HOST_APPROVAL=1 のときに使う妥協経路用のレスポンス。
+		// structuredContent に confirmation_token / expires_at を含めたまま返し、
+		// SEP-1865 iframe ボタン → create_order の経路を成立させる。
+		// 詳細は docs/adr/0002-hitl-confirmation-token-delivery.md。
+		const trustHostFallbackText = [
+			result.summary,
+			'',
+			'iframe の「注文を確定する」ボタンを押して発注を確定してください。',
+			'ボタンを押さない限り発注は行われません。',
+		].join('\n');
+
 		// elicitation 対応ホストでは preview → ユーザー確認 → create_order までを
 		// このハンドラ内で完結させる（LLM から見ると preview_order 1 回呼び出しで発注完了）。
 		// confirmation_token / expires_at は withElicitedConfirmation が
@@ -259,6 +270,10 @@ export const toolDef: ToolDefinition = {
 			declinedStructured: toStructured(result),
 			fallback: {
 				content: [{ type: 'text', text: fallbackText }],
+				structuredContent: toStructured(result),
+			},
+			trustHostFallback: {
+				content: [{ type: 'text', text: trustHostFallbackText }],
 				structuredContent: toStructured(result),
 			},
 		});

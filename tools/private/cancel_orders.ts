@@ -105,8 +105,9 @@ export const toolDef: ToolDefinition = {
 	name: 'cancel_orders',
 	description:
 		'[Cancel Orders / Bulk Cancel] 複数の注文を一括キャンセル（最大30件）。キャンセル後の注文情報を返す。Private API。' +
-		' ⚠️ このツールは preview_cancel_orders の elicitation accept 経路から内部的に呼ばれることを前提とする。' +
-		' confirmation_token はクライアントに返らない設計のため、LLM が直接 cancel_orders を呼び出してもトークン検証で拒否される（HITL の第二防衛線）。',
+		' ⚠️ LLM はこのツールを直接呼び出してはならない。常に preview_cancel_orders 経由（elicitation 対応ホストではネイティブダイアログ、SEP-1865 対応ホストでは iframe の「キャンセルを確定する」ボタン）でのみ呼び出すこと。' +
+		' デフォルト設定では confirmation_token はクライアントに返らないため、LLM が直接呼び出してもトークン検証で拒否される（HITL の第二防衛線）。' +
+		' `BITBANK_TRUST_HOST_APPROVAL=1` の妥協モードでは token が見える場合があるが、その場合もユーザーの明示的な確認操作が前提。',
 	inputSchema: CancelOrdersInputSchema,
 	handler: async (args) => {
 		const result = await cancelOrders(

@@ -218,8 +218,9 @@ export const toolDef: ToolDefinition = {
 	name: 'create_order',
 	description: [
 		'[Create Order / Place Order / Buy / Sell] 注文を発注する（現物または信用）。Private API。',
-		'⚠️ このツールは preview_order の elicitation accept 経路から内部的に呼ばれることを前提とする。',
-		'confirmation_token はクライアントに返らない設計のため、LLM が直接 create_order を呼び出してもトークン検証で拒否される（HITL の第二防衛線）。',
+		'⚠️ LLM はこのツールを直接呼び出してはならない。常に preview_order 経由（elicitation 対応ホストではネイティブダイアログ、SEP-1865 対応ホストでは iframe の「注文を確定する」ボタン）でのみ呼び出すこと。',
+		'デフォルト設定では confirmation_token はクライアントに返らないため、LLM が直接呼び出してもトークン検証で拒否される（HITL の第二防衛線）。',
+		'`BITBANK_TRUST_HOST_APPROVAL=1` の妥協モードでは structuredContent 経由で token が見える場合があるが、その場合もユーザーの明示的な確認操作（iframe ボタン押下またはホストの承認 UI）が前提となる。',
 		'対応注文タイプは limit（指値）/ market（成行）/ stop（逆指値）/ stop_limit（逆指値指値）の 4 種類のみ。',
 		'公式 spec の take_profit / stop_loss / losscut は本実装では未対応（仕様が曖昧なため意図的に除外）。',
 		'position_side を指定すると信用注文として扱う（ロング新規=buy+long, ロング決済=sell+long, ショート新規=sell+short, ショート決済=buy+short）。',

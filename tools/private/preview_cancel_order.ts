@@ -111,6 +111,15 @@ export const toolDef: ToolDefinition = {
 			'  実際にキャンセルするには、elicitation 対応クライアント（Claude Desktop など）で同じ操作を実行してください。',
 		].join('\n');
 
+		// BITBANK_TRUST_HOST_APPROVAL=1 のときに使う妥協経路用のレスポンス。
+		// 詳細は docs/adr/0002-hitl-confirmation-token-delivery.md。
+		const trustHostFallbackText = [
+			result.summary,
+			'',
+			'iframe の「キャンセルを確定する」ボタンを押してキャンセルを確定してください。',
+			'ボタンを押さない限りキャンセルは行われません。',
+		].join('\n');
+
 		// elicitation 対応ホストでは preview → ユーザー確認 → cancel_order までを
 		// このハンドラ内で完結させる。confirmation_token / expires_at は
 		// withElicitedConfirmation が structuredContent / declinedStructured / fallback
@@ -134,6 +143,10 @@ export const toolDef: ToolDefinition = {
 			declinedStructured: toStructured(result),
 			fallback: {
 				content: [{ type: 'text', text: fallbackText }],
+				structuredContent: toStructured(result),
+			},
+			trustHostFallback: {
+				content: [{ type: 'text', text: trustHostFallbackText }],
 				structuredContent: toStructured(result),
 			},
 		});
