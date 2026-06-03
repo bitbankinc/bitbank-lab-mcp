@@ -749,6 +749,22 @@ export const PreviewOrderDataSchema = z.object({
 		trigger_price: z.string().optional(),
 		post_only: z.boolean().optional(),
 		position_side: PositionSideEnum.optional(),
+		/** 見積り手数料（カテゴリ A: 取引手数料 / B: 信用手数料）。lib/fees.ts で解決した値。 */
+		fee_estimate: z
+			.object({
+				/** 解決した role（maker / taker） */
+				role: z.enum(['maker', 'taker']),
+				/** 解決した手数料率（負のリベートもありうる） */
+				rate: z.number(),
+				/** 見積り手数料（quote 建て）。約定価格依存で省略する場合は欠落。 */
+				estimated_fee_quote: z.number().optional(),
+				/** 見積りコスト（buy=notional+fee / sell=notional-fee）。省略時は欠落。 */
+				estimated_cost_quote: z.number().optional(),
+				/** 見積りの前提を説明する注記。 */
+				note: z.string(),
+			})
+			.optional()
+			.describe('見積り手数料（lib/fees.ts 経由で解決。約定価格依存の場合は note で省略理由を明示）'),
 	}),
 });
 
