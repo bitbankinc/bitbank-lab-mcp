@@ -10,8 +10,9 @@
  * 詳細は docs/private-api.md「`confirmation_token` の受け渡し」節を参照。
  */
 
+import { estimateOrderFee } from '../../lib/fees.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
-import { fetchPairsSpec, validateOrderConstraints } from '../../lib/pairs.js';
+import { fetchPairsSpec, type PairSpec, validateOrderConstraints } from '../../lib/pairs.js';
 import { fail, ok, toStructured } from '../../lib/result.js';
 import { validateTriggerPrice } from '../../lib/trigger-price.js';
 import { generateToken } from '../../src/private/confirmation.js';
@@ -60,6 +61,12 @@ function isPositiveNumericString(s: string): boolean {
 	return Number.isFinite(n) && n > 0;
 }
 
+/** 手数料率を % 表示にする（浮動小数の桁あふれを抑えて整形）。負のリベートはマイナス付きで返す。 */
+function formatRatePercent(rate: number): string {
+	const pct = Number((rate * 100).toFixed(4));
+	return `${pct}%`;
+}
+
 export default async function previewOrder(args: {
 	pair: string;
 	amount: string;
@@ -92,9 +99,11 @@ export default async function previewOrder(args: {
 	// API 取得失敗時は warning に留めて発注を継続する（後段の bitbank 側で必ず検証されるため）。
 	// 失敗時の挙動は docs/private-api.md「ペア仕様の事前バリデーション」節を参照。
 	const warnings: string[] = [];
+	// 手数料見積りでも spec を使うため try の外に保持する（pairs を二重 fetch しない）。
+	let spec: PairSpec | undefined;
 	try {
 		const pairsMap = await fetchPairsSpec();
-		const spec = pairsMap.get(pair.toLowerCase());
+		spec = pairsMap.get(pair.toLowerCase());
 		const violation = validateOrderConstraints(spec, {
 			pair,
 			type,
@@ -161,6 +170,42 @@ export default async function previewOrder(args: {
 	if (post_only) {
 		lines.push('  Post Only: 有効');
 	}
+
+	// ── 手数料見積り（カテゴリ A: 取引手数料 / B: 信用手数料）──
+	// spec は事前バリデーションで取得済み。取得失敗時は undefined のまま渡し、
+	// estimateOrderFee 側で公称 taker による概算にフォールバックする（warning は別途下段に表示）。
+	const feeEstimate = estimateOrderFee(spec, {
+		type,
+		side,
+		price,
+		amount,
+		postOnly: post_only,
+		positionSide: position_side,
+	});
+
+	// 手数料区分ラベル（信用は新規/決済を明示）
+	let feeKindLabel: string = feeEstimate.role;
+	if (isMargin) {
+		const isOpen = (side === 'buy' && position_side === 'long') || (side === 'sell' && position_side === 'short');
+		feeKindLabel = `${feeEstimate.role}（信用${isOpen ? '新規' : '決済'}）`;
+	}
+
+	// 手数料率（% 表示。負はリベート明示）
+	const ratePct = formatRatePercent(feeEstimate.rate);
+	const rateLabel = feeEstimate.rate < 0 ? `${ratePct}（リベート）` : ratePct;
+
+	lines.push('');
+	lines.push('💰 手数料見積り');
+	lines.push(`  手数料区分: ${feeKindLabel}`);
+	lines.push(`  手数料率: ${rateLabel}`);
+	if (feeEstimate.estimatedFeeQuote != null) {
+		lines.push(`  推定手数料: ${isJpy ? formatPrice(feeEstimate.estimatedFeeQuote) : feeEstimate.estimatedFeeQuote}`);
+	}
+	if (feeEstimate.estimatedCostQuote != null) {
+		lines.push(`  推定コスト: ${isJpy ? formatPrice(feeEstimate.estimatedCostQuote) : feeEstimate.estimatedCostQuote}`);
+	}
+	lines.push(`  備考: ${feeEstimate.note}`);
+
 	if (isMargin) {
 		lines.push('');
 		lines.push('⚠️ 信用取引です。損失が保証金を超える可能性があります。');
@@ -181,6 +226,15 @@ export default async function previewOrder(args: {
 	if (trigger_price) preview.trigger_price = trigger_price;
 	if (post_only) preview.post_only = post_only;
 	if (position_side) preview.position_side = position_side;
+
+	const feeEstimateOut: Record<string, unknown> = {
+		role: feeEstimate.role,
+		rate: feeEstimate.rate,
+		note: feeEstimate.note,
+	};
+	if (feeEstimate.estimatedFeeQuote != null) feeEstimateOut.estimated_fee_quote = feeEstimate.estimatedFeeQuote;
+	if (feeEstimate.estimatedCostQuote != null) feeEstimateOut.estimated_cost_quote = feeEstimate.estimatedCostQuote;
+	preview.fee_estimate = feeEstimateOut;
 
 	const meta: { action: 'create_order'; warnings?: string[] } = { action: 'create_order' as const };
 	if (warnings.length > 0) meta.warnings = warnings;

@@ -930,4 +930,247 @@ describe('preview_order', () => {
 			expect(result.meta.warnings).toBeUndefined();
 		});
 	});
+
+	// 手数料見積り（カテゴリ A: 取引手数料 / B: 信用手数料）。
+	// レートは lib/fees.ts 経由で解決される。/spot/pairs フィクスチャの maker は -0.0002（リベート）。
+	describe('手数料見積り（fee_estimate）', () => {
+		// maker 正レートでの買い/売りを明示検証するため、maker_fee_rate_quote を正値に上書きする。
+		const POSITIVE_MAKER_PAIR = {
+			name: 'btc_jpy',
+			base_asset: 'btc',
+			quote_asset: 'jpy',
+			unit_amount: '0.0001',
+			limit_max_amount: '1000',
+			market_max_amount: '0.5',
+			price_digits: 0,
+			amount_digits: 8,
+			is_enabled: true,
+			stop_order: false,
+			stop_order_and_cancel: false,
+			stop_market_order: false,
+			stop_stop_order: false,
+			stop_stop_limit_order: false,
+			stop_margin_long_order: false,
+			stop_margin_short_order: false,
+			stop_buy_order: false,
+			stop_sell_order: false,
+			maker_fee_rate_quote: '0.0001',
+			taker_fee_rate_quote: '0.0012',
+			maker_fee_rate_base: '0',
+			taker_fee_rate_base: '0',
+			margin_open_maker_fee_rate_quote: null,
+			margin_open_taker_fee_rate_quote: null,
+			margin_close_maker_fee_rate_quote: null,
+			margin_close_taker_fee_rate_quote: null,
+		};
+
+		it('limit 買い → maker。notional+fee で推定コストを算出する', async () => {
+			installDefaultFetchMock([POSITIVE_MAKER_PAIR]);
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'limit',
+				price: '14000000',
+			});
+			assertOk(result);
+			const fee = result.data.preview.fee_estimate;
+			expect(fee?.role).toBe('maker');
+			expect(fee?.rate).toBe(0.0001);
+			// notional = 14,000,000 * 0.01 = 140,000 / fee = 140,000 * 0.0001 = 14
+			expect(fee?.estimated_fee_quote).toBe(14);
+			// 買いは notional + fee
+			expect(fee?.estimated_cost_quote).toBe(140014);
+			// content（summary）に手数料行が含まれる
+			expect(result.summary).toContain('手数料見積り');
+			expect(result.summary).toContain('手数料区分: maker');
+			expect(result.summary).toContain('0.01%');
+		});
+
+		it('limit 売り → maker。notional-fee で推定コストを算出する', async () => {
+			installDefaultFetchMock([POSITIVE_MAKER_PAIR]);
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'sell',
+				type: 'limit',
+				price: '14000000',
+			});
+			assertOk(result);
+			const fee = result.data.preview.fee_estimate;
+			expect(fee?.role).toBe('maker');
+			expect(fee?.estimated_fee_quote).toBe(14);
+			// 売りは notional - fee
+			expect(fee?.estimated_cost_quote).toBe(139986);
+		});
+
+		it('負のリベート（maker -0.0002）はコストを減らす方向に効く', async () => {
+			// デフォルトフィクスチャの maker は -0.0002
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'limit',
+				price: '14000000',
+			});
+			assertOk(result);
+			const fee = result.data.preview.fee_estimate;
+			expect(fee?.role).toBe('maker');
+			expect(fee?.rate).toBe(-0.0002);
+			// fee = 140,000 * -0.0002 = -28
+			expect(fee?.estimated_fee_quote).toBe(-28);
+			// 買いは notional + fee = 140,000 + (-28) = 139,972（コストが減る）
+			expect(fee?.estimated_cost_quote).toBe(139972);
+			// リベート表示が summary に出る
+			expect(result.summary).toContain('リベート');
+		});
+
+		it('market → taker。JPY 見積りは省略し note で明示する', async () => {
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'market',
+			});
+			assertOk(result);
+			const fee = result.data.preview.fee_estimate;
+			expect(fee?.role).toBe('taker');
+			expect(fee?.estimated_fee_quote).toBeUndefined();
+			expect(fee?.estimated_cost_quote).toBeUndefined();
+			expect(fee?.note).toContain('約定価格依存');
+			expect(result.summary).toContain('手数料区分: taker');
+		});
+
+		it('post_only → maker 確定の note が出る', async () => {
+			installDefaultFetchMock([POSITIVE_MAKER_PAIR]);
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'limit',
+				price: '14000000',
+				post_only: true,
+			});
+			assertOk(result);
+			const fee = result.data.preview.fee_estimate;
+			expect(fee?.role).toBe('maker');
+			expect(fee?.note).toContain('maker 確定');
+		});
+
+		it('信用ロング新規（buy+long）→ margin_open レートで解決する', async () => {
+			installDefaultFetchMock([
+				{
+					...POSITIVE_MAKER_PAIR,
+					margin_open_maker_fee_rate_quote: '0.0004',
+					margin_close_maker_fee_rate_quote: '0.0003',
+				},
+			]);
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'limit',
+				price: '14000000',
+				position_side: 'long',
+			});
+			assertOk(result);
+			const fee = result.data.preview.fee_estimate;
+			expect(fee?.role).toBe('maker');
+			expect(fee?.rate).toBe(0.0004);
+			// fee = 140,000 * 0.0004 = 56
+			expect(fee?.estimated_fee_quote).toBe(56);
+			expect(result.summary).toContain('信用新規');
+		});
+
+		it('信用ロング決済（sell+long）→ margin_close レートで解決する', async () => {
+			installDefaultFetchMock([
+				{
+					...POSITIVE_MAKER_PAIR,
+					margin_open_maker_fee_rate_quote: '0.0004',
+					margin_close_maker_fee_rate_quote: '0.0003',
+				},
+			]);
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'sell',
+				type: 'limit',
+				price: '14000000',
+				position_side: 'long',
+			});
+			assertOk(result);
+			const fee = result.data.preview.fee_estimate;
+			expect(fee?.rate).toBe(0.0003);
+			expect(result.summary).toContain('信用決済');
+		});
+
+		it('/spot/pairs 取得失敗時は公称 taker で概算しつつ warning が content に残る', async () => {
+			globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : String(input);
+				if (url.includes('/spot/pairs')) {
+					return new Response('boom', { status: 500 });
+				}
+				if (url.includes('/ticker')) {
+					return new Response(JSON.stringify(mockBitbankSuccess({ last: '15000000' })), { status: 200 });
+				}
+				return new Response(JSON.stringify({ success: 1, data: {} }), { status: 200 });
+			}) as unknown as typeof fetch;
+
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'limit',
+				price: '14000000',
+			});
+			assertOk(result);
+			const fee = result.data.preview.fee_estimate;
+			// spec 不明 → 公称 taker (0.0012) で概算
+			expect(fee?.rate).toBe(0.0012);
+			expect(fee?.note).toContain('spec 不明');
+			// 手数料行と warning がどちらも summary に残る
+			expect(result.summary).toContain('手数料見積り');
+			expect(result.summary).toContain('スキップ');
+			expect(result.meta.warnings?.[0]).toContain('/spot/pairs');
+		});
+
+		it('handler の content[0].text に手数料行が含まれ、発注 POST は走らない', async () => {
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : String(input);
+				if (url.includes('/spot/pairs')) {
+					return new Response(JSON.stringify(mockSpotPairsResponse()), { status: 200 });
+				}
+				if (url.includes('/ticker')) {
+					return new Response(JSON.stringify(mockBitbankSuccess({ last: '15000000' })), { status: 200 });
+				}
+				return new Response(JSON.stringify({ success: 1, data: {} }), { status: 200 });
+			}) as unknown as typeof fetch;
+			globalThis.fetch = fetchMock;
+
+			const { toolDef } = await import('../../tools/private/preview_order.js');
+			// extra なし（elicitation 非対応扱い）→ create_order には到達しない
+			const result = (await toolDef.handler({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'limit',
+				price: '14000000',
+			})) as { content: { text: string }[] };
+
+			const text = result.content[0]?.text ?? '';
+			expect(text).toContain('手数料見積り');
+			expect(text).toContain('手数料区分: maker');
+			// 発注 API（POST /v1/user/spot/order）が一切呼ばれていないこと
+			const calls = (fetchMock as unknown as { mock: { calls: Array<[unknown]> } }).mock.calls;
+			expect(calls.some((c) => String(c[0]).includes('/user/spot/order'))).toBe(false);
+		});
+	});
 });
