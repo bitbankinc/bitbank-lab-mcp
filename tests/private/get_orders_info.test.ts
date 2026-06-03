@@ -242,8 +242,31 @@ describe('get_orders_info', () => {
 		expect(result.summary).not.toMatch(/\b(long|short)\b/);
 	});
 
-	it('order_ids が 31 件で validation_error を返す（cancel_orders と同じ上限 30 件）', async () => {
+	it('order_ids が 31 件でも入力バリデーションを通過する（cancel_orders の 30 件上限は orders_info に適用しない）', async () => {
 		const orderIds = Array.from({ length: 31 }, (_, i) => 4000 + i);
+		setupFetchMock(mockBitbankSuccess({ orders: orderIds.map((id) => orderData(id)) }));
+
+		const { default: getOrdersInfo } = await import('../../tools/private/get_orders_info.js');
+		const result = await getOrdersInfo({ pair: 'btc_jpy', order_ids: orderIds });
+
+		assertOk(result);
+		expect(result.data.orders).toHaveLength(31);
+		expect(result.meta.orderCount).toBe(31);
+	});
+
+	it('order_ids が 100 件（上限）でも入力バリデーションを通過する', async () => {
+		const orderIds = Array.from({ length: 100 }, (_, i) => 4000 + i);
+		setupFetchMock(mockBitbankSuccess({ orders: orderIds.map((id) => orderData(id)) }));
+
+		const { default: getOrdersInfo } = await import('../../tools/private/get_orders_info.js');
+		const result = await getOrdersInfo({ pair: 'btc_jpy', order_ids: orderIds });
+
+		assertOk(result);
+		expect(result.data.orders).toHaveLength(100);
+	});
+
+	it('order_ids が 101 件で validation_error を返す（防御的な上限 100 件超過）', async () => {
+		const orderIds = Array.from({ length: 101 }, (_, i) => 4000 + i);
 
 		const { default: getOrdersInfo } = await import('../../tools/private/get_orders_info.js');
 		const result = await getOrdersInfo({ pair: 'btc_jpy', order_ids: orderIds });

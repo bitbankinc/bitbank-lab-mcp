@@ -1019,7 +1019,10 @@ export const GetOrderOutputSchema = z.union([
 
 export const GetOrdersInfoInputSchema = z.object({
 	pair: z.string().describe('通貨ペア（例: btc_jpy）'),
-	order_ids: z.array(z.number()).min(1).max(30).describe('照会する注文IDの配列（最大30件）'),
+	// orders_info（Fetch multiple orders）の API ドキュメントには order_ids の件数上限の記載が無い。
+	// 30 件上限が明記されているのは cancel_orders 側であり、ここで同じ上限を課す根拠は無いため、
+	// 防御的な上限（100 件）に緩和してドキュメントに合わせる。
+	order_ids: z.array(z.number()).min(1).max(100).describe('照会する注文IDの配列（最大100件）'),
 });
 
 export const GetOrdersInfoDataSchema = z.object({
