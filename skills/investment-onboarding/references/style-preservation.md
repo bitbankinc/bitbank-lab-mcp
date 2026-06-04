@@ -74,6 +74,7 @@ DCA を選んだ場合はこのステップはスキップしてよい。
 **MCP ツール（Private API キー必要）:**
 - `preview_order` → `create_order` の 2 ステップ確認
   - 必ず `preview_order` で内容を確認してから `create_order` を呼ぶ
+  - 「N 円分」のような金額指定では、約定価格から算出した数量を**ペアの最小単位へ切り捨て（floor）てから** `preview_order` を呼ぶ（例: ETH は 0.0001 刻み → 0.00882 ETH は 0.0088 へ）。端数のまま渡すと最初のプレビューが validation_error になる。
 
 ### Step 5 — 定期確認
 

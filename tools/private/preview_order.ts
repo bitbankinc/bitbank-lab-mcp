@@ -255,6 +255,10 @@ export const toolDef: ToolDefinition = {
 	description: [
 		'[Preview Order] 注文内容をプレビューする。実際の発注は行わない。Private API。',
 		'バリデーション（パラメータチェック、トリガー価格チェック）もここで実施する。',
+		'⚠️ amount はペアの最小単位（数量の刻み幅 = 10^-amount_digits, 最小数量 = unit_amount）へ丸めてから渡すこと。端数はこのツールを呼ぶ前に解決する。',
+		'特に「N 円分」のような金額指定では約定価格から数量を算出するため端数が出やすい（例: 3000 円 ÷ 340000 円/ETH = 0.00882… ETH → ETH は最小単位 0.0001 なので 0.0088 へ切り捨て）。',
+		'丸めは必ず切り捨て（floor）で行い、予算・残高の超過を防ぐ。刻み幅が不明な場合は対象ペアの amount_digits（多くの JPY ペアは 4）に合わせて小数を切り詰める。',
+		'端数のまま渡すと最小数量未満・桁数超過で validation_error となり、無駄な失敗プレビューが発生する。',
 		'対応注文タイプは limit / market / stop / stop_limit の 4 種類のみ（take_profit / stop_loss / losscut は未対応）。',
 		'position_side を指定すると信用注文として扱う（ロング新規=buy+long, ロング決済=sell+long, ショート新規=sell+short, ショート決済=buy+short）。',
 		'⚠️ confirmation_token はクライアント側には返さない（content / structuredContent / _meta のいずれにも含めない）。',

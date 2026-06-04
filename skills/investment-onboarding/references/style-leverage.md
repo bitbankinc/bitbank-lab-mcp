@@ -84,6 +84,7 @@
 - `preview_order` → `create_order`（`position_side` を明示して新規建玉）
   - ロング新規: `side: buy` + `position_side: long`
   - ショート新規: `side: sell` + `position_side: short`
+  - 「N 円分」のような金額指定では、価格から算出した数量を**ペアの最小単位へ切り捨て（floor）てから** `preview_order` を呼ぶ（例: ETH は 0.0001 刻み → 0.00882 ETH は 0.0088 へ）。端数のまま渡すと最初のプレビューが validation_error になる。
 
 ### Step 6 — ポジション管理
 
