@@ -4,6 +4,7 @@ import {
 	ema,
 	ichimokuSeries,
 	ichimokuSnapshot,
+	lastCrossover,
 	macd,
 	obv,
 	rsi,
@@ -1395,5 +1396,94 @@ describe('shiftChikou', () => {
 		result.forEach((v) => {
 			expect(v).toBeNaN();
 		});
+	});
+});
+
+// --- lastCrossover ---
+
+describe('lastCrossover', () => {
+	it('空配列は null', () => {
+		expect(lastCrossover([], [])).toBeNull();
+	});
+
+	it('null 入力は null（fast / slow / 両方）', () => {
+		expect(lastCrossover(null, [1, 2])).toBeNull();
+		expect(lastCrossover([1, 2], null)).toBeNull();
+		expect(lastCrossover(null, null)).toBeNull();
+	});
+
+	it('単一要素は比較対象がなく null', () => {
+		expect(lastCrossover([1], [2])).toBeNull();
+	});
+
+	it('golden cross（最後の2本間, barsAgo=0）', () => {
+		// diff = [-1, 1]: fast が slow を下から上抜け
+		expect(lastCrossover([1, 3], [2, 2])).toEqual({ type: 'golden', barsAgo: 0 });
+	});
+
+	it('dead cross（最後の2本間, barsAgo=0）', () => {
+		// diff = [1, -1]: fast が slow を上から下抜け
+		expect(lastCrossover([3, 1], [2, 2])).toEqual({ type: 'dead', barsAgo: 0 });
+	});
+
+	it('barsAgo は最新足からの本数で返す', () => {
+		// diff = [-1, 1, 2, 3]: golden は index 1 で発生 → barsAgo = 3 - 1 = 2
+		expect(lastCrossover([1, 3, 4, 5], [2, 2, 2, 2])).toEqual({ type: 'golden', barsAgo: 2 });
+	});
+
+	it('複数クロスがあるときは末尾側（直近）を返す', () => {
+		// diff = [-1, 1, -1]: golden(index1) の後に dead(index2) → 直近の dead を返す
+		expect(lastCrossover([1, 3, 1], [2, 2, 2])).toEqual({ type: 'dead', barsAgo: 0 });
+	});
+
+	it('タイ値（diff=0）は未クロス扱いでスキップする（0 を跨いだだけでは検出しない）', () => {
+		// diff = [-1, 0, 1]: 0 を経由するだけで隣接する厳密な符号反転がない → null
+		// （旧 <=/>= ロジックなら golden 判定されていた箇所。挙動変更をここで固定する）
+		expect(lastCrossover([1, 2, 3], [2, 2, 2])).toBeNull();
+	});
+
+	it('中間のタイ値は無視し、厳密な符号反転があれば検出する', () => {
+		// diff = [-1, 0, -1, 1]: 末尾の -1 → 1 が厳密な golden（中間の 0 は無視）
+		expect(lastCrossover([1, 2, 1, 3], [2, 2, 2, 2])).toEqual({ type: 'golden', barsAgo: 0 });
+	});
+
+	it('prev がちょうど 0 の足はクロスにしない', () => {
+		expect(lastCrossover([2, 3], [2, 2])).toBeNull(); // diff = [0, 1]
+		expect(lastCrossover([2, 1], [2, 2])).toBeNull(); // diff = [0, -1]
+	});
+
+	it('curr がちょうど 0 の足はクロスにしない', () => {
+		expect(lastCrossover([1, 2], [2, 2])).toBeNull(); // diff = [-1, 0]
+		expect(lastCrossover([3, 2], [2, 2])).toBeNull(); // diff = [1, 0]
+	});
+
+	it('非有限値（NaN）が絡む比較はスキップする', () => {
+		// diff = [-1, NaN, 1]: どの隣接ペアも NaN を含む → null
+		expect(lastCrossover([1, NaN, 3], [2, 2, 2])).toBeNull();
+	});
+
+	it('末尾の NaN はスキップし、その手前の有効なクロスを返す', () => {
+		// diff = [-1, 1, NaN]: index2 は NaN でスキップ → index1 の golden を返す（barsAgo=1）
+		expect(lastCrossover([1, 3, NaN], [2, 2, 2])).toEqual({ type: 'golden', barsAgo: 1 });
+	});
+
+	it('Infinity が絡む比較はスキップする', () => {
+		// diff = [-1, Infinity, 1]: index1/index2 の比較は Infinity を含む → null
+		expect(lastCrossover([1, Infinity, 3], [2, 2, 2])).toBeNull();
+	});
+
+	it('長さが異なる場合は短い方（先頭インデックス基準）に合わせる', () => {
+		// n = 2 → fast[2] は無視。diff = [-1, 1] → golden barsAgo=0
+		expect(lastCrossover([1, 3, 5], [2, 2])).toEqual({ type: 'golden', barsAgo: 0 });
+	});
+
+	it('一貫して同符号ならクロスなし（null）', () => {
+		expect(lastCrossover([3, 4, 5], [1, 1, 1])).toBeNull();
+	});
+
+	it('sma 系列との組み合わせ（NaN ウォームアップを跨いで golden を検出）', () => {
+		// V 字回復。sma(2) が sma(4) を index5 で上抜け → barsAgo = 8 - 5 = 3
+		const closes = [5, 4, 3, 2, 3, 4, 5, 6, 7];
+		expect(lastCrossover(sma(closes, 2), sma(closes, 4))).toEqual({ type: 'golden', barsAgo: 3 });
 	});
 });

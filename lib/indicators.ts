@@ -657,3 +657,48 @@ export function obv(closes: number[], volumes: number[]): number[] {
 
 	return result;
 }
+
+// ============================================================
+// Crossover detection
+// ============================================================
+
+/** クロスの種類。golden = fast が slow を下から上抜け、dead = その逆。 */
+export type CrossType = 'golden' | 'dead';
+
+/**
+ * 2 系列 (fast / slow) の直近クロス（符号反転）を末尾側から探す。
+ *
+ * fast / slow は同一の時間インデックスで揃っている前提（index i が同じ足に対応する。
+ * `lib/indicators.ts` が返す NaN 埋めの全長系列が典型）。末尾（新しい側）から
+ * `prev = fast[i-1] - slow[i-1]` と `curr = fast[i] - slow[i]` を比較し、
+ * 最初に見つかった符号反転を返す。
+ *
+ * セマンティクス:
+ * - golden: `prev < 0` かつ `curr > 0`（fast が slow を下から上抜け）
+ * - dead:   `prev > 0` かつ `curr < 0`（fast が slow を上から下抜け）
+ * - タイ値（prev または curr がちょうど 0）は「未クロス」として **スキップし探索を継続** する。
+ *   厳密不等号で判定するため、0 を跨いだだけの足はクロス成立とみなさない。
+ * - 非有限値（NaN / Infinity）が絡む比較はスキップする。
+ * - 長さが異なる場合は短い方に合わせる（先頭インデックス基準で揃える）。
+ *
+ * @param fast 短期側の系列（例: SMA25 / MACD line）
+ * @param slow 長期側の系列（例: SMA75 / MACD signal）
+ * @returns 直近クロスの `{ type, barsAgo }`（barsAgo=0 は最後の 2 本間のクロス）。無ければ null。
+ */
+export function lastCrossover(
+	fast: readonly number[] | null,
+	slow: readonly number[] | null,
+): { type: CrossType; barsAgo: number } | null {
+	if (!fast || !slow) return null;
+	const n = Math.min(fast.length, slow.length);
+	for (let i = n - 1; i >= 1; i--) {
+		const prev = fast[i - 1] - slow[i - 1];
+		const curr = fast[i] - slow[i];
+		// 非有限（NaN/Infinity）は比較不能としてスキップ。
+		if (!Number.isFinite(prev) || !Number.isFinite(curr)) continue;
+		// 厳密不等号で判定 → タイ値（=0）は未クロス扱いで継続。
+		if (prev < 0 && curr > 0) return { type: 'golden', barsAgo: n - 1 - i };
+		if (prev > 0 && curr < 0) return { type: 'dead', barsAgo: n - 1 - i };
+	}
+	return null;
+}

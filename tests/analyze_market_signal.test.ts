@@ -235,6 +235,38 @@ describe('analyze_market_signal', () => {
 		expect(res.data.sma!.arrangement).toBe('bearish');
 	});
 
+	it('25/75 直近クロス: 時間軸を揃えた全長 SMA 系列で golden_cross を検出する（slidingMean ズレ修正の回帰）', async () => {
+		mockedGetFlowMetrics.mockResolvedValueOnce(asMockResult(flowOk(0.5, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
+		mockedGetVolatilityMetrics.mockResolvedValueOnce(asMockResult(volOk(0.5)));
+		// 60 本下落 → 60 本上昇の V 字。下落局面で sma25<sma75、上昇局面で sma25>sma75 となり、
+		// 直近クロスは上昇局面の golden。旧実装は長さの違う slidingMean 配列を同一 index で
+		// 比較して 50 本ズレていたため、ここは時間軸の揃った全長系列での検出を固定する。
+		const down = Array.from({ length: 60 }, (_, i) => 200 - i * 2);
+		const up = Array.from({ length: 60 }, (_, i) => 82 + (i + 1) * 3);
+		const closeSeries = [...down, ...up];
+		const indRes = indicatorsOk({
+			close: closeSeries[closeSeries.length - 1],
+			rsi: 55,
+			sma25: 100,
+			sma75: 100,
+			sma200: 100,
+		});
+		indRes.data.normalized = closeSeries.map((close, i) => ({
+			close,
+			isoTime: `2024-01-${String((i % 28) + 1).padStart(2, '0')}T00:00:00.000Z`,
+		}));
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indRes));
+
+		const res = await analyzeMarketSignal('btc_jpy');
+		assertOk(res);
+		const recentCross = res.data.sma?.recentCross ?? null;
+		expect(recentCross).not.toBeNull();
+		expect(recentCross?.type).toBe('golden_cross');
+		expect(recentCross?.pair).toBe('25/75');
+		expect(recentCross?.barsAgo).toBeGreaterThanOrEqual(0);
+		expect(recentCross?.barsAgo).toBeLessThan(closeSeries.length);
+	});
+
 	it('toolDef.handler: content テキストに分析結果が含まれる', async () => {
 		mockedGetFlowMetrics.mockResolvedValueOnce(asMockResult(flowOk(0.5, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
 		mockedGetVolatilityMetrics.mockResolvedValueOnce(asMockResult(volOk(0.5)));

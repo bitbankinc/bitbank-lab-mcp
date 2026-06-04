@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { calendarDateFromIso, dayjs } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
+import { lastCrossover } from '../lib/indicators.js';
 import { fail, failFromError, failFromValidation, ok, toStructured } from '../lib/result.js';
 import { ALLOWED_PAIRS, ensurePair } from '../lib/validate.js';
 import type { Pair } from '../src/schemas.js';
@@ -204,14 +205,10 @@ function findPrevCross(
 	signal: number[],
 	before: number,
 ): { idx: number; type: 'golden' | 'dead' } | null {
-	for (let j = before - 1; j >= 1; j--) {
-		const pd = diffAt(line, signal, j - 1);
-		const cd = diffAt(line, signal, j);
-		if (pd == null || cd == null) continue;
-		if (pd <= 0 && cd > 0) return { idx: j, type: 'golden' };
-		if (pd >= 0 && cd < 0) return { idx: j, type: 'dead' };
-	}
-	return null;
+	// index < before の範囲で直近クロスを探す（lastCrossover に委譲）。
+	const cross = lastCrossover(line.slice(0, before), signal.slice(0, before));
+	if (cross == null) return null;
+	return { idx: before - 1 - cross.barsAgo, type: cross.type };
 }
 
 function detectCrossInRange(
@@ -223,40 +220,42 @@ function detectCrossInRange(
 	n: number,
 	pairName: string,
 ): CrossDetailed | null {
-	for (let i = end; i >= start; i--) {
-		const prevDiff = diffAt(line, signal, i - 1);
-		const currDiff = diffAt(line, signal, i);
-		if (prevDiff == null || currDiff == null) continue;
-		const isGolden = prevDiff <= 0 && currDiff > 0;
-		const isDead = prevDiff >= 0 && currDiff < 0;
-		if (!isGolden && !isDead) continue;
+	// [start, end] の curr index 範囲で直近クロスを探す。
+	// lastCrossover は curr index <= end の最新クロスを返すので、end までで切って評価し、
+	// 見つかった index が start 未満なら（= 範囲内にクロスなし）null を返す。
+	const recent = lastCrossover(line.slice(0, end + 1), signal.slice(0, end + 1));
+	if (recent == null) return null;
+	const i = end - recent.barsAgo;
+	if (i < start) return null;
 
-		const currentPrice = (candles.at(-1)?.close ?? null) as number | null;
-		const priceAtCross = (candles[i]?.close ?? null) as number | null;
-		const retPct =
-			priceAtCross && currentPrice != null
-				? Number((((currentPrice - priceAtCross) / priceAtCross) * 100).toFixed(2))
-				: null;
-		const prev = findPrevCross(line, signal, i);
+	const prevDiff = diffAt(line, signal, i - 1);
+	const currDiff = diffAt(line, signal, i);
+	if (prevDiff == null || currDiff == null) return null;
 
-		return {
-			pair: pairName,
-			type: isGolden ? 'golden' : 'dead',
-			crossIndex: i,
-			crossDate: candles[i]?.isoTime ?? null,
-			barsAgo: n - 1 - i,
-			macdAtCross: (line[i] ?? null) as number | null,
-			signalAtCross: (signal[i] ?? null) as number | null,
-			histogramPrev: prevDiff,
-			histogramCurr: currDiff,
-			histogramDelta: Number((currDiff - prevDiff).toFixed(4)),
-			prevCross: prev ? { type: prev.type, barsAgo: i - prev.idx, date: candles[prev.idx]?.isoTime ?? null } : null,
-			priceAtCross,
-			currentPrice,
-			returnSinceCrossPct: retPct,
-		};
-	}
-	return null;
+	const currentPrice = (candles.at(-1)?.close ?? null) as number | null;
+	const priceAtCross = (candles[i]?.close ?? null) as number | null;
+	const retPct =
+		priceAtCross && currentPrice != null
+			? Number((((currentPrice - priceAtCross) / priceAtCross) * 100).toFixed(2))
+			: null;
+	const prev = findPrevCross(line, signal, i);
+
+	return {
+		pair: pairName,
+		type: recent.type,
+		crossIndex: i,
+		crossDate: candles[i]?.isoTime ?? null,
+		barsAgo: n - 1 - i,
+		macdAtCross: (line[i] ?? null) as number | null,
+		signalAtCross: (signal[i] ?? null) as number | null,
+		histogramPrev: prevDiff,
+		histogramCurr: currDiff,
+		histogramDelta: Number((currDiff - prevDiff).toFixed(4)),
+		prevCross: prev ? { type: prev.type, barsAgo: i - prev.idx, date: candles[prev.idx]?.isoTime ?? null } : null,
+		priceAtCross,
+		currentPrice,
+		returnSinceCrossPct: retPct,
+	};
 }
 
 // ── モード A: 複数ペアスクリーニング ──

@@ -2,6 +2,7 @@ import type { z } from 'zod';
 import { nowIso, toDisplayTime } from '../../lib/datetime.js';
 import { formatDeviation, formatPercent, formatPriceJPY, formatTrendSymbol } from '../../lib/formatter.js';
 import { ICHIMOKU_SHIFT, RSI_OVERBOUGHT, RSI_OVERSOLD } from '../../lib/indicator-config.js';
+import { lastCrossover } from '../../lib/indicators.js';
 import { EPSILON } from '../../lib/math.js';
 import { toStructured } from '../../lib/result.js';
 import { prependWarnings } from '../../lib/warning-propagation.js';
@@ -350,34 +351,6 @@ function calcRsiUnitLabel(type: string): string {
 	return '本';
 }
 
-function findLastMacdCross(
-	macdArr: number[] | null,
-	sigArr: number[] | null,
-): { type: 'golden' | 'dead'; barsAgo: number } | null {
-	if (!macdArr || !sigArr) return null;
-	const L = Math.min(macdArr.length, sigArr.length);
-	let lastIdx: number | null = null;
-	let lastType: 'golden' | 'dead' | null = null;
-	for (let i = L - 2; i >= 0; i--) {
-		const a0 = Number(macdArr[i]),
-			b0 = Number(sigArr[i]);
-		const a1 = Number(macdArr[i + 1]),
-			b1 = Number(sigArr[i + 1]);
-		if ([a0, b0, a1, b1].some((v) => !Number.isFinite(v))) continue;
-		const prevDiff = a0 - b0;
-		const nextDiff = a1 - b1;
-		if (prevDiff === 0) continue;
-		if ((prevDiff < 0 && nextDiff > 0) || (prevDiff > 0 && nextDiff < 0)) {
-			lastIdx = i + 1;
-			lastType = nextDiff > 0 ? 'golden' : 'dead';
-			break;
-		}
-	}
-	if (lastIdx == null) return null;
-	const barsAgo = L - 1 - lastIdx;
-	return { type: lastType as 'golden' | 'dead', barsAgo };
-}
-
 function detectDivergence(
 	candles: Array<{ close?: number }>,
 	histSeries: number[] | null,
@@ -499,21 +472,9 @@ function calcCloudDistance(
 
 function findSmaCross(s25: number[] | null, s75: number[] | null): string | null {
 	if (!s25 || !s75) return null;
-	const L = Math.min(s25.length, s75.length);
-	let lastIdx: number | null = null;
-	let t: 'golden' | 'dead' | null = null;
-	for (let i = L - 2; i >= 0; i--) {
-		const d0 = Number(s25[i]) - Number(s75[i]);
-		const d1 = Number(s25[i + 1]) - Number(s75[i + 1]);
-		if (![d0, d1].every(Number.isFinite)) continue;
-		if ((d0 < 0 && d1 > 0) || (d0 > 0 && d1 < 0)) {
-			lastIdx = i + 1;
-			t = d1 > 0 ? 'golden' : 'dead';
-			break;
-		}
-	}
-	if (lastIdx == null) return '直近クロス: なし';
-	return `直近クロス: ${t === 'golden' ? 'ゴールデン' : 'デッド'}（${L - 1 - lastIdx}本前）`;
+	const cross = lastCrossover(s25, s75);
+	if (cross == null) return '直近クロス: なし';
+	return `直近クロス: ${cross.type === 'golden' ? 'ゴールデン' : 'デッド'}（${cross.barsAgo}本前）`;
 }
 
 export const toolDef: ToolDefinition = {
@@ -589,7 +550,7 @@ export const toolDef: ToolDefinition = {
 			if (!Number.isFinite(a) || !Number.isFinite(b) || len <= 1) return null;
 			return (b - a) / (len - 1);
 		};
-		const lastMacdCross = findLastMacdCross(
+		const lastMacdCross = lastCrossover(
 			Array.isArray(ind?.series?.MACD_line) ? ind.series.MACD_line : null,
 			Array.isArray(ind?.series?.MACD_signal) ? ind.series.MACD_signal : null,
 		);

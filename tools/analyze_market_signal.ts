@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import { formatPercent, formatPriceJPY } from '../lib/formatter.js';
-import { slidingMean } from '../lib/math.js';
+import { lastCrossover, sma } from '../lib/indicators.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { collectUpstreamWarnings, prependWarnings } from '../lib/warning-propagation.js';
@@ -307,7 +307,9 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 			else if (latestClose < sma25 && latestClose < sma75 && latestClose < sma200) smaPosition = 'below_all';
 			else smaPosition = 'mixed';
 		}
-		// Recent cross detection for 25/75 using normalized closes (fallback if indicator series not available)
+		// Recent cross detection for 25/75 using normalized closes.
+		// 全長 SMA 系列（lib/indicators.ts の sma — NaN 埋めで時間インデックスが揃う）を
+		// lastCrossover に渡して直近クロスを取る。barsAgo は最新足からの本数。
 		let recentCross: { type: 'golden_cross' | 'death_cross'; pair: '25/75'; barsAgo: number } | null = null;
 		try {
 			const normalized = indRes.data.normalized;
@@ -315,19 +317,13 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 				? normalized.map((c) => Number(c?.close)).filter((v) => Number.isFinite(v))
 				: [];
 			if (closes.length >= 80) {
-				const sma25Series = slidingMean(closes, 25);
-				const sma75Series = slidingMean(closes, 75);
-				const m = Math.min(sma25Series.length, sma75Series.length);
-				const off = closes.length - m; // alignment offset to original closes indices
-				for (let j = m - 1; j >= 1; j--) {
-					const prevDiff = sma25Series[j - 1] - sma75Series[j - 1];
-					const currDiff = sma25Series[j] - sma75Series[j];
-					if ((prevDiff <= 0 && currDiff > 0) || (prevDiff >= 0 && currDiff < 0)) {
-						const typeCross = prevDiff <= 0 && currDiff > 0 ? 'golden_cross' : 'death_cross';
-						const barsAgo = Math.max(0, closes.length - 1 - (off + j));
-						recentCross = { type: typeCross, pair: '25/75', barsAgo };
-						break;
-					}
+				const cross = lastCrossover(sma(closes, 25), sma(closes, 75));
+				if (cross) {
+					recentCross = {
+						type: cross.type === 'golden' ? 'golden_cross' : 'death_cross',
+						pair: '25/75',
+						barsAgo: cross.barsAgo,
+					};
 				}
 			}
 		} catch {
