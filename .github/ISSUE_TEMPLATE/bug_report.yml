@@ -37,7 +37,7 @@ body:
         - OS:
         - Node.js バージョン:
         - MCP クライアント: Claude Desktop / Claude Code / その他
-        - 起動モード: STDIO / HTTP
+        - 起動モード: STDIO
     validations:
       required: true
 

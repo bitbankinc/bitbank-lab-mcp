@@ -69,37 +69,6 @@ npx @modelcontextprotocol/inspector docker run -i --rm \
   bitbank-mcp
 ```
 
-HTTPで試す場合（任意）:
-
-HTTP transport には Bearer 認証と rate limit が必須。`MCP_HTTP_TOKEN` を渡さないと起動拒否される。
-
-```bash
-export MCP_HTTP_TOKEN="$(openssl rand -hex 32)"
-
-docker run -it --rm -p 8787:8787 \
-  -e MCP_ENABLE_HTTP=1 -e PORT=8787 \
-  -e MCP_HTTP_TOKEN="$MCP_HTTP_TOKEN" \
-  -e NO_COLOR=1 -e LOG_LEVEL=info \
-  bitbank-mcp
-
-# 別ターミナルから Inspector で接続
-npx @modelcontextprotocol/inspector http://localhost:8787/mcp
-# Inspector の UI で接続設定 → "Authentication" / "Headers" セクションに
-# Authorization: Bearer $MCP_HTTP_TOKEN を追加してから接続する。
-```
-
-HTTP transport に関連する環境変数:
-
-| 環境変数 | 必須 | デフォルト |
-|---|---|---|
-| `MCP_HTTP_TOKEN` | HTTP 時必須 (空白のみは無効) | – |
-| `RATE_LIMIT_WINDOW_MS` | – | `60000` (NaN / 0 以下は fallback) |
-| `RATE_LIMIT_MAX` | – | `60` (NaN / 0 以下は fallback) |
-| `ALLOWED_HOSTS` | – | `127.0.0.1,localhost` (※) |
-| `ALLOWED_ORIGINS` | – | (空) |
-
-※ `MCP_ENABLE_HTTP=1` で `src/server.ts` (本番経路) を起動した場合のデフォルト。`tsx src/http.ts` を単独起動 (ngrok 検証用) した場合のみ `localhost,127.0.0.1,*.ngrok-free.dev` になる。
-
 ログ永続化（任意）:
 
 ```bash

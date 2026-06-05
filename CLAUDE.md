@@ -11,9 +11,6 @@ npm run gen:types           # Zod スキーマから型定義を生成
 npm run typecheck           # tsc --noEmit
 ```
 
-サンドボックス等で 127.0.0.1 への bind が制限されている環境では
-`SKIP_NETWORK_TESTS=1 npm test` で `tests/src/http-rate-limit.test.ts` を skip できる。
-
 ## コード品質
 
 - リンター（Biome / Oxlint）・pre-commit hook・banned-patterns が検出するルールに従う。
