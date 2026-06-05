@@ -26,15 +26,6 @@ interface FakeMcpServerShape {
 	requestHandlers: Record<string, (request?: Record<string, unknown>) => Promise<unknown> | unknown>;
 	connections: Array<{ kind: string }>;
 }
-interface FakeHttpTransportShape {
-	kind: string;
-	options: Record<string, unknown>;
-	handleRequest: ReturnType<typeof vi.fn>;
-}
-interface FakeExpressApp {
-	use: ReturnType<typeof vi.fn>;
-	listen: ReturnType<typeof vi.fn>;
-}
 interface MockPromptDef {
 	name: string;
 	description: string;
@@ -49,12 +40,8 @@ const runtime = vi.hoisted(() => ({
 	promptDefs: [] as MockPromptDef[],
 	serverInstances: [] as FakeMcpServerShape[],
 	stdioTransports: [] as Array<{ kind: string }>,
-	httpTransports: [] as FakeHttpTransportShape[],
 	logToolRun: vi.fn(),
 	logError: vi.fn(),
-	expressFactory: vi.fn(),
-	expressJson: vi.fn(),
-	expressApp: null as FakeExpressApp | null,
 }));
 
 vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => {
@@ -121,32 +108,10 @@ vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => {
 	return { StdioServerTransport: FakeStdioServerTransport };
 });
 
-vi.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', () => {
-	class FakeStreamableHTTPServerTransport {
-		kind = 'http';
-		options: Record<string, unknown>;
-		handleRequest = vi.fn(async () => {});
-
-		constructor(options: Record<string, unknown>) {
-			this.options = options;
-			runtime.httpTransports.push(this);
-		}
-	}
-
-	return { StreamableHTTPServerTransport: FakeStreamableHTTPServerTransport };
-});
-
 vi.mock('../lib/logger.js', () => ({
 	logToolRun: runtime.logToolRun,
 	logError: runtime.logError,
 }));
-
-vi.mock('express', () => {
-	// biome-ignore lint/suspicious/noExplicitAny: express モジュールモック — 関数に .json プロパティを動的付与するため any を使用
-	const express = runtime.expressFactory as any;
-	express.json = runtime.expressJson;
-	return { default: express };
-});
 
 vi.mock('../src/prompts.js', () => ({
 	get prompts() {
@@ -201,20 +166,8 @@ function resetRuntime() {
 	];
 	runtime.serverInstances = [];
 	runtime.stdioTransports = [];
-	runtime.httpTransports = [];
 	runtime.logToolRun.mockReset();
 	runtime.logError.mockReset();
-	runtime.expressApp = {
-		use: vi.fn(),
-		listen: vi.fn((port: number, callback?: () => void) => {
-			callback?.();
-			return { port };
-		}),
-	};
-	runtime.expressFactory.mockReset();
-	runtime.expressFactory.mockImplementation(() => runtime.expressApp);
-	runtime.expressJson.mockReset();
-	runtime.expressJson.mockReturnValue({ kind: 'json-middleware' });
 }
 
 async function importServer(): Promise<FakeMcpServerShape> {
@@ -229,11 +182,6 @@ describe('server.ts smoke', () => {
 	beforeEach(() => {
 		resetRuntime();
 		process.env = { ...originalEnv };
-		delete process.env.MCP_ENABLE_HTTP;
-		delete process.env.PORT;
-		delete process.env.ALLOWED_HOSTS;
-		delete process.env.ALLOWED_ORIGINS;
-		delete process.env.MCP_HTTP_TOKEN;
 	});
 
 	afterEach(() => {
@@ -519,7 +467,7 @@ describe('server.ts smoke', () => {
 		expect(privateResult.structuredContent.meta.errorType).toBe('invalid_amount');
 	});
 
-	it('HTTP 有効時は HTTP transport と express を初期化する', async () => {
+	it('stdio transport で起動し接続する', async () => {
 		const { z } = await import('zod');
 
 		runtime.toolDefs = [
@@ -530,66 +478,6 @@ describe('server.ts smoke', () => {
 				handler: vi.fn(async () => ({ summary: 'ok', ok: true })) as unknown as ToolDefinition['handler'],
 			},
 		];
-		process.env.MCP_ENABLE_HTTP = '1';
-		process.env.PORT = '3010';
-		process.env.ALLOWED_HOSTS = '127.0.0.1,localhost,example.com';
-		process.env.ALLOWED_ORIGINS = 'https://example.com';
-		process.env.MCP_HTTP_TOKEN = 'smoke-test-token';
-
-		const server = await importServer();
-
-		// SDK の McpServer.connect() は 1:1 のため、HTTP 有効時は stdio を接続しない
-		expect(server.connections).toHaveLength(1);
-		expect(server.connections[0].kind).toBe('http');
-		expect(runtime.httpTransports).toHaveLength(1);
-		expect(runtime.httpTransports[0].options).toMatchObject({
-			path: '/mcp',
-			enableDnsRebindingProtection: true,
-			allowedHosts: ['127.0.0.1', 'localhost', 'example.com'],
-			allowedOrigins: ['https://example.com'],
-		});
-		expect(typeof runtime.httpTransports[0].options.sessionIdGenerator).toBe('function');
-		expect(runtime.expressFactory).toHaveBeenCalledTimes(1);
-		expect(runtime.expressJson).toHaveBeenCalledTimes(1);
-		expect(runtime.expressApp?.use).toHaveBeenNthCalledWith(1, { kind: 'json-middleware' });
-		// 順序: 1) express.json, 2) rate limit (/mcp), 3) Bearer auth (/mcp), 4) handleRequest (/mcp)
-		expect(runtime.expressApp?.use).toHaveBeenNthCalledWith(2, '/mcp', expect.any(Function));
-		expect(runtime.expressApp?.use).toHaveBeenNthCalledWith(3, '/mcp', expect.any(Function));
-		expect(runtime.expressApp?.use).toHaveBeenNthCalledWith(4, '/mcp', expect.any(Function));
-		expect(runtime.expressApp?.listen).toHaveBeenCalledWith(expect.any(Number), expect.any(Function));
-	});
-
-	it('HTTP 有効化時に MCP_HTTP_TOKEN 未設定なら起動失敗する', async () => {
-		const { z } = await import('zod');
-
-		runtime.toolDefs = [
-			{
-				name: 'smoke_tool',
-				description: 'Smoke tool description',
-				inputSchema: z.object({ pair: z.string() }),
-				handler: vi.fn(async () => ({ summary: 'ok', ok: true })) as unknown as ToolDefinition['handler'],
-			},
-		];
-		process.env.MCP_ENABLE_HTTP = '1';
-		process.env.PORT = '3011';
-		delete process.env.MCP_HTTP_TOKEN;
-
-		await expect(importServer()).rejects.toThrow(/MCP_HTTP_TOKEN is required/);
-	});
-
-	it('stdio (HTTP 無効) では MCP_HTTP_TOKEN 未設定でも起動する', async () => {
-		const { z } = await import('zod');
-
-		runtime.toolDefs = [
-			{
-				name: 'smoke_tool',
-				description: 'Smoke tool description',
-				inputSchema: z.object({ pair: z.string() }),
-				handler: vi.fn(async () => ({ summary: 'ok', ok: true })) as unknown as ToolDefinition['handler'],
-			},
-		];
-		delete process.env.MCP_ENABLE_HTTP;
-		delete process.env.MCP_HTTP_TOKEN;
 
 		const server = await importServer();
 		expect(server.connections).toHaveLength(1);

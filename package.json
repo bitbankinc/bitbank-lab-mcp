@@ -24,7 +24,6 @@
   ],
   "scripts": {
     "start": "tsx src/server.ts",
-    "http": "tsx src/http.ts",
     "dev": "LOG_LEVEL=debug tsx src/server.ts",
     "build:ui:order": "vite build --config ui/order-confirm/vite.config.ts",
     "build:ui": "npm run build:ui:order && npm run build:ui:cancel",

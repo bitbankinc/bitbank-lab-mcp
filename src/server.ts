@@ -1,12 +1,9 @@
 import './env.js'; // must be first — loads .env before other modules read process.env
-import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { getErrorMessage, toPublicError } from '../lib/error.js';
 import { logError, logToolRun } from '../lib/logger.js';
-import { createBearerAuthMiddleware, createMcpRateLimiter, requireMcpHttpToken } from '../lib/mcp-http-security.js';
 import { type PromptDef, prompts as promptDefs } from './prompts.js';
 import { appResourceRegistry } from './resources/app-resources.js';
 import { allToolDefs } from './tool-registry.js';
@@ -280,19 +277,8 @@ for (const r of appResourceRegistry) {
 }
 
 // === トランスポート接続 ===
-// SDK の McpServer.connect() は 1:1 でトランスポートを結合する (SDK issue #961)。
-// MCP_ENABLE_HTTP=1 + PORT が設定されている場合は HTTP を優先し、stdio は接続しない。
-const enableHttp = process.env.MCP_ENABLE_HTTP === '1';
-const httpPort = (() => {
-	const p = Number(process.env.PORT);
-	return Number.isFinite(p) && p > 0 ? p : NaN;
-})();
-const useHttp = enableHttp && Number.isFinite(httpPort);
-
-if (!useHttp) {
-	const transport = new StdioServerTransport();
-	await server.connect(transport);
-}
+const transport = new StdioServerTransport();
+await server.connect(transport);
 
 // SDK の McpServer は setRequestHandler を public 型として export していないため、
 // 低レベル API アクセスのキャストをこのヘルパーに集約する。
@@ -353,69 +339,3 @@ try {
 		}
 	});
 } catch {}
-
-// Optional HTTP transport (/mcp) when MCP_ENABLE_HTTP=1 + PORT
-if (useHttp) {
-	// MCP_HTTP_TOKEN は HTTP transport 有効化時のみ必須。stdio 経路には影響しない。
-	// 未設定なら起動拒否（catch でログだけ吐いて握り潰さず、ここから throw する）。
-	const httpToken = requireMcpHttpToken();
-	try {
-		const { default: express } = await import('express');
-		const app = express();
-		app.use(express.json());
-		const allowedHosts = (process.env.ALLOWED_HOSTS || '127.0.0.1,localhost')
-			.split(',')
-			.map((s) => s.trim())
-			.filter(Boolean);
-		const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
-			.split(',')
-			.map((s) => s.trim())
-			.filter(Boolean);
-
-		// /mcp 配下は rate limit → Bearer 認証の順で保護する。
-		// rate limit を auth より先に置くのは、未認証クライアントによる総当たりや
-		// DoS でハンドラ層 (Private API も含む) を消耗させないため。
-		app.use('/mcp', createMcpRateLimiter());
-		app.use('/mcp', createBearerAuthMiddleware(httpToken));
-
-		// StreamableHTTPServerTransport のコンストラクタ引数・戻り値が SDK で正確に export されていないため
-		// Transport 互換型にキャストを集約する
-		type Transport = Parameters<typeof server.connect>[0];
-		type HandleRequestFn = (
-			req: import('node:http').IncomingMessage,
-			res: import('node:http').ServerResponse,
-			body?: unknown,
-		) => Promise<void>;
-		const HttpTransport = StreamableHTTPServerTransport as unknown as new (
-			opts: Record<string, unknown>,
-		) => Transport & {
-			handleRequest?: HandleRequestFn;
-		};
-		const httpTransport = new HttpTransport({
-			path: '/mcp',
-			sessionIdGenerator: () => randomUUID(),
-			enableDnsRebindingProtection: true,
-			...(allowedHosts.length ? { allowedHosts } : {}),
-			...(allowedOrigins.length ? { allowedOrigins } : {}),
-		});
-
-		await server.connect(httpTransport);
-
-		// SDK 公式の handleRequest を使って HTTP リクエストを処理する
-		if (typeof httpTransport.handleRequest === 'function') {
-			const handle = httpTransport.handleRequest.bind(httpTransport);
-			app.use('/mcp', (req, res, next) => {
-				handle(req, res, req.body).catch(next);
-			});
-		}
-		app.listen(httpPort, () => {
-			// no stdout/stderr output to avoid STDIO transport contamination
-		});
-	} catch (e) {
-		// useHttp=true のとき stdio は既にスキップされているため、HTTP 起動に失敗した時点で
-		// トランスポート無しのままプロセスが生きてしまう。明示的に再 throw して落とす。
-		// eslint-disable-next-line no-console
-		console.warn('HTTP transport setup failed:', getErrorMessage(e));
-		throw e;
-	}
-}
