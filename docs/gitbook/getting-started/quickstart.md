@@ -72,5 +72,5 @@ bitbank-lab-mcp を **Claude Desktop** に登録し、AIに市場データを分
 
 * **他のクライアントで使いたい / 詳しい設定** → [セットアップ詳細](setup.md)
 * **何を聞けばいいかわからない** → [プロンプト集](../guides/prompts.md)
-* **どのツールを使えばいい？** → [ツールの選び方・使い分け](../guides/tools.md)
+* **何ができる？** → [MCP サーバーでできること](../guides/tools.md)
 * **自分の資産確認や発注を使いたい** → [Private API（取引機能）](../private-api/setup.md)
