@@ -24,10 +24,7 @@ USER node
 # Set the environment to production
 ENV NODE_ENV=production
 
-# Expose the port the app runs on (optional but good practice)
-# ※サーバーが特定のポートをリッスンする場合に指定します。
-#   現状のStdioServerTransportでは不要ですが、将来的にWebサーバー化するなら必要です。
-# EXPOSE 1337
+# stdio 専用 (StdioServerTransport) のため公開ポートは不要
 
 # Define the entry point for the container (avoid npx for stdio stability)
 ENV NO_COLOR=1 \

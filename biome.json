@@ -37,8 +37,7 @@
 	"overrides": [
 		{
 			"includes": [
-				"src/server.ts",
-				"src/http.ts"
+				"src/server.ts"
 			],
 			"linter": {
 				"rules": {
