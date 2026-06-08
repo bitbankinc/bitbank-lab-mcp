@@ -205,6 +205,8 @@ export const rawDepositHistoryResponse = {
 			uuid: 'dep-002',
 			asset: 'btc',
 			network: 'BTC',
+			// 実 API（暗号資産入金）が返す入金先アドレス。jpy 入金（dep-001）には付かない。
+			address: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
 			amount: '0.5',
 			txid: '0xabc123',
 			status: 'CONFIRMED',

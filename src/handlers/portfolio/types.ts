@@ -78,6 +78,14 @@ export interface RawMarginTrade {
 	executed_at: number;
 }
 
+/**
+ * bitbank /v1/user/deposit_history の deposits[] のうち net-flow 計算に使う最小射影。
+ *
+ * 実 API は `network` / `txid` / `address`（暗号資産入金のみ）も返すが、純入出金額の算出には
+ * uuid / asset / amount / status / confirmed_at しか参照しないため、意図的にサブセットへ射影する
+ * （`RawWithdrawal` も同方針）。完全形は `tools/private/get_my_deposit_withdrawal.ts` の `RawDeposit`、
+ * フィールド一覧の一次ソースは `docs/internal/bitbank-api-fields.md` を参照。
+ */
 export interface RawDeposit {
 	uuid: string;
 	asset: string;

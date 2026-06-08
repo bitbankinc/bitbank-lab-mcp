@@ -349,6 +349,33 @@ describe('get_my_deposit_withdrawal', () => {
 		expect(serialized).not.toContain('acc-uuid-001');
 	});
 
+	it('入金アドレス（暗号資産）は出力に露出しない（出力方針 Option A）', async () => {
+		// 暗号資産入金（dep-002）には実 API どおり address が存在するが、入金側は出力に address を
+		// 含めない（HIGH 分類。突合は txid を使う＝docs/internal:425/632）。出金側のみ address を出す
+		// 非対称は意図的。get_margin_status 型のドリフト（フィクスチャがコード形）防止のため、Raw 型・
+		// フィクスチャは実 API へ同期しつつ、露出だけ抑える。
+		setupFetchMock({});
+
+		const { default: getMyDepositWithdrawal } = await import('../../tools/private/get_my_deposit_withdrawal.js');
+		const result = await getMyDepositWithdrawal({});
+
+		assertOk(result);
+
+		// 前提条件: フィクスチャの暗号資産入金に address が同期されている
+		const rawBtc = rawDepositHistoryResponse.deposits.find((d) => d.uuid === 'dep-002') as
+			| { address?: string }
+			| undefined;
+		expect(rawBtc?.address).toBeTruthy();
+
+		// 個別レコードに address プロパティが無い
+		const btcDeposit = result.data.deposits.find((d) => d.uuid === 'dep-002');
+		expect(btcDeposit).toBeDefined();
+		expect(btcDeposit).not.toHaveProperty('address');
+
+		// 結果全体（data + summary）に生のアドレス値が現れない
+		expect(JSON.stringify(result)).not.toContain(rawBtc?.address as string);
+	});
+
 	it('type=withdrawal で入金 API を呼ばない', async () => {
 		setupFetchMock({});
 

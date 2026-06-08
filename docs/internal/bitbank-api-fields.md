@@ -413,7 +413,7 @@ drift 時に「ミラー要更新」issue を起票する。
 | フィールド | 型 | 備考 | docs 行 |
 |---|---|---|---|
 | `uuid` | string | 入金識別 uuid | `:1019` |
-| `address` | string | 入金 address（**表のみ。JSON 例には未掲載**） | `:1020` |
+| `address` | string | 入金 address（暗号資産入金のみ）。**公式は表のみ・JSON 例には未掲載**だが live 確認済み（2026-06-08, `deposits[]` キーに `address` あり / jpy 入金は無し） | `:1020` |
 | `asset` | string | アセット名 | `:1021` |
 | `network` | string | ネットワーク名 | `:1022` |
 | `amount` | number（表）/ "string"（JSON 例） | 入金数量。**表は `number`・JSON 例は `"string"` で不一致（記録）** | `:1023` |

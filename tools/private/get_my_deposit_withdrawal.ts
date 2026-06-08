@@ -41,6 +41,8 @@ interface RawDeposit {
 	uuid: string;
 	asset: string;
 	network?: string;
+	/** 入金先アドレス（暗号資産入金のみ。jpy 入金は持たないため optional） */
+	address?: string;
 	amount: string;
 	txid?: string | null;
 	status: string;
