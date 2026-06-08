@@ -7,9 +7,10 @@
 
 import { nowIso } from '../../lib/datetime.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
-import { fail, ok } from '../../lib/result.js';
-import { getDefaultClient, PrivateApiError } from '../../src/private/client.js';
+import { ok } from '../../lib/result.js';
+import { getDefaultClient } from '../../src/private/client.js';
 import { GetMarginStatusInputSchema, GetMarginStatusOutputSchema } from '../../src/private/schemas.js';
+import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
 /** bitbank /v1/user/margin/status のレスポンス型 */
@@ -155,14 +156,9 @@ export default async function getMarginStatus(_args: Record<string, unknown>) {
 
 		return GetMarginStatusOutputSchema.parse(ok(summary, data, meta));
 	} catch (err) {
-		if (err instanceof PrivateApiError) {
-			return GetMarginStatusOutputSchema.parse(fail(err.message, err.errorType));
-		}
+		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
 		return GetMarginStatusOutputSchema.parse(
-			fail(
-				err instanceof Error ? err.message : '信用取引ステータス取得中に予期しないエラーが発生しました',
-				'upstream_error',
-			),
+			failPrivateToolError(err, '信用取引ステータス取得中に予期しないエラーが発生しました'),
 		);
 	}
 }

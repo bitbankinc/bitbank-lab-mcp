@@ -14,8 +14,9 @@ import { nowIso, parseIso8601, toIsoMs } from '../../lib/datetime.js';
 import { getErrorMessage } from '../../lib/error.js';
 import { formatPrice } from '../../lib/formatter.js';
 import { fail, ok } from '../../lib/result.js';
-import { type BitbankPrivateClient, getDefaultClient, PrivateApiError } from '../../src/private/client.js';
+import { type BitbankPrivateClient, getDefaultClient } from '../../src/private/client.js';
 import { GetMyDepositWithdrawalInputSchema, GetMyDepositWithdrawalOutputSchema } from '../../src/private/schemas.js';
+import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
 // ── API レスポンス型 ──
@@ -443,11 +444,9 @@ export default async function getMyDepositWithdrawal(args: {
 
 		return GetMyDepositWithdrawalOutputSchema.parse(ok(summary, data, meta));
 	} catch (err) {
-		if (err instanceof PrivateApiError) {
-			return GetMyDepositWithdrawalOutputSchema.parse(fail(err.message, err.errorType));
-		}
+		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
 		return GetMyDepositWithdrawalOutputSchema.parse(
-			fail(err instanceof Error ? err.message : '入出金履歴取得中に予期しないエラーが発生しました', 'upstream_error'),
+			failPrivateToolError(err, '入出金履歴取得中に予期しないエラーが発生しました'),
 		);
 	}
 }

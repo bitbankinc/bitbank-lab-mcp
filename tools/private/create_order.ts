@@ -25,11 +25,11 @@ import { logTradeAction } from '../../lib/logger.js';
 import { fetchPairsSpec, validateOrderConstraints } from '../../lib/pairs.js';
 import { fail, ok, toStructured } from '../../lib/result.js';
 import { validateTriggerPrice } from '../../lib/trigger-price.js';
-import { getBitbankErrorMessage } from '../../src/lib/bitbank-errors.js';
-import { getDefaultClient, PrivateApiError } from '../../src/private/client.js';
+import { getDefaultClient } from '../../src/private/client.js';
 import { validateToken } from '../../src/private/confirmation.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
 import { CreateOrderInputSchema, CreateOrderOutputSchema } from '../../src/private/schemas.js';
+import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
 /** create_order がどの経路から呼ばれたかを示す監査ログ用のラベル */
@@ -201,15 +201,10 @@ export default async function createOrder(
 			),
 		);
 	} catch (err) {
-		if (err instanceof PrivateApiError) {
-			// 取引固有エラーの文言は src/lib/bitbank-errors.ts に集約済み。
-			// client.ts も同テーブルを参照するため err.message には既にローカライズ文言が乗るが、
-			// 未登録コードを client が素通ししたケースに備えてここでも lookup する。
-			const mapped = err.bitbankCode != null ? getBitbankErrorMessage(err.bitbankCode) : undefined;
-			return CreateOrderOutputSchema.parse(fail(mapped ?? err.message, err.errorType));
-		}
+		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
+		// 未登録 bitbankCode の素通しに備え remapBitbankCode で再 lookup する。
 		return CreateOrderOutputSchema.parse(
-			fail(err instanceof Error ? err.message : '注文発注中に予期しないエラーが発生しました', 'upstream_error'),
+			failPrivateToolError(err, '注文発注中に予期しないエラーが発生しました', { remapBitbankCode: true }),
 		);
 	}
 }

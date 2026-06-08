@@ -9,10 +9,11 @@ import { nowIso } from '../../lib/datetime.js';
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
 import { logTradeAction } from '../../lib/logger.js';
 import { fail, ok, toStructured } from '../../lib/result.js';
-import { getDefaultClient, PrivateApiError } from '../../src/private/client.js';
+import { getDefaultClient } from '../../src/private/client.js';
 import { validateToken } from '../../src/private/confirmation.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
 import { CancelOrdersInputSchema, CancelOrdersOutputSchema } from '../../src/private/schemas.js';
+import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
 export default async function cancelOrders(
@@ -89,14 +90,9 @@ export default async function cancelOrders(
 			),
 		);
 	} catch (err) {
-		if (err instanceof PrivateApiError) {
-			return CancelOrdersOutputSchema.parse(fail(err.message, err.errorType));
-		}
+		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
 		return CancelOrdersOutputSchema.parse(
-			fail(
-				err instanceof Error ? err.message : '注文一括キャンセル中に予期しないエラーが発生しました',
-				'upstream_error',
-			),
+			failPrivateToolError(err, '注文一括キャンセル中に予期しないエラーが発生しました'),
 		);
 	}
 }

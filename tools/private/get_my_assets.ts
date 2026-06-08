@@ -8,10 +8,11 @@
 import { toNum } from '../../lib/conversions.js';
 import { nowIso } from '../../lib/datetime.js';
 import { formatPrice } from '../../lib/formatter.js';
-import { fail, ok } from '../../lib/result.js';
+import { ok } from '../../lib/result.js';
 import type { RawAsset } from '../../src/handlers/portfolio/types.js';
-import { getDefaultClient, PrivateApiError } from '../../src/private/client.js';
+import { getDefaultClient } from '../../src/private/client.js';
 import { GetMyAssetsInputSchema, GetMyAssetsOutputSchema } from '../../src/private/schemas.js';
+import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
 /**
@@ -171,12 +172,8 @@ export default async function getMyAssets(args: { include_jpy_valuation?: boolea
 
 		return GetMyAssetsOutputSchema.parse(result);
 	} catch (err) {
-		if (err instanceof PrivateApiError) {
-			return GetMyAssetsOutputSchema.parse(fail(err.message, err.errorType));
-		}
-		return GetMyAssetsOutputSchema.parse(
-			fail(err instanceof Error ? err.message : 'asset 取得中に予期しないエラーが発生しました', 'upstream_error'),
-		);
+		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
+		return GetMyAssetsOutputSchema.parse(failPrivateToolError(err, 'asset 取得中に予期しないエラーが発生しました'));
 	}
 }
 

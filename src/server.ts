@@ -152,6 +152,14 @@ function registerToolWithLog(
 			const TOOL_TIMEOUT_MS = 60_000;
 			const t0 = Date.now();
 			try {
+				// 入力を完全な inputSchema で検証する（defense-in-depth）。
+				// SDK には getRawShape() で抽出した shape のみ渡しているため、
+				// .refine() / .superRefine() 等のクロスフィールド制約は MCP 経由では失われ得る。
+				// また各 handler は `args as ...` で cast しており明示 parse をしないため、
+				// ここで本来のスキーマを通して取りこぼし・将来の登録経路変更に備える。
+				// ZodError は下の catch で toPublicError により 'validation_error' に正規化され、
+				// 入力断片やローカルパスは応答に露出しない。
+				schema.inputSchema.parse(input ?? {});
 				let timeoutId: ReturnType<typeof setTimeout> | undefined;
 				const timeoutPromise = new Promise<never>((_, reject) => {
 					timeoutId = setTimeout(

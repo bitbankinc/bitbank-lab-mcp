@@ -16,8 +16,9 @@ import { formatPair, formatPrice } from '../../lib/formatter.js';
 import { fail, ok } from '../../lib/result.js';
 import { paginateTrades } from '../../src/handlers/portfolio/fetch.js';
 import type { RawTrade } from '../../src/handlers/portfolio/types.js';
-import { getDefaultClient, PrivateApiError } from '../../src/private/client.js';
+import { getDefaultClient } from '../../src/private/client.js';
 import { GetMyTradeHistoryInputSchema, GetMyTradeHistoryOutputSchema } from '../../src/private/schemas.js';
+import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
 // bitbank /v1/user/spot/trade_history の 1 リクエスト上限。`paginateTrades` 内の
@@ -152,11 +153,9 @@ export default async function getMyTradeHistory(args: {
 
 		return GetMyTradeHistoryOutputSchema.parse(ok(summary, data, meta));
 	} catch (err) {
-		if (err instanceof PrivateApiError) {
-			return GetMyTradeHistoryOutputSchema.parse(fail(err.message, err.errorType));
-		}
+		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
 		return GetMyTradeHistoryOutputSchema.parse(
-			fail(err instanceof Error ? err.message : '約定履歴取得中に予期しないエラーが発生しました', 'upstream_error'),
+			failPrivateToolError(err, '約定履歴取得中に予期しないエラーが発生しました'),
 		);
 	}
 }
