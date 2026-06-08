@@ -17,8 +17,9 @@
 import { nowIso, parseIso8601, toIsoMs } from '../../lib/datetime.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
 import { fail, ok } from '../../lib/result.js';
-import { type BitbankPrivateClient, getDefaultClient, PrivateApiError } from '../../src/private/client.js';
+import { type BitbankPrivateClient, getDefaultClient } from '../../src/private/client.js';
 import { GetMarginTradeHistoryInputSchema, GetMarginTradeHistoryOutputSchema } from '../../src/private/schemas.js';
+import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
 /** bitbank /v1/user/spot/trade_history のレスポンス型（信用取引フィルタ時） */
@@ -243,11 +244,9 @@ export default async function getMarginTradeHistory(args: {
 
 		return GetMarginTradeHistoryOutputSchema.parse(ok(summary, data, meta));
 	} catch (err) {
-		if (err instanceof PrivateApiError) {
-			return GetMarginTradeHistoryOutputSchema.parse(fail(err.message, err.errorType));
-		}
+		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
 		return GetMarginTradeHistoryOutputSchema.parse(
-			fail(err instanceof Error ? err.message : '信用約定履歴取得中に予期しないエラーが発生しました', 'upstream_error'),
+			failPrivateToolError(err, '信用約定履歴取得中に予期しないエラーが発生しました'),
 		);
 	}
 }

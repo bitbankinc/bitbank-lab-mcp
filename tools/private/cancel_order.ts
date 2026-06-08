@@ -15,11 +15,11 @@ import { nowIso, toIsoMs } from '../../lib/datetime.js';
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
 import { logTradeAction } from '../../lib/logger.js';
 import { fail, ok, toStructured } from '../../lib/result.js';
-import { getBitbankErrorMessage } from '../../src/lib/bitbank-errors.js';
-import { getDefaultClient, PrivateApiError } from '../../src/private/client.js';
+import { getDefaultClient } from '../../src/private/client.js';
 import { validateToken } from '../../src/private/confirmation.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
 import { CancelOrderInputSchema, CancelOrderOutputSchema } from '../../src/private/schemas.js';
+import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
 export default async function cancelOrder(
@@ -91,15 +91,10 @@ export default async function cancelOrder(
 			),
 		);
 	} catch (err) {
-		if (err instanceof PrivateApiError) {
-			// キャンセル固有エラーの文言は src/lib/bitbank-errors.ts に集約済み。
-			// client.ts も同テーブルを参照するため err.message には既にローカライズ文言が乗るが、
-			// 未登録コードを client が素通ししたケースに備えてここでも lookup する。
-			const mapped = err.bitbankCode != null ? getBitbankErrorMessage(err.bitbankCode) : undefined;
-			return CancelOrderOutputSchema.parse(fail(mapped ?? err.message, err.errorType));
-		}
+		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
+		// 未登録 bitbankCode の素通しに備え remapBitbankCode で再 lookup する。
 		return CancelOrderOutputSchema.parse(
-			fail(err instanceof Error ? err.message : '注文キャンセル中に予期しないエラーが発生しました', 'upstream_error'),
+			failPrivateToolError(err, '注文キャンセル中に予期しないエラーが発生しました', { remapBitbankCode: true }),
 		);
 	}
 }

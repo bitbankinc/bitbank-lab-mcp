@@ -362,7 +362,9 @@ describe('get_my_trade_history — 非 PrivateApiError の generic catch', () =>
 
 		assertFail(result);
 		expect(result.meta.errorType).toBe('upstream_error');
-		expect(result.summary).toContain('unexpected crash');
+		// 漏洩防止 regression: 未知エラーの内部 message（err.message）は summary に出さず汎用文へ置換する。
+		expect(result.summary).not.toContain('unexpected crash');
+		expect(result.summary).toContain('予期しないエラー');
 	});
 });
 

@@ -9,9 +9,10 @@
 
 import { dayjs, nowIso } from '../../lib/datetime.js';
 import { formatPair, formatPercent, formatPrice, formatPriceJPY } from '../../lib/formatter.js';
-import { fail, ok } from '../../lib/result.js';
-import { getDefaultClient, PrivateApiError } from '../private/client.js';
+import { ok } from '../../lib/result.js';
+import { getDefaultClient } from '../private/client.js';
 import { AnalyzeMyPortfolioOutputSchema } from '../private/schemas.js';
+import { failPrivateToolError } from '../private/tool-error.js';
 import {
 	buildAccountPnl,
 	buildEquitySeries,
@@ -936,14 +937,9 @@ export default async function analyzeMyPortfolioHandler(args: {
 
 		return AnalyzeMyPortfolioOutputSchema.parse(ok(summary, data, meta));
 	} catch (err) {
-		if (err instanceof PrivateApiError) {
-			return AnalyzeMyPortfolioOutputSchema.parse(fail(err.message, err.errorType));
-		}
+		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
 		return AnalyzeMyPortfolioOutputSchema.parse(
-			fail(
-				err instanceof Error ? err.message : 'ポートフォリオ分析中に予期しないエラーが発生しました',
-				'upstream_error',
-			),
+			failPrivateToolError(err, 'ポートフォリオ分析中に予期しないエラーが発生しました'),
 		);
 	}
 }

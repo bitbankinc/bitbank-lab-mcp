@@ -9,10 +9,11 @@
 
 import { nowIso, toIsoMs } from '../../lib/datetime.js';
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
-import { fail, ok, toStructured } from '../../lib/result.js';
-import { getDefaultClient, PrivateApiError } from '../../src/private/client.js';
+import { ok, toStructured } from '../../lib/result.js';
+import { getDefaultClient } from '../../src/private/client.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
 import { GetOrderInputSchema, GetOrderOutputSchema } from '../../src/private/schemas.js';
+import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
 /** 注文情報を人間可読な文字列に整形 */
@@ -70,12 +71,8 @@ export default async function getOrder(args: { pair: string; order_id: number })
 			),
 		);
 	} catch (err) {
-		if (err instanceof PrivateApiError) {
-			return GetOrderOutputSchema.parse(fail(err.message, err.errorType));
-		}
-		return GetOrderOutputSchema.parse(
-			fail(err instanceof Error ? err.message : '注文情報取得中に予期しないエラーが発生しました', 'upstream_error'),
-		);
+		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
+		return GetOrderOutputSchema.parse(failPrivateToolError(err, '注文情報取得中に予期しないエラーが発生しました'));
 	}
 }
 
