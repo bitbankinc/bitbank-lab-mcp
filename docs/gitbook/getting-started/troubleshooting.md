@@ -16,7 +16,7 @@ description: 導入時によくあるトラブルと対処法
 | ツール実行時にタイムアウト | ネットワーク接続を確認 / [bitbank API の状態](https://status.bitbank.cc/) を確認 |
 | Private API ツールが表示されない | `BITBANK_API_KEY` と `BITBANK_API_SECRET` の両方が設定されているか確認（→ [Private API](../private-api/setup.md)） |
 | ログを詳細に確認したい | `env` に `"LOG_LEVEL": "debug"` を追加して再起動 |
-| Plugin install で「Marketplace not found」 | `/plugin marketplace add tjackiet/bitbank-genesis-mcp-server` を先に実行してから `/plugin install bitbank-lab-mcp@bitbank-lab` |
+| Plugin install で「Marketplace not found」 | `/plugin marketplace add tjackiet/bitbank-lab-mcp` を先に実行してから `/plugin install bitbank-lab-mcp@bitbank-lab` |
 
 ## ログを詳細に確認する
 
@@ -38,4 +38,4 @@ description: 導入時によくあるトラブルと対処法
 
 ## それでも解決しない場合
 
-[GitHub Issues](https://github.com/tjackiet/bitbank-genesis-mcp-server/issues) にてバグ報告・機能要望を受け付けています。Issue テンプレートを用意していますので、用途に合ったものを選択してください。
+[GitHub Issues](https://github.com/tjackiet/bitbank-lab-mcp/issues) にてバグ報告・機能要望を受け付けています。Issue テンプレートを用意していますので、用途に合ったものを選択してください。

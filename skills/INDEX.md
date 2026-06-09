@@ -1,6 +1,6 @@
 # Skills カタログ
 
-bitbank-genesis-mcp-server に同梱する Agent Skill の索引。
+bitbank-lab-mcp に同梱する Agent Skill の索引。
 各 skill は `skills/<name>/SKILL.md` を起点に、必要に応じて `references/` 配下に
 詳細ガイドを置く。横断で参照するドキュメントは `_shared/references/` に集約する。
 

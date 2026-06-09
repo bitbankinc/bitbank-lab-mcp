@@ -77,17 +77,17 @@ npm unpublish @tjackiet/bitbank-mcp@0.2.0
 
 ```bash
 # latest タグを旧バージョンのイメージに付け替える
-docker pull ghcr.io/tjackiet/bitbank-genesis-mcp-server:0.1.0
-docker tag  ghcr.io/tjackiet/bitbank-genesis-mcp-server:0.1.0 \
-            ghcr.io/tjackiet/bitbank-genesis-mcp-server:latest
-docker push ghcr.io/tjackiet/bitbank-genesis-mcp-server:latest
+docker pull ghcr.io/tjackiet/bitbank-lab-mcp:0.1.0
+docker tag  ghcr.io/tjackiet/bitbank-lab-mcp:0.1.0 \
+            ghcr.io/tjackiet/bitbank-lab-mcp:latest
+docker push ghcr.io/tjackiet/bitbank-lab-mcp:latest
 ```
 
 または、利用者側でバージョン指定に切り替える:
 
 ```bash
 # docker-compose.yml 等で
-image: ghcr.io/tjackiet/bitbank-genesis-mcp-server:0.1.0
+image: ghcr.io/tjackiet/bitbank-lab-mcp:0.1.0
 ```
 
 ### 2c. Git リポジトリ上のロールバック

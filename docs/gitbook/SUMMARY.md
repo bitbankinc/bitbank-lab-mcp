@@ -37,7 +37,7 @@
 
 * [よくある質問（FAQ）](reference/faq.md)
 * [免責事項](reference/disclaimer.md)
-* [GitHubリポジトリ（MCP サーバー）](https://github.com/tjackiet/bitbank-genesis-mcp-server)
+* [GitHubリポジトリ（MCP サーバー）](https://github.com/tjackiet/bitbank-lab-mcp)
 * [GitHubリポジトリ（CLI）](https://github.com/tjackiet/bitbank-cli-skills)
-* [全ツール一覧（docs/tools.md）](https://github.com/tjackiet/bitbank-genesis-mcp-server/blob/main/docs/tools.md)
-* [変更履歴（CHANGELOG）](https://github.com/tjackiet/bitbank-genesis-mcp-server/blob/main/CHANGELOG.md)
+* [全ツール一覧（docs/tools.md）](https://github.com/tjackiet/bitbank-lab-mcp/blob/main/docs/tools.md)
+* [変更履歴（CHANGELOG）](https://github.com/tjackiet/bitbank-lab-mcp/blob/main/CHANGELOG.md)

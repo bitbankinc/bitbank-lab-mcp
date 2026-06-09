@@ -16,7 +16,7 @@ git tag v0.5.0 && git push origin v0.5.0
 |---|---|
 | 1. CI gate | lint / typecheck / test をタグ時点のコードで再実行 |
 | 2. npm publish | [`bitbank-lab-mcp`](https://www.npmjs.com/package/bitbank-lab-mcp) を npm に公開 |
-| 3. Docker push | `ghcr.io/tjackiet/bitbank-genesis-mcp-server` に push |
+| 3. Docker push | `ghcr.io/tjackiet/bitbank-lab-mcp` に push |
 | 4. GitHub Release | changelog 自動生成でリリース作成 |
 
 #### Pre-release
@@ -51,7 +51,7 @@ npm run stat -- --last 24h
 
 ### CI / Cron 例
 ```cron
-0 9 * * * cd /path/to/bitbank-genesis-mcp-server && /usr/bin/npm run stat --silent -- --last 24h >> reports/$(date +\%F).log 2>&1
+0 9 * * * cd /path/to/bitbank-lab-mcp && /usr/bin/npm run stat --silent -- --last 24h >> reports/$(date +\%F).log 2>&1
 ```
 
 

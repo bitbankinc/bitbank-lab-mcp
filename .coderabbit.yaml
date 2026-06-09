@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 
-# bitbank-genesis-mcp-server 用 CodeRabbit 設定。
+# bitbank-lab-mcp 用 CodeRabbit 設定。
 # inheritance: false は YAML 同士の継承を無効化する設定 (UI 設定とは無関係)。
 # このリポの path_instructions / labeling_instructions / path_filters /
 # Summary format / Profile などは org/account UI 設定 (Settings → Reviews) で

@@ -6,8 +6,8 @@
     "name": "tjackiet",
     "url": "https://github.com/tjackiet"
   },
-  "homepage": "https://github.com/tjackiet/bitbank-genesis-mcp-server",
-  "repository": "https://github.com/tjackiet/bitbank-genesis-mcp-server",
+  "homepage": "https://github.com/tjackiet/bitbank-lab-mcp",
+  "repository": "https://github.com/tjackiet/bitbank-lab-mcp",
   "license": "MIT",
   "keywords": [
     "bitbank",
@@ -31,7 +31,7 @@
     "developerName": "tjackiet",
     "category": "Finance",
     "capabilities": ["Read", "Write", "Interactive"],
-    "websiteURL": "https://github.com/tjackiet/bitbank-genesis-mcp-server",
+    "websiteURL": "https://github.com/tjackiet/bitbank-lab-mcp",
     "defaultPrompt": [
       "BTC の今の市場状況を analyze_market_signal で総合判定して、根拠と寄与度も教えて。",
       "おはようレポートを出して。",
