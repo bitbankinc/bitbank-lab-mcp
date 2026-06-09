@@ -21,7 +21,7 @@ import {
 
 // テストベクタ: 固定の秘密鍵から手計算した署名
 // 検証方法: echo -n "<message>" | openssl dgst -sha256 -hmac "<secret>"
-const TEST_SECRET = 'test_secret_key_for_signing_12345';
+const TEST_SECRET = 'test_secret_key_for_signing_12345'; // gitleaks:allow（公開テストベクタ）
 
 describe('auth.ts 署名テストベクタ', () => {
 	describe('sign()', () => {

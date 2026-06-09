@@ -1,0 +1,10 @@
+# gitleaks の誤検知を fingerprint 単位で除外する。
+# 形式: <commit>:<file>:<rule>:<line>
+# 追加する際は「実鍵でないこと」を必ず確認し、理由をコメントで残すこと。
+
+# tests/private/auth.test.ts の TEST_SECRET は HMAC 署名の公開テストベクタ（実鍵ではない）。
+# 現行コードは inline `gitleaks:allow` で除外済み。以下は過去コミット分。
+9153f2bf4942135f1a9fbd7ab881cbd39e3b125c:tests/private/auth.test.ts:generic-api-key:24
+9be2117068f673c15f479f3d06ef81eaca44621a:tests/private/auth.test.ts:generic-api-key:24
+ca5cb4ac890df2a28307c59bdabccfda5b12ef1d:tests/private/auth.test.ts:generic-api-key:24
+fbe9f1f0efa9261cda6066b2646f0f5dbb5cc936:tests/private/auth.test.ts:generic-api-key:24
