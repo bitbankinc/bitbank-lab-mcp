@@ -107,10 +107,13 @@ jobs:
     environment: production
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: tjackiet/bitbank-lab-mcp
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      # GHCR image names must be lowercase; owner may contain uppercase after org transfer
+      - name: Set image name
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
       - name: Determine tag metadata
         id: meta
@@ -145,7 +148,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: |
-            org.opencontainers.image.source=https://github.com/tjackiet/bitbank-lab-mcp
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.description=MCP server for bitbank cryptocurrency exchange
 
