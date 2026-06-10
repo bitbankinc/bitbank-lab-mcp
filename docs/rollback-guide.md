@@ -9,7 +9,7 @@
 `v*` タグを push すると `.github/workflows/release.yml` が以下を自動実行する:
 
 1. CI チェック（lint / typecheck / test）
-2. npm publish（`@tjackiet/bitbank-mcp`）
+2. npm publish（`bitbank-lab-mcp`）
 3. Docker イメージを GHCR に push
 4. GitHub Release を作成（リリースノート自動生成）
 
@@ -45,29 +45,29 @@ git push origin v0.2.0-beta.1
 
 ```bash
 # 現在の latest タグを確認
-npm dist-tag ls @tjackiet/bitbank-mcp
+npm dist-tag ls bitbank-lab-mcp
 
 # latest タグを旧バージョンに付け替える
-npm dist-tag add @tjackiet/bitbank-mcp@<旧バージョン> latest
+npm dist-tag add bitbank-lab-mcp@<旧バージョン> latest
 
 # 例: v0.2.0 に問題があり v0.1.0 に戻す
-npm dist-tag add @tjackiet/bitbank-mcp@0.1.0 latest
+npm dist-tag add bitbank-lab-mcp@0.1.0 latest
 ```
 
-これにより `npm install @tjackiet/bitbank-mcp` で旧バージョンがインストールされる。
+これにより `npm install bitbank-lab-mcp` で旧バージョンがインストールされる。
 問題のあるバージョンのコード自体は npm 上に残るが、明示的に指定しない限りインストールされない。
 
 #### 問題バージョンに非推奨マークを付ける場合
 
 ```bash
-npm deprecate @tjackiet/bitbank-mcp@0.2.0 "セキュリティ問題あり。0.1.0 を使用してください"
+npm deprecate bitbank-lab-mcp@0.2.0 "セキュリティ問題あり。0.1.0 を使用してください"
 ```
 
 #### npm unpublish（最終手段）
 
 ```bash
 # 公開から 72 時間以内のみ可能
-npm unpublish @tjackiet/bitbank-mcp@0.2.0
+npm unpublish bitbank-lab-mcp@0.2.0
 ```
 
 > **注意**: unpublish は他のプロジェクトが依存している場合に破壊的。

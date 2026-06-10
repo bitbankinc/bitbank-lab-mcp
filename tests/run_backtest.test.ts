@@ -421,7 +421,7 @@ describe('run_backtest', () => {
 		const res = await runBacktest({
 			pair: 'btc_jpy',
 			strategy: { type: 'rsi', params: {} },
-			outputDir: '/Users/toshikitanaka/bitbank-mcp-sandbox/tools/tests',
+			outputDir: '/tmp/backtest-tests',
 			savePng: true,
 			includeSvg: false,
 		});
