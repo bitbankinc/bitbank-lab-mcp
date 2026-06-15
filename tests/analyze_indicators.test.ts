@@ -388,6 +388,64 @@ describe('analyze_indicators', () => {
 		expect(res.meta.warnings?.some((w) => w.includes('Stochastic'))).toBe(true);
 	});
 
+	// classic Stochastic（kPeriod=14, smoothK=3, smoothD=3）の最新 %D は 18本目で確定する。
+	// 2 回の fetch は同一 timestamp のため dedupeByTimestamp で 1 本扱いになり、dataLength = 行数。
+	it('Stochastic 境界: 17本（< 18）→ Stochastic 警告あり', async () => {
+		const rows = makeOhlcvRows(17);
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: 'OK',
+			json: async () => ({ success: 1, data: { candlestick: [{ type: '1day', ohlcv: rows }] } }),
+		}) as unknown as typeof fetch;
+
+		const res = await analyzeIndicators('btc_jpy', '1day', null);
+		assertOk(res);
+		expect(res.meta.warnings?.some((w) => w.includes('Stochastic'))).toBe(true);
+	});
+
+	it('Stochastic 境界: 18本（= 最小要件）→ Stochastic 警告なし（off-by-two 是正）', async () => {
+		const rows = makeOhlcvRows(18);
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: 'OK',
+			json: async () => ({ success: 1, data: { candlestick: [{ type: '1day', ohlcv: rows }] } }),
+		}) as unknown as typeof fetch;
+
+		const res = await analyzeIndicators('btc_jpy', '1day', null);
+		assertOk(res);
+		expect(res.meta.warnings?.some((w) => w.includes('Stochastic'))).toBe(false);
+	});
+
+	it('Stochastic 境界: 19本 → Stochastic 警告なし', async () => {
+		const rows = makeOhlcvRows(19);
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: 'OK',
+			json: async () => ({ success: 1, data: { candlestick: [{ type: '1day', ohlcv: rows }] } }),
+		}) as unknown as typeof fetch;
+
+		const res = await analyzeIndicators('btc_jpy', '1day', null);
+		assertOk(res);
+		expect(res.meta.warnings?.some((w) => w.includes('Stochastic'))).toBe(false);
+	});
+
+	it('Stochastic 境界: 20本 → Stochastic 警告なし', async () => {
+		const rows = makeOhlcvRows(20);
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: 'OK',
+			json: async () => ({ success: 1, data: { candlestick: [{ type: '1day', ohlcv: rows }] } }),
+		}) as unknown as typeof fetch;
+
+		const res = await analyzeIndicators('btc_jpy', '1day', null);
+		assertOk(res);
+		expect(res.meta.warnings?.some((w) => w.includes('Stochastic'))).toBe(false);
+	});
+
 	it('各警告の分岐: SMA_200/EMA_200 → データ不足 の警告を含む（モック2回 × 99行 = 198行）', async () => {
 		// 2呼び出し × 99行 = 198行 < 200 → SMA_200, EMA_200警告
 		const rows = makeOhlcvRows(99);

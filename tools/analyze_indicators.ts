@@ -417,7 +417,9 @@ function buildWarnings(dataLength: number, candleCount: number): string[] {
 	if (dataLength < 15) warnings.push('RSI_14: データ不足');
 	if (dataLength < 20) warnings.push('Bollinger_Bands: データ不足');
 	if (dataLength < 52) warnings.push('Ichimoku: データ不足');
-	if (dataLength < 20) warnings.push('Stochastic: データ不足');
+	// classic Stochastic（kPeriod=14, smoothK=3, smoothD=3）の最新 %D は
+	// kPeriod + smoothK + smoothD - 2 = 18 本目で確定する（lib/indicators.ts の早期 return 条件と一致）。
+	if (dataLength < 18) warnings.push('Stochastic: データ不足');
 	if (dataLength < 34) warnings.push('StochRSI: データ不足');
 	if (candleCount < 2) warnings.push('OBV: データ不足');
 	return warnings;
