@@ -421,6 +421,67 @@ describe('toolDef handler - meta.warning propagation', () => {
 	});
 });
 
+// ─── handler: 形成中足（meta.provisional）注記の content 伝播 ─────────────────
+
+describe('toolDef handler - meta.provisional 注記', () => {
+	function mockResProvisional(provisional?: boolean) {
+		const body = [
+			'BTC/JPY [1day] 5,000,000円 rv=0.380(ann)',
+			'',
+			'aggregates: rv_std:0.022 rv_std_ann:0.38 parkinson:0.018 garmanKlass:0.016 rogersSatchell:0.012 atr:200000',
+		].join('\n');
+		// summary view 用: tool が summary 先頭に注記を連結済みのケースを模す。
+		const summary = provisional ? `ℹ️ 最新足は未確定（形成中）です。\n${body}` : body;
+		return {
+			ok: true,
+			summary,
+			data: {
+				aggregates: { rv_std: 0.02, rv_std_ann: 0.38, atr: 200_000 },
+				rolling: [
+					{ window: 7, rv_std: 0.022, rv_std_ann: 0.42 },
+					{ window: 30, rv_std: 0.019, rv_std_ann: 0.36 },
+				],
+				tags: [],
+				series: { ts: [1700000000000], close: [5_000_000], ret: [0.005] },
+				meta: { annualize: true, baseIntervalMs: 86_400_000, sampleSize: 50 },
+			},
+			meta: provisional ? { provisional: true } : {},
+		};
+	}
+
+	it('view=beginner: meta.provisional=true で「未確定（形成中）」注記が content に出る', async () => {
+		mockedGetVolatilityMetrics.mockResolvedValueOnce(mockResProvisional(true) as never);
+		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 50, view: 'beginner' });
+		const text = (res as { content: Array<{ text: string }> }).content[0].text;
+		expect(text).toContain('未確定（形成中）');
+		const idxNote = text.indexOf('未確定（形成中）');
+		const idxBody = text.indexOf('1日の平均的な動き');
+		expect(idxNote).toBeGreaterThanOrEqual(0);
+		expect(idxNote).toBeLessThan(idxBody);
+	});
+
+	it('view=detailed: meta.provisional=true で注記が content に出る', async () => {
+		mockedGetVolatilityMetrics.mockResolvedValueOnce(mockResProvisional(true) as never);
+		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 50, view: 'detailed' });
+		const text = (res as { content: Array<{ text: string }> }).content[0].text;
+		expect(text).toContain('未確定（形成中）');
+	});
+
+	it('view=summary: 上流 summary の注記がそのまま content に出る', async () => {
+		mockedGetVolatilityMetrics.mockResolvedValueOnce(mockResProvisional(true) as never);
+		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 50, view: 'summary' });
+		const text = (res as { content: Array<{ text: string }> }).content[0].text;
+		expect(text).toContain('未確定（形成中）');
+	});
+
+	it('meta.provisional 未設定なら注記は出ない', async () => {
+		mockedGetVolatilityMetrics.mockResolvedValueOnce(mockResProvisional(undefined) as never);
+		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 50, view: 'beginner' });
+		const text = (res as { content: Array<{ text: string }> }).content[0].text;
+		expect(text).not.toContain('未確定（形成中）');
+	});
+});
+
 // ─── prependVolWarning ユニットテスト ─────────────────────────────────────────
 
 describe('prependVolWarning', () => {

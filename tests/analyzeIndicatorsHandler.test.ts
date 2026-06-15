@@ -1003,6 +1003,52 @@ describe('toolDef.handler', () => {
 			content: Array<{ text: string }>;
 		};
 		expect(res.content[0].text.startsWith('⚠️')).toBe(false);
+		expect(res.content[0].text.startsWith('ℹ️')).toBe(false);
 		expect(res.content[0].text.startsWith('===')).toBe(true);
+	});
+
+	// ── 形成中足（meta.provisional）の注記 ─────────────────
+
+	it('meta.provisional=true で「未確定（形成中）」注記が content[0].text に出る', async () => {
+		const m = mockResult();
+		(m as { meta?: Record<string, unknown> }).meta = { provisional: true };
+		mockedAnalyze.mockResolvedValueOnce(m as never);
+		const res = (await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 200 })) as {
+			content: Array<{ text: string }>;
+		};
+		const text = res.content[0].text;
+		expect(text).toContain('未確定（形成中）');
+		// 注記は本文より前に出る
+		const idxNote = text.indexOf('未確定（形成中）');
+		const idxBody = text.indexOf('【総合判定】');
+		expect(idxNote).toBeGreaterThanOrEqual(0);
+		expect(idxNote).toBeLessThan(idxBody);
+	});
+
+	it('meta.provisional 未設定なら注記は出ない', async () => {
+		mockedAnalyze.mockResolvedValueOnce(mockResult() as never);
+		const res = (await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 200 })) as {
+			content: Array<{ text: string }>;
+		};
+		expect(res.content[0].text).not.toContain('未確定（形成中）');
+	});
+
+	it('warning と provisional が両方あるとき ⚠️ → ℹ️ → 本文 の順で並ぶ', async () => {
+		const m = mockResult();
+		(m as { meta?: Record<string, unknown> }).meta = {
+			warning: '⚠️ 3日中1日の取得に失敗しました。',
+			provisional: true,
+		};
+		mockedAnalyze.mockResolvedValueOnce(m as never);
+		const res = (await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 200 })) as {
+			content: Array<{ text: string }>;
+		};
+		const text = res.content[0].text;
+		const idxWarning = text.indexOf('⚠️');
+		const idxNote = text.indexOf('ℹ️');
+		const idxBody = text.indexOf('【総合判定】');
+		expect(idxWarning).toBeGreaterThanOrEqual(0);
+		expect(idxWarning).toBeLessThan(idxNote);
+		expect(idxNote).toBeLessThan(idxBody);
 	});
 });

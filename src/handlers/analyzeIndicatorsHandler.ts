@@ -4,6 +4,7 @@ import { formatDeviation, formatPercent, formatPriceJPY, formatTrendSymbol } fro
 import { ICHIMOKU_SHIFT, RSI_OVERBOUGHT, RSI_OVERSOLD } from '../../lib/indicator-config.js';
 import { lastCrossover } from '../../lib/indicators.js';
 import { EPSILON } from '../../lib/math.js';
+import { prependProvisionalNote } from '../../lib/provisional-bar.js';
 import { toStructured } from '../../lib/result.js';
 import { prependWarnings } from '../../lib/warning-propagation.js';
 import analyzeIndicators from '../../tools/analyze_indicators.js';
@@ -665,9 +666,11 @@ export const toolDef: ToolDefinition = {
 			obvPrev,
 			obvUnit: String(pair).toLowerCase().includes('btc') ? 'BTC' : '',
 		});
-		// 上流 fetchWarning（meta.warning: 取得層）と指標不足（meta.warnings[]: 計算層）を
-		// content 先頭に別行で出す。LLM がデータの不完全性を見落とさないようにするため。
-		const text = prependWarnings(body, res.meta as { warning?: string; warnings?: string[] });
+		// 形成中足の注記（meta.provisional）と上流 fetchWarning（meta.warning: 取得層）/
+		// 指標不足（meta.warnings[]: 計算層）を content 先頭に別行で出す。
+		// 順序は ⚠️ warning → ℹ️ 注記 → 本文（warning を最優先で見せる）。
+		const withNote = prependProvisionalNote(body, (res.meta as { provisional?: boolean })?.provisional === true);
+		const text = prependWarnings(withNote, res.meta as { warning?: string; warnings?: string[] });
 		return { content: [{ type: 'text', text }], structuredContent: toStructured(res) };
 	},
 };

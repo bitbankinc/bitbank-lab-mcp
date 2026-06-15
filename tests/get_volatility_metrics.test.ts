@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { dayjs } from '../lib/datetime.js';
 import getVolatilityMetrics from '../tools/get_volatility_metrics.js';
 import { assertOk } from './_assertResult.js';
 
@@ -368,6 +369,37 @@ describe('get_volatility_metrics', () => {
 			for (const t of res.data.series.ts) {
 				expect(t).toBeLessThan(before);
 			}
+		});
+	});
+
+	// === 形成中足（provisional）注記 =====================================
+
+	describe('形成中足（provisional）', () => {
+		/** 末尾の足が「現在形成中」になるよう ts を当日 UTC 0 時に揃えた日足を作る。 */
+		function makeRowsEndingToday(count: number): OhlcvRow[] {
+			const todayStart = dayjs().utc().startOf('day').valueOf();
+			const rows: OhlcvRow[] = [];
+			for (let i = count - 1; i >= 0; i--) {
+				const base = 10_000_000 + (count - 1 - i) * 1_000;
+				rows.push([base, base + 2_000, base - 2_000, base + 500, 100, todayStart - i * 86_400_000]);
+			}
+			return rows;
+		}
+
+		it('最新足が形成中のとき meta.provisional=true かつ summary に注記が出る', async () => {
+			mockFetchWithOhlcv(makeRowsEndingToday(30));
+			const res = await getVolatilityMetrics('btc_jpy', '1day', 30);
+			assertOk(res);
+			expect((res.meta as { provisional?: boolean }).provisional).toBe(true);
+			expect(res.summary).toContain('未確定（形成中）');
+		});
+
+		it('最新足が確定済み（過去日）のとき meta.provisional は付かず注記も出ない', async () => {
+			mockFetchWithOhlcv(makeOhlcvRows(30)); // 2025 年起点 → 確定済み
+			const res = await getVolatilityMetrics('btc_jpy', '1day', 30);
+			assertOk(res);
+			expect((res.meta as { provisional?: boolean }).provisional).toBeUndefined();
+			expect(res.summary).not.toContain('未確定（形成中）');
 		});
 	});
 });

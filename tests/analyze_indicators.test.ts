@@ -900,3 +900,55 @@ describe('padSeriesLengths: createChartData 経由で検証', () => {
 		}
 	});
 });
+
+// === 形成中足（provisional）注記 ======================================
+describe('analyze_indicators: 形成中足（provisional）', () => {
+	const originalFetch = globalThis.fetch;
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+		clearIndicatorCache();
+	});
+
+	/** 最新足が「現在形成中」になるよう、末尾 ts を当日 UTC 0 時に揃えた日足を作る。 */
+	function makeRowsEndingToday(count: number): OhlcvRow[] {
+		const todayStart = dayjs().utc().startOf('day').valueOf();
+		const rows: OhlcvRow[] = [];
+		for (let i = count - 1; i >= 0; i--) {
+			const base = 10_000_000 + (count - 1 - i) * 1_000;
+			rows.push([
+				String(base),
+				String(base + 2_000),
+				String(base - 2_000),
+				String(base + 500),
+				'1.5',
+				String(todayStart - i * 86_400_000),
+			]);
+		}
+		return rows;
+	}
+
+	function mockFetch(rows: OhlcvRow[]) {
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: 'OK',
+			json: async () => ({ success: 1, data: { candlestick: [{ type: '1day', ohlcv: rows }] } }),
+		}) as unknown as typeof fetch;
+	}
+
+	it('最新足が形成中のとき meta.provisional=true かつ summary に注記が出る', async () => {
+		mockFetch(makeRowsEndingToday(60));
+		const res = await analyzeIndicators('btc_jpy', '1day', 60);
+		assertOk(res);
+		expect((res.meta as { provisional?: boolean }).provisional).toBe(true);
+		expect(res.summary).toContain('未確定（形成中）');
+	});
+
+	it('最新足が確定済み（過去日）のとき meta.provisional は付かず注記も出ない', async () => {
+		mockFetch(makeOhlcvRows(60)); // startMs=2024-01-01 起点 → 確定済み
+		const res = await analyzeIndicators('btc_jpy', '1day', 60);
+		assertOk(res);
+		expect((res.meta as { provisional?: boolean }).provisional).toBeUndefined();
+		expect(res.summary).not.toContain('未確定（形成中）');
+	});
+});

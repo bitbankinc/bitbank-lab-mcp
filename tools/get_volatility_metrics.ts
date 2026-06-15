@@ -4,6 +4,7 @@ import { nowIso } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
 import { wilderAtr } from '../lib/indicators.js';
 import { slidingMean, slidingStddev, stddev } from '../lib/math.js';
+import { isLatestBarProvisional, prependProvisionalNote } from '../lib/provisional-bar.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair, validateLimit } from '../lib/validate.js';
 import {
@@ -191,6 +192,10 @@ export default async function getVolatilityMetrics(
 		}
 		const fetchWarning = warningLines.length > 0 ? warningLines.join('\n') : undefined;
 
+		// 最新足が形成中（未確定）か。realtime 取得（date 未指定）では最新足は現在形成中の足。
+		// 有効足の最新 ts（ts.at(-1)）を起点に判定する。
+		const provisional = isLatestBarProvisional(ts.at(-1), String(type));
+
 		const ret = logReturns(close, useLog);
 		const rvInst = ret.map((r) => Math.abs(r));
 
@@ -302,12 +307,14 @@ export default async function getVolatilityMetrics(
 			aggregates: data.aggregates,
 			rolling: rollingOut,
 		});
-		// 上流 fetchWarning（get_candles の取得層不完全性）と自前スキップ警告を
-		// summary 先頭に連結する。LLM が default view で警告を見落とさないようにするため。
-		const summary = fetchWarning ? `${fetchWarning}\n${bodySummary}` : bodySummary;
+		// 形成中足の注記（warning 2 系統とは別系統）→ 上流 fetchWarning の順で summary 先頭に連結する。
+		// 順序は ⚠️ warning → ℹ️ 注記 → 本文（warning を最優先で見せる）。
+		const summaryWithNote = prependProvisionalNote(bodySummary, provisional, { separator: '\n' });
+		const summary = fetchWarning ? `${fetchWarning}\n${summaryWithNote}` : summaryWithNote;
 
 		const metaExtra: Record<string, unknown> = { type, count: close.length };
 		if (fetchWarning) metaExtra.warning = fetchWarning;
+		if (provisional) metaExtra.provisional = true;
 		const meta = createMeta(chk.pair, metaExtra);
 		return GetVolMetricsOutputSchema.parse(
 			ok<z.infer<typeof GetVolMetricsDataSchemaOut>, z.infer<typeof GetVolMetricsMetaSchemaOut>>(

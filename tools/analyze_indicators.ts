@@ -34,6 +34,7 @@ import {
 	stochRSI as rawStochRSI,
 	toNumericSeries,
 } from '../lib/indicators.js';
+import { isLatestBarProvisional, prependProvisionalNote } from '../lib/provisional-bar.js';
 import { fail, failFromValidation, ok, parseAsResult } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import type {
@@ -659,7 +660,11 @@ export default async function analyzeIndicators(
 	const chartData = createChartData(normalized, indicators, displayCount);
 	padSeriesLengths(chartData.indicators as Record<string, unknown>, chartData.candles.length);
 
-	const summary = buildIndicatorsSummaryText({
+	// 最新足が形成中（未確定）か。realtime 取得（date 未指定）では最新足は現在形成中の足。
+	// now 依存のためキャッシュには載せず、毎回 normalized 末尾 ts から判定する。
+	const provisional = isLatestBarProvisional(normalized.at(-1)?.timestamp, String(type));
+
+	const baseSummary = buildIndicatorsSummaryText({
 		pair: chk.pair,
 		type: String(type),
 		indicators,
@@ -672,6 +677,8 @@ export default async function analyzeIndicators(
 		normalized,
 		displayCount,
 	});
+	// 形成中足の注記を summary 先頭に連結（warning 2 系統とは別系統の情報注記）。
+	const summary = prependProvisionalNote(baseSummary, provisional, { separator: '\n' });
 
 	const data: GetIndicatorsData = {
 		summary,
@@ -690,6 +697,8 @@ export default async function analyzeIndicators(
 		// 上流 fetchWarning は warnings[] と別系統。
 		// warnings[] に混ぜると指標不足と取得層不完全性の区別がつかなくなる。
 		warning: computed.upstreamWarning,
+		// 形成中足フラグ（warning / warnings とは別系統）。handler が content に注記を出す。
+		provisional: provisional || undefined,
 	});
 
 	const parsedData = GetIndicatorsDataSchema.parse(data);

@@ -8,6 +8,7 @@ import {
 	formatTrendArrow,
 } from '../../lib/formatter.js';
 import { stddev } from '../../lib/math.js';
+import { prependProvisionalNote } from '../../lib/provisional-bar.js';
 import getVolatilityMetrics, { WILDER_ATR_PERIOD } from '../../tools/get_volatility_metrics.js';
 import { GetVolMetricsInputSchema } from '../schemas.js';
 import type { ToolDefinition } from '../tool-definition.js';
@@ -141,6 +142,8 @@ export const toolDef: ToolDefinition = {
 	}: z.infer<typeof GetVolMetricsInputSchema>) => {
 		const res = await getVolatilityMetrics(pair, type, limit, windows, { useLogReturns, annualize });
 		if (!res?.ok) return res;
+		// 形成中足フラグ（meta.provisional）。warning 2 系統とは別系統の情報注記を content に出す。
+		const provisional = (res.meta as { provisional?: boolean })?.provisional === true;
 		const meta = res?.data?.meta || {};
 		const a = res?.data?.aggregates || {};
 		const roll: VolViewInput['rolling'] = Array.isArray(res?.data?.rolling) ? res.data.rolling : [];
@@ -209,7 +212,7 @@ export const toolDef: ToolDefinition = {
 		// beginner view (plain language for non-experts)
 		if (view === 'beginner') {
 			const body = buildVolatilityBeginnerText(viewInput);
-			const text = prependVolWarning(body, res.meta as { warning?: string });
+			const text = prependVolWarning(prependProvisionalNote(body, provisional), res.meta as { warning?: string });
 			return {
 				content: [{ type: 'text', text }],
 				structuredContent: { ...res, data: { ...res.data, tags: tagsAll } } as Record<string, unknown>,
@@ -237,7 +240,7 @@ export const toolDef: ToolDefinition = {
 			},
 		};
 		const body = buildVolatilityDetailedText(detailedInput, view === 'full' ? 'full' : 'detailed');
-		const text = prependVolWarning(body, res.meta as { warning?: string });
+		const text = prependVolWarning(prependProvisionalNote(body, provisional), res.meta as { warning?: string });
 		return {
 			content: [{ type: 'text', text }],
 			structuredContent: { ...res, data: { ...res.data, tags: tagsAll } } as Record<string, unknown>,

@@ -118,6 +118,8 @@ export const GetIndicatorsMetaSchema = BaseMetaSchema.extend({
 	warnings: z.array(z.string()).optional(),
 	/** 上流（get_candles）の fetchWarning。multi-year/multi-day 部分失敗等で発生する取得層の不完全性。warnings[] とは別系統。 */
 	warning: z.string().optional(),
+	/** 最新足が形成中（未確定）か。warning（取得層）/ warnings（計算層）とは別系統の情報フラグ。 */
+	provisional: z.boolean().optional(),
 });
 
 export const GetIndicatorsInputSchema = BasePairInputSchema.extend({
