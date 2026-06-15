@@ -121,7 +121,8 @@ export function buildVolatilityDetailedText(input: VolDetailedInput, view: 'deta
 		const minClose = cArr.length ? Math.min(...cArr) : null;
 		const maxClose = cArr.length ? Math.max(...cArr) : null;
 		const mean = retArr.length ? retArr.reduce((s, v) => s + v, 0) / retArr.length : null;
-		const std = retArr.length ? stddev(retArr) : null;
+		// series の returns std も rv_std と同じ標本分散（n-1）で揃える。
+		const std = retArr.length ? stddev(retArr, true) : null;
 		text += `\n\n【Series】\nTotal: ${sampleSize ?? cArr.length} candles\nFirst: ${firstIso} , Last: ${lastIso}\nClose range: ${minClose != null ? Number(minClose).toLocaleString('ja-JP') : 'n/a'} - ${maxClose != null ? Number(maxClose).toLocaleString('ja-JP') : 'n/a'} JPY\nReturns: mean=${formatPercent(mean, { multiply: true, digits: 2 })}, std=${formatPercent(std, { multiply: true, digits: 2 })}${ann ? ' (base interval)' : ''}`;
 	}
 	return text;

@@ -29,14 +29,23 @@ export function median(arr: number[]): number | null {
 
 /**
  * 配列の標準偏差を計算
+ *
+ * 既定は母集団分散（divisor = n）。`sample=true` で標本分散（divisor = n-1, Bessel 補正）。
+ * 実現ボラ（サンプルからの母分散推定）は n-1 が統計標準。一方、z-score 正規化や
+ * ヒューリスティック閾値（candle-validate / depth-analysis 等）は母集団のままが妥当なため、
+ * 既定挙動は変えず opt-in とする。
+ *
  * @param values 数値配列
- * @returns 標準偏差、空配列の場合は0
+ * @param sample true で標本分散（n-1）。既定 false（母集団 n）
+ * @returns 標準偏差、空配列または標本分散で要素1以下の場合は0
  */
-export function stddev(values: number[]): number {
+export function stddev(values: number[], sample = false): number {
 	const n = values.length;
 	if (n === 0) return 0;
+	const divisor = sample ? n - 1 : n;
+	if (divisor <= 0) return 0;
 	const mean = values.reduce((s, v) => s + v, 0) / n;
-	const variance = values.reduce((s, v) => s + (v - mean) * (v - mean), 0) / n;
+	const variance = values.reduce((s, v) => s + (v - mean) * (v - mean), 0) / divisor;
 	return Math.sqrt(Math.max(0, variance));
 }
 
@@ -60,11 +69,16 @@ export function slidingMean(values: number[], window: number): number[] {
 
 /**
  * スライディングウィンドウ標準偏差
+ *
+ * 既定は母集団分散（divisor = window）。`sample=true` で標本分散（divisor = window-1）。
+ * 既定挙動は `stddev` と同じ理由で母集団のままとし、n-1 は opt-in とする。
+ *
  * @param values 数値配列
  * @param window ウィンドウサイズ（>= 2）
+ * @param sample true で標本分散（window-1）。既定 false（母集団 window）
  * @returns 各ウィンドウの標準偏差配列（長さ = values.length - window + 1）
  */
-export function slidingStddev(values: number[], window: number): number[] {
+export function slidingStddev(values: number[], window: number, sample = false): number[] {
 	const out: number[] = [];
 	if (window <= 1) return out;
 	let sum = 0;
@@ -81,7 +95,8 @@ export function slidingStddev(values: number[], window: number): number[] {
 		if (i >= window - 1) {
 			const n = window;
 			const mean = sum / n;
-			const variance = Math.max(0, sumsq / n - mean * mean);
+			// 標本: Σ(x-mean)² / (n-1) = (sumsq - n*mean²)/(n-1)。母集団: sumsq/n - mean²（既存式を維持）。
+			const variance = sample ? Math.max(0, (sumsq - n * mean * mean) / (n - 1)) : Math.max(0, sumsq / n - mean * mean);
 			out.push(Math.sqrt(variance));
 		}
 	}

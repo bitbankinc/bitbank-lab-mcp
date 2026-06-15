@@ -205,7 +205,8 @@ export default async function getVolatilityMetrics(
 		const rsSeries = rogersSatchellComponents(open, high, low, close);
 
 		// Aggregates over whole sample (use returns length for rv)
-		const rvStd = stddev(ret);
+		// 実現ボラはサンプルからの母分散推定 → 標本分散（n-1, Bessel 補正）を採用。
+		const rvStd = stddev(ret, true);
 		// Parkinson/GK/RS are per-candle estimators (not return-based), so use full series
 		const pkMean = pkSeries.reduce((s, v) => s + v, 0) / Math.max(1, pkSeries.length);
 		const gkMean = gkSeries.reduce((s, v) => s + v, 0) / Math.max(1, gkSeries.length);
@@ -233,7 +234,8 @@ export default async function getVolatilityMetrics(
 		for (const wRaw of windows) {
 			const w = Math.max(2, Math.min(wRaw | 0, ret.length));
 			if (w > ret.length) continue;
-			const rvStdRoll = slidingStddev(ret, w);
+			// rolling も aggregate と同一定義（標本 n-1）で内部整合を保つ。
+			const rvStdRoll = slidingStddev(ret, w, true);
 			const rvStdLatest = rvStdRoll.at(-1) ?? 0;
 			const rvStdAnnLatest = withAnn ? rvStdLatest * annFactor : undefined;
 			const pkRoll = slidingMean(pkSeries, w);

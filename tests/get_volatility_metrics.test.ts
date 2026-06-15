@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
+import { slidingStddev, stddev } from '../lib/math.js';
 import getVolatilityMetrics from '../tools/get_volatility_metrics.js';
 import { assertOk } from './_assertResult.js';
 
@@ -121,6 +122,49 @@ describe('get_volatility_metrics', () => {
 			for (const r of res.data.rolling) {
 				if (r.rv_std_ann != null) {
 					expect(r.rv_std_ann).toBeCloseTo(r.rv_std * Math.sqrt(365), 6);
+				}
+			}
+		});
+	});
+
+	// === 実現ボラの分散定義（標本 n-1, Bessel）の一貫性 ===================
+	//   Issue #638: 実現ボラは標本分散（n-1）を採用。
+	//   aggregate rv_std / rolling rv_std / annualized が同一定義で一貫することを検証する。
+
+	describe('分散定義（標本 n-1）の一貫性', () => {
+		const rows = makeOhlcvRows(60, { noise: 0.05 });
+
+		it('aggregate rv_std は標本 stddev（n-1）と一致し、母集団より大きい', async () => {
+			mockFetchWithOhlcv(rows);
+			const res = await getVolatilityMetrics('btc_jpy', '1day', 60, [14, 20, 30]);
+			assertOk(res);
+			const ret = res.data.series.ret;
+			// 標本分散（n-1）で計算した値と一致する
+			expect(res.data.aggregates.rv_std).toBeCloseTo(stddev(ret, true), 6);
+			// 母集団分散（n）より厳密に大きい（Bessel 補正が効いている証跡）
+			expect(stddev(ret, true)).toBeGreaterThan(stddev(ret));
+		});
+
+		it('rolling rv_std も標本 slidingStddev（window-1）と一致する', async () => {
+			mockFetchWithOhlcv(rows);
+			const res = await getVolatilityMetrics('btc_jpy', '1day', 60, [14, 20, 30]);
+			assertOk(res);
+			const ret = res.data.series.ret;
+			for (const r of res.data.rolling) {
+				const expectedLatest = slidingStddev(ret, r.window, true).at(-1) ?? 0;
+				expect(r.rv_std).toBeCloseTo(expectedLatest, 6);
+			}
+		});
+
+		it('annualized は採用した rv_std と一貫する（aggregate / rolling 共通）', async () => {
+			mockFetchWithOhlcv(rows);
+			const res = await getVolatilityMetrics('btc_jpy', '1day', 60, [14, 20, 30]);
+			assertOk(res);
+			const ann = Math.sqrt(365);
+			expect(res.data.aggregates.rv_std_ann).toBeCloseTo(res.data.aggregates.rv_std * ann, 6);
+			for (const r of res.data.rolling) {
+				if (r.rv_std_ann != null) {
+					expect(r.rv_std_ann).toBeCloseTo(r.rv_std * ann, 6);
 				}
 			}
 		});
