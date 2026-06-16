@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
 import { slidingStddev, stddev } from '../lib/math.js';
-import getVolatilityMetrics from '../tools/get_volatility_metrics.js';
+import getVolatilityMetrics, {
+	CALM_RV_ANN_THRESHOLD,
+	classifyRealizedVolTags,
+	VOLATILE_RV_ANN_THRESHOLD,
+} from '../tools/get_volatility_metrics.js';
 import { assertOk } from './_assertResult.js';
 
 const originalFetch = globalThis.fetch;
@@ -170,6 +174,82 @@ describe('get_volatility_metrics', () => {
 		});
 	});
 
+	// === volatile/calm 閾値の再ベースライン（標本分散 n-1 後）=============
+	//   実現ボラの標本分散(n-1, Bessel)化に伴う閾値整合確認。閾値は据え置き
+	//   （VOLATILE/CALM_RV_ANN_THRESHOLD）。境界値と、判定基準が「標本分散 rv_std × 年率」で
+	//   rv_std / rolling / annualized に一貫することを検証する。
+
+	describe('classifyRealizedVolTags（volatile/calm 閾値の境界値）', () => {
+		it('閾値定数は標本分散化後も据え置き（volatile=0.8 / calm=0.3）', () => {
+			expect(VOLATILE_RV_ANN_THRESHOLD).toBe(0.8);
+			expect(CALM_RV_ANN_THRESHOLD).toBe(0.3);
+		});
+		it('rv_std_ann = 0.8（境界・以上）→ volatile', () => {
+			expect(classifyRealizedVolTags(0.8)).toEqual(['volatile']);
+		});
+		it('rv_std_ann = 0.79999（境界直下）→ タグ無し', () => {
+			expect(classifyRealizedVolTags(0.79999)).toEqual([]);
+		});
+		it('rv_std_ann = 0.3（境界・以下）→ calm', () => {
+			expect(classifyRealizedVolTags(0.3)).toEqual(['calm']);
+		});
+		it('rv_std_ann = 0.30001（境界直上）→ タグ無し', () => {
+			expect(classifyRealizedVolTags(0.30001)).toEqual([]);
+		});
+		it('0.3 < rv_std_ann < 0.8 → タグ無し（中立）', () => {
+			expect(classifyRealizedVolTags(0.5)).toEqual([]);
+		});
+		it('volatile と calm は同時に付かない（閾値が分離）', () => {
+			expect(classifyRealizedVolTags(0.85)).not.toContain('calm');
+			expect(classifyRealizedVolTags(0.1)).not.toContain('volatile');
+		});
+	});
+
+	describe('volatile/calm 閾値と標本分散 rv_std_ann の整合', () => {
+		const ann = Math.sqrt(365); // 1day の periodsPerYear
+
+		it('高ボラ: tag は classifyRealizedVolTags と一致し、判定基準は標本分散(n-1)×年率', async () => {
+			const rows = makeOhlcvRows(200, { noise: 0.15 });
+			mockFetchWithOhlcv(rows);
+			const res = await getVolatilityMetrics('btc_jpy', '1day', 200, [14, 20, 30]);
+			assertOk(res);
+			const ret = res.data.series.ret;
+			const rvAnn = res.data.aggregates.rv_std_ann as number;
+			// 閾値の判定基準は「標本分散(n-1) × sqrt(365)」で aggregate / annualized が一貫
+			expect(rvAnn).toBeCloseTo(stddev(ret, true) * ann, 6);
+			// tool が付ける tags は純粋関数の判定と完全一致する
+			expect(res.data.tags).toEqual(classifyRealizedVolTags(rvAnn));
+			expect(rvAnn).toBeGreaterThanOrEqual(VOLATILE_RV_ANN_THRESHOLD);
+			expect(res.data.tags).toContain('volatile');
+			expect(res.data.tags).not.toContain('calm');
+		});
+
+		it('低ボラ: tag は classifyRealizedVolTags と一致し calm になる', async () => {
+			const rows = makeOhlcvRows(200, { noise: 0.001 });
+			mockFetchWithOhlcv(rows);
+			const res = await getVolatilityMetrics('btc_jpy', '1day', 200, [14, 20, 30]);
+			assertOk(res);
+			const ret = res.data.series.ret;
+			const rvAnn = res.data.aggregates.rv_std_ann as number;
+			expect(rvAnn).toBeCloseTo(stddev(ret, true) * ann, 6);
+			expect(res.data.tags).toEqual(classifyRealizedVolTags(rvAnn));
+			expect(rvAnn).toBeLessThanOrEqual(CALM_RV_ANN_THRESHOLD);
+			expect(res.data.tags).toContain('calm');
+			expect(res.data.tags).not.toContain('volatile');
+		});
+
+		it('annualize=false でも tags の判定基準は年率値（rv_std × sqrt(periodsPerYear)）で一貫', async () => {
+			const rows = makeOhlcvRows(200, { noise: 0.15 });
+			mockFetchWithOhlcv(rows);
+			const res = await getVolatilityMetrics('btc_jpy', '1day', 200, [14, 20, 30], { annualize: false });
+			assertOk(res);
+			// annualize=false では rv_std_ann は出ないが、tool 内部は年率換算して判定する
+			expect(res.data.aggregates.rv_std_ann).toBeUndefined();
+			const rvAnnInternal = res.data.aggregates.rv_std * ann;
+			expect(res.data.tags).toEqual(classifyRealizedVolTags(rvAnnInternal));
+		});
+	});
+
 	// === 3. annualize: false =============================================
 
 	describe('annualize: false', () => {
@@ -335,7 +415,8 @@ describe('get_volatility_metrics', () => {
 			mockFetchWithOhlcv(rows);
 			const res = await getVolatilityMetrics('btc_jpy', '1day', 30);
 			assertOk(res);
-			if (res.data.aggregates!.rv_std_ann! >= 0.8) {
+			const rvAnn = res.data.aggregates.rv_std_ann;
+			if (rvAnn != null && rvAnn >= 0.8) {
 				expect(res.data.tags).toContain('volatile');
 			}
 		});
@@ -345,8 +426,8 @@ describe('get_volatility_metrics', () => {
 			mockFetchWithOhlcv(rows);
 			const res = await getVolatilityMetrics('btc_jpy', '1day', 200, [14, 20, 30], { annualize: true });
 			assertOk(res);
-			const rvAnn = res.data.aggregates!.rv_std_ann;
-			if (rvAnn! <= 0.3) {
+			const rvAnn = res.data.aggregates.rv_std_ann;
+			if (rvAnn != null && rvAnn <= 0.3) {
 				expect(res.data.tags).toContain('calm');
 			} else {
 				expect(res.data.tags).not.toContain('calm');

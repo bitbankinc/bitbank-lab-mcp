@@ -263,6 +263,9 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 		const buyPressure = clamp((buyRatio - 0.5) * 2, -1, 1);
 
 		// Volatility
+		// rv_std_ann は aggregate（全サンプル, 上の取得は limit=200 → 約 199 returns）の年率実現ボラ。
+		// 実現ボラは標本分散(n-1)化済みだが、aggregate の Bessel 補正は約 +0.25% と無視可能なため、
+		// volatilityFactor の 0.5 正規化基準・閾値は据え置く（「小窓ほど上振れ」の影響は rolling 限定）。
 		const rv = volRes?.data?.aggregates?.rv_std_ann ?? volRes?.data?.aggregates?.rv_std;
 		const rvNum = typeof rv === 'number' ? rv : 0.5; // typical range ~0.2-0.8
 		const volatilityFactor = clamp((0.5 - rvNum) / 0.5, -1, 1); // 低ボラほど +
@@ -563,7 +566,8 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 		const toState = (v: number) => (v > 0.1 ? 'up' : v < -0.1 ? 'down' : 'flat');
 		const momentumState = toState(momentumFactor);
 		const cvdState = toState(cvdTrend);
-		// Timeframe recommendation (simple): suggest 4hour when annualized RV is high
+		// Timeframe recommendation (simple): suggest 4hour when annualized RV is high.
+		// rvNum は aggregate 年率 RV（標本分散化後も Bessel 補正 ~+0.25% で無視可能）→ 0.6 閾値は据え置き。
 		const recommendedTimeframes: string[] = ['1day', ...(rvNum > 0.6 ? ['4hour'] : [])];
 
 		const data = {

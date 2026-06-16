@@ -29,6 +29,32 @@ type Candle = { open: number; high: number; low: number; close: number; isoTime?
  */
 export const WILDER_ATR_PERIOD = 14;
 
+/**
+ * 年率実現ボラ（rv_std_ann）に対する volatile / calm 判定閾値。
+ *
+ * 実現ボラを母集団分散(n) → 標本分散(n-1, Bessel 補正)へ変更した後も **据え置く**。根拠:
+ * これらは aggregate rv_std（全サンプルの標準偏差）を年率換算した値に対する閾値である。
+ * aggregate のサンプル数は標準 limit=200 では returns 約 199 本で、Bessel 補正
+ * `√(n/(n-1))` は n≈199 のとき約 1.0025（+0.25%）にすぎない。最小サンプル（20 本 →
+ * 19 returns）でも +2.74% に留まり、0.3 / 0.8 の判定境界を実質的に跨がない。
+ * 「小窓ほど上振れ」する影響は rolling 側に限定され、aggregate の n は十分大きいため、
+ * 母集団分散時代の 0.8 / 0.3 をそのまま用いても整合する。閾値変更は不要。
+ */
+export const VOLATILE_RV_ANN_THRESHOLD = 0.8;
+export const CALM_RV_ANN_THRESHOLD = 0.3;
+
+/**
+ * 年率実現ボラ rvStdAnn から volatile / calm タグを判定する純粋関数。
+ *
+ * annualize フラグに依らず常に年率値で判定する（rv_std / rolling / annualized で
+ * 閾値の基準を一貫させるため）。`VOLATILE/CALM_RV_ANN_THRESHOLD` の据え置き根拠も参照。
+ */
+export function classifyRealizedVolTags(rvStdAnn: number): string[] {
+	if (rvStdAnn >= VOLATILE_RV_ANN_THRESHOLD) return ['volatile'];
+	if (rvStdAnn <= CALM_RV_ANN_THRESHOLD) return ['calm'];
+	return [];
+}
+
 export interface RollingEntry {
 	window: number;
 	rv_std: number;
@@ -254,11 +280,10 @@ export default async function getVolatilityMetrics(
 			});
 		}
 
-		// Tags: always use annualized RV for consistent thresholds regardless of annualize flag
-		const tags: string[] = [];
+		// Tags: always use annualized RV for consistent thresholds regardless of annualize flag.
+		// 実現ボラの標本分散(n-1)化後も閾値は据え置き（根拠は classifyRealizedVolTags / 各閾値定数を参照）。
 		const rvRefAnn = rvStdAnn ?? rvStd * Math.sqrt(periodsPerYear(type));
-		if (rvRefAnn >= 0.8) tags.push('volatile');
-		else if (rvRefAnn <= 0.3) tags.push('calm');
+		const tags: string[] = classifyRealizedVolTags(rvRefAnn);
 
 		const data = {
 			meta: {

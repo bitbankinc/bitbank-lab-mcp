@@ -162,6 +162,18 @@ export const toolDef: ToolDefinition = {
 		const atrPct = lastClose ? (atrAbs as number) / lastClose : null;
 
 		// tags: base + derived
+		// ─ 閾値の再ベースライン（実現ボラの標本分散 n-1 採用後）─────────────────────────
+		// 実現ボラは母集団分散(n) → 標本分散(n-1, Bessel) に変更済みだが、以下の派生タグ閾値は
+		// 据え置く。判定は全て年率値（annualize フラグ非依存）で行い、rv_std / rolling /
+		// annualized で基準を一貫させる。据え置き根拠:
+		//   - high_vol(>0.5) / low_vol(<0.2): aggregate rv_std_ann に対する判定。aggregate は
+		//     全サンプル（標準 200 本）の std で Bessel 補正は約 +0.25%（最小 20 本でも +2.74%）。
+		//     0.5 / 0.2 の境界を実質跨がない。
+		//   - expanding_vol / contracting_vol: short/long の rolling rv_std_ann の比。Bessel 係数
+		//     √(w/(w-1)) は分子分母で大半が相殺し、既定 [14,30] でも残差は約 +2%。判定の ±5%
+		//     中立バンド内に収まる。
+		//   - high_short_term_vol(>0.4): 最小窓 rolling rv_std_ann。既定 w=14 で Bessel は約 +3.78%、
+		//     ヒューリスティックなタグの許容範囲内。
 		const tagsBase: string[] = Array.isArray(res?.data?.tags) ? [...res.data.tags] : [];
 		const tagsDerived: string[] = [];
 		// Always use annualized values for tag thresholds (consistent regardless of annualize flag)
