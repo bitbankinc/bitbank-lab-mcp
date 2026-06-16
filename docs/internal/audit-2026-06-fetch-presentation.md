@@ -51,8 +51,8 @@ $ npx vitest run tests/audit_layer2_probe.test.ts
 |---|---|---|
 | **確認済み問題** | F1（`get_orderbook` の非数値 sanitize 欠如・mode 間不整合） | P1（`get_candles` `view=items` の warning/meta 欠落）, P2（`get_orderbook` 単位 "BTC" ハードコード） |
 | **推測** | — | P3（`get_transactions` filter+summary の行欠落, 仕様の可能性）, P4（`analyzeMarketSignalHandler` 自前連結）, P5（`prependVolWarning` の `warnings[]` 非対応） |
-| **要追加確認** | A1（`formatDateWithDayOfWeek` の UTC 暦日） | — |
-| **確認済み（問題なし）** | TZ（doc と一致）, timestamp fallback, NaN/Infinity（他ツール）, multi-day 重複/欠落 | 丸めは表示境界のみ（計算側は full precision） |
+| **要追加確認** | （なし — A1 は本監査内で解決） | — |
+| **確認済み（問題なし）** | TZ（doc 一致・**ライブ再確認済 2026-06-16**）, timestamp fallback, NaN/Infinity（他ツール）, multi-day 重複/欠落, A1（軽微・設計通り） | 丸めは表示境界のみ（計算側は full precision） |
 
 ---
 
@@ -113,6 +113,11 @@ pressure.bands[0]: {"baseMid":null,"baseBidSize":0,...,"netDeltaPct":null,"tag":
 - `tools/get_candles.ts:135-149`（`computeAnchorEndMs`, tz 暦日終端）, `307-343`（sub-day の UTC key 導出）, `351-368`（YEARLY tz window）は doc の「UTC fetch key + tz anchor filter」二段構えと一致。
 - 証拠: `npx vitest run tests/get_candles.test.ts`（77 pass）。`tests/get_candles.test.ts:864-901` が `tz='Asia/Tokyo'` / `tz='UTC'` で `keyPoints.date` が変わること（doc の §6 と一致）、`:843` が `isoTimeLocal='2024-01-01T09:00:00'`（JST 表示）を固定。
 - `1day`+`YYYY` の「UTC 00:00 基準 daily」も doc §7 の限界どおり（厳密 JST 日足ではない旨は doc 明記済）。
+- **ライブ再確認済み（2026-06-16, `btc_jpy`, public API 直叩き）**。サンドボックスは `public.bitbank.cc` が許可リスト外のため、ローカル `curl`+`jq` で実測（doc の測定は 2026-05-22 / `d5b1fff`）:
+  - `GET /candlestick/1hour/20260615` → `count=24, first=2026-06-15T00:00:00Z, last=2026-06-15T23:00:00Z`（= JST 06-15 09:00〜06-16 08:00）→ **UTC 暦日グルーピング**（doc §1）と一致。
+  - `GET /candlestick/1day/2026` → `count=167, first=2026-01-01T00:00:00Z`（UTC 00:00 基準 / 経過日数）→ doc §2 と一致。
+  - `GET /candlestick/1hour/{20100101,20991231}` → ともに `HTTP 404`（取引開始前・未来）→ doc §3-5 と一致。
+  - → doc の前提（UTC fetch key + tz anchor filter）は今日時点でも有効。**TZ は問題なし（ライブ確定）**。
 
 ### timestamp 欠損 → `Date.now()` fallback 排除
 - `lib/get-depth.ts:80-83`, `tools/get_orderbook.ts:508-511`, `tools/prepare_depth_data.ts:164-166`（getDepth 保証に委譲）, `tools/get_candles.ts:563-569` いずれも欠損/≤0/非有限を `upstream` fail に倒す。
@@ -128,9 +133,11 @@ pressure.bands[0]: {"baseMid":null,"baseBidSize":0,...,"netDeltaPct":null,"tag":
 - 欠落検出: `lib/candle-validate.ts:123-157` `checkCompleteness`（`tools/validate_candle_data.ts` 起点）。証拠: `tests/validate_candle_data.test.ts` pass。
 - → 取得層の集約ロジック自体は健全（**ただし** 一部失敗時の `meta.warning` が提示層 `view=items` で落ちる → P1 参照）。
 
-## 【要追加確認】A1 — `formatDateWithDayOfWeek` が UTC 暦日で曜日を出す
-- `lib/datetime.ts:169-177` は `.utc()` 固定で `M/D(曜日)` を生成。JST 深夜帯の日付/曜日が 1 日ずれ得る。
-- 取得層スコープ（get_*）の主要パスでは未使用に見えるが、`prompts` / 予測系での利用有無は未確認。**要追加確認**（利用箇所を grep し、JST 表示文脈で使われていれば提示層バグ）。コードからの推論であり断定しない。
+## 【確認済み・軽微】A1 — `formatDateWithDayOfWeek` が UTC 暦日で曜日を出す
+- `lib/datetime.ts:169-177` は `.utc()` 固定で `M/D(曜日)` を生成。
+- **利用箇所を確定**: `src/handlers/analyzeCandlePatternsHandler.ts:156-157, 215-217, 310, 351`（ローソク足パターンの日付ラベル）。`get_*` 取得層では未使用。
+- **評価**: 日足（ts=UTC 00:00）では UTC 暦日 == 表示意図の日付で問題なし（本リポジトリの daily=UTC 基準の方針と整合）。**intraday（1hour 等）でパターン検出した場合のみ**、他ツールの JST 表記（`isoTimeLocal`）と UTC 深夜帯で最大 1 日/曜日ずれる余地。`tests/lib/datetime.test.ts:153-163` が UTC 挙動を固定（= 意図的）。
+- → 当初「要追加確認」だったが本監査内で解決。**軽微**（intraday パターンの日付ラベルのみ、設計通り）。修正は任意（intraday で JST 揃えにするなら tz 引数化）。
 
 ---
 
@@ -262,7 +269,7 @@ filter 時の summary にもフィルタ後の `txLines` を付す、または f
 | **P2** | `get_orderbook` 単位 "BTC" ハードコード | 提示 | 3 | 4 | **12** | 確認済み |
 | P3 | `get_transactions` filter+summary 行欠落 | 提示 | 3 | 2 | 6 | 推測 |
 | P4 | `analyzeMarketSignalHandler` 自前 warning 連結 | 提示 | 2 | 2 | 4 | 推測 |
-| A1 | `formatDateWithDayOfWeek` UTC 暦日 | 取得/提示 | 2 | 2 | 4 | 要追加確認 |
+| A1 | `formatDateWithDayOfWeek` UTC 暦日（intraday のみ JST と差） | 提示 | 2 | 1 | 2 | 確認済み（軽微・設計通り） |
 | P5 | `prependVolWarning` が `warnings[]` 非対応 | 提示 | 1 | 1 | 1 | 推測（潜在） |
 
 ## 上位 3 件
@@ -280,4 +287,4 @@ filter 時の summary にもフィルタ後の `txLines` を付す、または f
 
 ## 付録: 監査で追加した再現テスト
 
-`tests/audit_layer2_probe.test.ts`（11 件）。F1/P1/P2/P3 の現状挙動を固定する characterization test。修正適用時は本ファイルの期待値更新＝指摘クローズの確認に使える。P4/P5/A1 は再現テスト未追加（コード読解ベースの指摘のため、必要なら別途追加提案）。
+`tests/audit_layer2_probe.test.ts`（11 件）。F1/P1/P2/P3 の現状挙動を固定する characterization test。修正適用時は本ファイルの期待値更新＝指摘クローズの確認に使える。P4/P5 はコード読解ベースの指摘で再現テスト未追加（必要なら別途追加提案）。A1 は `tests/lib/datetime.test.ts:153-163` が UTC 挙動を固定済み。TZ はライブ実測（2026-06-16, §TZ）で再確認済み。
