@@ -308,8 +308,14 @@ function createChartData(
 	};
 }
 
-// 本番の指標オブジェクト生成。schema 契約テスト（tests/indicators-contract.test.ts）が
-// この戻り値を IndicatorsInternalSchema に直接通して未知キー混入・キーパス欠落を検出するため export する。
+/**
+ * 本番の指標オブジェクトを生成する（flat 構造で `series` ラッパは持たない）。
+ * schema 契約テスト（tests/indicators-contract.test.ts）が戻り値を IndicatorsInternalSchema に
+ * 直接通して未知キー混入・キーパス欠落を検出するため公開している。
+ *
+ * @param normalized 正規化済みローソク足
+ * @returns IndicatorsInternalSchema（`GetIndicatorsData['indicators']`）互換の指標オブジェクト
+ */
 export function computeAllIndicators(normalized: Candle[]): GetIndicatorsData['indicators'] {
 	const allHighs = normalized.map((c) => c.high);
 	const allLows = normalized.map((c) => c.low);
