@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import { avg } from '../lib/math.js';
+import { isLatestBarProvisional, prependProvisionalNote } from '../lib/provisional-bar.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
@@ -256,6 +257,10 @@ export default async function analyzeIchimokuSnapshot(
 
 		// 上流 analyze_indicators の meta.warning（取得層）と meta.warnings（計算層）を別系統で伝播する。
 		const { warning, warnings } = extractUpstreamWarning(indRes.meta);
+
+		// 最新足が形成中（未確定）か。価格位置・転換線/基準線・遅行スパン等は最新足の終値に依存するため、
+		// analyze_indicators と同じ流儀で最新足 ts から判定し注記を出す（warning 2 系統とは別系統の情報注記）。
+		const provisional = isLatestBarProvisional(indRes.data.normalized.at(-1)?.timestamp, String(type));
 
 		const latest = indRes.data.indicators;
 		const close = indRes.data.normalized.at(-1)?.close ?? null;
@@ -539,6 +544,7 @@ export default async function analyzeIchimokuSnapshot(
 			count: indRes.data.normalized.length,
 			...(warning ? { warning } : {}),
 			...(warnings && warnings.length > 0 ? { warnings } : {}),
+			...(provisional ? { provisional: true } : {}),
 		});
 		const baseText = buildIchimokuSnapshotText({
 			pair: chk.pair,
@@ -576,7 +582,12 @@ export default async function analyzeIchimokuSnapshot(
 			futureSpanB,
 			tkDistPct,
 		});
-		const text = prependWarnings(baseText, { warning, warnings }, { separator: '\n' });
+		// 順序は ⚠️ warning → ℹ️ 注記 → 本文（warning を最優先で見せる）。
+		const text = prependWarnings(
+			prependProvisionalNote(baseText, provisional, { separator: '\n' }),
+			{ warning, warnings },
+			{ separator: '\n' },
+		);
 		return AnalyzeIchimokuSnapshotOutputSchema.parse(
 			ok(
 				text,

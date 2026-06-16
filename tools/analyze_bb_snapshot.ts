@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import { calendarDateFromIso, nowIso } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
+import { isLatestBarProvisional, prependProvisionalNote } from '../lib/provisional-bar.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
@@ -110,6 +111,10 @@ export default async function analyzeBbSnapshot(
 
 		// 上流 analyze_indicators の meta.warning（取得層）と meta.warnings（計算層）を別系統で伝播する。
 		const { warning, warnings } = extractUpstreamWarning(indRes.meta);
+
+		// 最新足が形成中（未確定）か。BB の最新値（middle/upper/lower/zScore）は最新足の終値に依存するため、
+		// analyze_indicators と同じ流儀で最新足 ts から判定し注記を出す（warning 2 系統とは別系統の情報注記）。
+		const provisional = isLatestBarProvisional(indRes.data.normalized.at(-1)?.timestamp, String(type));
 
 		const close = indRes.data.normalized.at(-1)?.close ?? null;
 		const mid = indRes.data.indicators.BB2_middle ?? indRes.data.indicators.BB_middle ?? null;
@@ -294,7 +299,12 @@ export default async function analyzeBbSnapshot(
 				bandWidthPct,
 				timeseries,
 			});
-			const summaryLines = prependWarnings(baseSummaryLines, { warning, warnings }, { separator: '\n' });
+			// 順序は ⚠️ warning → ℹ️ 注記 → 本文（warning を最優先で見せる）。
+			const summaryLines = prependWarnings(
+				prependProvisionalNote(baseSummaryLines, provisional, { separator: '\n' }),
+				{ warning, warnings },
+				{ separator: '\n' },
+			);
 			const meta = createMeta(chk.pair, {
 				type,
 				count: indRes.data.normalized.length,
@@ -309,6 +319,7 @@ export default async function analyzeBbSnapshot(
 				},
 				...(warning ? { warning } : {}),
 				...(warnings && warnings.length > 0 ? { warnings } : {}),
+				...(provisional ? { provisional: true } : {}),
 			});
 			return AnalyzeBbSnapshotOutputSchema.parse(ok(summaryLines, data, meta));
 		}
@@ -361,13 +372,19 @@ export default async function analyzeBbSnapshot(
 			},
 			...(warning ? { warning } : {}),
 			...(warnings && warnings.length > 0 ? { warnings } : {}),
+			...(provisional ? { provisional: true } : {}),
 		});
 		const baseExtSummary =
 			summaryBase +
 			`\n\n---\n📌 含まれるもの: ボリンジャーバンド拡張（±1σ/±2σ/±3σ）、Zスコア、バンド幅` +
 			`\n📌 含まれないもの: 他のテクニカル指標（RSI・MACD・一目均衡表）、出来高フロー、板情報` +
 			`\n📌 補完ツール: analyze_indicators（他指標）, get_flow_metrics（出来高）, get_volatility_metrics（ボラ詳細）`;
-		const extSummary = prependWarnings(baseExtSummary, { warning, warnings }, { separator: '\n' });
+		// 順序は ⚠️ warning → ℹ️ 注記 → 本文（warning を最優先で見せる）。
+		const extSummary = prependWarnings(
+			prependProvisionalNote(baseExtSummary, provisional, { separator: '\n' }),
+			{ warning, warnings },
+			{ separator: '\n' },
+		);
 		return AnalyzeBbSnapshotOutputSchema.parse(ok(extSummary, data, meta));
 	} catch (e: unknown) {
 		return failFromError(e, { schema: AnalyzeBbSnapshotOutputSchema });

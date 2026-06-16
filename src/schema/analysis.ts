@@ -317,6 +317,8 @@ export const AnalyzeIchimokuSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	warning: z.string().optional(),
 	/** 計算層の不完全性（analyze_indicators の meta.warnings を継承）。 */
 	warnings: z.array(z.string()).optional(),
+	/** 最新足が形成中（未確定）か。warning（取得層）/ warnings（計算層）とは別系統の情報フラグ。 */
+	provisional: z.boolean().optional(),
 });
 
 export const AnalyzeIchimokuSnapshotOutputSchema = toolResultSchema(
@@ -388,6 +390,8 @@ export const AnalyzeBbSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	warning: z.string().optional(),
 	/** 計算層の不完全性（analyze_indicators の meta.warnings を継承）。 */
 	warnings: z.array(z.string()).optional(),
+	/** 最新足が形成中（未確定）か。warning（取得層）/ warnings（計算層）とは別系統の情報フラグ。 */
+	provisional: z.boolean().optional(),
 });
 
 export const AnalyzeBbSnapshotOutputSchema = toolResultSchema(
@@ -453,6 +457,8 @@ export const AnalyzeSmaSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	warning: z.string().optional(),
 	/** 計算層の不完全性（analyze_indicators の meta.warnings を継承）。 */
 	warnings: z.array(z.string()).optional(),
+	/** 最新足が形成中（未確定）か。warning（取得層）/ warnings（計算層）とは別系統の情報フラグ。 */
+	provisional: z.boolean().optional(),
 });
 
 export const AnalyzeSmaSnapshotOutputSchema = toolResultSchema(
@@ -517,6 +523,8 @@ export const AnalyzeEmaSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	warning: z.string().optional(),
 	/** 計算層の不完全性（analyze_indicators の meta.warnings を継承）。getCandles 直叩き path では undefined。 */
 	warnings: z.array(z.string()).optional(),
+	/** 最新足が形成中（未確定）か。warning（取得層）/ warnings（計算層）とは別系統の情報フラグ。 */
+	provisional: z.boolean().optional(),
 });
 
 export const AnalyzeEmaSnapshotOutputSchema = toolResultSchema(
@@ -571,6 +579,8 @@ export const AnalyzeStochSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	warning: z.string().optional(),
 	/** 計算層の不完全性（analyze_indicators の meta.warnings を継承）。getCandles 直叩き path では undefined。 */
 	warnings: z.array(z.string()).optional(),
+	/** 最新足が形成中（未確定）か。warning（取得層）/ warnings（計算層）とは別系統の情報フラグ。 */
+	provisional: z.boolean().optional(),
 });
 
 export const AnalyzeStochSnapshotOutputSchema = toolResultSchema(

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { dayjs } from '../lib/datetime.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
 
 // 既存のテストは fetch モックで analyze_indicators の全フローを通すため、
@@ -1397,5 +1398,52 @@ describe('analyze_bb_snapshot', () => {
 		expect(res.data.signals).toContain('Price consolidating near middle band');
 		expect(res.data.interpretation.bandwidth_state).toBe('normal');
 		expect(res.data.signals).toContain('Band width around typical levels');
+	});
+
+	// === 形成中足（provisional）注記 ===
+	// 親 describe の afterEach が fetch 復元 + clearIndicatorCache() を実行する。
+	describe('形成中足（provisional）注記', () => {
+		// 最新足 ts を当日 UTC 0 時に揃え、realtime 取得（date 未指定）相当＝形成中にする。
+		function makeRowsEndingToday(count: number): OhlcvRow[] {
+			const todayStart = dayjs().utc().startOf('day').valueOf();
+			const rows: OhlcvRow[] = [];
+			for (let i = count - 1; i >= 0; i--) {
+				const base = 10_000_000 + (count - 1 - i) * 1_000;
+				rows.push([
+					String(base),
+					String(base + 2_000),
+					String(base - 2_000),
+					String(base + 500),
+					'1.5',
+					String(todayStart - i * 86_400_000),
+				]);
+			}
+			return rows;
+		}
+
+		it('realtime（最新足が形成中）: content[0].text 相当の summary に未確定注記が出て meta.provisional=true', async () => {
+			mockFetch(makeRowsEndingToday(250));
+			const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
+			assertOk(res);
+			expect(res.summary).toContain('ℹ️ 最新足は未確定（形成中）');
+			expect((res.meta as { provisional?: boolean }).provisional).toBe(true);
+		});
+
+		it('extended mode でも未確定注記が出て meta.provisional=true', async () => {
+			mockFetch(makeRowsEndingToday(250));
+			const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'extended');
+			assertOk(res);
+			expect(res.summary).toContain('ℹ️ 最新足は未確定（形成中）');
+			expect((res.meta as { provisional?: boolean }).provisional).toBe(true);
+		});
+
+		it('過去の確定足（date 指定相当）: 注記が出ず meta.provisional も付かない', async () => {
+			// makeTrendingOhlcvRows は startMs=2024-01-01 起点 → 最新足も確定済み
+			mockFetch(makeTrendingOhlcvRows(250));
+			const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
+			assertOk(res);
+			expect(res.summary).not.toContain('未確定（形成中）');
+			expect((res.meta as { provisional?: boolean }).provisional).toBeUndefined();
+		});
 	});
 });

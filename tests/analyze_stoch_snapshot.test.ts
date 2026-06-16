@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { dayjs } from '../lib/datetime.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
 
 vi.mock('../tools/analyze_indicators.js', async (importOriginal) => {
@@ -416,6 +417,70 @@ describe('analyze_stoch_snapshot', () => {
 			// getCandles path は取得層のみ。計算層 warnings は契約上 drop される。
 			expect(res.meta.warnings).toBeUndefined();
 			expect(res.summary).not.toContain('不正な計算層 warning');
+		});
+	});
+
+	// === 形成中足（provisional）注記 ===
+	// default パラメータは analyzeIndicators 経由、非デフォルトは getCandles 直叩き。
+	// 両 path で最新足 ts から判定されることを確認する。
+	describe('形成中足（provisional）注記', () => {
+		function buildIndicatorsWithLatestTs(latestTsMs: number) {
+			const base = buildIndicatorsOk();
+			const norm = base.data.normalized;
+			norm[norm.length - 1] = { ...norm[norm.length - 1], timestamp: latestTsMs };
+			return base;
+		}
+		function makeFlatCandlesWithLatestTs(count: number, latestTsMs: number) {
+			const candles = makeFlatCandles(count);
+			candles[candles.length - 1] = { ...candles[candles.length - 1], timestamp: latestTsMs };
+			return candles;
+		}
+		const todayUtcStart = () => dayjs().utc().startOf('day').valueOf();
+
+		it('default パラメータ × realtime: 未確定注記が出て meta.provisional=true', async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(buildIndicatorsWithLatestTs(todayUtcStart())));
+			const res = await analyzeStochSnapshot('btc_jpy', '1day', 120);
+			assertOk(res);
+			expect(res.summary).toContain('ℹ️ 最新足は未確定（形成中）');
+			expect((res.meta as { provisional?: boolean }).provisional).toBe(true);
+		});
+
+		it('default パラメータ × 過去の確定足: 注記が出ず meta.provisional も付かない', async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(buildIndicatorsWithLatestTs(Date.UTC(2024, 0, 1))));
+			const res = await analyzeStochSnapshot('btc_jpy', '1day', 120);
+			assertOk(res);
+			expect(res.summary).not.toContain('未確定（形成中）');
+			expect((res.meta as { provisional?: boolean }).provisional).toBeUndefined();
+		});
+
+		it('非デフォルト（getCandles 直叩き）× realtime: 未確定注記が出て meta.provisional=true', async () => {
+			mockedGetCandles.mockResolvedValueOnce(
+				asMockResult({
+					ok: true,
+					summary: 'ok',
+					data: { normalized: makeFlatCandlesWithLatestTs(20, todayUtcStart()), raw: {} },
+					meta: { pair: 'btc_jpy', type: '1day', count: 20 },
+				}),
+			);
+			const res = await analyzeStochSnapshot('btc_jpy', '1day', 40, 14, 3, 2);
+			assertOk(res);
+			expect(res.summary).toContain('ℹ️ 最新足は未確定（形成中）');
+			expect((res.meta as { provisional?: boolean }).provisional).toBe(true);
+		});
+
+		it('非デフォルト（getCandles 直叩き）× 過去の確定足: 注記が出ず meta.provisional も付かない', async () => {
+			mockedGetCandles.mockResolvedValueOnce(
+				asMockResult({
+					ok: true,
+					summary: 'ok',
+					data: { normalized: makeFlatCandlesWithLatestTs(20, Date.UTC(2024, 0, 1)), raw: {} },
+					meta: { pair: 'btc_jpy', type: '1day', count: 20 },
+				}),
+			);
+			const res = await analyzeStochSnapshot('btc_jpy', '1day', 40, 14, 3, 2);
+			assertOk(res);
+			expect(res.summary).not.toContain('未確定（形成中）');
+			expect((res.meta as { provisional?: boolean }).provisional).toBeUndefined();
 		});
 	});
 });

@@ -315,5 +315,25 @@ describe('detect_whale_events', () => {
 			assertFail(res);
 			expect(res.meta?.errorType).toBe('internal');
 		});
+
+		// === 形成中足（provisional）注記は対象外 ===
+		// 主分析は板スナップショットであり、candles は lookback の概況（priceChange）にしか使わない。
+		// 最新足が形成中（ts ≈ now）でも note を付与しないことを固定する。
+		it('板スナップショットのため形成中足注記は付与しない', async () => {
+			mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
+			mockedGetCandles.mockResolvedValueOnce(
+				asMockResult(
+					candlesOk([
+						{ close: 100, timestamp: Date.now() - 300_000 },
+						{ close: 105, timestamp: Date.now() },
+					]),
+				),
+			);
+
+			const res = await detectWhaleEvents('btc_jpy', '1hour', 0.66);
+			assertOk(res);
+			expect(res.summary).not.toContain('未確定（形成中）');
+			expect((res.meta as { provisional?: boolean }).provisional).toBeUndefined();
+		});
 	});
 });

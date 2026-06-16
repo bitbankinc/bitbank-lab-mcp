@@ -61,6 +61,11 @@ export default async function detectWhaleEvents(
 			'2hour': { type: '5min', limit: 24 },
 		};
 		const lb = lbMap[lookback] || lbMap['1hour'];
+		// NOTE: 形成中足（provisional）注記は対象外。
+		// 本ツールの主分析は「現在の板（orderbook depth）」のスナップショットであり、ローソク足の
+		// 最新値（終値・RSI・ATR 等）を確定値として提示するものではない。candles は lookback 区間の
+		// 概況（先頭→末尾の close 変化率 priceChange）を添えるためだけに使い、最新足の終値そのものを
+		// 指標値として出力しない。よって lib/provisional-bar.ts の「最新足は未確定」注記は意味を成さず付与しない。
 		const candlesRes = await getCandles(chk.pair, lb.type, undefined, lb.limit);
 		if (!candlesRes?.ok)
 			return fail(

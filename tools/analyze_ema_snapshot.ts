@@ -15,6 +15,7 @@ import {
 	type MaLineEntry,
 	type RecentCrossEntry,
 } from '../lib/ma-snapshot-utils.js';
+import { isLatestBarProvisional, prependProvisionalNote } from '../lib/provisional-bar.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
@@ -74,6 +75,10 @@ export default async function analyzeEmaSnapshot(
 		// - hasCustomPeriods=false: analyzeIndicators の meta.warning / meta.warnings 両方
 		let warning: string | undefined;
 		let warnings: string[] | undefined;
+		// 最新足が形成中（未確定）か。EMA の最新値・配列・乖離は最新足の終値に依存するため、
+		// analyze_indicators と同じ流儀で最新足 ts から判定する（warning 2 系統とは別系統の情報注記）。
+		// 取得 path に依らず最新足 ts で判定できるよう、両 path の中で代入する。
+		let provisional = false;
 
 		if (hasCustomPeriods) {
 			const candlesResult = await getCandles(chk.pair, type, undefined, fetchLimit);
@@ -90,6 +95,7 @@ export default async function analyzeEmaSnapshot(
 			close = allCloses.at(-1) ?? null;
 			candles = normalized;
 			normalizedLen = normalized.length;
+			provisional = isLatestBarProvisional(normalized.at(-1)?.timestamp, String(type));
 
 			for (const p of periods) {
 				const series = ema(allCloses, p);
@@ -114,6 +120,7 @@ export default async function analyzeEmaSnapshot(
 					? indRes.data.normalized
 					: [];
 			normalizedLen = indRes.data.normalized.length;
+			provisional = isLatestBarProvisional(indRes.data.normalized.at(-1)?.timestamp, String(type));
 
 			const indRecord = indRes.data.indicators as Record<string, number[] | number | null>;
 			for (const p of periods) {
@@ -159,7 +166,12 @@ export default async function analyzeEmaSnapshot(
 			crossStatuses: crosses,
 			recentCrosses,
 		});
-		const summaryText = prependWarnings(baseSummaryText, { warning, warnings }, { separator: '\n' });
+		// 順序は ⚠️ warning → ℹ️ 注記 → 本文（warning を最優先で見せる）。
+		const summaryText = prependWarnings(
+			prependProvisionalNote(baseSummaryText, provisional, { separator: '\n' }),
+			{ warning, warnings },
+			{ separator: '\n' },
+		);
 
 		const data: z.infer<typeof AnalyzeEmaSnapshotDataSchemaOut> = {
 			latest: { close },
@@ -177,6 +189,7 @@ export default async function analyzeEmaSnapshot(
 			periods,
 			...(warning ? { warning } : {}),
 			...(warnings && warnings.length > 0 ? { warnings } : {}),
+			...(provisional ? { provisional: true } : {}),
 		});
 		return AnalyzeEmaSnapshotOutputSchema.parse(ok(summaryText, data, meta));
 	} catch (e: unknown) {

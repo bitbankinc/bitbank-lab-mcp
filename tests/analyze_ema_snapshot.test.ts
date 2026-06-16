@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { dayjs } from '../lib/datetime.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
 
 vi.mock('../tools/analyze_indicators.js', async (importOriginal) => {
@@ -1020,6 +1021,57 @@ describe('analyze_ema_snapshot', () => {
 				recentCrosses: [],
 			});
 			expect(result).not.toContain('Recent Crosses (all):');
+		});
+	});
+
+	// === 形成中足（provisional）注記 ===
+	// fixed-periods は analyzeIndicators 経由、custom-periods は getCandles 直叩き。
+	// 両 path で最新足 ts から判定されることを確認する。
+	describe('形成中足（provisional）注記', () => {
+		function buildIndicatorsWithLatestTs(latestTsMs: number) {
+			const base = buildIndicatorsOk();
+			const norm = base.data.normalized;
+			norm[norm.length - 1] = { ...norm[norm.length - 1], timestamp: latestTsMs };
+			return base;
+		}
+		function buildCandlesWithLatestTs(latestTsMs: number) {
+			const base = buildCandlesOk();
+			const norm = base.data.normalized;
+			norm[norm.length - 1] = { ...norm[norm.length - 1], timestamp: latestTsMs };
+			return base;
+		}
+		const todayUtcStart = () => dayjs().utc().startOf('day').valueOf();
+
+		it('fixed-periods × realtime: 未確定注記が出て meta.provisional=true', async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(buildIndicatorsWithLatestTs(todayUtcStart())));
+			const res = await analyzeEmaSnapshot('btc_jpy', '1day', 220, [12, 26, 50, 200]);
+			assertOk(res);
+			expect(res.summary).toContain('ℹ️ 最新足は未確定（形成中）');
+			expect((res.meta as { provisional?: boolean }).provisional).toBe(true);
+		});
+
+		it('fixed-periods × 過去の確定足: 注記が出ず meta.provisional も付かない', async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(buildIndicatorsWithLatestTs(Date.UTC(2024, 0, 1))));
+			const res = await analyzeEmaSnapshot('btc_jpy', '1day', 220, [12, 26, 50, 200]);
+			assertOk(res);
+			expect(res.summary).not.toContain('未確定（形成中）');
+			expect((res.meta as { provisional?: boolean }).provisional).toBeUndefined();
+		});
+
+		it('custom-periods（getCandles 直叩き）× realtime: 未確定注記が出て meta.provisional=true', async () => {
+			mockedGetCandles.mockResolvedValueOnce(asMockResult(buildCandlesWithLatestTs(todayUtcStart())));
+			const res = await analyzeEmaSnapshot('btc_jpy', '1day', 220, [10, 30]);
+			assertOk(res);
+			expect(res.summary).toContain('ℹ️ 最新足は未確定（形成中）');
+			expect((res.meta as { provisional?: boolean }).provisional).toBe(true);
+		});
+
+		it('custom-periods（getCandles 直叩き）× 過去の確定足: 注記が出ず meta.provisional も付かない', async () => {
+			mockedGetCandles.mockResolvedValueOnce(asMockResult(buildCandlesWithLatestTs(Date.UTC(2024, 0, 1))));
+			const res = await analyzeEmaSnapshot('btc_jpy', '1day', 220, [10, 30]);
+			assertOk(res);
+			expect(res.summary).not.toContain('未確定（形成中）');
+			expect((res.meta as { provisional?: boolean }).provisional).toBeUndefined();
 		});
 	});
 });

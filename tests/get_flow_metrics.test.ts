@@ -308,6 +308,17 @@ describe('get_flow_metrics', () => {
 		const res = (await toolDef.handler({ pair: 'btc_jpy', limit: 3, date: '20240101' })) as { ok: boolean };
 		expect(res.ok).toBe(false);
 	});
+
+	// === 形成中足（provisional）注記は対象外 ===
+	// 本ツールは OHLC ローソク足ではなく約定（transactions）を時間バケットに集計するため、
+	// 「最新足が未確定（形成中）」の概念が存在しない。note を付与しないことを固定する。
+	it('形成中足注記は付与しない（約定バケットのため対象外）', async () => {
+		mockFetch(txPayload());
+		const res = await getFlowMetrics('btc_jpy', 3, '20240101', 60_000);
+		assertOk(res);
+		expect(res.summary).not.toContain('未確定（形成中）');
+		expect((res.meta as { provisional?: boolean }).provisional).toBeUndefined();
+	});
 });
 
 // ─── buildFlowMetricsText 単体テスト ─────────────────

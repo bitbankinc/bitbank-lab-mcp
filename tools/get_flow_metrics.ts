@@ -469,6 +469,13 @@ export default async function getFlowMetrics(
 			latest: txs.at(-1)?.price,
 			extra: `trades=${totalTrades} buy%=${(aggressorRatio * 100).toFixed(1)} CVD=${cvd.toFixed(2)}${spikeInfo}${rangeLabel}`,
 		});
+		// NOTE: 形成中足（provisional）注記は対象外。
+		// 本ツールは OHLC ローソク足ではなく約定（transactions）を時間バケットに集計するため、
+		// 「最新足が未確定（形成中）」という概念が存在しない（lib/provisional-bar.ts の対象外）。
+		// 最新バケットの不完全性は別系統で扱う:
+		//   - hours 指定時のカバレッジ不足 → dataWarning（取得層 meta.warning）
+		//   - 取得失敗 → fetchWarning（取得層 meta.warning）
+		// これらは analyze_indicators 等の provisional 注記（ℹ️）とは別物なので混在させない。
 		// Result の summary は "summary" モード（集計値のみ、バケット行なし）。
 		// 呼び出し側 (handler) が view に応じて content テキストを差し替える。
 		const summary = buildFlowMetricsText({

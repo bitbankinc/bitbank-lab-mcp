@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { dayjs } from '../lib/datetime.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
 
 vi.mock('../tools/analyze_indicators.js', () => ({
@@ -289,5 +290,34 @@ describe('analyze_ichimoku_snapshot', () => {
 		expect(res.meta.warning).toBeUndefined();
 		expect(res.meta.warnings).toBeUndefined();
 		expect(res.summary.startsWith('⚠️')).toBe(false);
+	});
+
+	// === 形成中足（provisional）注記 ===
+	describe('形成中足（provisional）注記', () => {
+		// buildMockIndicatorSuccess() の最新足にのみ provisional 判定用 ts を載せる。
+		function buildIndicatorsWithLatestTs(latestTsMs: number) {
+			const base = buildMockIndicatorSuccess();
+			const norm = base.data.normalized;
+			norm[norm.length - 1] = { ...norm[norm.length - 1], timestamp: latestTsMs };
+			return base;
+		}
+
+		it('realtime（最新足が形成中）: content の text に未確定注記が出て meta.provisional=true', async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(
+				asMockResult(buildIndicatorsWithLatestTs(dayjs().utc().startOf('day').valueOf())),
+			);
+			const res = await analyzeIchimokuSnapshot('btc_jpy', '1day', 120, 10);
+			assertOk(res);
+			expect(res.summary).toContain('ℹ️ 最新足は未確定（形成中）');
+			expect((res.meta as { provisional?: boolean }).provisional).toBe(true);
+		});
+
+		it('過去の確定足（date 指定相当）: 注記が出ず meta.provisional も付かない', async () => {
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(buildIndicatorsWithLatestTs(Date.UTC(2024, 0, 1))));
+			const res = await analyzeIchimokuSnapshot('btc_jpy', '1day', 120, 10);
+			assertOk(res);
+			expect(res.summary).not.toContain('未確定（形成中）');
+			expect((res.meta as { provisional?: boolean }).provisional).toBeUndefined();
+		});
 	});
 });

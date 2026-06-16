@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import { calendarDateFromIso, dayjs } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
+import { isLatestBarProvisional, prependProvisionalNote } from '../lib/provisional-bar.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
@@ -103,6 +104,10 @@ export default async function analyzeStochSnapshot(
 		// - isDefault=false: getCandles の meta.warning のみ（warnings は出ない）
 		let warning: string | undefined;
 		let warnings: string[] | undefined;
+		// 最新足が形成中（未確定）か。%K/%D・ゾーン・クロスは最新足の終値に依存するため、
+		// analyze_indicators と同じ流儀で最新足 ts から判定する（warning 2 系統とは別系統の情報注記）。
+		// 取得 path に依らず最新足 ts で判定できるよう、両 path の中で代入する。
+		let provisional = false;
 
 		if (isDefault) {
 			const indRes = await analyzeIndicators(chk.pair, type, limit);
@@ -127,6 +132,7 @@ export default async function analyzeStochSnapshot(
 					? indRes.data.normalized
 					: [];
 			normalizedLen = indRes.data.normalized.length;
+			provisional = isLatestBarProvisional(indRes.data.normalized.at(-1)?.timestamp, String(type));
 		} else {
 			const candlesResult = await getCandles(chk.pair, type, undefined, limit);
 			if (!candlesResult.ok)
@@ -144,6 +150,7 @@ export default async function analyzeStochSnapshot(
 			close = closes.at(-1) ?? null;
 			candles = normalized;
 			normalizedLen = normalized.length;
+			provisional = isLatestBarProvisional(normalized.at(-1)?.timestamp, String(type));
 			const result = computeClassicStochastic(highs, lows, closes, kPeriod, smoothK, smoothD);
 			stochK = result.k;
 			stochD = result.d;
@@ -249,7 +256,12 @@ export default async function analyzeStochSnapshot(
 			divDesc,
 			recentCrosses,
 		});
-		const summaryText = prependWarnings(baseSummaryText, { warning, warnings }, { separator: '\n' });
+		// 順序は ⚠️ warning → ℹ️ 注記 → 本文（warning を最優先で見せる）。
+		const summaryText = prependWarnings(
+			prependProvisionalNote(baseSummaryText, provisional, { separator: '\n' }),
+			{ warning, warnings },
+			{ separator: '\n' },
+		);
 
 		const data: z.infer<typeof AnalyzeStochSnapshotDataSchemaOut> = {
 			latest: { close },
@@ -266,6 +278,7 @@ export default async function analyzeStochSnapshot(
 			params: { kPeriod, smoothK, smoothD },
 			...(warning ? { warning } : {}),
 			...(warnings && warnings.length > 0 ? { warnings } : {}),
+			...(provisional ? { provisional: true } : {}),
 		});
 		return AnalyzeStochSnapshotOutputSchema.parse(ok(summaryText, data, meta));
 	} catch (e: unknown) {
