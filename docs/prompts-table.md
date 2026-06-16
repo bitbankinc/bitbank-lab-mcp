@@ -27,7 +27,7 @@
 | 5 | 中級：BTCのフロー分析をして | get_flow_metrics, get_transactions | CVD・Aggressor Ratio・スパイクから短期モメンタムを分析（デイトレ〜短期スイングの地合い確認用） |
 | 6 | 中級：BTCのパターン分析をして | detect_patterns, analyze_candle_patterns | 完成済み＆形成中チャートパターン＋ローソク足パターンを統合検出 |
 | 7 | 中級：BTCのサポレジを分析して | analyze_support_resistance, get_orderbook, analyze_sma_snapshot | 過去90日の反応と現在の板・圧力を統合してサポレジ強度を評価 |
-| 8 | 🌅 おはようレポート | get_ticker, get_candles, analyze_market_signal | 価格＋前日比・ミニスパークライン・地合い1行をサッと把握する軽量レポート（前回実行値と比較。Visualizer / HTML） |
+| 8 | 🌅 おはようレポート | get_ticker, get_candles, analyze_market_signal | 価格＋前日比(24h)・ミニスパークライン・地合い1行をサッと把握する軽量レポート（Visualizer / HTML） |
 
 ## Private（1 種）
 

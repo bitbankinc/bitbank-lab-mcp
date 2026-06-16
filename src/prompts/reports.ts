@@ -5,29 +5,21 @@ function userMessage(text: string) {
 	return [{ role: 'user' as const, content: [{ type: 'text', text }] }];
 }
 
-/** おはようレポートの前日比用 状態ファイル（作業ディレクトリ基準。cache/ は .gitignore 済み） */
-const OHAYO_STATE_PATH = 'cache/ohayo-state.json';
-
 const OHAYO_TEXT = `今朝の BTC/JPY を「なんとなく把握」する軽量レポートを作成してください。トレード判断用ではありません。5 秒で「今こういう感じか」と分かる密度に絞ります。
 
 【速度（重要）】
 - 必要ツールは最初に 1 回でまとめてロードする（tool_search を何度も呼ばない）。
-- 下記 3 ツールは互いに依存しないので **必ず並列で** 呼ぶ（直列にしない）。
+- 下記 3 ツールは互いに依存しないので **必ず並列で** 呼ぶ（直列にしない）。状態ファイル等の読み書きは不要。
 
-【データ取得・分析ツール（この 3 つだけ。他の分析・データ取得ツールは追加しない）】
-1. get_ticker(pair="btc_jpy") — 現在値・24h 高安・取得時刻
-2. get_candles(pair="btc_jpy", type="1hour", limit=8, view="items") — スパークライン用に直近 8 本の close だけ使う（view="items" で 8 本すべて取得。default view は 5 本しか返さないため不可）
+【ツール（この 3 つだけ。追加呼び出し禁止）】
+1. get_ticker(pair="btc_jpy") — 現在値(last)・24h 始値(open)・24h 高安・取得時刻。前日比(24h) はこの 24h変動 (last−open)/open を使う
+2. get_candles(pair="btc_jpy", type="1hour", limit=24, view="items") — 直近 24h（24 本）の close。ミニスパークライン用（view="items" で 24 本すべて取得）
 3. analyze_market_signal(pair="btc_jpy") — 地合い判定。総合スコア（-100〜+100）と bullish/neutral/bearish を 1 行に要約する用途のみ（数値テーブルは展開しない）
-※「3 つだけ」は分析・データ取得ツールの制約。下記の前日比で使う Read/Write ファイルツールはこの数に含めず、呼んでよい。
 
-【前日比（状態保存。要 Read/Write ファイルツール）】
-- 冒頭: 作業ディレクトリ直下の ${OHAYO_STATE_PATH} を Read（絶対パスに解決）。
-  スキーマ: {"fetchedAt": ISO8601, "price": number, "signal": "bullish"|"neutral"|"bearish"}
-  ファイルが無い / 読めない / ファイルツール未提供なら **初回扱い**（エラーにしない）。
-- 前日比 = (今回 get_ticker.last − 前回 price) / 前回 price × 100。前回 fetchedAt → 今回取得時刻 の経過時間も添える。
-- 初回など前回値が無い場合は「前日比 N/A（初回）」と明示する。
-- 末尾: ${OHAYO_STATE_PATH} に今回値を Write（cache/ が無ければ作成）。Write 不可の環境なら保存はスキップしてよい。
-  {"fetchedAt": <get_ticker の取得時刻 ISO>, "price": <get_ticker.last>, "signal": <analyze_market_signal の recommendation>}
+【前日比（24h・データ由来。状態保存はしない）】
+- 前日比(24h) = get_ticker が算出済みの 24h変動 (last−open)/open をそのまま転記する。
+- ラベルは「前日比(24h)」と明記（暦日の前日比ではなく 24 時間前比であることを正直に）。
+- 毎回データから算出するため初回・別環境でも N/A にならない。前回値の保存/読込は行わない。
 
 【データ誠実性】
 - 各数値に取得時刻・カバー期間をツールレスポンスのまま明記（推測・「直近8時間」等のハードコード禁止）。
@@ -42,8 +34,17 @@ ${VISUALIZER_OUTPUT_BLOCK}
 - mockup モジュール想定。カードを敷き詰めず余白を活かす。「テキスト＋スパークライン 1 個」を超えて盛らない。
 
 【セクション（この 3 つだけ）】
-1. 結論（最上段・1〜2 行）— 結論先行。例:「今朝 ¥10,600,000、前日比 −0.2%（ほぼ横ばい）。地合いは弱気寄り。」価格の質感を言葉で（じり安 / 横ばい / 急騰 等）。これだけ読めば把握が完了する密度にする。
-2. ミニスパークライン — get_candles 直近 8 本 close からインライン SVG（<svg><polyline>。render_chart_svg は使わない）。始点・終点の close 値だけ添える。装飾は最小。
+1. 結論（最上段・1〜2 行）— 結論先行。例:「今朝 ¥10,600,000、前日比(24h) −0.2%（ほぼ横ばい）。地合いは弱気寄り。」価格の質感を言葉で（じり安 / 横ばい / 急騰 等）。これだけ読めば把握が完了する密度にする。
+2. ミニスパークライン — get_candles 直近 24 本（24h）の close をインライン SVG（<svg><polyline>）で描く。render_chart_svg は使わない。
+   ▼上下の見切れ防止（必須・スケーリング規則）:
+   - Y ドメインは描画データ自身の min/max から取る（固定値で決め打ちしない）→ 全点が必ず枠内に収まる。
+   - viewBox と上下マージン（パディング）で min/max が枠線に接しないようにする。例: viewBox="0 0 240 48"、上下マージン M=8。
+     ・点 i の x = 4 + i/(n−1) × (240 − 8)
+     ・点 i の y = M + (1 − (close_i − min)/(max − min)) × (48 − 2M)
+     ・max == min（無変化）のときは全点 y = 24 の水平線にする（ゼロ除算回避）
+   - <svg> に overflow="visible"、<polyline> は fill="none" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"。
+   - 線色は方向で（任意）: 上げ=緑 / 下げ=赤 / 横ばい=グレー。
+   - 始点(≈24h前)・終点(≈現在)の close 値だけ数値で添える。装飾はこれ以上盛らない。
 3. 地合い 1 行 — analyze_market_signal を「強気 / 弱気 / 方向感なし」＋ごく短い根拠（スコア・信頼度）1 行に要約。数値テーブルは出さない。
 （任意・下段に小さく）主要ライン 2 本 — get_ticker の 24h 高安で代用可。上下各 1 本だけ small text。S/R ツールは追加しない（速度優先）。
 
@@ -89,7 +90,7 @@ export const reportPrompts: PromptDef[] = [
 	{
 		name: '🌅 おはようレポート',
 		description:
-			'今朝の BTC/JPY をサッと把握する軽量レポート（価格＋前日比・ミニスパークライン・地合い1行）。前回実行値と比較。Visualizer（デフォルト）または HTML 出力。',
+			'今朝の BTC/JPY をサッと把握する軽量レポート（価格＋前日比(24h)・ミニスパークライン・地合い1行）。Visualizer（デフォルト）または HTML 出力。',
 		arguments: [VISUALIZER_MODE_ARG],
 		messages: userMessage(OHAYO_TEXT),
 		metadata: {
