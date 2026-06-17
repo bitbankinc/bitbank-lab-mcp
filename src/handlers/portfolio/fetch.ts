@@ -6,6 +6,7 @@
  */
 
 import { dayjs } from '../../../lib/datetime.js';
+import { fetchTickerPricesMap } from '../../../lib/tickers.js';
 import analyzeIndicators from '../../../tools/analyze_indicators.js';
 import getCandles from '../../../tools/get_candles.js';
 import getMarginPositions from '../../../tools/private/get_margin_positions.js';
@@ -317,24 +318,13 @@ export async function fetchMarginAccountInfo(): Promise<MarginAccountInfo> {
 
 // ── Ticker 取得 ──
 
+/**
+ * public API の tickers_jpy から asset → 最新価格 Map を取得する。
+ * 共通ヘルパー `fetchTickerPricesMap`（lib/tickers.ts）の薄いラッパ。
+ * 後方互換のため Map のみを返すシグネチャを維持する（呼び出し側は error を握り潰す）。
+ */
 export async function fetchTickerPrices(): Promise<Map<string, number>> {
-	const prices = new Map<string, number>();
-	try {
-		const res = await fetch('https://public.bitbank.cc/tickers_jpy', {
-			signal: AbortSignal.timeout(3000),
-		});
-		if (!res.ok) return prices;
-		const json = (await res.json()) as { success?: number; data?: Array<{ pair: string; last: string }> };
-		if (json.success !== 1 || !Array.isArray(json.data)) return prices;
-		for (const item of json.data) {
-			const asset = item.pair.replace('_jpy', '');
-			const last = Number(item.last);
-			if (Number.isFinite(last) && last > 0) prices.set(asset, last);
-		}
-	} catch {
-		/* ticker 失敗は非致命的 */
-	}
-	return prices;
+	return (await fetchTickerPricesMap()).prices;
 }
 
 /**

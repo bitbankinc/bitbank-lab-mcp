@@ -9,42 +9,12 @@ import { toNum } from '../../lib/conversions.js';
 import { nowIso } from '../../lib/datetime.js';
 import { formatPrice } from '../../lib/formatter.js';
 import { ok } from '../../lib/result.js';
+import { fetchTickerPricesMap } from '../../lib/tickers.js';
 import type { RawAsset } from '../../src/handlers/portfolio/types.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import { GetMyAssetsInputSchema, GetMyAssetsOutputSchema } from '../../src/private/schemas.js';
 import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
-
-/**
- * public API の tickers_jpy から各通貨の最新価格を取得する。
- * 失敗しても get_my_assets 自体は動作する（partial_data_warning）。
- */
-async function fetchTickerPrices(): Promise<{ prices: Map<string, number>; error?: string }> {
-	try {
-		const res = await fetch('https://public.bitbank.cc/tickers_jpy', {
-			signal: AbortSignal.timeout(3000),
-		});
-		if (!res.ok) {
-			return { prices: new Map(), error: `ticker HTTP ${res.status}` };
-		}
-		const json = (await res.json()) as { success?: number; data?: Array<{ pair: string; last: string }> };
-		if (json.success !== 1 || !Array.isArray(json.data)) {
-			return { prices: new Map(), error: 'ticker レスポンス不正' };
-		}
-
-		const prices = new Map<string, number>();
-		for (const item of json.data) {
-			const asset = item.pair.replace('_jpy', '');
-			const last = toNum(item.last);
-			if (last != null && last > 0) {
-				prices.set(asset, last);
-			}
-		}
-		return { prices };
-	} catch (e) {
-		return { prices: new Map(), error: e instanceof Error ? e.message : 'ticker 取得失敗' };
-	}
-}
 
 export default async function getMyAssets(args: { include_jpy_valuation?: boolean }) {
 	const { include_jpy_valuation = true } = args;
@@ -65,7 +35,7 @@ export default async function getMyAssets(args: { include_jpy_valuation?: boolea
 		let prices = new Map<string, number>();
 
 		if (include_jpy_valuation) {
-			const tickerResult = await fetchTickerPrices();
+			const tickerResult = await fetchTickerPricesMap();
 			prices = tickerResult.prices;
 			tickerError = tickerResult.error;
 		}
