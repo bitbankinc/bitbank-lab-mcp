@@ -62,6 +62,15 @@ describe('render_depth_svg', () => {
 		expect(res.summary).toContain('rendered');
 	});
 
+	it('Y軸数量ラベルは pair の base 通貨を使う（eth_jpy → ETH、BTC を含まない）', async () => {
+		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
+		const res = await renderDepthSvg({ pair: 'eth_jpy' });
+		assertOk(res);
+		// Y軸目盛りの <text>…N ETH</text>
+		expect(res.data.svg).toMatch(/\d+ ETH<\/text>/);
+		expect(res.data.svg).not.toContain('BTC');
+	});
+
 	it('SVG に板の深さヘッダー・買い売り比率・中央価格を含む', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
 		const res = await renderDepthSvg({ pair: 'btc_jpy' });

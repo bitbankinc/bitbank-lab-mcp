@@ -116,16 +116,18 @@ export default async function detectWhaleEvents(
 		const avgBuyDist = avg(buyDists);
 		const avgSellDist = avg(sellDists);
 
+		// 数量の単位は pair の base 通貨から導出する（規約元6ツールと同じ書式）。
+		const baseCcy = chk.pair.split('_')[0]?.toUpperCase() ?? '';
 		const text = [
 			`=== ${chk.pair.toUpperCase()} 大口動向分析（過去${lookback}）===`,
 			'',
 			`🐋 検出された大口: ${events.length}件`,
-			`買い: ${largeBids.length}件（合計${buyVol.toFixed(2)} BTC）`,
-			`売り: ${largeAsks.length}件（合計${sellVol.toFixed(2)} BTC）`,
+			`買い: ${largeBids.length}件（合計${buyVol.toFixed(2)} ${baseCcy}）`,
+			`売り: ${largeAsks.length}件（合計${sellVol.toFixed(2)} ${baseCcy}）`,
 			'',
 			'📊 買い/売りバランス:',
-			`   買い: ${buyBars} ${buyVol.toFixed(2)} BTC (${(buyPct * 100).toFixed(0)}%)`,
-			`   売り: ${sellBars} ${sellVol.toFixed(2)} BTC (${(sellPct * 100).toFixed(0)}%)`,
+			`   買い: ${buyBars} ${buyVol.toFixed(2)} ${baseCcy} (${(buyPct * 100).toFixed(0)}%)`,
+			`   売り: ${sellBars} ${sellVol.toFixed(2)} ${baseCcy} (${(sellPct * 100).toFixed(0)}%)`,
 			'',
 			'📏 距離の統計:',
 			`   平均距離: 買い ${avgBuyDist.toFixed(2)}%, 売り ${avgSellDist.toFixed(2)}%`,
@@ -133,7 +135,7 @@ export default async function detectWhaleEvents(
 			'📋 主要な大口:',
 			...events.map(
 				(e) =>
-					`${e.side === 'buy' ? '🟢' : '🔴'} ${e.price.toLocaleString('ja-JP')}円に${e.size} BTC（${e.side === 'buy' ? '買い' : '売り'}）距離: ${e.distancePct != null ? `${(e.distancePct >= 0 ? '+' : '') + e.distancePct}%` : 'n/a'}`,
+					`${e.side === 'buy' ? '🟢' : '🔴'} ${e.price.toLocaleString('ja-JP')}円に${e.size} ${baseCcy}（${e.side === 'buy' ? '買い' : '売り'}）距離: ${e.distancePct != null ? `${(e.distancePct >= 0 ? '+' : '') + e.distancePct}%` : 'n/a'}`,
 			),
 			'',
 			`📈 過去${lookback}の価格変化: ${(priceChange * 100).toFixed(2)}%`,

@@ -664,7 +664,7 @@ export const toolDef: ToolDefinition = {
 			obvSma20,
 			obvTrend,
 			obvPrev,
-			obvUnit: (pair ?? '').split('_')[0]?.toUpperCase() || 'BTC',
+			obvUnit: (pair ?? '').split('_')[0]?.toUpperCase() ?? '',
 		});
 		// 形成中足の注記（meta.provisional）と上流 fetchWarning（meta.warning: 取得層）/
 		// 指標不足（meta.warnings[]: 計算層）を content 先頭に別行で出す。

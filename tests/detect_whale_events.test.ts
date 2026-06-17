@@ -83,6 +83,18 @@ describe('detect_whale_events', () => {
 		expect(res.summary).not.toContain('NaN');
 	});
 
+	it('数量ラベルは pair の base 通貨を使う（eth_jpy → ETH、BTC を含まない）', async () => {
+		// depthOk の既定サイズ（0.8〜1.2）は minSize=0.5 超 → events 検出され per-event 行も exercise される
+		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
+		mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk([{ close: 100 }, { close: 105 }])));
+
+		const res = await detectWhaleEvents('eth_jpy', '1hour', 0.5);
+		assertOk(res);
+		expect(res.data.events.length).toBeGreaterThan(0);
+		expect(res.summary).toContain('ETH');
+		expect(res.summary).not.toContain('BTC');
+	});
+
 	// ── 新規追加テスト ──
 	// beforeEach で resetAllMocks を呼び、前テストが消費しなかった
 	// mockResolvedValueOnce キューをフラッシュしてテスト間の干渉を防ぐ

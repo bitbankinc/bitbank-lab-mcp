@@ -32,6 +32,8 @@ export default async function renderDepthSvg(
 		const chk = ensurePair(args.pair || 'btc_jpy');
 		if (!chk.ok) return failFromValidation(chk);
 		const pair = chk.pair;
+		// Y軸数量の単位は pair の base 通貨から導出する（prepare_depth_data と同じ書式）。
+		const baseCcy = pair.split('_')[0]?.toUpperCase() ?? '';
 		const type = String(args.type || '1day');
 		const levels = Math.max(10, Number(args?.depth?.levels ?? 200));
 
@@ -118,7 +120,7 @@ export default async function renderDepthSvg(
 		const yTickTexts = yTicks
 			.map(
 				(t) =>
-					`<text x="${padding.left - 8}" y="${t.y}" text-anchor="end" dominant-baseline="middle" fill="#e5e7eb" font-size="10">${Math.round(t.q)} BTC</text>`,
+					`<text x="${padding.left - 8}" y="${t.y}" text-anchor="end" dominant-baseline="middle" fill="#e5e7eb" font-size="10">${Math.round(t.q)} ${baseCcy}</text>`,
 			)
 			.join('');
 		// X軸目盛り（5分割）

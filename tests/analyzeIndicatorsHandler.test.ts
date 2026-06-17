@@ -625,28 +625,28 @@ describe('toolDef.handler', () => {
 		expect(obvLine).toContain('BTC');
 	});
 
-	// pair 欠損時のフォールバック（formatter の baseCcy と同じ `|| 'BTC'`）。
+	// pair 欠損時は base 通貨を導出できないため単位は空（formatter の baseCcy と同じ `?? ''`）。
 	// 本番は schema default('btc_jpy') で到達しないが、String(pair) 経由で
-	// "UNDEFINED" 化していた退行を防ぐ防御的回帰。
-	it('obvUnit は pair が undefined のとき BTC にフォールバックし UNDEFINED にならない', async () => {
+	// "UNDEFINED" 化していた退行を防ぐ防御的回帰。末尾に通貨コードが付かないこと。
+	it('obvUnit は pair が undefined でも UNDEFINED 化せず単位が空になる', async () => {
 		mockedAnalyze.mockResolvedValueOnce(mockResult() as never);
 		const res = (await toolDef.handler({ pair: undefined as never, type: '1day', limit: 200 })) as {
 			content: Array<{ text: string }>;
 		};
 		const obvLine = res.content[0].text.split('\n').find((l) => l.trim().startsWith('現在値:'));
 		expect(obvLine).toBeDefined();
-		expect(obvLine).toContain('BTC');
 		expect(obvLine).not.toContain('UNDEFINED');
+		expect(obvLine).not.toMatch(/[A-Z]{2,}$/);
 	});
 
-	it('obvUnit は pair が空文字のとき BTC にフォールバックする', async () => {
+	it('obvUnit は pair が空文字でも単位が空になる', async () => {
 		mockedAnalyze.mockResolvedValueOnce(mockResult() as never);
 		const res = (await toolDef.handler({ pair: '', type: '1day', limit: 200 })) as {
 			content: Array<{ text: string }>;
 		};
 		const obvLine = res.content[0].text.split('\n').find((l) => l.trim().startsWith('現在値:'));
 		expect(obvLine).toBeDefined();
-		expect(obvLine).toContain('BTC');
+		expect(obvLine).not.toMatch(/[A-Z]{2,}$/);
 	});
 
 	it('analyzeIndicators 失敗時はそのまま返す', async () => {

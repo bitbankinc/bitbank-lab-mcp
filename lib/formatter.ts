@@ -293,9 +293,8 @@ export function formatSummary(
 
 		// 出来高情報
 		if (volumeStats) {
-			// 出来高の単位は pair の base 通貨から導出する（他ツールと同じ規約）。
-			// pair 未指定時のみ従来どおり BTC にフォールバックする。
-			const baseCcy = (pair ?? '').split('_')[0]?.toUpperCase() || 'BTC';
+			// 出来高の単位は pair の base 通貨から導出する（規約元6ツール・OBV と同じ書式）。
+			const baseCcy = (pair ?? '').split('_')[0]?.toUpperCase() ?? '';
 			summary += '\n\n【出来高推移】';
 			summary += `\n- 直近7日間の平均: ${volumeStats.recent7DaysAvg.toFixed(0)} ${baseCcy}/日`;
 			summary += `\n- その前7日間の平均: ${volumeStats.previous7DaysAvg.toFixed(0)} ${baseCcy}/日`;
