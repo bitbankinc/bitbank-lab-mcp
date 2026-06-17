@@ -528,21 +528,21 @@ describe('prepare_chart_data', () => {
 	// ここでは market_data_audit.test.ts §3 の assertRoundTrip パターンで、
 	// JSON.stringify→parse 後の wire 形式でも schema を通過し意味が壊れないことを固定する。
 	describe('wire 出力 schema 検証 (JSON round-trip)', () => {
-		function assertRoundTrip<T>(res: T, schema: { parse: (v: unknown) => unknown }, invariants: (parsed: T) => void) {
+		type ParsedPrepareChartData = ReturnType<typeof PrepareChartDataOutputSchema.parse>;
+
+		// wire（JSON 往復後）を schema に通し、parse 結果（strip/transform 適用後）で意味不変を検証する。
+		// 生の wire ではなく parsed に対して invariants を評価することで、parse 時の strip も検出できる。
+		function assertRoundTrip(res: unknown, invariants: (parsed: ParsedPrepareChartData) => void) {
 			const wire = JSON.parse(JSON.stringify(res));
-			// schema が wire 形式（NaN/Infinity 不在）を受理する。
-			expect(() => schema.parse(wire)).not.toThrow();
-			// 重要フィールドの意味が壊れていない。
-			invariants(wire as T);
+			const parsed = PrepareChartDataOutputSchema.parse(wire); // schema 違反なら throw → テスト失敗
+			invariants(parsed);
 		}
 
 		it('candles のみ: roundtrip 後も schema parse 成功 + summary/candles/times/meta 不変', async () => {
 			mockFetch(makeOhlcvRows(600));
 			const res = await prepareChartData('btc_jpy', '1day', 30);
 			assertOk(res);
-			assertRoundTrip(res, PrepareChartDataOutputSchema, (p) => {
-				// biome-ignore lint/suspicious/noExplicitAny: assertion helper
-				const v = p as any;
+			assertRoundTrip(res, (v) => {
 				expect(v.ok).toBe(true);
 				expect(v.summary).toBe(res.summary);
 				expect(v.data.candles).toHaveLength(res.data.candles.length);
@@ -558,13 +558,11 @@ describe('prepare_chart_data', () => {
 			mockFetch(makeOhlcvRows(600));
 			const res = await prepareChartData('btc_jpy', '1day', 50, ['SMA_20', 'BB', 'RSI', 'MACD']);
 			assertOk(res);
-			assertRoundTrip(res, PrepareChartDataOutputSchema, (p) => {
-				// biome-ignore lint/suspicious/noExplicitAny: assertion helper
-				const v = p as any;
+			assertRoundTrip(res, (v) => {
 				expect(Object.keys(v.data.series ?? {}).length).toBeGreaterThan(0);
-				expect(v.data.series.SMA_20).toHaveLength(v.data.candles.length);
-				expect(v.data.subPanels.RSI_14).toHaveLength(v.data.candles.length);
-				expect(v.data.subPanels.MACD.line).toHaveLength(v.data.candles.length);
+				expect(v.data.series?.SMA_20).toHaveLength(v.data.candles.length);
+				expect(v.data.subPanels?.RSI_14).toHaveLength(v.data.candles.length);
+				expect(v.data.subPanels?.MACD?.line).toHaveLength(v.data.candles.length);
 			});
 		});
 
@@ -575,11 +573,9 @@ describe('prepare_chart_data', () => {
 			const res = await prepareChartData('mona_jpy', '1day', 30);
 			assertOk(res);
 			expect((res.meta.warnings ?? []).length).toBeGreaterThan(0);
-			assertRoundTrip(res, PrepareChartDataOutputSchema, (p) => {
-				// biome-ignore lint/suspicious/noExplicitAny: assertion helper
-				const v = p as any;
+			assertRoundTrip(res, (v) => {
 				expect(Array.isArray(v.meta.warnings)).toBe(true);
-				expect(v.meta.warnings.length).toBeGreaterThan(0);
+				expect((v.meta.warnings ?? []).length).toBeGreaterThan(0);
 				expect(v.meta.warnings).toEqual(res.meta.warnings);
 			});
 		});
