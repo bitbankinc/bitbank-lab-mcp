@@ -3,6 +3,12 @@ import { nowIso } from './datetime.js';
 
 // bitbank 公式ペアリスト（アクティブなもののみ）
 // 参考: https://github.com/bitbankinc/bitbank-api-docs/blob/master/pairs.md
+//
+// ⚠️ 制約: このリストは現状 JPY 建てのみ。
+// 表示層（lib/formatter.ts ほか多数）が価格に「円」を直書きしているため、
+// 非 JPY 建て（例: eth_btc）を追加する場合は表示層の quote 通貨対応が必須。
+// Pair 型は `${string}_${string}` なので型では防げず、サイレントに誤表記となる。
+// tests/lib/validate.test.ts のガードが番人（非JPYを足した瞬間 CI が赤くなる）。
 export const ALLOWED_PAIRS: Set<Pair> = new Set([
 	// 主要ペア
 	'btc_jpy',

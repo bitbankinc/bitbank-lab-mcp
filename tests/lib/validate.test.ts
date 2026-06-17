@@ -59,6 +59,23 @@ describe('ensurePair', () => {
 	});
 });
 
+describe('ALLOWED_PAIRS は JPY 建てのみ（表示層が円前提のガード）', () => {
+	// 表示層（lib/formatter.ts ほか多数）が価格に「円」を直書きしているため、
+	// ALLOWED_PAIRS は現状すべて JPY クォート（*_jpy）でなければならない。
+	// 非JPYペア（例: eth_btc）を追加すると表示層が一斉に誤表記になる「サイレントな潜在バグ」。
+	// Pair 型は `${string}_${string}` で非JPYも型上は通るため、型では防げない。
+	// → 非JPYペアの追加には表示層の quote 通貨対応が先に必要。このテストがその番人。
+	it('quote 通貨が空（空集合）でないこと（番人の空振り防止）', () => {
+		expect(ALLOWED_PAIRS.size).toBeGreaterThan(0);
+	});
+	it('全ペアの quote 通貨（pair.split("_")[1]）が jpy であること', () => {
+		for (const pair of ALLOWED_PAIRS) {
+			const quote = pair.split('_')[1];
+			expect(quote, `${pair} は非JPY建て。追加には表示層の quote 通貨対応が先に必要`).toBe('jpy');
+		}
+	});
+});
+
 describe('validateLimit', () => {
 	it('範囲内の整数で ok: true を返す', () => {
 		expect(validateLimit(100)).toEqual({ ok: true, value: 100 });
