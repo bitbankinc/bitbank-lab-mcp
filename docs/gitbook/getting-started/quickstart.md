@@ -2,9 +2,10 @@
 description: Claude Desktop に登録して、AIに bitbank のデータを分析させるまでの最短手順（約5分）
 ---
 
-# クイックスタート（5分）
+# クイックスタート
 
-bitbank-lab-mcp を **Claude Desktop** に登録し、AIに市場データを分析させるまでの最短手順です。API キーは不要（Public ツールのみ）で始められます。
+bitbank-lab-mcp を **Claude Desktop** に登録し、AI に市場データを分析させるまでの最短手順です。\
+公開データのみの場合は APIキーは不要です。
 
 {% hint style="success" %}
 インストール作業はありません。`npx` 経由で起動するため、設定ファイルに数行追記するだけで完了します。
@@ -35,7 +36,9 @@ bitbank-lab-mcp を **Claude Desktop** に登録し、AIに市場データを分
 {% endtab %}
 {% endtabs %}
 
-**設定内容（Public ツールのみ・API キー不要）:**
+**A. Public データのみ:**
+
+価格・板・ローソク足などの公開市場データの取得と分析。API キー不要。
 
 ```json
 {
@@ -48,13 +51,64 @@ bitbank-lab-mcp を **Claude Desktop** に登録し、AIに市場データを分
 }
 ```
 
+**B. Private データ参照系（要 API キー）:**
+
+資産残高・約定履歴・注文照会・ポートフォリオ分析などの読み取り専用。発注はできません。
+
+```json
+{
+  "mcpServers": {
+    "bitbank-lab": {
+      "command": "npx",
+      "args": ["-y", "bitbank-lab-mcp"],
+      "env": {
+        "BITBANK_API_KEY": "your_api_key",
+        "BITBANK_API_SECRET": "your_api_secret"
+      }
+    }
+  }
+}
+```
+
+{% hint style="success" %}
+**bitbank API の権限は「参照」のみ設定することを推奨**
+{% endhint %}
+
+&#x20;**C. 取引注文・注文キャンセル実行（要 APIキー）:**
+
+B に加えて、AI からの発注・注文キャンセルまで実行。実行前に必ず確認ステップが入ります。
+
+```json
+{
+  "mcpServers": {
+    "bitbank-lab": {
+      "command": "npx",
+      "args": ["-y", "bitbank-lab-mcp"],
+      "env": {
+        "BITBANK_API_KEY": "your_api_key",
+        "BITBANK_API_SECRET": "your_api_secret",
+        "BITBANK_TRUST_HOST_APPROVAL": "1"
+      }
+    }
+  }
+}
+```
+
+{% hint style="success" %}
+**bitbank API の権限は「参照」および「取引」のみ設定することを推奨**
+{% endhint %}
+
+**※「出金」権限は有効化しないことを強く推奨します。本サーバは出金系ツール未実装のため不要です。**
+
 ## 2. Claude Desktop を再起動する
 
-設定を反映するため、**Claude Desktop を完全終了して再起動** してください（macOS は `Cmd+Q`、Windows はタスクトレイから完全終了）。
+設定を反映するため、**Claude Desktop を完全終了して再起動**してください。\
+以降、設定を修正した場合も、それを反映するために毎度再起動が必要となります。
 
 ## 3. 動作確認
 
-新規チャットを開いて、次のように話しかけてみてください。
+新規チャットを開いて、次のように話しかけてみてください。\
+ツール利用の承認を求められます。Claude Desktop の **Customize** → **Connectors** からツール使用に関する承認要否の設定を行うことができます。
 
 > BTC/JPY の今の価格を教えて
 
@@ -65,7 +119,7 @@ bitbank-lab-mcp を **Claude Desktop** に登録し、AIに市場データを分
 * `直近1週間でテクニカル的に上向きの仮想通貨を3つ教えて。`
 
 {% hint style="info" %}
-うまく動かない場合は [トラブルシューティング](troubleshooting.md) を参照してください。`npx` が見つからない場合の対処などをまとめています。
+うまく動かない場合は [トラブルシューティング](troubleshooting.md) を参照してください。
 {% endhint %}
 
 ## 次のステップ
