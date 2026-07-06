@@ -4,7 +4,7 @@
 
 ## MCP サーバー
 
-* [クイックスタート（5分）](getting-started/quickstart.md)
+* [クイックスタート](getting-started/quickstart.md)
 * [セットアップ詳細](getting-started/setup.md)
   * [Claude Desktop](getting-started/claude-desktop.md)
   * [Plugin 導入（Claude Code / Cursor / Codex / Gemini CLI）](getting-started/plugin-clients.md)
