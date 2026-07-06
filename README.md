@@ -136,9 +136,13 @@ B に加えて、AI からの発注・注文キャンセルまで実行。実行
 >
 > ※ **「出金」権限は有効化しないことを強く推奨します**。本サーバーは出金系ツール未実装のため不要です。
 
-`BITBANK_TRUST_HOST_APPROVAL`（値は文字列の `"1"` のみ有効）は、Claude Desktop の確認ボタンから発注/キャンセルを実行できるようにするオプトインです。有効化すると確認トークンが LLM からも見える経路で返るため、理論上は LLM が確認ボタンを経ずに実行を試みる余地を受け入れることになります。ただしトークンは**プレビューした注文 1 件のみ有効・期限 60 秒・使い捨て**で、実行前には毎回ホストの承認ダイアログが最終ゲートとして入るため、影響は限定的です。このゲートを保つため、**取引ツールは「常に許可（Always allow）」にせず毎回確認**してください。詳細: [ADR-0007](docs/adr/0007-hitl-confirmation-token-delivery.md) / [Private API ガイド](docs/private-api.md)。
+`BITBANK_TRUST_HOST_APPROVAL`（値は文字列の `"1"` のみ有効）は、Claude Desktop の確認ボタンから発注/キャンセルを実行できるようにするオプトインです。有効化すると確認トークンが LLM からも見える経路で返るため、理論上は LLM が確認ボタンを経ずに実行を試みる余地を受け入れることになります。ただしトークンは**プレビューした注文 1 件のみ有効・期限 60 秒・使い捨て**で、実行前には毎回ホストの承認ダイアログが最終ゲートとして入るため、影響は限定的です。このゲートを保つため、**取引ツールは「常に許可（Always allow）」にせず毎回確認**してください。
 
-B / C の API キーは [bitbank 設定画面](https://app.bitbank.cc/account/api) で発行し、**必要最小限の権限のみ**を付与、可能なら **IP 制限**も設定してください（最小権限の原則）。詳細: [Private API ガイド](docs/private-api.md)。
+詳細: [ADR-0007](docs/adr/0007-hitl-confirmation-token-delivery.md) / [Private API ガイド](docs/private-api.md)。
+
+B / C の API キーは [bitbank 設定画面](https://app.bitbank.cc/account/api) で発行し、**必要最小限の権限のみ**を付与、可能なら **IP 制限**も設定してください（最小権限の原則）。
+
+詳細: [Private API ガイド](docs/private-api.md)。
 
 #### 絶対パス方式（フォールバック）
 
