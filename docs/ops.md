@@ -31,11 +31,17 @@ git tag v0.5.0 && git push origin v0.5.0
 
 GitHub Actions の **Run workflow** から `workflow_dispatch` でタグを指定して手動実行も可能です。
 
-#### 必要な GitHub Secrets
+#### 認証（npm publish は OIDC / Trusted Publishing）
 
-| Secret | 用途 | 設定方法 |
+npm への publish は **OIDC（Trusted Publishing）** で認証します。`NPM_TOKEN` のような長期シークレットは使いません。`npm-publish` job が `id-token: write` 権限で発行する短命の OIDC トークンを npm が検証し、`npm publish --provenance` で provenance（来歴）付きの公開を行います。
+
+そのため事前準備は npmjs.com 側の **1 回だけの設定** です（GitHub Secrets への登録は不要）:
+
+- npmjs.com の `bitbank-lab-mcp` パッケージ → Settings → **Trusted Publisher** に、このリポジトリの `release.yml`（job: `npm-publish`、environment: `production`）を登録する。
+
+| 認証 | 用途 | 設定方法 |
 |---|---|---|
-| `NPM_TOKEN` | npm publish 認証 | npmjs.com → Access Tokens → Automation token を生成し、repo Settings → Secrets → Actions に追加 |
+| OIDC（Trusted Publishing） | npm publish 認証 | npmjs.com のパッケージ設定で Trusted Publisher を登録（GitHub Secrets 不要）。ワークフロー側は `id-token: write` + `npm publish --provenance` で対応済み |
 | `GITHUB_TOKEN` | GHCR push / Release 作成 | 自動付与（設定不要） |
 
 ---

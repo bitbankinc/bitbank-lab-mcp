@@ -64,4 +64,4 @@ candlestick で使う `YYYYMMDD` / `YYYY`（`--date` の値）は **UTC 基準**
 
 ## API エラーコード
 
-bitbank API が返すエラーコードの分類と再試行指針は、リポジトリの [`agents/error-catalog.json`](https://github.com/tjackiet/bitbank-cli-skills/blob/main/agents/error-catalog.json) に機械可読な形でまとまっています。「rate_limit はどう待つか」「POST はなぜ自動再送しないか」もここで確認できます。
+bitbank API が返すエラーコードの分類と再試行指針は、リポジトリの [`agents/error-catalog.json`](https://github.com/bitbankinc/bitbank-lab-cli/blob/main/agents/error-catalog.json) に機械可読な形でまとまっています。「rate_limit はどう待つか」「POST はなぜ自動再送しないか」もここで確認できます。

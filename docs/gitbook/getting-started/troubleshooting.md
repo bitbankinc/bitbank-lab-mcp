@@ -9,6 +9,7 @@ description: 導入時によくあるトラブルと対処法
 | 症状 | 原因・対処 |
 | --- | --- |
 | Claude Desktop にツールが表示されない | `claude_desktop_config.json` の JSON 構文が壊れている / Claude Desktop を `Cmd+Q`（Windows は完全終了）で再起動していない |
+| サーバーは正常に起動しているのに Chat でツールが見つからない | 環境によって `mcpServers` のキー名（サーバー名）が日本語などの非 ASCII だとツールが見つからない事例あり。`bitbank-lab-mcp` のような ASCII 名に変更する |
 | 「サーバーに接続できません」エラー（npx 方式） | Claude Desktop から `npx` が見つからない可能性。[方式B（npx 絶対パス）](claude-desktop.md) に切り替える |
 | `spawn npx ENOENT` エラー | `which npx` の結果が異なるパスを指している。`command` を正しいパスに書き換える |
 | Node.js アップデート後に MCP が動かなくなった | nvm / volta の場合、Node.js バージョンが変わると絶対パスも変わる。`which npx` を再確認して `command` を更新するか、方式A（`npx` 名指し）に切り替える |
@@ -16,7 +17,7 @@ description: 導入時によくあるトラブルと対処法
 | ツール実行時にタイムアウト | ネットワーク接続を確認 / [bitbank API の状態](https://status.bitbank.cc/) を確認 |
 | Private API ツールが表示されない | `BITBANK_API_KEY` と `BITBANK_API_SECRET` の両方が設定されているか確認（→ [Private API](../private-api/setup.md)） |
 | ログを詳細に確認したい | `env` に `"LOG_LEVEL": "debug"` を追加して再起動 |
-| Plugin install で「Marketplace not found」 | `/plugin marketplace add tjackiet/bitbank-lab-mcp` を先に実行してから `/plugin install bitbank-lab-mcp@bitbank-lab` |
+| Plugin install で「Marketplace not found」 | `/plugin marketplace add bitbankinc/bitbank-lab-mcp` を先に実行してから `/plugin install bitbank-lab-mcp@bitbank-lab` |
 
 ## ログを詳細に確認する
 
@@ -38,4 +39,4 @@ description: 導入時によくあるトラブルと対処法
 
 ## それでも解決しない場合
 
-[GitHub Issues](https://github.com/tjackiet/bitbank-lab-mcp/issues) にてバグ報告・機能要望を受け付けています。Issue テンプレートを用意していますので、用途に合ったものを選択してください。
+[GitHub Issues](https://github.com/bitbankinc/bitbank-lab-mcp/issues) にてバグ報告・機能要望を受け付けています。Issue テンプレートを用意していますので、用途に合ったものを選択してください。

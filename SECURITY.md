@@ -17,7 +17,7 @@ bitbank のバグバウンティ scope は `bitbank.cc` / `app.bitbank.cc` / `ap
 
 ただし、セキュリティに関するご指摘はコントリビューションとして歓迎します。**機微な内容（未公開の脆弱性など）は GitHub の "Private vulnerability reporting" をご利用ください。**
 
-https://github.com/tjackiet/bitbank-lab-mcp/security/advisories/new から
+https://github.com/bitbankinc/bitbank-lab-mcp/security/advisories/new から
 非公開でご報告ください。
 
 ご報告に含めていただきたい情報:

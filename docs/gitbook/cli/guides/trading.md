@@ -88,4 +88,4 @@ bitbank assets                          # 残高が動いていないか
 
 ## bot で 24/7 運用する場合
 
-read-only profile → paper → dry-run → 本番という段階フローを [レシピ集](recipes.md#bot-運用の段階フロー) と、リポジトリの [botter 運用 Runbook](https://github.com/tjackiet/bitbank-cli-skills/blob/main/docs/botter-runbook.md) にまとめています。監視には読み取り専用キー、取引には取引用キーを別プロファイルにして、誤爆の被害を局所化してください（[API キーの設定](../getting-started/api-keys.md) を参照）。
+read-only profile → paper → dry-run → 本番という段階フローを [レシピ集](recipes.md#bot-運用の段階フロー) と、リポジトリの [botter 運用 Runbook](https://github.com/bitbankinc/bitbank-lab-cli/blob/main/docs/botter-runbook.md) にまとめています。監視には読み取り専用キー、取引には取引用キーを別プロファイルにして、誤爆の被害を局所化してください（[API キーの設定](../getting-started/api-keys.md) を参照）。

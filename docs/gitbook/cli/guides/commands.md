@@ -112,4 +112,4 @@ bitbank watch ticker btc_jpy --count=10 --format=json
 
 ## 機械可読カタログ
 
-全コマンドのパラメータ（JSON Schema）・出力・安全フラグは、リポジトリの [`agents/tool-catalog.json`](https://github.com/tjackiet/bitbank-cli-skills/blob/main/agents/tool-catalog.json) に機械可読な形でまとまっています。エラーコードの分類と再試行指針は [`agents/error-catalog.json`](https://github.com/tjackiet/bitbank-cli-skills/blob/main/agents/error-catalog.json) を参照してください。これらは単一ソースから自動生成される（手書き禁止）ため、CLI を実行せずリポジトリを読むだけで全コマンドと安全フラグを把握できます。
+全コマンドのパラメータ（JSON Schema）・出力・安全フラグは、リポジトリの [`agents/tool-catalog.json`](https://github.com/bitbankinc/bitbank-lab-cli/blob/main/agents/tool-catalog.json) に機械可読な形でまとまっています。エラーコードの分類と再試行指針は [`agents/error-catalog.json`](https://github.com/bitbankinc/bitbank-lab-cli/blob/main/agents/error-catalog.json) を参照してください。これらは単一ソースから自動生成される（手書き禁止）ため、CLI を実行せずリポジトリを読むだけで全コマンドと安全フラグを把握できます。

@@ -55,7 +55,7 @@ Recipe の詳しい使い分けは [レシピ集](recipes.md) を参照してく
 ## トリガーの仕組みと有効化
 
 * **Claude Code / Cursor** — リポジトリを開くだけで自動有効化されます。追加設定は不要です。
-* **plugin としてインストール** — 各エージェントの plugin システムからも導入できます。Claude Code なら `/plugin marketplace add tjackiet/bitbank-cli-skills` → `/plugin install bitbank-lab-cli@bitbank-lab-cli` の流れです（`/plugin install` は `<plugin-name>@<marketplace-name>` 指定が必要）。
+* **plugin としてインストール** — 各エージェントの plugin システムからも導入できます。Claude Code なら `/plugin marketplace add bitbankinc/bitbank-lab-cli` → `/plugin install bitbank-lab-cli@bitbank-lab-cli` の流れです（`/plugin install` は `<plugin-name>@<marketplace-name>` 指定が必要）。
 * **その他のエージェント** — Codex CLI / Gemini CLI などは [基本的な使い方](usage.md) の配置先にコピーすると自動トリガーできます。
 
 {% hint style="warning" %}
@@ -64,4 +64,4 @@ plugin の `/plugin install` は**ローカル版 Claude Code CLI（ターミナ
 
 ## 独自 Skill を追加する
 
-`skills/<name>/SKILL.md` を作成するだけで独自 Skill を追加できます。詳しい手順とテンプレートは、リポジトリの [カスタマイズガイド](https://github.com/tjackiet/bitbank-cli-skills/blob/main/docs/customization-guide.md) を参照してください。
+`skills/<name>/SKILL.md` を作成するだけで独自 Skill を追加できます。詳しい手順とテンプレートは、リポジトリの [カスタマイズガイド](https://github.com/bitbankinc/bitbank-lab-cli/blob/main/docs/customization-guide.md) を参照してください。

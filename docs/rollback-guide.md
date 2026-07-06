@@ -133,7 +133,6 @@ GitHub Release を編集して警告を追記する:
 
 ## 4. 初回リリース前チェックリスト
 
-- [ ] `NPM_TOKEN` シークレットが GitHub リポジトリに設定されているか
-- [ ] `npm whoami` で npm にログインできるか（ローカル確認用）
+- [ ] npmjs.com の `bitbank-lab-mcp` で Trusted Publisher（OIDC）が登録されているか（`release.yml` の `npm-publish` job / environment `production`）。publish 認証はこれで行うため `NPM_TOKEN` シークレットは不要
 - [ ] GHCR への push 権限があるか（`GITHUB_TOKEN` は自動提供）
 - [ ] CHANGELOG.md に初回リリース内容を記載したか

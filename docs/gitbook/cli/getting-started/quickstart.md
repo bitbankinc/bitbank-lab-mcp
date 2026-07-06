@@ -35,8 +35,8 @@ npx -y bitbank-lab-cli ticker btc_jpy
 Skill を編集・カスタマイズしたい場合や CLI 開発に参加したい場合は、リポジトリをクローンして `./install.sh` を実行します（内部で `npm ci` と `npm link` を行います）。
 
 ```bash
-git clone https://github.com/tjackiet/bitbank-cli-skills.git
-cd bitbank-cli-skills
+git clone https://github.com/bitbankinc/bitbank-lab-cli.git
+cd bitbank-lab-cli
 ./install.sh
 ```
 {% endtab %}

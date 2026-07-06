@@ -117,18 +117,22 @@ Windows でも方式A の `npx` 経由がそのまま使えます。
 
 ## 表示名のカスタマイズ
 
-Claude Desktop の UI に表示される名前は `mcpServers` 配下のキー名で決まります。日本語名も使用できます。
+Claude Desktop の UI に表示される名前は `mcpServers` 配下のキー名で決まります。`bitbank-lab-mcp` のような **ASCII（英数字）の名前を推奨**します。
 
 ```json
 {
   "mcpServers": {
-    "ビットバンクMCP": {
+    "bitbank-lab-mcp": {
       "command": "npx",
       "args": ["-y", "bitbank-lab-mcp"]
     }
   }
 }
 ```
+
+{% hint style="warning" %}
+環境によって、日本語などの非 ASCII 名だと Chat でツールが見つからない事例があります。サーバーは正常に起動しているのにツールが呼ばれない場合は、キー名を ASCII 名に変更してみてください。
+{% endhint %}
 
 ## 設定後の注意
 

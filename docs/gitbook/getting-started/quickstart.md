@@ -126,6 +126,59 @@ B に加えて、AI からの発注・注文キャンセルまで実行。実行
 うまく動かない場合は [トラブルシューティング](troubleshooting.md) を参照してください。
 {% endhint %}
 
+## （任意）API キーを設定して Private API を使う
+
+自分の資産確認・取引履歴の参照や、AI からの発注・キャンセルを使う場合は、`env` ブロックに bitbank の API キーを追加します。必要な環境変数は `BITBANK_API_KEY` と `BITBANK_API_SECRET` の **2 つだけ**で、両方が設定されていると Private ツールが自動で有効になります。キーの発行手順と権限の選び方は [Private API（取引機能）](../private-api/setup.md) を参照してください。
+
+{% tabs %}
+{% tab title="参照のみ（資産・履歴の確認）" %}
+bitbank 側で **「参照」権限のみ**のキーを発行して設定します（最も安全）。
+
+```json
+{
+  "mcpServers": {
+    "bitbank-lab": {
+      "command": "npx",
+      "args": ["-y", "bitbank-lab-mcp"],
+      "env": {
+        "BITBANK_API_KEY": "your_api_key",
+        "BITBANK_API_SECRET": "your_api_secret"
+      }
+    }
+  }
+}
+```
+{% endtab %}
+
+{% tab title="取引あり（発注・キャンセル）" %}
+bitbank 側で **「参照」+「取引」権限**のキーを発行します。さらに Claude Desktop で発注の確認ボタン（確認 UI）を有効にするため、`BITBANK_TRUST_HOST_APPROVAL` を追加します。
+
+```json
+{
+  "mcpServers": {
+    "bitbank-lab": {
+      "command": "npx",
+      "args": ["-y", "bitbank-lab-mcp"],
+      "env": {
+        "BITBANK_API_KEY": "your_api_key",
+        "BITBANK_API_SECRET": "your_api_secret",
+        "BITBANK_TRUST_HOST_APPROVAL": "1"
+      }
+    }
+  }
+}
+```
+
+{% hint style="warning" %}
+* `BITBANK_TRUST_HOST_APPROVAL` の値は文字列の `"1"` のみ有効です（`"true"` などは無効）。
+* 発注は preview → 確認ボタン → 実行の 2 段階確認を必ず経由します。取引ツールの承認ダイアログでは**「常に許可（Always allow）」を選ばず**、毎回内容を確認してください。詳細は [取引の安全設計](../private-api/safety.md) を参照してください。
+* **「出金」権限は絶対に有効化しないでください**（本サーバーは出金系ツールを実装していないため不要です）。
+{% endhint %}
+{% endtab %}
+{% endtabs %}
+
+設定を変更したら、Claude Desktop を再起動して反映してください。
+
 ## 次のステップ
 
 * **他のクライアントで使いたい / 詳しい設定** → [セットアップ詳細](setup.md)

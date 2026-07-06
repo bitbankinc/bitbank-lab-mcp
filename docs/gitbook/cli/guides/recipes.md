@@ -51,4 +51,4 @@ Recipe の背後にあるのは、「現状把握 → 環境分析 → 仮説検
 
 ## bot 運用の段階フロー
 
-実際の資金で 24/7 取引を回す前に通すべき手順は、**read-only → paper → dry-run → 本番**の段階フローとして整理されています。各段階には「次へ進む条件」があり、影響範囲を一段ずつ広げます。詳しくはリポジトリの [botter 運用 Runbook](https://github.com/tjackiet/bitbank-cli-skills/blob/main/docs/botter-runbook.md) を参照してください。取引の安全ガードそのものは [取引と安全ガード](trading.md) にまとめています。
+実際の資金で 24/7 取引を回す前に通すべき手順は、**read-only → paper → dry-run → 本番**の段階フローとして整理されています。各段階には「次へ進む条件」があり、影響範囲を一段ずつ広げます。詳しくはリポジトリの [botter 運用 Runbook](https://github.com/bitbankinc/bitbank-lab-cli/blob/main/docs/botter-runbook.md) を参照してください。取引の安全ガードそのものは [取引と安全ガード](trading.md) にまとめています。

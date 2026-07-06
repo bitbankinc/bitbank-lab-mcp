@@ -48,4 +48,4 @@ bitbank API のレートリミットに到達すると、CLI は終了コード 
 
 ## それでも解決しないとき
 
-バグ報告・機能リクエストは [GitHub Issues](https://github.com/tjackiet/bitbank-cli-skills/issues) へお願いします。セキュリティ上の問題は公開 Issue にせず、リポジトリの [SECURITY.md](https://github.com/tjackiet/bitbank-cli-skills/blob/main/SECURITY.md) のフロー（GitHub の Private vulnerability reporting）に従って非公開で報告してください。
+バグ報告・機能リクエストは [GitHub Issues](https://github.com/bitbankinc/bitbank-lab-cli/issues) へお願いします。セキュリティ上の問題は公開 Issue にせず、リポジトリの [SECURITY.md](https://github.com/bitbankinc/bitbank-lab-cli/blob/main/SECURITY.md) のフロー（GitHub の Private vulnerability reporting）に従って非公開で報告してください。
