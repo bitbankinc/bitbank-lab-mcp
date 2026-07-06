@@ -138,7 +138,9 @@ B に加えて、AI からの発注・注文キャンセルまで実行。実行
 
 `BITBANK_TRUST_HOST_APPROVAL` は、Claude Desktop で preview の確認 UI ボタンから発注/キャンセルを実行できるようにするオプトインです（値は文字列の `"1"` のみ有効）。有効化時も 2 段階確認は必ず経由しますが、**取引ツールを「常に許可（Always allow）」にはしないでください**。詳細とセキュリティ前提: [ADR-0007](docs/adr/0007-hitl-confirmation-token-delivery.md) / [Private API ガイド](docs/private-api.md)。
 
-B / C の API キーは [bitbank 設定画面](https://app.bitbank.cc/account/api) で発行してください。**必要最小限の権限のみ付与する**ことを強く推奨します（最小権限の原則）。bitbank 側で API キーに **IP 制限**を設定できる場合は、可能な限り設定を推奨します。詳細: [Private API ガイド](docs/private-api.md)。
+B / C の API キーは [bitbank 設定画面](https://app.bitbank.cc/account/api) で発行してください。**必要最小限の権限のみ付与する**ことを強く推奨します（最小権限の原則）。bitbank 側で API キーに **IP 制限**を設定できる場合は、可能な限り設定を推奨します。
+
+詳細: [Private API ガイド](docs/private-api.md)。
 
 #### 絶対パス方式（フォールバック）
 
