@@ -1227,6 +1227,8 @@ describe('analyze_my_portfolio — equity series データ品質', () => {
 		// 静的フィクスチャ candlesBtcJpy1day120 は 2024 年データなので、年初判定のための
 		// 「年初以降の daily candle が存在するか」を満たすために動的に最近の candle を生成する。
 		// baseTs = 今日から (count - 1) 日前 → 今日まで連続する 1day 足
+		// count は年初（1/1）〜今日を常にカバーする 400 日（うるう年でも 366 日 < 400）。
+		// 180 日だと年初から 181 日目（6/30）以降の実行で 1/1 に届かず fallback 判定になる。
 		const TODAY_MS = Date.now();
 		const ONE_DAY_MS = 86_400_000;
 		const recentCandle = (count: number) => ({
@@ -1249,7 +1251,7 @@ describe('analyze_my_portfolio — equity series データ品質', () => {
 				return new Response(JSON.stringify(tickersJpy), { status: 200 });
 			}
 			if (urlStr.includes('candlestick')) {
-				return new Response(JSON.stringify(recentCandle(180)), { status: 200 });
+				return new Response(JSON.stringify(recentCandle(400)), { status: 200 });
 			}
 			if (urlStr.includes('/v1/user/assets')) {
 				return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
