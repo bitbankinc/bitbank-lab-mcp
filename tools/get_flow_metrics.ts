@@ -188,9 +188,11 @@ export default async function getFlowMetrics(
 			const dateMerge = mergeTxResults(dateResults, dates);
 			const latestMerge = mergeTxResults([latestResult], ['latest']);
 
-			// 完了済み UTC 日アーカイブ（authoritative）が全滅し何も取れていない場合は fail。
+			// 完了済み UTC 日アーカイブ（authoritative）が全滅した場合は fail。
 			// 進行中の UTC 日は fetch 対象外（アーカイブ未公開）なので、この失敗は実失敗のみ。
-			const historicalAllFailed = dates.length > 0 && dateMerge.txs.length === 0 && dateMerge.failures.length > 0;
+			// 「全滅」は失敗件数 == 要求件数で厳密に判定する（txs.length===0 をプロキシにすると、
+			// 約定 0 件の日 + 一部失敗の組合せを全滅と誤分類する）。
+			const historicalAllFailed = dates.length > 0 && dateMerge.failures.length === dates.length;
 
 			if (historicalAllFailed) {
 				return GetFlowMetricsOutputSchema.parse(

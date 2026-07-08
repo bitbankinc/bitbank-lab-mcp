@@ -196,8 +196,11 @@ export default async function getTransactions(pair: string = 'btc_jpy', limit: n
 		const baseMsg = e instanceof Error && e.message ? e.message : typeof e === 'string' ? e : 'ネットワークエラー';
 		// 進行中・未来の UTC 日のアーカイブ 404 は bitbank 側の仕様（UTC 暦日完了後に公開）。
 		// 「なぜ 404 か」を呼び出し側で診断できるようヒントを付与する。
+		// URL 生成（上記）と同じ形式判定に揃える: YYYYMMDD 形式でない date は latest エンドポイントに
+		// フォールバックしており、その 404 にアーカイブ未公開ヒントを付けると誤誘導になる。
+		const isDateArchiveRequest = date != null && /^\d{8}$/.test(String(date));
 		const archiveHint =
-			date && /404/.test(baseMsg) && !isArchiveExpectedPublished(String(date))
+			isDateArchiveRequest && /404/.test(baseMsg) && !isArchiveExpectedPublished(String(date))
 				? `（/transactions/{YYYYMMDD} は UTC 暦日アーカイブで、date=${date} は UTC ではまだ完了していないため未公開です。直近の約定は date 省略の latest を使用してください）`
 				: '';
 		const wrapped = new Error(`${baseMsg} [url: ${url}]${archiveHint}`);

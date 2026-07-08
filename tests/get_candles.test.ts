@@ -1996,7 +1996,9 @@ describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () =>
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(dayjs.utc('2026-07-07T23:31:00Z').valueOf());
 		// 未来 UTC 日 20260708 を要求したら 404（実測どおり）→ 旧実装では過半数失敗で全滅していた
-		mockPerUtcDay((key) => (key === '20260707' ? { status: 200, body: okBody(key) } : { status: 404, body: notFoundBody }));
+		mockPerUtcDay((key) =>
+			key === '20260707' ? { status: 200, body: okBody(key) } : { status: 404, body: notFoundBody },
+		);
 
 		const res = await getCandles('btc_jpy', '1hour', undefined, 24);
 		assertOk(res);
@@ -2008,7 +2010,9 @@ describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () =>
 	it('date=当日 (JST 20260708) 明示 @JST 08:31: 未来扱いせず部分データを返す', async () => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(dayjs.utc('2026-07-07T23:31:00Z').valueOf());
-		mockPerUtcDay((key) => (key === '20260707' ? { status: 200, body: okBody(key) } : { status: 404, body: notFoundBody }));
+		mockPerUtcDay((key) =>
+			key === '20260707' ? { status: 200, body: okBody(key) } : { status: 404, body: notFoundBody },
+		);
 
 		const res = await getCandles('btc_jpy', '1hour', '20260708', 8);
 		assertOk(res);
@@ -2054,7 +2058,9 @@ describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () =>
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(dayjs.utc('2026-07-08T00:05:00Z').valueOf());
 		// date=20240115 (JST) → UTC keys [20240114, 20240115]。過去日 20240114 が HTTP 404 → 実失敗。
-		mockPerUtcDay((key) => (key === '20240114' ? { status: 404, body: notFoundBody } : { status: 200, body: okBody(key) }));
+		mockPerUtcDay((key) =>
+			key === '20240114' ? { status: 404, body: notFoundBody } : { status: 200, body: okBody(key) },
+		);
 
 		const res = await getCandles('btc_jpy', '1hour', '20240115', 24);
 		assertFail(res);
@@ -2062,5 +2068,51 @@ describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () =>
 		expect(res.summary).toContain('btc_jpy/1hour');
 		expect(res.summary).toContain('20240114');
 		expect(res.summary).toContain('404');
+	});
+
+	// tz=UTC は tz 暦日 = UTC 暦日のため window が 1 UTC 日に潰れやすく、
+	// UTC 日開始直後（データ未生成 success:0）の挙動が multi-fetch 経路と別枠になる。
+
+	it('tz=UTC × date 省略 @UTC 日開始直後: 前日 chunk へ広げて最新 limit 本を返す（realtime lookback）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(dayjs.utc('2026-07-08T00:05:00Z').valueOf());
+		// 進行中 UTC 日 20260708 は開始直後でデータ未生成（200 + success:0、実測どおり）
+		mockPerUtcDay((key) =>
+			key === '20260707' ? { status: 200, body: okBody(key) } : { status: 200, body: notFoundBody },
+		);
+
+		const res = await getCandles('btc_jpy', '1hour', undefined, 24, 'UTC');
+		assertOk(res);
+		// realtime は「現在時刻から遡って limit 本」を window に含めるため前日 chunk も fetch される
+		expect(calledUrls().some((u) => u.endsWith('/1hour/20260707'))).toBe(true);
+		expect(res.data.normalized).toHaveLength(24);
+		expect(res.meta.warning).toContain('ℹ️');
+	});
+
+	it('tz=UTC × date 省略 @UTC 日中: 前日 chunk と合わせて limit 本を満たす（当日分のみの不足を解消）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(dayjs.utc('2026-07-08T12:30:00Z').valueOf());
+		mockPerUtcDay((key) => ({ status: 200, body: okBody(key) }));
+
+		const res = await getCandles('btc_jpy', '1hour', undefined, 24, 'UTC');
+		assertOk(res);
+		expect(calledUrls().some((u) => u.endsWith('/1hour/20260707'))).toBe(true);
+		expect(calledUrls().some((u) => u.endsWith('/1hour/20260708'))).toBe(true);
+		// 旧実装は当日 chunk のみ（〜13本）しか返せなかった
+		expect(res.data.normalized).toHaveLength(24);
+	});
+
+	it('tz=UTC × date=当日明示 @UTC 日開始直後: 単一フェッチの success:0 は upstream ではなく user（データ未生成）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(dayjs.utc('2026-07-08T00:05:00Z').valueOf());
+		mockPerUtcDay((key) =>
+			key === '20260707' ? { status: 200, body: okBody(key) } : { status: 200, body: notFoundBody },
+		);
+
+		const res = await getCandles('btc_jpy', '1hour', '20260708', 8, 'UTC');
+		assertFail(res);
+		expect(res.meta?.errorType).toBe('user');
+		expect(res.summary).toContain('データ未生成');
+		expect(res.summary).toContain('20260708');
 	});
 });

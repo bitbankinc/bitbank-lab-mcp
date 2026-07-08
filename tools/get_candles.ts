@@ -400,7 +400,14 @@ export default async function getCandles(
 		const localDayEndMs = dayjs.tz(`${y}-${m}-${d}`, anchorTz).endOf('day').valueOf();
 		const intervalMsForDaily = INTERVAL_MS[String(type)] ?? 3_600_000;
 		const lookbackStartMs = localDayEndMs - (limit - 1) * intervalMsForDaily;
-		const windowStartMs = Math.min(localDayStartMs, lookbackStartMs);
+		// date 省略（realtime）は「現在時刻から遡って limit 本」も window に含める。
+		// tz 暦日終端起点の lookback だけだと、tz 暦日 = UTC 暦日となる tz（UTC 等）で window が
+		// 当日 1 chunk に潰れ、UTC 日開始直後はデータ未生成（success:0）で 0 本、日中も当日分
+		// しか返せず limit 本を満たせない。realtime の意味論は「最新 limit 本」なので now 起点が正。
+		const realtimeLookbackStartMs = !dateProvided
+			? Date.now() - (limit - 1) * intervalMsForDaily
+			: Number.POSITIVE_INFINITY;
+		const windowStartMs = Math.min(localDayStartMs, lookbackStartMs, realtimeLookbackStartMs);
 		// fetch key の列挙は現在時刻でクランプする。date 省略・当日指定では window 終端が
 		// tz 暦日の終端（未来）まで伸びるが、未来の UTC 日 chunk は上流に存在せず 404 が確定
 		// している（docs/internal/bitbank-candle-tz.md）。クランプしないと JST 早朝
@@ -592,6 +599,18 @@ export default async function getCandles(
 			// 公式 API は { success: 0|1, data: ... } 形式で、エラー時は success:0 を返す。
 			// optional chaining のフォールバックに任せると空配列として握りつぶされ「データなし」(user) として返してしまう。
 			if (jsonObj?.success !== 1) {
+				// 進行中の UTC 期間の success:0 は「データ未生成（UTC 期間の開始直後）」で上流障害ではない。
+				// multi-fetch 経路の expected-gap（partitionFailedChunks）と同じ扱いで user 向けに明示する
+				// （例: tz=UTC × 当日指定が UTC 日開始直後に単一 key へ潰れるケース）。
+				if (isDailyType && String(singleKey) >= dayjs.utc().format('YYYYMMDD')) {
+					return parseAsResult<GetCandlesData, GetCandlesMeta>(
+						GetCandlesOutputSchema,
+						fail(
+							`No candle data available yet for ${chk.pair} / ${type} / ${singleKey} (UTC 暦日の開始直後でデータ未生成です。しばらく待って再試行するか、前日以前の date を指定してください)`,
+							'user',
+						),
+					);
+				}
 				const code = jsonObj?.data?.code;
 				const codeStr = code != null ? `（code: ${code}）` : '';
 				return parseAsResult<GetCandlesData, GetCandlesMeta>(

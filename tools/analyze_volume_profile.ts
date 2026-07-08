@@ -28,12 +28,22 @@ type Tx = { price: number; amount: number; side: 'buy' | 'sell'; timestampMs: nu
 
 // ── Transaction fetch helpers (shared pattern with get_flow_metrics) ──
 
-function mergeTxResults(results: unknown[]): { txs: Tx[]; totalCount: number; failedCount: number } {
+type TxFetchFailure = { label: string; errorType: string; message: string };
+
+function mergeTxResults(
+	results: unknown[],
+	labels?: string[],
+): { txs: Tx[]; totalCount: number; failedCount: number; failures: TxFetchFailure[] } {
 	const seen = new Set<string>();
 	const merged: Tx[] = [];
-	let failedCount = 0;
-	for (const res of results) {
-		const r = res as { ok?: boolean; data?: { normalized?: Tx[] } } | null;
+	const failures: TxFetchFailure[] = [];
+	for (let i = 0; i < results.length; i++) {
+		const r = results[i] as {
+			ok?: boolean;
+			data?: { normalized?: Tx[] };
+			summary?: string;
+			meta?: { errorType?: string };
+		} | null;
 		if (r?.ok && Array.isArray(r.data?.normalized)) {
 			for (const tx of r.data.normalized as Tx[]) {
 				const key = `${tx.timestampMs}:${tx.price}:${tx.amount}:${tx.side}`;
@@ -43,10 +53,19 @@ function mergeTxResults(results: unknown[]): { txs: Tx[]; totalCount: number; fa
 				}
 			}
 		} else {
-			failedCount++;
+			failures.push({
+				label: labels?.[i] ?? `#${i}`,
+				errorType: r?.meta?.errorType ?? 'unknown',
+				message: r?.summary ?? 'unknown error',
+			});
 		}
 	}
-	return { txs: merged, totalCount: results.length, failedCount };
+	return { txs: merged, totalCount: results.length, failedCount: failures.length, failures };
+}
+
+/** 失敗詳細を "label(errorType: message)" 形式で列挙する（get_flow_metrics と同形式）。 */
+function formatFailures(failures: TxFetchFailure[]): string {
+	return failures.map((f) => `${f.label}(${f.errorType}: ${f.message})`).join(', ');
 }
 
 type FetchResult = { ok: true; txs: Tx[]; fetchWarning?: string } | { ok: false; errorType: string; summary: string };
@@ -61,9 +80,10 @@ function extractUpstreamError(results: unknown[]): { errorType: string; summary:
 	return null;
 }
 
-function partialFailureWarning(totalCount: number, failedCount: number): string | undefined {
-	if (failedCount === 0) return undefined;
-	return `⚠️ ${totalCount}件中${failedCount}件のAPI取得に失敗しました。データが不完全な可能性があります。`;
+function partialFailureWarning(totalCount: number, failures: TxFetchFailure[]): string | undefined {
+	if (failures.length === 0) return undefined;
+	// どの日付/エンドポイントが何の理由で失敗したかを必ず含める（件数だけでは診断不能）。
+	return `⚠️ ${totalCount}件中${failures.length}件のAPI取得に失敗しました（${formatFailures(failures)}）。データが不完全な可能性があります。`;
 }
 
 async function fetchTransactions(pair: string, hours?: number, limit?: number): Promise<FetchResult> {
@@ -80,7 +100,8 @@ async function fetchTransactions(pair: string, hours?: number, limit?: number): 
 		const fetches: Promise<unknown>[] = dates.map((ds) => getTransactions(pair, 1000, ds));
 		fetches.push(getTransactions(pair, 1000));
 		const results = await Promise.all(fetches);
-		const { txs: mergedTxs, totalCount, failedCount } = mergeTxResults(results);
+		const labels = [...dates, 'latest'];
+		const { txs: mergedTxs, totalCount, failedCount, failures } = mergeTxResults(results, labels);
 		if (mergedTxs.length === 0) {
 			const upstreamErr = extractUpstreamError(results);
 			if (upstreamErr) return { ok: false, ...upstreamErr };
@@ -89,7 +110,7 @@ async function fetchTransactions(pair: string, hours?: number, limit?: number): 
 			return {
 				ok: false,
 				errorType: 'upstream',
-				summary: `API取得の過半数が失敗しました（${totalCount}件中${failedCount}件失敗）`,
+				summary: `API取得の過半数が失敗しました（${totalCount}件中${failedCount}件失敗: ${formatFailures(failures)}）`,
 			};
 		}
 		return {
@@ -97,7 +118,7 @@ async function fetchTransactions(pair: string, hours?: number, limit?: number): 
 			txs: mergedTxs
 				.filter((t) => t.timestampMs >= sinceMs && t.timestampMs <= nowMs)
 				.sort((a, b) => a.timestampMs - b.timestampMs),
-			fetchWarning: partialFailureWarning(totalCount, failedCount),
+			fetchWarning: partialFailureWarning(totalCount, failures),
 		};
 	}
 
@@ -118,7 +139,8 @@ async function fetchTransactions(pair: string, hours?: number, limit?: number): 
 	const supplementDates = recentCompletedUtcDayKeys(lim > 500 ? 2 : 1);
 	const supplementResults = await Promise.all(supplementDates.map((ds) => getTransactions(pair, 1000, ds)));
 	const allResults = [latestRes, ...supplementResults];
-	const { txs: mergedTxs, totalCount, failedCount } = mergeTxResults(allResults);
+	const labels = ['latest', ...supplementDates];
+	const { txs: mergedTxs, totalCount, failures } = mergeTxResults(allResults, labels);
 	if (mergedTxs.length === 0) {
 		const upstreamErr = extractUpstreamError(allResults);
 		if (upstreamErr) return { ok: false, ...upstreamErr };
@@ -129,7 +151,7 @@ async function fetchTransactions(pair: string, hours?: number, limit?: number): 
 	return {
 		ok: true,
 		txs: mergedTxs.sort((a, b) => a.timestampMs - b.timestampMs).slice(-lim),
-		fetchWarning: partialFailureWarning(totalCount, failedCount),
+		fetchWarning: partialFailureWarning(totalCount, failures),
 	};
 }
 
