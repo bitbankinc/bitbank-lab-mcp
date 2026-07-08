@@ -346,18 +346,19 @@ describe('analyze_volume_profile', () => {
 
 	// ── fetchWarning が summary と meta に含まれる ──
 
-	it('fetchWarning が存在するとき summary と meta に含まれる', async () => {
-		// count-based で latestTxs が lim 未満 → supplement fetch → 一部失敗
-		// lim=10, latestTxs=5件, supplement失敗 → failedCount=1, totalCount=2 → 1 >= 1 → upstream error
-		const latestTxs = buildTxs([100, 101, 102, 103, 104]);
+	it('count-based: latest 成功 + supplement 失敗 → fail せず fetchWarning 付きで部分データを返す', async () => {
+		// 補完アーカイブは公開遅延等で 404 になり得るため best-effort。
+		// latest が成功していれば「過半数失敗」で全体 fail せず、警告付きで返す
+		// （旧実装は 1/2 失敗 → upstream fail で、JST 早朝に正当なデータごと捨てていた）。
+		const latestTxs = buildTxs(Array.from({ length: 15 }, (_, i) => 100 + i));
 		mockedGetTransactions
-			.mockResolvedValueOnce(asMockResult(mockTxResult(latestTxs))) // latest (5件)
+			.mockResolvedValueOnce(asMockResult(mockTxResult(latestTxs))) // latest (15件)
 			.mockResolvedValueOnce(asMockResult(mockFailResult('network', 'day fetch failed'))); // supplement day-1
 
-		const res = await analyzeVolumeProfile('btc_jpy', 0, 10, 5, 0.7);
-		// failedCount=1 >= totalCount(2)/2=1 → upstream error
-		assertFail(res);
-		expect(res.meta?.errorType).toBe('upstream');
+		const res = await analyzeVolumeProfile('btc_jpy', 0, 20, 5, 0.7);
+		assertOk(res);
+		// fetchWarning は summary の先頭に含まれる (meta はスキーマで warning フィールドなし)
+		expect(res.summary).toContain('⚠️');
 	});
 
 	it('fetchWarning が存在するとき (latestTxs < lim で supplement 1件失敗、lim > 500 で3回fetch)', async () => {
@@ -415,17 +416,45 @@ describe('analyze_volume_profile', () => {
 	});
 
 	it('hours > 0: 過半数失敗 (mergedTxs > 0) → upstream エラー', async () => {
-		// 3回呼ばれる: 2回失敗 + 1回成功 → failedCount=2, totalCount=3 → 2>=1.5 → upstream
-		const goodTxs = buildTxs(Array.from({ length: 5 }, (_, i) => 100 + i));
-		mockedGetTransactions
-			.mockResolvedValueOnce(asMockResult(mockTxResult(goodTxs))) // 成功
-			.mockResolvedValueOnce(asMockResult(mockFailResult('upstream', 'fail1'))) // 失敗
-			.mockResolvedValueOnce(asMockResult(mockFailResult('upstream', 'fail2'))); // 失敗
+		// 完了済み UTC 日 2 日分（20260706, 20260707）+ latest = 3 fetch になるよう固定時刻で実行
+		// （dates は完了済み UTC 暦日基準。壁時計依存だと mid-day に dates が減り majority 判定が変わる）
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(Date.UTC(2026, 6, 8, 1, 0, 0));
+		try {
+			const goodTxs = buildTxs(Array.from({ length: 5 }, (_, i) => 100 + i));
+			mockedGetTransactions
+				.mockResolvedValueOnce(asMockResult(mockTxResult(goodTxs))) // 成功
+				.mockResolvedValueOnce(asMockResult(mockFailResult('upstream', 'fail1'))) // 失敗
+				.mockResolvedValueOnce(asMockResult(mockFailResult('upstream', 'fail2'))); // 失敗
 
-		const res = await analyzeVolumeProfile('btc_jpy', 2, 500, 5, 0.7);
-		// failedCount=2, totalCount=3 → 2 >= 1.5 → upstream エラー
-		assertFail(res);
-		expect(res.meta?.errorType).toBe('upstream');
+			const res = await analyzeVolumeProfile('btc_jpy', 27, 500, 5, 0.7);
+			// failedCount=2, totalCount=3 → 2 >= 1.5 → upstream エラー
+			assertFail(res);
+			expect(res.meta?.errorType).toBe('upstream');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('count-based: 補完日付は完了済み UTC 日（JST 早朝でも進行中の UTC 日を要求しない）', async () => {
+		// 2026-07-08 08:31 JST = 2026-07-07 23:31 UTC → 進行中 UTC 日 = 20260707、完了済み = 20260706
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(Date.UTC(2026, 6, 7, 23, 31, 0));
+		try {
+			const latestTxs = buildTxs(Array.from({ length: 15 }, (_, i) => 100 + i));
+			const dayTxs = buildTxs(Array.from({ length: 10 }, (_, i) => 200 + i));
+			mockedGetTransactions
+				.mockResolvedValueOnce(asMockResult(mockTxResult(latestTxs))) // latest
+				.mockResolvedValueOnce(asMockResult(mockTxResult(dayTxs))); // supplement
+
+			const res = await analyzeVolumeProfile('btc_jpy', 0, 20, 5, 0.7);
+			assertOk(res);
+			// 補完 fetch は完了済み UTC 日 20260706（JST 基準の「昨日」20260707 ではない）
+			expect(mockedGetTransactions).toHaveBeenCalledWith('btc_jpy', 1000, '20260706');
+			expect(mockedGetTransactions).not.toHaveBeenCalledWith('btc_jpy', 1000, '20260707');
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('hours > 0: 部分失敗で fetchWarning あり', async () => {

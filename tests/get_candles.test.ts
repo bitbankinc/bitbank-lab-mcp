@@ -1949,3 +1949,118 @@ describe('getCandles', () => {
 		});
 	});
 });
+
+// ── JST 早朝（UTC 日付境界前後）の当日データ取得 ──
+// 障害再現: 2026-07-08 08:31 JST（= 2026-07-07 23:31 UTC）に「直近24時間」系が全滅した。
+// 原因は (1) 未来 UTC 日 chunk の要求 → 404 → 過半数失敗、(2) 当日 date 指定の future 誤拒否。
+// bitbank API 実測（docs/internal/bitbank-candle-tz.md / bitbank-tx-archive-tz.md）:
+//   - 進行中の UTC 日の candlestick は 200 + 部分データ
+//   - 未来の UTC 日は 404、UTC 日開始直後は 200 + success:0 (code:10000)
+
+describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () => {
+	const originalFetch = globalThis.fetch;
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	/** UTC 暦日キーごとに応答を返すモック。valid な日は 0..23 時の 24 本を返す。 */
+	const mockPerUtcDay = (respond: (dateKey: string) => { status: number; body: unknown }) =>
+		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+			const m = String(url).match(/\/1hour\/(\d{8})$/);
+			const { status, body } = respond(m ? m[1] : '');
+			return {
+				ok: status >= 200 && status < 300,
+				status,
+				statusText: status === 404 ? 'Not Found' : 'OK',
+				headers: { get: () => null },
+				json: async () => body,
+			} as unknown as Response;
+		});
+
+	const dayBars = (dateKey: string) => {
+		const y = Number(dateKey.slice(0, 4));
+		const mo = Number(dateKey.slice(4, 6));
+		const d = Number(dateKey.slice(6, 8));
+		const baseTs = Date.UTC(y, mo - 1, d);
+		return Array.from({ length: 24 }, (_, i) => ['100', '110', '90', '105', '1.0', String(baseTs + i * 3600000)]);
+	};
+	const okBody = (dateKey: string) => ({ success: 1, data: { candlestick: [{ ohlcv: dayBars(dateKey) }] } });
+	const notFoundBody = { success: 0, data: { code: 10000 } };
+
+	const calledUrls = () => (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+
+	it('date 省略 + 1hour + limit=24 @JST 08:31: 進行中 UTC 日のみ fetch し、未来 UTC 日 (JST 当日キー) を要求しない', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(dayjs.utc('2026-07-07T23:31:00Z').valueOf());
+		// 未来 UTC 日 20260708 を要求したら 404（実測どおり）→ 旧実装では過半数失敗で全滅していた
+		mockPerUtcDay((key) => (key === '20260707' ? { status: 200, body: okBody(key) } : { status: 404, body: notFoundBody }));
+
+		const res = await getCandles('btc_jpy', '1hour', undefined, 24);
+		assertOk(res);
+		expect(res.data.normalized).toHaveLength(24);
+		expect(calledUrls().some((u) => u.endsWith('/1hour/20260707'))).toBe(true);
+		expect(calledUrls().some((u) => u.endsWith('/1hour/20260708'))).toBe(false);
+	});
+
+	it('date=当日 (JST 20260708) 明示 @JST 08:31: 未来扱いせず部分データを返す', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(dayjs.utc('2026-07-07T23:31:00Z').valueOf());
+		mockPerUtcDay((key) => (key === '20260707' ? { status: 200, body: okBody(key) } : { status: 404, body: notFoundBody }));
+
+		const res = await getCandles('btc_jpy', '1hour', '20260708', 8);
+		assertOk(res);
+		// fetch key は UTC 基準の 20260707 のみ（JST 20260708 の 00:00〜08:31 は UTC 7/7 chunk 内）
+		expect(calledUrls().some((u) => u.endsWith('/1hour/20260707'))).toBe(true);
+		expect(calledUrls().some((u) => u.endsWith('/1hour/20260708'))).toBe(false);
+		expect(res.data.normalized).toHaveLength(8);
+		// 当日は最新足が形成中 → 注記が付く
+		expect((res.meta as { provisional?: boolean }).provisional).toBe(true);
+		expect(res.summary).toContain('未確定（形成中）');
+	});
+
+	it('date=翌日 (JST 20260709) は引き続き future として fetch 前に user fail する', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(dayjs.utc('2026-07-07T23:31:00Z').valueOf());
+		const fetchSpy = mockPerUtcDay(() => ({ status: 404, body: notFoundBody }));
+
+		const res = await getCandles('btc_jpy', '1hour', '20260709', 8);
+		assertFail(res);
+		expect(res.summary).toContain('future');
+		expect(res.meta?.errorType).toBe('user');
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it('UTC 日開始直後 @JST 09:05: 進行中 UTC 日 chunk の success:0 は過半数失敗に数えず ℹ️ 注記で許容する', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(dayjs.utc('2026-07-08T00:05:00Z').valueOf());
+		// 実測: UTC 日開始直後は 200 + success:0 (code:10000) が返る
+		mockPerUtcDay((key) =>
+			key === '20260707' ? { status: 200, body: okBody(key) } : { status: 200, body: notFoundBody },
+		);
+
+		const res = await getCandles('btc_jpy', '1hour', undefined, 24);
+		assertOk(res);
+		expect(res.data.normalized).toHaveLength(24);
+		expect(calledUrls().some((u) => u.endsWith('/1hour/20260708'))).toBe(true);
+		// 過半数失敗 fail にならず、ℹ️ 注記が meta.warning / summary に出る
+		expect(res.meta.warning).toContain('ℹ️');
+		expect(res.meta.warning).toContain('20260708');
+	});
+
+	it('過去 UTC 日 chunk の実失敗（404）は過半数 fail し、メッセージに日付と原因を含む', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(dayjs.utc('2026-07-08T00:05:00Z').valueOf());
+		// date=20240115 (JST) → UTC keys [20240114, 20240115]。過去日 20240114 が HTTP 404 → 実失敗。
+		mockPerUtcDay((key) => (key === '20240114' ? { status: 404, body: notFoundBody } : { status: 200, body: okBody(key) }));
+
+		const res = await getCandles('btc_jpy', '1hour', '20240115', 24);
+		assertFail(res);
+		expect(res.summary).toContain('過半数が失敗');
+		expect(res.summary).toContain('btc_jpy/1hour');
+		expect(res.summary).toContain('20240114');
+		expect(res.summary).toContain('404');
+	});
+});

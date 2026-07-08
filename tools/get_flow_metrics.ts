@@ -1,6 +1,12 @@
 import { dayjs, toDisplayTime, toIsoTime, toIsoWithTz } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
+import {
+	completedUtcDayKeysInRange,
+	currentUtcDayKey,
+	isArchiveExpectedPublished,
+	recentCompletedUtcDayKeys,
+} from '../lib/tx-archive.js';
 import { createMeta, ensurePair, validateLimit } from '../lib/validate.js';
 import { GetFlowMetricsInputSchema, GetFlowMetricsOutputSchema } from '../src/schemas.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
@@ -151,20 +157,13 @@ export default async function getFlowMetrics(
 			const nowMs = Date.now();
 			const sinceMs = nowMs - hours * 3600_000;
 
-			// bitbank の /transactions/{YYYYMMDD} は JST 基準の日付アーカイブ。
-			// 当日分はアーカイブが未生成で 404 を返すことがあるため、当日 URL の失敗は
-			// fatal 扱いせず /transactions (latest) からの補完にフォールバックする。
-			const sinceDayjs = dayjs(sinceMs).tz('Asia/Tokyo');
-			const nowDayjs = dayjs(nowMs).tz('Asia/Tokyo');
-			const todayStr = nowDayjs.format('YYYYMMDD');
-
-			// 必要な日付を YYYYMMDD (JST) 形式で列挙（古い順）
-			const dates: string[] = [];
-			let d = sinceDayjs.startOf('day');
-			while (d.isBefore(nowDayjs) || d.isSame(nowDayjs, 'day')) {
-				dates.push(d.format('YYYYMMDD'));
-				d = d.add(1, 'day');
-			}
+			// bitbank の /transactions/{YYYYMMDD} は UTC 暦日アーカイブで、当該 UTC 日が完了する
+			// まで 404 を返す（実測: docs/internal/bitbank-tx-archive-tz.md）。進行中の UTC 日は
+			// 要求しても必ず 404 なので列挙から除外し、その区間は /transactions (latest) で補完する。
+			// （旧実装は JST 暦日で列挙しており、JST 早朝＝UTC 日付更新前に進行中の UTC 日を
+			// 要求して 404 → 全滅していた。）
+			const currentUtcKey = currentUtcDayKey(nowMs);
+			const dates = completedUtcDayKeysInRange(sinceMs, nowMs);
 
 			// 日付ベース取得（authoritative: 時間範囲をカバー）と latest（supplement: 直近数分の補完）を区別。
 			// 当日分は日付指定だと直近数分が欠ける場合があるため latest も併用する。
@@ -189,12 +188,9 @@ export default async function getFlowMetrics(
 			const dateMerge = mergeTxResults(dateResults, dates);
 			const latestMerge = mergeTxResults([latestResult], ['latest']);
 
-			// 当日 (JST) のアーカイブ欠如は許容: その分は latest から補う。
-			// fatal 扱いするのは「過去日が要求されたのに全て失敗」または「当日のみ要求で latest も失敗」
-			const nonTodayFailures = dateMerge.failures.filter((f) => f.label !== todayStr);
-			const todayFailed = dateMerge.failures.some((f) => f.label === todayStr);
-			const historicalRequested = dates.some((ds) => ds !== todayStr);
-			const historicalAllFailed = historicalRequested && dateMerge.txs.length === 0 && nonTodayFailures.length > 0;
+			// 完了済み UTC 日アーカイブ（authoritative）が全滅し何も取れていない場合は fail。
+			// 進行中の UTC 日は fetch 対象外（アーカイブ未公開）なので、この失敗は実失敗のみ。
+			const historicalAllFailed = dates.length > 0 && dateMerge.txs.length === 0 && dateMerge.failures.length > 0;
 
 			if (historicalAllFailed) {
 				return GetFlowMetricsOutputSchema.parse(
@@ -205,29 +201,28 @@ export default async function getFlowMetrics(
 				);
 			}
 
-			// 過去日が無く (today のみ) かつ today + latest 両方失敗 → 取得手段なし
-			if (!historicalRequested && todayFailed && latestMerge.txs.length === 0) {
-				const allFailures = [...dateMerge.failures, ...latestMerge.failures];
+			// 時間窓が進行中の UTC 日内に収まる（アーカイブ要求なし）場合、latest が唯一のソース。
+			// その latest も失敗したら取得手段なし。
+			if (dates.length === 0 && latestMerge.txs.length === 0 && latestMerge.failures.length > 0) {
 				return GetFlowMetricsOutputSchema.parse(
 					fail(
-						`日付ベース取得（当日 ${todayStr}）と latest の両方が失敗しました（${allFailures.length}件: ${formatFailures(allFailures)}）`,
+						`取得手段がありません: 時間窓が進行中の UTC 日 (${currentUtcKey}) 内のためアーカイブは未公開で、latest 取得も失敗しました（${formatFailures(latestMerge.failures)}）`,
 						'upstream',
 					),
 				);
 			}
 
-			// 部分失敗は警告のみ（latest 失敗は直近数分の欠落、一部 date 失敗は該当日のカバレッジ不足）
+			// 部分失敗・カバレッジ制約は警告で明示（latest 失敗は直近数分の欠落、一部 date 失敗は該当日のカバレッジ不足）
 			const warnMsgs: string[] = [];
-			if (nonTodayFailures.length > 0) {
+			if (dateMerge.failures.length > 0) {
 				warnMsgs.push(
-					`⚠️ 日付ベース取得で ${dateMerge.totalCount}件中 ${nonTodayFailures.length}件失敗: ${formatFailures(nonTodayFailures)}`,
+					`⚠️ 日付ベース取得で ${dateMerge.totalCount}件中 ${dateMerge.failures.length}件失敗: ${formatFailures(dateMerge.failures)}`,
 				);
 			}
-			if (todayFailed) {
-				warnMsgs.push(
-					`⚠️ 当日 (${todayStr}) アーカイブが未公開または取得失敗のため /transactions (latest) から補完しました`,
-				);
-			}
+			// 進行中の UTC 日の区間はアーカイブが存在しないため、常に latest（直近約60件）のみでの補完になる
+			warnMsgs.push(
+				`ℹ️ 進行中の UTC 日 (${currentUtcKey}) のアーカイブは未公開のため、この区間は /transactions (latest, 直近約60件) で補完しています`,
+			);
 			if (latestMerge.failures.length > 0) {
 				warnMsgs.push(
 					`⚠️ 最新約定の補完取得に失敗 (${formatFailures(latestMerge.failures)}) — 直近数分のデータが欠落している可能性があります`,
@@ -256,21 +251,23 @@ export default async function getFlowMetrics(
 
 			if (date) {
 				// 明示的な日付指定がある場合はそのまま取得。
-				// 当日 (JST) はアーカイブ未生成で 404 の可能性があるため latest にフォールバック。
+				// /transactions/{YYYYMMDD} は UTC 暦日アーカイブで、当該 UTC 日が完了するまで未公開
+				// （404）。進行中・未来の UTC 日（JST の「今日」に加え、JST 早朝は「昨日」も該当）を
+				// 指定された場合は latest にフォールバックする。
 				const txRes = await getTransactions(chk.pair, Math.min(lim.value, 1000), date);
-				const isTodayJst = date === dayjs().tz('Asia/Tokyo').format('YYYYMMDD');
+				const archivePublished = isArchiveExpectedPublished(date);
 				if (!txRes?.ok) {
-					if (isTodayJst) {
+					if (!archivePublished) {
 						const latestRes = await getTransactions(chk.pair, Math.min(lim.value, 1000));
 						if (!latestRes?.ok) {
 							return GetFlowMetricsOutputSchema.parse(
 								fail(
-									`date=${date} (today JST) アーカイブ未公開かつ latest 取得も失敗: ${txRes?.summary || 'unknown'} / ${latestRes?.summary || 'unknown'}`,
+									`date=${date} のアーカイブは未公開（UTC 暦日完了後に公開）で、latest 取得も失敗: ${txRes?.summary || 'unknown'} / ${latestRes?.summary || 'unknown'}`,
 									latestRes?.meta?.errorType || 'upstream',
 								),
 							);
 						}
-						fetchWarning = `⚠️ 当日 (${date}) のアーカイブは未公開のため /transactions (latest) から取得しました`;
+						fetchWarning = `⚠️ date=${date} のアーカイブは未公開（/transactions/{YYYYMMDD} は UTC 暦日の完了後に公開）のため /transactions (latest) から取得しました`;
 						// 加工契約: 全ての取得パスで昇順 sort を保証する。
 						// 上流 getTransactions も内部 sort 済みだが、契約の単一ソースをこちらに置く。
 						txs = (latestRes.data.normalized as Tx[]).slice().sort((a, b) => a.timestampMs - b.timestampMs);
@@ -294,18 +291,15 @@ export default async function getFlowMetrics(
 					// 加工契約: 全ての取得パスで昇順 sort を保証する。
 					txs = latestTxs.slice().sort((a, b) => a.timestampMs - b.timestampMs);
 				} else {
-					// latest の返却数が不足 → 前日・前々日の日付ベース取得で補完
-					// bitbank の latest エンドポイントは約60件のみ返却するため
-					const todayJst = dayjs().tz('Asia/Tokyo');
-					const supplementFetches: Promise<unknown>[] = [
-						getTransactions(chk.pair, 1000, todayJst.subtract(1, 'day').format('YYYYMMDD')),
-					];
-					if (lim.value > 500) {
-						supplementFetches.push(getTransactions(chk.pair, 1000, todayJst.subtract(2, 'day').format('YYYYMMDD')));
-					}
-					const supplementResults = await Promise.all(supplementFetches);
+					// latest の返却数が不足（bitbank の latest エンドポイントは約60件のみ返却）
+					// → 完了済み UTC 日アーカイブで補完する。
+					// /transactions/{YYYYMMDD} は UTC 暦日アーカイブ・当該 UTC 日完了後に公開のため、
+					// JST 基準の「昨日」で組むと JST 早朝（UTC 日付更新前）は進行中の UTC 日を
+					// 要求して必ず 404 になる（当該障害の原因）。
+					const supplementDates = recentCompletedUtcDayKeys(lim.value > 500 ? 2 : 1);
+					const supplementResults = await Promise.all(supplementDates.map((ds) => getTransactions(chk.pair, 1000, ds)));
 					const allResults = [latestRes, ...supplementResults];
-					const labels = ['latest', ...supplementFetches.map((_, i) => `supplement-${i + 1}`)];
+					const labels = ['latest', ...supplementDates];
 					const { txs: merged, totalCount, failures } = mergeTxResults(allResults, labels);
 					// 全て失敗した場合は network エラーとして返す
 					if (merged.length === 0 && failures.length > 0) {
@@ -313,19 +307,22 @@ export default async function getFlowMetrics(
 							fail(`upstream fetch all failed (${formatFailures(failures)})`, 'network'),
 						);
 					}
-					// 過半数失敗なら fail
-					if (failures.length > 0 && failures.length >= totalCount / 2) {
-						return GetFlowMetricsOutputSchema.parse(
-							fail(
-								`API取得の過半数が失敗しました（${totalCount}件中${failures.length}件失敗: ${formatFailures(failures)}）`,
-								'upstream',
-							),
+					// 補完は best-effort: 何かしら取得できていれば fail せず、失敗と件数不足を警告で明示する。
+					// （latest 成功 + 補完失敗を「過半数失敗」として全体 fail すると、正当に取得できた
+					// 直近データまで捨ててしまう。補完アーカイブは公開遅延等で 404 になり得る。）
+					const warnMsgs: string[] = [];
+					if (failures.length > 0) {
+						warnMsgs.push(
+							`⚠️ ${totalCount}件中 ${failures.length}件のAPI取得に失敗しました: ${formatFailures(failures)}`,
 						);
 					}
-					if (failures.length > 0) {
-						fetchWarning = `⚠️ ${totalCount}件中 ${failures.length}件のAPI取得に失敗しました: ${formatFailures(failures)}`;
-					}
 					txs = merged.sort((a, b) => a.timestampMs - b.timestampMs).slice(-lim.value);
+					if (txs.length < lim.value) {
+						warnMsgs.push(
+							`ℹ️ 要求 ${lim.value}件に対し取得できたのは ${txs.length}件です（進行中の UTC 日のアーカイブは未公開のため取得不可）`,
+						);
+					}
+					if (warnMsgs.length > 0) fetchWarning = warnMsgs.join('\n');
 				}
 			}
 		}
@@ -546,6 +543,7 @@ export const toolDef: ToolDefinition = {
 	name: 'get_flow_metrics',
 	description:
 		`[Flow / CVD / Buy-Sell Pressure] 資金フロー分析（flow / CVD / aggressor ratio / buy-sell pressure）。約定データからCVD・アグレッサー比・スパイクを検出。hours（推奨）で時間範囲指定、または limit で件数指定。` +
+		`\n\nデータソース制約（bitbank 側仕様）: 約定アーカイブ /transactions/{YYYYMMDD} は UTC 暦日単位で、当該 UTC 日の完了後にのみ公開される。進行中の UTC 日（JST 09:00 で切り替わる）の約定は /transactions (latest, 直近約60件) でしか取得できないため、当日区間のカバレッジは限定的（warning で明示される）。` +
 		`\n\n加工契約:` +
 		`\n- 内部で使用する約定列は、取得パスに関わらず timestampMs 昇順にソート済み。` +
 		`\n- latest と date ベースをマージする場合、重複除去キーは \`timestampMs:price:amount:side\`（transaction_id は使用しない: 同一約定でも上流エンドポイント間で ID が一致しないケースがあるため）。`,

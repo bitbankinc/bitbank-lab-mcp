@@ -10,9 +10,10 @@
  */
 
 import type { z } from 'zod';
-import { dayjs, toDisplayTime, toIsoWithTz } from '../lib/datetime.js';
+import { toDisplayTime, toIsoWithTz } from '../lib/datetime.js';
 import { formatPair, formatPercent, formatPrice } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
+import { completedUtcDayKeysInRange, recentCompletedUtcDayKeys } from '../lib/tx-archive.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import {
 	type AnalyzeVolumeProfileDataSchemaOut,
@@ -69,15 +70,12 @@ async function fetchTransactions(pair: string, hours?: number, limit?: number): 
 	if (hours != null && hours > 0) {
 		const nowMs = Date.now();
 		const sinceMs = nowMs - hours * 3600_000;
-		const sinceDayjs = dayjs(sinceMs).tz('Asia/Tokyo');
-		const nowDayjs = dayjs(nowMs).tz('Asia/Tokyo');
 
-		const dates: string[] = [];
-		let d = sinceDayjs.startOf('day');
-		while (d.isBefore(nowDayjs) || d.isSame(nowDayjs, 'day')) {
-			dates.push(d.format('YYYYMMDD'));
-			d = d.add(1, 'day');
-		}
+		// /transactions/{YYYYMMDD} は UTC 暦日アーカイブで、当該 UTC 日が完了するまで 404
+		// （実測: docs/internal/bitbank-tx-archive-tz.md）。進行中の UTC 日は列挙から除外し、
+		// その区間は /transactions (latest) で補完する。JST 暦日で列挙すると JST 早朝に
+		// 進行中の UTC 日を要求して必ず失敗する。
+		const dates = completedUtcDayKeysInRange(sinceMs, nowMs);
 
 		const fetches: Promise<unknown>[] = dates.map((ds) => getTransactions(pair, 1000, ds));
 		fetches.push(getTransactions(pair, 1000));
@@ -115,27 +113,19 @@ async function fetchTransactions(pair: string, hours?: number, limit?: number): 
 	if (latestTxs.length >= lim) return { ok: true, txs: latestTxs.slice(-lim) };
 
 	// Supplement with previous days
-	const todayJst = dayjs().tz('Asia/Tokyo');
-	const supplementFetches: Promise<unknown>[] = [
-		getTransactions(pair, 1000, todayJst.subtract(1, 'day').format('YYYYMMDD')),
-	];
-	if (lim > 500) {
-		supplementFetches.push(getTransactions(pair, 1000, todayJst.subtract(2, 'day').format('YYYYMMDD')));
-	}
-	const supplementResults = await Promise.all(supplementFetches);
+	// /transactions/{YYYYMMDD} は UTC 暦日アーカイブ・当該 UTC 日完了後に公開のため、
+	// 完了済み UTC 日から補完する（JST 基準で組むと JST 早朝に進行中の UTC 日を要求して 404）。
+	const supplementDates = recentCompletedUtcDayKeys(lim > 500 ? 2 : 1);
+	const supplementResults = await Promise.all(supplementDates.map((ds) => getTransactions(pair, 1000, ds)));
 	const allResults = [latestRes, ...supplementResults];
 	const { txs: mergedTxs, totalCount, failedCount } = mergeTxResults(allResults);
 	if (mergedTxs.length === 0) {
 		const upstreamErr = extractUpstreamError(allResults);
 		if (upstreamErr) return { ok: false, ...upstreamErr };
 	}
-	if (failedCount > 0 && failedCount >= totalCount / 2) {
-		return {
-			ok: false,
-			errorType: 'upstream',
-			summary: `API取得の過半数が失敗しました（${totalCount}件中${failedCount}件失敗）`,
-		};
-	}
+	// 補完は best-effort: 何かしら取得できていれば fail せず、部分失敗は警告で明示する
+	// （latest 成功 + 補完失敗を「過半数失敗」として全体 fail すると、正当に取得できた
+	// 直近データまで捨ててしまう。補完アーカイブは公開遅延等で 404 になり得る）。
 	return {
 		ok: true,
 		txs: mergedTxs.sort((a, b) => a.timestampMs - b.timestampMs).slice(-lim),

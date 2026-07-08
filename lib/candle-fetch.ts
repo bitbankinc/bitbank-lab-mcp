@@ -160,6 +160,29 @@ export async function mergeChunks(
 	return { rows, results, lastRateLimit, failedKeys };
 }
 
+/**
+ * 失敗した chunk を「key(エラー内容)」形式で列挙する（診断用メッセージ向け）。
+ * 例: "20260708(HTTP 404 Not Found), 20260707(bitbank API error (code: 10000))"
+ *
+ * 「N日中M日失敗」だけではどの日付が何の理由で落ちたか判別できず調査不能になるため、
+ * 過半数失敗 fail / 部分失敗 warning のメッセージには必ずこれを含めること。
+ */
+export function describeFailedChunks(
+	keys: string[],
+	results: FetchChunkResult[],
+	onlyKeys?: ReadonlySet<string>,
+): string {
+	const parts: string[] = [];
+	for (let i = 0; i < keys.length; i++) {
+		const err = results[i]?.error;
+		if (err == null) continue;
+		if (onlyKeys && !onlyKeys.has(keys[i])) continue;
+		const msg = err instanceof Error ? err.message : String(err);
+		parts.push(`${keys[i]}(${msg})`);
+	}
+	return parts.join(', ');
+}
+
 function isOhlcAllZero(row: OhlcvRow): boolean {
 	return Number(row[0]) === 0 && Number(row[1]) === 0 && Number(row[2]) === 0 && Number(row[3]) === 0;
 }

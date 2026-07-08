@@ -405,3 +405,48 @@ describe('get_transactions', () => {
 		});
 	});
 });
+
+// ── UTC 暦日アーカイブ制約のエラーヒント ──
+// /transactions/{YYYYMMDD} は UTC 暦日アーカイブで、当該 UTC 日完了後に公開される（bitbank 側仕様）。
+// 進行中・未来の UTC 日の 404 には「なぜ 404 か」のヒントを付与する。
+
+describe('get_transactions: 未公開アーカイブ 404 のヒント', () => {
+	const originalFetch = globalThis.fetch;
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	const mock404 = () =>
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+			ok: false,
+			status: 404,
+			statusText: 'Not Found',
+			headers: { get: () => null },
+			json: async () => ({ success: 0, data: { code: 10000 } }),
+		} as unknown as Response);
+
+	it('進行中の UTC 日（JST 早朝の「JST 昨日」）の 404 にはアーカイブ未公開ヒントが付く', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(Date.UTC(2026, 6, 7, 23, 31, 0)); // 進行中 UTC 日 = 20260707
+		mock404();
+
+		const res = await getTransactions('btc_jpy', 60, '20260707');
+		expect(res.ok).toBe(false);
+		expect(res.summary).toContain('UTC ではまだ完了していない');
+		expect(res.summary).toContain('20260707');
+	});
+
+	it('完了済み UTC 日の 404 にはヒントを付けない（実失敗として扱う）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(Date.UTC(2026, 6, 7, 23, 31, 0));
+		mock404();
+
+		const res = await getTransactions('btc_jpy', 60, '20260701');
+		expect(res.ok).toBe(false);
+		expect(res.summary).not.toContain('UTC ではまだ完了していない');
+		expect(res.summary).toContain('404');
+	});
+});

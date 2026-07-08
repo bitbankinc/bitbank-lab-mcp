@@ -143,46 +143,81 @@ describe('get_flow_metrics', () => {
 	});
 
 	it('hours: latest のみ失敗しても date が成功していれば ok（警告付き）', async () => {
-		// /transactions (latest) は失敗、/transactions/YYYYMMDD (date) は成功
-		const nowMs = Date.now();
-		const txs = [
-			{ price: '5000000', amount: '0.1', side: 'buy', executed_at: String(nowMs - 1000) },
-			{ price: '5000100', amount: '0.2', side: 'sell', executed_at: String(nowMs - 500) },
-		];
-		globalThis.fetch = vi.fn().mockImplementation((url: string) => {
-			if (/\/transactions\/\d{8}$/.test(url)) {
+		// 時間窓が完了済み UTC 日 (20260707) にかかるよう固定時刻で実行
+		// （dates の列挙は UTC 暦日基準になったため、壁時計依存だと mid-day に dates=[] になる）
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(Date.UTC(2026, 6, 8, 0, 30, 0));
+		try {
+			// /transactions (latest) は失敗、/transactions/YYYYMMDD (date) は成功
+			const nowMs = Date.now();
+			const txs = [
+				{ price: '5000000', amount: '0.1', side: 'buy', executed_at: String(nowMs - 1000) },
+				{ price: '5000100', amount: '0.2', side: 'sell', executed_at: String(nowMs - 500) },
+			];
+			globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+				if (/\/transactions\/\d{8}$/.test(url)) {
+					return Promise.resolve({
+						ok: true,
+						status: 200,
+						statusText: 'OK',
+						json: async () => txPayload(txs),
+					});
+				}
 				return Promise.resolve({
-					ok: true,
-					status: 200,
-					statusText: 'OK',
-					json: async () => txPayload(txs),
+					ok: false,
+					status: 503,
+					statusText: 'Service Unavailable',
+					json: async () => ({}),
 				});
-			}
-			return Promise.resolve({
+			}) as unknown as typeof fetch;
+			const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 1);
+			assertOk(res);
+			expect(res.meta.warning).toBeTruthy();
+			expect(res.meta.warning).toContain('latest');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('hours: 完了済み UTC 日の date 取得が全滅した場合は fail with 失敗詳細', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(Date.UTC(2026, 6, 8, 0, 30, 0));
+		try {
+			globalThis.fetch = vi.fn().mockResolvedValue({
 				ok: false,
 				status: 503,
 				statusText: 'Service Unavailable',
+				headers: { get: () => null },
 				json: async () => ({}),
-			});
-		}) as unknown as typeof fetch;
-		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 1);
-		assertOk(res);
-		expect(res.meta.warning).toBeTruthy();
-		expect(res.meta.warning).toContain('latest');
+			}) as unknown as typeof fetch;
+			const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 1);
+			assertFail(res);
+			expect(res.summary).toContain('日付ベース');
+			expect(res.summary).toMatch(/HTTP 503|network|timeout|unknown/);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
-	it('hours: date 取得が全滅した場合は fail with 失敗詳細', async () => {
-		globalThis.fetch = vi.fn().mockResolvedValue({
-			ok: false,
-			status: 503,
-			statusText: 'Service Unavailable',
-			headers: { get: () => null },
-			json: async () => ({}),
-		}) as unknown as typeof fetch;
-		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 1);
-		assertFail(res);
-		expect(res.summary).toContain('日付ベース');
-		expect(res.summary).toMatch(/HTTP 503|network|timeout|unknown/);
+	it('hours: 時間窓が進行中 UTC 日内のみ（アーカイブ要求なし）で latest も失敗 → 取得手段なしで fail', async () => {
+		// UTC mid-day: hours=1 の窓は進行中 UTC 日 (20260708) 内に収まる → アーカイブ fetch なし
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(Date.UTC(2026, 6, 8, 12, 0, 0));
+		try {
+			globalThis.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				status: 503,
+				statusText: 'Service Unavailable',
+				headers: { get: () => null },
+				json: async () => ({}),
+			}) as unknown as typeof fetch;
+			const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 1);
+			assertFail(res);
+			expect(res.summary).toContain('取得手段がありません');
+			expect(res.summary).toContain('20260708');
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	// ─── 空データ ─────────────────────────────────────────
@@ -434,5 +469,111 @@ describe('buildFlowMetricsText', () => {
 			bucketMs: 60_000,
 		});
 		expect(text).toContain('z:n/a');
+	});
+});
+
+// ── JST 早朝（UTC 日付境界前）の取得回帰 ──
+// 障害再現: 2026-07-08 08:31 JST（= 2026-07-07 23:31 UTC）に analyze_market_signal 経由の
+// getFlowMetrics(limit=300) が「supplement 404 → 過半数失敗」で全滅した。
+// 原因: /transactions/{YYYYMMDD} は UTC 暦日アーカイブ（UTC 日完了後に公開）なのに、
+// 補完日付を JST の「昨日」で組んでいた（JST 早朝の「JST 昨日」= 進行中の UTC 日 → 必ず 404）。
+
+describe('JST 早朝の補完取得（UTC 日付境界回帰）', () => {
+	const originalFetch = globalThis.fetch;
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	/** nowMs 直近の約定 count 件（重複しない ts）を生成 */
+	const recentTxs = (nowMs: number, count: number) =>
+		Array.from({ length: count }, (_, i) => ({
+			price: String(5_000_000 + i),
+			amount: '0.01',
+			side: i % 2 === 0 ? 'buy' : 'sell',
+			executed_at: String(nowMs - (count - i) * 1000),
+		}));
+
+	const jsonRes = (body: unknown, status = 200) =>
+		({
+			ok: status >= 200 && status < 300,
+			status,
+			statusText: status === 404 ? 'Not Found' : 'OK',
+			headers: { get: () => null },
+			json: async () => body,
+		}) as unknown as Response;
+
+	const calledUrls = () => (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+
+	it('count path @JST 08:31: 補完日付は完了済み UTC 日 (20260706) で、進行中 UTC 日 (20260707) を要求しない', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(Date.UTC(2026, 6, 7, 23, 31, 0)); // = 2026-07-08 08:31 JST
+		const nowMs = Date.now();
+		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+			const u = String(url);
+			if (u.endsWith('/transactions')) return jsonRes(txPayload(recentTxs(nowMs, 60)));
+			if (u.endsWith('/transactions/20260706')) return jsonRes(txPayload(recentTxs(nowMs - 86_400_000, 100)));
+			return jsonRes({ success: 0, data: { code: 10000 } }, 404);
+		});
+
+		const res = await getFlowMetrics('btc_jpy', 300, undefined, 60_000);
+		assertOk(res);
+		expect(calledUrls().some((u) => u.endsWith('/transactions/20260706'))).toBe(true);
+		expect(calledUrls().some((u) => u.endsWith('/transactions/20260707'))).toBe(false);
+	});
+
+	it('count path: latest 成功 + 補完 404 → fail せず warning 付き部分データ（旧: 過半数失敗で全滅）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(Date.UTC(2026, 6, 7, 23, 31, 0));
+		const nowMs = Date.now();
+		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+			const u = String(url);
+			if (u.endsWith('/transactions')) return jsonRes(txPayload(recentTxs(nowMs, 60)));
+			// 補完アーカイブは公開遅延で 404 になり得る
+			return jsonRes({ success: 0, data: { code: 10000 } }, 404);
+		});
+
+		const res = await getFlowMetrics('btc_jpy', 300, undefined, 60_000);
+		assertOk(res);
+		expect(res.data.aggregates.totalTrades).toBe(60);
+		expect(res.meta.warning).toContain('⚠️');
+		expect(res.meta.warning).toContain('20260706');
+		// 件数不足の明示
+		expect(res.meta.warning).toContain('300件');
+	});
+
+	it('count path: 明示 date が進行中 UTC 日（JST 早朝の「JST 昨日」）→ latest フォールバック + warning', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(Date.UTC(2026, 6, 7, 23, 31, 0)); // 進行中 UTC 日 = 20260707
+		const nowMs = Date.now();
+		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+			const u = String(url);
+			if (u.endsWith('/transactions')) return jsonRes(txPayload(recentTxs(nowMs, 30)));
+			return jsonRes({ success: 0, data: { code: 10000 } }, 404);
+		});
+
+		const res = await getFlowMetrics('btc_jpy', 100, '20260707', 60_000);
+		assertOk(res);
+		expect(res.meta.warning).toContain('アーカイブは未公開');
+	});
+
+	it('hours path @JST 09:30: 完了済み UTC 日のみ列挙し、進行中 UTC 日を要求しない + カバレッジ注記', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(Date.UTC(2026, 6, 8, 0, 30, 0)); // = 2026-07-08 09:30 JST、進行中 UTC 日 = 20260708
+		const nowMs = Date.now();
+		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+			const u = String(url);
+			if (u.endsWith('/transactions')) return jsonRes(txPayload(recentTxs(nowMs, 60)));
+			if (u.endsWith('/transactions/20260707')) return jsonRes(txPayload(recentTxs(nowMs - 3_600_000, 100)));
+			return jsonRes({ success: 0, data: { code: 10000 } }, 404);
+		});
+
+		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 2);
+		assertOk(res);
+		expect(calledUrls().some((u) => u.endsWith('/transactions/20260707'))).toBe(true);
+		expect(calledUrls().some((u) => u.endsWith('/transactions/20260708'))).toBe(false);
+		expect(res.meta.warning).toContain('進行中の UTC 日 (20260708)');
 	});
 });

@@ -4,6 +4,7 @@ import { dayjs, toIsoMs } from '../lib/datetime.js';
 import { formatPair, formatPrice } from '../lib/formatter.js';
 import { BITBANK_API_BASE, DEFAULT_RETRIES, fetchJsonWithRateLimit } from '../lib/http.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
+import { isArchiveExpectedPublished } from '../lib/tx-archive.js';
 import { createMeta, ensurePair, validateLimit } from '../lib/validate.js';
 import {
 	type GetTransactionsDataSchemaOut,
@@ -193,7 +194,13 @@ export default async function getTransactions(pair: string = 'btc_jpy', limit: n
 			});
 		}
 		const baseMsg = e instanceof Error && e.message ? e.message : typeof e === 'string' ? e : 'ネットワークエラー';
-		const wrapped = new Error(`${baseMsg} [url: ${url}]`);
+		// 進行中・未来の UTC 日のアーカイブ 404 は bitbank 側の仕様（UTC 暦日完了後に公開）。
+		// 「なぜ 404 か」を呼び出し側で診断できるようヒントを付与する。
+		const archiveHint =
+			date && /404/.test(baseMsg) && !isArchiveExpectedPublished(String(date))
+				? `（/transactions/{YYYYMMDD} は UTC 暦日アーカイブで、date=${date} は UTC ではまだ完了していないため未公開です。直近の約定は date 省略の latest を使用してください）`
+				: '';
+		const wrapped = new Error(`${baseMsg} [url: ${url}]${archiveHint}`);
 		return failFromError(wrapped, {
 			schema: GetTransactionsOutputSchema,
 			timeoutMs: 4000,
@@ -207,7 +214,8 @@ export default async function getTransactions(pair: string = 'btc_jpy', limit: n
 export const toolDef: ToolDefinition = {
 	name: 'get_transactions',
 	description:
-		'[Transactions / Trades] 市場の約定履歴（transactions / recent trades）を取得。直近60件 or 日付指定。金額・価格でフィルタ可能。',
+		'[Transactions / Trades] 市場の約定履歴（transactions / recent trades）を取得。直近60件 or 日付指定。金額・価格でフィルタ可能。' +
+		'\n\n制約（bitbank 側仕様）: date 指定（YYYYMMDD）は UTC 暦日アーカイブで、当該 UTC 日の完了後（JST 09:00 以降）にのみ公開される。進行中の UTC 日を指定すると 404。当日分の約定は date 省略（latest, 直近約60件）でのみ取得可能。',
 	inputSchema: GetTransactionsInputSchema,
 	handler: async ({
 		pair,
