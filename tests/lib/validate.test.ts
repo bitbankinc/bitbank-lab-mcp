@@ -1,3 +1,5 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -185,6 +187,49 @@ describe('ensureAllowedOutputDir', () => {
 	it('環境変数が空文字・空白のみの場合は root を追加しない', () => {
 		process.env[OUTPUT_DIR_ALLOWLIST_ENV] = ' : ';
 		expect(allowedOutputRoots()).toEqual([resolve(DEFAULT_CHART_OUTPUT_DIR), process.cwd()]);
+	});
+
+	// symlink は実パスに解決してから判定する（許可 root 配下の symlink 経由の迂回防止）
+	it('許可 root 配下の symlink 経由で外部を指すパスは拒否される', () => {
+		const allowedRoot = mkdtempSync(join(tmpdir(), 'outdir-allowed-'));
+		const outside = mkdtempSync(join(tmpdir(), 'outdir-outside-'));
+		try {
+			symlinkSync(outside, join(allowedRoot, 'link'), 'dir');
+			process.env[OUTPUT_DIR_ALLOWLIST_ENV] = allowedRoot;
+			expect(ensureAllowedOutputDir(join(allowedRoot, 'link')).ok).toBe(false);
+			expect(ensureAllowedOutputDir(join(allowedRoot, 'link', 'sub')).ok).toBe(false);
+		} finally {
+			rmSync(allowedRoot, { recursive: true, force: true });
+			rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
+	it('許可 root 配下の実ディレクトリ・未作成サブディレクトリは symlink 解決後も許可される', () => {
+		const allowedRoot = mkdtempSync(join(tmpdir(), 'outdir-allowed-'));
+		try {
+			process.env[OUTPUT_DIR_ALLOWLIST_ENV] = allowedRoot;
+			mkdirSync(join(allowedRoot, 'real'));
+			expect(ensureAllowedOutputDir(join(allowedRoot, 'real')).ok).toBe(true);
+			expect(ensureAllowedOutputDir(join(allowedRoot, 'not-created-yet', 'sub')).ok).toBe(true);
+		} finally {
+			rmSync(allowedRoot, { recursive: true, force: true });
+		}
+	});
+
+	it('許可 root 自体が symlink の場合も実パスで一貫して判定される', () => {
+		// root を symlink で登録しても、symlink 経由・実体経由のどちらの指定も同じ実パスとして扱う
+		const real = mkdtempSync(join(tmpdir(), 'outdir-real-'));
+		const linkParent = mkdtempSync(join(tmpdir(), 'outdir-linkparent-'));
+		const link = join(linkParent, 'root-link');
+		try {
+			symlinkSync(real, link, 'dir');
+			process.env[OUTPUT_DIR_ALLOWLIST_ENV] = link;
+			expect(ensureAllowedOutputDir(join(link, 'sub')).ok).toBe(true);
+			expect(ensureAllowedOutputDir(join(real, 'sub')).ok).toBe(true);
+		} finally {
+			rmSync(linkParent, { recursive: true, force: true });
+			rmSync(real, { recursive: true, force: true });
+		}
 	});
 });
 

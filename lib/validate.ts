@@ -1,4 +1,5 @@
-import { delimiter, resolve, sep } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { basename, delimiter, dirname, join, resolve, sep } from 'node:path';
 import type { Pair } from '../src/schemas.js';
 import { nowIso } from './datetime.js';
 
@@ -171,17 +172,40 @@ export function allowedOutputRoots(): string[] {
 }
 
 /**
+ * パスを実パスに正規化する。実在する最深の祖先を realpathSync で解決し、
+ * 未作成の末尾セグメントは字句のまま結合する（mkdir 前の検証で使うため）。
+ * 許可 root 配下に置かれた symlink を経由した外部への書き込みを防ぐ。
+ */
+function canonicalizePath(p: string): string {
+	let current = resolve(p);
+	const pending: string[] = [];
+	for (;;) {
+		try {
+			return join(realpathSync(current), ...pending);
+		} catch {
+			const parent = dirname(current);
+			if (parent === current) return join(current, ...pending);
+			pending.unshift(basename(current));
+			current = parent;
+		}
+	}
+}
+
+/**
  * outputDir が許可 root 配下かを検証する。
  * LLM 入力（プロンプトインジェクション含む）経由でプロセス権限内の任意パスへ
  * ディレクトリ作成・ファイル書き込みされるのを防ぐ。`..` を含むパスも
- * resolve 後の実パスで判定するためトラバーサルでは迂回できない。
+ * symlink も実パスに解決してから判定するため、トラバーサル・symlink では
+ * 迂回できない（検証と書き込みの間に symlink を差し替える TOCTOU は、
+ * それができる時点でローカルアクセスを持つため脅威モデル外）。
  */
 export function ensureAllowedOutputDir(
 	dir: string,
 ): { ok: true; dir: string } | { ok: false; error: { type: 'user' | 'internal'; message: string } } {
-	const resolved = resolve(dir);
+	const canonical = canonicalizePath(dir);
 	const roots = allowedOutputRoots();
-	const allowed = roots.some((root) => resolved === root || resolved.startsWith(root + sep));
+	const canonicalRoots = roots.map(canonicalizePath);
+	const allowed = canonicalRoots.some((root) => canonical === root || canonical.startsWith(root + sep));
 	if (!allowed) {
 		return {
 			ok: false,
@@ -191,7 +215,7 @@ export function ensureAllowedOutputDir(
 			},
 		};
 	}
-	return { ok: true, dir: resolved };
+	return { ok: true, dir: canonical };
 }
 
 export function createMeta(
