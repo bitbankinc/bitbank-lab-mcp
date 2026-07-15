@@ -1,9 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { join, resolve } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
 	ALLOWED_PAIRS,
+	allowedOutputRoots,
 	createMeta,
+	DEFAULT_CHART_OUTPUT_DIR,
+	ensureAllowedOutputDir,
 	ensurePair,
 	normalizePair,
+	OUTPUT_DIR_ALLOWLIST_ENV,
 	validateDate,
 	validateLimit,
 } from '../../lib/validate.js';
@@ -127,6 +132,59 @@ describe('validateDate', () => {
 		expect(validateDate('abc').ok).toBe(false);
 		expect(validateDate('2025-02-13').ok).toBe(false);
 		expect(validateDate('').ok).toBe(false);
+	});
+});
+
+describe('ensureAllowedOutputDir', () => {
+	afterEach(() => {
+		delete process.env[OUTPUT_DIR_ALLOWLIST_ENV];
+	});
+
+	it('デフォルト出力ディレクトリは許可される', () => {
+		const res = ensureAllowedOutputDir(DEFAULT_CHART_OUTPUT_DIR);
+		expect(res).toEqual({ ok: true, dir: resolve(DEFAULT_CHART_OUTPUT_DIR) });
+	});
+
+	it('デフォルト出力ディレクトリ配下のサブディレクトリも許可される', () => {
+		const res = ensureAllowedOutputDir(join(DEFAULT_CHART_OUTPUT_DIR, 'charts', 'btc'));
+		expect(res.ok).toBe(true);
+	});
+
+	it('サーバー作業ディレクトリ（cwd）と相対パスは許可される', () => {
+		expect(ensureAllowedOutputDir(process.cwd()).ok).toBe(true);
+		const rel = ensureAllowedOutputDir('./charts');
+		expect(rel).toEqual({ ok: true, dir: join(process.cwd(), 'charts') });
+	});
+
+	it('許可 root 外の絶対パスは拒否される', () => {
+		const res = ensureAllowedOutputDir('/etc/cron.d');
+		expect(res.ok).toBe(false);
+		if (!res.ok) {
+			expect(res.error.type).toBe('user');
+			expect(res.error.message).toContain('/etc/cron.d');
+		}
+	});
+
+	it('.. によるトラバーサルは resolve 後のパスで拒否される', () => {
+		const res = ensureAllowedOutputDir(join(DEFAULT_CHART_OUTPUT_DIR, '..', '..', '..', 'etc'));
+		expect(res.ok).toBe(false);
+	});
+
+	it('許可 root のプレフィックス衝突（/mnt/user-data/outputs-evil）は拒否される', () => {
+		const res = ensureAllowedOutputDir(`${DEFAULT_CHART_OUTPUT_DIR}-evil`);
+		expect(res.ok).toBe(false);
+	});
+
+	it('環境変数で追加した root 配下は許可される', () => {
+		process.env[OUTPUT_DIR_ALLOWLIST_ENV] = '/srv/charts:/opt/reports';
+		expect(ensureAllowedOutputDir('/srv/charts/btc').ok).toBe(true);
+		expect(ensureAllowedOutputDir('/opt/reports').ok).toBe(true);
+		expect(ensureAllowedOutputDir('/srv/other').ok).toBe(false);
+	});
+
+	it('環境変数が空文字・空白のみの場合は root を追加しない', () => {
+		process.env[OUTPUT_DIR_ALLOWLIST_ENV] = ' : ';
+		expect(allowedOutputRoots()).toEqual([resolve(DEFAULT_CHART_OUTPUT_DIR), process.cwd()]);
 	});
 });
 

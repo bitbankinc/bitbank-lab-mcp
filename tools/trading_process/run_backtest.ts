@@ -7,6 +7,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { dayjs, formatDateInTz } from '../../lib/datetime.js';
+import { DEFAULT_CHART_OUTPUT_DIR, ensureAllowedOutputDir } from '../../lib/validate.js';
 import { prependWarnings } from '../../lib/warning-propagation.js';
 import { type BacktestEngineInput, type BacktestEngineResult, runBacktestEngine } from './lib/backtest_engine.js';
 import { fetchCandlesForBacktest } from './lib/fetch_candles.js';
@@ -21,7 +22,7 @@ import {
 import type { BacktestRange, Period, Timeframe } from './types.js';
 
 // Claude.ai のデフォルト出力ディレクトリ
-const DEFAULT_OUTPUT_DIR = '/mnt/user-data/outputs';
+const DEFAULT_OUTPUT_DIR = DEFAULT_CHART_OUTPUT_DIR;
 
 /**
  * 書き込み可能なディレクトリを確保
@@ -48,7 +49,7 @@ export interface RunBacktestInput {
 	strategy: StrategyConfig;
 	fee_bp?: number;
 	execution?: 't+1_open';
-	/** 出力ディレクトリ（デフォルト: /mnt/user-data/outputs/） */
+	/** 出力ディレクトリ（デフォルト: /mnt/user-data/outputs/）。許可 root 配下のみ（lib/validate.ts の ensureAllowedOutputDir） */
 	outputDir?: string;
 	/** PNG ファイルを生成する（デフォルト: false、ファイルシステム非共有のため） */
 	savePng?: boolean;
@@ -117,6 +118,17 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 			};
 		}
 		const params = validation.normalizedParams;
+
+		// 出力ディレクトリをバリデーション（savePng 時のみ・fetch 前に弾く）。
+		// LLM 指定の任意パスへの書き込みを許可 root 配下に制限する。
+		let resolvedOutputDir: string | undefined;
+		if (savePng) {
+			const dirCheck = ensureAllowedOutputDir(outputDir);
+			if (!dirCheck.ok) {
+				return { ok: false, error: dirCheck.error.message };
+			}
+			resolvedOutputDir = dirCheck.dir;
+		}
 
 		// 必要なバー数を params から動的に計算（ユーザーが long / slow / signal 等を
 		// デフォルトより大きく指定した場合でもウォームアップを十分確保するため）
@@ -214,11 +226,11 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 		};
 
 		// PNG ファイル保存（savePng: true の場合のみ）
-		if (savePng && svg) {
+		if (savePng && svg && resolvedOutputDir) {
 			try {
-				ensureOutputDir(outputDir);
+				ensureOutputDir(resolvedOutputDir);
 				const filename = generateBacktestChartFilename(pair, timeframe, strategyConfig.type, 'png');
-				const pngPath = join(outputDir, filename);
+				const pngPath = join(resolvedOutputDir, filename);
 				await svgToPng(svg, pngPath, { density: 150 });
 				output.chartPath = pngPath;
 			} catch (pngError) {

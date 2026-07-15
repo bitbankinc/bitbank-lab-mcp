@@ -49,6 +49,28 @@ describe('generateBacktestChartFilename', () => {
 		expect(filename).toContain('xrpjpy');
 		expect(filename).not.toContain('xrp_jpy');
 	});
+
+	// パス区切りやドットを含む値が渡ってもファイル名がディレクトリを抜け出さないこと
+	// （防御的サニタイズ。pair は上流の ensurePair で弾かれる前提だが、局所でも保証する）
+	it('パストラバーサルを含むペア名からパス区切りとドットを除去する', () => {
+		const filename = generateBacktestChartFilename('../../etc/passwd', '1D', 'sma_cross');
+		expect(filename).not.toContain('/');
+		expect(filename).not.toContain('..');
+		expect(filename).toMatch(/^backtest_etcpasswd_1D_sma_cross_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.png$/);
+	});
+
+	it('バックスラッシュ・null バイト等の危険文字も除去する', () => {
+		const filename = generateBacktestChartFilename('..\\evil\0name', '1D/../x', 'rsi');
+		expect(filename).not.toContain('\\');
+		expect(filename).not.toContain('\0');
+		expect(filename).not.toContain('/');
+		expect(filename).not.toContain('..');
+	});
+
+	it('正常なペア名のファイル名フォーマットはサニタイズ後も変わらない（回帰）', () => {
+		const filename = generateBacktestChartFilename('btc_jpy', '1D', 'sma_cross');
+		expect(filename).toMatch(/^backtest_btcjpy_1D_sma_cross_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.png$/);
+	});
 });
 
 describe('svgToPng', () => {

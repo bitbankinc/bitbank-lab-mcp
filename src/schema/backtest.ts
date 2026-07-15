@@ -60,7 +60,15 @@ export const RunBacktestInputSchema = z
 				'One-way fee in basis points. When omitted, resolved dynamically from the current /spot/pairs taker rate (falls back to nominal 12 bp if unavailable). Explicit values are always respected.',
 			),
 		execution: z.literal('t+1_open').optional().default('t+1_open').describe('Execution timing (fixed: t+1_open)'),
-		outputDir: z.string().optional().default('/mnt/user-data/outputs').describe('Output directory for chart files'),
+		outputDir: z
+			.string()
+			.optional()
+			.default('/mnt/user-data/outputs')
+			.describe(
+				'Output directory for chart files. Must be under an allowed root: ' +
+					'/mnt/user-data/outputs, the server working directory, or a directory listed in ' +
+					'the BACKTEST_OUTPUT_DIR_ALLOWLIST environment variable.',
+			),
 		savePng: z
 			.boolean()
 			.optional()

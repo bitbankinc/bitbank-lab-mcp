@@ -1,3 +1,4 @@
+import { delimiter, resolve, sep } from 'node:path';
 import type { Pair } from '../src/schemas.js';
 import { nowIso } from './datetime.js';
 
@@ -146,6 +147,51 @@ export function validateDate(
 		};
 	}
 	return { ok: true, value: date };
+}
+
+/** チャートファイルの既定出力ディレクトリ（Claude.ai 環境の出力先） */
+export const DEFAULT_CHART_OUTPUT_DIR = '/mnt/user-data/outputs';
+
+/** チャート出力の許可 root を運用側が追加する環境変数（path.delimiter 区切り） */
+export const OUTPUT_DIR_ALLOWLIST_ENV = 'BACKTEST_OUTPUT_DIR_ALLOWLIST';
+
+/**
+ * チャート出力先として許可される root ディレクトリ一覧。
+ * 既定: DEFAULT_CHART_OUTPUT_DIR とサーバー作業ディレクトリ配下
+ * （相対パス指定・Cursor 等でワークスペース直下に書き出すユースケース用）。
+ * それ以外は運用側が環境変数で明示的に許可する（LLM 入力からは追加できない）。
+ */
+export function allowedOutputRoots(): string[] {
+	const extra = (process.env[OUTPUT_DIR_ALLOWLIST_ENV] ?? '')
+		.split(delimiter)
+		.map((p) => p.trim())
+		.filter((p) => p.length > 0)
+		.map((p) => resolve(p));
+	return [resolve(DEFAULT_CHART_OUTPUT_DIR), process.cwd(), ...extra];
+}
+
+/**
+ * outputDir が許可 root 配下かを検証する。
+ * LLM 入力（プロンプトインジェクション含む）経由でプロセス権限内の任意パスへ
+ * ディレクトリ作成・ファイル書き込みされるのを防ぐ。`..` を含むパスも
+ * resolve 後の実パスで判定するためトラバーサルでは迂回できない。
+ */
+export function ensureAllowedOutputDir(
+	dir: string,
+): { ok: true; dir: string } | { ok: false; error: { type: 'user' | 'internal'; message: string } } {
+	const resolved = resolve(dir);
+	const roots = allowedOutputRoots();
+	const allowed = roots.some((root) => resolved === root || resolved.startsWith(root + sep));
+	if (!allowed) {
+		return {
+			ok: false,
+			error: {
+				type: 'user',
+				message: `outputDir '${dir}' は許可されていません。許可 root: ${roots.join(', ')} 配下のみ（追加は環境変数 ${OUTPUT_DIR_ALLOWLIST_ENV} で指定）`,
+			},
+		};
+	}
+	return { ok: true, dir: resolved };
 }
 
 export function createMeta(

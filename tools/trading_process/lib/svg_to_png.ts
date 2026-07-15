@@ -50,6 +50,15 @@ export async function svgToPng(
 }
 
 /**
+ * ファイル名に埋め込む値からパス区切り・ドット等を除去する。
+ * pair は上流（ensurePair）で検証済みだが、ファイル名の安全性を
+ * 上流バリデーションに依存させないための防御的サニタイズ。
+ */
+function sanitizeFilenamePart(part: string): string {
+	return part.replace(/[^a-zA-Z0-9_-]/g, '');
+}
+
+/**
  * Generate a unique filename for backtest chart
  */
 export function generateBacktestChartFilename(
@@ -59,6 +68,6 @@ export function generateBacktestChartFilename(
 	format: 'png' | 'svg' = 'png',
 ): string {
 	const timestamp = dayjs().format('YYYY-MM-DDTHH-mm-ss');
-	const safePair = pair.replace('_', '');
-	return `backtest_${safePair}_${timeframe}_${strategy}_${timestamp}.${format}`;
+	const safePair = sanitizeFilenamePart(pair.replace('_', ''));
+	return `backtest_${safePair}_${sanitizeFilenamePart(timeframe)}_${sanitizeFilenamePart(strategy)}_${timestamp}.${format}`;
 }

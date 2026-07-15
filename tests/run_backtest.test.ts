@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -421,7 +422,6 @@ describe('run_backtest', () => {
 		const res = await runBacktest({
 			pair: 'btc_jpy',
 			strategy: { type: 'rsi', params: {} },
-			outputDir: '/tmp/backtest-tests',
 			savePng: true,
 			includeSvg: false,
 		});
@@ -429,6 +429,88 @@ describe('run_backtest', () => {
 		assertOk(res);
 		expect(res.pngError).toContain('sharp failed');
 		expect(res.svg).toBeUndefined();
+	});
+
+	it('savePng=true で許可 root 外の outputDir は fetch 前に弾かれる', async () => {
+		mocks.getStrategy.mockReturnValue({
+			name: 'RSI',
+			type: 'rsi',
+			requiredBars: 14,
+			defaultParams: { period: 14, overbought: 70, oversold: 30 },
+			computeRequiredBars: () => 14,
+			validate: makeValidateOk({ period: 14, overbought: 70, oversold: 30 }),
+		});
+
+		const res = await runBacktest({
+			pair: 'btc_jpy',
+			strategy: { type: 'rsi', params: {} },
+			outputDir: '/etc/cron.d',
+			savePng: true,
+			includeSvg: false,
+		});
+
+		expect(res.ok).toBe(false);
+		if (res.ok === false) {
+			expect(res.error).toContain('outputDir');
+			expect(res.error).toContain('/etc/cron.d');
+		}
+		expect(mocks.fetchCandlesForBacktest).not.toHaveBeenCalled();
+		expect(mocks.svgToPng).not.toHaveBeenCalled();
+	});
+
+	it('savePng=false なら outputDir が許可外でも成功する（書き込みしないため検証しない）', async () => {
+		mocks.getStrategy.mockReturnValue({
+			name: 'RSI',
+			type: 'rsi',
+			requiredBars: 14,
+			defaultParams: { period: 14, overbought: 70, oversold: 30 },
+			computeRequiredBars: () => 14,
+			validate: makeValidateOk({ period: 14, overbought: 70, oversold: 30 }),
+		});
+		mocks.fetchCandlesForBacktest.mockResolvedValue(buildCandles(90));
+		mocks.runBacktestEngine.mockReturnValue(buildEngineResult());
+
+		const res = await runBacktest({
+			pair: 'btc_jpy',
+			strategy: { type: 'rsi', params: {} },
+			outputDir: '/etc/cron.d',
+			savePng: false,
+			includeSvg: false,
+		});
+
+		assertOk(res);
+		expect(mocks.svgToPng).not.toHaveBeenCalled();
+	});
+
+	it('savePng=true で許可 root（cwd）配下なら resolve 済みパスで PNG を保存する', async () => {
+		mocks.getStrategy.mockReturnValue({
+			name: 'RSI',
+			type: 'rsi',
+			requiredBars: 14,
+			defaultParams: { period: 14, overbought: 70, oversold: 30 },
+			computeRequiredBars: () => 14,
+			validate: makeValidateOk({ period: 14, overbought: 70, oversold: 30 }),
+		});
+		mocks.fetchCandlesForBacktest.mockResolvedValue(buildCandles(90));
+		mocks.runBacktestEngine.mockReturnValue(buildEngineResult());
+		mocks.renderBacktestChartGeneric.mockReturnValue('<svg>chart</svg>');
+		mocks.generateBacktestChartFilename.mockReturnValue('backtest.png');
+		mocks.svgToPng.mockResolvedValue(undefined);
+
+		const res = await runBacktest({
+			pair: 'btc_jpy',
+			strategy: { type: 'rsi', params: {} },
+			outputDir: process.cwd(),
+			savePng: true,
+			includeSvg: false,
+		});
+
+		assertOk(res);
+		expect(res.pngError).toBeUndefined();
+		expect(res.chartPath).toBe(join(process.cwd(), 'backtest.png'));
+		expect(mocks.svgToPng).toHaveBeenCalledWith('<svg>chart</svg>', join(process.cwd(), 'backtest.png'), {
+			density: 150,
+		});
 	});
 
 	it('無効な params は fetch 前に弾かれ、fetchCandlesForBacktest が呼ばれない', async () => {
