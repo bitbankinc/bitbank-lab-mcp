@@ -6,7 +6,7 @@
  * gen:types / typecheck / vitest 自体の動作は検証対象外
  * （それぞれ独立してテスト済み）。
  */
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -72,9 +72,9 @@ describe('session-start.sh テスト実行モード判定', () => {
 		execSync(`git add -A && git commit -m "${message}"`, { cwd: tmpDir, stdio: 'pipe' });
 	}
 
-	/** モード判定スクリプトを実行 */
+	/** モード判定スクリプトを実行（Windows の cmd.exe はシングルクォートを解釈しないためシェルを介さない） */
 	function detectMode(): string {
-		const out = execSync(`bash -c '${MODE_DETECT_SCRIPT.replace(/'/g, "'\\''")}'`, {
+		const out = execFileSync('bash', ['-c', MODE_DETECT_SCRIPT], {
 			cwd: tmpDir,
 			encoding: 'utf8',
 			timeout: 5_000,

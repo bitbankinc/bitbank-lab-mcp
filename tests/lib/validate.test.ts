@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
 	ALLOWED_PAIRS,
@@ -178,14 +178,16 @@ describe('ensureAllowedOutputDir', () => {
 	});
 
 	it('環境変数で追加した root 配下は許可される', () => {
-		process.env[OUTPUT_DIR_ALLOWLIST_ENV] = '/srv/charts:/opt/reports';
-		expect(ensureAllowedOutputDir('/srv/charts/btc').ok).toBe(true);
-		expect(ensureAllowedOutputDir('/opt/reports').ok).toBe(true);
-		expect(ensureAllowedOutputDir('/srv/other').ok).toBe(false);
+		const rootA = resolve('/srv/charts');
+		const rootB = resolve('/opt/reports');
+		process.env[OUTPUT_DIR_ALLOWLIST_ENV] = [rootA, rootB].join(delimiter);
+		expect(ensureAllowedOutputDir(join(rootA, 'btc')).ok).toBe(true);
+		expect(ensureAllowedOutputDir(rootB).ok).toBe(true);
+		expect(ensureAllowedOutputDir(resolve('/srv/other')).ok).toBe(false);
 	});
 
 	it('環境変数が空文字・空白のみの場合は root を追加しない', () => {
-		process.env[OUTPUT_DIR_ALLOWLIST_ENV] = ' : ';
+		process.env[OUTPUT_DIR_ALLOWLIST_ENV] = ` ${delimiter} `;
 		expect(allowedOutputRoots()).toEqual([resolve(DEFAULT_CHART_OUTPUT_DIR), process.cwd()]);
 	});
 
