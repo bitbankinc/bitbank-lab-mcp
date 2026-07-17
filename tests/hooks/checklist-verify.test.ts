@@ -12,6 +12,18 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const SCRIPT = join(import.meta.dirname, '../../.claude/hooks/checklist-verify.sh');
 
+// 失敗レポートの JSON 出力はスクリプト内で jq を使う。
+// jq が無い環境（Windows の Git Bash 標準構成 等）では失敗レポート系テストを skip する。
+const hasJq = (() => {
+	try {
+		execSync('bash -c "command -v jq"', { stdio: 'pipe', timeout: 10_000 });
+		return true;
+	} catch {
+		return false;
+	}
+})();
+const itWithJq = it.skipIf(!hasJq);
+
 describe('checklist-verify.sh', () => {
 	let tmpDir: string;
 	let checklistPath: string;
@@ -73,7 +85,7 @@ describe('checklist-verify.sh', () => {
 		expect(existsSync(checklistPath)).toBe(false);
 	});
 
-	it('file_exists: ファイルが存在しなければ FAIL', () => {
+	itWithJq('file_exists: ファイルが存在しなければ FAIL', () => {
 		const { stdout } = run('file_exists nonexistent.txt');
 		const ctx = extractContext(stdout);
 		expect(ctx).toContain('FAIL');
@@ -87,7 +99,7 @@ describe('checklist-verify.sh', () => {
 		expect(stdout.trim()).toBe('');
 	});
 
-	it('file_not_empty: 空ファイルなら FAIL', () => {
+	itWithJq('file_not_empty: 空ファイルなら FAIL', () => {
 		writeFileSync(join(tmpDir, 'empty.txt'), '');
 		const { stdout } = run('file_not_empty empty.txt');
 		const ctx = extractContext(stdout);
@@ -101,7 +113,7 @@ describe('checklist-verify.sh', () => {
 		expect(stdout.trim()).toBe('');
 	});
 
-	it('grep_in: パターンが見つからなければ FAIL', () => {
+	itWithJq('grep_in: パターンが見つからなければ FAIL', () => {
 		writeFileSync(join(tmpDir, 'src.ts'), 'export const foo = {};');
 		const { stdout } = run('grep_in toolDef src.ts');
 		const ctx = extractContext(stdout);
@@ -115,7 +127,7 @@ describe('checklist-verify.sh', () => {
 		expect(stdout.trim()).toBe('');
 	});
 
-	it('grep_not_in: パターンがあれば FAIL', () => {
+	itWithJq('grep_not_in: パターンがあれば FAIL', () => {
 		writeFileSync(join(tmpDir, 'dirty.ts'), '// TODO: fix this');
 		const { stdout } = run('grep_not_in TODO dirty.ts');
 		const ctx = extractContext(stdout);
@@ -128,7 +140,7 @@ describe('checklist-verify.sh', () => {
 		expect(stdout.trim()).toBe('');
 	});
 
-	it('cmd: コマンドが失敗すれば FAIL', () => {
+	itWithJq('cmd: コマンドが失敗すれば FAIL', () => {
 		const { stdout } = run('cmd false');
 		const ctx = extractContext(stdout);
 		expect(ctx).toContain('FAIL');
@@ -146,7 +158,7 @@ file_exists exists.txt
 	});
 
 	// ── 不明なチェックタイプ ──
-	it('不明なチェックタイプはエラーとして報告する', () => {
+	itWithJq('不明なチェックタイプはエラーとして報告する', () => {
 		const { stdout } = run('unknown_check foo');
 		const ctx = extractContext(stdout);
 		expect(ctx).toContain('不明なチェックタイプ');
@@ -154,7 +166,7 @@ file_exists exists.txt
 	});
 
 	// ── 複数チェック ──
-	it('複数チェックで一部失敗した場合、失敗のみ報告する', () => {
+	itWithJq('複数チェックで一部失敗した場合、失敗のみ報告する', () => {
 		writeFileSync(join(tmpDir, 'a.txt'), 'content');
 		const { stdout } = run(`file_exists a.txt
 file_exists missing.txt
