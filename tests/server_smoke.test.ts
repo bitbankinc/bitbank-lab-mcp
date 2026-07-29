@@ -400,6 +400,65 @@ describe('server.ts smoke', () => {
 		});
 	});
 
+	it('_meta.ui.resourceUri を持つツールの応答は UI スナップショットに保存される', async () => {
+		const { z } = await import('zod');
+
+		runtime.toolDefs = [
+			{
+				name: 'ui_tool',
+				description: 'MCP Apps 連携ツール',
+				inputSchema: z.object({}),
+				handler: vi.fn(async () => ({
+					ok: true,
+					summary: 'preview ok',
+					data: { preview: { pair: 'btc_jpy' } },
+				})) as unknown as ToolDefinition['handler'],
+				_meta: { ui: { resourceUri: 'ui://order/confirm.html' } },
+			},
+			{
+				name: 'plain_tool',
+				description: '通常ツール',
+				inputSchema: z.object({}),
+				handler: vi.fn(async () => ({ ok: true, summary: 'plain ok' })) as unknown as ToolDefinition['handler'],
+			},
+			{
+				name: 'ui_error_tool',
+				description: 'MCP Apps 連携ツール（エラー）',
+				inputSchema: z.object({}),
+				handler: vi.fn(async () => {
+					throw new Error('boom');
+				}) as unknown as ToolDefinition['handler'],
+				_meta: { ui: { resourceUri: 'ui://cancel/confirm.html' } },
+			},
+		];
+
+		const server = await importServer();
+		// importServer() の vi.resetModules() 後に server.ts と同一インスタンスの
+		// cache モジュールを import する（モジュールキャッシュを共有させる）。
+		const { getUiSnapshot, _resetUiSnapshots } = await import('../src/ui-snapshot-cache.js');
+		_resetUiSnapshots();
+
+		await server.tools[0].handler({});
+		expect(getUiSnapshot('ui://order/confirm.html')).toMatchObject({
+			ok: true,
+			data: { preview: { pair: 'btc_jpy' } },
+		});
+
+		// _meta.ui の無いツールはどの URI にも保存されない
+		await server.tools[1].handler({});
+		expect(getUiSnapshot('ui://cancel/confirm.html')).toBeNull();
+
+		// エラー応答も ontoolresult で配信されるはずの内容としてスナップショットに残る
+		await server.tools[2].handler({});
+		expect(getUiSnapshot('ui://cancel/confirm.html')).toMatchObject({ ok: false });
+
+		// スナップショットは呼び出し元接続の sessionId にバインドされる
+		await server.tools[0].handler({}, { sessionId: 'sess-1' });
+		expect(getUiSnapshot('ui://order/confirm.html', { sessionId: 'sess-1' })).toMatchObject({ ok: true });
+		expect(getUiSnapshot('ui://order/confirm.html', { sessionId: 'other-session' })).toBeNull();
+		expect(getUiSnapshot('ui://order/confirm.html')).toBeNull();
+	});
+
 	it('ハンドラには ctx と内部 Server を合流させた extra が渡る', async () => {
 		const { z } = await import('zod');
 

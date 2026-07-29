@@ -30,6 +30,7 @@ import { toolDef as getFlowMetrics } from '../tools/get_flow_metrics.js';
 import { toolDef as getOrderbook } from '../tools/get_orderbook.js';
 import { toolDef as getTicker } from '../tools/get_ticker.js';
 import { toolDef as getTransactions } from '../tools/get_transactions.js';
+import { toolDef as getUiSnapshot } from '../tools/get_ui_snapshot.js';
 import { toolDef as prepareChartData } from '../tools/prepare_chart_data.js';
 import { toolDef as prepareDepthData } from '../tools/prepare_depth_data.js';
 import { toolDef as refreshPairsCache } from '../tools/refresh_pairs_cache.js';
@@ -106,6 +107,9 @@ export const allToolDefs: ToolDefinition[] = [
 
 	// ── Maintenance (1) ──
 	refreshPairsCache,
+
+	// ── MCP Apps support (1) ──
+	getUiSnapshot,
 ];
 
 // ── Private API tools（APIキー設定時のみ有効化） ──
