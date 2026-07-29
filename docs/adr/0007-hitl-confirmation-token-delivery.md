@@ -91,8 +91,9 @@ bitbank の Private API は注文発注・キャンセル（`create_order` / `ca
 1. ツール呼び出しに対し、サーバーが `resultType: "input_required"` + `inputRequests`（キー付き確認要求）+
    `requestState`（不透明 blob）を返す
 2. クライアントはユーザー回答を集め、同一キーの `inputResponses` と echo した `requestState` を付けて
-   **元のツール呼び出しを再試行**する（JSON-RPC id は別。状態はすべてペイロードに載るため
-   サーバーはステートレスに再開できる）
+   **元のツール呼び出しを再試行**する（JSON-RPC id は別。`requestState` に必要な文脈を載せる、
+   またはサーバー側状態への検証可能なハンドルとすることで、プロトコルセッションに依存せず
+   任意のサーバーインスタンスが再開できる）
 
 ```json
 {
@@ -113,6 +114,10 @@ bitbank の Private API は注文発注・キャンセル（`create_order` / `ca
 したがって `confirmation_token` / `expires_at` を格納する場合は平文や HMAC 付き平文ではなく
 **暗号化する（または token 本体はサーバー内に保持し、署名付き参照 ID のみを格納する）**。
 改ざん検知だけなら HMAC で足りるが、本件は token の LLM 不可視性が要件のため暗号化が基本。
+また暗号化の有無や参照 ID 方式かにかかわらず、echo されて戻る `requestState` は
+**攻撃者制御入力として扱い、受信時に必ず検証したうえで、認証済みユーザー・元のメソッド/引数・
+有効期限・one-time-use 状態に暗号学的にバインドする**（裸の署名付き参照 ID だけでは
+replay や別文脈での再利用を防げない）。
 （RC 時点の本 ADR は「LLM 不可視のまま round trip できる」としていたが、これは平文格納では成立しない。）
 
 ### 移行計画
@@ -128,9 +133,11 @@ bitbank の Private API は注文発注・キャンセル（`create_order` / `ca
   2. 主要ホスト（Claude Desktop / claude-ai）が 2026-07-28 仕様 + MRTR を扱えること
      （経路 1 の elicitation はホスト側が 1 年近く advertise しなかった前例があり、
      ホスト対応が実質の律速）
-- **SDK v2 移行後**: `withElicitedConfirmation` に「`input_required` 返し」経路を追加。
-  優先順位は `elicitation > MRTR > trust-host-approval > fallback` を基本としつつ、
-  両対応ホストでは仕様上の後継である MRTR を優先する案も実装時に判断する。
+- **SDK v2 移行後**: `withElicitedConfirmation` を「`input_required` 返し」（MRTR）スタイルへ移行する。
+  SDK v2 には legacy shim（デフォルト有効）があり、MRTR スタイルの戻り値を 2025 系クライアント向けに
+  `elicitation/create` へ自動変換するため、ハンドラは MRTR を基本とし、`elicitInput` の直接呼び出しは
+  shim で賄えない互換用途に限る。
+  優先順位は `MRTR（旧クライアントへは shim が elicitation 変換）> trust-host-approval > fallback`。
 - **クライアント実装が広く出揃ったタイミング**: `BITBANK_TRUST_HOST_APPROVAL` モードを deprecate → 撤去
 
 トラッキング:
