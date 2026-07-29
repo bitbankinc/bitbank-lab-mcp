@@ -15,6 +15,7 @@ import type { OrderResponse } from '../../src/private/schemas.js';
 import { CancelOrdersInputSchema, CancelOrdersOutputSchema } from '../../src/private/schemas.js';
 import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
+import { clearUiSnapshot } from '../../src/ui-snapshot-cache.js';
 
 export default async function cancelOrders(
 	args: {
@@ -76,6 +77,9 @@ export default async function cancelOrders(
 			confirmed: true,
 			route,
 		});
+
+		// 実行済み preview のスナップショットを無効化（cancel_order と同趣旨）。
+		clearUiSnapshot('ui://cancel/confirm.html');
 
 		return CancelOrdersOutputSchema.parse(
 			ok(

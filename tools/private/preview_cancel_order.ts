@@ -13,7 +13,7 @@
  */
 
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
-import { ok, toStructured } from '../../lib/result.js';
+import { fail, ok, toStructured } from '../../lib/result.js';
 import { generateToken } from '../../src/private/confirmation.js';
 import { withElicitedConfirmation } from '../../src/private/elicitation.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
@@ -53,6 +53,14 @@ export default async function previewCancelOrder(args: { pair: string; order_id:
 	const detailResult = await getOrder({ pair, order_id });
 	if (detailResult.ok) {
 		orderDetail = detailResult.data.order;
+	}
+
+	// 既にキャンセル済みの注文はプレビュー段階で拒否する（復元された古いカードや
+	// 重複依頼による二重キャンセルを bitbank へ届く前に止める）。
+	if (orderDetail?.status?.startsWith('CANCELED')) {
+		return PreviewCancelOrderOutputSchema.parse(
+			fail(`この注文は既にキャンセル済みです（status: ${orderDetail.status}）`, 'validation_error'),
+		);
 	}
 
 	const tokenParams = { pair, order_id };
@@ -117,7 +125,7 @@ export const toolDef: ToolDefinition = {
 			result.summary,
 			'',
 			'このチャットに表示される確認カードの「キャンセルを確定する」ボタンを押すと、キャンセルがチャット内で完結します。ボタンを押さない限りキャンセルは行われません。',
-			'ユーザーへの案内: まず上記の確認カードのボタン操作を案内すること（キャンセルはこのチャット内で完了できる）。bitbank アプリ/ウェブで該当注文をキャンセルすることも可能だが、任意の代替手段として扱う。',
+			'ユーザーへの案内: まず上記の確認カードのボタン操作を案内すること（キャンセルはこのチャット内で完了できる）。bitbank アプリ/ウェブで該当注文をキャンセルすることも可能だが、任意の代替手段として扱う。LLM 自身が cancel_order を呼んでキャンセルを代行してはならない（実行は必ずユーザーのボタン操作に委ねる）。',
 		].join('\n');
 
 		// elicitation 対応ホストでは preview → ユーザー確認 → cancel_order までを

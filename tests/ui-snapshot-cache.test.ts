@@ -6,7 +6,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { _resetUiSnapshots, getUiSnapshot, storeUiSnapshot } from '../src/ui-snapshot-cache.js';
+import { _resetUiSnapshots, clearUiSnapshot, getUiSnapshot, storeUiSnapshot } from '../src/ui-snapshot-cache.js';
 
 const URI = 'ui://order/confirm.html';
 const TTL_MS = 5 * 60_000;
@@ -63,6 +63,14 @@ describe('ui-snapshot-cache', () => {
 		expect(getUiSnapshot(URI)).toBeNull();
 		// 同一セッションのみ取得できる
 		expect(getUiSnapshot(URI, { sessionId: 'session-a' })).not.toBeNull();
+	});
+
+	it('clearUiSnapshot は指定 URI のみ破棄する', () => {
+		storeUiSnapshot('ui://order/confirm.html', { ok: true, summary: 'order' });
+		storeUiSnapshot('ui://cancel/confirm.html', { ok: true, summary: 'cancel' });
+		clearUiSnapshot('ui://cancel/confirm.html');
+		expect(getUiSnapshot('ui://cancel/confirm.html')).toBeNull();
+		expect(getUiSnapshot('ui://order/confirm.html')).not.toBeNull();
 	});
 
 	it('セッションレス（stdio）同士は一致として扱い取得できる', () => {

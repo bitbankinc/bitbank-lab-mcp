@@ -21,6 +21,7 @@ import type { OrderResponse } from '../../src/private/schemas.js';
 import { CancelOrderInputSchema, CancelOrderOutputSchema } from '../../src/private/schemas.js';
 import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
+import { clearUiSnapshot } from '../../src/ui-snapshot-cache.js';
 
 export default async function cancelOrder(
 	args: {
@@ -77,6 +78,10 @@ export default async function cancelOrder(
 			confirmed: true,
 			route,
 		});
+
+		// 実行済み preview のスナップショットを無効化する（再描画で復元された古い確認
+		// カードからの二重キャンセル → bitbank 70019 を防ぐ）。
+		clearUiSnapshot('ui://cancel/confirm.html');
 
 		return CancelOrderOutputSchema.parse(
 			ok(
