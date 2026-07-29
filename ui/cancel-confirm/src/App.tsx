@@ -21,8 +21,9 @@ import { useEffect, useRef, useState } from 'react';
 const CANCEL_ORDER_TIMEOUT_MS = 45_000;
 /** ui/initialize（ホスト接続）応答待ちの診断タイムアウト（ms） */
 const CONNECT_TIMEOUT_MS = 7_000;
-/** 接続成立後、ツール結果通知が届かない場合に pull 復元へ切り替えるまでの時間（ms） */
-const RESULT_WAIT_HINT_MS = 8_000;
+/** 接続成立後、ツール結果通知が届かない場合に pull 復元へ切り替えるまでの時間（ms）。
+ *  push 配信が正常なホストでは通常 1 秒未満で届くため、これは猶予であって遅延ではない。 */
+const RESULT_WAIT_HINT_MS = 2_500;
 /** この UI が対応する MCP Apps リソース URI（get_ui_snapshot の取得キー） */
 const RESOURCE_URI = 'ui://cancel/confirm.html';
 /** スナップショット取得（pull 型 hydration）の timeout（ms） */
