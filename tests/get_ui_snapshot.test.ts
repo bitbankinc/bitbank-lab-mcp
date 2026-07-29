@@ -65,6 +65,26 @@ describe('handler', () => {
 		expect(result.content[0]?.text).toContain('再送');
 	});
 
+	it('別セッションで保存されたスナップショットは返さない（セッションバインド）', async () => {
+		storeUiSnapshot(URI, { ok: true, summary: 'other session' }, { sessionId: 'session-a' });
+
+		// セッションレス（stdio 相当）の呼び出しでは取得できない
+		const noSession = (await toolDef.handler({ resource_uri: URI })) as { ok: boolean };
+		expect(noSession.ok).toBe(false);
+
+		// 別セッションからも取得できない
+		const otherSession = (await toolDef.handler({ resource_uri: URI }, { sessionId: 'session-b' })) as {
+			ok: boolean;
+		};
+		expect(otherSession.ok).toBe(false);
+
+		// 同一セッションからは取得できる
+		const sameSession = (await toolDef.handler({ resource_uri: URI }, { sessionId: 'session-a' })) as {
+			structuredContent: Record<string, unknown>;
+		};
+		expect(sameSession.structuredContent).toMatchObject({ summary: 'other session' });
+	});
+
 	it('URI ごとに独立したスナップショットを返す', async () => {
 		const orderSnap = { ok: true, summary: 'order' };
 		storeUiSnapshot('ui://order/confirm.html', orderSnap);

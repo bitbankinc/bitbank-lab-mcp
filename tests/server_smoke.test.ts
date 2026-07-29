@@ -451,6 +451,12 @@ describe('server.ts smoke', () => {
 		// エラー応答も ontoolresult で配信されるはずの内容としてスナップショットに残る
 		await server.tools[2].handler({});
 		expect(getUiSnapshot('ui://cancel/confirm.html')).toMatchObject({ ok: false });
+
+		// スナップショットは呼び出し元接続の sessionId にバインドされる
+		await server.tools[0].handler({}, { sessionId: 'sess-1' });
+		expect(getUiSnapshot('ui://order/confirm.html', { sessionId: 'sess-1' })).toMatchObject({ ok: true });
+		expect(getUiSnapshot('ui://order/confirm.html', { sessionId: 'other-session' })).toBeNull();
+		expect(getUiSnapshot('ui://order/confirm.html')).toBeNull();
 	});
 
 	it('ハンドラには ctx と内部 Server を合流させた extra が渡る', async () => {

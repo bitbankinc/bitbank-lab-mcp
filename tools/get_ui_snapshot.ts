@@ -23,9 +23,13 @@ export const toolDef: ToolDefinition = {
 		'LLM が会話の応答生成のために呼ぶ必要はない（preview 系ツールの応答に同じ内容が含まれる）。',
 	].join(' '),
 	inputSchema: GetUiSnapshotInputSchema,
-	handler: async (args) => {
+	handler: async (args, extra) => {
 		const { resource_uri } = args as { resource_uri: string };
-		const snapshot = getUiSnapshot(resource_uri);
+		// スナップショットは保存元接続の sessionId にバインドされている。
+		// 呼び出し元のセッションを渡し、別セッションからの読み出しを拒否する
+		// （stdio では両者 undefined で一致し、挙動は変わらない）。
+		const sessionId = (extra as { sessionId?: string } | undefined)?.sessionId;
+		const snapshot = getUiSnapshot(resource_uri, { sessionId });
 		if (!snapshot) {
 			return fail('表示できるスナップショットがありません。preview ツールを再実行してください', 'snapshot_not_found');
 		}

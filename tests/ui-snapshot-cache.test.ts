@@ -44,15 +44,29 @@ describe('ui-snapshot-cache', () => {
 
 	it('TTL ちょうどは有効（off-by-one）', () => {
 		const now = 1_000_000;
-		storeUiSnapshot(URI, { ok: true }, now);
-		expect(getUiSnapshot(URI, now + TTL_MS)).not.toBeNull();
+		storeUiSnapshot(URI, { ok: true }, { nowMs: now });
+		expect(getUiSnapshot(URI, { nowMs: now + TTL_MS })).not.toBeNull();
 	});
 
 	it('TTL 超過で null になる', () => {
 		const now = 1_000_000;
-		storeUiSnapshot(URI, { ok: true }, now);
-		expect(getUiSnapshot(URI, now + TTL_MS + 1)).toBeNull();
+		storeUiSnapshot(URI, { ok: true }, { nowMs: now });
+		expect(getUiSnapshot(URI, { nowMs: now + TTL_MS + 1 })).toBeNull();
 		// 期限切れエントリは削除され、以降も null のまま
-		expect(getUiSnapshot(URI, now)).toBeNull();
+		expect(getUiSnapshot(URI, { nowMs: now })).toBeNull();
+	});
+
+	it('保存時と異なる sessionId からの取得は拒否する（セッションバインド）', () => {
+		storeUiSnapshot(URI, { ok: true }, { sessionId: 'session-a' });
+		expect(getUiSnapshot(URI, { sessionId: 'session-b' })).toBeNull();
+		// セッションレス呼び出しも不一致として拒否
+		expect(getUiSnapshot(URI)).toBeNull();
+		// 同一セッションのみ取得できる
+		expect(getUiSnapshot(URI, { sessionId: 'session-a' })).not.toBeNull();
+	});
+
+	it('セッションレス（stdio）同士は一致として扱い取得できる', () => {
+		storeUiSnapshot(URI, { ok: true });
+		expect(getUiSnapshot(URI)).not.toBeNull();
 	});
 });

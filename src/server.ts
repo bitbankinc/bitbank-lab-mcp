@@ -88,11 +88,18 @@ const respond = (result: unknown): ToolReturn => {
  * `_meta.ui.resourceUri` を持つツール（MCP Apps 連携ツール）の応答を
  * UI スナップショットとして保持する。一部ホストで `ui/notifications/tool-result` が
  * iframe に配信されない場合の pull 型 hydration（get_ui_snapshot）に使う。
+ * スナップショットは呼び出し元接続の sessionId にバインドする（stdio では undefined）。
  */
-function storeSnapshotIfUiTool(meta: Record<string, unknown> | undefined, response: ToolReturn): void {
+function storeSnapshotIfUiTool(
+	meta: Record<string, unknown> | undefined,
+	response: ToolReturn,
+	ctx?: Record<string, unknown>,
+): void {
 	const resourceUri = (meta as { ui?: { resourceUri?: unknown } } | undefined)?.ui?.resourceUri;
 	if (typeof resourceUri === 'string' && response.structuredContent) {
-		storeUiSnapshot(resourceUri, response.structuredContent);
+		storeUiSnapshot(resourceUri, response.structuredContent, {
+			sessionId: (ctx as { sessionId?: string } | undefined)?.sessionId,
+		});
 	}
 }
 
@@ -141,7 +148,7 @@ function registerToolWithLog(
 				}
 				logToolRun({ tool: name, input, result, ms });
 				const response = respond(result);
-				storeSnapshotIfUiTool(schema._meta, response);
+				storeSnapshotIfUiTool(schema._meta, response, ctx);
 				return response;
 			} catch (err: unknown) {
 				const ms = Date.now() - t0;
@@ -158,7 +165,7 @@ function registerToolWithLog(
 				};
 				// エラー応答も ontoolresult で配信されるはずの内容なので、同様にスナップショットへ残す
 				// （UI 側は preview 未受領時の ok:false をエラー表示として扱う）。
-				storeSnapshotIfUiTool(schema._meta, errorResponse);
+				storeSnapshotIfUiTool(schema._meta, errorResponse, ctx);
 				return errorResponse;
 			}
 		},
