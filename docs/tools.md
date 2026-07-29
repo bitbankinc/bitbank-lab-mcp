@@ -10,9 +10,9 @@
 
 ---
 
-## カテゴリ別ツール（全 48 ツール：Public 32 + Private 16）
+## カテゴリ別ツール（全 49 ツール：Public 33 + Private 16）
 
-> Private ツール（16）は `BITBANK_API_KEY` + `BITBANK_API_SECRET` 設定時のみ表示されます。未設定時は Public 32 ツールのみが利用可能です。
+> Private ツール（16）は `BITBANK_API_KEY` + `BITBANK_API_SECRET` 設定時のみ表示されます。未設定時は Public 33 ツールのみが利用可能です。
 
 ### データ取得 — 生データ（Raw）：4 ツール
 
@@ -111,6 +111,12 @@ API の応答をそのまま、または軽量整形して返す。指標計算�
 | ツール | 概要 |
 |--------|------|
 | `refresh_pairs_cache` | /spot/pairs 手数料レートの TTL キャッシュ（既定 1h）を強制再取得。キャンペーン境界などで最新 maker/taker 率を即時反映したいときに使う |
+
+### MCP Apps サポート：1 ツール
+
+| ツール | 概要 |
+|--------|------|
+| `get_ui_snapshot` | [Internal] 確認 UI（iframe）向けに直近の preview 系ツール応答スナップショットを返す。ホストが `ui/notifications/tool-result` を配信しない場合の UI 自己復元（pull 型 hydration）用。LLM が応答生成のために呼ぶ必要はない |
 
 ### Private API：16 ツール
 

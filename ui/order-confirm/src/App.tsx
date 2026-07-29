@@ -28,8 +28,12 @@ const JPY_MAX_FRACTION_DIGITS = 0;
 const CREATE_ORDER_TIMEOUT_MS = 45_000;
 /** ui/initialize（ホスト接続）応答待ちの診断タイムアウト（ms） */
 const CONNECT_TIMEOUT_MS = 7_000;
-/** 接続成立後、ツール結果通知が届かない場合に案内を出すまでの時間（ms） */
+/** 接続成立後、ツール結果通知が届かない場合に pull 復元へ切り替えるまでの時間（ms） */
 const RESULT_WAIT_HINT_MS = 8_000;
+/** この UI が対応する MCP Apps リソース URI（get_ui_snapshot の取得キー） */
+const RESOURCE_URI = 'ui://order/confirm.html';
+/** スナップショット取得（pull 型 hydration）の timeout（ms） */
+const SNAPSHOT_TIMEOUT_MS = 10_000;
 
 interface PreviewArgs {
 	pair: string;
@@ -133,18 +137,20 @@ export function App() {
 		const mcpApp = new McpApp({ name: 'bitbank-order-confirm', version: '0.1.0' });
 		appRef.current = mcpApp;
 
-		mcpApp.ontoolresult = (params) => {
-			// preview_order の結果のみ取り込む。他ツール（特に create_order）の結果で
-			// state をリセットしないよう data.preview の存在でフィルタする
-			// （preview フィールドは preview_* の Result にのみ存在し、create_order 等の
-			// 他ツール応答には含まれないため安全）。
-			//
-			// confirmation_token は意図的に structuredContent には含めない設計
-			// （docs/private-api.md「confirmation_token の受け渡し」参照）。
-			// SEP-1865 経由の UI 実行経路は pending action store 整備後に解禁予定で、
-			// 現状 token が来ないホスト（Claude.ai web 等）では preview 内容のみ表示し、
-			// 「このホストでは確認 UI 未対応」案内を出す。
-			const structured = params?.structuredContent as PreviewResult | undefined;
+		// preview 応答の取り込み処理。push 通知（ontoolresult）と pull 復元
+		// （get_ui_snapshot）の両経路で共通に使う。
+		//
+		// preview_order の結果のみ取り込む。他ツール（特に create_order）の結果で
+		// state をリセットしないよう data.preview の存在でフィルタする
+		// （preview フィールドは preview_* の Result にのみ存在し、create_order 等の
+		// 他ツール応答には含まれないため安全）。
+		//
+		// confirmation_token は意図的に structuredContent には含めない設計
+		// （docs/private-api.md「confirmation_token の受け渡し」参照）。
+		// SEP-1865 経由の UI 実行経路は pending action store 整備後に解禁予定で、
+		// 現状 token が来ないホスト（Claude.ai web 等）では preview 内容のみ表示し、
+		// 「このホストでは確認 UI 未対応」案内を出す。
+		const applyPreviewStructured = (structured: PreviewResult | undefined) => {
 			if (structured?.ok && structured.data?.preview) {
 				hasPreviewRef.current = true;
 				setResultWaitHint(false);
@@ -173,6 +179,10 @@ export function App() {
 			}
 		};
 
+		mcpApp.ontoolresult = (params) => {
+			applyPreviewStructured(params?.structuredContent as PreviewResult | undefined);
+		};
+
 		mcpApp.onhostcontextchanged = (ctx) => {
 			if (ctx.theme) applyDocumentTheme(ctx.theme);
 			if (ctx.styles) applyHostStyleVariables(ctx.styles);
@@ -197,7 +207,23 @@ export function App() {
 				if (ctx?.styles) applyHostStyleVariables(ctx.styles);
 				if (ctx?.fontCss) applyHostFonts(ctx.fontCss);
 				resultWaitTimerId = setTimeout(() => {
-					if (!hasPreviewRef.current) setResultWaitHint(true);
+					if (hasPreviewRef.current) return;
+					setResultWaitHint(true);
+					// pull 型 hydration: 一部ホストは ui/notifications/tool-result を配信しない
+					// （2026-07-28 ロールアウト後の Claude Desktop で確認）。サーバー側の
+					// スナップショット（get_ui_snapshot）から直近の preview 応答を取得して復元する。
+					void mcpApp
+						.callServerTool(
+							{ name: 'get_ui_snapshot', arguments: { resource_uri: RESOURCE_URI } },
+							{ timeout: SNAPSHOT_TIMEOUT_MS },
+						)
+						.then((result) => {
+							if (hasPreviewRef.current) return;
+							applyPreviewStructured(result.structuredContent as PreviewResult | undefined);
+						})
+						.catch(() => {
+							// スナップショット取得失敗時は案内表示のまま（内容はチャット本文で確認可能）
+						});
 				}, RESULT_WAIT_HINT_MS);
 			})
 			.catch(() => {
@@ -301,7 +327,7 @@ export function App() {
 			connState === 'failed'
 				? 'ホストとの MCP Apps 接続（ui/initialize）を確立できませんでした。このホストでは確認 UI を利用できません。プレビュー内容はチャット本文を参照してください。'
 				: resultWaitHint
-					? 'ホストに接続済みですが、ツール結果（ui/notifications/tool-result）が届いていません。プレビュー内容はチャット本文を参照してください。'
+					? 'ホストからツール結果（ui/notifications/tool-result）が届かないため、スナップショットからの復元を試みています。表示されない場合はプレビュー内容をチャット本文で確認してください。'
 					: 'preview_order の結果を待機中…';
 		return (
 			<div className="app">
