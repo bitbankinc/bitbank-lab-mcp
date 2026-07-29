@@ -50,8 +50,8 @@ export const toolDef: ToolDefinition = {
 	description: [
 		'[Preview Cancel Orders] 一括キャンセルのプレビュー。実際のキャンセルは行わない。Private API。',
 		'⚠️ confirmation_token はクライアント側には返さない（content / structuredContent / _meta のいずれにも含めない）。',
-		'実際のキャンセルは elicitation 対応ホストでのみ可能で、その場合はこのハンドラ内で preview → ユーザー確認 → cancel_orders までを完結させる。',
-		'elicitation 非対応ホストではプレビュー内容のみ返し、キャンセル実行は受け付けない。',
+		'実際のキャンセルはユーザーの明示操作を経てチャット内で完結できる（elicitation/MRTR 対応ホストは確認ダイアログ、SEP-1865 + BITBANK_TRUST_HOST_APPROVAL=1 はチャット内確認カードの「キャンセルを確定する」ボタン）。',
+		'いずれも不可のホストではプレビューのみ返し、キャンセル実行は受け付けない。ユーザーにはチャット内の確認手段を第一に案内し、bitbank アプリ/ウェブでのキャンセルは任意の代替手段として扱う。',
 	].join(' '),
 	inputSchema: PreviewCancelOrdersInputSchema,
 	// MCP Apps (SEP-1865): 対応ホストでは iframe 内にキャンセル確認 UI を表示する。
@@ -74,7 +74,7 @@ export const toolDef: ToolDefinition = {
 			result.summary,
 			'',
 			'※ このホストでは取引実行に対応していません。',
-			'  実際に一括キャンセルするには、elicitation 対応クライアント（Claude Desktop など）で同じ操作を実行してください。',
+			'  実際に一括キャンセルするには、取引実行対応クライアント（Claude Desktop など）で同じ操作を行うか、bitbank アプリ/ウェブで該当注文をキャンセルしてください。',
 		].join('\n');
 
 		// BITBANK_TRUST_HOST_APPROVAL=1 のときに使う妥協経路用のレスポンス。
@@ -82,8 +82,8 @@ export const toolDef: ToolDefinition = {
 		const trustHostFallbackText = [
 			result.summary,
 			'',
-			'iframe の「キャンセルを確定する」ボタンを押して一括キャンセルを確定してください。',
-			'ボタンを押さない限りキャンセルは行われません。',
+			'このチャットに表示される確認カードの「キャンセルを確定する」ボタンを押すと、一括キャンセルがチャット内で完結します。ボタンを押さない限りキャンセルは行われません。',
+			'ユーザーへの案内: まず上記の確認カードのボタン操作を案内すること（キャンセルはこのチャット内で完了できる）。bitbank アプリ/ウェブで該当注文をキャンセルすることも可能だが、任意の代替手段として扱う。',
 		].join('\n');
 
 		// elicitation 対応ホストでは preview → ユーザー確認 → cancel_orders までを

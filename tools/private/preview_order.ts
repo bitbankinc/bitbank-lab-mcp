@@ -262,8 +262,8 @@ export const toolDef: ToolDefinition = {
 		'対応注文タイプは limit / market / stop / stop_limit の 4 種類のみ（take_profit / stop_loss / losscut は未対応）。',
 		'position_side を指定すると信用注文として扱う（ロング新規=buy+long, ロング決済=sell+long, ショート新規=sell+short, ショート決済=buy+short）。',
 		'⚠️ confirmation_token はクライアント側には返さない（content / structuredContent / _meta のいずれにも含めない）。',
-		'実際の発注は elicitation 対応ホストでのみ可能で、その場合はこのハンドラ内で preview → ユーザー確認 → create_order までを完結させる。',
-		'elicitation 非対応ホストではプレビュー内容のみ返し、取引実行は受け付けない。',
+		'実際の発注はユーザーの明示操作を経てチャット内で完結できる（elicitation/MRTR 対応ホストは確認ダイアログ、SEP-1865 + BITBANK_TRUST_HOST_APPROVAL=1 はチャット内確認カードの「注文を確定する」ボタン）。',
+		'いずれも不可のホストではプレビューのみ返し、取引実行は受け付けない。ユーザーにはチャット内の確認手段を第一に案内し、bitbank アプリ/ウェブでの手動発注は任意の代替手段として扱う。',
 	].join(' '),
 	inputSchema: PreviewOrderInputSchema,
 	// MCP Apps (SEP-1865): 対応ホストでは iframe 内に注文確認 UI を表示する。
@@ -295,7 +295,7 @@ export const toolDef: ToolDefinition = {
 			result.summary,
 			'',
 			'※ このホストでは取引実行に対応していません。',
-			'  実際に発注するには、elicitation 対応クライアント（Claude Desktop など）で同じ操作を実行してください。',
+			'  実際に発注するには、取引実行対応クライアント（Claude Desktop など）で同じ操作を行うか、bitbank アプリ/ウェブで同じ内容を手動発注してください。',
 		].join('\n');
 
 		// BITBANK_TRUST_HOST_APPROVAL=1 のときに使う妥協経路用のレスポンス。
@@ -305,8 +305,8 @@ export const toolDef: ToolDefinition = {
 		const trustHostFallbackText = [
 			result.summary,
 			'',
-			'iframe の「注文を確定する」ボタンを押して発注を確定してください。',
-			'ボタンを押さない限り発注は行われません。',
+			'このチャットに表示される確認カードの「注文を確定する」ボタンを押すと、発注がチャット内で完結します。ボタンを押さない限り発注は行われません。',
+			'ユーザーへの案内: まず上記の確認カードのボタン操作を案内すること（発注はこのチャット内で完了できる）。bitbank アプリ/ウェブで同じ内容を手動発注することも可能だが、任意の代替手段として扱う。',
 		].join('\n');
 
 		// elicitation 対応ホストでは preview → ユーザー確認 → create_order までを
