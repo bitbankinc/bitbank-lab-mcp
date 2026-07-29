@@ -159,7 +159,7 @@ MCP 仕様（SEP-1624 の整理）では `CallToolResult.content` と `structure
 
 `confirmation_token` は本来「ユーザーの最終確認を経たことの証拠」であり、LLM が独断で引用して `create_order` を呼べる文字列にしてはならない。実装は次の階層で扱う（設計判断の背景と SEP-2322 への移行計画は `docs/adr/0007-hitl-confirmation-token-delivery.md` を参照）:
 
-1. **第一選択（elicitation 対応ホスト）** — `preview_order` ハンドラ内で `server.elicitInput` によりユーザー確認 → 同一ハンドラ内で `create_order` を呼び出して完結。**トークンはサーバープロセス内に閉じ、LLM/クライアントには返らない**。Claude Desktop / Claude Code のうち elicitation 対応版はこの経路。
+1. **第一選択（elicitation を扱えるホスト）** — MRTR（SEP-2322）スタイルで実装。round 1 で `preview_order` が `input_required`（confirm 要求 + 署名付き `requestState`）を返し、クライアントがユーザー確認を取って元の呼び出しを再試行（round 2）すると、`requestState` の検証（action / 引数 digest / one-time nonce。`src/private/request-state.ts`）を経て同一ハンドラ内で `create_order` を呼び出して完結。**トークンはサーバープロセス内に閉じ、LLM/クライアントには返らない**（`requestState` は署名のみで暗号化されないため token を載せない）。2025 系クライアントには SDK v2 の legacy shim が `input_required` を従来の `elicitation/create` push に自動変換するため、elicitation 対応版はどちらの世代でもこの経路。
 2. **第二選択（SEP-1865 対応ホスト + `BITBANK_TRUST_HOST_APPROVAL=1` オプトイン）** — iframe (`_meta.ui.resourceUri`) に `confirmation_token` / `expires_at` を含む `structuredContent` を返し、iframe ボタン → `app.callServerTool` の経路で `create_order` を実行する。`structuredContent` は LLM にも見えうるため、「ホスト（Claude Desktop / claude-ai 等）のツール承認 UI を最終 gate として信頼する」という前提を受け入れたユーザーがオプトインで有効化する。詳細は `docs/adr/0007-hitl-confirmation-token-delivery.md`。
 3. **フォールバック（上記いずれも非該当のホスト）** — `content` / `structuredContent` / `_meta` のいずれにも `confirmation_token` / `expires_at` を返さない。プレビュー内容だけを返し、「このホストでは取引実行に対応していない」旨を `content[0].text` に明記する。LLM が `create_order` / `cancel_order` / `cancel_orders` を直接呼んでも、トークン検証で拒否される。
 
@@ -194,7 +194,7 @@ elicitation を advertise していないが SEP-1865 iframe をサポートす�
 
 #### 将来の代替案 / 移行計画
 
-- **SEP-2322 (Multi Round-Trip Requests)** — MCP 2026-07-28 仕様で正式導入（final）。`resultType: "input_required"` + 不透明 `requestState`（※秘匿保証は無いため token は暗号化格納が前提。さらに echo された `requestState` は攻撃者制御入力として受信時に検証し、認証済みユーザー・元リクエスト文脈・有効期限にバインドして replay / 別文脈再利用を防ぐ）で、サーバー主導のユーザー確認を仕様内で実現できる。`BITBANK_TRUST_HOST_APPROVAL` モードの構造的後継。TypeScript SDK は v2 系（`@modelcontextprotocol/server` 2.0.0）で対応済みだが、本リポジトリの SDK v2 移行とホスト側の MRTR 対応が前提。詳細は `docs/adr/0007-hitl-confirmation-token-delivery.md`
+- **SEP-2322 (Multi Round-Trip Requests)** — MCP 2026-07-28 仕様で正式導入（final）。**本リポジトリは SDK v2（`@modelcontextprotocol/server` 2.0.0）へ移行し、第一選択の経路として実装済み**（上記「`confirmation_token` の受け渡し」節を参照）。`requestState` は秘匿保証が無いため token を載せず、nonce + 引数 digest を署名して載せ、受信時に HMAC / 期限（SDK verify フック）+ action / digest / one-time nonce（`withElicitedConfirmation`）で検証して replay / 別文脈再利用を防ぐ。`BITBANK_TRUST_HOST_APPROVAL` モードの構造的後継であり、ホスト側の MRTR 対応が広がった時点で同モードは deprecate → 撤去する。詳細は `docs/adr/0007-hitl-confirmation-token-delivery.md`
 - **サーバー側 pending action store** — SEP-2322 が来る前の中間案。`preview_*` がサーバー内 Map に pending entry を作り、短い不透明 ID を返す。`create_order` 等は ID + 独立した同意シグナルを要求する。ただし SEP-1865 では「独立した同意シグナル」を仕様化していないので、現状では「ホスト承認 UI を信頼する」前提を回避できない
 - **`_meta` 経由の UI 専用チャネル** — OpenAI Apps SDK 慣習。MCP 基本仕様としては「`_meta` は LLM 非可視」を保証しないため、これ単体で安全境界とはしない
 - **elicitation 非対応ホストの明示的サポート縮退** — 「HITL 強制が必要なホストは elicitation か SEP-2322 のどちらかを要求する」とする方針

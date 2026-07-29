@@ -316,6 +316,8 @@ export const toolDef: ToolDefinition = {
 		// caller 側で sanitize する必要はない（多層防御の最終ガードは helper 側）。
 		return withElicitedConfirmation({
 			extra,
+			action: 'create_order',
+			bindArgs: typedArgs as unknown as Record<string, unknown>,
 			summary: result.summary,
 			confirmTitle: 'この注文を発注する',
 			// 内部的に create_order を実行。監査ログには route='elicitation' で記録される。
