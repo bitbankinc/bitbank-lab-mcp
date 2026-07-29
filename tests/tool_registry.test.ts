@@ -35,13 +35,14 @@ const expectedToolNames = [
 	'render_candle_pattern_diagram',
 	'run_backtest',
 	'refresh_pairs_cache',
+	'get_ui_snapshot',
 ];
 
 describe('tool-registry', () => {
-	it('期待する 32 ツール名セットと一致する', () => {
+	it('期待する 33 ツール名セットと一致する', () => {
 		const actualNames = allToolDefs.map((toolDef) => toolDef.name);
 
-		expect(actualNames).toHaveLength(32);
+		expect(actualNames).toHaveLength(33);
 		expect([...actualNames].sort()).toEqual([...expectedToolNames].sort());
 	});
 
@@ -52,7 +53,7 @@ describe('tool-registry', () => {
 			actualNames.includes(name),
 		);
 
-		expect(docsToolNames).toHaveLength(32);
+		expect(docsToolNames).toHaveLength(33);
 		expect(new Set(docsToolNames).size).toBe(docsToolNames.length);
 		expect([...docsToolNames].sort()).toEqual([...actualNames].sort());
 	});

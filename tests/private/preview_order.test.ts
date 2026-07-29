@@ -655,25 +655,21 @@ describe('preview_order', () => {
 				);
 			}) as unknown as typeof fetch;
 
-			const elicitInput = vi.fn().mockResolvedValue({ action: 'accept', content: { confirmed: true } });
-			const fakeServer = {
-				getClientCapabilities: () => ({ elicitation: {} }),
-				elicitInput,
+			const { mrtrRound2Ctx } = await import('./_mrtr-helpers.js');
+			const { toolDef } = await import('../../tools/private/preview_order.js');
+			const args = {
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'limit',
+				price: '14000000',
+			};
+			// MRTR round 2: confirm 応答（accept + confirmed=true）つきの再入
+			const result = (await toolDef.handler(args, mrtrRound2Ctx('create_order', args, 'po-accept-1'))) as {
+				content: { text: string }[];
+				structuredContent: Record<string, unknown>;
 			};
 
-			const { toolDef } = await import('../../tools/private/preview_order.js');
-			const result = (await toolDef.handler(
-				{
-					pair: 'btc_jpy',
-					amount: '0.01',
-					side: 'buy',
-					type: 'limit',
-					price: '14000000',
-				},
-				{ server: fakeServer },
-			)) as { content: { text: string }[]; structuredContent: Record<string, unknown> };
-
-			expect(elicitInput).toHaveBeenCalledTimes(1);
 			expect(result.content[0]?.text).toContain('注文発注完了');
 			// structuredContent は create_order の Result が乗る
 			expect(result.structuredContent).toMatchObject({ ok: true });
@@ -690,21 +686,19 @@ describe('preview_order', () => {
 			}) as unknown as typeof fetch;
 			globalThis.fetch = fetchMock;
 
-			const fakeServer = {
-				getClientCapabilities: () => ({ elicitation: {} }),
-				elicitInput: vi.fn().mockResolvedValue({ action: 'decline' }),
-			};
-
+			const { mrtrRound2Ctx } = await import('./_mrtr-helpers.js');
 			const { toolDef } = await import('../../tools/private/preview_order.js');
+			const args = {
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'limit',
+				price: '14000000',
+			};
+			// MRTR round 2: confirm 応答（decline）つきの再入
 			const result = (await toolDef.handler(
-				{
-					pair: 'btc_jpy',
-					amount: '0.01',
-					side: 'buy',
-					type: 'limit',
-					price: '14000000',
-				},
-				{ server: fakeServer },
+				args,
+				mrtrRound2Ctx('create_order', args, 'po-decline-1', { action: 'decline' }),
 			)) as {
 				content: { text: string }[];
 				structuredContent: { data?: { confirmation_token?: string; expires_at?: number } };
@@ -718,6 +712,31 @@ describe('preview_order', () => {
 			const calls = (fetchMock as unknown as { mock: { calls: Array<[unknown]> } }).mock.calls;
 			expect(calls).toHaveLength(1);
 			expect(String(calls[0]?.[0])).toContain('/spot/pairs');
+		});
+
+		it('elicitation 対応ホストの round 1 では input_required が返り token は載らない', async () => {
+			globalThis.fetch = vi.fn(async () => new Response(JSON.stringify(mockSpotPairsResponse()), { status: 200 }));
+
+			const { mrtrRound1Ctx } = await import('./_mrtr-helpers.js');
+			const { isInputRequiredResult } = await import('@modelcontextprotocol/server');
+			const { toolDef } = await import('../../tools/private/preview_order.js');
+			const result = await toolDef.handler(
+				{
+					pair: 'btc_jpy',
+					amount: '0.01',
+					side: 'buy',
+					type: 'limit',
+					price: '14000000',
+				},
+				mrtrRound1Ctx(),
+			);
+
+			expect(isInputRequiredResult(result)).toBe(true);
+			const mrtr = result as unknown as { inputRequests?: Record<string, unknown>; requestState?: string };
+			expect(mrtr.inputRequests).toHaveProperty('confirm');
+			expect(typeof mrtr.requestState).toBe('string');
+			// requestState は署名のみで暗号化されないため token を含めない（JSON 全体にも出さない）
+			expect(JSON.stringify(result)).not.toContain('confirmation_token');
 		});
 	});
 

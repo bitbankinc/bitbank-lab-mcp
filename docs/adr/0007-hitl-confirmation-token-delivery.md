@@ -2,6 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-05-29
+- **Updated**: 2026-07-29（MCP 2026-07-28 仕様の正式リリースを受けて「Future direction」を final 仕様と SDK 状況に合わせて更新。同日、SDK v2 移行 + MRTR 経路の実装を完了 — 「移行計画」の実装済み注記を参照）
 - **Decision**: 取引系 HITL の `confirmation_token` 配送を 3 層構造で扱う。デフォルトはサーバープロセス内に閉じ、`BITBANK_TRUST_HOST_APPROVAL=1` のオプトインで SEP-1865 iframe ボタン経路を有効化する。長期的には MCP SEP-2322 (Multi Round-Trip Requests / `InputRequiredResult`) への置き換えを想定する。
 
 ## Context
@@ -76,35 +77,78 @@ bitbank の Private API は注文発注・キャンセル（`create_order` / `ca
 
 ## Future direction: SEP-2322 (Multi Round-Trip Requests) への移行
 
-MCP 2026-07-28 release candidate で導入される **`InputRequiredResult`** が本問題の構造的な解決策となる:
+> **2026-07-29 更新**: SEP-2322 は MCP 2026-07-28 仕様として正式リリースされ final となった。
+> 以下は RC 時点の記述を final 仕様・SDK 状況に合わせて更新したもの。
+
+2026-07-28 仕様で導入された **MRTR（`resultType: "input_required"`）** が本問題の構造的な解決策となる。
+仕様上、MRTR はサーバー発リクエスト（`elicitation/create` / `sampling/createMessage` / `roots/list`）を
+置き換えるものと位置づけられ、現行の経路 1（`elicitInput`）は旧方式となった。
+（正式な非推奨リスト入りは Roots / Sampling / Logging。非推奨機能には最低 12 ヶ月の猶予があり、
+`elicitation/create` も当面は動作継続する。）
+
+フローは 2 リクエスト構成:
+
+1. ツール呼び出しに対し、サーバーが `resultType: "input_required"` + `inputRequests`（キー付き確認要求）+
+   `requestState`（不透明 blob）を返す
+2. クライアントはユーザー回答を集め、同一キーの `inputResponses` と echo した `requestState` を付けて
+   **元のツール呼び出しを再試行**する（JSON-RPC id は別。`requestState` に必要な文脈を載せる、
+   またはサーバー側状態への検証可能なハンドルとすることで、プロトコルセッションに依存せず
+   任意のサーバーインスタンスが再開できる）
 
 ```json
 {
-  "resultType": "inputRequired",
+  "resultType": "input_required",
   "inputRequests": {
     "confirm": {
       "type": "elicitation",
       "message": "この注文を発注しますか？",
-      "schema": { "type": "boolean" }
+      "requestedSchema": { "type": "boolean" }
     }
   },
   "requestState": "<opaque server-controlled blob>"
 }
 ```
 
-`requestState` はサーバーが任意の文字列（HMAC / 暗号文）にできる**不透明 blob**で、クライアントは中身を解釈せず echo するだけ。`confirmation_token` / `expires_at` を `requestState` に格納すれば LLM 不可視のまま round trip できる。
+`requestState` はクライアントが中身を解釈せず verbatim に echo する不透明 blob だが、
+**final 仕様は「opaque だが secret ではない」と明記しており、LLM / クライアントから可視になり得る**。
+したがって `confirmation_token` / `expires_at` を格納する場合は平文や HMAC 付き平文ではなく
+**暗号化する（または token 本体はサーバー内に保持し、署名付き参照 ID のみを格納する）**。
+改ざん検知だけなら HMAC で足りるが、本件は token の LLM 不可視性が要件のため暗号化が基本。
+また暗号化の有無や参照 ID 方式かにかかわらず、echo されて戻る `requestState` は
+**攻撃者制御入力として扱い、受信時に必ず検証したうえで、認証済みユーザー・元のメソッド/引数・
+有効期限・one-time-use 状態に暗号学的にバインドする**（裸の署名付き参照 ID だけでは
+replay や別文脈での再利用を防げない）。
+（RC 時点の本 ADR は「LLM 不可視のまま round trip できる」としていたが、これは平文格納では成立しない。）
 
 ### 移行計画
 
-- **〜2026-07-28**: SEP-2322 final 確定を待つ。spec ドリフトに備え PoC は作らない
-- **2026-07-28 以降**: TypeScript SDK の対応状況を見る（SDK PR を watch）
-- **SDK 対応後**: `withElicitedConfirmation` に「`InputRequiredResult` 返し」経路を追加。優先順位は `elicitation > InputRequiredResult > trust-host-approval > fallback`
+- ~~**〜2026-07-28**: SEP-2322 final 確定を待つ~~ → **完了**（2026-07-28 仕様として正式リリース済み）
+- **SDK 状況（2026-07-29 時点）**: TypeScript SDK は v2 系の新パッケージ
+  （`@modelcontextprotocol/server` 2.0.0、2026-07-27 公開）が 2026-07-28 仕様と
+  `inputRequired.elicit()` API を実装。現行使用中の v1 系（`@modelcontextprotocol/sdk` 1.x）には
+  来ない見込みのため、MRTR 経路の実装には **SDK v2 移行**（パッケージ分割・`serverInfo` の
+  `_meta` 移動・出力拡張子変更等の破壊的変更を含む）が前提となる。
+- ~~**移行着手の判断基準**（2026-Q4 目安に再評価）~~ → **前倒しで着手・実装済み**（2026-07-29）。
+  Anthropic が Claude 製品（Claude Desktop / Claude Code / claude.ai）への 2026-07-28 対応
+  ロールアウトを発表したため（https://claude.com/blog/bringing-mcp-2026-07-28-to-claude ）、
+  「ホスト対応が律速」の前提が崩れ、待つ理由がなくなった。
+- ~~**SDK v2 移行後**~~ → **実装済み**: SDK v2（`@modelcontextprotocol/server` 2.0.0 固定）へ移行し、
+  `withElicitedConfirmation` を「`input_required` 返し」（MRTR）スタイルへ書き換えた。
+  SDK v2 の legacy shim（デフォルト有効）が MRTR スタイルの戻り値を 2025 系クライアント向けに
+  `elicitation/create` へ自動変換するため、ハンドラは MRTR のみで両世代に対応する
+  （`elicitInput` の直接呼び出しは廃止）。
+  優先順位は `MRTR（旧クライアントへは shim が elicitation 変換）> trust-host-approval > fallback`。
+  `requestState` には token を載せず（署名のみで暗号化されないため）、nonce + 引数 digest を
+  署名して載せ、HMAC / 期限（SDK verify フック）+ action / digest / one-time nonce
+  （`withElicitedConfirmation`）の 2 層で検証する。実装は `src/private/request-state.ts` /
+  `src/private/elicitation.ts` / `src/server.ts`。
 - **クライアント実装が広く出揃ったタイミング**: `BITBANK_TRUST_HOST_APPROVAL` モードを deprecate → 撤去
 
 トラッキング:
-- 仕様: https://modelcontextprotocol.io/seps/2322-MRTR
-- リリース予定: https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/
-- TS SDK 実装: `gh pr list -R modelcontextprotocol/typescript-sdk --search "InputRequiredResult OR SEP-2322"` を月 1 で確認
+- 仕様（final）: https://modelcontextprotocol.io/seps/2322-MRTR
+- リリース記事: https://blog.modelcontextprotocol.io/posts/2026-07-28/
+- TS SDK v2: https://github.com/modelcontextprotocol/typescript-sdk/releases を月 1 で確認
+  （`server@2.0.x` のパッチ状況と、主要ホストの MRTR 対応状況をあわせて見る）
 
 ## 関連
 
