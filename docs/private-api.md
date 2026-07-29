@@ -190,11 +190,11 @@ elicitation を advertise していないが SEP-1865 iframe をサポートす�
 - ホスト（Claude Desktop 等）のツール承認 UI が "Allow always" されていない
 - LLM が `create_order` 等を直接呼ばないことを description 等で促す（強制力は無い）
 
-長期的には MCP SEP-2322 (`InputRequiredResult` / `requestState`) に置き換えて撤去する。
+長期的には MCP SEP-2322（MRTR / `input_required` + `requestState`）に置き換えて撤去する。
 
 #### 将来の代替案 / 移行計画
 
-- **SEP-2322 (Multi Round-Trip Requests)** — 2026-07-28 release candidate で導入。`InputRequiredResult` + 不透明 `requestState` 文字列で「LLM 不可視のままサーバーがユーザー確認を取る」を仕様内で実現できる。`BITBANK_TRUST_HOST_APPROVAL` モードの構造的後継。TypeScript SDK 対応待ち。詳細は `docs/adr/0007-hitl-confirmation-token-delivery.md`
+- **SEP-2322 (Multi Round-Trip Requests)** — MCP 2026-07-28 仕様で正式導入（final）。`resultType: "input_required"` + 不透明 `requestState`（※秘匿保証は無いため token は暗号化格納が前提）で、サーバー主導のユーザー確認を仕様内で実現できる。`BITBANK_TRUST_HOST_APPROVAL` モードの構造的後継。TypeScript SDK は v2 系（`@modelcontextprotocol/server` 2.0.0）で対応済みだが、本リポジトリの SDK v2 移行とホスト側の MRTR 対応が前提。詳細は `docs/adr/0007-hitl-confirmation-token-delivery.md`
 - **サーバー側 pending action store** — SEP-2322 が来る前の中間案。`preview_*` がサーバー内 Map に pending entry を作り、短い不透明 ID を返す。`create_order` 等は ID + 独立した同意シグナルを要求する。ただし SEP-1865 では「独立した同意シグナル」を仕様化していないので、現状では「ホスト承認 UI を信頼する」前提を回避できない
 - **`_meta` 経由の UI 専用チャネル** — OpenAI Apps SDK 慣習。MCP 基本仕様としては「`_meta` は LLM 非可視」を保証しないため、これ単体で安全境界とはしない
 - **elicitation 非対応ホストの明示的サポート縮退** — 「HITL 強制が必要なホストは elicitation か SEP-2322 のどちらかを要求する」とする方針
