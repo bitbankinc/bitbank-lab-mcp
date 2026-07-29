@@ -65,6 +65,15 @@ export function getUiSnapshot(resourceUri: string, scope: SnapshotScope = {}): R
 	return entry.structuredContent;
 }
 
+/**
+ * 指定リソースのスナップショットを破棄する。
+ * 取引実行（create_order / cancel_order(s)）の成功時に呼び、実行済み内容の
+ * 「操作可能な確認カード」が再描画時に復元されて二重実行を誘発するのを防ぐ。
+ */
+export function clearUiSnapshot(resourceUri: string): void {
+	snapshots.delete(resourceUri);
+}
+
 /** スナップショットをすべて破棄する（テスト用）。 */
 export function _resetUiSnapshots(): void {
 	snapshots.clear();

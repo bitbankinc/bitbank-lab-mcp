@@ -284,6 +284,16 @@ describe('preview_cancel_order — handler (toolDef)', () => {
 		expect(text).toContain('このホストでは取引実行に対応していません');
 	});
 
+	it('既にキャンセル済みの注文はプレビュー段階で拒否する', async () => {
+		mockGetOrderOnce(mockOrder({ status: 'CANCELED_UNFILLED' }));
+		const previewCancelOrder = await loadPreviewCancelOrder();
+		const result = await previewCancelOrder({ pair: 'btc_jpy', order_id: 2001 });
+
+		expect(result.ok).toBe(false);
+		expect(result.summary).toContain('既にキャンセル済み');
+		expect(result.meta.errorType).toBe('validation_error');
+	});
+
 	it('elicitation 対応ホストで accept されると cancel_order まで実行される', async () => {
 		// 1 回目: get_order（preview 内部）、2 回目: cancel_order
 		globalThis.fetch = vi

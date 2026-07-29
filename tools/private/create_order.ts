@@ -31,6 +31,7 @@ import type { OrderResponse } from '../../src/private/schemas.js';
 import { CreateOrderInputSchema, CreateOrderOutputSchema } from '../../src/private/schemas.js';
 import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
+import { clearUiSnapshot } from '../../src/ui-snapshot-cache.js';
 
 /** create_order がどの経路から呼ばれたかを示す監査ログ用のラベル */
 export type CreateOrderRoute = 'elicitation' | 'ui-button' | 'direct-text';
@@ -184,6 +185,10 @@ export default async function createOrder(
 		}
 
 		const summary = lines.join('\n');
+
+		// 実行済み preview のスナップショットを無効化（発注済み内容の確認カードが
+		// 復元されて二重発注を誘発するのを防ぐ）。
+		clearUiSnapshot('ui://order/confirm.html');
 
 		return CreateOrderOutputSchema.parse(
 			ok(
