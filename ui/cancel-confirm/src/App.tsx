@@ -19,6 +19,10 @@ import { useEffect, useRef, useState } from 'react';
 
 /** cancel_order(s) 呼び出しの timeout（ms）。サーバー側のツール timeout 60s より少し短く設定 */
 const CANCEL_ORDER_TIMEOUT_MS = 45_000;
+/** ui/initialize（ホスト接続）応答待ちの診断タイムアウト（ms） */
+const CONNECT_TIMEOUT_MS = 7_000;
+/** 接続成立後、ツール結果通知が届かない場合に案内を出すまでの時間（ms） */
+const RESULT_WAIT_HINT_MS = 8_000;
 
 type Action = 'cancel_order' | 'cancel_orders';
 
@@ -124,6 +128,13 @@ export function App() {
 	const [status, setStatus] = useState<Status>('idle');
 	const [message, setMessage] = useState<string>('');
 	const appRef = useRef<McpApp | null>(null);
+	// ontoolresult は useEffect([]) 内のクロージャから最新 state を参照できないため、
+	// preview 受領済みかどうかは ref で判定する（order-confirm と同じパターン）。
+	const hasPreviewRef = useRef(false);
+	// ホスト接続・結果受信の診断用状態。無言の「待機中…」で固まらせず、
+	// どの段階（ui/initialize / tool-result 配信）で止まっているかを表示する。
+	const [connState, setConnState] = useState<'connecting' | 'connected' | 'failed'>('connecting');
+	const [resultWaitHint, setResultWaitHint] = useState(false);
 
 	useEffect(() => {
 		const mcpApp = new McpApp({ name: 'bitbank-cancel-confirm', version: '0.1.0' });
@@ -146,6 +157,8 @@ export function App() {
 				structured.data?.preview &&
 				(metaAction === 'cancel_order' || metaAction === 'cancel_orders')
 			) {
+				hasPreviewRef.current = true;
+				setResultWaitHint(false);
 				setAction(metaAction);
 				setPreview(structured.data.preview);
 				setOrder(structured.data.order ?? null);
@@ -167,19 +180,35 @@ export function App() {
 			if (ctx.fontCss) applyHostFonts(ctx.fontCss);
 		};
 
+		// 診断タイマー: ui/initialize が応答しない / 接続後に tool-result が届かない場合に
+		// 段階別の案内へ表示を切り替える（ホスト側問題の切り分けを画面だけで可能にする）。
+		const connectTimeoutId = setTimeout(() => {
+			setConnState((s) => (s === 'connecting' ? 'failed' : s));
+		}, CONNECT_TIMEOUT_MS);
+		let resultWaitTimerId: ReturnType<typeof setTimeout> | undefined;
+
 		mcpApp
 			.connect()
 			.then(() => {
+				clearTimeout(connectTimeoutId);
+				setConnState('connected');
 				const ctx = mcpApp.getHostContext();
 				applyDocumentTheme(ctx?.theme ?? getDocumentTheme());
 				if (ctx?.styles) applyHostStyleVariables(ctx.styles);
 				if (ctx?.fontCss) applyHostFonts(ctx.fontCss);
+				resultWaitTimerId = setTimeout(() => {
+					if (!hasPreviewRef.current) setResultWaitHint(true);
+				}, RESULT_WAIT_HINT_MS);
 			})
 			.catch(() => {
 				// 非対応ホスト or スタンドアロン表示。UI だけ表示する。
+				clearTimeout(connectTimeoutId);
+				setConnState('failed');
 			});
 
 		return () => {
+			clearTimeout(connectTimeoutId);
+			if (resultWaitTimerId) clearTimeout(resultWaitTimerId);
 			const current = appRef.current;
 			appRef.current = null;
 			void current?.close().catch(() => {
@@ -247,10 +276,18 @@ export function App() {
 	};
 
 	if (!preview || !action) {
+		// 段階別の診断メッセージ。ホスト側の MCP Apps 実装に問題がある場合、
+		// どこで止まっているか（接続 or 結果配信）をユーザーがこの表示だけで判別できる。
+		const waitingText =
+			connState === 'failed'
+				? 'ホストとの MCP Apps 接続（ui/initialize）を確立できませんでした。このホストでは確認 UI を利用できません。プレビュー内容はチャット本文を参照してください。'
+				: resultWaitHint
+					? 'ホストに接続済みですが、ツール結果（ui/notifications/tool-result）が届いていません。プレビュー内容はチャット本文を参照してください。'
+					: 'preview_cancel_order(s) の結果を待機中…';
 		return (
 			<div className="app">
 				<div className="card">
-					<p className="muted">preview_cancel_order(s) の結果を待機中…</p>
+					<p className="muted">{waitingText}</p>
 				</div>
 			</div>
 		);
