@@ -1,11 +1,17 @@
 /**
  * preview 系ツール（preview_order / preview_cancel_order / preview_cancel_orders）の
- * elicitation/create フローを共通化するヘルパー。
+ * ユーザー確認フローを共通化するヘルパー。
  *
- * 各 preview ツールは以下のパターンを同じ手順で実装していた:
- *   1. クライアントが elicitation/create に対応しているかを判定
- *   2. 対応していれば elicitInput でユーザー確認を取り、accept なら execute を実行
- *   3. 非対応 / decline / cancel / elicit 例外時は `fallback`（実行不可通知）を返す
+ * MCP 2026-07-28 (SEP-2322 MRTR) スタイルで実装する:
+ *   - round 1: クライアントが elicitation を扱えるなら `input_required` 結果
+ *     （confirm 要求 + 署名付き requestState）を返す
+ *   - round 2: クライアントが confirm 応答つきで元のツール呼び出しを再試行してきたら、
+ *     requestState を検証（action / 引数 digest / one-time nonce）した上で
+ *     accept なら execute を実行する
+ *   - 2025 系クライアントには SDK の legacy shim（デフォルト有効）が round 1 の
+ *     `input_required` を従来の `elicitation/create` push に自動変換し、応答を
+ *     `inputResponses` に詰めてハンドラを再入させる。ハンドラは一度書けば両世代で動く
+ *   - elicitation 非対応 / 検証失敗時は `fallback`（実行不可通知）を返す
  *
  * 取引系 HITL（Human-in-the-Loop）の中核であり、3 箇所に散らばっていると
  * 仕様ドリフトで事故になるため、本モジュールに集約する。
@@ -17,34 +23,70 @@
  *     呼び出し側が誤って `fallback` / `declinedStructured` に token を含めても、
  *     `withElicitedConfirmation` 内の `stripConfirmationTokenFields` で必ず除去される
  *     （多層防御。caller convention だけに依存しない最終ガード）。
+ *   - `requestState` は署名のみで暗号化されない（クライアント / LLM から可視）ため、
+ *     token を含めない。nonce + 引数 digest のみを載せ、再入時に検証する。
+ *     詳細は src/private/request-state.ts と ADR-0007 を参照。
  *   - 「`structuredContent` は LLM 非可視」をホストの仕様保証として扱わない。
  *     SEP-1624 / 各ホスト挙動の詳細は docs/private-api.md「content /
  *     structuredContent / `_meta` の役割と HITL の境界」節を参照。
  */
 
+import { type InputRequiredResult, inputRequired, inputResponse } from '@modelcontextprotocol/server';
 import { toStructured } from '../../lib/result.js';
 import type { Result } from '../schema/types.js';
 import type { McpResponse, ToolHandlerExtra } from '../tool-definition.js';
 import { isHostApprovalTrusted } from './config.js';
+import { type ConfirmRequestState, consumeNonce, digestArgs, mintConfirmState } from './request-state.js';
 
-/** SDK の elicitInput を呼び出すための最小限の interface */
-export interface ElicitCapableServer {
-	elicitInput: (params: {
-		message: string;
-		requestedSchema: Record<string, unknown>;
-	}) => Promise<{ action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }>;
-}
+/** inputResponses の confirm 応答を引くためのキー */
+const CONFIRM_KEY = 'confirm';
 
 /**
- * クライアントが elicitation/create に対応しているかを判定する。
- * 非対応ホストでは取引実行を行わず、呼び出し側が用意した `fallback`
- * （実行不可通知レスポンス）を返す。
+ * クライアントが elicitation を扱えるかを判定する。
+ *
+ * - 2025 系接続: initialize 時の client capabilities（server.getClientCapabilities()）
+ * - 2026-07-28 系リクエスト: per-request の `_meta` envelope に載る clientCapabilities
+ *
+ * どちらにも `elicitation` が無いホストでは取引実行を行わず、呼び出し側が用意した
+ * `fallback`（実行不可通知レスポンス）を返す。
  */
 export function clientSupportsElicitation(extra: ToolHandlerExtra | undefined): boolean {
 	const server = (extra as { server?: { getClientCapabilities?: () => unknown } } | undefined)?.server;
-	const caps = typeof server?.getClientCapabilities === 'function' ? server.getClientCapabilities() : undefined;
-	const elicitation = (caps as { elicitation?: unknown } | undefined)?.elicitation;
-	return Boolean(elicitation);
+	const initCaps = typeof server?.getClientCapabilities === 'function' ? server.getClientCapabilities() : undefined;
+	if ((initCaps as { elicitation?: unknown } | undefined)?.elicitation) return true;
+
+	const envelope = (extra as { mcpReq?: { envelope?: { clientCapabilities?: unknown } } } | undefined)?.mcpReq
+		?.envelope;
+	const envCaps = envelope?.clientCapabilities;
+	return Boolean((envCaps as { elicitation?: unknown } | undefined)?.elicitation);
+}
+
+/** 再入リクエストの inputResponses を ctx から取り出す。 */
+function readInputResponses(extra: ToolHandlerExtra | undefined): Record<string, unknown> | undefined {
+	const responses = (extra as { mcpReq?: { inputResponses?: Record<string, unknown> } } | undefined)?.mcpReq
+		?.inputResponses;
+	return responses && typeof responses === 'object' ? responses : undefined;
+}
+
+/**
+ * verify フック（server.ts の ServerOptions.requestState.verify）が復号した
+ * requestState payload を ctx から読み取る。形状が想定と異なる場合は undefined。
+ */
+function readConfirmState(extra: ToolHandlerExtra | undefined): ConfirmRequestState | undefined {
+	const accessor = (extra as { mcpReq?: { requestState?: unknown } } | undefined)?.mcpReq?.requestState;
+	if (typeof accessor !== 'function') return undefined;
+	let value: unknown;
+	try {
+		value = (accessor as () => unknown)();
+	} catch {
+		return undefined;
+	}
+	if (!value || typeof value !== 'object') return undefined;
+	const state = value as Partial<ConfirmRequestState>;
+	if (typeof state.action !== 'string' || typeof state.argsDigest !== 'string' || typeof state.nonce !== 'string') {
+		return undefined;
+	}
+	return state as ConfirmRequestState;
 }
 
 /**
@@ -74,6 +116,16 @@ function stripConfirmationTokenFields(value: Record<string, unknown>): Record<st
 export interface WithElicitedConfirmationOptions {
 	/** ハンドラに渡される MCP リクエストコンテキスト */
 	extra: ToolHandlerExtra | undefined;
+	/**
+	 * 確認対象の操作種別（'create_order' | 'cancel_order' | 'cancel_orders'）。
+	 * requestState のドメイン分離に使い、別操作への accept 流用を拒否する。
+	 */
+	action: string;
+	/**
+	 * 元リクエストの引数。requestState の引数 digest にバインドし、round 2 で
+	 * 引数を差し替えた再試行（ユーザーが見ていないプレビュー内容の実行）を拒否する。
+	 */
+	bindArgs: Record<string, unknown>;
 	/** elicitation の message に渡す preview 結果サマリ */
 	summary: string;
 	/** elicitation スキーマの confirmed フィールドに付ける title（例: 'この注文を発注する'） */
@@ -95,9 +147,8 @@ export interface WithElicitedConfirmationOptions {
 	declinedStructured: Record<string, unknown>;
 	/**
 	 * elicitation 非対応ホスト向けの「実行不可通知」レスポンス。以下のケースで返る:
-	 *   - クライアントが elicitation 非対応
-	 *   - server.elicitInput が無い
-	 *   - elicitInput が例外を投げた
+	 *   - クライアントが elicitation 非対応（2025 系 capabilities / 2026 系 envelope とも無し）
+	 *   - requestState の mint に失敗した
 	 *
 	 * セマンティクス: 取引実行は行わずプレビュー内容のみ返し、対応ホストで実行するよう
 	 * ユーザー / LLM に促す。`structuredContent` 内の `confirmation_token` / `expires_at`
@@ -125,12 +176,13 @@ export interface WithElicitedConfirmationOptions {
 }
 
 /**
- * preview 結果に対するユーザー確認（elicitation）フローを実行する高レベルラッパー。
+ * preview 結果に対するユーザー確認（MRTR / elicitation）フローを実行する高レベルラッパー。
  *
  * 責務:
- *   1. capability 判定
- *   2. elicitInput 呼び出し
- *   3. ユーザー応答（accept / decline / cancel / confirmed=false）による分岐返却
+ *   1. round 判定（inputResponses の confirm 応答の有無）
+ *   2. round 1: capability 判定 → `input_required` 結果の生成（requestState mint 込み）
+ *   3. round 2: requestState 検証（action / 引数 digest / one-time nonce）と
+ *      ユーザー応答（accept / decline / cancel / confirmed=false）による分岐返却
  *
  * 実 API 呼び出し（create_order / cancel_order / cancel_orders）は呼び出し側が
  * `onConfirmed` 内で行う。bitbank のキャンセル系は単数/複数で execute シグネチャが
@@ -138,11 +190,12 @@ export interface WithElicitedConfirmationOptions {
  *
  * 挙動の統一:
  *   - decline / cancel / accept-without-confirmed はすべて「ユーザー拒否」として
- *     同一処理にする（既存 3 ツールはこの分岐ロジック自体は同じだった）。
- *   - `onConfirmed` の例外は捕捉せず呼び出し側に伝播させる
- *     （elicitInput 自体の例外のみフォールバックさせる）。
+ *     同一処理にする。
+ *   - `onConfirmed` の例外は捕捉せず呼び出し側に伝播させる。
  */
-export async function withElicitedConfirmation(opts: WithElicitedConfirmationOptions): Promise<McpResponse> {
+export async function withElicitedConfirmation(
+	opts: WithElicitedConfirmationOptions,
+): Promise<McpResponse | InputRequiredResult> {
 	// fallback / declinedStructured は caller convention だけに依頼せず、ここで必ず
 	// confirmation_token / expires_at を剥がす（多層防御の最終ガード）。
 	const safeFallback: McpResponse = {
@@ -157,46 +210,74 @@ export async function withElicitedConfirmation(opts: WithElicitedConfirmationOpt
 	// 詳細は docs/adr/0007-hitl-confirmation-token-delivery.md を参照。
 	const trustHostFallback = isHostApprovalTrusted() ? opts.trustHostFallback : undefined;
 
+	// ── round 2: confirm 応答つき再入 ──
+	const view = inputResponse(readInputResponses(opts.extra), CONFIRM_KEY);
+	if (view.kind === 'elicit') {
+		// requestState（verify フックで HMAC / 期限検証済み）の文脈バインドを検証する。
+		// 検証はユーザー応答の内容より先に行い、nonce は accept / decline を問わず消費する
+		// （拒否された確認の requestState を後から accept 付きで replay させない）。
+		const state = readConfirmState(opts.extra);
+		const bound =
+			state !== undefined &&
+			state.action === opts.action &&
+			state.argsDigest === digestArgs(opts.action, opts.bindArgs) &&
+			consumeNonce(state.nonce);
+		if (!bound) {
+			return {
+				content: [
+					{
+						type: 'text',
+						text: '確認情報が無効なため実行しませんでした（引数の変更・再利用・期限切れの可能性）。preview からやり直してください。',
+					},
+				],
+				structuredContent: safeDeclinedStructured,
+			};
+		}
+
+		if (view.action !== 'accept' || view.content?.confirmed !== true) {
+			return {
+				content: [{ type: 'text', text: opts.onDeclinedText }],
+				structuredContent: safeDeclinedStructured,
+			};
+		}
+
+		const execResult = await opts.onConfirmed();
+		const text = execResult.ok ? execResult.summary : `Error: ${execResult.summary}`;
+		// onConfirmed の Result（create_order 等の戻り値）には confirmation_token は含まれない
+		// 想定だが、念のため同じ最終ガードを通す。
+		return {
+			content: [{ type: 'text', text }],
+			structuredContent: stripConfirmationTokenFields(toStructured(execResult)),
+		};
+	}
+
+	// ── round 1: 確認要求の発行 ──
 	if (!clientSupportsElicitation(opts.extra)) {
 		return trustHostFallback ?? safeFallback;
 	}
 
-	const server = (opts.extra as { server?: ElicitCapableServer } | undefined)?.server;
-	if (!server || typeof server.elicitInput !== 'function') {
-		return trustHostFallback ?? safeFallback;
-	}
-
-	let elicit: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> };
+	let requestState: string;
 	try {
-		elicit = await server.elicitInput({
-			message: opts.summary,
-			requestedSchema: {
-				type: 'object',
-				properties: {
-					confirmed: { type: 'boolean', title: opts.confirmTitle },
-				},
-				required: ['confirmed'],
-			},
-		});
+		requestState = await mintConfirmState(opts.action, opts.bindArgs);
 	} catch {
-		// elicitInput が想定外に失敗した場合はフォールバックに進む。
+		// mint が想定外に失敗した場合はフォールバックに進む。
 		// trust-host モード ON なら iframe ボタン経路を残す trustHostFallback を返す。
 		return trustHostFallback ?? safeFallback;
 	}
 
-	if (elicit.action !== 'accept' || !elicit.content?.confirmed) {
-		return {
-			content: [{ type: 'text', text: opts.onDeclinedText }],
-			structuredContent: safeDeclinedStructured,
-		};
-	}
-
-	const execResult = await opts.onConfirmed();
-	const text = execResult.ok ? execResult.summary : `Error: ${execResult.summary}`;
-	// onConfirmed の Result（create_order 等の戻り値）には confirmation_token は含まれない
-	// 想定だが、念のため同じ最終ガードを通す。
-	return {
-		content: [{ type: 'text', text }],
-		structuredContent: stripConfirmationTokenFields(toStructured(execResult)),
-	};
+	return inputRequired({
+		inputRequests: {
+			[CONFIRM_KEY]: inputRequired.elicit({
+				message: opts.summary,
+				requestedSchema: {
+					type: 'object',
+					properties: {
+						confirmed: { type: 'boolean', title: opts.confirmTitle },
+					},
+					required: ['confirmed'],
+				},
+			}),
+		},
+		requestState,
+	});
 }

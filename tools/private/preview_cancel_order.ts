@@ -126,6 +126,8 @@ export const toolDef: ToolDefinition = {
 		// から必ず剥がすため caller 側で sanitize する必要はない（最終ガードは helper 側）。
 		return withElicitedConfirmation({
 			extra,
+			action: 'cancel_order',
+			bindArgs: typedArgs as unknown as Record<string, unknown>,
 			summary: result.summary,
 			confirmTitle: 'この注文をキャンセルする',
 			// 内部的に cancel_order を実行。監査ログには route='elicitation' で記録される。

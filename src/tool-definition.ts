@@ -1,3 +1,4 @@
+import type { InputRequiredResult } from '@modelcontextprotocol/server';
 import type { z } from 'zod';
 import type { Result } from './schemas.js';
 
@@ -10,9 +11,10 @@ export interface McpResponse {
 /**
  * ハンドラに渡される MCP リクエストコンテキスト。
  *
- * elicitation/sampling 等のサーバー → クライアント呼び出しを行うツール用。
- * SDK の `RequestHandlerExtra` をそのまま受け取れるよう構造的型で受ける。
- * `server` プロパティは server.ts 側で `McpServer` を合流させて注入する。
+ * MRTR（input_required）/ elicitation 等でリクエスト文脈を参照するツール用。
+ * SDK v2 の `ServerContext`（`mcpReq.inputResponses` / `mcpReq.requestState` 等）を
+ * そのまま受け取れるよう構造的型で受ける。
+ * `server` プロパティは server.ts 側で内部 `Server` を合流させて注入する。
  */
 export interface ToolHandlerExtra {
 	[key: string]: unknown;
@@ -33,9 +35,10 @@ export interface ToolDefinition {
 	inputSchema: z.ZodTypeAny;
 	/**
 	 * MCP ハンドラ（入力を受けて結果を返す）。respond() で自動ラップされる。
-	 * 第2引数 `extra` は elicitation 等で SDK のサーバー機能にアクセスする必要があるツールのみ参照する。
+	 * 第2引数 `extra` は MRTR / elicitation 等でリクエスト文脈にアクセスする必要があるツールのみ参照する。
+	 * MRTR ラウンドでは `InputRequiredResult` を返してよい（server.ts が素通しする）。
 	 */
-	handler(args: Record<string, unknown>, extra?: ToolHandlerExtra): Promise<Result | McpResponse>;
+	handler(args: Record<string, unknown>, extra?: ToolHandlerExtra): Promise<Result | McpResponse | InputRequiredResult>;
 	/**
 	 * MCP ツール メタデータ。MCP Apps (SEP-1865) の `_meta.ui.resourceUri` 等を保持する。
 	 * 未対応ホストでは無視される（Progressive Enhancement）。

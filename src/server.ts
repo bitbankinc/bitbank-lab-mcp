@@ -1,22 +1,26 @@
 import './env.js'; // must be first — loads .env before other modules read process.env
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { z } from 'zod';
-import { getErrorMessage, toPublicError } from '../lib/error.js';
+import { isInputRequiredResult, McpServer } from '@modelcontextprotocol/server';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+import type { z } from 'zod';
+import { toPublicError } from '../lib/error.js';
 import { logError, logToolRun } from '../lib/logger.js';
+import { requestStateCodec } from './private/request-state.js';
 import { type PromptDef, prompts as promptDefs } from './prompts.js';
 import { appResourceRegistry } from './resources/app-resources.js';
 import { allToolDefs } from './tool-registry.js';
 
-const server = new McpServer({ name: 'bitbank-mcp', version: '0.4.2' });
-// Explicit registries for tools/prompts to improve STDIO inspector compatibility
-const registeredTools: Array<{
-	name: string;
-	description: string;
-	inputSchema: Record<string, unknown>;
-	_meta?: Record<string, unknown>;
-}> = [];
-const registeredPrompts: Array<{ name: string; description: string }> = [];
+const server = new McpServer(
+	{ name: 'bitbank-mcp', version: '0.4.2' },
+	{
+		// MRTR (SEP-2322) の requestState 検証。HMAC / 有効期限の検証をハンドラ実行前に行い、
+		// 失敗時は SDK が wire レベルの -32602（Invalid or expired requestState）を返す。
+		// codec の詳細と payload の文脈バインド検証は src/private/request-state.ts /
+		// src/private/elicitation.ts を参照。
+		requestState: {
+			verify: (state, ctx) => requestStateCodec.verify(state, ctx),
+		},
+	},
+);
 
 type TextContent = { type: 'text'; text: string; _meta?: Record<string, unknown> };
 type ToolReturn = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -79,87 +83,27 @@ const respond = (result: unknown): ToolReturn => {
 	};
 };
 
-/** Zod スキーマ → MCP inspector 用 JSON Schema に変換する。
- *  Zod 4 組み込みの toJSONSchema を使い、MCP 不要の additionalProperties を除去する。 */
-function zodToInputJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
-	const json = z.toJSONSchema(schema, { target: 'openApi3' }) as Record<string, unknown>;
-	delete json.additionalProperties;
-	// default 付きフィールドは required から除外（Zod が parse 時に適用するため MCP 入力では不要）
-	const props = json.properties as Record<string, Record<string, unknown>> | undefined;
-	if (Array.isArray(json.required) && props) {
-		json.required = (json.required as string[]).filter((k) => !('default' in (props[k] ?? {})));
-		if ((json.required as string[]).length === 0) delete json.required;
-	}
-	return json;
-}
-
-/** SDK の registerTool に渡すための ZodRawShape を取得する。
- *  .describe() / .default() / .optional() 等のラッパーを再帰的にアンラップする。 */
-function getRawShape(s: z.ZodTypeAny): z.ZodRawShape {
-	type Unwrappable = {
-		shape?: z.ZodRawShape;
-		_def?: { schema?: z.ZodTypeAny; innerType?: z.ZodTypeAny; in?: z.ZodTypeAny };
-	};
-	let cur = s as Unwrappable;
-	for (let i = 0; i < 6; i++) {
-		if (cur.shape) break;
-		const def = cur._def;
-		if (!def) break;
-		// Zod 3: ZodEffects uses _def.schema / Zod 4: uses _def.in
-		if (def.schema) {
-			cur = def.schema as Unwrappable;
-			continue;
-		}
-		if (def.in) {
-			cur = def.in as Unwrappable;
-			continue;
-		}
-		if (def.innerType) {
-			cur = def.innerType as Unwrappable;
-			continue;
-		}
-		break;
-	}
-	if (cur.shape) return cur.shape;
-	throw new Error('inputSchema must be or wrap a ZodObject');
-}
-
 function registerToolWithLog(
 	name: string,
 	schema: { description: string; inputSchema: z.ZodTypeAny; _meta?: Record<string, unknown> },
 	handler: (input: Record<string, unknown>, extra?: Record<string, unknown>) => Promise<unknown>,
 ) {
-	// Build JSON Schema for listing
-	const inputSchemaJson = zodToInputJsonSchema(schema.inputSchema);
-	registeredTools.push({
-		name,
-		description: schema.description,
-		inputSchema: inputSchemaJson,
-		...(schema._meta ? { _meta: schema._meta } : {}),
-	});
-
-	// SDK の registerTool は第2引数に { inputSchema: ZodRawShape } を要求するが
-	// 型定義が厳密すぎて直接渡せないため、ここでキャストを集約する
+	// SDK v2 は Standard Schema（Zod v4 オブジェクト）を inputSchema として直接受け、
+	// `.refine()` / `.superRefine()` 等のクロスフィールド制約も含めた完全なスキーマで
+	// ハンドラ実行前に入力検証する（v1 時代の raw shape 抽出 + 二重 parse は不要になった）。
+	// 型定義は Zod スキーマの generics に厳密なため、ここでキャストを集約する。
 	const toolConfig: Record<string, unknown> = {
 		description: schema.description,
-		inputSchema: getRawShape(schema.inputSchema),
+		inputSchema: schema.inputSchema,
 	};
 	if (schema._meta) toolConfig._meta = schema._meta;
 	(server as unknown as { registerTool: (n: string, s: unknown, h: unknown) => void }).registerTool(
 		name,
 		toolConfig,
-		async (input: Record<string, unknown>, extra?: Record<string, unknown>) => {
+		async (input: Record<string, unknown>, ctx?: Record<string, unknown>) => {
 			const TOOL_TIMEOUT_MS = 60_000;
 			const t0 = Date.now();
 			try {
-				// 入力を完全な inputSchema で検証する（defense-in-depth）。
-				// SDK には getRawShape() で抽出した shape のみ渡しているため、
-				// .refine() / .superRefine() 等のクロスフィールド制約は MCP 経由では失われ得る。
-				// また各 handler は `args as ...` で cast しており明示 parse をしないため、
-				// ここで本来のスキーマを通して取りこぼし・将来の登録経路変更に備える。
-				// ZodError は下の catch で toPublicError により 'validation_error' に正規化され、
-				// 入力断片やローカルパスは応答に露出しない。
-				schema.inputSchema.parse(input ?? {});
 				let timeoutId: ReturnType<typeof setTimeout> | undefined;
 				const timeoutPromise = new Promise<never>((_, reject) => {
 					timeoutId = setTimeout(
@@ -167,15 +111,21 @@ function registerToolWithLog(
 						TOOL_TIMEOUT_MS,
 					);
 				});
-				// elicitation 等で server.elicitInput / getClientCapabilities を使うツール向けに、
-				// SDK の RequestHandlerExtra に内部 Server インスタンスを合流させる。
-				// （elicitInput / getClientCapabilities は McpServer 直下ではなく
-				// McpServer.server (= 内部 Server) 上にあるため、wrapper ではなく中身を渡す）
-				const handlerExtra = { ...extra, server: server.server };
-				const result = await Promise.race([handler(input, handlerExtra), timeoutPromise]).finally(() => {
+				// MRTR / elicitation を使うツール向けに、SDK の ServerContext
+				// （mcpReq.inputResponses / mcpReq.requestState 等）へ内部 Server インスタンスを
+				// 合流させて渡す。server は 2025 系接続の client capabilities 判定
+				// （getClientCapabilities）に使う。
+				const handlerExtra = { ...ctx, server: server.server };
+				const result = await Promise.race([handler(input ?? {}, handlerExtra), timeoutPromise]).finally(() => {
 					if (timeoutId) clearTimeout(timeoutId);
 				});
 				const ms = Date.now() - t0;
+				// MRTR ラウンド（input_required）は SDK にそのまま渡す。respond() で包むと
+				// resultType が失われ、クライアントが確認要求を受け取れなくなる。
+				if (isInputRequiredResult(result)) {
+					logToolRun({ tool: name, input, result: { ok: true, summary: '[MRTR] input_required round' }, ms });
+					return result;
+				}
 				logToolRun({ tool: name, input, result, ms });
 				return respond(result);
 			} catch (err: unknown) {
@@ -205,7 +155,7 @@ for (const def of allToolDefs) {
 	);
 }
 
-// === Register prompts (SDK 形式に寄せた最小導入) ===
+// === Register prompts ===
 
 type PromptMessage = PromptDef['messages'][number];
 type ContentBlock = PromptMessage['content'][number];
@@ -234,29 +184,22 @@ function toSdkMessages(msgs: PromptMessage[]) {
 	});
 }
 
-function registerPromptSafe(name: string, def: Pick<PromptDef, 'description' | 'messages'>) {
-	const s = server as unknown as {
-		registerPrompt?: (name: string, meta: { description: string }, cb: () => unknown) => void;
-	};
-	if (typeof s.registerPrompt === 'function') {
-		registeredPrompts.push({ name, description: def.description });
-		s.registerPrompt(name, { description: def.description }, () => ({
-			description: def.description,
-			messages: toSdkMessages(def.messages),
-		}));
-	}
-}
-
-// === Register prompts from src/prompts.ts ===
+// SDK の registerPrompt は argsSchema の generics に厳密なため、引数なしプロンプトの
+// 登録はキャストを集約して行う。prompts/list・prompts/get のルーティングは SDK が担う。
 for (const p of promptDefs) {
-	registerPromptSafe(p.name, p);
+	(server as unknown as { registerPrompt: (n: string, c: unknown, cb: unknown) => void }).registerPrompt(
+		p.name,
+		{ description: p.description },
+		() => ({
+			description: p.description,
+			messages: toSdkMessages(p.messages),
+		}),
+	);
 }
 
 // === Register MCP Apps UI resources ===
 // SDK の `registerResource` を使うことで `resources/list` と `resources/read` の
 // JSON-RPC ルーティングが SDK 内部で正しく行われる。
-// （以前の `setHandler('resources/...')` は SDK が要求する Zod スキーマではなく
-//  文字列を渡していたため silently no-op となり、本番で `Method not found` を返していた）
 for (const r of appResourceRegistry) {
 	const config: Record<string, unknown> = {
 		description: r.description,
@@ -287,63 +230,3 @@ for (const r of appResourceRegistry) {
 // === トランスポート接続 ===
 const transport = new StdioServerTransport();
 await server.connect(transport);
-
-// SDK の McpServer は setRequestHandler を public 型として export していないため、
-// 低レベル API アクセスのキャストをこのヘルパーに集約する。
-type HandlerFn = (request: unknown) => Promise<unknown>;
-function setHandler(method: string, fn: HandlerFn) {
-	(server as unknown as { setRequestHandler?: (method: string, fn: HandlerFn) => void }).setRequestHandler?.(
-		method,
-		fn,
-	);
-}
-
-// Fallback handlers to ensure list operations work over STDIO
-try {
-	setHandler('tools/list', async () => ({
-		tools: registeredTools.map((t) => ({
-			name: t.name,
-			description: t.description,
-			inputSchema: t.inputSchema,
-			...(t._meta ? { _meta: t._meta } : {}),
-		})),
-	}));
-	setHandler('prompts/list', async () => ({
-		prompts: registeredPrompts.map((p) => ({ name: p.name, description: p.description })),
-	}));
-	// prompts/get: convert content arrays to single TextContent objects per MCP spec
-	setHandler('prompts/get', async (request: unknown) => {
-		try {
-			const params = (request as { params?: { name?: string } })?.params;
-			const name = params?.name;
-			console.error('[prompts/get] Requested name:', name);
-			if (!name) {
-				throw new Error('Prompt name is required');
-			}
-
-			const promptDef = promptDefs.find((p) => p.name === name);
-			if (!promptDef) {
-				console.error('[prompts/get] ERROR: Prompt not found:', name);
-				throw new Error(`Prompt not found: ${name}`);
-			}
-
-			console.error('[prompts/get] Found prompt:', name, 'with', promptDef.messages.length, 'messages');
-			// prompts/get はテキストブロックのみ抽出（tool_code は除外）
-			const messages = promptDef.messages.map((msg) => {
-				const blocks: ContentBlock[] = Array.isArray(msg.content) ? msg.content : [];
-				const text = blocks
-					.filter((b): b is ContentBlock & { text: string } => b.type === 'text' && typeof b.text === 'string')
-					.map((b) => b.text)
-					.join('\n');
-				return {
-					role: msg.role === 'assistant' ? ('assistant' as const) : ('user' as const),
-					content: { type: 'text' as const, text },
-				};
-			});
-			return { description: promptDef.description, messages };
-		} catch (error: unknown) {
-			console.error('[prompts/get] EXCEPTION:', getErrorMessage(error));
-			throw error;
-		}
-	});
-} catch {}

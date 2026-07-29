@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-05-29
-- **Updated**: 2026-07-29（MCP 2026-07-28 仕様の正式リリースを受けて「Future direction」を final 仕様と SDK 状況に合わせて更新）
+- **Updated**: 2026-07-29（MCP 2026-07-28 仕様の正式リリースを受けて「Future direction」を final 仕様と SDK 状況に合わせて更新。同日、SDK v2 移行 + MRTR 経路の実装を完了 — 「移行計画」の実装済み注記を参照）
 - **Decision**: 取引系 HITL の `confirmation_token` 配送を 3 層構造で扱う。デフォルトはサーバープロセス内に閉じ、`BITBANK_TRUST_HOST_APPROVAL=1` のオプトインで SEP-1865 iframe ボタン経路を有効化する。長期的には MCP SEP-2322 (Multi Round-Trip Requests / `InputRequiredResult`) への置き換えを想定する。
 
 ## Context
@@ -128,16 +128,20 @@ replay や別文脈での再利用を防げない）。
   `inputRequired.elicit()` API を実装。現行使用中の v1 系（`@modelcontextprotocol/sdk` 1.x）には
   来ない見込みのため、MRTR 経路の実装には **SDK v2 移行**（パッケージ分割・`serverInfo` の
   `_meta` 移動・出力拡張子変更等の破壊的変更を含む）が前提となる。
-- **移行着手の判断基準**（2026-Q4 目安に再評価）:
-  1. `@modelcontextprotocol/server` 2.0.x がパッチを重ねて安定していること
-  2. 主要ホスト（Claude Desktop / claude-ai）が 2026-07-28 仕様 + MRTR を扱えること
-     （経路 1 の elicitation はホスト側が 1 年近く advertise しなかった前例があり、
-     ホスト対応が実質の律速）
-- **SDK v2 移行後**: `withElicitedConfirmation` を「`input_required` 返し」（MRTR）スタイルへ移行する。
-  SDK v2 には legacy shim（デフォルト有効）があり、MRTR スタイルの戻り値を 2025 系クライアント向けに
-  `elicitation/create` へ自動変換するため、ハンドラは MRTR を基本とし、`elicitInput` の直接呼び出しは
-  shim で賄えない互換用途に限る。
+- ~~**移行着手の判断基準**（2026-Q4 目安に再評価）~~ → **前倒しで着手・実装済み**（2026-07-29）。
+  Anthropic が Claude 製品（Claude Desktop / Claude Code / claude.ai）への 2026-07-28 対応
+  ロールアウトを発表したため（https://claude.com/blog/bringing-mcp-2026-07-28-to-claude ）、
+  「ホスト対応が律速」の前提が崩れ、待つ理由がなくなった。
+- ~~**SDK v2 移行後**~~ → **実装済み**: SDK v2（`@modelcontextprotocol/server` 2.0.0 固定）へ移行し、
+  `withElicitedConfirmation` を「`input_required` 返し」（MRTR）スタイルへ書き換えた。
+  SDK v2 の legacy shim（デフォルト有効）が MRTR スタイルの戻り値を 2025 系クライアント向けに
+  `elicitation/create` へ自動変換するため、ハンドラは MRTR のみで両世代に対応する
+  （`elicitInput` の直接呼び出しは廃止）。
   優先順位は `MRTR（旧クライアントへは shim が elicitation 変換）> trust-host-approval > fallback`。
+  `requestState` には token を載せず（署名のみで暗号化されないため）、nonce + 引数 digest を
+  署名して載せ、HMAC / 期限（SDK verify フック）+ action / digest / one-time nonce
+  （`withElicitedConfirmation`）の 2 層で検証する。実装は `src/private/request-state.ts` /
+  `src/private/elicitation.ts` / `src/server.ts`。
 - **クライアント実装が広く出揃ったタイミング**: `BITBANK_TRUST_HOST_APPROVAL` モードを deprecate → 撤去
 
 トラッキング:
