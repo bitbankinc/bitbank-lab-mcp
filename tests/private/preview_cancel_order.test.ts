@@ -284,6 +284,16 @@ describe('preview_cancel_order — handler (toolDef)', () => {
 		expect(text).toContain('このホストでは取引実行に対応していません');
 	});
 
+	it('既にキャンセル済みの注文はプレビュー段階で拒否する', async () => {
+		mockGetOrderOnce(mockOrder({ status: 'CANCELED_UNFILLED' }));
+		const previewCancelOrder = await loadPreviewCancelOrder();
+		const result = await previewCancelOrder({ pair: 'btc_jpy', order_id: 2001 });
+
+		expect(result.ok).toBe(false);
+		expect(result.summary).toContain('既にキャンセル済み');
+		expect(result.meta.errorType).toBe('validation_error');
+	});
+
 	it('elicitation 対応ホストで accept されると cancel_order まで実行される', async () => {
 		// 1 回目: get_order（preview 内部）、2 回目: cancel_order
 		globalThis.fetch = vi
@@ -312,19 +322,15 @@ describe('preview_cancel_order — handler (toolDef)', () => {
 				),
 			) as unknown as typeof fetch;
 
-		const elicitInput = vi.fn().mockResolvedValue({ action: 'accept', content: { confirmed: true } });
-		const fakeServer = {
-			getClientCapabilities: () => ({ elicitation: {} }),
-			elicitInput,
-		};
-
+		const { mrtrRound2Ctx } = await import('./_mrtr-helpers.js');
 		const { toolDef } = await import('../../tools/private/preview_cancel_order.js');
-		const result = (await toolDef.handler({ pair: 'btc_jpy', order_id: 2001 }, { server: fakeServer })) as {
+		const args = { pair: 'btc_jpy', order_id: 2001 };
+		// MRTR round 2: confirm 応答（accept + confirmed=true）つきの再入
+		const result = (await toolDef.handler(args, mrtrRound2Ctx('cancel_order', args, 'pco-accept-1'))) as {
 			content: { text: string }[];
 			structuredContent: Record<string, unknown>;
 		};
 
-		expect(elicitInput).toHaveBeenCalledTimes(1);
 		expect(result.content[0]?.text).toContain('注文キャンセル完了');
 		expect(result.structuredContent).toMatchObject({ ok: true });
 	});
@@ -333,13 +339,14 @@ describe('preview_cancel_order — handler (toolDef)', () => {
 		const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(mockOrder()), { status: 200 }));
 		globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-		const fakeServer = {
-			getClientCapabilities: () => ({ elicitation: {} }),
-			elicitInput: vi.fn().mockResolvedValue({ action: 'decline' }),
-		};
-
+		const { mrtrRound2Ctx } = await import('./_mrtr-helpers.js');
 		const { toolDef } = await import('../../tools/private/preview_cancel_order.js');
-		const result = (await toolDef.handler({ pair: 'btc_jpy', order_id: 2001 }, { server: fakeServer })) as {
+		const args = { pair: 'btc_jpy', order_id: 2001 };
+		// MRTR round 2: confirm 応答（decline）つきの再入
+		const result = (await toolDef.handler(
+			args,
+			mrtrRound2Ctx('cancel_order', args, 'pco-decline-1', { action: 'decline' }),
+		)) as {
 			content: { text: string }[];
 			structuredContent: { data?: { confirmation_token?: string; expires_at?: number } };
 		};

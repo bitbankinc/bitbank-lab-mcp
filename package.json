@@ -63,8 +63,9 @@
   ],
   "author": "Bitbank, Inc.",
   "dependencies": {
-    "@modelcontextprotocol/ext-apps": "^1.7.0",
+    "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/server": "2.0.0",
     "dayjs": "^1.11.19",
     "dotenv": "^17.4.2",
     "lightweight-charts": "^5.1.0",

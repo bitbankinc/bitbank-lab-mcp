@@ -5,7 +5,7 @@ import type { ToolDefinition } from '../src/tool-definition.js';
 interface FakeToolEntry {
 	name: string;
 	options: Record<string, unknown>;
-	handler: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+	handler: (input: Record<string, unknown>, ctx?: Record<string, unknown>) => Promise<Record<string, unknown>>;
 }
 interface FakePromptEntry {
 	name: string;
@@ -20,10 +20,11 @@ interface FakeResourceEntry {
 }
 interface FakeMcpServerShape {
 	info: Record<string, unknown>;
+	options: Record<string, unknown> | undefined;
+	server: Record<string, unknown>;
 	tools: FakeToolEntry[];
 	prompts: FakePromptEntry[];
 	resources: FakeResourceEntry[];
-	requestHandlers: Record<string, (request?: Record<string, unknown>) => Promise<unknown> | unknown>;
 	connections: Array<{ kind: string }>;
 }
 interface MockPromptDef {
@@ -44,21 +45,28 @@ const runtime = vi.hoisted(() => ({
 	logError: vi.fn(),
 }));
 
-vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => {
+// SDK v2 は部分モックにする: McpServer だけ差し替え、isInputRequiredResult /
+// inputRequired / createRequestStateCodec 等の純粋関数は実物を使う
+// （server.ts 経由でロードされる src/private/request-state.ts が実物の codec を必要とする）。
+vi.mock('@modelcontextprotocol/server', async (importOriginal) => {
+	const actual = await importOriginal<Record<string, unknown>>();
+
 	class FakeMcpServer {
 		info: Record<string, unknown>;
+		options: Record<string, unknown> | undefined;
+		// server.ts が handlerExtra に注入する内部 Server 相当
+		server: Record<string, unknown> = { getClientCapabilities: () => undefined };
 		tools: FakeToolEntry[];
 		prompts: FakePromptEntry[];
 		resources: FakeResourceEntry[];
-		requestHandlers: Record<string, (request?: Record<string, unknown>) => Promise<unknown> | unknown>;
 		connections: Array<{ kind: string }>;
 
-		constructor(info: Record<string, unknown>) {
+		constructor(info: Record<string, unknown>, options?: Record<string, unknown>) {
 			this.info = info;
+			this.options = options;
 			this.tools = [];
 			this.prompts = [];
 			this.resources = [];
-			this.requestHandlers = {};
 			this.connections = [];
 			runtime.serverInstances.push(this);
 		}
@@ -66,7 +74,7 @@ vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => {
 		registerTool(
 			name: string,
 			options: Record<string, unknown>,
-			handler: (input: Record<string, unknown>) => Promise<Record<string, unknown>>,
+			handler: (input: Record<string, unknown>, ctx?: Record<string, unknown>) => Promise<Record<string, unknown>>,
 		) {
 			this.tools.push({ name, options, handler });
 		}
@@ -84,19 +92,15 @@ vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => {
 			this.resources.push({ name, uri, config, read });
 		}
 
-		setRequestHandler(name: string, handler: (request?: Record<string, unknown>) => Promise<unknown> | unknown) {
-			this.requestHandlers[name] = handler;
-		}
-
 		async connect(transport: { kind: string }) {
 			this.connections.push(transport);
 		}
 	}
 
-	return { McpServer: FakeMcpServer };
+	return { ...actual, McpServer: FakeMcpServer };
 });
 
-vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => {
+vi.mock('@modelcontextprotocol/server/stdio', () => {
 	class FakeStdioServerTransport {
 		kind = 'stdio';
 
@@ -188,7 +192,7 @@ describe('server.ts smoke', () => {
 		process.env = { ...originalEnv };
 	});
 
-	it('起動時にツール・prompt・fallback handlers を登録する', async () => {
+	it('起動時にツール・prompt・resources を登録し requestState.verify を設定する', async () => {
 		const { z } = await import('zod');
 
 		runtime.toolDefs = [
@@ -217,111 +221,74 @@ describe('server.ts smoke', () => {
 		expect(server.info).toEqual({ name: 'bitbank-mcp', version: '0.4.2' });
 		expect(server.tools.map((tool) => tool.name)).toEqual(['smoke_tool', 'second_tool']);
 		expect(server.prompts.map((prompt) => prompt.name)).toEqual(['smoke_prompt']);
-		expect(Object.keys(server.requestHandlers)).toEqual(
-			expect.arrayContaining(['tools/list', 'prompts/list', 'prompts/get']),
-		);
+		// MRTR requestState の HMAC / 期限検証フックが ServerOptions に接続されている
+		const requestState = server.options?.requestState as { verify?: unknown } | undefined;
+		expect(typeof requestState?.verify).toBe('function');
 		// Resources は SDK の registerResource 経由で正規ルートに登録される
 		expect(server.resources.map((r) => r.uri)).toEqual(['ui://order/confirm.html', 'ui://cancel/confirm.html']);
-		expect(server.requestHandlers).not.toHaveProperty('resources/list');
-		expect(server.requestHandlers).not.toHaveProperty('resources/read');
 		expect(server.connections).toHaveLength(1);
 		expect(server.connections[0].kind).toBe('stdio');
 		expect(runtime.stdioTransports).toHaveLength(1);
 	});
 
-	it('tools/list・prompts/list・prompts/get と resources の登録内容を返す', async () => {
+	it('tool・prompt・resources の登録内容が SDK に渡る', async () => {
 		const { z } = await import('zod');
-		const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-		try {
-			runtime.toolDefs = [
-				{
-					name: 'smoke_tool',
-					description: 'Smoke tool description',
-					inputSchema: z.object({
-						pair: z.string().regex(/^[a-z_]+$/),
-						limit: z.number().default(5),
-						enabled: z.boolean(),
-						note: z.string().optional(),
-					}),
-					handler: vi.fn(async () => ({ summary: 'ok', ok: true })) as unknown as ToolDefinition['handler'],
-				},
-			];
-
-			const server = await importServer();
-
-			const toolsList = (await server.requestHandlers['tools/list']()) as { tools: Array<Record<string, unknown>> };
-			expect(toolsList.tools).toHaveLength(1);
-			expect(toolsList.tools[0]).toMatchObject({
+		const inputSchema = z.object({
+			pair: z.string().regex(/^[a-z_]+$/),
+			limit: z.number().default(5),
+			enabled: z.boolean(),
+			note: z.string().optional(),
+		});
+		runtime.toolDefs = [
+			{
 				name: 'smoke_tool',
 				description: 'Smoke tool description',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						pair: { type: 'string', pattern: '^[a-z_]+$' },
-						limit: { type: 'number', default: 5 },
-						enabled: { type: 'boolean' },
-						note: { type: 'string' },
-					},
-					required: ['pair', 'enabled'],
+				inputSchema,
+				handler: vi.fn(async () => ({ summary: 'ok', ok: true })) as unknown as ToolDefinition['handler'],
+			},
+		];
+
+		const server = await importServer();
+
+		// ツールは完全な Zod スキーマ（.refine 等を含む）をそのまま SDK に渡す。
+		// JSON Schema への変換・入力検証・tools/list のルーティングは SDK v2 の責務。
+		expect(server.tools).toHaveLength(1);
+		expect(server.tools[0].options).toMatchObject({ description: 'Smoke tool description' });
+		expect(server.tools[0].options.inputSchema).toBe(inputSchema);
+
+		// prompt は registerPrompt 経由で登録され、メッセージは SDK 形式に変換される
+		const registeredPrompt = server.prompts[0];
+		expect(registeredPrompt.options).toEqual({ description: 'Smoke prompt description' });
+		const promptRegistration = registeredPrompt.handler();
+		expect(promptRegistration.messages).toEqual([
+			{ role: 'user', content: { type: 'text', text: 'system instruction' } },
+			{
+				role: 'assistant',
+				content: {
+					type: 'text',
+					text: 'assistant note\nCall get_ticker with {"pair":"btc_jpy"}',
 				},
-			});
+			},
+		]);
 
-			const promptsList = (await server.requestHandlers['prompts/list']()) as {
-				prompts: Array<Record<string, unknown>>;
-			};
-			expect(promptsList.prompts).toEqual([{ name: 'smoke_prompt', description: 'Smoke prompt description' }]);
-
-			const registeredPrompt = server.prompts[0];
-			const promptRegistration = registeredPrompt.handler();
-			expect(promptRegistration.messages).toEqual([
-				{ role: 'user', content: { type: 'text', text: 'system instruction' } },
-				{
-					role: 'assistant',
-					content: {
-						type: 'text',
-						text: 'assistant note\nCall get_ticker with {"pair":"btc_jpy"}',
-					},
-				},
-			]);
-
-			const promptGet = (await server.requestHandlers['prompts/get']({ params: { name: 'smoke_prompt' } })) as {
-				description: string;
-				messages: Array<Record<string, unknown>>;
-			};
-			expect(promptGet.description).toBe('Smoke prompt description');
-			expect(promptGet.messages).toEqual([
-				{ role: 'user', content: { type: 'text', text: 'system instruction' } },
-				{ role: 'assistant', content: { type: 'text', text: 'assistant note' } },
-			]);
-
-			// Resources は SDK の registerResource 経由で登録され、`server.resources` に集約される
-			expect(server.resources.map((r) => ({ uri: r.uri, name: r.name, ...r.config }))).toEqual([
-				{
-					uri: 'ui://order/confirm.html',
-					name: 'Order Confirmation',
-					description:
-						'preview_order の結果をインタラクティブに確認し、create_order を発注するための UI（MCP Apps / SEP-1865）',
-					mimeType: 'text/html;profile=mcp-app',
-				},
-				{
-					uri: 'ui://cancel/confirm.html',
-					name: 'Cancel Confirmation',
-					description:
-						'preview_cancel_order / preview_cancel_orders の結果をインタラクティブに確認し、cancel_order(s) を実行するための UI（MCP Apps / SEP-1865）',
-					mimeType: 'text/html;profile=mcp-app',
-				},
-			]);
-
-			expect(server.requestHandlers['resources/list']).toBeUndefined();
-			expect(server.requestHandlers['resources/read']).toBeUndefined();
-
-			await expect(server.requestHandlers['prompts/get']({ params: { name: 'missing_prompt' } })).rejects.toThrow(
-				'Prompt not found: missing_prompt',
-			);
-		} finally {
-			consoleErrorSpy.mockRestore();
-		}
+		// Resources は SDK の registerResource 経由で登録され、`server.resources` に集約される
+		expect(server.resources.map((r) => ({ uri: r.uri, name: r.name, ...r.config }))).toEqual([
+			{
+				uri: 'ui://order/confirm.html',
+				name: 'Order Confirmation',
+				description:
+					'preview_order の結果をインタラクティブに確認し、create_order を発注するための UI（MCP Apps / SEP-1865）',
+				mimeType: 'text/html;profile=mcp-app',
+			},
+			{
+				uri: 'ui://cancel/confirm.html',
+				name: 'Cancel Confirmation',
+				description:
+					'preview_cancel_order / preview_cancel_orders の結果をインタラクティブに確認し、cancel_order(s) を実行するための UI（MCP Apps / SEP-1865）',
+				mimeType: 'text/html;profile=mcp-app',
+			},
+		]);
 	});
 
 	it('tool 実行の success と error を整形し logger を呼ぶ', async () => {
@@ -389,6 +356,130 @@ describe('server.ts smoke', () => {
 		expect(runtime.logError).toHaveBeenCalledTimes(1);
 		expect(runtime.logError).toHaveBeenCalledWith('error_tool', expect.any(Error), { pair: 'eth_jpy' });
 		expect((runtime.logError.mock.calls[0][1] as Error).message).toBe('boom');
+	});
+
+	it('MRTR（input_required）を返すハンドラの結果は respond() で包まず素通しする', async () => {
+		const { z } = await import('zod');
+		const { inputRequired } = (await vi.importActual(
+			'@modelcontextprotocol/server',
+		)) as typeof import('@modelcontextprotocol/server');
+
+		const mrtrResult = inputRequired({
+			inputRequests: {
+				confirm: inputRequired.elicit({
+					message: '実行しますか？',
+					requestedSchema: {
+						type: 'object',
+						properties: { confirmed: { type: 'boolean' } },
+						required: ['confirmed'],
+					},
+				}),
+			},
+			requestState: 'opaque-state',
+		});
+		const mrtrHandler = vi.fn(async () => mrtrResult);
+
+		runtime.toolDefs = [
+			{
+				name: 'mrtr_tool',
+				description: 'MRTR tool',
+				inputSchema: z.object({ pair: z.string() }),
+				handler: mrtrHandler as unknown as ToolDefinition['handler'],
+			},
+		];
+
+		const server = await importServer();
+		const result = await server.tools[0].handler({ pair: 'btc_jpy' });
+
+		// respond() の content/structuredContent ラップが掛かっていないこと
+		expect(result).toBe(mrtrResult);
+		expect(runtime.logToolRun).toHaveBeenCalledTimes(1);
+		expect(runtime.logToolRun.mock.calls[0][0]).toMatchObject({
+			tool: 'mrtr_tool',
+			result: { ok: true, summary: '[MRTR] input_required round' },
+		});
+	});
+
+	it('_meta.ui.resourceUri を持つツールの応答は UI スナップショットに保存される', async () => {
+		const { z } = await import('zod');
+
+		runtime.toolDefs = [
+			{
+				name: 'ui_tool',
+				description: 'MCP Apps 連携ツール',
+				inputSchema: z.object({}),
+				handler: vi.fn(async () => ({
+					ok: true,
+					summary: 'preview ok',
+					data: { preview: { pair: 'btc_jpy' } },
+				})) as unknown as ToolDefinition['handler'],
+				_meta: { ui: { resourceUri: 'ui://order/confirm.html' } },
+			},
+			{
+				name: 'plain_tool',
+				description: '通常ツール',
+				inputSchema: z.object({}),
+				handler: vi.fn(async () => ({ ok: true, summary: 'plain ok' })) as unknown as ToolDefinition['handler'],
+			},
+			{
+				name: 'ui_error_tool',
+				description: 'MCP Apps 連携ツール（エラー）',
+				inputSchema: z.object({}),
+				handler: vi.fn(async () => {
+					throw new Error('boom');
+				}) as unknown as ToolDefinition['handler'],
+				_meta: { ui: { resourceUri: 'ui://cancel/confirm.html' } },
+			},
+		];
+
+		const server = await importServer();
+		// importServer() の vi.resetModules() 後に server.ts と同一インスタンスの
+		// cache モジュールを import する（モジュールキャッシュを共有させる）。
+		const { getUiSnapshot, _resetUiSnapshots } = await import('../src/ui-snapshot-cache.js');
+		_resetUiSnapshots();
+
+		await server.tools[0].handler({});
+		expect(getUiSnapshot('ui://order/confirm.html')).toMatchObject({
+			ok: true,
+			data: { preview: { pair: 'btc_jpy' } },
+		});
+
+		// _meta.ui の無いツールはどの URI にも保存されない
+		await server.tools[1].handler({});
+		expect(getUiSnapshot('ui://cancel/confirm.html')).toBeNull();
+
+		// エラー応答も ontoolresult で配信されるはずの内容としてスナップショットに残る
+		await server.tools[2].handler({});
+		expect(getUiSnapshot('ui://cancel/confirm.html')).toMatchObject({ ok: false });
+
+		// スナップショットは呼び出し元接続の sessionId にバインドされる
+		await server.tools[0].handler({}, { sessionId: 'sess-1' });
+		expect(getUiSnapshot('ui://order/confirm.html', { sessionId: 'sess-1' })).toMatchObject({ ok: true });
+		expect(getUiSnapshot('ui://order/confirm.html', { sessionId: 'other-session' })).toBeNull();
+		expect(getUiSnapshot('ui://order/confirm.html')).toBeNull();
+	});
+
+	it('ハンドラには ctx と内部 Server を合流させた extra が渡る', async () => {
+		const { z } = await import('zod');
+
+		const spyHandler = vi.fn(async () => ({ summary: 'ok', ok: true }));
+		runtime.toolDefs = [
+			{
+				name: 'ctx_tool',
+				description: 'ctx tool',
+				inputSchema: z.object({}),
+				handler: spyHandler as unknown as ToolDefinition['handler'],
+			},
+		];
+
+		const server = await importServer();
+		const fakeCtx = { mcpReq: { id: 1, inputResponses: { confirm: { action: 'decline' } } } };
+		await server.tools[0].handler({}, fakeCtx);
+
+		expect(spyHandler).toHaveBeenCalledTimes(1);
+		const extra = spyHandler.mock.calls[0]?.[1] as Record<string, unknown>;
+		expect(extra.mcpReq).toBe(fakeCtx.mcpReq);
+		expect(extra.server).toBe(server.server);
 	});
 
 	it('応答層は内部エラー本文・ZodError 詳細を漏らさず PrivateApiError は素通しする', async () => {
