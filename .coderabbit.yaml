@@ -1,11 +1,12 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 
 # bitbank-lab-mcp 用 CodeRabbit 設定。
-# inheritance: false は YAML 同士の継承を無効化する設定 (UI 設定とは無関係)。
-# このリポの path_instructions / labeling_instructions / path_filters /
-# Summary format / Profile などは org/account UI 設定 (Settings → Reviews) で
-# MCP リポ向けに定義済み。repo YAML には UI で表現できない項目 (linked_repositories 等)
-# だけを書く運用とする。
+# inheritance: false = Org 設定を継承マージしない（既定 false／Org→repo の継承可否）。
+#   結果、この yaml と repository UI 設定だけが効く（Org は Use Org=OFF で不使用）。
+# 運用: UI で表現できる項目は repository UI 側で設定し、repo YAML には UI で
+#   表現できない項目（linked_repositories 等）だけを書く。
+# レビュー観点（path_instructions / labeling_instructions / path_filters 等）は
+#   yaml に個別定義せず既定に委ねる（repo スコープの管轄。org UI ではない）。
 # 仕様: https://docs.coderabbit.ai/guides/configuration-overview
 
 inheritance: false
