@@ -3,6 +3,9 @@ import { formatSummary } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { isArchiveExpectedPublished } from '../lib/tx-archive.js';
 import {
+	buildAggregateCoverageNote,
+	buildTxCoverageWarning,
+	computeTxCoverage,
 	fetchLatestTxs,
 	fetchSupplementTxs,
 	fetchTxTimeRange,
@@ -341,27 +344,35 @@ export default async function getFlowMetrics(
 		const netVolume = buyVolume - sellVolume;
 		const aggressorRatio = totalTrades > 0 ? Number((buyTrades / totalTrades).toFixed(3)) : 0;
 
-		// 実際の取得範囲を計算
+		// 実際の取得範囲を計算。
+		// 先頭〜末尾の単純差分（span）だけを申告すると、アーカイブ未公開区間などの穴を
+		// 「カバー済み」に見せてしまうため、実データがある区間の合計も併せて出す。
 		const actualStartMs = txs[0]?.timestampMs;
 		const actualEndMs = txs[txs.length - 1]?.timestampMs;
-		const actualDurationMin = actualStartMs && actualEndMs ? Math.round((actualEndMs - actualStartMs) / 60_000) : 0;
+		const coverage = computeTxCoverage(txs);
+		const actualDurationMin = coverage?.spanMinutes ?? 0;
+		const requestedMin = hours != null && hours > 0 ? Math.round(hours * 60) : undefined;
 
-		// データ範囲の注記（直近フロー）
+		// 取得層の注記（meta.warning）: 取得失敗・アーカイブ未公開区間・カバレッジ欠損。
+		// 旧実装の「直近約N分間分です。直近フローとして扱ってください」は、変えられない制約
+		// （進行中 UTC 日は latest 約60件のみ）と、直せる制約（アーカイブ側の 1000 件切り捨て）を
+		// 同じ文言で覆い隠していた。後者はキャップ解除で解消したので、残る欠損を実測値で出す。
 		const warnings: string[] = [];
 		if (fetchWarning) warnings.push(fetchWarning);
-		// hours を指定しても当日分はアーカイブ未公開で直近約定のみになることが多い。
-		// 「N時間リクエストに対しカバー率X%」という固定窓ベースの言い回しは使わず、
-		// 取得できた実レンジを「直近フロー」として提示する（過去日にまたがる分は archive で補完済み）。
-		if (hours != null && hours > 0 && actualDurationMin > 0) {
-			const requestedMin = hours * 60;
-			const coveragePct = Math.round((actualDurationMin / requestedMin) * 100);
-			if (coveragePct < 80) {
-				warnings.push(
-					`ℹ️ 取得できた約定は直近約${actualDurationMin}分間分です。固定の時間窓に対する不足ではなく、直近フローとして扱ってください。`,
-				);
-			}
-		}
+		const coverageWarning = buildTxCoverageWarning(coverage, { requestedMinutes: requestedMin, tz });
+		if (coverageWarning) warnings.push(coverageWarning);
 		const dataWarning = warnings.length > 0 ? warnings.join('\n') : undefined;
+
+		// 計算層の注記（meta.warnings）: 集計値が欠損を含む区間から算出されている事実。
+		// 取得層（上記 dataWarning）とは別系統で出す（.claude/rules/tools.md）。
+		const calcWarnings: string[] =
+			coverage && coverage.gaps.length > 0
+				? [buildAggregateCoverageNote(coverage, '集計値（totalTrades / CVD / アグレッサー比 / スパイク Z スコア）')]
+				: [];
+
+		// summary / content には 2 系統を別行で並べる（meta では別フィールド）
+		const summaryNote =
+			[...(dataWarning ? [dataWarning] : []), ...calcWarnings.map((w) => `⚠️ ${w}`)].join('\n') || undefined;
 
 		// スパイク情報を集計（spike が null でないものをフィルタ）
 		const spikes = outBuckets.filter((b) => b.spike !== null);
@@ -381,9 +392,14 @@ export default async function getFlowMetrics(
 			spikeInfo = ' | スパイクなし';
 		}
 
+		// 欠損がある場合は「スパン◯分」だけでなく実カバー分も出す（穴をカバー済みと申告しない）
+		const coverageLabel =
+			coverage && coverage.gaps.length > 0
+				? `スパン${coverage.spanMinutes}分/実カバー${coverage.coveredMinutes}分`
+				: `${actualDurationMin}分間`;
 		const rangeLabel =
 			actualStartMs && actualEndMs
-				? ` (${toDisplayTime(actualStartMs, tz) ?? '?'}〜${toDisplayTime(actualEndMs, tz) ?? '?'}, ${actualDurationMin}分間)`
+				? ` (${toDisplayTime(actualStartMs, tz) ?? '?'}〜${toDisplayTime(actualEndMs, tz) ?? '?'}, ${coverageLabel})`
 				: '';
 		const baseSummary = formatSummary({
 			pair: chk.pair,
@@ -394,14 +410,15 @@ export default async function getFlowMetrics(
 		// 本ツールは OHLC ローソク足ではなく約定（transactions）を時間バケットに集計するため、
 		// 「最新足が未確定（形成中）」という概念が存在しない（lib/provisional-bar.ts の対象外）。
 		// 最新バケットの不完全性は別系統で扱う:
-		//   - hours 指定時の直近レンジ注記（直近フロー） → dataWarning（取得層 meta.warning, ℹ️）
+		//   - カバレッジ欠損 → dataWarning（取得層 meta.warning, ℹ️）
 		//   - 取得失敗 → fetchWarning（取得層 meta.warning, ⚠️）
+		//   - 集計値が欠損区間を含む → calcWarnings（計算層 meta.warnings）
 		// これらは OHLC ローソク足の provisional 注記（最新足が形成中）とは別物。本ツールに provisional 注記は付けない。
 		// Result の summary は "summary" モード（集計値のみ、バケット行なし）。
 		// 呼び出し側 (handler) が view に応じて content テキストを差し替える。
 		const summary = buildFlowMetricsText({
 			baseSummary,
-			dataWarning,
+			dataWarning: summaryNote,
 			totalTrades,
 			buyVolume,
 			sellVolume,
@@ -442,15 +459,42 @@ export default async function getFlowMetrics(
 			metaExtra.hours = hours;
 			metaExtra.mode = 'time_range';
 		}
-		if (actualStartMs && actualEndMs) {
+		if (coverage) {
+			const fmtRange = (ms: number) => toIsoWithTz(ms, tz) ?? toIsoTime(ms);
 			metaExtra.actualRange = {
-				start: toIsoWithTz(actualStartMs, tz) ?? toIsoTime(actualStartMs),
-				end: toIsoWithTz(actualEndMs, tz) ?? toIsoTime(actualEndMs),
-				durationMinutes: actualDurationMin,
+				start: fmtRange(coverage.startMs),
+				end: fmtRange(coverage.endMs),
+				// durationMinutes は先頭〜末尾のスパン（欠損を含む）。カバー済み時間は coveredMinutes。
+				durationMinutes: coverage.spanMinutes,
+				coveredMinutes: coverage.coveredMinutes,
+				gapMinutes: coverage.gapMinutes,
+				segments: coverage.segments.length,
+				...(requestedMin != null
+					? {
+							requestedMinutes: requestedMin,
+							coveragePct: Number(((coverage.coveredMinutes / requestedMin) * 100).toFixed(1)),
+						}
+					: {}),
+				// 欠損区間は長い順に最大 3 件だけ載せる（件数が多いと structuredContent が膨らむ）
+				...(coverage.gaps.length > 0
+					? {
+							gaps: [...coverage.gaps]
+								.sort((a, b) => b.durationMinutes - a.durationMinutes)
+								.slice(0, 3)
+								.map((g) => ({
+									start: fmtRange(g.startMs),
+									end: fmtRange(g.endMs),
+									durationMinutes: g.durationMinutes,
+								})),
+						}
+					: {}),
 			};
 		}
 		if (dataWarning) {
 			metaExtra.warning = dataWarning;
+		}
+		if (calcWarnings.length > 0) {
+			metaExtra.warnings = calcWarnings;
 		}
 		const meta = createMeta(chk.pair, metaExtra);
 		return GetFlowMetricsOutputSchema.parse(ok(summary, data, meta));
@@ -464,7 +508,8 @@ export const toolDef: ToolDefinition = {
 	name: 'get_flow_metrics',
 	description:
 		`[Flow / CVD / Buy-Sell Pressure] 資金フロー分析（flow / CVD / aggressor ratio / buy-sell pressure）。約定データからCVD・アグレッサー比・スパイクを検出。hours（推奨）で時間範囲指定、または limit で件数指定。` +
-		`\n\nデータソース制約（bitbank 側仕様）: 約定アーカイブ /transactions/{YYYYMMDD} は UTC 暦日単位で、当該 UTC 日の完了後にのみ公開される。進行中の UTC 日（JST 09:00 で切り替わる）の約定は /transactions (latest, 直近約60件) でしか取得できないため、当日区間のカバレッジは限定的（warning で明示される）。` +
+		`\n\nデータソース制約（bitbank 側仕様）: 約定アーカイブ /transactions/{YYYYMMDD} は UTC 暦日単位で、当該 UTC 日の完了後にのみ公開される。完了済み UTC 日は**全件**（1日あたり数千件）を集計に使う。進行中の UTC 日（JST 09:00 で切り替わる）の約定は /transactions (latest, 直近約60件) でしか取得できないため、当日区間のカバレッジは限定的（warning で明示される）。` +
+		`\n\nカバレッジ申告: meta.actualRange は durationMinutes（先頭〜末尾のスパン）に加えて coveredMinutes（実データがある区間の合計）/ gapMinutes / gaps を返す。欠損があれば meta.warning（取得層）と meta.warnings（計算層: 集計値がカバー区間のみ由来である旨）で明示される。` +
 		`\n\n加工契約:` +
 		`\n- 内部で使用する約定列は、取得パスに関わらず timestampMs 昇順にソート済み。` +
 		`\n- latest と date ベースをマージする場合、重複除去キーは \`timestampMs:price:amount:side\`（transaction_id は使用しない: 同一約定でも上流エンドポイント間で ID が一致しないケースがあるため）。`,
@@ -529,10 +574,18 @@ export const toolDef: ToolDefinition = {
 		const fmt = (b: FlowMetricsBucket) =>
 			`${b.displayTime || b.isoTime}  buy=${b.buyVolume} sell=${b.sellVolume} total=${b.totalVolume} cvd=${b.cvd}${b.spike ? ` spike=${b.spike}` : ''}`;
 		const actualRange = res?.meta?.actualRange;
+		// スパン（穴を含む）と実カバー時間を必ず並記する。durationMinutes だけを出すと
+		// 欠損区間をカバー済みとして申告することになる。
 		const rangeStr = actualRange
-			? ` 実取得範囲: ${actualRange.start}〜${actualRange.end}（${actualRange.durationMinutes}分間）`
+			? ` 実取得範囲: ${actualRange.start}〜${actualRange.end}（スパン${actualRange.durationMinutes}分 / 実カバー${actualRange.coveredMinutes}分${
+					actualRange.gapMinutes > 0 ? `, 欠損${actualRange.gapMinutes}分` : ''
+				}${actualRange.requestedMinutes != null ? ` / 要求${actualRange.requestedMinutes}分` : ''}）`
 			: '';
-		const warnStr = res?.meta?.warning ? `\n${res.meta.warning}` : '';
+		// 取得層 (meta.warning) と計算層 (meta.warnings) は別行で出す（.claude/rules/tools.md）。
+		// 各行は本体側で ℹ️ / ⚠️ を付与済みなので、ここでは prefix を触らない。
+		const metaWarnings = (res?.meta as { warnings?: string[] })?.warnings ?? [];
+		const warnLines = [...(res?.meta?.warning ? [res.meta.warning] : []), ...metaWarnings.map((w) => `⚠️ ${w}`)];
+		const warnStr = warnLines.length > 0 ? `\n${warnLines.join('\n')}` : '';
 		let text = `${String(pair).toUpperCase()} Flow Metrics (bucketMs=${res?.data?.params?.bucketMs ?? bucketMs})${rangeStr}\n`;
 		text += `Totals: trades=${agg.totalTrades} buyVol=${agg.buyVolume} sellVol=${agg.sellVolume} net=${agg.netVolume} buy%=${(agg.aggressorRatio * 100 || 0).toFixed(1)} CVD=${agg.finalCvd}${warnStr}`;
 		if (effectiveView === 'buckets') {

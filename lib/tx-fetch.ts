@@ -5,6 +5,7 @@
  *   - 完了済み UTC 日アーカイブの列挙 + latest 補完という取得戦略
  *   - 重複除去つきマージ（dedup キー = `timestampMs:price:amount:side`）
  *   - 失敗詳細のフォーマット / 部分失敗 warning
+ *   - 取得区間のカバレッジ（実データがある区間 / 欠損区間）算出
  *
  * 失敗ハンドリングの方針（全滅 fail / 過半数 fail / 部分失敗 warning）は呼び出し側に委ねる
  * （`lib/candle-fetch.ts` と同じ設計）。判定に必要な素材（results / labels / failures /
@@ -14,6 +15,7 @@
  * seam であり、テストでは単体で差し替えられる。
  */
 
+import { toDisplayTime } from './datetime.js';
 import { completedUtcDayKeysInRange, currentUtcDayKey, recentCompletedUtcDayKeys } from './tx-archive.js';
 
 /** 正規化済み約定（`get_transactions` の `data.normalized` 要素） */
@@ -271,4 +273,119 @@ export async function fetchSupplementTxs(
 	const results = [latest.result, ...supplementResults];
 	const labels = ['latest', ...supplementDates];
 	return { supplementDates, results, labels, merged: mergeTxResults(results, labels) };
+}
+
+// ── カバレッジ（実データ区間 / 欠損区間） ────────────────────
+
+/**
+ * 約定列のカバレッジ判定で「欠損」とみなす無約定時間の既定閾値（ms）。
+ *
+ * BTC/JPY の 1 UTC 日は実測 5,609〜8,040 件（平均間隔 11〜15 秒）。5 分間まったく約定が
+ * 無い状態は通常の市況ではまず起きないため、取得欠損（アーカイブ未公開区間など）の
+ * 指標として使える。
+ */
+export const DEFAULT_TX_GAP_MS = 5 * 60_000;
+
+export type TxSegment = { startMs: number; endMs: number; durationMinutes: number };
+
+export type TxCoverage = {
+	startMs: number;
+	endMs: number;
+	/** 先頭〜末尾のスパン（**欠損区間を含む**） */
+	spanMinutes: number;
+	/** 実際に約定が存在する区間（セグメント）の合計 */
+	coveredMinutes: number;
+	/** spanMinutes - coveredMinutes */
+	gapMinutes: number;
+	/** 連続して約定があった区間 */
+	segments: TxSegment[];
+	/** 閾値を超える無約定区間 */
+	gaps: TxSegment[];
+};
+
+function toSegment(startMs: number, endMs: number): TxSegment {
+	return { startMs, endMs, durationMinutes: Math.round((endMs - startMs) / 60_000) };
+}
+
+/**
+ * 約定列から実カバー区間と欠損区間を算出する。
+ *
+ * 先頭〜末尾の単純差分（span）を「カバー済み時間」として申告すると、アーカイブ未公開区間の
+ * ような穴を埋めたことにしてしまう。実データがある区間だけを合計した `coveredMinutes` を
+ * 併記するために使う。
+ *
+ * @param txs   timestampMs 昇順にソート済みの約定列
+ * @param gapMs 欠損とみなす無約定時間の閾値
+ */
+export function computeTxCoverage(txs: Tx[], gapMs: number = DEFAULT_TX_GAP_MS): TxCoverage | null {
+	if (txs.length === 0) return null;
+	const startMs = txs[0].timestampMs;
+	const endMs = txs[txs.length - 1].timestampMs;
+
+	const segments: TxSegment[] = [];
+	const gaps: TxSegment[] = [];
+	let segStart = startMs;
+	let prev = startMs;
+	let coveredMs = 0;
+	for (const t of txs) {
+		if (t.timestampMs - prev > gapMs) {
+			segments.push(toSegment(segStart, prev));
+			gaps.push(toSegment(prev, t.timestampMs));
+			coveredMs += prev - segStart;
+			segStart = t.timestampMs;
+		}
+		prev = t.timestampMs;
+	}
+	segments.push(toSegment(segStart, prev));
+	coveredMs += prev - segStart;
+
+	const spanMinutes = Math.round((endMs - startMs) / 60_000);
+	const coveredMinutes = Math.round(coveredMs / 60_000);
+	return {
+		startMs,
+		endMs,
+		spanMinutes,
+		coveredMinutes,
+		// 分に丸めた値どうしの差にして span = covered + gap の整合を保つ（個別に丸めるとずれる）
+		gapMinutes: Math.max(0, spanMinutes - coveredMinutes),
+		segments,
+		gaps,
+	};
+}
+
+export type TxCoverageWarningOptions = {
+	/** 要求した時間窓（分）。hours 指定時のみ。カバー率の分母になる */
+	requestedMinutes?: number;
+	tz?: string;
+};
+
+/**
+ * カバレッジ欠損の注記（取得層 warning, ℹ️）を組み立てる。欠損が無ければ undefined。
+ *
+ * 「先頭〜末尾の N 分間分を取得」とだけ申告すると欠損区間をカバー済みに見せてしまうため、
+ * 要求窓 / 実カバー / 欠損を必ずセットで出す。
+ */
+export function buildTxCoverageWarning(
+	coverage: TxCoverage | null,
+	options: TxCoverageWarningOptions = {},
+): string | undefined {
+	if (!coverage || coverage.gaps.length === 0) return undefined;
+	const tz = options.tz ?? 'Asia/Tokyo';
+	const largest = coverage.gaps.reduce((a, b) => (b.durationMinutes > a.durationMinutes ? b : a));
+	const largestLabel = `${toDisplayTime(largest.startMs, tz) ?? '?'}〜${toDisplayTime(largest.endMs, tz) ?? '?'}`;
+	const head =
+		options.requestedMinutes != null && options.requestedMinutes > 0
+			? `ℹ️ カバレッジ: 要求 ${options.requestedMinutes}分のうち実データがあるのは ${coverage.coveredMinutes}分（${Math.round((coverage.coveredMinutes / options.requestedMinutes) * 100)}%）です`
+			: `ℹ️ カバレッジ: 取得区間のスパン ${coverage.spanMinutes}分のうち実データがあるのは ${coverage.coveredMinutes}分です`;
+	return `${head}。欠損 ${coverage.gapMinutes}分（${coverage.gaps.length}区間、最大 ${largest.durationMinutes}分: ${largestLabel}）`;
+}
+
+/**
+ * 「集計値がカバー区間のみから算出されている」ことを示す注記（計算層 warnings[]）。
+ *
+ * 取得層の欠損そのもの（`buildTxCoverageWarning`）とは別系統。`.claude/rules/tools.md` の
+ * 2 系統ルールに従い、`meta.warning`（string）ではなく `meta.warnings`（string[]）に載せる。
+ */
+export function buildAggregateCoverageNote(coverage: TxCoverage, metricsLabel: string): string {
+	return `${metricsLabel}は実データのある ${coverage.coveredMinutes}分（${coverage.segments.length}区間）のみから算出しています。欠損 ${coverage.gapMinutes}分の約定は含まれません`;
 }

@@ -6,6 +6,9 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+	buildAggregateCoverageNote,
+	buildTxCoverageWarning,
+	computeTxCoverage,
 	extractUpstreamError,
 	fetchLatestTxs,
 	fetchSupplementTxs,
@@ -305,5 +308,107 @@ describe('fetchLatestTxs / fetchSupplementTxs', () => {
 
 		expect(sup.merged.txs).toHaveLength(2);
 		expect(sup.merged.failedCount).toBe(0);
+	});
+});
+
+describe('computeTxCoverage', () => {
+	/** ts オフセット（分）で約定列を作る */
+	const at = (minutes: number[]) => minutes.map((m) => tx({ timestampMs: BASE_MS + m * 60_000 }));
+
+	it('空配列: null', () => {
+		expect(computeTxCoverage([])).toBeNull();
+	});
+
+	it('単一要素: スパン 0・欠損なし', () => {
+		const c = computeTxCoverage(at([0]));
+		expect(c?.spanMinutes).toBe(0);
+		expect(c?.coveredMinutes).toBe(0);
+		expect(c?.gapMinutes).toBe(0);
+		expect(c?.segments).toHaveLength(1);
+		expect(c?.gaps).toHaveLength(0);
+	});
+
+	it('連続した約定: span = covered、欠損なし', () => {
+		const c = computeTxCoverage(at([0, 1, 2, 3, 5, 8]));
+		expect(c?.spanMinutes).toBe(8);
+		expect(c?.coveredMinutes).toBe(8);
+		expect(c?.gapMinutes).toBe(0);
+		expect(c?.gaps).toHaveLength(0);
+	});
+
+	it('閾値ちょうどの無約定は欠損としない（off-by-one）', () => {
+		// 既定閾値 5 分。ちょうど 5 分は許容、5 分 + 1ms から欠損
+		expect(computeTxCoverage(at([0, 5]))?.gaps).toHaveLength(0);
+		const overThreshold = [tx({ timestampMs: BASE_MS }), tx({ timestampMs: BASE_MS + 5 * 60_000 + 1 })];
+		expect(computeTxCoverage(overThreshold)?.gaps).toHaveLength(1);
+	});
+
+	it('穴があるとき: covered は穴を含まず、span = covered + gap', () => {
+		// 0〜10分に約定、10〜610分は空白、610〜620分に約定
+		const c = computeTxCoverage(at([0, 5, 10, 610, 615, 620]));
+		expect(c?.spanMinutes).toBe(620);
+		expect(c?.coveredMinutes).toBe(20); // 10 + 10
+		expect(c?.gapMinutes).toBe(600);
+		expect(c?.segments).toHaveLength(2);
+		expect(c?.gaps).toHaveLength(1);
+		expect(c?.gaps[0].durationMinutes).toBe(600);
+		expect((c?.coveredMinutes ?? 0) + (c?.gapMinutes ?? 0)).toBe(c?.spanMinutes);
+	});
+
+	it('穴が複数あるとき: すべて列挙する', () => {
+		const c = computeTxCoverage(at([0, 5, 10, 100, 105, 110, 300, 305, 310]));
+		expect(c?.segments).toHaveLength(3);
+		expect(c?.gaps.map((g) => g.durationMinutes)).toEqual([90, 190]);
+	});
+
+	it('gapMs は指定で変えられる', () => {
+		const c = computeTxCoverage(at([0, 10, 20]), 60 * 60_000);
+		expect(c?.gaps).toHaveLength(0);
+		expect(c?.coveredMinutes).toBe(20);
+	});
+});
+
+describe('buildTxCoverageWarning / buildAggregateCoverageNote', () => {
+	const at = (minutes: number[]) => minutes.map((m) => tx({ timestampMs: BASE_MS + m * 60_000 }));
+
+	it('欠損なしなら undefined（誤検知しない）', () => {
+		expect(buildTxCoverageWarning(computeTxCoverage(at([0, 5, 10])))).toBeUndefined();
+	});
+
+	it('coverage が null なら undefined', () => {
+		expect(buildTxCoverageWarning(null)).toBeUndefined();
+	});
+
+	it('requestedMinutes 指定時: 要求窓に対するカバー率を出す', () => {
+		const c = computeTxCoverage(at([0, 5, 10, 610, 615, 620]));
+		const w = buildTxCoverageWarning(c, { requestedMinutes: 1440, tz: 'Asia/Tokyo' });
+		expect(w).toContain('要求 1440分');
+		expect(w).toContain('20分');
+		expect(w).toContain('欠損 600分');
+		expect(w).toContain('1区間');
+	});
+
+	it('requestedMinutes 未指定時: スパンを分母にする', () => {
+		const w = buildTxCoverageWarning(computeTxCoverage(at([0, 5, 10, 610, 615, 620])));
+		expect(w).toContain('スパン 620分');
+		expect(w).not.toContain('要求');
+	});
+
+	it('最大の欠損区間を時刻付きで示す', () => {
+		const w = buildTxCoverageWarning(computeTxCoverage(at([0, 5, 10, 100, 105, 110, 500, 505, 510])));
+		expect(w).toContain('2区間');
+		expect(w).toContain('最大 390分');
+	});
+
+	it('buildAggregateCoverageNote: 計算層の注記は集計対象時間と区間数を含む', () => {
+		const c = computeTxCoverage(at([0, 5, 10, 610, 615, 620]));
+		if (!c) throw new Error('coverage should exist');
+		const note = buildAggregateCoverageNote(c, '集計値（CVD）');
+		expect(note).toContain('集計値（CVD）');
+		expect(note).toContain('20分');
+		expect(note).toContain('2区間');
+		expect(note).toContain('600分');
+		// 計算層は meta.warnings に入るので ⚠️ プレフィックスは付けない
+		expect(note.startsWith('⚠️')).toBe(false);
 	});
 });

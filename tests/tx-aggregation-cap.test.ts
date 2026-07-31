@@ -11,7 +11,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import analyzeVolumeProfile from '../tools/analyze_volume_profile.js';
-import getFlowMetrics from '../tools/get_flow_metrics.js';
+import getFlowMetrics, { toolDef } from '../tools/get_flow_metrics.js';
 import getTransactions from '../tools/get_transactions.js';
 import { assertOk } from './_assertResult.js';
 
@@ -146,7 +146,7 @@ describe('内部集計のキャップ解除（1 UTC 日 2000 件超）', () => {
 		expect(res.summary).not.toContain('📋 全');
 	});
 
-	it('unlimited でもフィルタは limit 前に効く（フィルタ後の全件が返る）', async () => {
+	it('unlimited でもフィルタは limit 適用前に効く（フィルタ後の全件が返る）', async () => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(NOW);
 		mockUpstream();
@@ -158,5 +158,147 @@ describe('内部集計のキャップ解除（1 UTC 日 2000 件超）', () => {
 		expect(res.data.normalized).toHaveLength(ARCHIVE_COUNT / 2);
 		expect(res.meta.matched).toBe(ARCHIVE_COUNT / 2);
 		expect(res.data.normalized.every((t) => t.price >= 5_500_000)).toBe(true);
+	});
+});
+
+/**
+ * カバレッジ申告の是正
+ *
+ * 旧実装の meta.actualRange.durationMinutes は先頭〜末尾の単純差分だった。JST 17:30 時点の
+ * hours=24 では「直近約763分間分」と申告するが、実データがあるのは約5時間分のみで、
+ * 間の空白区間がカバー済みとして計上されていた。
+ *
+ * 下記フィクスチャは実運用と同じ形（完了済み UTC 日アーカイブ → 空白 → latest 約60件）で、
+ * 空白がカバー済みとして申告されないことを固定する。
+ */
+describe('カバレッジ申告（hours=24, 進行中 UTC 日に穴があるケース）', () => {
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	/** アーカイブ末尾（7/7 22:23 UTC）〜 latest 先頭（7/8 08:29 UTC）の空白 */
+	const EXPECTED_GAP_MIN = 606;
+	const EXPECTED_COVERED_MIN = 834;
+
+	it('get_flow_metrics: durationMinutes(スパン) と coveredMinutes(実カバー) を分けて申告する', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 24);
+
+		assertOk(res);
+		const range = res.meta.actualRange;
+		expect(range).toBeDefined();
+		// スパンは要求窓どおり 1440 分だが、実データはその一部しかない
+		expect(range?.durationMinutes).toBe(1440);
+		expect(range?.coveredMinutes).toBe(EXPECTED_COVERED_MIN);
+		expect(range?.gapMinutes).toBe(EXPECTED_GAP_MIN);
+		expect(range?.coveredMinutes).toBeLessThan(range?.durationMinutes ?? 0);
+		// 穴で分断された 2 区間
+		expect(range?.segments).toBe(2);
+		expect(range?.requestedMinutes).toBe(1440);
+		expect(range?.coveragePct).toBeCloseTo(57.9, 1);
+		// 最大の欠損区間が時刻付きで出る
+		expect(range?.gaps?.[0].durationMinutes).toBe(EXPECTED_GAP_MIN);
+	});
+
+	it('get_flow_metrics: 欠損は取得層 warning、集計値の由来は計算層 warnings で明示される', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 24);
+
+		assertOk(res);
+		// 取得層 (meta.warning): 要求窓 / 実カバー / 欠損の 3 点
+		expect(res.meta.warning).toContain('カバレッジ');
+		expect(res.meta.warning).toContain('要求 1440分');
+		expect(res.meta.warning).toContain(`${EXPECTED_COVERED_MIN}分`);
+		expect(res.meta.warning).toContain(`欠損 ${EXPECTED_GAP_MIN}分`);
+		// 進行中 UTC 日のカバレッジ制約は従来どおり明示される
+		expect(res.meta.warning).toContain('進行中の UTC 日 (20260708)');
+		expect(res.meta.warning).toContain('直近約60件');
+		// 計算層 (meta.warnings): 集計値がカバー区間のみ由来であること。2 系統は混ぜない
+		expect(res.meta.warnings?.[0]).toContain('集計値');
+		expect(res.meta.warnings?.[0]).toContain(`${EXPECTED_COVERED_MIN}分`);
+		expect(res.meta.warning).not.toContain('集計値（totalTrades');
+	});
+
+	it('get_flow_metrics: summary は穴をカバー済みと申告しない（スパン/実カバー並記）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 24);
+
+		assertOk(res);
+		expect(res.summary).toContain(`スパン1440分/実カバー${EXPECTED_COVERED_MIN}分`);
+		// 旧文言（穴の有無を問わず「直近約N分間分」で覆い隠していた）は出さない
+		expect(res.summary).not.toContain('直近フローとして扱ってください');
+	});
+
+	it('get_flow_metrics handler: content テキストにスパン/実カバー/欠損が出る', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		const res = (await toolDef.handler({
+			pair: 'btc_jpy',
+			bucketMs: 60_000,
+			hours: 24,
+			view: 'buckets',
+			bucketsN: 3,
+		})) as { content: Array<{ text: string }> };
+
+		const text = res.content[0].text;
+		expect(text).toContain('スパン1440分');
+		expect(text).toContain(`実カバー${EXPECTED_COVERED_MIN}分`);
+		expect(text).toContain(`欠損${EXPECTED_GAP_MIN}分`);
+		expect(text).toContain('要求1440分');
+		// 取得層 / 計算層の両方が content に出る（LLM は structuredContent を読めない）
+		expect(text).toContain('カバレッジ');
+		expect(text).toContain('集計値');
+	});
+
+	it('analyze_volume_profile: timeRange が実カバー区間を反映する', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		const res = await analyzeVolumeProfile('btc_jpy', 24, 500, 20, 0.7);
+
+		assertOk(res);
+		const tr = res.data.params.timeRange;
+		expect(tr.durationMin).toBe(1440);
+		expect(tr.coveredMin).toBe(EXPECTED_COVERED_MIN);
+		expect(tr.gapMin).toBe(EXPECTED_GAP_MIN);
+		expect(tr.segments).toBe(2);
+		expect(tr.requestedMin).toBe(1440);
+		expect(res.summary).toContain(`スパン1440分/実カバー${EXPECTED_COVERED_MIN}分`);
+		expect(res.meta.warning).toContain('カバレッジ');
+		expect(res.meta.warnings?.[0]).toContain('集計値');
+	});
+
+	it('欠損が無ければカバレッジ warning は出ない（誤検知しない）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		// latest がアーカイブ末尾に連続する（＝穴なし）ケース
+		const contiguousLatest = buildTxs(ARCHIVE_START + ARCHIVE_COUNT * 20_000, LATEST_COUNT, 20_000, 900_001);
+		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+			const u = String(url);
+			if (u.endsWith('/transactions/20260707')) return jsonRes(payload(ARCHIVE_TXS));
+			if (u.endsWith('/transactions')) return jsonRes(payload(contiguousLatest));
+			return jsonRes({ success: 0, data: { code: 10000 } }, 404);
+		});
+
+		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 24);
+
+		assertOk(res);
+		expect(res.meta.actualRange?.gapMinutes).toBe(0);
+		expect(res.meta.actualRange?.segments).toBe(1);
+		expect(res.meta.warning).not.toContain('カバレッジ');
+		expect(res.meta.warnings).toBeUndefined();
 	});
 });

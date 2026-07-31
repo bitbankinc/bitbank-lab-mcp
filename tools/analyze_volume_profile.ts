@@ -14,6 +14,9 @@ import { toDisplayTime, toIsoWithTz } from '../lib/datetime.js';
 import { formatPair, formatPercent, formatPrice } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import {
+	buildAggregateCoverageNote,
+	buildTxCoverageWarning,
+	computeTxCoverage,
 	extractUpstreamError,
 	fetchLatestTxs,
 	fetchSupplementTxs,
@@ -408,10 +411,22 @@ export default async function analyzeVolumeProfile(
 			below_2sigma: '大幅に割安（-2σ超）→ 短期反発期待',
 		};
 
-		// Time range info
+		// Time range info。
+		// 先頭〜末尾の単純差分（durationMin）だけでは、アーカイブ未公開区間などの穴を
+		// 「カバー済み」に見せてしまうため、実データがある区間の合計も併せて出す。
 		const startMs = txs[0].timestampMs;
 		const endMs = txs[txs.length - 1].timestampMs;
-		const durationMin = Math.round((endMs - startMs) / 60_000);
+		const coverage = computeTxCoverage(txs);
+		const durationMin = coverage?.spanMinutes ?? Math.round((endMs - startMs) / 60_000);
+		const requestedMin = hours != null && hours > 0 ? Math.round(hours * 60) : undefined;
+		const coverageWarning = buildTxCoverageWarning(coverage, { requestedMinutes: requestedMin, tz });
+		// 取得層（部分失敗・カバレッジ欠損）と計算層（集計値がカバー区間のみ由来）は別系統。
+		const fetchWarnings = [fetchResult.fetchWarning, coverageWarning].filter(Boolean) as string[];
+		const dataWarning = fetchWarnings.length > 0 ? fetchWarnings.join('\n') : undefined;
+		const calcWarnings =
+			coverage && coverage.gaps.length > 0
+				? [buildAggregateCoverageNote(coverage, '集計値（VWAP / POC / Value Area / 約定サイズ分布）')]
+				: [];
 		const totalVolume = txs.reduce((s, t) => s + t.amount, 0);
 		const { low: priceLow, high: priceHigh } = priceRangeOf(txs);
 
@@ -439,7 +454,12 @@ export default async function analyzeVolumeProfile(
 				timeRange: {
 					start: toIsoWithTz(startMs, tz) ?? '',
 					end: toIsoWithTz(endMs, tz) ?? '',
+					// durationMin は先頭〜末尾のスパン（欠損を含む）。カバー済み時間は coveredMin。
 					durationMin,
+					coveredMin: coverage?.coveredMinutes ?? durationMin,
+					gapMin: coverage?.gapMinutes ?? 0,
+					segments: coverage?.segments.length ?? 1,
+					...(requestedMin != null ? { requestedMin } : {}),
 				},
 				bins,
 				valueAreaPct,
@@ -459,11 +479,16 @@ export default async function analyzeVolumeProfile(
 			})
 			.join('\n');
 
-		const summaryLines: string[] = [];
-		if (fetchResult.fetchWarning) summaryLines.push(fetchResult.fetchWarning);
+		// 取得層 → 計算層の順で本文の前に出す（.claude/rules/tools.md の 2 系統ルール）
+		const summaryLines: string[] = [...(dataWarning ? [dataWarning] : []), ...calcWarnings.map((w) => `⚠️ ${w}`)];
+		// 欠損がある場合は「◯分間」ではなくスパン/実カバーを並記する（穴をカバー済みと申告しない）
+		const durationLabel =
+			coverage && coverage.gaps.length > 0
+				? `スパン${coverage.spanMinutes}分/実カバー${coverage.coveredMinutes}分`
+				: `${durationMin}分間`;
 		const summary = [
 			...summaryLines,
-			`${pairDisplay} Volume Profile & VWAP (${txs.length}件, ${durationMin}分間)`,
+			`${pairDisplay} Volume Profile & VWAP (${txs.length}件, ${durationLabel})`,
 			`期間: ${rangeStr}`,
 			'',
 			'📊 VWAP:',
@@ -492,7 +517,8 @@ export default async function analyzeVolumeProfile(
 		].join('\n');
 
 		const metaExtra: Record<string, unknown> = { count: txs.length };
-		if (fetchResult.fetchWarning) metaExtra.warning = fetchResult.fetchWarning;
+		if (dataWarning) metaExtra.warning = dataWarning;
+		if (calcWarnings.length > 0) metaExtra.warnings = calcWarnings;
 		const meta = createMeta(chk.pair, metaExtra);
 		return AnalyzeVolumeProfileOutputSchema.parse(
 			ok<z.infer<typeof AnalyzeVolumeProfileDataSchemaOut>, z.infer<typeof AnalyzeVolumeProfileMetaSchemaOut>>(
@@ -509,7 +535,11 @@ export default async function analyzeVolumeProfile(
 // ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'analyze_volume_profile',
-	description: `[Volume Profile / VWAP / POC] 出来高プロファイル分析（volume profile / VWAP / POC / value area）。VWAP±σバンド・価格帯別出来高・約定サイズ分布を算出。hours で期間指定（デフォルト4h、最大24h）。`,
+	description:
+		`[Volume Profile / VWAP / POC] 出来高プロファイル分析（volume profile / VWAP / POC / value area）。VWAP±σバンド・価格帯別出来高・約定サイズ分布を算出。hours で期間指定（デフォルト4h、最大24h）。` +
+		`\n\nデータソース制約（bitbank 側仕様）: 約定アーカイブ /transactions/{YYYYMMDD} は UTC 暦日単位で、当該 UTC 日の完了後にのみ公開される。完了済み UTC 日は**全件**（1日あたり数千件）を集計に使う。進行中の UTC 日（JST 09:00 で切り替わる）は /transactions (latest, 直近約60件) のみ。` +
+		`\n\nカバレッジ申告: params.timeRange は durationMin（先頭〜末尾のスパン）に加えて coveredMin（実データがある区間の合計）/ gapMin / segments を返す。欠損があれば meta.warning（取得層）と meta.warnings（計算層: 集計値がカバー区間のみ由来である旨）で明示される。` +
+		`\n\n加工契約: 内部の約定列は timestampMs 昇順にソート済み。latest と date ベースのマージ時の重複除去キーは \`timestampMs:price:amount:side\`（transaction_id は使用しない）。`,
 	inputSchema: AnalyzeVolumeProfileInputSchema,
 	handler: async (rawInput: Record<string, unknown>) => {
 		const parsed = AnalyzeVolumeProfileInputSchema.parse(rawInput);
