@@ -1,18 +1,20 @@
 import { dayjs, toDisplayTime, toIsoTime, toIsoWithTz } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
+import { isArchiveExpectedPublished } from '../lib/tx-archive.js';
 import {
-	completedUtcDayKeysInRange,
-	currentUtcDayKey,
-	isArchiveExpectedPublished,
-	recentCompletedUtcDayKeys,
-} from '../lib/tx-archive.js';
+	fetchLatestTxs,
+	fetchSupplementTxs,
+	fetchTxTimeRange,
+	formatTxFailures,
+	sortTxsAsc,
+	type Tx,
+	type TxFetcher,
+} from '../lib/tx-fetch.js';
 import { createMeta, ensurePair, validateLimit } from '../lib/validate.js';
 import { GetFlowMetricsInputSchema, GetFlowMetricsOutputSchema } from '../src/schemas.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
 import getTransactions from './get_transactions.js';
-
-type Tx = { price: number; amount: number; side: 'buy' | 'sell'; timestampMs: number; isoTime: string };
 
 export interface FlowMetricsBucket {
 	timestampMs: number;
@@ -83,59 +85,8 @@ export function buildFlowMetricsText(input: BuildFlowMetricsTextInput): string {
 	return baseSummary + warningLine + aggregatesLine + label + bucketLines.join('\n') + footer;
 }
 
-type FetchFailure = { label: string; errorType: string; message: string };
-
-type TxResultLike = {
-	ok?: boolean;
-	data?: { normalized?: Tx[] };
-	summary?: string;
-	meta?: { errorType?: string };
-} | null;
-
-/**
- * 複数の getTransactions 結果をマージし重複を除去する（失敗詳細も返す）。
- *
- * 重複除去キー: `timestampMs:price:amount:side`
- *   - bitbank の `/transactions` (latest) と `/transactions/{date}` で同じ約定の
- *     `transaction_id` が一致しないケースがあるため、`transaction_id` は使用しない。
- *   - 同一ミリ秒・同一価格・同一数量・同一サイドの約定は実用上同一とみなす（誤差は
- *     CVD 等の集計値に影響しない範囲）。
- *
- * マージ後の `txs` はソート前である。呼び出し側で `sort((a, b) => a.timestampMs - b.timestampMs)`
- * を適用すること（加工契約: 全ての取得パスで昇順 sort を保証する）。
- */
-function mergeTxResults(
-	results: unknown[],
-	labels?: string[],
-): { txs: Tx[]; totalCount: number; failures: FetchFailure[] } {
-	const seen = new Set<string>();
-	const merged: Tx[] = [];
-	const failures: FetchFailure[] = [];
-	for (let i = 0; i < results.length; i++) {
-		const r = results[i] as TxResultLike;
-		if (r?.ok && Array.isArray(r.data?.normalized)) {
-			for (const tx of r.data.normalized as Tx[]) {
-				const key = `${tx.timestampMs}:${tx.price}:${tx.amount}:${tx.side}`;
-				if (!seen.has(key)) {
-					seen.add(key);
-					merged.push(tx);
-				}
-			}
-		} else {
-			failures.push({
-				label: labels?.[i] ?? `#${i}`,
-				errorType: r?.meta?.errorType ?? 'unknown',
-				message: r?.summary ?? 'unknown error',
-			});
-		}
-	}
-	return { txs: merged, totalCount: results.length, failures };
-}
-
-/** 失敗詳細をフォーマットする（"20260420(network: HTTP 503 ...)" 形式） */
-function formatFailures(failures: FetchFailure[]): string {
-	return failures.map((f) => `${f.label}(${f.errorType}: ${f.message})`).join(', ');
-}
+/** get_transactions の応答件数上限（public ツールの limit 上限と同値）。 */
+const PUBLIC_TX_LIMIT = 1000;
 
 export default async function getFlowMetrics(
 	pair: string = 'btc_jpy',
@@ -154,50 +105,22 @@ export default async function getFlowMetrics(
 
 		if (hours != null && hours > 0) {
 			// === 時間範囲ベースの取得 ===
-			const nowMs = Date.now();
-			const sinceMs = nowMs - hours * 3600_000;
-
-			// bitbank の /transactions/{YYYYMMDD} は UTC 暦日アーカイブで、当該 UTC 日が完了する
-			// まで 404 を返す（実測: docs/internal/bitbank-tx-archive-tz.md）。進行中の UTC 日は
-			// 要求しても必ず 404 なので列挙から除外し、その区間は /transactions (latest) で補完する。
-			// （旧実装は JST 暦日で列挙しており、JST 早朝＝UTC 日付更新前に進行中の UTC 日を
-			// 要求して 404 → 全滅していた。）
-			const currentUtcKey = currentUtcDayKey(nowMs);
-			const dates = completedUtcDayKeysInRange(sinceMs, nowMs);
-
-			// 日付ベース取得（authoritative: 時間範囲をカバー）と latest（supplement: 直近数分の補完）を区別。
-			// 当日分は日付指定だと直近数分が欠ける場合があるため latest も併用する。
-			const dateResults = await Promise.all(dates.map((ds) => getTransactions(chk.pair, 1000, ds)));
-			const latestResult = await getTransactions(chk.pair, 1000);
-
-			// 失敗した date 取得を一度だけリトライ（fetchJsonWithRateLimit の内部リトライより長い間隔）
-			const retryIdx: number[] = [];
-			for (let i = 0; i < dateResults.length; i++) {
-				const r = dateResults[i] as TxResultLike;
-				if (!r?.ok) retryIdx.push(i);
-			}
-			if (retryIdx.length > 0) {
-				await new Promise((resolve) => setTimeout(resolve, 500));
-				const retried = await Promise.all(retryIdx.map((i) => getTransactions(chk.pair, 1000, dates[i])));
-				for (let j = 0; j < retryIdx.length; j++) {
-					const r = retried[j] as TxResultLike;
-					if (r?.ok) dateResults[retryIdx[j]] = retried[j];
-				}
-			}
-
-			const dateMerge = mergeTxResults(dateResults, dates);
-			const latestMerge = mergeTxResults([latestResult], ['latest']);
+			// 完了済み UTC 日アーカイブの列挙 + latest 補完 + dedup マージは lib/tx-fetch.ts に集約。
+			// 失敗ハンドリング（全滅 fail / 部分失敗 warning）の方針は本ツール側で判断する。
+			const rangeFetcher: TxFetcher = (d) => getTransactions(chk.pair, PUBLIC_TX_LIMIT, d);
+			const range = await fetchTxTimeRange(rangeFetcher, hours, { retryFailedDates: { delayMs: 500 } });
+			const { currentUtcDay, dates, dateMerge, latestMerge } = range;
 
 			// 完了済み UTC 日アーカイブ（authoritative）が全滅した場合は fail。
 			// 進行中の UTC 日は fetch 対象外（アーカイブ未公開）なので、この失敗は実失敗のみ。
 			// 「全滅」は失敗件数 == 要求件数で厳密に判定する（txs.length===0 をプロキシにすると、
 			// 約定 0 件の日 + 一部失敗の組合せを全滅と誤分類する）。
-			const historicalAllFailed = dates.length > 0 && dateMerge.failures.length === dates.length;
+			const historicalAllFailed = dates.length > 0 && dateMerge.failedCount === dates.length;
 
 			if (historicalAllFailed) {
 				return GetFlowMetricsOutputSchema.parse(
 					fail(
-						`日付ベースの取得が全て失敗しました（${dateMerge.failures.length}件: ${formatFailures(dateMerge.failures)}）`,
+						`日付ベースの取得が全て失敗しました（${dateMerge.failedCount}件: ${formatTxFailures(dateMerge.failures)}）`,
 						'upstream',
 					),
 				);
@@ -205,10 +128,10 @@ export default async function getFlowMetrics(
 
 			// 時間窓が進行中の UTC 日内に収まる（アーカイブ要求なし）場合、latest が唯一のソース。
 			// その latest も失敗したら取得手段なし。
-			if (dates.length === 0 && latestMerge.txs.length === 0 && latestMerge.failures.length > 0) {
+			if (dates.length === 0 && latestMerge.txs.length === 0 && latestMerge.failedCount > 0) {
 				return GetFlowMetricsOutputSchema.parse(
 					fail(
-						`取得手段がありません: 時間窓が進行中の UTC 日 (${currentUtcKey}) 内のためアーカイブは未公開で、latest 取得も失敗しました（${formatFailures(latestMerge.failures)}）`,
+						`取得手段がありません: 時間窓が進行中の UTC 日 (${currentUtcDay}) 内のためアーカイブは未公開で、latest 取得も失敗しました（${formatTxFailures(latestMerge.failures)}）`,
 						'upstream',
 					),
 				);
@@ -216,36 +139,23 @@ export default async function getFlowMetrics(
 
 			// 部分失敗・カバレッジ制約は警告で明示（latest 失敗は直近数分の欠落、一部 date 失敗は該当日のカバレッジ不足）
 			const warnMsgs: string[] = [];
-			if (dateMerge.failures.length > 0) {
+			if (dateMerge.failedCount > 0) {
 				warnMsgs.push(
-					`⚠️ 日付ベース取得で ${dateMerge.totalCount}件中 ${dateMerge.failures.length}件失敗: ${formatFailures(dateMerge.failures)}`,
+					`⚠️ 日付ベース取得で ${dateMerge.totalCount}件中 ${dateMerge.failedCount}件失敗: ${formatTxFailures(dateMerge.failures)}`,
 				);
 			}
 			// 進行中の UTC 日の区間はアーカイブが存在しないため、常に latest（直近約60件）のみでの補完になる
 			warnMsgs.push(
-				`ℹ️ 進行中の UTC 日 (${currentUtcKey}) のアーカイブは未公開のため、この区間は /transactions (latest, 直近約60件) で補完しています`,
+				`ℹ️ 進行中の UTC 日 (${currentUtcDay}) のアーカイブは未公開のため、この区間は /transactions (latest, 直近約60件) で補完しています`,
 			);
-			if (latestMerge.failures.length > 0) {
+			if (latestMerge.failedCount > 0) {
 				warnMsgs.push(
-					`⚠️ 最新約定の補完取得に失敗 (${formatFailures(latestMerge.failures)}) — 直近数分のデータが欠落している可能性があります`,
+					`⚠️ 最新約定の補完取得に失敗 (${formatTxFailures(latestMerge.failures)}) — 直近数分のデータが欠落している可能性があります`,
 				);
 			}
 			if (warnMsgs.length > 0) fetchWarning = warnMsgs.join('\n');
 
-			// date + latest を統合して重複除去
-			const combined = new Set<string>();
-			const allTxs: Tx[] = [];
-			for (const tx of [...dateMerge.txs, ...latestMerge.txs]) {
-				const key = `${tx.timestampMs}:${tx.price}:${tx.amount}:${tx.side}`;
-				if (!combined.has(key)) {
-					combined.add(key);
-					allTxs.push(tx);
-				}
-			}
-
-			txs = allTxs
-				.filter((t) => t.timestampMs >= sinceMs && t.timestampMs <= nowMs)
-				.sort((a, b) => a.timestampMs - b.timestampMs);
+			txs = range.txs;
 		} else {
 			// === 件数ベース取得 ===
 			const lim = validateLimit(limit, 1, 2000);
@@ -256,11 +166,12 @@ export default async function getFlowMetrics(
 				// /transactions/{YYYYMMDD} は UTC 暦日アーカイブで、当該 UTC 日が完了するまで未公開
 				// （404）。進行中・未来の UTC 日（JST の「今日」に加え、JST 早朝は「昨日」も該当）を
 				// 指定された場合は latest にフォールバックする。
-				const txRes = await getTransactions(chk.pair, Math.min(lim.value, 1000), date);
+				const dateFetcher = (d?: string) => getTransactions(chk.pair, Math.min(lim.value, PUBLIC_TX_LIMIT), d);
+				const txRes = await dateFetcher(date);
 				const archivePublished = isArchiveExpectedPublished(date);
 				if (!txRes?.ok) {
 					if (!archivePublished) {
-						const latestRes = await getTransactions(chk.pair, Math.min(lim.value, 1000));
+						const latestRes = await dateFetcher();
 						if (!latestRes?.ok) {
 							return GetFlowMetricsOutputSchema.parse(
 								fail(
@@ -272,7 +183,7 @@ export default async function getFlowMetrics(
 						fetchWarning = `⚠️ date=${date} のアーカイブは未公開（/transactions/{YYYYMMDD} は UTC 暦日の完了後に公開）のため /transactions (latest) から取得しました`;
 						// 加工契約: 全ての取得パスで昇順 sort を保証する。
 						// 上流 getTransactions も内部 sort 済みだが、契約の単一ソースをこちらに置く。
-						txs = (latestRes.data.normalized as Tx[]).slice().sort((a, b) => a.timestampMs - b.timestampMs);
+						txs = sortTxsAsc(latestRes.data.normalized as Tx[]);
 					} else {
 						return GetFlowMetricsOutputSchema.parse(
 							fail(txRes?.summary || 'failed', txRes?.meta?.errorType || 'internal'),
@@ -280,45 +191,37 @@ export default async function getFlowMetrics(
 					}
 				} else {
 					// 加工契約: 全ての取得パスで昇順 sort を保証する。
-					txs = (txRes.data.normalized as Tx[]).slice().sort((a, b) => a.timestampMs - b.timestampMs);
+					txs = sortTxsAsc(txRes.data.normalized as Tx[]);
 				}
 			} else {
-				// 日付指定なし: latest で取得し、不足なら日付ベースで補完
-				const latestRes = await getTransactions(chk.pair, Math.min(lim.value, 1000));
-				const latestR = latestRes as { ok?: boolean; data?: { normalized?: Tx[] } };
-				const latestOk = !!latestR?.ok;
-				const latestTxs: Tx[] = latestOk && Array.isArray(latestR.data?.normalized) ? latestR.data.normalized : [];
+				// 日付指定なし: latest で取得し、不足なら完了済み UTC 日アーカイブで補完する
+				// （列挙・マージは lib/tx-fetch.ts。失敗ハンドリングの方針は本ツール側）。
+				const countFetcher: TxFetcher = (d) =>
+					getTransactions(chk.pair, d ? PUBLIC_TX_LIMIT : Math.min(lim.value, PUBLIC_TX_LIMIT), d);
+				const latest = await fetchLatestTxs(countFetcher);
 
-				if (latestTxs.length >= lim.value) {
+				if (latest.txs.length >= lim.value) {
 					// 加工契約: 全ての取得パスで昇順 sort を保証する。
-					txs = latestTxs.slice().sort((a, b) => a.timestampMs - b.timestampMs);
+					txs = sortTxsAsc(latest.txs);
 				} else {
 					// latest の返却数が不足（bitbank の latest エンドポイントは約60件のみ返却）
-					// → 完了済み UTC 日アーカイブで補完する。
-					// /transactions/{YYYYMMDD} は UTC 暦日アーカイブ・当該 UTC 日完了後に公開のため、
-					// JST 基準の「昨日」で組むと JST 早朝（UTC 日付更新前）は進行中の UTC 日を
-					// 要求して必ず 404 になる（当該障害の原因）。
-					const supplementDates = recentCompletedUtcDayKeys(lim.value > 500 ? 2 : 1);
-					const supplementResults = await Promise.all(supplementDates.map((ds) => getTransactions(chk.pair, 1000, ds)));
-					const allResults = [latestRes, ...supplementResults];
-					const labels = ['latest', ...supplementDates];
-					const { txs: merged, totalCount, failures } = mergeTxResults(allResults, labels);
+					const { merged } = await fetchSupplementTxs(countFetcher, lim.value, latest);
 					// 全て失敗した場合は network エラーとして返す
-					if (merged.length === 0 && failures.length > 0) {
+					if (merged.txs.length === 0 && merged.failedCount > 0) {
 						return GetFlowMetricsOutputSchema.parse(
-							fail(`upstream fetch all failed (${formatFailures(failures)})`, 'network'),
+							fail(`upstream fetch all failed (${formatTxFailures(merged.failures)})`, 'network'),
 						);
 					}
 					// 補完は best-effort: 何かしら取得できていれば fail せず、失敗と件数不足を警告で明示する。
 					// （latest 成功 + 補完失敗を「過半数失敗」として全体 fail すると、正当に取得できた
 					// 直近データまで捨ててしまう。補完アーカイブは公開遅延等で 404 になり得る。）
 					const warnMsgs: string[] = [];
-					if (failures.length > 0) {
+					if (merged.failedCount > 0) {
 						warnMsgs.push(
-							`⚠️ ${totalCount}件中 ${failures.length}件のAPI取得に失敗しました: ${formatFailures(failures)}`,
+							`⚠️ ${merged.totalCount}件中 ${merged.failedCount}件のAPI取得に失敗しました: ${formatTxFailures(merged.failures)}`,
 						);
 					}
-					txs = merged.sort((a, b) => a.timestampMs - b.timestampMs).slice(-lim.value);
+					txs = sortTxsAsc(merged.txs).slice(-lim.value);
 					if (txs.length < lim.value) {
 						warnMsgs.push(
 							`ℹ️ 要求 ${lim.value}件に対し取得できたのは ${txs.length}件です（進行中の UTC 日のアーカイブは未公開のため取得不可）`,

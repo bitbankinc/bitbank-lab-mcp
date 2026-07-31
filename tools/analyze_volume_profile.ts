@@ -13,7 +13,17 @@ import type { z } from 'zod';
 import { toDisplayTime, toIsoWithTz } from '../lib/datetime.js';
 import { formatPair, formatPercent, formatPrice } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
-import { completedUtcDayKeysInRange, recentCompletedUtcDayKeys } from '../lib/tx-archive.js';
+import {
+	extractUpstreamError,
+	fetchLatestTxs,
+	fetchSupplementTxs,
+	fetchTxTimeRange,
+	formatTxFailures,
+	partialFailureWarning,
+	sortTxsAsc,
+	type Tx,
+	type TxFetcher,
+} from '../lib/tx-fetch.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import {
 	type AnalyzeVolumeProfileDataSchemaOut,
@@ -24,125 +34,52 @@ import {
 import type { ToolDefinition } from '../src/tool-definition.js';
 import getTransactions from './get_transactions.js';
 
-type Tx = { price: number; amount: number; side: 'buy' | 'sell'; timestampMs: number; isoTime: string };
-
-// ── Transaction fetch helpers (shared pattern with get_flow_metrics) ──
-
-type TxFetchFailure = { label: string; errorType: string; message: string };
-
-function mergeTxResults(
-	results: unknown[],
-	labels?: string[],
-): { txs: Tx[]; totalCount: number; failedCount: number; failures: TxFetchFailure[] } {
-	const seen = new Set<string>();
-	const merged: Tx[] = [];
-	const failures: TxFetchFailure[] = [];
-	for (let i = 0; i < results.length; i++) {
-		const r = results[i] as {
-			ok?: boolean;
-			data?: { normalized?: Tx[] };
-			summary?: string;
-			meta?: { errorType?: string };
-		} | null;
-		if (r?.ok && Array.isArray(r.data?.normalized)) {
-			for (const tx of r.data.normalized as Tx[]) {
-				const key = `${tx.timestampMs}:${tx.price}:${tx.amount}:${tx.side}`;
-				if (!seen.has(key)) {
-					seen.add(key);
-					merged.push(tx);
-				}
-			}
-		} else {
-			failures.push({
-				label: labels?.[i] ?? `#${i}`,
-				errorType: r?.meta?.errorType ?? 'unknown',
-				message: r?.summary ?? 'unknown error',
-			});
-		}
-	}
-	return { txs: merged, totalCount: results.length, failedCount: failures.length, failures };
-}
-
-/** 失敗詳細を "label(errorType: message)" 形式で列挙する（get_flow_metrics と同形式）。 */
-function formatFailures(failures: TxFetchFailure[]): string {
-	return failures.map((f) => `${f.label}(${f.errorType}: ${f.message})`).join(', ');
-}
+/** get_transactions の応答件数上限（public ツールの limit 上限と同値）。 */
+const PUBLIC_TX_LIMIT = 1000;
 
 type FetchResult = { ok: true; txs: Tx[]; fetchWarning?: string } | { ok: false; errorType: string; summary: string };
 
-function extractUpstreamError(results: unknown[]): { errorType: string; summary: string } | null {
-	for (const res of results) {
-		const r = res as { ok?: boolean; meta?: { errorType?: string }; summary?: string } | null;
-		if (r && r.ok === false && r.meta?.errorType) {
-			return { errorType: r.meta.errorType, summary: r.summary ?? 'upstream error' };
-		}
-	}
-	return null;
-}
-
-function partialFailureWarning(totalCount: number, failures: TxFetchFailure[]): string | undefined {
-	if (failures.length === 0) return undefined;
-	// どの日付/エンドポイントが何の理由で失敗したかを必ず含める（件数だけでは診断不能）。
-	return `⚠️ ${totalCount}件中${failures.length}件のAPI取得に失敗しました（${formatFailures(failures)}）。データが不完全な可能性があります。`;
-}
-
+/**
+ * 約定を取得する。完了済み UTC 日アーカイブの列挙 + latest 補完 + dedup マージは
+ * lib/tx-fetch.ts に集約されており、本関数は失敗ハンドリングの方針
+ * （全滅 fail / 過半数 fail / 部分失敗 warning）だけを持つ。
+ */
 async function fetchTransactions(pair: string, hours?: number, limit?: number): Promise<FetchResult> {
 	if (hours != null && hours > 0) {
-		const nowMs = Date.now();
-		const sinceMs = nowMs - hours * 3600_000;
-
-		// /transactions/{YYYYMMDD} は UTC 暦日アーカイブで、当該 UTC 日が完了するまで 404
-		// （実測: docs/internal/bitbank-tx-archive-tz.md）。進行中の UTC 日は列挙から除外し、
-		// その区間は /transactions (latest) で補完する。JST 暦日で列挙すると JST 早朝に
-		// 進行中の UTC 日を要求して必ず失敗する。
-		const dates = completedUtcDayKeysInRange(sinceMs, nowMs);
-
-		const fetches: Promise<unknown>[] = dates.map((ds) => getTransactions(pair, 1000, ds));
-		fetches.push(getTransactions(pair, 1000));
-		const results = await Promise.all(fetches);
-		const labels = [...dates, 'latest'];
-		const { txs: mergedTxs, totalCount, failedCount, failures } = mergeTxResults(results, labels);
-		if (mergedTxs.length === 0) {
+		const rangeFetcher: TxFetcher = (d) => getTransactions(pair, PUBLIC_TX_LIMIT, d);
+		const range = await fetchTxTimeRange(rangeFetcher, hours);
+		const { results, merged } = range;
+		if (merged.txs.length === 0) {
 			const upstreamErr = extractUpstreamError(results);
 			if (upstreamErr) return { ok: false, ...upstreamErr };
 		}
-		if (failedCount > 0 && failedCount >= totalCount / 2) {
+		if (merged.failedCount > 0 && merged.failedCount >= merged.totalCount / 2) {
 			return {
 				ok: false,
 				errorType: 'upstream',
-				summary: `API取得の過半数が失敗しました（${totalCount}件中${failedCount}件失敗: ${formatFailures(failures)}）`,
+				summary: `API取得の過半数が失敗しました（${merged.totalCount}件中${merged.failedCount}件失敗: ${formatTxFailures(merged.failures)}）`,
 			};
 		}
 		return {
 			ok: true,
-			txs: mergedTxs
-				.filter((t) => t.timestampMs >= sinceMs && t.timestampMs <= nowMs)
-				.sort((a, b) => a.timestampMs - b.timestampMs),
-			fetchWarning: partialFailureWarning(totalCount, failures),
+			txs: range.txs,
+			fetchWarning: partialFailureWarning(merged.totalCount, merged.failures),
 		};
 	}
 
 	// Count-based
 	const lim = limit ?? 500;
-	const latestRes = await getTransactions(pair, Math.min(lim, 1000));
-	const latestR = latestRes as { ok?: boolean; data?: { normalized?: Tx[] } };
-	const latestTxs: Tx[] = latestR?.ok && Array.isArray(latestR.data?.normalized) ? latestR.data.normalized : [];
-	if (latestTxs.length === 0) {
-		const upstreamErr = extractUpstreamError([latestRes]);
+	const countFetcher: TxFetcher = (d) => getTransactions(pair, d ? PUBLIC_TX_LIMIT : Math.min(lim, PUBLIC_TX_LIMIT), d);
+	const latest = await fetchLatestTxs(countFetcher);
+	if (latest.txs.length === 0) {
+		const upstreamErr = extractUpstreamError([latest.result]);
 		if (upstreamErr) return { ok: false, ...upstreamErr };
 	}
-	if (latestTxs.length >= lim) return { ok: true, txs: latestTxs.slice(-lim) };
+	if (latest.txs.length >= lim) return { ok: true, txs: latest.txs.slice(-lim) };
 
-	// Supplement with previous days
-	// /transactions/{YYYYMMDD} は UTC 暦日アーカイブ・当該 UTC 日完了後に公開のため、
-	// 完了済み UTC 日から補完する（JST 基準で組むと JST 早朝に進行中の UTC 日を要求して 404）。
-	const supplementDates = recentCompletedUtcDayKeys(lim > 500 ? 2 : 1);
-	const supplementResults = await Promise.all(supplementDates.map((ds) => getTransactions(pair, 1000, ds)));
-	const allResults = [latestRes, ...supplementResults];
-	const labels = ['latest', ...supplementDates];
-	const { txs: mergedTxs, totalCount, failures } = mergeTxResults(allResults, labels);
-	if (mergedTxs.length === 0) {
-		const upstreamErr = extractUpstreamError(allResults);
+	const { results, merged } = await fetchSupplementTxs(countFetcher, lim, latest);
+	if (merged.txs.length === 0) {
+		const upstreamErr = extractUpstreamError(results);
 		if (upstreamErr) return { ok: false, ...upstreamErr };
 	}
 	// 補完は best-effort: 何かしら取得できていれば fail せず、部分失敗は警告で明示する
@@ -150,8 +87,8 @@ async function fetchTransactions(pair: string, hours?: number, limit?: number): 
 	// 直近データまで捨ててしまう。補完アーカイブは公開遅延等で 404 になり得る）。
 	return {
 		ok: true,
-		txs: mergedTxs.sort((a, b) => a.timestampMs - b.timestampMs).slice(-lim),
-		fetchWarning: partialFailureWarning(totalCount, failures),
+		txs: sortTxsAsc(merged.txs).slice(-lim),
+		fetchWarning: partialFailureWarning(merged.totalCount, merged.failures),
 	};
 }
 
