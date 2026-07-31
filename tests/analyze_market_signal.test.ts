@@ -220,7 +220,7 @@ describe('analyze_market_signal', () => {
 
 		const res = await analyzeMarketSignal('btc_jpy');
 		assertOk(res);
-		expect(res.data.sma!.arrangement).toBe('bullish');
+		expect(res.data.sma?.arrangement).toBe('bullish');
 	});
 
 	it('SMA 整列: price < sma25 < sma75 < sma200 で aligned_down', async () => {
@@ -232,7 +232,7 @@ describe('analyze_market_signal', () => {
 
 		const res = await analyzeMarketSignal('btc_jpy');
 		assertOk(res);
-		expect(res.data.sma!.arrangement).toBe('bearish');
+		expect(res.data.sma?.arrangement).toBe('bearish');
 	});
 
 	it('25/75 直近クロス: 時間軸を揃えた全長 SMA 系列で golden_cross を検出する（slidingMean ズレ修正の回帰）', async () => {
@@ -406,13 +406,42 @@ describe('analyze_market_signal', () => {
 		// 取得層 warning は meta.warning に
 		expect(res.meta.warning).toContain('[indicators]');
 		expect(res.meta.warning).toContain('indicators 取得層警告');
-		// 計算層 warnings は meta.warnings に（取得層メッセージが混入していない）
-		expect(res.meta.warnings).toEqual(['SMA_200: データ不足', 'Ichimoku: データ不足']);
+		// 計算層 warnings は meta.warnings に（取得層メッセージが混入していない）。
+		// 由来が追えるよう warning と同じく [source] prefix を付ける。
+		expect(res.meta.warnings).toEqual(['[indicators] SMA_200: データ不足', '[indicators] Ichimoku: データ不足']);
 		expect(res.meta.warnings).not.toContain('indicators 取得層警告');
 		// content 先頭に取得層 warning と計算層 warnings が両方並ぶ
 		expect(res.summary).toContain('[indicators] indicators 取得層警告');
-		expect(res.summary).toContain('⚠️ SMA_200: データ不足');
-		expect(res.summary).toContain('⚠️ Ichimoku: データ不足');
+		expect(res.summary).toContain('⚠️ [indicators] SMA_200: データ不足');
+		expect(res.summary).toContain('⚠️ [indicators] Ichimoku: データ不足');
+	});
+
+	it('get_flow_metrics の計算層 warnings（集計値のカバー区間）も meta.warnings に伝播する', async () => {
+		// キャップ解除後も進行中 UTC 日は latest 約60件のみ。CVD 系スコアが欠損を含む区間から
+		// 算出されている事実は間接消費者（本ツール）まで届かないと LLM が気づけない。
+		mockedGetFlowMetrics.mockResolvedValueOnce(
+			asMockResult(
+				flowOk(0.5, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], {
+					warning: 'ℹ️ カバレッジ: 要求 300分のうち実データがあるのは 90分（30%）です。欠損 210分（1区間）',
+					warnings: [
+						'集計値（totalTrades / CVD / アグレッサー比）は実データのある 90分（2区間）のみから算出しています',
+					],
+				}),
+			),
+		);
+		mockedGetVolatilityMetrics.mockResolvedValueOnce(asMockResult(volOk(0.5)));
+		mockedAnalyzeIndicators.mockResolvedValueOnce(
+			asMockResult(indicatorsOk({ close: 100, rsi: 50, sma25: 100, sma75: 100, sma200: 100 })),
+		);
+
+		const res = await analyzeMarketSignal('btc_jpy');
+		assertOk(res);
+		expect(res.meta.warning).toContain('[flow] ');
+		expect(res.meta.warning).toContain('カバレッジ');
+		expect(res.meta.warnings?.[0]).toBe(
+			'[flow] 集計値（totalTrades / CVD / アグレッサー比）は実データのある 90分（2区間）のみから算出しています',
+		);
+		expect(res.summary).toContain('集計値');
 	});
 
 	// ── confidence のデータ品質連動降格（§9.4） ─────────────────────────────────
