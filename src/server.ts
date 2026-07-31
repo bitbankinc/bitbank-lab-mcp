@@ -1,4 +1,5 @@
 import './env.js'; // must be first — loads .env before other modules read process.env
+import { createRequire } from 'node:module';
 import { isInputRequiredResult, McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import type { z } from 'zod';
@@ -10,8 +11,15 @@ import { appResourceRegistry } from './resources/app-resources.js';
 import { allToolDefs } from './tool-registry.js';
 import { storeUiSnapshot } from './ui-snapshot-cache.js';
 
+// serverInfo.version は package.json を単一ソースとする。
+// ハードコードすると package.json 側のリリースに追従せず drift する（実際に 0.4.2 のまま取り残されていた）。
+// package.json は publish 対象（package.json の files）に含まれるため npm 経由の起動でも解決できる。
+const { version: packageVersion } = createRequire(import.meta.url)('../package.json') as {
+	version: string;
+};
+
 const server = new McpServer(
-	{ name: 'bitbank-mcp', version: '0.4.2' },
+	{ name: 'bitbank-mcp', version: packageVersion },
 	{
 		// MRTR (SEP-2322) の requestState 検証。HMAC / 有効期限の検証をハンドラ実行前に行い、
 		// 失敗時は SDK が wire レベルの -32602（Invalid or expired requestState）を返す。
