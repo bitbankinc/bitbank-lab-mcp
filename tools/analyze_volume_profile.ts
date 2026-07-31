@@ -40,14 +40,30 @@ const PUBLIC_TX_LIMIT = 1000;
 type FetchResult = { ok: true; txs: Tx[]; fetchWarning?: string } | { ok: false; errorType: string; summary: string };
 
 /**
+ * 内部集計用の約定フェッチャ。
+ *
+ * `get_transactions` の応答上限（1000 件）は MCP 応答のサイズ制限であってフェッチ制限では
+ * ないため、集計用途では外す（`unlimited`）。本ツールの出力は価格帯別プロファイル（bins 固定）
+ * とサイズ分布なので全件を集計してもトークンは増えない一方、キャップしたままだと 1 UTC 日
+ * （BTC/JPY で実測 5,609〜8,040 件）の末尾 4〜5 時間分しか VWAP / POC / Value Area に
+ * 入らなかった。public ツール `get_transactions` 側の応答上限は変更していない。
+ */
+function internalTxFetcher(pair: string): TxFetcher {
+	// limit は unlimited 指定時に無視されるが、万一オプションが外れても旧挙動
+	// （応答上限 1000 件）へ縮退するよう public 上限を渡しておく。
+	return (date) => getTransactions(pair, PUBLIC_TX_LIMIT, date, undefined, { unlimited: true });
+}
+
+/**
  * 約定を取得する。完了済み UTC 日アーカイブの列挙 + latest 補完 + dedup マージは
  * lib/tx-fetch.ts に集約されており、本関数は失敗ハンドリングの方針
  * （全滅 fail / 過半数 fail / 部分失敗 warning）だけを持つ。
  */
 async function fetchTransactions(pair: string, hours?: number, limit?: number): Promise<FetchResult> {
+	const txFetcher = internalTxFetcher(pair);
+
 	if (hours != null && hours > 0) {
-		const rangeFetcher: TxFetcher = (d) => getTransactions(pair, PUBLIC_TX_LIMIT, d);
-		const range = await fetchTxTimeRange(rangeFetcher, hours);
+		const range = await fetchTxTimeRange(txFetcher, hours);
 		const { results, merged } = range;
 		if (merged.txs.length === 0) {
 			const upstreamErr = extractUpstreamError(results);
@@ -69,15 +85,15 @@ async function fetchTransactions(pair: string, hours?: number, limit?: number): 
 
 	// Count-based
 	const lim = limit ?? 500;
-	const countFetcher: TxFetcher = (d) => getTransactions(pair, d ? PUBLIC_TX_LIMIT : Math.min(lim, PUBLIC_TX_LIMIT), d);
-	const latest = await fetchLatestTxs(countFetcher);
+	const latest = await fetchLatestTxs(txFetcher);
 	if (latest.txs.length === 0) {
 		const upstreamErr = extractUpstreamError([latest.result]);
 		if (upstreamErr) return { ok: false, ...upstreamErr };
 	}
-	if (latest.txs.length >= lim) return { ok: true, txs: latest.txs.slice(-lim) };
+	// 取得は無制限だが limit はユーザーの明示要求なので最新側 limit 件に切る。
+	if (latest.txs.length >= lim) return { ok: true, txs: sortTxsAsc(latest.txs).slice(-lim) };
 
-	const { results, merged } = await fetchSupplementTxs(countFetcher, lim, latest);
+	const { results, merged } = await fetchSupplementTxs(txFetcher, lim, latest);
 	if (merged.txs.length === 0) {
 		const upstreamErr = extractUpstreamError(results);
 		if (upstreamErr) return { ok: false, ...upstreamErr };
@@ -115,10 +131,25 @@ function calcVwap(txs: Tx[]) {
 
 // ── Volume Profile Calculation ──
 
+/**
+ * 約定列の価格レンジ。
+ *
+ * `Math.min(...prices)` はスプレッド引数が数万件になると RangeError（stack overflow）に
+ * なり得る。内部取得のキャップ解除で 1 UTC 日 8,000 件超を扱うようになったため、
+ * ループで求める。
+ */
+function priceRangeOf(txs: Tx[]): { low: number; high: number } {
+	let low = Number.POSITIVE_INFINITY;
+	let high = Number.NEGATIVE_INFINITY;
+	for (const t of txs) {
+		if (t.price < low) low = t.price;
+		if (t.price > high) high = t.price;
+	}
+	return { low, high };
+}
+
 function calcVolumeProfile(txs: Tx[], bins: number, valueAreaPct: number) {
-	const prices = txs.map((t) => t.price);
-	const priceLow = Math.min(...prices);
-	const priceHigh = Math.max(...prices);
+	const { low: priceLow, high: priceHigh } = priceRangeOf(txs);
 	const range = priceHigh - priceLow;
 
 	// Guard against zero range (all trades at same price)
@@ -382,8 +413,7 @@ export default async function analyzeVolumeProfile(
 		const endMs = txs[txs.length - 1].timestampMs;
 		const durationMin = Math.round((endMs - startMs) / 60_000);
 		const totalVolume = txs.reduce((s, t) => s + t.amount, 0);
-		const priceHigh = Math.max(...txs.map((t) => t.price));
-		const priceLow = Math.min(...txs.map((t) => t.price));
+		const { low: priceLow, high: priceHigh } = priceRangeOf(txs);
 
 		const data = {
 			vwap: {

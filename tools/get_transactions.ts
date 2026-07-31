@@ -48,6 +48,24 @@ export type GetTransactionsFilters = {
 	maxPrice?: number;
 };
 
+/** 内部呼び出し用オプション。MCP public ツールの handler からは指定しない。 */
+export type GetTransactionsOptions = {
+	/**
+	 * 応答件数上限（`limit`）を適用せず、取得・正規化した全件を返す。指定時 `limit` は無視される。
+	 *
+	 * 内部集計ツール（`get_flow_metrics` / `analyze_volume_profile`）専用の経路。
+	 * - これらの出力はバケット集計・プロファイル集計なので、全件を渡しても**トークンは増えない**。
+	 * - 逆に 1000 件キャップを掛けると 1 UTC 日（BTC/JPY で実測 5,609〜8,040 件）の
+	 *   末尾 4〜5 時間分しか集計に入らず、CVD / VWAP / Volume Profile が切り捨て後サンプル
+	 *   由来の値になる（しかもその事実が出力に現れない）。
+	 * - 本関数は元々レスポンス全件をパースしており、`limit` は最後の `slice` でしか効いていない。
+	 *   キャップは応答サイズ制限であってフェッチ制限ではないため、解除しても通信量は変わらない。
+	 *
+	 * MCP public ツールとしての応答上限（1000 件）は変更しない。
+	 */
+	unlimited?: boolean;
+};
+
 /** meta.actualRange / meta.fetchedRange 用の時刻範囲（Asia/Tokyo 表記、失敗時は UTC ISO へフォールバック） */
 function toRange(startMs: number, endMs: number): { start: string; end: string } {
 	return {
@@ -111,19 +129,26 @@ function buildTxLines(transactions: NormalizedTxn[]): string[] {
 const TX_SCOPE_FOOTER =
 	`\n\n---\n📌 含まれるもの: 個別約定（時刻・売買方向・価格・数量）、買い/売り件数比率` +
 	`\n📌 含まれないもの: 集計済みフロー指標（CVD・Zスコア・スパイク）、OHLCV、板情報` +
-	`\n📌 補完ツール: get_flow_metrics（集計フロー・CVD・スパイク検出）, get_candles（OHLCV）, get_orderbook（板情報）`;
+	`\n📌 補完ツール: get_flow_metrics（集計フロー・CVD・スパイク検出）, analyze_volume_profile（VWAP・価格帯別出来高）, get_candles（OHLCV）, get_orderbook（板情報）` +
+	`\n📌 集計ツール（get_flow_metrics / analyze_volume_profile）は本ツールの応答上限 1000 件に縛られず、対象区間の約定を全件集計する。個別約定の列挙が不要なら、切り捨てを避ける手段として使える`;
 
 export default async function getTransactions(
 	pair: string = 'btc_jpy',
 	limit: number = 60,
 	date?: string,
 	filters?: GetTransactionsFilters,
+	options?: GetTransactionsOptions,
 ) {
 	const chk = ensurePair(pair);
 	if (!chk.ok) return failFromValidation(chk, GetTransactionsOutputSchema);
 
-	const lim = validateLimit(limit, 1, 1000);
-	if (!lim.ok) return failFromValidation(lim, GetTransactionsOutputSchema);
+	const unlimited = options?.unlimited === true;
+	let effectiveLimit = Number.POSITIVE_INFINITY;
+	if (!unlimited) {
+		const lim = validateLimit(limit, 1, 1000);
+		if (!lim.ok) return failFromValidation(lim, GetTransactionsOutputSchema);
+		effectiveLimit = lim.value;
+	}
 
 	const url =
 		date && /^\d{8}$/.test(String(date))
@@ -194,7 +219,7 @@ export default async function getTransactions(
 				)
 			: sorted;
 		const matched = matchedItems.length;
-		const latest = matchedItems.slice(-lim.value);
+		const latest = unlimited ? matchedItems : matchedItems.slice(-effectiveLimit);
 		const returned = latest.length;
 		const truncated = matched > returned;
 		const actualRange =
@@ -211,7 +236,8 @@ export default async function getTransactions(
 			? `⚠️ ${hasFilter ? '条件に合致する' : '取得した'}${matched}件のうち最新側${returned}件のみを返却しています` +
 				`（返却範囲: ${toDisplayTime(latest[0].timestampMs) ?? '?'}〜${toDisplayTime(latest[returned - 1].timestampMs) ?? '?'}` +
 				` / 取得全体: ${toDisplayTime(sorted[0].timestampMs) ?? '?'}〜${toDisplayTime(sorted[totalFetched - 1].timestampMs) ?? '?'}）。` +
-				`切り捨て区間の分析が必要な場合は minAmount 等の条件で絞り込むか、期間を分割してください`
+				`切り捨て区間の分析が必要な場合は minAmount 等の条件で絞り込むか、期間を分割してください。` +
+				`集計値（CVD・VWAP・出来高分布）で足りる場合は get_flow_metrics / analyze_volume_profile が全件を集計します`
 			: undefined;
 
 		const warningText = [dropWarning, truncationWarning].filter(Boolean).join('\n') || undefined;
@@ -221,13 +247,16 @@ export default async function getTransactions(
 		const baseSummary = formatTransactionsSummary(chk.pair, latest, buys, sells);
 		// テキスト summary に全取引データを含める（LLM が structuredContent.data を読めない対策）。
 		// warning は約定行の列挙より前に出す（.claude/rules/tools.md）。
-		const txLines = buildTxLines(latest);
-		const summary =
-			baseSummary +
-			(warningText ? `\n\n${warningText}` : '') +
-			`\n\n📋 全${latest.length}件の取引:\n` +
-			txLines.join('\n') +
-			TX_SCOPE_FOOTER;
+		// ただし unlimited（内部集計呼び出し）は content として LLM に渡らないため、
+		// 数千件の約定行を組み立てない（文字列生成コストだけが増える）。失敗診断に使う
+		// warning は残す。
+		const summary = unlimited
+			? baseSummary + (warningText ? `\n\n${warningText}` : '')
+			: baseSummary +
+				(warningText ? `\n\n${warningText}` : '') +
+				`\n\n📋 全${latest.length}件の取引:\n` +
+				buildTxLines(latest).join('\n') +
+				TX_SCOPE_FOOTER;
 
 		const data = { normalized: latest };
 		const meta = createMeta(chk.pair, {

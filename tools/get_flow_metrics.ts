@@ -88,6 +88,24 @@ export function buildFlowMetricsText(input: BuildFlowMetricsTextInput): string {
 /** get_transactions の応答件数上限（public ツールの limit 上限と同値）。 */
 const PUBLIC_TX_LIMIT = 1000;
 
+/** getTransactions の Result 型（date 指定パスで直接読むため） */
+type TxResult = Awaited<ReturnType<typeof getTransactions>>;
+
+/**
+ * 内部集計用の約定フェッチャ。
+ *
+ * `get_transactions` の応答上限（1000 件）は MCP 応答のサイズ制限であってフェッチ制限では
+ * ないため、集計用途では外す（`unlimited`）。本ツールの出力は時間バケット集計なので
+ * 全件を集計してもトークンは増えない一方、キャップしたままだと 1 UTC 日
+ * （BTC/JPY で実測 5,609〜8,040 件）の末尾 4〜5 時間分しか CVD / アグレッサー比に
+ * 入らなかった。public ツール `get_transactions` 側の応答上限は変更していない。
+ */
+function internalTxFetcher(pair: string): TxFetcher {
+	// limit は unlimited 指定時に無視されるが、万一オプションが外れても旧挙動
+	// （応答上限 1000 件）へ縮退するよう public 上限を渡しておく。
+	return (date) => getTransactions(pair, PUBLIC_TX_LIMIT, date, undefined, { unlimited: true });
+}
+
 export default async function getFlowMetrics(
 	pair: string = 'btc_jpy',
 	limit: number = 100,
@@ -102,13 +120,13 @@ export default async function getFlowMetrics(
 	try {
 		let txs: Tx[];
 		let fetchWarning: string | undefined;
+		const txFetcher = internalTxFetcher(chk.pair);
 
 		if (hours != null && hours > 0) {
 			// === 時間範囲ベースの取得 ===
 			// 完了済み UTC 日アーカイブの列挙 + latest 補完 + dedup マージは lib/tx-fetch.ts に集約。
 			// 失敗ハンドリング（全滅 fail / 部分失敗 warning）の方針は本ツール側で判断する。
-			const rangeFetcher: TxFetcher = (d) => getTransactions(chk.pair, PUBLIC_TX_LIMIT, d);
-			const range = await fetchTxTimeRange(rangeFetcher, hours, { retryFailedDates: { delayMs: 500 } });
+			const range = await fetchTxTimeRange(txFetcher, hours, { retryFailedDates: { delayMs: 500 } });
 			const { currentUtcDay, dates, dateMerge, latestMerge } = range;
 
 			// 完了済み UTC 日アーカイブ（authoritative）が全滅した場合は fail。
@@ -166,12 +184,11 @@ export default async function getFlowMetrics(
 				// /transactions/{YYYYMMDD} は UTC 暦日アーカイブで、当該 UTC 日が完了するまで未公開
 				// （404）。進行中・未来の UTC 日（JST の「今日」に加え、JST 早朝は「昨日」も該当）を
 				// 指定された場合は latest にフォールバックする。
-				const dateFetcher = (d?: string) => getTransactions(chk.pair, Math.min(lim.value, PUBLIC_TX_LIMIT), d);
-				const txRes = await dateFetcher(date);
+				const txRes = (await txFetcher(date)) as TxResult;
 				const archivePublished = isArchiveExpectedPublished(date);
 				if (!txRes?.ok) {
 					if (!archivePublished) {
-						const latestRes = await dateFetcher();
+						const latestRes = (await txFetcher()) as TxResult;
 						if (!latestRes?.ok) {
 							return GetFlowMetricsOutputSchema.parse(
 								fail(
@@ -183,7 +200,8 @@ export default async function getFlowMetrics(
 						fetchWarning = `⚠️ date=${date} のアーカイブは未公開（/transactions/{YYYYMMDD} は UTC 暦日の完了後に公開）のため /transactions (latest) から取得しました`;
 						// 加工契約: 全ての取得パスで昇順 sort を保証する。
 						// 上流 getTransactions も内部 sort 済みだが、契約の単一ソースをこちらに置く。
-						txs = sortTxsAsc(latestRes.data.normalized as Tx[]);
+						// 取得は無制限だが limit はユーザーの明示要求なので最新側 limit 件に切る。
+						txs = sortTxsAsc(latestRes.data.normalized as Tx[]).slice(-lim.value);
 					} else {
 						return GetFlowMetricsOutputSchema.parse(
 							fail(txRes?.summary || 'failed', txRes?.meta?.errorType || 'internal'),
@@ -191,21 +209,19 @@ export default async function getFlowMetrics(
 					}
 				} else {
 					// 加工契約: 全ての取得パスで昇順 sort を保証する。
-					txs = sortTxsAsc(txRes.data.normalized as Tx[]);
+					txs = sortTxsAsc(txRes.data.normalized as Tx[]).slice(-lim.value);
 				}
 			} else {
 				// 日付指定なし: latest で取得し、不足なら完了済み UTC 日アーカイブで補完する
 				// （列挙・マージは lib/tx-fetch.ts。失敗ハンドリングの方針は本ツール側）。
-				const countFetcher: TxFetcher = (d) =>
-					getTransactions(chk.pair, d ? PUBLIC_TX_LIMIT : Math.min(lim.value, PUBLIC_TX_LIMIT), d);
-				const latest = await fetchLatestTxs(countFetcher);
+				const latest = await fetchLatestTxs(txFetcher);
 
 				if (latest.txs.length >= lim.value) {
 					// 加工契約: 全ての取得パスで昇順 sort を保証する。
-					txs = sortTxsAsc(latest.txs);
+					txs = sortTxsAsc(latest.txs).slice(-lim.value);
 				} else {
 					// latest の返却数が不足（bitbank の latest エンドポイントは約60件のみ返却）
-					const { merged } = await fetchSupplementTxs(countFetcher, lim.value, latest);
+					const { merged } = await fetchSupplementTxs(txFetcher, lim.value, latest);
 					// 全て失敗した場合は network エラーとして返す
 					if (merged.txs.length === 0 && merged.failedCount > 0) {
 						return GetFlowMetricsOutputSchema.parse(
