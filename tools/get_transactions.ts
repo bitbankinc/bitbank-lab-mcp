@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import { toNum } from '../lib/conversions.js';
-import { dayjs, toIsoMs } from '../lib/datetime.js';
+import { dayjs, toDisplayTime, toIsoMs, toIsoWithTz } from '../lib/datetime.js';
 import { formatPair, formatPrice } from '../lib/formatter.js';
 import { BITBANK_API_BASE, DEFAULT_RETRIES, fetchJsonWithRateLimit } from '../lib/http.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
@@ -39,6 +39,22 @@ type NormalizedTxn = {
 	timestampMs: number;
 	isoTime: string;
 };
+
+/** 約定フィルタ（limit 適用前に効く）。toolDef.handler と内部呼び出しの双方から使用。 */
+export type GetTransactionsFilters = {
+	minAmount?: number;
+	maxAmount?: number;
+	minPrice?: number;
+	maxPrice?: number;
+};
+
+/** meta.actualRange / meta.fetchedRange 用の時刻範囲（Asia/Tokyo 表記、失敗時は UTC ISO へフォールバック） */
+function toRange(startMs: number, endMs: number): { start: string; end: string } {
+	return {
+		start: toIsoWithTz(startMs, 'Asia/Tokyo') ?? toIsoMs(startMs) ?? '',
+		end: toIsoWithTz(endMs, 'Asia/Tokyo') ?? toIsoMs(endMs) ?? '',
+	};
+}
 
 /**
  * 取引サマリを生成
@@ -97,7 +113,12 @@ const TX_SCOPE_FOOTER =
 	`\n📌 含まれないもの: 集計済みフロー指標（CVD・Zスコア・スパイク）、OHLCV、板情報` +
 	`\n📌 補完ツール: get_flow_metrics（集計フロー・CVD・スパイク検出）, get_candles（OHLCV）, get_orderbook（板情報）`;
 
-export default async function getTransactions(pair: string = 'btc_jpy', limit: number = 60, date?: string) {
+export default async function getTransactions(
+	pair: string = 'btc_jpy',
+	limit: number = 60,
+	date?: string,
+	filters?: GetTransactionsFilters,
+) {
 	const chk = ensurePair(pair);
 	if (!chk.ok) return failFromValidation(chk, GetTransactionsOutputSchema);
 
@@ -148,18 +169,58 @@ export default async function getTransactions(pair: string = 'btc_jpy', limit: n
 			})
 			.filter(Boolean) as NormalizedTxn[];
 
-		const warningText =
+		const dropWarning =
 			droppedCount > 0
 				? `⚠️ 上流レスポンスから ${droppedCount}件 の不正な約定行を除外しました（price/amount/side/timestamp のいずれかが欠損または不正）`
 				: undefined;
 
 		const sorted = items.sort((a, b) => a.timestampMs - b.timestampMs);
-		const latest = sorted.slice(-lim.value);
+		const totalFetched = sorted.length;
+		const fetchedRange =
+			totalFetched > 0 ? toRange(sorted[0].timestampMs, sorted[totalFetched - 1].timestampMs) : undefined;
+
+		// フィルタは limit の前に適用する。逆順（limit 後にフィルタ）だと「最新側 limit 件の中の
+		// 合致分」しか返らず、条件を絞るほどカバー期間が縮む（date 指定時は全日約 8,000 件の
+		// 末尾 limit 件しか対象にならない）。
+		const f = filters ?? {};
+		const hasFilter = f.minAmount != null || f.maxAmount != null || f.minPrice != null || f.maxPrice != null;
+		const matchedItems = hasFilter
+			? sorted.filter(
+					(t) =>
+						(f.minAmount == null || t.amount >= f.minAmount) &&
+						(f.maxAmount == null || t.amount <= f.maxAmount) &&
+						(f.minPrice == null || t.price >= f.minPrice) &&
+						(f.maxPrice == null || t.price <= f.maxPrice),
+				)
+			: sorted;
+		const matched = matchedItems.length;
+		const latest = matchedItems.slice(-lim.value);
+		const returned = latest.length;
+		const truncated = matched > returned;
+		const actualRange =
+			returned > 0
+				? {
+						...toRange(latest[0].timestampMs, latest[returned - 1].timestampMs),
+						durationMinutes: Math.round((latest[returned - 1].timestampMs - latest[0].timestampMs) / 60_000),
+					}
+				: undefined;
+
+		// 切り捨ての明示: 黙って切り捨てると「該当期間に約定がなかった」と「limit で切れた」が
+		// 応答上区別できず、カバレッジ誤認（欠損区間の見落とし）の原因になる。
+		const truncationWarning = truncated
+			? `⚠️ ${hasFilter ? '条件に合致する' : '取得した'}${matched}件のうち最新側${returned}件のみを返却しています` +
+				`（返却範囲: ${toDisplayTime(latest[0].timestampMs) ?? '?'}〜${toDisplayTime(latest[returned - 1].timestampMs) ?? '?'}` +
+				` / 取得全体: ${toDisplayTime(sorted[0].timestampMs) ?? '?'}〜${toDisplayTime(sorted[totalFetched - 1].timestampMs) ?? '?'}）。` +
+				`切り捨て区間の分析が必要な場合は minAmount 等の条件で絞り込むか、期間を分割してください`
+			: undefined;
+
+		const warningText = [dropWarning, truncationWarning].filter(Boolean).join('\n') || undefined;
 
 		const buys = latest.filter((t) => t.side === 'buy').length;
-		const sells = latest.filter((t) => t.side === 'sell').length;
+		const sells = latest.length - buys;
 		const baseSummary = formatTransactionsSummary(chk.pair, latest, buys, sells);
-		// テキスト summary に全取引データを含める（LLM が structuredContent.data を読めない対策）
+		// テキスト summary に全取引データを含める（LLM が structuredContent.data を読めない対策）。
+		// warning は約定行の列挙より前に出す（.claude/rules/tools.md）。
 		const txLines = buildTxLines(latest);
 		const summary =
 			baseSummary +
@@ -168,10 +229,16 @@ export default async function getTransactions(pair: string = 'btc_jpy', limit: n
 			txLines.join('\n') +
 			TX_SCOPE_FOOTER;
 
-		const data = { raw: json, normalized: latest };
+		const data = { normalized: latest };
 		const meta = createMeta(chk.pair, {
-			count: latest.length,
+			count: returned,
 			source: date ? 'by_date' : 'latest',
+			totalFetched,
+			matched,
+			returned,
+			truncated,
+			...(actualRange ? { actualRange } : {}),
+			...(fetchedRange ? { fetchedRange } : {}),
 			...(rateLimit ? { rateLimit } : {}),
 			...(warningText ? { warning: warningText } : {}),
 		});
@@ -217,7 +284,8 @@ export default async function getTransactions(pair: string = 'btc_jpy', limit: n
 export const toolDef: ToolDefinition = {
 	name: 'get_transactions',
 	description:
-		'[Transactions / Trades] 市場の約定履歴（transactions / recent trades）を取得。直近60件 or 日付指定。金額・価格でフィルタ可能。' +
+		'[Transactions / Trades] 市場の約定履歴（transactions / recent trades）を取得。直近60件 or 日付指定。金額・価格でフィルタ可能（フィルタは limit の前に適用され、条件に合致した約定を最大 limit 件返す）。' +
+		'\n\nlimit による切り捨てが起きた場合は meta（totalFetched / matched / returned / truncated / actualRange / fetchedRange）と warning で明示される。' +
 		'\n\n制約（bitbank 側仕様）: date 指定（YYYYMMDD）は UTC 暦日アーカイブで、当該 UTC 日の完了後（JST 09:00 以降）にのみ公開される。進行中の UTC 日を指定すると 404。当日分の約定は date 省略（latest, 直近約60件）でのみ取得可能。',
 	inputSchema: GetTransactionsInputSchema,
 	handler: async ({
@@ -239,7 +307,8 @@ export const toolDef: ToolDefinition = {
 		maxPrice?: number;
 		view?: 'summary' | 'items';
 	}) => {
-		const res = await getTransactions(pair, limit, date);
+		// フィルタはコア関数側で limit の前に適用される（handler 層では絞り込まない）。
+		const res = await getTransactions(pair, limit, date, { minAmount, maxAmount, minPrice, maxPrice });
 		if (!res?.ok) return res;
 		const hasFilter = minAmount != null || maxAmount != null || minPrice != null || maxPrice != null;
 		type TxItem = {
@@ -250,15 +319,9 @@ export const toolDef: ToolDefinition = {
 			timestampMs: number;
 			isoTime: string;
 		};
-		const items = (res?.data?.normalized ?? ([] as TxItem[])).filter(
-			(t: TxItem) =>
-				(minAmount == null || t.amount >= minAmount) &&
-				(maxAmount == null || t.amount <= maxAmount) &&
-				(minPrice == null || t.price >= minPrice) &&
-				(maxPrice == null || t.price <= maxPrice),
-		);
+		const items = (res?.data?.normalized ?? []) as TxItem[];
 		const fBuys = items.filter((t: TxItem) => t.side === 'buy').length;
-		const fSells = items.filter((t: TxItem) => t.side === 'sell').length;
+		const fSells = items.length - fBuys;
 		const warningBlock = res.meta?.warning ? `\n\n${res.meta.warning}` : '';
 		// フィルタ時も個別約定行を summary に含める。content[0].text しか LLM に見えないため、
 		// 件数だけだとどの約定がヒットしたか不可視になる（非フィルタ経路と同じ並びで出す）。
@@ -275,9 +338,9 @@ export const toolDef: ToolDefinition = {
 			}
 			return {
 				content,
-				structuredContent: { ...res, summary, data: { ...res.data, normalized: items } } as Record<string, unknown>,
+				structuredContent: { ...res, summary } as Record<string, unknown>,
 			};
 		}
-		return { ...res, summary, data: { ...res.data, normalized: items } };
+		return { ...res, summary };
 	},
 };

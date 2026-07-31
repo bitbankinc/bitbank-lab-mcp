@@ -266,25 +266,48 @@ export const TransactionItemSchema = z.object({
 	isoTime: z.string(),
 });
 
-export const GetTransactionsDataSchemaOut = z.object({ raw: z.unknown(), normalized: z.array(TransactionItemSchema) });
+// raw（生レスポンス全量）は非搭載: date 指定時に全 UTC 日分（約 8,000 件超）が structuredContent に
+// 毎回同梱され limit の意義を無効化していたため削除（消費者ゼロ確認済み）。
+export const GetTransactionsDataSchemaOut = z.object({ normalized: z.array(TransactionItemSchema) });
+
+/** meta.actualRange / meta.fetchedRange の時刻範囲（Asia/Tokyo 表記） */
+export const TransactionRangeSchema = z.object({ start: z.string(), end: z.string() });
+
 export const GetTransactionsMetaSchemaOut = BaseMetaSchema.extend({
 	count: z.number().int(),
 	source: z.enum(['latest', 'by_date']),
+	totalFetched: z.number().int().describe('上流から取得し normalize に成功した全件数（不正行 drop 除外後）'),
+	matched: z.number().int().describe('フィルタ適用後の件数（フィルタ未指定時は totalFetched と同値）'),
+	returned: z.number().int().describe('limit 適用後の返却件数（count と同値）'),
+	truncated: z.boolean().describe('matched > returned（limit による切り捨てが発生したか）'),
+	actualRange: TransactionRangeSchema.extend({ durationMinutes: z.number().int() })
+		.optional()
+		.describe('返却した約定の実カバー範囲（Asia/Tokyo。0 件時は省略）'),
+	fetchedRange: TransactionRangeSchema.optional().describe('取得できた全約定の時刻範囲（Asia/Tokyo。0 件時は省略）'),
 	warning: z.string().optional(),
 });
 export const GetTransactionsOutputSchema = toolResultSchema(GetTransactionsDataSchemaOut, GetTransactionsMetaSchemaOut);
 
 export const GetTransactionsInputSchema = BasePairInputSchema.extend({
-	limit: z.number().int().min(1).max(1000).optional().default(100),
+	limit: z
+		.number()
+		.int()
+		.min(1)
+		.max(1000)
+		.optional()
+		.default(100)
+		.describe(
+			'返却件数の上限。フィルタ適用後の件数に対して効き、超過分は最新側を残して切り捨て（meta.truncated / warning で明示）',
+		),
 	date: z
 		.string()
 		.regex(/^\d{8}$/)
 		.optional()
 		.describe('YYYYMMDD; omit for latest'),
-	minAmount: z.number().positive().optional(),
-	maxAmount: z.number().positive().optional(),
-	minPrice: z.number().positive().optional(),
-	maxPrice: z.number().positive().optional(),
+	minAmount: z.number().positive().optional().describe('約定数量の下限（limit 適用前にフィルタ）'),
+	maxAmount: z.number().positive().optional().describe('約定数量の上限（limit 適用前にフィルタ）'),
+	minPrice: z.number().positive().optional().describe('約定価格の下限（limit 適用前にフィルタ）'),
+	maxPrice: z.number().positive().optional().describe('約定価格の上限（limit 適用前にフィルタ）'),
 	view: z.enum(['summary', 'items']).optional().default('summary'),
 });
 
