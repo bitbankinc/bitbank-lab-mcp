@@ -450,3 +450,160 @@ describe('get_transactions: 未公開アーカイブ 404 のヒント', () => {
 		expect(res.summary).toContain('404');
 	});
 });
+
+// ── フィルタ→limit の適用順序 / truncation メタデータ ──
+// フィルタは limit の前に適用される（filter → slice）。逆順だと「最新側 limit 件の中の合致分」
+// しか返らず、条件を絞るほどカバー期間が縮む。切り捨て発生時は meta と warning で明示する。
+
+describe('get_transactions: フィルタ→limit の順序と truncation メタ', () => {
+	const originalFetch = globalThis.fetch;
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+		vi.restoreAllMocks();
+	});
+
+	/** count 行のうち largeEvery 行ごとに大口 (1.0)、他は小口 (0.01) を全域に分散させる */
+	function buildSpread(count: number, largeEvery: number): TxInput[] {
+		const baseTs = 1_700_000_000_000;
+		return Array.from({ length: count }, (_, i) => ({
+			transaction_id: 1_000_000 + i,
+			price: String(5_000_000 + i),
+			amount: i % largeEvery === 0 ? '1.0' : '0.01',
+			side: i % 2 === 0 ? 'buy' : 'sell',
+			executed_at: String(baseTs + i * 1000),
+		}));
+	}
+
+	it('limit 窓の外にあるフィルタ合致行も返す（filter → limit の順）', async () => {
+		// 2000 行中 50 件の大口が全域に分散。旧実装（limit → filter）では末尾 100 行内の
+		// 大口しか返らなかったケース。
+		globalThis.fetch = mockFetchOk({ success: 1, data: { transactions: buildSpread(2000, 40) } });
+		const res = (await toolDef.handler({ pair: 'btc_jpy', limit: 100, minAmount: 0.5 })) as {
+			ok: true;
+			data: { normalized: Array<{ transaction_id?: number }> };
+			meta: { totalFetched: number; matched: number; returned: number; truncated: boolean };
+		};
+		expect(res.ok).toBe(true);
+		expect(res.data.normalized).toHaveLength(50);
+		// 時系列最古の大口（旧実装の limit 窓の外）が含まれる
+		expect(res.data.normalized[0].transaction_id).toBe(1_000_000);
+		expect(res.meta.totalFetched).toBe(2000);
+		expect(res.meta.matched).toBe(50);
+		expect(res.meta.returned).toBe(50);
+		expect(res.meta.truncated).toBe(false);
+	});
+
+	it('truncation off-by-one: matched == limit は truncated=false・warning なし', async () => {
+		globalThis.fetch = mockFetchOk({ success: 1, data: { transactions: buildTransactions(10) } });
+		const res = await getTransactions('btc_jpy', 10);
+		assertOk(res);
+		expect(res.meta.matched).toBe(10);
+		expect(res.meta.returned).toBe(10);
+		expect(res.meta.truncated).toBe(false);
+		expect(res.meta.warning).toBeUndefined();
+	});
+
+	it('truncation off-by-one: matched == limit+1 は truncated=true・warning あり・最古 1 件が落ちる', async () => {
+		globalThis.fetch = mockFetchOk({ success: 1, data: { transactions: buildTransactions(11) } });
+		const res = await getTransactions('btc_jpy', 10);
+		assertOk(res);
+		expect(res.meta.totalFetched).toBe(11);
+		expect(res.meta.matched).toBe(11);
+		expect(res.meta.returned).toBe(10);
+		expect(res.meta.truncated).toBe(true);
+		expect(res.meta.warning).toContain('11件のうち最新側10件');
+		expect(res.summary).toContain(res.meta.warning as string);
+		// 最新側優先: 最古（startId+0）が落ち、startId+1 以降が残る
+		expect(res.data.normalized[0].transaction_id).toBe(1_000_001);
+		// warning は約定行の列挙より前に出る（.claude/rules/tools.md）
+		expect(res.summary.indexOf('のみを返却')).toBeLessThan(res.summary.indexOf('📋'));
+	});
+
+	it('フィルタ未指定時は matched === totalFetched', async () => {
+		globalThis.fetch = mockFetchOk({ success: 1, data: { transactions: buildTransactions(5) } });
+		const res = await getTransactions('btc_jpy', 10);
+		assertOk(res);
+		expect(res.meta.matched).toBe(res.meta.totalFetched);
+		expect(res.meta.matched).toBe(5);
+	});
+
+	it('空配列: メタは全て 0 / truncated=false / range なし', async () => {
+		globalThis.fetch = mockFetchOk({ success: 1, data: { transactions: [] } });
+		const res = await getTransactions('btc_jpy', 10);
+		assertOk(res);
+		expect(res.meta.totalFetched).toBe(0);
+		expect(res.meta.matched).toBe(0);
+		expect(res.meta.returned).toBe(0);
+		expect(res.meta.truncated).toBe(false);
+		expect(res.meta.actualRange).toBeUndefined();
+		expect(res.meta.fetchedRange).toBeUndefined();
+	});
+
+	it('フィルタ 0 件ヒット: matched=0 / truncated=false / actualRange なし・fetchedRange あり', async () => {
+		globalThis.fetch = mockFetchOk({ success: 1, data: { transactions: buildTransactions(5) } });
+		const res = (await toolDef.handler({ pair: 'btc_jpy', limit: 10, minAmount: 100 })) as {
+			ok: true;
+			meta: {
+				totalFetched: number;
+				matched: number;
+				returned: number;
+				truncated: boolean;
+				actualRange?: unknown;
+				fetchedRange?: unknown;
+			};
+		};
+		expect(res.meta.totalFetched).toBe(5);
+		expect(res.meta.matched).toBe(0);
+		expect(res.meta.returned).toBe(0);
+		expect(res.meta.truncated).toBe(false);
+		expect(res.meta.actualRange).toBeUndefined();
+		expect(res.meta.fetchedRange).toBeDefined();
+	});
+
+	it('actualRange / fetchedRange: 切り捨て時は actualRange が fetchedRange の内側に縮む', async () => {
+		globalThis.fetch = mockFetchOk({ success: 1, data: { transactions: buildTransactions(120) } });
+		const res = await getTransactions('btc_jpy', 60);
+		assertOk(res);
+		expect(res.meta.truncated).toBe(true);
+		const ar = res.meta.actualRange as { start: string; end: string; durationMinutes: number };
+		const fr = res.meta.fetchedRange as { start: string; end: string };
+		expect(ar.end).toBe(fr.end); // 最新側は一致
+		expect(ar.start > fr.start).toBe(true); // 返却範囲の開始は取得全体より後ろ
+		// 60 件・1 秒間隔 → 59 秒 ≒ 1 分
+		expect(ar.durationMinutes).toBe(1);
+	});
+
+	it('data.raw は返却しない', async () => {
+		globalThis.fetch = mockFetchOk({ success: 1, data: { transactions: buildTransactions(3) } });
+		const res = await getTransactions('btc_jpy', 3);
+		assertOk(res);
+		expect((res.data as { raw?: unknown }).raw).toBeUndefined();
+	});
+
+	it('view=items: truncation warning が content の別要素に出る（content[0] は JSON のまま）', async () => {
+		globalThis.fetch = mockFetchOk({ success: 1, data: { transactions: buildTransactions(11) } });
+		const res = (await toolDef.handler({ pair: 'btc_jpy', limit: 10, view: 'items' })) as {
+			content: Array<{ type: string; text: string }>;
+		};
+		const parsed = JSON.parse(res.content[0].text);
+		expect(Array.isArray(parsed)).toBe(true);
+		expect(parsed).toHaveLength(10);
+		expect(res.content).toHaveLength(2);
+		expect(res.content[1].text).toContain('最新側10件');
+	});
+
+	it('フィルタ + truncation: warning がフィルタ後 summary にも伝搬する', async () => {
+		globalThis.fetch = mockFetchOk({ success: 1, data: { transactions: buildSpread(2000, 40) } });
+		const res = (await toolDef.handler({ pair: 'btc_jpy', limit: 10, minAmount: 0.5 })) as {
+			ok: true;
+			summary: string;
+			meta: { matched: number; returned: number; truncated: boolean; warning?: string };
+		};
+		expect(res.meta.matched).toBe(50);
+		expect(res.meta.returned).toBe(10);
+		expect(res.meta.truncated).toBe(true);
+		expect(res.summary).toContain('フィルタ後 10件');
+		expect(res.summary).toContain('条件に合致する50件のうち最新側10件');
+	});
+});
