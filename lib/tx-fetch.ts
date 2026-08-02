@@ -15,8 +15,14 @@
  * seam であり、テストでは単体で差し替えられる。
  */
 
-import { toDisplayTime } from './datetime.js';
-import { completedUtcDayKeysInRange, currentUtcDayKey, recentCompletedUtcDayKeys } from './tx-archive.js';
+import { ISO8601_WITH_OFFSET_PATTERN, MAX_TX_RANGE_DAYS } from '../src/schema/base.js';
+import { parseIso8601, toDisplayTime, toIsoTime } from './datetime.js';
+import {
+	completedUtcDayKeysInRange,
+	currentUtcDayKey,
+	currentUtcDayStartMs,
+	recentCompletedUtcDayKeys,
+} from './tx-archive.js';
 
 /** 正規化済み約定（`get_transactions` の `data.normalized` 要素） */
 export type Tx = {
@@ -136,6 +142,167 @@ export function partialFailureWarning(totalCount: number, failures: TxFetchFailu
 	return `⚠️ ${totalCount}件中${failures.length}件のAPI取得に失敗しました（${formatTxFailures(failures)}）。データが不完全な可能性があります。`;
 }
 
+// ── 取得区間の解決（hours / since・until） ──────────────────
+
+/**
+ * `since`〜`until` に指定できる最大範囲（ms）。
+ * 上限値と根拠は `MAX_TX_RANGE_DAYS`（`src/schema/base.ts`。入力スキーマの description でも
+ * 同じ値を出すため定数はそちらに置いている）。
+ */
+const MAX_TX_RANGE_MS = MAX_TX_RANGE_DAYS * 86_400_000;
+
+export type TxTimeRangeInput = {
+	/** 絶対時刻の区間開始（**含む**）。オフセット付き ISO8601 */
+	since?: string;
+	/**
+	 * 絶対時刻の区間終端（**含まない**: `[since, until)`）。オフセット付き ISO8601。
+	 * 省略時は現在時刻まで。排他にしておくと、隣接する区間を続けて要求しても
+	 * 境界の約定が二重に計上されない。
+	 */
+	until?: string;
+	/** 現在時刻起点の相対窓（時間）。`since` / `until` とは排他 */
+	hours?: number;
+	/** 暦日指定（YYYYMMDD）。排他チェックにのみ使う（区間の解決には使わない） */
+	date?: string;
+	/** 現在時刻（テスト用。既定は Date.now()） */
+	nowMs?: number;
+};
+
+export type TxTimeRangeResolved = {
+	/** `hours` = 現在時刻起点の相対窓 / `absolute` = since・until による絶対区間 */
+	mode: 'hours' | 'absolute';
+	/** 取得層に渡す閉区間の下端（含む） */
+	sinceMs: number;
+	/** 取得層に渡す閉区間の上端（含む）。`until` 排他指定は 1ms 手前に丸めてある */
+	untilMs: number;
+	nowMs: number;
+	/** 要求区間の長さ（分）。カバレッジ率の分母（`buildTxCoverageWarning` 等に渡す） */
+	requestedMinutes: number;
+	/** 申告用: 要求区間の開始（UTC ISO8601） */
+	sinceIso: string;
+	/** 申告用: 要求区間の終端（UTC ISO8601, 排他）。`until` 省略時は現在時刻 */
+	untilIso: string;
+};
+
+export type TxTimeRangeResolution =
+	| ({ ok: true } & TxTimeRangeResolved)
+	| { ok: false; error: { type: 'user'; message: string } };
+
+function txRangeUserError(message: string): TxTimeRangeResolution {
+	return { ok: false, error: { type: 'user', message } };
+}
+
+/** オフセット付き ISO8601 を ms に変換する（形式・暦日ともに strict に検証）。 */
+function parseAbsoluteIso(label: string, value: string): { ok: true; ms: number } | { ok: false; message: string } {
+	const parts = value.match(ISO8601_WITH_OFFSET_PATTERN);
+	if (!parts) {
+		return {
+			ok: false,
+			message: `${label} はオフセット付き ISO8601 で指定してください（例: 2026-08-01T00:00:00Z / 2026-08-01T09:00:00+09:00）。指定値: ${value}`,
+		};
+	}
+	// 秒省略（2026-08-01T00:00Z）と小数秒の桁数違い（.5 / .12 / .1234）を正準形 `.SSS` に
+	// 揃えてから strict parse に渡す。parseIso8601 の strict format は 3 桁固定なので、
+	// 揃えずに渡すと受理すべき入力が「存在しない日付・時刻」として弾かれる。
+	// 小数秒は 10 進小数（.5 = 500ms）。ミリ秒未満は Date が保持できないので切り捨てる。
+	const [, dateHm, sec, frac, offset] = parts;
+	const ms = (frac ?? '').padEnd(3, '0').slice(0, 3);
+	const parsed = parseIso8601(`${dateHm}:${sec ?? '00'}.${ms}${offset}`);
+	if (!parsed) {
+		return { ok: false, message: `${label} の日時が不正です（存在しない日付・時刻）。指定値: ${value}` };
+	}
+	return { ok: true, ms: parsed.valueOf() };
+}
+
+/**
+ * 取得区間を解決する。`hours`（相対）と `since`/`until`（絶対）の排他判定もここで行う。
+ *
+ * 併用を「どちらかを優先」で黙って解決すると、要求と異なる区間の集計値が返っても応答から
+ * 気づけないため user エラーにする。
+ */
+export function resolveTxTimeRange(input: TxTimeRangeInput): TxTimeRangeResolution {
+	const nowMs = input.nowMs ?? Date.now();
+	const { since, until, hours, date } = input;
+	const hasAbsolute = since != null || until != null;
+	const hasHours = hours != null && hours > 0;
+
+	if (hasAbsolute && hasHours) {
+		return txRangeUserError(
+			'hours と since/until は併用できません（hours は現在時刻起点の相対指定、since/until は絶対時刻の区間指定）。どちらか一方を指定してください',
+		);
+	}
+	if (hasAbsolute && date != null) {
+		return txRangeUserError(
+			'date と since/until は併用できません（date は UTC 暦日、since/until は絶対時刻の区間指定）。どちらか一方を指定してください',
+		);
+	}
+
+	if (!hasAbsolute) {
+		if (!hasHours) {
+			return txRangeUserError('時間範囲の指定がありません（hours または since/until を指定してください）');
+		}
+		const sinceMs = nowMs - hours * 3600_000;
+		return {
+			ok: true,
+			mode: 'hours',
+			sinceMs,
+			untilMs: nowMs,
+			nowMs,
+			requestedMinutes: Math.round(hours * 60),
+			sinceIso: toIsoTime(sinceMs) ?? '',
+			untilIso: toIsoTime(nowMs) ?? '',
+		};
+	}
+
+	if (since == null) {
+		return txRangeUserError('until 単独では取得区間が決まりません。since も指定してください');
+	}
+
+	const sinceParsed = parseAbsoluteIso('since', since);
+	if (!sinceParsed.ok) return txRangeUserError(sinceParsed.message);
+	const sinceMs = sinceParsed.ms;
+
+	let untilMsExclusive = nowMs;
+	if (until != null) {
+		const untilParsed = parseAbsoluteIso('until', until);
+		if (!untilParsed.ok) return txRangeUserError(untilParsed.message);
+		untilMsExclusive = untilParsed.ms;
+	}
+
+	if (sinceMs > nowMs) {
+		return txRangeUserError(`since が未来時刻です（現在: ${toIsoTime(nowMs)}）。指定値: ${since}`);
+	}
+	if (untilMsExclusive > nowMs) {
+		return txRangeUserError(
+			`until が未来時刻です（現在: ${toIsoTime(nowMs)}）。現在までを対象にする場合は until を省略してください。指定値: ${until}`,
+		);
+	}
+	if (sinceMs >= untilMsExclusive) {
+		return txRangeUserError(
+			`since は until より前の時刻を指定してください（since=${toIsoTime(sinceMs)}, until=${toIsoTime(untilMsExclusive)}）`,
+		);
+	}
+	if (untilMsExclusive - sinceMs > MAX_TX_RANGE_MS) {
+		const days = ((untilMsExclusive - sinceMs) / 86_400_000).toFixed(1);
+		return txRangeUserError(
+			`since〜until が長すぎます（${days}日）。1 リクエスト = 1 UTC 日アーカイブ（BTC/JPY で 5,600〜8,000 件）のため上限は ${MAX_TX_RANGE_DAYS} 日です。期間を分割して呼び出してください`,
+		);
+	}
+
+	return {
+		ok: true,
+		mode: 'absolute',
+		sinceMs,
+		// until は排他（[since, until)）だが取得層は閉区間。1ms 手前を上端にする。
+		// until 省略時は「現在時刻まで」なので hours 指定と同じく現在時刻を含める。
+		untilMs: until != null ? untilMsExclusive - 1 : nowMs,
+		nowMs,
+		requestedMinutes: Math.round((untilMsExclusive - sinceMs) / 60_000),
+		sinceIso: toIsoTime(sinceMs) ?? '',
+		untilIso: toIsoTime(untilMsExclusive) ?? '',
+	};
+}
+
 // ── 時間範囲ベースの取得 ─────────────────────────────────────
 
 export type TimeRangeFetchOptions = {
@@ -148,48 +315,74 @@ export type TimeRangeFetchOptions = {
 	retryFailedDates?: { delayMs: number };
 };
 
+/**
+ * 取得する時間区間（**両端を含む**閉区間 `[sinceMs, untilMs]`）。
+ *
+ * 呼び出し側が「終端を含まない」区間を要求する場合は `untilMs` を 1ms 手前に丸めて渡すこと
+ * （`resolveTxTimeRange` の `until` がこの形）。区間を閉区間にしているのは、`hours` 指定
+ * （終端 = 現在時刻）の従来挙動を保つため。
+ */
+export type TxTimeRange = {
+	sinceMs: number;
+	untilMs: number;
+};
+
 export type TimeRangeFetch = {
 	sinceMs: number;
+	untilMs: number;
 	nowMs: number;
 	/** 進行中の UTC 暦日キー（この日のアーカイブは未公開） */
 	currentUtcDay: string;
 	/** 要求した完了済み UTC 暦日キー（昇順） */
 	dates: string[];
-	/** `[...dateResults, latestResult]`（呼び出し側の errorType 分類用に順序を保つ） */
+	/**
+	 * latest エンドポイントを叩いたか。
+	 * 要求区間が進行中の UTC 日にかからない（＝過去区間のみ）場合は false。
+	 * 呼び出し側の「進行中 UTC 日は latest 約60件のみ」warning はこのフラグで出し分ける。
+	 */
+	usedLatest: boolean;
+	/** `[...dateResults, latestResult?]`（呼び出し側の errorType 分類用に順序を保つ） */
 	results: unknown[];
-	/** `[...dates, 'latest']` */
+	/** `[...dates, 'latest'?]` */
 	labels: string[];
 	/** 日付アーカイブのみのマージ結果（authoritative: 時間範囲をカバー） */
 	dateMerge: TxMerge;
-	/** latest のみのマージ結果（supplement: 進行中 UTC 日の補完） */
+	/** latest のみのマージ結果（supplement: 進行中 UTC 日の補完）。未取得なら空 */
 	latestMerge: TxMerge;
 	/** date + latest を 1 パスでマージした結果 */
 	merged: TxMerge;
-	/** `merged.txs` を [sinceMs, nowMs] でフィルタし昇順 sort したもの */
+	/** `merged.txs` を [sinceMs, untilMs] でフィルタし昇順 sort したもの */
 	txs: Tx[];
 };
 
 /**
- * 直近 `hours` 時間分の約定を取得する。
+ * 指定した時間区間 `[sinceMs, untilMs]` の約定を取得する。
  *
  * bitbank の `/transactions/{YYYYMMDD}` は UTC 暦日アーカイブで、当該 UTC 日が完了する
  * まで 404 を返す（実測: docs/internal/bitbank-tx-archive-tz.md）。進行中の UTC 日は
  * 要求しても必ず 404 なので列挙から除外し、その区間は `/transactions` (latest) で補完する。
  * （JST 暦日で列挙すると JST 早朝＝UTC 日付更新前に進行中の UTC 日を要求して全滅する。）
+ *
+ * latest は **要求区間が進行中の UTC 日にかかる場合のみ**叩く。過去区間だけを要求された
+ * ときの latest は現在の約定しか返さず区間外なので、呼び出しぶんが無駄になる（rate limit も
+ * 消費する）。
  */
 export async function fetchTxTimeRange(
 	fetcher: TxFetcher,
-	hours: number,
+	range: TxTimeRange,
 	options: TimeRangeFetchOptions = {},
 ): Promise<TimeRangeFetch> {
 	const nowMs = options.nowMs ?? Date.now();
-	const sinceMs = nowMs - hours * 3600_000;
+	const { sinceMs, untilMs } = range;
 	const currentUtcDay = currentUtcDayKey(nowMs);
-	const dates = completedUtcDayKeysInRange(sinceMs, nowMs);
+	// 「進行中の UTC 日」の判定は untilMs ではなく実時刻 nowMs で行う
+	// （過去区間では untilMs の UTC 日は既に完了しておりアーカイブが公開されている）。
+	const dates = completedUtcDayKeysInRange(sinceMs, untilMs, nowMs);
+	const usedLatest = untilMs >= currentUtcDayStartMs(nowMs);
 
 	// 日付ベース取得（authoritative: 時間範囲をカバー）と latest（supplement: 直近数分の補完）を
 	// 区別する。当日分は日付指定だと直近数分が欠ける場合があるため latest も併用する。
-	const results = await Promise.all([...dates.map((ds) => fetcher(ds)), fetcher()]);
+	const results = await Promise.all([...dates.map((ds) => fetcher(ds)), ...(usedLatest ? [fetcher()] : [])]);
 
 	const retry = options.retryFailedDates;
 	if (retry) {
@@ -206,15 +399,28 @@ export async function fetchTxTimeRange(
 		}
 	}
 
-	const labels = [...dates, 'latest'];
+	const labels = usedLatest ? [...dates, 'latest'] : [...dates];
 	const dateResults = results.slice(0, dates.length);
 	const latestResults = results.slice(dates.length);
 	const dateMerge = mergeTxResults(dateResults, dates);
 	const latestMerge = mergeTxResults(latestResults, ['latest']);
 	const merged = mergeTxResults(results, labels);
-	const txs = sortTxsAsc(merged.txs.filter((t) => t.timestampMs >= sinceMs && t.timestampMs <= nowMs));
+	const txs = sortTxsAsc(merged.txs.filter((t) => t.timestampMs >= sinceMs && t.timestampMs <= untilMs));
 
-	return { sinceMs, nowMs, currentUtcDay, dates, results, labels, dateMerge, latestMerge, merged, txs };
+	return {
+		sinceMs,
+		untilMs,
+		nowMs,
+		currentUtcDay,
+		dates,
+		usedLatest,
+		results,
+		labels,
+		dateMerge,
+		latestMerge,
+		merged,
+		txs,
+	};
 }
 
 // ── 件数ベースの取得 ─────────────────────────────────────────

@@ -5,6 +5,7 @@
  * ツール description に明文化済みのため、ここで固定する。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { dayjs } from '../../lib/datetime.js';
 import {
 	applyTxLimit,
 	buildAggregateCoverageNote,
@@ -19,10 +20,13 @@ import {
 	hasCoverageShortfall,
 	mergeTxResults,
 	partialFailureWarning,
+	resolveTxTimeRange,
 	sortTxsAsc,
 	type Tx,
+	type TxTimeRangeResolved,
 	txDedupKey,
 } from '../../lib/tx-fetch.js';
+import { ISO8601_WITH_OFFSET_PATTERN, MAX_TX_RANGE_DAYS } from '../../src/schema/base.js';
 
 const BASE_MS = Date.UTC(2026, 6, 7, 0, 0, 0);
 
@@ -165,6 +169,186 @@ describe('formatTxFailures / partialFailureWarning / extractUpstreamError', () =
 	});
 });
 
+describe('resolveTxTimeRange', () => {
+	/** 2026-08-02 12:00 UTC。進行中 UTC 日 = 20260802、完了済み = 20260801 */
+	const NOW = Date.UTC(2026, 7, 2, 12, 0, 0);
+	const resolve = (input: Omit<Parameters<typeof resolveTxTimeRange>[0], 'nowMs'>) =>
+		resolveTxTimeRange({ ...input, nowMs: NOW });
+
+	/** ok 分岐に絞り込む（fail なら message 付きで落とす） */
+	function assertResolved(
+		res: ReturnType<typeof resolveTxTimeRange>,
+	): asserts res is { ok: true } & TxTimeRangeResolved {
+		if (!res.ok) throw new Error(`expected ok but failed: ${res.error.message}`);
+	}
+
+	describe('hours（相対窓）', () => {
+		it('現在時刻起点の閉区間に変換し requestedMinutes は hours×60', () => {
+			const res = resolve({ hours: 8 });
+			assertResolved(res);
+			expect(res.mode).toBe('hours');
+			expect(res.sinceMs).toBe(NOW - 8 * 3600_000);
+			expect(res.untilMs).toBe(NOW);
+			expect(res.requestedMinutes).toBe(480);
+		});
+
+		it('小数の hours も分に丸めて扱う', () => {
+			const res = resolve({ hours: 0.25 });
+			assertResolved(res);
+			expect(res.requestedMinutes).toBe(15);
+		});
+
+		it('hours も since/until も無ければ user エラー', () => {
+			const res = resolve({});
+			expect(res.ok).toBe(false);
+		});
+	});
+
+	describe('since/until（絶対区間）', () => {
+		it('完了済み UTC 日 1 日ぶん: until 排他で 1440 分', () => {
+			const res = resolve({ since: '2026-08-01T00:00:00Z', until: '2026-08-02T00:00:00Z' });
+			assertResolved(res);
+			expect(res.mode).toBe('absolute');
+			expect(res.sinceMs).toBe(Date.UTC(2026, 7, 1, 0, 0, 0));
+			// 取得層は閉区間なので終端は 1ms 手前
+			expect(res.untilMs).toBe(Date.UTC(2026, 7, 2, 0, 0, 0) - 1);
+			expect(res.requestedMinutes).toBe(1440);
+			expect(res.sinceIso).toBe('2026-08-01T00:00:00.000Z');
+			expect(res.untilIso).toBe('2026-08-02T00:00:00.000Z');
+		});
+
+		it('until 省略時は現在時刻まで（終端を含む）', () => {
+			const res = resolve({ since: '2026-08-02T06:00:00Z' });
+			assertResolved(res);
+			expect(res.untilMs).toBe(NOW);
+			expect(res.requestedMinutes).toBe(360);
+			expect(res.untilIso).toBe('2026-08-02T12:00:00.000Z');
+		});
+
+		it('オフセット付き（+09:00）も受け付ける', () => {
+			const res = resolve({ since: '2026-08-01T09:00:00+09:00', until: '2026-08-02T09:00:00+09:00' });
+			assertResolved(res);
+			expect(res.sinceMs).toBe(Date.UTC(2026, 7, 1, 0, 0, 0));
+			expect(res.requestedMinutes).toBe(1440);
+		});
+
+		it('秒の省略形（YYYY-MM-DDTHH:mmZ）も受け付ける', () => {
+			const res = resolve({ since: '2026-08-01T00:00Z', until: '2026-08-01T12:00Z' });
+			assertResolved(res);
+			expect(res.sinceMs).toBe(Date.UTC(2026, 7, 1, 0, 0, 0));
+			expect(res.requestedMinutes).toBe(720);
+		});
+
+		it('ミリ秒付きも受け付ける', () => {
+			const res = resolve({ since: '2026-08-01T00:00:00.500Z', until: '2026-08-01T01:00:00.500Z' });
+			assertResolved(res);
+			expect(res.sinceMs).toBe(Date.UTC(2026, 7, 1, 0, 0, 0) + 500);
+		});
+
+		// 小数秒は 10 進小数（.5 = 500ms）。桁数が 3 でない入力は、スキーマの正規表現は
+		// 通るのに parseIso8601（strict format は .SSS 固定）が落として「存在しない日付・
+		// 時刻」と誤報していた。正準形へ揃える正規化をここで固定する。
+		it.each([
+			['2026-08-01T00:00:00.5Z', 500],
+			['2026-08-01T00:00:00.12Z', 120],
+			['2026-08-01T00:00:00.123Z', 123],
+			// ミリ秒未満は Date が保持できないので切り捨てる
+			['2026-08-01T00:00:00.1234Z', 123],
+		])('小数秒の桁数が 3 でなくても正しく解釈する: %s', (since, expectedMs) => {
+			const res = resolve({ since, until: '2026-08-01T01:00:00Z' });
+			assertResolved(res);
+			expect(res.sinceMs).toBe(Date.UTC(2026, 7, 1, 0, 0, 0) + expectedMs);
+		});
+
+		it('小数秒の桁数が 3 でない入力はスキーマ側でも受理される（parse と食い違わない）', () => {
+			// 「スキーマは通るが parse で落ちる」入力を作らないことがパターンの契約
+			for (const value of ['2026-08-01T00:00:00.5Z', '2026-08-01T00:00:00.12Z', '2026-08-01T00:00:00.1234Z']) {
+				expect(ISO8601_WITH_OFFSET_PATTERN.test(value)).toBe(true);
+				expect(resolve({ since: value, until: '2026-08-01T01:00:00Z' }).ok).toBe(true);
+			}
+		});
+
+		it('小数秒だけ・分の小数は受け付けない（秒が無ければ小数秒も無い）', () => {
+			expect(resolve({ since: '2026-08-01T00:00:00.Z' }).ok).toBe(false);
+			expect(resolve({ since: '2026-08-01T00:00.5Z' }).ok).toBe(false);
+		});
+	});
+
+	describe('排他とエラー', () => {
+		const message = (res: ReturnType<typeof resolveTxTimeRange>) => (res.ok ? '' : res.error.message);
+		const errorType = (res: ReturnType<typeof resolveTxTimeRange>) => (res.ok ? null : res.error.type);
+
+		it('hours との併用は user エラー', () => {
+			const res = resolve({ since: '2026-08-01T00:00:00Z', hours: 4 });
+			expect(errorType(res)).toBe('user');
+			expect(message(res)).toContain('hours と since/until は併用できません');
+		});
+
+		it('until だけでも hours との併用は user エラー', () => {
+			expect(resolve({ until: '2026-08-01T00:00:00Z', hours: 4 }).ok).toBe(false);
+		});
+
+		it('date との併用は user エラー', () => {
+			const res = resolve({ since: '2026-08-01T00:00:00Z', date: '20260801' });
+			expect(message(res)).toContain('date と since/until は併用できません');
+		});
+
+		it('hours=0 は「未指定」として扱う（併用エラーにしない）', () => {
+			const res = resolve({ since: '2026-08-01T00:00:00Z', until: '2026-08-02T00:00:00Z', hours: 0 });
+			assertResolved(res);
+			expect(res.mode).toBe('absolute');
+		});
+
+		it('until 単独は user エラー', () => {
+			expect(message(resolve({ until: '2026-08-01T00:00:00Z' }))).toContain('until 単独では');
+		});
+
+		it('since >= until は user エラー（同時刻＝長さ 0 も含む）', () => {
+			expect(message(resolve({ since: '2026-08-02T00:00:00Z', until: '2026-08-01T00:00:00Z' }))).toContain(
+				'since は until より前',
+			);
+			expect(message(resolve({ since: '2026-08-01T00:00:00Z', until: '2026-08-01T00:00:00Z' }))).toContain(
+				'since は until より前',
+			);
+		});
+
+		it('未来時刻は user エラー（since / until それぞれ）', () => {
+			expect(message(resolve({ since: '2026-08-03T00:00:00Z' }))).toContain('since が未来時刻です');
+			expect(message(resolve({ since: '2026-08-01T00:00:00Z', until: '2026-08-03T00:00:00Z' }))).toContain(
+				'until が未来時刻です',
+			);
+		});
+
+		it('現在時刻ちょうどの until は許可する（off-by-one）', () => {
+			expect(resolve({ since: '2026-08-02T00:00:00Z', until: '2026-08-02T12:00:00Z' }).ok).toBe(true);
+			expect(resolve({ since: '2026-08-02T00:00:00Z', until: '2026-08-02T12:00:00.001Z' }).ok).toBe(false);
+		});
+
+		it('YYYYMMDD / オフセット無しは user エラー', () => {
+			expect(message(resolve({ since: '20260801' }))).toContain('オフセット付き ISO8601');
+			expect(message(resolve({ since: '2026-08-01' }))).toContain('オフセット付き ISO8601');
+			expect(message(resolve({ since: '2026-08-01T00:00:00' }))).toContain('オフセット付き ISO8601');
+		});
+
+		it('存在しない日時は user エラー', () => {
+			expect(message(resolve({ since: '2026-02-30T00:00:00Z' }))).toContain('存在しない日付・時刻');
+			expect(message(resolve({ since: '2026-13-01T00:00:00Z' }))).toContain('存在しない日付・時刻');
+			expect(message(resolve({ since: '2026-08-01T25:00:00Z' }))).toContain('存在しない日付・時刻');
+		});
+
+		it(`最大範囲ちょうど（${MAX_TX_RANGE_DAYS}日）は許可、1ms でも超えたら user エラー（off-by-one）`, () => {
+			const untilMs = Date.UTC(2026, 7, 2, 12, 0, 0);
+			const iso = (ms: number) => dayjs.utc(ms).toISOString();
+			const exact = iso(untilMs - MAX_TX_RANGE_DAYS * 86_400_000);
+			const over = iso(untilMs - MAX_TX_RANGE_DAYS * 86_400_000 - 1);
+			expect(resolve({ since: exact, until: '2026-08-02T12:00:00Z' }).ok).toBe(true);
+			const res = resolve({ since: over, until: '2026-08-02T12:00:00Z' });
+			expect(res.ok).toBe(false);
+			expect(message(res)).toContain(`${MAX_TX_RANGE_DAYS} 日`);
+		});
+	});
+});
+
 describe('fetchTxTimeRange', () => {
 	afterEach(() => {
 		vi.useRealTimers();
@@ -174,6 +358,9 @@ describe('fetchTxTimeRange', () => {
 	/** 2026-07-08 09:30 JST = 2026-07-08 00:30 UTC。進行中 UTC 日 = 20260708 */
 	const NOW = Date.UTC(2026, 6, 8, 0, 30, 0);
 
+	/** hours 指定（現在時刻起点の相対窓）を絶対区間に変換する — 呼び出し側と同じ変換 */
+	const lastHours = (hours: number, nowMs: number = NOW) => ({ sinceMs: nowMs - hours * 3600_000, untilMs: nowMs });
+
 	it('進行中の UTC 日は列挙せず、完了済み UTC 日 + latest を叩く', async () => {
 		const calls: Array<string | undefined> = [];
 		const fetcher = vi.fn(async (date?: string) => {
@@ -181,12 +368,13 @@ describe('fetchTxTimeRange', () => {
 			return okResult([tx({ timestampMs: NOW - 60_000 })]);
 		});
 
-		const res = await fetchTxTimeRange(fetcher, 2, { nowMs: NOW });
+		const res = await fetchTxTimeRange(fetcher, lastHours(2), { nowMs: NOW });
 
 		expect(res.dates).toEqual(['20260707']);
 		expect(res.currentUtcDay).toBe('20260708');
 		expect(calls).toEqual(['20260707', undefined]);
 		expect(res.labels).toEqual(['20260707', 'latest']);
+		expect(res.usedLatest).toBe(true);
 	});
 
 	it('時間窓外の約定は除外し、昇順 sort して返す', async () => {
@@ -197,7 +385,7 @@ describe('fetchTxTimeRange', () => {
 			date ? okResult([future, tooOld]) : okResult([inWindow, tx({ timestampMs: NOW - 10 * 60_000 })]),
 		);
 
-		const res = await fetchTxTimeRange(fetcher, 1, { nowMs: NOW });
+		const res = await fetchTxTimeRange(fetcher, lastHours(1), { nowMs: NOW });
 
 		expect(res.txs.map((t) => t.timestampMs)).toEqual([NOW - 30 * 60_000, NOW - 10 * 60_000]);
 	});
@@ -205,7 +393,7 @@ describe('fetchTxTimeRange', () => {
 	it('date 群と latest のマージ結果を別々に取り出せる（警告文の出し分け用）', async () => {
 		const fetcher = vi.fn(async (date?: string) => (date ? failResult('upstream', 'HTTP 404') : okResult([tx()])));
 
-		const res = await fetchTxTimeRange(fetcher, 2, { nowMs: NOW });
+		const res = await fetchTxTimeRange(fetcher, lastHours(2), { nowMs: NOW });
 
 		expect(res.dateMerge.failedCount).toBe(1);
 		expect(res.dateMerge.failures[0].label).toBe('20260707');
@@ -221,7 +409,7 @@ describe('fetchTxTimeRange', () => {
 			return dateCalls === 1 ? failResult('network', 'HTTP 503') : okResult([tx({ timestampMs: NOW - 2000 })]);
 		});
 
-		const res = await fetchTxTimeRange(fetcher, 2, { nowMs: NOW, retryFailedDates: { delayMs: 0 } });
+		const res = await fetchTxTimeRange(fetcher, lastHours(2), { nowMs: NOW, retryFailedDates: { delayMs: 0 } });
 
 		expect(dateCalls).toBe(2);
 		expect(res.dateMerge.failedCount).toBe(0);
@@ -235,7 +423,7 @@ describe('fetchTxTimeRange', () => {
 			return failResult('network', 'HTTP 503');
 		});
 
-		const res = await fetchTxTimeRange(fetcher, 2, { nowMs: NOW });
+		const res = await fetchTxTimeRange(fetcher, lastHours(2), { nowMs: NOW });
 
 		expect(dateCalls).toBe(1);
 		expect(res.dateMerge.failedCount).toBe(1);
@@ -248,10 +436,80 @@ describe('fetchTxTimeRange', () => {
 			return okResult([tx({ timestampMs: NOW - 1000 })]);
 		});
 
-		const res = await fetchTxTimeRange(fetcher, 0.25, { nowMs: NOW });
+		const res = await fetchTxTimeRange(fetcher, lastHours(0.25), { nowMs: NOW });
 
 		expect(res.dates).toEqual([]);
 		expect(calls).toEqual([undefined]);
+	});
+
+	it('過去区間のみの要求では latest を叩かない（区間外の約定しか返らないため）', async () => {
+		const calls: Array<string | undefined> = [];
+		const fetcher = vi.fn(async (date?: string) => {
+			calls.push(date);
+			return okResult([tx({ timestampMs: Date.UTC(2026, 6, 6, 12, 0, 0) })]);
+		});
+
+		// 完了済み UTC 日 20260706 の丸 1 日（untilMs は閉区間の上端 = 23:59:59.999）
+		const res = await fetchTxTimeRange(
+			fetcher,
+			{ sinceMs: Date.UTC(2026, 6, 6, 0, 0, 0), untilMs: Date.UTC(2026, 6, 7, 0, 0, 0) - 1 },
+			{ nowMs: NOW },
+		);
+
+		expect(calls).toEqual(['20260706']);
+		expect(res.usedLatest).toBe(false);
+		expect(res.labels).toEqual(['20260706']);
+		expect(res.latestMerge.totalCount).toBe(0);
+		expect(res.latestMerge.failedCount).toBe(0);
+		expect(res.txs).toHaveLength(1);
+	});
+
+	it('過去区間でも「進行中の UTC 日」の判定は実時刻で行う（終端の日を未公開扱いしない）', async () => {
+		// untilMs の UTC 日 = 20260707。これを現在時刻とみなすと 20260707 が進行中と誤判定され、
+		// 実際には公開済みのアーカイブを列挙しなくなる。
+		const calls: Array<string | undefined> = [];
+		const fetcher = vi.fn(async (date?: string) => {
+			calls.push(date);
+			return okResult([tx({ timestampMs: Date.UTC(2026, 6, 7, 6, 0, 0) })]);
+		});
+
+		const res = await fetchTxTimeRange(
+			fetcher,
+			{ sinceMs: Date.UTC(2026, 6, 7, 0, 0, 0), untilMs: Date.UTC(2026, 6, 7, 12, 0, 0) },
+			{ nowMs: NOW },
+		);
+
+		expect(res.dates).toEqual(['20260707']);
+		expect(calls).toEqual(['20260707']);
+		expect(res.usedLatest).toBe(false);
+	});
+
+	it('区間が進行中 UTC 日にかかる場合は latest を叩く', async () => {
+		const calls: Array<string | undefined> = [];
+		const fetcher = vi.fn(async (date?: string) => {
+			calls.push(date);
+			return okResult([tx({ timestampMs: NOW - 60_000 })]);
+		});
+
+		const res = await fetchTxTimeRange(
+			fetcher,
+			{ sinceMs: Date.UTC(2026, 6, 7, 12, 0, 0), untilMs: Date.UTC(2026, 6, 8, 0, 10, 0) },
+			{ nowMs: NOW },
+		);
+
+		expect(res.usedLatest).toBe(true);
+		expect(calls).toEqual(['20260707', undefined]);
+	});
+
+	it('untilMs は閉区間の上端として扱う（境界の約定を落とさない）', async () => {
+		const untilMs = Date.UTC(2026, 6, 8, 0, 10, 0);
+		const fetcher = vi.fn(async (date?: string) =>
+			date ? okResult([]) : okResult([tx({ timestampMs: untilMs }), tx({ timestampMs: untilMs + 1, price: 1 })]),
+		);
+
+		const res = await fetchTxTimeRange(fetcher, { sinceMs: untilMs - 3600_000, untilMs }, { nowMs: NOW });
+
+		expect(res.txs.map((t) => t.timestampMs)).toEqual([untilMs]);
 	});
 });
 

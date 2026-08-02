@@ -5,6 +5,8 @@ import {
 	CandleTypeEnum,
 	FailResultSchema,
 	TrendLabelEnum,
+	TX_RANGE_SINCE_SCHEMA,
+	TX_RANGE_UNTIL_SCHEMA,
 	toolResultSchema,
 } from './base.js';
 
@@ -857,8 +859,19 @@ export const AnalyzeVolumeProfileInputSchema = BasePairInputSchema.extend({
 		.max(24)
 		.optional()
 		.default(4)
-		.describe('直近N時間分の約定を取得（デフォルト4h）。limit より優先'),
-	limit: z.number().int().min(50).max(2000).optional().default(500).describe('取得する約定件数。hours 指定時は無視'),
+		.describe(
+			'直近N時間分の約定を取得（デフォルト4h）。**現在時刻起点**の相対窓。limit より優先。since/until とは併用不可（併用時は user エラー）',
+		),
+	since: TX_RANGE_SINCE_SCHEMA,
+	until: TX_RANGE_UNTIL_SCHEMA,
+	limit: z
+		.number()
+		.int()
+		.min(50)
+		.max(2000)
+		.optional()
+		.default(500)
+		.describe('取得する約定件数。hours / since・until 指定時は無視'),
 	bins: z.number().int().min(5).max(100).optional().default(20).describe('Volume Profile の価格帯分割数'),
 	valueAreaPct: z
 		.number()
@@ -938,7 +951,10 @@ export const AnalyzeVolumeProfileDataSchemaOut = z.object({
 			requestedMin: z
 				.number()
 				.optional()
-				.describe('要求した時間窓（**分**）。hours 指定時のみ、hours×60（例: hours=4 → 240）'),
+				.describe(
+					'要求した時間窓（**分**）。hours 指定時は hours×60（例: hours=4 → 240）、since/until 指定時は (until - since) / 60000' +
+						'（例: since=2026-08-01T00:00:00Z, until=2026-08-02T00:00:00Z → 1440）。件数ベース取得では省略',
+				),
 		}),
 		bins: z.number().int(),
 		valueAreaPct: z.number(),
@@ -947,6 +963,17 @@ export const AnalyzeVolumeProfileDataSchemaOut = z.object({
 
 export const AnalyzeVolumeProfileMetaSchemaOut = BaseMetaSchema.extend({
 	count: z.number().int(),
+	mode: z
+		.enum(['absolute_range'])
+		.optional()
+		.describe('absolute_range: since・until による絶対時刻区間で取得した場合のみ'),
+	range: z
+		.object({ since: z.string(), until: z.string() })
+		.optional()
+		.describe(
+			'要求した絶対時刻区間（UTC ISO8601）。until は排他（[since, until)）で、省略指定時は解決に使った現在時刻が入る。' +
+				'mode=absolute_range のときのみ',
+		),
 	totalAvailable: z
 		.number()
 		.int()

@@ -5,6 +5,8 @@ import {
 	CandleSchema,
 	CandleTypeEnum,
 	FailResultSchema,
+	TX_RANGE_SINCE_SCHEMA,
+	TX_RANGE_UNTIL_SCHEMA,
 	toolResultSchema,
 } from './base.js';
 
@@ -395,7 +397,8 @@ export const TxCoverageRangeSchema = z.object({
 		.int()
 		.optional()
 		.describe(
-			'要求した時間窓（**分**）。hours 指定時は hours×60（例: hours=8 → 480）、date 指定（アーカイブ取得成功時）は当該 UTC 暦日の 1440。' +
+			'要求した時間窓（**分**）。hours 指定時は hours×60（例: hours=8 → 480）、since/until 指定時は (until - since) / 60000' +
+				'（例: since=2026-08-01T00:00:00Z, until=2026-08-02T00:00:00Z → 1440）、date 指定（アーカイブ取得成功時）は当該 UTC 暦日の 1440。' +
 				'時間窓の要求が無いケース（件数ベース取得 / date 指定でアーカイブ未公開のため latest にフォールバックした場合）は省略',
 		),
 	coveragePct: z
@@ -415,7 +418,17 @@ export const GetFlowMetricsMetaSchemaOut = BaseMetaSchema.extend({
 	timezoneOffset: z.string().optional(),
 	serverTime: z.string().optional(),
 	hours: z.number().optional(),
-	mode: z.enum(['time_range']).optional(),
+	mode: z
+		.enum(['time_range', 'absolute_range'])
+		.optional()
+		.describe('time_range: hours による現在時刻起点の相対窓 / absolute_range: since・until による絶対時刻区間'),
+	range: z
+		.object({ since: z.string(), until: z.string() })
+		.optional()
+		.describe(
+			'要求した絶対時刻区間（UTC ISO8601）。until は排他（[since, until)）で、省略指定時は解決に使った現在時刻が入る。' +
+				'mode=absolute_range のときのみ',
+		),
 	actualRange: TxCoverageRangeSchema.optional(),
 	totalAvailable: z
 		.number()
@@ -451,8 +464,11 @@ export const GetFlowMetricsInputSchema = BasePairInputSchema.extend({
 		.max(24)
 		.optional()
 		.describe(
-			'指定した時間数分の約定を取得して分析（例: 8 → 直近8時間）。limit より優先。複数日にまたがる場合も自動で取得します',
+			'指定した時間数分の約定を取得して分析（例: 8 → 直近8時間）。**現在時刻起点**の相対窓。limit より優先。' +
+				'複数日にまたがる場合も自動で取得します。since/until・date とは併用不可（併用時は user エラー）',
 		),
+	since: TX_RANGE_SINCE_SCHEMA,
+	until: TX_RANGE_UNTIL_SCHEMA,
 	date: z
 		.string()
 		.regex(/^\d{8}$/)
@@ -462,7 +478,8 @@ export const GetFlowMetricsInputSchema = BasePairInputSchema.extend({
 				'get_candles / validate_candle_data の date が tz 引数の暦日（既定 Asia/Tokyo）である点と基準が異なります。' +
 				'進行中の UTC 日を指定した場合は latest にフォールバックし warning を出します。省略時は latest。' +
 				'なお limit 上限（2000）より 1 UTC 日の約定数（BTC/JPY で 5,600〜8,000 件）が多いため、' +
-				'date 指定では 1 日全体をカバーできません。1 日を通した集計には hours を使ってください。',
+				'date 指定では 1 日全体をカバーできません。1 UTC 日全体を切り捨てなく集計するには since/until を使ってください' +
+				'（例: since=2026-08-01T00:00:00Z, until=2026-08-02T00:00:00Z）。since/until とは併用不可（併用時は user エラー）。',
 		),
 	bucketMs: z
 		.number()

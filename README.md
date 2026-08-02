@@ -420,7 +420,7 @@ npx @modelcontextprotocol/inspector -- npx -y bitbank-lab-mcp
 ```
 ソースコードから動かす場合は `npx @modelcontextprotocol/inspector -- tsx src/server.ts`（[開発者向け](#開発者向けソースから起動) を参照）。
 
-**Q. 当日の約定（フロー）データが少ない・古い時間帯が取れない** bitbank 側の仕様です。約定履歴の日付アーカイブ（`/transactions/{YYYYMMDD}`）は **UTC 暦日単位**で、当該 UTC 日の完了後（日本時間 9:00 以降、さらに公開遅延あり）にのみ公開されます。進行中の UTC 日の約定は直近約 60 件（latest）しか取得できないため、`get_flow_metrics` 等では当日区間のカバレッジが限定的になります（結果に warning として明示されます）。ローソク足（`get_candles`）は進行中の UTC 日でもリアルタイムで取得できます。
+**Q. 当日の約定（フロー）データが少ない・古い時間帯が取れない** bitbank 側の仕様です。約定履歴の日付アーカイブ（`/transactions/{YYYYMMDD}`）は **UTC 暦日単位**で、当該 UTC 日の完了後（日本時間 9:00 以降、さらに公開遅延あり）にのみ公開されます。進行中の UTC 日の約定は直近約 60 件（latest）しか取得できないため、`get_flow_metrics` 等では当日区間のカバレッジが限定的になります（結果に warning として明示されます）。ローソク足（`get_candles`）は進行中の UTC 日でもリアルタイムで取得できます。<br>なお**公開済みの過去区間**であれば、`get_flow_metrics` / `analyze_volume_profile` の `since` / `until`（オフセット付き ISO8601、最大 7 日）でその区間の**全件**を集計できます（例: `since=2026-08-01T00:00:00Z`, `until=2026-08-02T00:00:00Z` で UTC 8/1 の 1 日ぶん）。件数上限による切り捨ては起きません。
 
 ## トラブルシューティング
 
