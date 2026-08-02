@@ -503,9 +503,10 @@ describe('getCandles', () => {
 			expect(calledUrls.some((u) => u.endsWith('/btc_jpy/candlestick/1hour/20240115'))).toBe(true);
 		});
 
-		// anchor 年内の利用可能本数の見積りは「1/1 から anchor 日までの**暦日数**」で決まる。
-		// DST を挟む tz では ms 差の単純割り算だと 1 日ぶん少なく出る
-		// （NY 2025-01-01 00:00 EST → 06-16 00:00 EDT は暦日で 167 日だが ms 差は 166 日 23 時間）。
+		// anchor 年内の利用可能本数の見積りは「1/1 から anchor 日までの**暦日数**」（= 暦日差 + 1）で決まる。
+		// DST を挟む tz では ms 差の単純割り算だと 1 日ぶん少なく出る:
+		// NY 2025-01-01 00:00 EST → 06-16 00:00 EDT は暦日差 166 日（= 経過 167 日ぶん）だが、
+		// 春の DST 開始で 1 時間短いため ms 差は 165 日 23 時間 → 割り算では経過 166 日ぶんに落ちる。
 		//
 		// この見積り (barsInAnchorYear) は yearsNeeded → needsMultiYear を経て **limit 上限**を
 		// 切り替える（multiYear=5000 / default=1000）。date 指定時は fetch key が UTC 年 window 側から

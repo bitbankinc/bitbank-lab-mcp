@@ -215,7 +215,7 @@ export function enumerateDayKeys(startMs: number, endMs: number, tz: string): Da
  * 同じ暦日なら 0、`toMs` が翌日なら 1、前日なら -1。
  *
  * ミリ秒差を 86400000 で割ってはいけない。DST を挟むと 23h / 25h の日が出て 1 日ぶんずれる
- * （`America/New_York` の 2025-01-01 → 06-16 は暦日で 167 日だが ms 差は 166 日 23 時間）。
+ * （`America/New_York` の 2025-01-01 → 06-16 は暦日で 166 日だが ms 差は 165 日 23 時間）。
  * 暦日キーの日付演算で数えるためオフセットの変化に影響されない。
  */
 export function diffCalendarDays(fromMs: number, toMs: number, tz: string): number {
