@@ -26,7 +26,7 @@ import {
 	type TxTimeRangeResolved,
 	txDedupKey,
 } from '../../lib/tx-fetch.js';
-import { MAX_TX_RANGE_DAYS } from '../../src/schema/base.js';
+import { ISO8601_WITH_OFFSET_PATTERN, MAX_TX_RANGE_DAYS } from '../../src/schema/base.js';
 
 const BASE_MS = Date.UTC(2026, 6, 7, 0, 0, 0);
 
@@ -243,6 +243,34 @@ describe('resolveTxTimeRange', () => {
 			const res = resolve({ since: '2026-08-01T00:00:00.500Z', until: '2026-08-01T01:00:00.500Z' });
 			assertResolved(res);
 			expect(res.sinceMs).toBe(Date.UTC(2026, 7, 1, 0, 0, 0) + 500);
+		});
+
+		// 小数秒は 10 進小数（.5 = 500ms）。桁数が 3 でない入力は、スキーマの正規表現は
+		// 通るのに parseIso8601（strict format は .SSS 固定）が落として「存在しない日付・
+		// 時刻」と誤報していた。正準形へ揃える正規化をここで固定する。
+		it.each([
+			['2026-08-01T00:00:00.5Z', 500],
+			['2026-08-01T00:00:00.12Z', 120],
+			['2026-08-01T00:00:00.123Z', 123],
+			// ミリ秒未満は Date が保持できないので切り捨てる
+			['2026-08-01T00:00:00.1234Z', 123],
+		])('小数秒の桁数が 3 でなくても正しく解釈する: %s', (since, expectedMs) => {
+			const res = resolve({ since, until: '2026-08-01T01:00:00Z' });
+			assertResolved(res);
+			expect(res.sinceMs).toBe(Date.UTC(2026, 7, 1, 0, 0, 0) + expectedMs);
+		});
+
+		it('小数秒の桁数が 3 でない入力はスキーマ側でも受理される（parse と食い違わない）', () => {
+			// 「スキーマは通るが parse で落ちる」入力を作らないことがパターンの契約
+			for (const value of ['2026-08-01T00:00:00.5Z', '2026-08-01T00:00:00.12Z', '2026-08-01T00:00:00.1234Z']) {
+				expect(ISO8601_WITH_OFFSET_PATTERN.test(value)).toBe(true);
+				expect(resolve({ since: value, until: '2026-08-01T01:00:00Z' }).ok).toBe(true);
+			}
+		});
+
+		it('小数秒だけ・分の小数は受け付けない（秒が無ければ小数秒も無い）', () => {
+			expect(resolve({ since: '2026-08-01T00:00:00.Z' }).ok).toBe(false);
+			expect(resolve({ since: '2026-08-01T00:00.5Z' }).ok).toBe(false);
 		});
 	});
 

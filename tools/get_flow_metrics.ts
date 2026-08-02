@@ -654,7 +654,7 @@ export const toolDef: ToolDefinition = {
 		`\n- **hours**: 現在時刻起点の相対窓（最大24h）。「直近N時間」の分析用。` +
 		`\n- **since / until**: オフセット付き ISO8601 の絶対時刻区間（例: since=2026-08-01T00:00:00Z, until=2026-08-02T00:00:00Z）。**過去の特定区間を全件**集計する唯一の手段。until は排他（[since, until)）で省略時は現在時刻まで。最大 ${MAX_TX_RANGE_DAYS} 日。limit は適用しない。` +
 		`\n- **date**: UTC 暦日 1 日。ただし limit 上限（2000）が 1 日の約定数（5,600〜8,000 件）に届かないため 1 日全体はカバーできない。1 日全体は since/until を使うこと。` +
-		`\n- hours / since・until / date は**併用不可**（併用すると user エラー）。暗黙の優先順位は要求と異なる区間の集計値を無言で返すため設けていない。` +
+		`\n- **since/until は hours とも date とも併用不可**（併用すると user エラー）。暗黙の優先順位を置くと、要求と異なる区間の集計値が無言で返るため。なお hours と date の同時指定だけは従来どおりエラーにせず hours が優先される（date は無視される）。` +
 		`\n- since/until に YYYYMMDD 形式は使えない。暦日の基準がツール間で割れている（本ツールの date は UTC 暦日、get_candles の date は tz 引数の暦日）ため、絶対時刻はオフセット必須の ISO8601 のみ受け付ける。` +
 		`\n\nデータソース制約（bitbank 側仕様）: 約定アーカイブ /transactions/{YYYYMMDD} は UTC 暦日単位で、当該 UTC 日の完了後にのみ公開される。完了済み UTC 日は**全件**（1日あたり数千件）を集計に使う。進行中の UTC 日（JST 09:00 で切り替わる）の約定は /transactions (latest, 直近約60件) でしか取得できないため、当日区間のカバレッジは限定的（warning で明示される）。` +
 		`\n\nカバレッジ申告: meta.actualRange は durationMinutes（先頭〜末尾のスパン）に加えて coveredMinutes（実データがある区間の合計）/ gapMinutes / gaps を返す。requestedMinutes（要求区間）に対する coveragePct が出るので、要求どおり取れたかは常にこの値で確認できる。欠損があれば meta.warning（取得層）と meta.warnings（計算層: 集計値がカバー区間のみ由来である旨）で明示される。完了済み UTC 日のみの区間なら coveragePct はほぼ 100%、進行中 UTC 日にかかる区間は latest 約60件ぶんまで下がる。` +

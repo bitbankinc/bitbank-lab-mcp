@@ -201,9 +201,13 @@ function parseAbsoluteIso(label: string, value: string): { ok: true; ms: number 
 			message: `${label} はオフセット付き ISO8601 で指定してください（例: 2026-08-01T00:00:00Z / 2026-08-01T09:00:00+09:00）。指定値: ${value}`,
 		};
 	}
-	// 秒省略（2026-08-01T00:00Z）を補って strict parse に渡す
-	const [, dateHm, sec, offset] = parts;
-	const parsed = parseIso8601(`${dateHm}${sec ?? ':00'}${offset}`);
+	// 秒省略（2026-08-01T00:00Z）と小数秒の桁数違い（.5 / .12 / .1234）を正準形 `.SSS` に
+	// 揃えてから strict parse に渡す。parseIso8601 の strict format は 3 桁固定なので、
+	// 揃えずに渡すと受理すべき入力が「存在しない日付・時刻」として弾かれる。
+	// 小数秒は 10 進小数（.5 = 500ms）。ミリ秒未満は Date が保持できないので切り捨てる。
+	const [, dateHm, sec, frac, offset] = parts;
+	const ms = (frac ?? '').padEnd(3, '0').slice(0, 3);
+	const parsed = parseIso8601(`${dateHm}:${sec ?? '00'}.${ms}${offset}`);
 	if (!parsed) {
 		return { ok: false, message: `${label} の日時が不正です（存在しない日付・時刻）。指定値: ${value}` };
 	}

@@ -601,8 +601,9 @@ export const toolDef: ToolDefinition = {
 		const parsed = AnalyzeVolumeProfileInputSchema.parse(rawInput);
 		return analyzeVolumeProfile(
 			parsed.pair,
-			// hours はスキーマ既定値（4）を持つため、明示指定されたときだけ相対窓として扱う
-			// （既定値のまま since/until と併用扱いになると排他エラーで弾かれてしまう）。
+			// hours はスキーマ既定値（4）を持つが、**明示指定されたときだけ**相対窓として扱う
+			// （既存挙動。省略時は既定値 4 を使わず件数ベース = limit にフォールバックする）。
+			// 副次的に、since/until 指定時は hours が undefined になるため排他エラーにならない。
 			'hours' in rawInput ? parsed.hours : undefined,
 			parsed.limit,
 			parsed.bins,
