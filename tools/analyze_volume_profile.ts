@@ -26,10 +26,12 @@ import {
 	formatTxFailures,
 	hasCoverageShortfall,
 	partialFailureWarning,
+	resolveTxTimeRange,
 	sortTxsAsc,
 	type Tx,
 	type TxFetcher,
 	type TxLimitApplication,
+	type TxTimeRangeResolved,
 } from '../lib/tx-fetch.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import {
@@ -37,6 +39,7 @@ import {
 	AnalyzeVolumeProfileInputSchema,
 	type AnalyzeVolumeProfileMetaSchemaOut,
 	AnalyzeVolumeProfileOutputSchema,
+	MAX_TX_RANGE_DAYS,
 } from '../src/schemas.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
 import getTransactions from './get_transactions.js';
@@ -67,15 +70,14 @@ function internalTxFetcher(pair: string): TxFetcher {
  * 約定を取得する。完了済み UTC 日アーカイブの列挙 + latest 補完 + dedup マージは
  * lib/tx-fetch.ts に集約されており、本関数は失敗ハンドリングの方針
  * （全滅 fail / 過半数 fail / 部分失敗 warning）だけを持つ。
+ *
+ * @param resolved 時間範囲ベース取得の解決済み区間。undefined なら件数ベース取得。
  */
-async function fetchTransactions(pair: string, hours?: number, limit?: number): Promise<FetchResult> {
+async function fetchTransactions(pair: string, resolved?: TxTimeRangeResolved, limit?: number): Promise<FetchResult> {
 	const txFetcher = internalTxFetcher(pair);
 
-	if (hours != null && hours > 0) {
-		// hours は現在時刻起点の相対指定。絶対区間への変換は呼び出し側で行い、
-		// 取得層（lib/tx-fetch.ts）には絶対区間だけを渡す。
-		const nowMs = Date.now();
-		const range = await fetchTxTimeRange(txFetcher, { sinceMs: nowMs - hours * 3600_000, untilMs: nowMs }, { nowMs });
+	if (resolved) {
+		const range = await fetchTxTimeRange(txFetcher, resolved, { nowMs: resolved.nowMs });
 		const { results, merged } = range;
 		if (merged.txs.length === 0) {
 			const upstreamErr = extractUpstreamError(results);
@@ -396,12 +398,24 @@ export default async function analyzeVolumeProfile(
 	bins: number = 20,
 	valueAreaPct: number = 0.7,
 	tz: string = 'Asia/Tokyo',
+	range?: { since?: string; until?: string },
 ) {
 	const chk = ensurePair(pair);
 	if (!chk.ok) return failFromValidation(chk, AnalyzeVolumeProfileOutputSchema);
 
 	try {
-		const fetchResult = await fetchTransactions(chk.pair, hours, limit);
+		const since = range?.since;
+		const until = range?.until;
+		// 時間範囲ベース（hours = 相対窓 / since・until = 絶対区間）か件数ベースかを先に決める。
+		// 排他判定・形式検証・最大範囲チェックは lib/tx-fetch.ts に集約。
+		let resolvedRange: TxTimeRangeResolved | undefined;
+		if (since != null || until != null || (hours != null && hours > 0)) {
+			const resolved = resolveTxTimeRange({ since, until, hours });
+			if (!resolved.ok) return failFromValidation(resolved, AnalyzeVolumeProfileOutputSchema);
+			resolvedRange = resolved;
+		}
+
+		const fetchResult = await fetchTransactions(chk.pair, resolvedRange, limit);
 		if (!fetchResult.ok) {
 			return AnalyzeVolumeProfileOutputSchema.parse(fail(fetchResult.summary, fetchResult.errorType));
 		}
@@ -444,7 +458,7 @@ export default async function analyzeVolumeProfile(
 		const endMs = txs[txs.length - 1].timestampMs;
 		const coverage = computeTxCoverage(txs);
 		const durationMin = coverage?.spanMinutes ?? Math.round((endMs - startMs) / 60_000);
-		const requestedMin = hours != null && hours > 0 ? Math.round(hours * 60) : undefined;
+		const requestedMin = resolvedRange?.requestedMinutes;
 		const coverageWarning = buildTxCoverageWarning(coverage, { requestedMinutes: requestedMin, tz });
 		// 取得層（部分失敗・カバレッジ欠損）と計算層（集計値がカバー区間のみ由来）は別系統。
 		const fetchWarnings = [fetchResult.fetchWarning, coverageWarning].filter(Boolean) as string[];
@@ -545,6 +559,11 @@ export default async function analyzeVolumeProfile(
 		].join('\n');
 
 		const metaExtra: Record<string, unknown> = { count: txs.length };
+		// 絶対区間指定は要求区間そのものを申告する（hours の相対窓と区別できるようにする）
+		if (resolvedRange?.mode === 'absolute') {
+			metaExtra.mode = 'absolute_range';
+			metaExtra.range = { since: resolvedRange.sinceIso, until: resolvedRange.untilIso };
+		}
 		if (dataWarning) metaExtra.warning = dataWarning;
 		if (calcWarnings.length > 0) metaExtra.warnings = calcWarnings;
 		// limit による切り捨ての明示（get_flow_metrics / get_transactions と対応）
@@ -570,6 +589,10 @@ export const toolDef: ToolDefinition = {
 	name: 'analyze_volume_profile',
 	description:
 		`[Volume Profile / VWAP / POC] 出来高プロファイル分析（volume profile / VWAP / POC / value area）。VWAP±σバンド・価格帯別出来高・約定サイズ分布を算出。hours で期間指定（デフォルト4h、最大24h）。` +
+		`\n\n期間指定の使い分け:` +
+		`\n- **hours**: 現在時刻起点の相対窓（最大24h）。` +
+		`\n- **since / until**: オフセット付き ISO8601 の絶対時刻区間（例: since=2026-08-01T00:00:00Z, until=2026-08-02T00:00:00Z）。**過去の特定区間を全件**集計する唯一の手段。until は排他（[since, until)）で省略時は現在時刻まで。最大 ${MAX_TX_RANGE_DAYS} 日。limit は適用しない。` +
+		`\n- hours と since/until は**併用不可**（併用すると user エラー）。since/until に YYYYMMDD 形式は使えない（暦日の基準がツール間で割れているため、絶対時刻はオフセット必須の ISO8601 のみ受け付ける）。` +
 		`\n\nデータソース制約（bitbank 側仕様）: 約定アーカイブ /transactions/{YYYYMMDD} は UTC 暦日単位で、当該 UTC 日の完了後にのみ公開される。完了済み UTC 日は**全件**（1日あたり数千件）を集計に使う。進行中の UTC 日（JST 09:00 で切り替わる）は /transactions (latest, 直近約60件) のみ。` +
 		`\n\nカバレッジ申告: params.timeRange は durationMin（先頭〜末尾のスパン）に加えて coveredMin（実データがある区間の合計）/ gapMin / segments を返す。欠損があれば meta.warning（取得層）と meta.warnings（計算層: 集計値がカバー区間のみ由来である旨）で明示される。` +
 		`\n\n加工契約: 内部の約定列は timestampMs 昇順にソート済み。latest と date ベースのマージ時の重複除去キーは \`timestampMs:price:amount:side\`（transaction_id は使用しない）。`,
@@ -578,11 +601,14 @@ export const toolDef: ToolDefinition = {
 		const parsed = AnalyzeVolumeProfileInputSchema.parse(rawInput);
 		return analyzeVolumeProfile(
 			parsed.pair,
+			// hours はスキーマ既定値（4）を持つため、明示指定されたときだけ相対窓として扱う
+			// （既定値のまま since/until と併用扱いになると排他エラーで弾かれてしまう）。
 			'hours' in rawInput ? parsed.hours : undefined,
 			parsed.limit,
 			parsed.bins,
 			parsed.valueAreaPct,
 			parsed.tz,
+			{ since: parsed.since, until: parsed.until },
 		);
 	},
 };

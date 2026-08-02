@@ -14,13 +14,15 @@ import {
 	formatTxFailures,
 	hasCoverageShortfall,
 	isGapRange,
+	resolveTxTimeRange,
 	sortTxsAsc,
 	type Tx,
 	type TxFetcher,
 	type TxLimitApplication,
+	type TxTimeRangeResolved,
 } from '../lib/tx-fetch.js';
 import { createMeta, ensurePair, validateLimit } from '../lib/validate.js';
-import { GetFlowMetricsInputSchema, GetFlowMetricsOutputSchema } from '../src/schemas.js';
+import { GetFlowMetricsInputSchema, GetFlowMetricsOutputSchema, MAX_TX_RANGE_DAYS } from '../src/schemas.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
 import getTransactions from './get_transactions.js';
 
@@ -178,6 +180,7 @@ export default async function getFlowMetrics(
 	bucketMs: number = 60_000,
 	tz: string = 'Asia/Tokyo',
 	hours?: number,
+	range?: { since?: string; until?: string },
 ) {
 	const chk = ensurePair(pair);
 	if (!chk.ok) return failFromValidation(chk, GetFlowMetricsOutputSchema);
@@ -190,26 +193,30 @@ export default async function getFlowMetrics(
 		/**
 		 * 要求した時間窓（分）。カバレッジ率の分母になる。
 		 * - hours 指定: hours×60 分
+		 * - since/until 指定: (until - since) / 60000 分
 		 * - date 指定: 当該 UTC 暦日 = 1440 分（limit で切れた場合に「1 日のうちどれだけ見たか」が出る）
-		 * - 件数ベース（date/hours なし）: 時間窓の要求が無いので undefined
+		 * - 件数ベース（date/hours/since なし）: 時間窓の要求が無いので undefined
 		 */
 		let requestedMin: number | undefined;
+		/** 時間範囲ベース取得の解決結果（meta 申告用に保持） */
+		let resolvedRange: TxTimeRangeResolved | undefined;
 		const txFetcher = internalTxFetcher(chk.pair);
+		const since = range?.since;
+		const until = range?.until;
 
-		if (hours != null && hours > 0) {
-			// === 時間範囲ベースの取得 ===
+		if (since != null || until != null || (hours != null && hours > 0)) {
+			// === 時間範囲ベースの取得（hours = 相対窓 / since・until = 絶対区間）===
 			// 完了済み UTC 日アーカイブの列挙 + latest 補完 + dedup マージは lib/tx-fetch.ts に集約。
 			// 失敗ハンドリング（全滅 fail / 部分失敗 warning）の方針は本ツール側で判断する。
-			requestedMin = Math.round(hours * 60);
-			// hours は現在時刻起点の相対指定。絶対区間への変換は呼び出し側で行い、
-			// 取得層（lib/tx-fetch.ts）には絶対区間だけを渡す。
-			const nowMs = Date.now();
-			const range = await fetchTxTimeRange(
-				txFetcher,
-				{ sinceMs: nowMs - hours * 3600_000, untilMs: nowMs },
-				{ nowMs, retryFailedDates: { delayMs: 500 } },
-			);
-			const { currentUtcDay, dates, dateMerge, latestMerge } = range;
+			const resolved = resolveTxTimeRange({ since, until, hours, date });
+			if (!resolved.ok) return failFromValidation(resolved, GetFlowMetricsOutputSchema);
+			resolvedRange = resolved;
+			requestedMin = resolved.requestedMinutes;
+			const fetched = await fetchTxTimeRange(txFetcher, resolved, {
+				nowMs: resolved.nowMs,
+				retryFailedDates: { delayMs: 500 },
+			});
+			const { currentUtcDay, dates, dateMerge, latestMerge } = fetched;
 
 			// 完了済み UTC 日アーカイブ（authoritative）が全滅した場合は fail。
 			// 進行中の UTC 日は fetch 対象外（アーカイブ未公開）なので、この失敗は実失敗のみ。
@@ -226,7 +233,7 @@ export default async function getFlowMetrics(
 				);
 			}
 
-			// 時間窓が進行中の UTC 日内に収まる（アーカイブ要求なし）場合、latest が唯一のソース。
+			// 要求区間が進行中の UTC 日内に収まる（アーカイブ要求なし）場合、latest が唯一のソース。
 			// その latest も失敗したら取得手段なし。
 			if (dates.length === 0 && latestMerge.txs.length === 0 && latestMerge.failedCount > 0) {
 				return GetFlowMetricsOutputSchema.parse(
@@ -246,7 +253,7 @@ export default async function getFlowMetrics(
 			}
 			// 進行中の UTC 日の区間はアーカイブが存在しないため、常に latest（直近約60件）のみでの補完になる。
 			// 要求区間が進行中の UTC 日にかからない（過去区間のみ）場合は latest を叩かないので出さない。
-			if (range.usedLatest) {
+			if (fetched.usedLatest) {
 				warnMsgs.push(
 					`ℹ️ 進行中の UTC 日 (${currentUtcDay}) のアーカイブは未公開のため、この区間は /transactions (latest, 直近約60件) で補完しています`,
 				);
@@ -258,7 +265,7 @@ export default async function getFlowMetrics(
 			}
 			if (warnMsgs.length > 0) fetchWarning = warnMsgs.join('\n');
 
-			txs = range.txs;
+			txs = fetched.txs;
 		} else {
 			// === 件数ベース取得 ===
 			const lim = validateLimit(limit, 1, 2000);
@@ -583,6 +590,11 @@ export default async function getFlowMetrics(
 			metaExtra.hours = hours;
 			metaExtra.mode = 'time_range';
 		}
+		// 絶対区間指定は要求区間そのものを申告する（hours の相対窓と区別できるようにする）
+		if (resolvedRange?.mode === 'absolute') {
+			metaExtra.mode = 'absolute_range';
+			metaExtra.range = { since: resolvedRange.sinceIso, until: resolvedRange.untilIso };
+		}
 		if (coverage) {
 			const fmtRange = (ms: number) => toIsoWithTz(ms, tz) ?? toIsoTime(ms);
 			metaExtra.actualRange = {
@@ -637,9 +649,15 @@ export default async function getFlowMetrics(
 export const toolDef: ToolDefinition = {
 	name: 'get_flow_metrics',
 	description:
-		`[Flow / CVD / Buy-Sell Pressure] 資金フロー分析（flow / CVD / aggressor ratio / buy-sell pressure）。約定データからCVD・アグレッサー比・スパイクを検出。hours（推奨）で時間範囲指定、または limit で件数指定。` +
+		`[Flow / CVD / Buy-Sell Pressure] 資金フロー分析（flow / CVD / aggressor ratio / buy-sell pressure）。約定データからCVD・アグレッサー比・スパイクを検出。直近フローは hours（現在時刻起点）、過去の特定区間は since/until（絶対時刻）、件数指定は limit。` +
+		`\n\n期間指定の使い分け:` +
+		`\n- **hours**: 現在時刻起点の相対窓（最大24h）。「直近N時間」の分析用。` +
+		`\n- **since / until**: オフセット付き ISO8601 の絶対時刻区間（例: since=2026-08-01T00:00:00Z, until=2026-08-02T00:00:00Z）。**過去の特定区間を全件**集計する唯一の手段。until は排他（[since, until)）で省略時は現在時刻まで。最大 ${MAX_TX_RANGE_DAYS} 日。limit は適用しない。` +
+		`\n- **date**: UTC 暦日 1 日。ただし limit 上限（2000）が 1 日の約定数（5,600〜8,000 件）に届かないため 1 日全体はカバーできない。1 日全体は since/until を使うこと。` +
+		`\n- hours / since・until / date は**併用不可**（併用すると user エラー）。暗黙の優先順位は要求と異なる区間の集計値を無言で返すため設けていない。` +
+		`\n- since/until に YYYYMMDD 形式は使えない。暦日の基準がツール間で割れている（本ツールの date は UTC 暦日、get_candles の date は tz 引数の暦日）ため、絶対時刻はオフセット必須の ISO8601 のみ受け付ける。` +
 		`\n\nデータソース制約（bitbank 側仕様）: 約定アーカイブ /transactions/{YYYYMMDD} は UTC 暦日単位で、当該 UTC 日の完了後にのみ公開される。完了済み UTC 日は**全件**（1日あたり数千件）を集計に使う。進行中の UTC 日（JST 09:00 で切り替わる）の約定は /transactions (latest, 直近約60件) でしか取得できないため、当日区間のカバレッジは限定的（warning で明示される）。` +
-		`\n\nカバレッジ申告: meta.actualRange は durationMinutes（先頭〜末尾のスパン）に加えて coveredMinutes（実データがある区間の合計）/ gapMinutes / gaps を返す。欠損があれば meta.warning（取得層）と meta.warnings（計算層: 集計値がカバー区間のみ由来である旨）で明示される。` +
+		`\n\nカバレッジ申告: meta.actualRange は durationMinutes（先頭〜末尾のスパン）に加えて coveredMinutes（実データがある区間の合計）/ gapMinutes / gaps を返す。requestedMinutes（要求区間）に対する coveragePct が出るので、要求どおり取れたかは常にこの値で確認できる。欠損があれば meta.warning（取得層）と meta.warnings（計算層: 集計値がカバー区間のみ由来である旨）で明示される。完了済み UTC 日のみの区間なら coveragePct はほぼ 100%、進行中 UTC 日にかかる区間は latest 約60件ぶんまで下がる。` +
 		`\n\n加工契約:` +
 		`\n- 内部で使用する約定列は、取得パスに関わらず timestampMs 昇順にソート済み。` +
 		`\n- latest と date ベースをマージする場合、重複除去キーは \`timestampMs:price:amount:side\`（transaction_id は使用しない: 同一約定でも上流エンドポイント間で ID が一致しないケースがあるため）。`,
@@ -653,6 +671,8 @@ export const toolDef: ToolDefinition = {
 		bucketsN,
 		tz,
 		hours,
+		since,
+		until,
 	}: {
 		pair?: string;
 		limit?: number;
@@ -662,6 +682,8 @@ export const toolDef: ToolDefinition = {
 		bucketsN?: number;
 		tz?: string;
 		hours?: number;
+		since?: string;
+		until?: string;
 	}) => {
 		const res = await getFlowMetrics(
 			pair,
@@ -670,6 +692,7 @@ export const toolDef: ToolDefinition = {
 			Number(bucketMs),
 			tz,
 			hours != null ? Number(hours) : undefined,
+			{ since, until },
 		);
 		if (!res?.ok) return res;
 

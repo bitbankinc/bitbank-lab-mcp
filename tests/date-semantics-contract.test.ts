@@ -58,9 +58,10 @@ describe('date パラメータの暦基準が description に明記されてい�
 
 	it('get_flow_metrics: date では 1 UTC 日全体をカバーできないことが書かれている', () => {
 		// limit 上限 2000 < 1 UTC 日の約定数（BTC/JPY 5,600〜8,000 件）のため、
-		// date 指定は最新側に切り詰められる。hours への誘導まで含めて明記する。
+		// date 指定は最新側に切り詰められる。切り捨てなく 1 日を集計できる代替手段
+		// （since/until の絶対区間指定）への誘導まで含めて明記する。
 		const desc = dateDescription(getFlowMetricsDef.inputSchema);
-		expect(desc).toContain('hours');
+		expect(desc).toContain('since/until');
 		expect(desc).toMatch(/カバーできません|1 日全体/);
 	});
 });
