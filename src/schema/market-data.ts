@@ -5,6 +5,7 @@ import {
 	CandleSchema,
 	CandleTypeEnum,
 	FailResultSchema,
+	MAX_TX_COUNT_LIMIT,
 	TX_RANGE_SINCE_SCHEMA,
 	TX_RANGE_UNTIL_SCHEMA,
 	toolResultSchema,
@@ -454,7 +455,7 @@ export const GetFlowMetricsInputSchema = BasePairInputSchema.extend({
 		.number()
 		.int()
 		.min(1)
-		.max(2000)
+		.max(MAX_TX_COUNT_LIMIT)
 		.optional()
 		.default(100)
 		.describe('取得する約定件数（バケット数ではない）。hours 指定時は無視されます'),

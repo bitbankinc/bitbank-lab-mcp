@@ -4,6 +4,7 @@ import {
 	BasePairInputSchema,
 	CandleTypeEnum,
 	FailResultSchema,
+	MAX_TX_COUNT_LIMIT,
 	TrendLabelEnum,
 	TX_RANGE_SINCE_SCHEMA,
 	TX_RANGE_UNTIL_SCHEMA,
@@ -868,7 +869,7 @@ export const AnalyzeVolumeProfileInputSchema = BasePairInputSchema.extend({
 		.number()
 		.int()
 		.min(50)
-		.max(2000)
+		.max(MAX_TX_COUNT_LIMIT)
 		.optional()
 		.default(500)
 		.describe('取得する約定件数。hours / since・until 指定時は無視'),
