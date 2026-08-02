@@ -7,6 +7,7 @@
  */
 
 import { dayjs } from '../../../lib/datetime.js';
+import { PORTFOLIO_CALENDAR_TZ, portfolioDayStartMs } from './calendar.js';
 import type {
 	AccountPnl,
 	CandlePriceData,
@@ -498,12 +499,17 @@ export function calcPeriodDWSummary(
 
 /**
  * JST 基準の年初来・月初来の境界タイムスタンプを返す。
+ *
+ * 当日の起点だけは `portfolioDayStartMs`（= `lib/calendar.ts`）経由で求める。
+ * `fetchCandlePriceData` の日次価格キーおよび資産推移の日次点と同じ暦日境界を
+ * 共有する必要があるため（`./calendar.ts` 参照）。
  */
 export function getJstPeriodBoundaries() {
-	const nowJst = dayjs().tz('Asia/Tokyo');
+	const nowMs = Date.now();
+	const nowJst = dayjs(nowMs).tz(PORTFOLIO_CALENDAR_TZ);
 	const yearStart = nowJst.startOf('year');
 	const monthStart = nowJst.startOf('month');
-	const dayStart = nowJst.startOf('day');
+	const dayStart = dayjs(portfolioDayStartMs(nowMs)).tz(PORTFOLIO_CALENDAR_TZ);
 	return {
 		yearStartMs: yearStart.valueOf(),
 		yearStartIso: yearStart.format('YYYY-MM-DDTHH:mm:ssZ'),
