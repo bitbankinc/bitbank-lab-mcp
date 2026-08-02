@@ -1,3 +1,4 @@
+import { isSupportedTimeZone } from '../lib/calendar.js';
 import {
 	dedupeByTimestamp,
 	describeFailedChunks,
@@ -100,21 +101,17 @@ const CANDLE_LIMIT = {
 	multiDay: 10_000,
 } as const;
 
+/** 空文字・undefined・不正 tz のフォールバック先（表示層が円建て・JST 前提のため）。 */
+const DEFAULT_ANCHOR_TZ = 'Asia/Tokyo';
+
 /**
  * tz 引数を正規化する。空文字・undefined・不正値は Asia/Tokyo にフォールバック。
  *
- * dayjs.tz は不正な timezone 文字列を渡すと throw する実装系もあるため、
- * 呼び出し側で safe な値に揃えてから渡す。
+ * 不正 tz を既定値へ倒すかどうかは呼び出し側のポリシーなので、lib/calendar.ts は
+ * 判定（isSupportedTimeZone）だけを提供する。倒し先を決めるのがこの関数の責務。
  */
 function normalizeAnchorTz(tz: string | undefined): string {
-	if (typeof tz !== 'string' || tz.length === 0) return 'Asia/Tokyo';
-	try {
-		// dummy timestamp で tz が dayjs に認識されるか検証
-		if (dayjs(0).tz(tz).isValid()) return tz;
-	} catch {
-		// fallthrough
-	}
-	return 'Asia/Tokyo';
+	return isSupportedTimeZone(tz) ? tz : DEFAULT_ANCHOR_TZ;
 }
 
 /**
