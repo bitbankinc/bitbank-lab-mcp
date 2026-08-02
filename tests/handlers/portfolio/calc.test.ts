@@ -13,7 +13,7 @@
  * を、calcPnl / calcPeriodRealizedPnl / reconstructHoldingsAtDate の 3 関数で検証する。
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	buildAccountPnl,
 	buildPeriodPerformance,
@@ -22,10 +22,12 @@ import {
 	calcPeriodMarginPnl,
 	calcPeriodRealizedPnl,
 	calcPnl,
+	getJstPeriodBoundaries,
 	PERFORMANCE_NOTE,
 	type PortfolioPerformanceContext,
 	reconstructHoldingsAtDate,
 } from '../../../src/handlers/portfolio/calc.js';
+import { portfolioDayStartMs } from '../../../src/handlers/portfolio/calendar.js';
 import type {
 	CandlePriceData,
 	DepositWithdrawalData,
@@ -1004,5 +1006,103 @@ describe('buildPeriodPerformance', () => {
 			'period_end',
 			'note',
 		]);
+	});
+});
+
+/**
+ * 当日損益（daily performance）の起点が JST 暦日の 0:00 であることを境界時刻で固定する。
+ *
+ * この起点は `fetchCandlePriceData` が日次価格マップのキーに使う JST 0:00 正規化、および
+ * 資産推移の日次点の打ち止めと**同じ暦日境界でなければならない**（src/handlers/portfolio/
+ * calendar.ts 参照）。UTC 暦日で計算してしまうと JST 09:00 を境に起点が 1 日ぶんずれ、
+ * JST 深夜（UTC ではまだ前日）の当日損益が前日ぶんを含んだ値になる。
+ */
+describe('getJstPeriodBoundaries: JST 暦日境界', () => {
+	/** JST の壁時計時刻を epoch ms に変換する（JST は DST を持たないので UTC+9 固定）。 */
+	function jstMs(y: number, m: number, d: number, h = 0, min = 0, s = 0, ms = 0): number {
+		return Date.UTC(y, m - 1, d, h - 9, min, s, ms);
+	}
+
+	function boundariesAt(nowMs: number) {
+		vi.setSystemTime(nowMs);
+		return getJstPeriodBoundaries();
+	}
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.unstubAllEnvs();
+	});
+
+	it('JST 00:00:00.000 ちょうど → 起点はその瞬間自身', () => {
+		const midnight = jstMs(2026, 8, 2);
+		const b = boundariesAt(midnight);
+		expect(b.dayStartMs).toBe(midnight);
+		expect(b.dayStartIso).toBe('2026-08-02T00:00:00+09:00');
+	});
+
+	it('JST 00:00 の 1ms 前 → 前日 00:00 が起点（翌日ぶんに飛ばない）', () => {
+		const b = boundariesAt(jstMs(2026, 8, 2) - 1);
+		expect(b.dayStartMs).toBe(jstMs(2026, 8, 1));
+		expect(b.dayStartIso).toBe('2026-08-01T00:00:00+09:00');
+	});
+
+	it('JST 00:00 の 1ms 後 → 当日 00:00 が起点', () => {
+		const b = boundariesAt(jstMs(2026, 8, 2) + 1);
+		expect(b.dayStartMs).toBe(jstMs(2026, 8, 2));
+		expect(b.dayStartIso).toBe('2026-08-02T00:00:00+09:00');
+	});
+
+	it('JST 23:59:59.999 → 当日 00:00 が起点', () => {
+		const b = boundariesAt(jstMs(2026, 8, 2, 23, 59, 59, 999));
+		expect(b.dayStartMs).toBe(jstMs(2026, 8, 2));
+	});
+
+	it('UTC 日付の変わり目（JST 09:00）を跨いでも起点は動かない', () => {
+		// UTC 暦日で計算していると、この 1ms を跨いだ瞬間に起点が 1 日ぶんずれる
+		const before = boundariesAt(jstMs(2026, 8, 2, 8, 59, 59, 999)); // = 2026-08-01T23:59:59.999Z
+		expect(before.dayStartMs).toBe(jstMs(2026, 8, 2));
+		const after = boundariesAt(jstMs(2026, 8, 2, 9)); // = 2026-08-02T00:00:00.000Z
+		expect(after.dayStartMs).toBe(jstMs(2026, 8, 2));
+	});
+
+	it('JST 深夜（UTC ではまだ前日）でも起点は JST 暦日の 0:00', () => {
+		// JST 2026-08-02 01:00 = 2026-08-01T16:00Z。UTC 暦日なら 8/1 00:00 が起点になってしまう。
+		const b = boundariesAt(jstMs(2026, 8, 2, 1));
+		expect(b.dayStartMs).toBe(jstMs(2026, 8, 2));
+		expect(b.dayStartIso).toBe('2026-08-02T00:00:00+09:00');
+	});
+
+	it('元日 JST 00:00 → 年初・月初・当日の起点が一致する', () => {
+		const newYear = jstMs(2026, 1, 1);
+		const b = boundariesAt(newYear);
+		expect(b.yearStartMs).toBe(newYear);
+		expect(b.monthStartMs).toBe(newYear);
+		expect(b.dayStartMs).toBe(newYear);
+	});
+
+	it('実行環境 TZ が UTC でも JST 暦日で計算される', () => {
+		vi.stubEnv('TZ', 'UTC');
+		const b = boundariesAt(jstMs(2026, 8, 2, 3));
+		expect(b.dayStartMs).toBe(jstMs(2026, 8, 2));
+		expect(b.dayStartIso).toBe('2026-08-02T00:00:00+09:00');
+	});
+
+	it('起点は portfolioDayStartMs と一致する（日次価格キーとの共有契約）', () => {
+		// ここがずれると資産推移の日次点が dailyPrices を引けず、全点が現在価格
+		// フォールバックに落ちる（equitySeriesQuality が実態と乖離する）。
+		const cases = [
+			jstMs(2026, 8, 2),
+			jstMs(2026, 8, 2) - 1,
+			jstMs(2026, 8, 2, 9),
+			jstMs(2026, 8, 2, 23, 59, 59, 999),
+			jstMs(2026, 1, 1),
+		];
+		for (const nowMs of cases) {
+			expect(boundariesAt(nowMs).dayStartMs).toBe(portfolioDayStartMs(nowMs));
+		}
 	});
 });

@@ -7,9 +7,17 @@
  * - 数値 NaN / time欠損は除外
  */
 
+import { diffCalendarDays, endOfDayMs } from '../../../lib/calendar.js';
 import { calendarDateFromIso, dayjs } from '../../../lib/datetime.js';
 import getCandles from '../../get_candles.js';
 import type { BacktestRange, Candle, Period, Timeframe } from '../types.js';
+
+/**
+ * 絶対範囲指定（`start_date` / `end_date`）と「今日」を解釈する暦。
+ *
+ * bitbank の日足が JST 0:00 区切りのため固定で、実行環境の TZ には依存しない。
+ */
+const BACKTEST_CALENDAR_TZ = 'Asia/Tokyo';
 
 // 期間 → 必要本数のマッピング（バックテスト対象期間）
 // 1D: 日足 → 1M=30, 3M=90, 6M=180, 1Y=365, 2Y=730, 3Y=1095
@@ -166,8 +174,7 @@ async function fetchByPeriod(
  * start_date - warmupBars 本前 〜 end_date までを返す
  *
  * 【タイムゾーン】
- * `start` / `end` ("YYYY-MM-DD") は **JST (Asia/Tokyo)** として解釈する。
- * bitbank の日足は JST 0:00 区切りのため固定。実行環境の TZ には依存しない。
+ * `start` / `end` ("YYYY-MM-DD") は **JST (Asia/Tokyo)** として解釈する（`BACKTEST_CALENDAR_TZ`）。
  */
 async function fetchByAbsoluteRange(
 	pair: string,
@@ -176,21 +183,24 @@ async function fetchByAbsoluteRange(
 	end: string,
 	warmupBars: number,
 ): Promise<Candle[]> {
-	const startMs = dayjs.tz(start, 'Asia/Tokyo').valueOf();
-	const endMs = dayjs.tz(end, 'Asia/Tokyo').endOf('day').valueOf();
-	if (Number.isNaN(startMs) || Number.isNaN(endMs)) {
+	const startMs = dayjs.tz(start, BACKTEST_CALENDAR_TZ).valueOf();
+	// 暦日終端を当てる前に不正な日付を弾く（lib/calendar は非有限 ms に TypeError を投げる）。
+	const endParsedMs = dayjs.tz(end, BACKTEST_CALENDAR_TZ).valueOf();
+	if (Number.isNaN(startMs) || Number.isNaN(endParsedMs)) {
 		throw new Error(`Invalid date format: start=${start}, end=${end}`);
 	}
+	const endMs = endOfDayMs(endParsedMs, BACKTEST_CALENDAR_TZ);
 	if (startMs > endMs) {
 		throw new Error(`start_date (${start}) must be on or before end_date (${end})`);
 	}
 
 	const barsPerDay = BARS_PER_DAY[timeframe];
 	const maxBars = MAX_FETCHABLE_BARS[timeframe];
-	const todayMs = dayjs().tz('Asia/Tokyo').endOf('day').valueOf();
 
-	// 今日から start_date まで遡る日数（最低 0）
-	const daysFromTodayToStart = Math.max(0, Math.ceil((todayMs - startMs) / (24 * 60 * 60 * 1000)));
+	// 今日から start_date まで遡る日数（最低 0）。当日ぶんを含めるので暦日差 + 1。
+	// ミリ秒差を 86400000 で割らないのは lib/calendar の diffCalendarDays と同じ理由
+	// （DST を挟む暦では 23h / 25h の日が出て 1 日ずれる）。
+	const daysFromTodayToStart = Math.max(0, diffCalendarDays(startMs, Date.now(), BACKTEST_CALENDAR_TZ) + 1);
 	const neededBars = daysFromTodayToStart * barsPerDay + warmupBars + 20;
 	const fetchLimit = Math.min(neededBars, maxBars);
 

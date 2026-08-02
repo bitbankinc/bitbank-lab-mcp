@@ -5,13 +5,13 @@
  * Public API（ticker・キャンドル）の取得、テクニカル分析の取得を担当。
  */
 
-import { dayjs } from '../../../lib/datetime.js';
 import { fetchTickerPricesMap } from '../../../lib/tickers.js';
 import analyzeIndicators from '../../../tools/analyze_indicators.js';
 import getCandles from '../../../tools/get_candles.js';
 import getMarginPositions from '../../../tools/private/get_margin_positions.js';
 import getMarginStatus from '../../../tools/private/get_margin_status.js';
 import type { BitbankPrivateClient } from '../../private/client.js';
+import { PORTFOLIO_CALENDAR_TZ, portfolioDayStartMs } from './calendar.js';
 import {
 	type CandlePriceData,
 	type DepositWithdrawalData,
@@ -348,7 +348,8 @@ export async function fetchCandlePriceData(
 	// が欲しいだけなので date を渡さず内部 default（todayYyyymmdd, anchorActive=false）に委ねる。
 	const promises = pairs.map(async (pair) => {
 		try {
-			const res = await getCandles(pair, '1day', undefined, limit, 'Asia/Tokyo');
+			// 日足の区切りは下の JST 0:00 正規化と同じ暦でなければキーがずれる（./calendar.ts）。
+			const res = await getCandles(pair, '1day', undefined, limit, PORTFOLIO_CALENDAR_TZ);
 			if (!res?.ok) return;
 
 			const normalized = res.data?.normalized;
@@ -366,7 +367,7 @@ export async function fetchCandlePriceData(
 				if (ts == null || !Number.isFinite(ts) || !Number.isFinite(open) || open <= 0) continue;
 
 				// Normalize to JST midnight so keys match buildEquitySeries date lookups
-				const jstMidnight = dayjs(ts).tz('Asia/Tokyo').startOf('day').valueOf();
+				const jstMidnight = portfolioDayStartMs(ts);
 				priceByDate.set(jstMidnight, open);
 
 				if (yearStartPrice == null && ts >= yearStartMs) {

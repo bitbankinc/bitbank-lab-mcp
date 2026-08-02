@@ -28,6 +28,7 @@ import {
 	type PeriodSpec,
 	type PortfolioPerformanceContext,
 } from './portfolio/calc.js';
+import { PORTFOLIO_CALENDAR_TZ } from './portfolio/calendar.js';
 import {
 	fetchCandlePriceData,
 	fetchDepositWithdrawal,
@@ -354,13 +355,15 @@ export default async function analyzeMyPortfolioHandler(args: {
 			// fallbackPrices=prices を渡すと、daily candle が無い資産は現在 ticker 価格で
 			// 代替され、historical 点と最終点 currentValueJpy のスケールが揃う。
 			const holdingsForReconstruction = nonZeroAssets.map((a) => ({ asset: a.asset, amount: a.onhand_amount }));
-			const nowJst = dayjs().tz('Asia/Tokyo');
 
 			// Monthly: daily points from month start through today 00:00 JST, + current
+			// 打ち止めの「今日 00:00 JST」は fetchCandlePriceData に渡した boundaries と
+			// **同じ瞬間から導く**（portfolio/calendar.ts 参照）。ここで時計を読み直すと、
+			// リクエスト処理中に JST 00:00 を跨いだ場合に取得済みの日次価格に無い翌日の点が
+			// 1 つ増え、その点だけ現在価格フォールバックに落ちる。
 			const monthDates: ReturnType<typeof dayjs>[] = [];
-			let d = dayjs(boundaries.monthStartMs).tz('Asia/Tokyo');
-			const todayStart = nowJst.startOf('day');
-			while (!d.isAfter(todayStart)) {
+			let d = dayjs(boundaries.monthStartMs).tz(PORTFOLIO_CALENDAR_TZ);
+			while (d.valueOf() <= boundaries.dayStartMs) {
 				monthDates.push(d);
 				d = d.add(1, 'day');
 			}
@@ -376,10 +379,10 @@ export default async function analyzeMyPortfolioHandler(args: {
 			);
 
 			// Yearly: monthly points from year start through current month start, + current
+			// 月次点の終端も同じ理由で boundaries 由来（月跨ぎのレースを避ける）。
 			const yearDates: ReturnType<typeof dayjs>[] = [];
-			let m = dayjs(boundaries.yearStartMs).tz('Asia/Tokyo');
-			const currentMonthStart = nowJst.startOf('month');
-			while (!m.isAfter(currentMonthStart)) {
+			let m = dayjs(boundaries.yearStartMs).tz(PORTFOLIO_CALENDAR_TZ);
+			while (m.valueOf() <= boundaries.monthStartMs) {
 				yearDates.push(m);
 				m = m.add(1, 'month');
 			}
