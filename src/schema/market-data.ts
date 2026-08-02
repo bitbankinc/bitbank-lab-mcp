@@ -344,8 +344,15 @@ export const FlowBucketSchema = z.object({
 	sellVolume: z.number(),
 	totalVolume: z.number(),
 	cvd: z.number(),
+	/** 欠損バケット（hasData=false）では null。観測が無い区間に Z スコアは定義できない */
 	zscore: z.number().nullable().optional(),
 	spike: z.enum(['notice', 'warning', 'strong']).nullable().optional(),
+	hasData: z
+		.boolean()
+		.describe(
+			'この区間に取得できたデータがあるか。false は「約定ゼロ」ではなく「取得できていない（欠損区間）」を意味する。' +
+				'false のバケットは Z スコア・スパイクの母集団から除外される',
+		),
 });
 
 export const GetFlowMetricsDataSchemaOut = z.object({

@@ -353,6 +353,20 @@ export function computeTxCoverage(txs: Tx[], gapMs: number = DEFAULT_TX_GAP_MS):
 	};
 }
 
+/**
+ * `[startMs, endMs]` が欠損区間に完全に含まれるか（= この区間には取得できたデータが無い）。
+ *
+ * 時間バケット集計で「約定ゼロ」と「データなし」を区別するために使う。両者を混同すると、
+ * 欠損区間のゼロ埋めがそのまま観測値として平均・分散に入り、Z スコア / スパイク判定を歪める。
+ *
+ * 判定は「区間全体が欠損に含まれる」で行う。欠損の境界にあたるバケットは境界の約定を
+ * 含むため、そもそもゼロにならない。
+ */
+export function isGapRange(coverage: TxCoverage | null, startMs: number, endMs: number): boolean {
+	if (!coverage) return false;
+	return coverage.gaps.some((g) => startMs >= g.startMs && endMs <= g.endMs);
+}
+
 export type TxCoverageWarningOptions = {
 	/** 要求した時間窓（分）。hours 指定時のみ。カバー率の分母になる */
 	requestedMinutes?: number;

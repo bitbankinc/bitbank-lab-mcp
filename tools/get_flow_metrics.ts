@@ -10,6 +10,7 @@ import {
 	fetchSupplementTxs,
 	fetchTxTimeRange,
 	formatTxFailures,
+	isGapRange,
 	sortTxsAsc,
 	type Tx,
 	type TxFetcher,
@@ -30,6 +31,52 @@ export interface FlowMetricsBucket {
 	cvd: number;
 	zscore: number | null;
 	spike: 'notice' | 'warning' | 'strong' | null;
+	/**
+	 * このバケットの区間に取得できたデータがあるか。
+	 * `false` は「約定ゼロ」ではなく「取得できていない（欠損区間）」を意味する。
+	 * ツール出力では常にセットされる。表示層の入力型としては省略を許し、
+	 * 未指定はデータありとして扱う（判定は必ず `=== false` で行うこと）。
+	 */
+	hasData?: boolean;
+}
+
+/** バケットの表示時刻ラベル */
+function bucketTimeLabel(b: FlowMetricsBucket): string {
+	return b.displayTime || b.isoTimeJST || b.isoTime || '?';
+}
+
+/**
+ * compact 表示用の行を組み立てる。連続する欠損バケットは 1 行の区間表記に畳む。
+ *
+ * 「非ゼロのみ」で単純フィルタすると欠損区間が応答から**黙って消える**ため、
+ * 欠損は必ず区間として残す（消すと「閑散だった」と誤読される）。
+ */
+export function renderCompactBucketLines(
+	buckets: FlowMetricsBucket[],
+	fmt: (b: FlowMetricsBucket, index: number) => string,
+): { lines: string[]; shown: number; gapBuckets: number } {
+	const lines: string[] = [];
+	let shown = 0;
+	let gapBuckets = 0;
+	let i = 0;
+	while (i < buckets.length) {
+		if (buckets[i].hasData === false) {
+			const start = i;
+			while (i < buckets.length && buckets[i].hasData === false) i++;
+			gapBuckets += i - start;
+			lines.push(
+				`⋯ 欠損 ${bucketTimeLabel(buckets[start])}〜${bucketTimeLabel(buckets[i - 1])}（${i - start}バケット, データなし）`,
+			);
+			continue;
+		}
+		const b = buckets[i];
+		if (b.buyVolume > 0 || b.sellVolume > 0) {
+			lines.push(fmt(b, shown));
+			shown++;
+		}
+		i++;
+	}
+	return { lines, shown, gapBuckets };
 }
 
 export interface BuildFlowMetricsTextInput {
@@ -74,17 +121,25 @@ export function buildFlowMetricsText(input: BuildFlowMetricsTextInput): string {
 		return baseSummary + warningLine + aggregatesLine + footer;
 	}
 
-	const displayBuckets =
-		bucketsMode === 'compact' ? buckets.filter((b) => b.buyVolume > 0 || b.sellVolume > 0) : buckets;
-	const bucketLines = displayBuckets.map((b, i) => {
-		const t = b.displayTime || b.isoTimeJST || b.isoTime || '?';
+	const fmtBucket = (b: FlowMetricsBucket, i: number) => {
+		const t = bucketTimeLabel(b);
+		// 欠損バケットを通常行と同じ形（buy:0 sell:0）で出すと「約定ゼロ」と誤読される
+		if (b.hasData === false) return `[${i}] ${t} データなし（欠損区間）`;
 		const sp = b.spike ? ` spike:${b.spike}` : '';
 		return `[${i}] ${t} buy:${b.buyVolume} sell:${b.sellVolume} cvd:${b.cvd} z:${b.zscore ?? 'n/a'}${sp}`;
-	});
-	const label =
-		bucketsMode === 'compact'
-			? `\n\n📋 非ゼロ${displayBuckets.length}/${buckets.length}件のバケット (${bucketMs}ms間隔):\n`
-			: `\n\n📋 全${displayBuckets.length}件のバケット (${bucketMs}ms間隔):\n`;
+	};
+
+	let bucketLines: string[];
+	let label: string;
+	if (bucketsMode === 'compact') {
+		const { lines, shown, gapBuckets } = renderCompactBucketLines(buckets, fmtBucket);
+		bucketLines = lines;
+		const gapNote = gapBuckets > 0 ? `（欠損${gapBuckets}件は区間表記）` : '';
+		label = `\n\n📋 非ゼロ${shown}/${buckets.length}件のバケット${gapNote} (${bucketMs}ms間隔):\n`;
+	} else {
+		bucketLines = buckets.map(fmtBucket);
+		label = `\n\n📋 全${buckets.length}件のバケット (${bucketMs}ms間隔):\n`;
+	}
 	return baseSummary + warningLine + aggregatesLine + label + bucketLines.join('\n') + footer;
 }
 
@@ -274,14 +329,24 @@ export default async function getFlowMetrics(
 			);
 		}
 
+		// 実カバー区間 / 欠損区間。バケット分割より前に求める（欠損バケットの判定に使う）。
+		const coverage = computeTxCoverage(txs);
+
 		// バケット分割
 		const t0 = txs[0].timestampMs;
-		const buckets: Array<{ ts: number; buys: number; sells: number; vBuy: number; vSell: number }> = [];
+		const buckets: Array<{
+			ts: number;
+			buys: number;
+			sells: number;
+			vBuy: number;
+			vSell: number;
+			hasData: boolean;
+		}> = [];
 		const idx = (ms: number) => Math.floor((ms - t0) / bucketMs);
 		for (const t of txs) {
 			const k = idx(t.timestampMs);
 			while (buckets.length <= k)
-				buckets.push({ ts: t0 + buckets.length * bucketMs, buys: 0, sells: 0, vBuy: 0, vSell: 0 });
+				buckets.push({ ts: t0 + buckets.length * bucketMs, buys: 0, sells: 0, vBuy: 0, vSell: 0, hasData: true });
 			if (t.side === 'buy') {
 				buckets[k].buys++;
 				buckets[k].vBuy += t.amount;
@@ -291,21 +356,21 @@ export default async function getFlowMetrics(
 			}
 		}
 
+		// 欠損区間に完全に含まれるバケットは「約定ゼロ」ではなく「データなし」。
+		// 両者を混同すると (a) ゼロ埋めが Z スコアの母集団に入って歪む、(b) 応答上
+		// 「閑散だった」と「取得できていない」が区別できない、の 2 つの誤読を生む。
+		for (const b of buckets) {
+			if (b.buys === 0 && b.sells === 0 && isGapRange(coverage, b.ts, b.ts + bucketMs)) {
+				b.hasData = false;
+			}
+		}
+
 		// CVD とスパイク
-		const outBuckets: Array<{
-			timestampMs: number;
-			isoTime: string;
-			isoTimeJST?: string;
-			displayTime?: string;
-			buyVolume: number;
-			sellVolume: number;
-			totalVolume: number;
-			cvd: number;
-			zscore: number | null;
-			spike: 'notice' | 'warning' | 'strong' | null;
-		}> = [];
+		const outBuckets: FlowMetricsBucket[] = [];
 		let cvd = 0;
-		const vols = buckets.map((b) => b.vBuy + b.vSell);
+		// 平均・分散は**データのあるバケットのみ**から求める。欠損区間のゼロ埋めを母集団に
+		// 入れると平均が押し下げられ、欠損明けの通常バケットが偽スパイクとして検出される。
+		const vols = buckets.filter((b) => b.hasData).map((b) => b.vBuy + b.vSell);
 		const mean = vols.reduce((a, b) => a + b, 0) / Math.max(1, vols.length);
 		const variance = vols.reduce((s, v) => s + (v - mean) ** 2, 0) / Math.max(1, vols.length);
 		const stdev = Math.sqrt(variance);
@@ -319,8 +384,10 @@ export default async function getFlowMetrics(
 
 		for (const b of buckets) {
 			const vol = b.vBuy + b.vSell;
+			// 欠損バケットは vBuy/vSell とも 0 なので CVD は据え置きで引き継がれる（正しい）。
 			cvd += b.vBuy - b.vSell;
-			const z = stdev > 0 ? (vol - mean) / stdev : 0;
+			// 欠損バケットに Z スコアは定義できない（観測が無い）。0 でも負値でもなく null。
+			const z = b.hasData ? (stdev > 0 ? (vol - mean) / stdev : 0) : null;
 			const ts = b.ts + bucketMs - 1;
 			outBuckets.push({
 				timestampMs: ts,
@@ -331,8 +398,9 @@ export default async function getFlowMetrics(
 				sellVolume: Number(b.vSell.toFixed(8)),
 				totalVolume: Number(vol.toFixed(8)),
 				cvd: Number(cvd.toFixed(8)),
-				zscore: Number.isFinite(z) ? Number(z.toFixed(2)) : null,
-				spike: spikeLevel(z),
+				zscore: z != null && Number.isFinite(z) ? Number(z.toFixed(2)) : null,
+				spike: z != null ? spikeLevel(z) : null,
+				hasData: b.hasData,
 			});
 		}
 
@@ -349,7 +417,6 @@ export default async function getFlowMetrics(
 		// 「カバー済み」に見せてしまうため、実データがある区間の合計も併せて出す。
 		const actualStartMs = txs[0]?.timestampMs;
 		const actualEndMs = txs[txs.length - 1]?.timestampMs;
-		const coverage = computeTxCoverage(txs);
 		const actualDurationMin = coverage?.spanMinutes ?? 0;
 		const requestedMin = hours != null && hours > 0 ? Math.round(hours * 60) : undefined;
 
@@ -554,25 +621,30 @@ export const toolDef: ToolDefinition = {
 			return { content: [{ type: 'text', text: res.summary }], structuredContent: trimmed as Record<string, unknown> };
 		}
 
-		// view=compact: 非ゼロバケットのみ
+		// 欠損バケットを通常行と同じ形（buy=0 sell=0）で出すと「約定ゼロ」と誤読される
+		const fmt = (b: FlowMetricsBucket) =>
+			b.hasData === false
+				? `${b.displayTime || b.isoTime}  データなし（欠損区間）`
+				: `${b.displayTime || b.isoTime}  buy=${b.buyVolume} sell=${b.sellVolume} total=${b.totalVolume} cvd=${b.cvd}${b.spike ? ` spike=${b.spike}` : ''}`;
+
+		// view=compact: 非ゼロバケットのみ。ただし欠損バケットは落とさない
+		// （落とすと欠損区間が応答から消え、「閑散だった」と誤読される）。
 		if (effectiveView === 'compact') {
-			const nonZero = buckets.filter((b) => b.buyVolume > 0 || b.sellVolume > 0);
+			const kept = buckets.filter((b) => b.buyVolume > 0 || b.sellVolume > 0 || b.hasData === false);
 			const data = {
 				...res.data,
-				series: { ...res.data.series, buckets: nonZero },
+				series: { ...res.data.series, buckets: kept },
 			} as typeof res.data;
 			const trimmed = { ...res, data };
-			const fmt = (b: FlowMetricsBucket) =>
-				`${b.displayTime || b.isoTime}  buy=${b.buyVolume} sell=${b.sellVolume} total=${b.totalVolume} cvd=${b.cvd}${b.spike ? ` spike=${b.spike}` : ''}`;
-			const text = `${res.summary}\n\nNon-zero ${nonZero.length}/${buckets.length} buckets:\n${nonZero.map(fmt).join('\n')}`;
+			const { lines, shown, gapBuckets } = renderCompactBucketLines(buckets, fmt);
+			const gapNote = gapBuckets > 0 ? ` (+${gapBuckets} no-data buckets shown as ranges)` : '';
+			const text = `${res.summary}\n\nNon-zero ${shown}/${buckets.length} buckets${gapNote}:\n${lines.join('\n')}`;
 			return { content: [{ type: 'text', text }], structuredContent: trimmed as Record<string, unknown> };
 		}
 
 		const agg = res?.data?.aggregates ?? {};
 		const n = Number(bucketsN ?? 10);
 		const last = buckets.slice(-n);
-		const fmt = (b: FlowMetricsBucket) =>
-			`${b.displayTime || b.isoTime}  buy=${b.buyVolume} sell=${b.sellVolume} total=${b.totalVolume} cvd=${b.cvd}${b.spike ? ` spike=${b.spike}` : ''}`;
 		const actualRange = res?.meta?.actualRange;
 		// スパン（穴を含む）と実カバー時間を必ず並記する。durationMinutes だけを出すと
 		// 欠損区間をカバー済みとして申告することになる。

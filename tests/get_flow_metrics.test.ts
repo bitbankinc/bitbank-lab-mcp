@@ -315,8 +315,8 @@ describe('get_flow_metrics', () => {
 		expect(res.content[0].text).not.toContain('📋 全');
 	});
 
-	it('handler: view=compact は非ゼロバケットのみを返す', async () => {
-		// ゼロ埋めバケットを生むため、時間的に離れた2約定のみで bucketMs を小さめに
+	it('handler: view=compact は非ゼロバケットと欠損バケットのみを返す（真のゼロは落とす）', async () => {
+		// 2約定を 10 分離す → 間の 9 バケットは欠損（ギャップ閾値 5 分超）
 		const payload = {
 			success: 1,
 			data: {
@@ -333,9 +333,43 @@ describe('get_flow_metrics', () => {
 			date: '20240101',
 			bucketMs: 60_000,
 			view: 'compact',
+		})) as {
+			content: Array<{ text: string }>;
+			structuredContent: { data: { series: { buckets: FlowMetricsBucket[] } } };
+		};
+		const buckets = res.structuredContent.data.series.buckets;
+		// 残るのは「非ゼロ」か「欠損」のみ。真のゼロ（データありで出来高 0）は落とす
+		expect(buckets.every((b) => b.buyVolume > 0 || b.sellVolume > 0 || b.hasData === false)).toBe(true);
+		// 欠損バケットは黙って消えない
+		expect(buckets.some((b) => b.hasData === false)).toBe(true);
+		// content では連続する欠損が 1 行の区間表記に畳まれる
+		expect(res.content[0].text).toMatch(/⋯ 欠損 .+〜.+（9バケット, データなし）/);
+		expect(res.content[0].text).toContain('no-data buckets shown as ranges');
+	});
+
+	it('handler: view=compact のギャップ以外のゼロバケットは落とす', async () => {
+		// 約定を 0/2/4 分に置く → 1 分目・3 分目はゼロだが欠損ではない（間隔 2 分 < 閾値 5 分）
+		const payload = {
+			success: 1,
+			data: {
+				transactions: [
+					{ price: '5000000', amount: '0.1', side: 'buy', executed_at: '1700000000000' },
+					{ price: '5000100', amount: '0.2', side: 'sell', executed_at: '1700000120000' },
+					{ price: '5000200', amount: '0.3', side: 'buy', executed_at: '1700000240000' },
+				],
+			},
+		};
+		mockFetch(payload);
+		const res = (await toolDef.handler({
+			pair: 'btc_jpy',
+			limit: 10,
+			date: '20240101',
+			bucketMs: 60_000,
+			view: 'compact',
 		})) as { structuredContent: { data: { series: { buckets: FlowMetricsBucket[] } } } };
 		const buckets = res.structuredContent.data.series.buckets;
-		expect(buckets.every((b) => b.buyVolume > 0 || b.sellVolume > 0)).toBe(true);
+		expect(buckets).toHaveLength(3);
+		expect(buckets.every((b) => b.hasData !== false)).toBe(true);
 	});
 
 	it('handler: 失敗時はそのまま返す', async () => {

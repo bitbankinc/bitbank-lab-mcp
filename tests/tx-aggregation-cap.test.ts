@@ -302,3 +302,110 @@ describe('カバレッジ申告（hours=24, 進行中 UTC 日に穴があるケ�
 		expect(res.meta.warnings).toBeUndefined();
 	});
 });
+
+/**
+ * 欠損バケットの扱い（PR#8 のカバレッジ申告で露見した後続不具合）
+ *
+ * バケット分割は欠損区間をゼロ埋めするため、旧実装では
+ *   (A) `total=0` が「約定ゼロ」なのか「データなし」なのか応答から判別できない
+ *       （view=compact では欠損区間が黙って消える）
+ *   (B) ゼロ埋めが Z スコアの母集団に入り、平均が押し下げられて欠損明けの
+ *       通常バケットが偽スパイクとして検出される
+ * という 2 つの誤読を生んでいた。
+ */
+describe('欠損バケット（hasData）', () => {
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	it('欠損区間のバケットは hasData=false / zscore=null / spike=null になる', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 24);
+
+		assertOk(res);
+		const buckets = res.data.series.buckets;
+		const gapBuckets = buckets.filter((b) => b.hasData === false);
+		expect(gapBuckets.length).toBeGreaterThan(0);
+		// 観測が無い区間に Z スコアは定義できない。0 でも負値でもなく null
+		expect(gapBuckets.every((b) => b.zscore === null)).toBe(true);
+		expect(gapBuckets.every((b) => b.spike === null)).toBe(true);
+		expect(gapBuckets.every((b) => b.totalVolume === 0)).toBe(true);
+	});
+
+	it('データのあるバケットは hasData=true（ゼロ出来高でも欠損扱いしない）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 24);
+
+		assertOk(res);
+		const buckets = res.data.series.buckets;
+		// アーカイブ区間は 20 秒間隔なので全バケットに約定がある
+		expect(buckets.filter((b) => b.hasData !== false).every((b) => b.zscore !== null)).toBe(true);
+		// 欠損バケット数は meta の gapMinutes とおおむね一致する（bucketMs=1分）
+		const gapCount = buckets.filter((b) => b.hasData === false).length;
+		expect(Math.abs(gapCount - (res.meta.actualRange?.gapMinutes ?? 0))).toBeLessThanOrEqual(2);
+	});
+
+	it('Z スコアの母集団から欠損バケットが除外される（偽スパイクを出さない）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 24);
+
+		assertOk(res);
+		const buckets = res.data.series.buckets;
+		const dataBuckets = buckets.filter((b) => b.hasData !== false);
+		// 母集団 = データのあるバケットのみ。その平均を実測から再計算して突き合わせる
+		const mean = dataBuckets.reduce((s, b) => s + b.totalVolume, 0) / dataBuckets.length;
+		const variance = dataBuckets.reduce((s, b) => s + (b.totalVolume - mean) ** 2, 0) / dataBuckets.length;
+		const stdev = Math.sqrt(variance);
+		const sample = dataBuckets.find((b) => b.totalVolume > 0);
+		if (!sample) throw new Error('data bucket should exist');
+		expect(sample.zscore).toBeCloseTo(Number(((sample.totalVolume - mean) / stdev).toFixed(2)), 2);
+
+		// 全バケット基準（旧実装）の平均は欠損ゼロ埋めで押し下げられる
+		const meanAll = buckets.reduce((s, b) => s + b.totalVolume, 0) / buckets.length;
+		expect(meanAll).toBeLessThan(mean);
+	});
+
+	it('欠損明けの最初のバケットが偽スパイクにならない（同量の約定なら spike なし）', async () => {
+		// アーカイブ区間と latest 区間で 1 バケットあたりの出来高を揃えたフィクスチャ。
+		// 旧実装ではゼロ埋めで平均が下がり、欠損明けバケットの Z スコアが跳ねていた。
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		const uniform = (startMs: number, count: number, idBase: number): RawTx[] =>
+			Array.from({ length: count }, (_, i) => ({
+				transaction_id: idBase + i,
+				price: '5000000',
+				amount: '0.01',
+				side: 'buy',
+				executed_at: String(startMs + i * 60_000),
+			}));
+		// 8:30 UTC の 24h 窓に収まるよう、アーカイブは 200 分・latest は 30 分ぶん
+		const archive = uniform(Date.UTC(2026, 6, 7, 10, 0, 0), 200, 1);
+		const latest = uniform(NOW - 30 * 60_000, 30, 900_001);
+		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+			const u = String(url);
+			if (u.endsWith('/transactions/20260707')) return jsonRes(payload(archive));
+			if (u.endsWith('/transactions')) return jsonRes(payload(latest));
+			return jsonRes({ success: 0, data: { code: 10000 } }, 404);
+		});
+
+		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 24);
+
+		assertOk(res);
+		const buckets = res.data.series.buckets;
+		const firstAfterGap = buckets.findIndex((b, i) => i > 0 && b.hasData !== false && buckets[i - 1].hasData === false);
+		expect(firstAfterGap).toBeGreaterThan(0);
+		// 全バケット同量なので、欠損を除けば分散 0 → スパイクは検出されない
+		expect(buckets[firstAfterGap].spike).toBeNull();
+		expect(buckets.filter((b) => b.spike !== null)).toHaveLength(0);
+	});
+});

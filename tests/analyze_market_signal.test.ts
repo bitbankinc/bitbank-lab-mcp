@@ -416,6 +416,31 @@ describe('analyze_market_signal', () => {
 		expect(res.summary).toContain('⚠️ [indicators] Ichimoku: データ不足');
 	});
 
+	it('直近バケットが全て欠損（hasData=false）でも CVD 傾きを「中立」と読まない', async () => {
+		// 直近 horizon(=10) 本が全部欠損バケットのケース。欠損バケットは CVD が据え置きで
+		// 引き継がれるため、そのまま傾きを取ると 0 ＝「フロー中立」と誤読される。
+		// 観測のあるバケットだけを対象にすれば、上昇トレンドが正しく反映される。
+		const rising = [0, 20, 40, 60, 80, 100, 120, 140, 160, 180].map((cvd) => ({ cvd, hasData: true }));
+		const gapTail = Array.from({ length: 10 }, () => ({ cvd: 180, hasData: false }));
+		mockedGetFlowMetrics.mockResolvedValueOnce(
+			asMockResult({
+				ok: true,
+				summary: 'ok',
+				data: { aggregates: { aggressorRatio: 0.5 }, series: { buckets: [...rising, ...gapTail] } },
+				meta: {},
+			}),
+		);
+		mockedGetVolatilityMetrics.mockResolvedValueOnce(asMockResult(volOk(0.5)));
+		mockedAnalyzeIndicators.mockResolvedValueOnce(
+			asMockResult(indicatorsOk({ close: 100, rsi: 50, sma25: 100, sma75: 100, sma200: 100 })),
+		);
+
+		const res = await analyzeMarketSignal('btc_jpy');
+		assertOk(res);
+		// 欠損を含めると傾き 0 → cvdTrend 0 になる。観測分だけなら明確に正
+		expect(res.data.breakdown.cvdTrend.rawValue).toBeGreaterThan(0.5);
+	});
+
 	it('get_flow_metrics の計算層 warnings（集計値のカバー区間）も meta.warnings に伝播する', async () => {
 		// キャップ解除後も進行中 UTC 日は latest 約60件のみ。CVD 系スコアが欠損を含む区間から
 		// 算出されている事実は間接消費者（本ツール）まで届かないと LLM が気づけない。
