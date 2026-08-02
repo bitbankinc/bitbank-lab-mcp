@@ -13,7 +13,20 @@ import type { z } from 'zod';
 import { toDisplayTime, toIsoWithTz } from '../lib/datetime.js';
 import { formatPair, formatPercent, formatPrice } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
-import { completedUtcDayKeysInRange, recentCompletedUtcDayKeys } from '../lib/tx-archive.js';
+import {
+	buildAggregateCoverageNote,
+	buildTxCoverageWarning,
+	computeTxCoverage,
+	extractUpstreamError,
+	fetchLatestTxs,
+	fetchSupplementTxs,
+	fetchTxTimeRange,
+	formatTxFailures,
+	partialFailureWarning,
+	sortTxsAsc,
+	type Tx,
+	type TxFetcher,
+} from '../lib/tx-fetch.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import {
 	type AnalyzeVolumeProfileDataSchemaOut,
@@ -24,125 +37,68 @@ import {
 import type { ToolDefinition } from '../src/tool-definition.js';
 import getTransactions from './get_transactions.js';
 
-type Tx = { price: number; amount: number; side: 'buy' | 'sell'; timestampMs: number; isoTime: string };
-
-// ── Transaction fetch helpers (shared pattern with get_flow_metrics) ──
-
-type TxFetchFailure = { label: string; errorType: string; message: string };
-
-function mergeTxResults(
-	results: unknown[],
-	labels?: string[],
-): { txs: Tx[]; totalCount: number; failedCount: number; failures: TxFetchFailure[] } {
-	const seen = new Set<string>();
-	const merged: Tx[] = [];
-	const failures: TxFetchFailure[] = [];
-	for (let i = 0; i < results.length; i++) {
-		const r = results[i] as {
-			ok?: boolean;
-			data?: { normalized?: Tx[] };
-			summary?: string;
-			meta?: { errorType?: string };
-		} | null;
-		if (r?.ok && Array.isArray(r.data?.normalized)) {
-			for (const tx of r.data.normalized as Tx[]) {
-				const key = `${tx.timestampMs}:${tx.price}:${tx.amount}:${tx.side}`;
-				if (!seen.has(key)) {
-					seen.add(key);
-					merged.push(tx);
-				}
-			}
-		} else {
-			failures.push({
-				label: labels?.[i] ?? `#${i}`,
-				errorType: r?.meta?.errorType ?? 'unknown',
-				message: r?.summary ?? 'unknown error',
-			});
-		}
-	}
-	return { txs: merged, totalCount: results.length, failedCount: failures.length, failures };
-}
-
-/** 失敗詳細を "label(errorType: message)" 形式で列挙する（get_flow_metrics と同形式）。 */
-function formatFailures(failures: TxFetchFailure[]): string {
-	return failures.map((f) => `${f.label}(${f.errorType}: ${f.message})`).join(', ');
-}
+/** get_transactions の応答件数上限（public ツールの limit 上限と同値）。 */
+const PUBLIC_TX_LIMIT = 1000;
 
 type FetchResult = { ok: true; txs: Tx[]; fetchWarning?: string } | { ok: false; errorType: string; summary: string };
 
-function extractUpstreamError(results: unknown[]): { errorType: string; summary: string } | null {
-	for (const res of results) {
-		const r = res as { ok?: boolean; meta?: { errorType?: string }; summary?: string } | null;
-		if (r && r.ok === false && r.meta?.errorType) {
-			return { errorType: r.meta.errorType, summary: r.summary ?? 'upstream error' };
-		}
-	}
-	return null;
+/**
+ * 内部集計用の約定フェッチャ。
+ *
+ * `get_transactions` の応答上限（1000 件）は MCP 応答のサイズ制限であってフェッチ制限では
+ * ないため、集計用途では外す（`unlimited`）。本ツールの出力は価格帯別プロファイル（bins 固定）
+ * とサイズ分布なので全件を集計してもトークンは増えない一方、キャップしたままだと 1 UTC 日
+ * （BTC/JPY で実測 5,609〜8,040 件）の末尾 4〜5 時間分しか VWAP / POC / Value Area に
+ * 入らなかった。public ツール `get_transactions` 側の応答上限は変更していない。
+ */
+function internalTxFetcher(pair: string): TxFetcher {
+	// limit は unlimited 指定時に無視されるが、万一オプションが外れても旧挙動
+	// （応答上限 1000 件）へ縮退するよう public 上限を渡しておく。
+	return (date) => getTransactions(pair, PUBLIC_TX_LIMIT, date, undefined, { unlimited: true });
 }
 
-function partialFailureWarning(totalCount: number, failures: TxFetchFailure[]): string | undefined {
-	if (failures.length === 0) return undefined;
-	// どの日付/エンドポイントが何の理由で失敗したかを必ず含める（件数だけでは診断不能）。
-	return `⚠️ ${totalCount}件中${failures.length}件のAPI取得に失敗しました（${formatFailures(failures)}）。データが不完全な可能性があります。`;
-}
-
+/**
+ * 約定を取得する。完了済み UTC 日アーカイブの列挙 + latest 補完 + dedup マージは
+ * lib/tx-fetch.ts に集約されており、本関数は失敗ハンドリングの方針
+ * （全滅 fail / 過半数 fail / 部分失敗 warning）だけを持つ。
+ */
 async function fetchTransactions(pair: string, hours?: number, limit?: number): Promise<FetchResult> {
+	const txFetcher = internalTxFetcher(pair);
+
 	if (hours != null && hours > 0) {
-		const nowMs = Date.now();
-		const sinceMs = nowMs - hours * 3600_000;
-
-		// /transactions/{YYYYMMDD} は UTC 暦日アーカイブで、当該 UTC 日が完了するまで 404
-		// （実測: docs/internal/bitbank-tx-archive-tz.md）。進行中の UTC 日は列挙から除外し、
-		// その区間は /transactions (latest) で補完する。JST 暦日で列挙すると JST 早朝に
-		// 進行中の UTC 日を要求して必ず失敗する。
-		const dates = completedUtcDayKeysInRange(sinceMs, nowMs);
-
-		const fetches: Promise<unknown>[] = dates.map((ds) => getTransactions(pair, 1000, ds));
-		fetches.push(getTransactions(pair, 1000));
-		const results = await Promise.all(fetches);
-		const labels = [...dates, 'latest'];
-		const { txs: mergedTxs, totalCount, failedCount, failures } = mergeTxResults(results, labels);
-		if (mergedTxs.length === 0) {
+		const range = await fetchTxTimeRange(txFetcher, hours);
+		const { results, merged } = range;
+		if (merged.txs.length === 0) {
 			const upstreamErr = extractUpstreamError(results);
 			if (upstreamErr) return { ok: false, ...upstreamErr };
 		}
-		if (failedCount > 0 && failedCount >= totalCount / 2) {
+		if (merged.failedCount > 0 && merged.failedCount >= merged.totalCount / 2) {
 			return {
 				ok: false,
 				errorType: 'upstream',
-				summary: `API取得の過半数が失敗しました（${totalCount}件中${failedCount}件失敗: ${formatFailures(failures)}）`,
+				summary: `API取得の過半数が失敗しました（${merged.totalCount}件中${merged.failedCount}件失敗: ${formatTxFailures(merged.failures)}）`,
 			};
 		}
 		return {
 			ok: true,
-			txs: mergedTxs
-				.filter((t) => t.timestampMs >= sinceMs && t.timestampMs <= nowMs)
-				.sort((a, b) => a.timestampMs - b.timestampMs),
-			fetchWarning: partialFailureWarning(totalCount, failures),
+			txs: range.txs,
+			fetchWarning: partialFailureWarning(merged.totalCount, merged.failures),
 		};
 	}
 
 	// Count-based
 	const lim = limit ?? 500;
-	const latestRes = await getTransactions(pair, Math.min(lim, 1000));
-	const latestR = latestRes as { ok?: boolean; data?: { normalized?: Tx[] } };
-	const latestTxs: Tx[] = latestR?.ok && Array.isArray(latestR.data?.normalized) ? latestR.data.normalized : [];
-	if (latestTxs.length === 0) {
-		const upstreamErr = extractUpstreamError([latestRes]);
+	const latest = await fetchLatestTxs(txFetcher);
+	if (latest.txs.length === 0) {
+		const upstreamErr = extractUpstreamError([latest.result]);
 		if (upstreamErr) return { ok: false, ...upstreamErr };
 	}
-	if (latestTxs.length >= lim) return { ok: true, txs: latestTxs.slice(-lim) };
+	// 取得は無制限だが limit はユーザーの明示要求なので最新側 limit 件に切る。
+	if (latest.txs.length >= lim) return { ok: true, txs: sortTxsAsc(latest.txs).slice(-lim) };
 
-	// Supplement with previous days
-	// /transactions/{YYYYMMDD} は UTC 暦日アーカイブ・当該 UTC 日完了後に公開のため、
-	// 完了済み UTC 日から補完する（JST 基準で組むと JST 早朝に進行中の UTC 日を要求して 404）。
-	const supplementDates = recentCompletedUtcDayKeys(lim > 500 ? 2 : 1);
-	const supplementResults = await Promise.all(supplementDates.map((ds) => getTransactions(pair, 1000, ds)));
-	const allResults = [latestRes, ...supplementResults];
-	const labels = ['latest', ...supplementDates];
-	const { txs: mergedTxs, totalCount, failures } = mergeTxResults(allResults, labels);
-	if (mergedTxs.length === 0) {
-		const upstreamErr = extractUpstreamError(allResults);
+	const { results, merged } = await fetchSupplementTxs(txFetcher, lim, latest);
+	if (merged.txs.length === 0) {
+		const upstreamErr = extractUpstreamError(results);
 		if (upstreamErr) return { ok: false, ...upstreamErr };
 	}
 	// 補完は best-effort: 何かしら取得できていれば fail せず、部分失敗は警告で明示する
@@ -150,8 +106,8 @@ async function fetchTransactions(pair: string, hours?: number, limit?: number): 
 	// 直近データまで捨ててしまう。補完アーカイブは公開遅延等で 404 になり得る）。
 	return {
 		ok: true,
-		txs: mergedTxs.sort((a, b) => a.timestampMs - b.timestampMs).slice(-lim),
-		fetchWarning: partialFailureWarning(totalCount, failures),
+		txs: sortTxsAsc(merged.txs).slice(-lim),
+		fetchWarning: partialFailureWarning(merged.totalCount, merged.failures),
 	};
 }
 
@@ -178,10 +134,25 @@ function calcVwap(txs: Tx[]) {
 
 // ── Volume Profile Calculation ──
 
+/**
+ * 約定列の価格レンジ。
+ *
+ * `Math.min(...prices)` はスプレッド引数が数万件になると RangeError（stack overflow）に
+ * なり得る。内部取得のキャップ解除で 1 UTC 日 8,000 件超を扱うようになったため、
+ * ループで求める。
+ */
+function priceRangeOf(txs: Tx[]): { low: number; high: number } {
+	let low = Number.POSITIVE_INFINITY;
+	let high = Number.NEGATIVE_INFINITY;
+	for (const t of txs) {
+		if (t.price < low) low = t.price;
+		if (t.price > high) high = t.price;
+	}
+	return { low, high };
+}
+
 function calcVolumeProfile(txs: Tx[], bins: number, valueAreaPct: number) {
-	const prices = txs.map((t) => t.price);
-	const priceLow = Math.min(...prices);
-	const priceHigh = Math.max(...prices);
+	const { low: priceLow, high: priceHigh } = priceRangeOf(txs);
 	const range = priceHigh - priceLow;
 
 	// Guard against zero range (all trades at same price)
@@ -440,13 +411,24 @@ export default async function analyzeVolumeProfile(
 			below_2sigma: '大幅に割安（-2σ超）→ 短期反発期待',
 		};
 
-		// Time range info
+		// Time range info。
+		// 先頭〜末尾の単純差分（durationMin）だけでは、アーカイブ未公開区間などの穴を
+		// 「カバー済み」に見せてしまうため、実データがある区間の合計も併せて出す。
 		const startMs = txs[0].timestampMs;
 		const endMs = txs[txs.length - 1].timestampMs;
-		const durationMin = Math.round((endMs - startMs) / 60_000);
+		const coverage = computeTxCoverage(txs);
+		const durationMin = coverage?.spanMinutes ?? Math.round((endMs - startMs) / 60_000);
+		const requestedMin = hours != null && hours > 0 ? Math.round(hours * 60) : undefined;
+		const coverageWarning = buildTxCoverageWarning(coverage, { requestedMinutes: requestedMin, tz });
+		// 取得層（部分失敗・カバレッジ欠損）と計算層（集計値がカバー区間のみ由来）は別系統。
+		const fetchWarnings = [fetchResult.fetchWarning, coverageWarning].filter(Boolean) as string[];
+		const dataWarning = fetchWarnings.length > 0 ? fetchWarnings.join('\n') : undefined;
+		const calcWarnings =
+			coverage && coverage.gaps.length > 0
+				? [buildAggregateCoverageNote(coverage, '集計値（VWAP / POC / Value Area / 約定サイズ分布）')]
+				: [];
 		const totalVolume = txs.reduce((s, t) => s + t.amount, 0);
-		const priceHigh = Math.max(...txs.map((t) => t.price));
-		const priceLow = Math.min(...txs.map((t) => t.price));
+		const { low: priceLow, high: priceHigh } = priceRangeOf(txs);
 
 		const data = {
 			vwap: {
@@ -472,7 +454,12 @@ export default async function analyzeVolumeProfile(
 				timeRange: {
 					start: toIsoWithTz(startMs, tz) ?? '',
 					end: toIsoWithTz(endMs, tz) ?? '',
+					// durationMin は先頭〜末尾のスパン（欠損を含む）。カバー済み時間は coveredMin。
 					durationMin,
+					coveredMin: coverage?.coveredMinutes ?? durationMin,
+					gapMin: coverage?.gapMinutes ?? 0,
+					segments: coverage?.segments.length ?? 1,
+					...(requestedMin != null ? { requestedMin } : {}),
 				},
 				bins,
 				valueAreaPct,
@@ -492,11 +479,16 @@ export default async function analyzeVolumeProfile(
 			})
 			.join('\n');
 
-		const summaryLines: string[] = [];
-		if (fetchResult.fetchWarning) summaryLines.push(fetchResult.fetchWarning);
+		// 取得層 → 計算層の順で本文の前に出す（.claude/rules/tools.md の 2 系統ルール）
+		const summaryLines: string[] = [...(dataWarning ? [dataWarning] : []), ...calcWarnings.map((w) => `⚠️ ${w}`)];
+		// 欠損がある場合は「◯分間」ではなくスパン/実カバーを並記する（穴をカバー済みと申告しない）
+		const durationLabel =
+			coverage && coverage.gaps.length > 0
+				? `スパン${coverage.spanMinutes}分/実カバー${coverage.coveredMinutes}分`
+				: `${durationMin}分間`;
 		const summary = [
 			...summaryLines,
-			`${pairDisplay} Volume Profile & VWAP (${txs.length}件, ${durationMin}分間)`,
+			`${pairDisplay} Volume Profile & VWAP (${txs.length}件, ${durationLabel})`,
 			`期間: ${rangeStr}`,
 			'',
 			'📊 VWAP:',
@@ -525,7 +517,8 @@ export default async function analyzeVolumeProfile(
 		].join('\n');
 
 		const metaExtra: Record<string, unknown> = { count: txs.length };
-		if (fetchResult.fetchWarning) metaExtra.warning = fetchResult.fetchWarning;
+		if (dataWarning) metaExtra.warning = dataWarning;
+		if (calcWarnings.length > 0) metaExtra.warnings = calcWarnings;
 		const meta = createMeta(chk.pair, metaExtra);
 		return AnalyzeVolumeProfileOutputSchema.parse(
 			ok<z.infer<typeof AnalyzeVolumeProfileDataSchemaOut>, z.infer<typeof AnalyzeVolumeProfileMetaSchemaOut>>(
@@ -542,7 +535,11 @@ export default async function analyzeVolumeProfile(
 // ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'analyze_volume_profile',
-	description: `[Volume Profile / VWAP / POC] 出来高プロファイル分析（volume profile / VWAP / POC / value area）。VWAP±σバンド・価格帯別出来高・約定サイズ分布を算出。hours で期間指定（デフォルト4h、最大24h）。`,
+	description:
+		`[Volume Profile / VWAP / POC] 出来高プロファイル分析（volume profile / VWAP / POC / value area）。VWAP±σバンド・価格帯別出来高・約定サイズ分布を算出。hours で期間指定（デフォルト4h、最大24h）。` +
+		`\n\nデータソース制約（bitbank 側仕様）: 約定アーカイブ /transactions/{YYYYMMDD} は UTC 暦日単位で、当該 UTC 日の完了後にのみ公開される。完了済み UTC 日は**全件**（1日あたり数千件）を集計に使う。進行中の UTC 日（JST 09:00 で切り替わる）は /transactions (latest, 直近約60件) のみ。` +
+		`\n\nカバレッジ申告: params.timeRange は durationMin（先頭〜末尾のスパン）に加えて coveredMin（実データがある区間の合計）/ gapMin / segments を返す。欠損があれば meta.warning（取得層）と meta.warnings（計算層: 集計値がカバー区間のみ由来である旨）で明示される。` +
+		`\n\n加工契約: 内部の約定列は timestampMs 昇順にソート済み。latest と date ベースのマージ時の重複除去キーは \`timestampMs:price:amount:side\`（transaction_id は使用しない）。`,
 	inputSchema: AnalyzeVolumeProfileInputSchema,
 	handler: async (rawInput: Record<string, unknown>) => {
 		const parsed = AnalyzeVolumeProfileInputSchema.parse(rawInput);

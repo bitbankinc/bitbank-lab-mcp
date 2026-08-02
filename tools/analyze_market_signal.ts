@@ -240,16 +240,25 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 		// 上流 meta から warning / warnings を集約する。
 		// - meta.warning (string): 取得層の不完全性。3 ツールそれぞれの meta.warning を改行連結し、
 		//   どのツール由来か追跡できるよう `[flow] / [volatility] / [indicators]` の prefix を付ける。
-		// - meta.warnings (string[]): 計算層の不完全性。analyze_indicators のみが出すので、
-		//   そのまま継承する。warning と warnings は同じ field に混ぜない（別系統）。
+		// - meta.warnings (string[]): 計算層の不完全性。get_flow_metrics（集計値が約定の
+		//   カバー区間のみ由来）と analyze_indicators（バー数不足）が出すので両方継承し、
+		//   同じく由来が追える prefix を付ける。warning と warnings は同じ field に混ぜない（別系統）。
 		const upstreamWarning = collectUpstreamWarnings([
 			{ source: 'flow', warning: (flowRes.meta as { warning?: string }).warning },
 			{ source: 'volatility', warning: (volRes.meta as { warning?: string }).warning },
 			{ source: 'indicators', warning: (indRes.meta as { warning?: string }).warning },
 		]);
-		const rawIndWarnings = (indRes.meta as { warnings?: string[] }).warnings;
-		const upstreamWarnings =
-			Array.isArray(rawIndWarnings) && rawIndWarnings.length > 0 ? [...rawIndWarnings] : undefined;
+		const collectWarnings = (source: string, meta: unknown): string[] => {
+			const raw = (meta as { warnings?: string[] })?.warnings;
+			return Array.isArray(raw)
+				? raw.filter((w) => typeof w === 'string' && w.length > 0).map((w) => `[${source}] ${w}`)
+				: [];
+		};
+		const rawUpstreamWarnings = [
+			...collectWarnings('flow', flowRes.meta),
+			...collectWarnings('indicators', indRes.meta),
+		];
+		const upstreamWarnings = rawUpstreamWarnings.length > 0 ? rawUpstreamWarnings : undefined;
 
 		// Flow metrics
 		const agg = flowRes.data.aggregates || {};

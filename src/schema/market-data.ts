@@ -364,6 +364,28 @@ export const GetFlowMetricsDataSchemaOut = z.object({
 	series: z.object({ buckets: z.array(FlowBucketSchema) }),
 });
 
+/**
+ * 約定の実カバー範囲。
+ *
+ * `durationMinutes`（先頭〜末尾のスパン）だけでは、アーカイブ未公開区間などの穴を
+ * 「カバー済み」として申告してしまう。実データがある区間の合計（`coveredMinutes`）と
+ * 欠損（`gapMinutes` / `gaps`）を必ず併記する。
+ */
+export const TxCoverageRangeSchema = z.object({
+	start: z.string(),
+	end: z.string(),
+	durationMinutes: z.number().int().describe('先頭〜末尾のスパン（欠損区間を含む）'),
+	coveredMinutes: z.number().int().describe('実際に約定が存在する区間の合計'),
+	gapMinutes: z.number().int().describe('durationMinutes - coveredMinutes'),
+	segments: z.number().int().describe('連続して約定があった区間の数'),
+	requestedMinutes: z.number().int().optional().describe('要求した時間窓（hours 指定時のみ）'),
+	coveragePct: z.number().optional().describe('coveredMinutes / requestedMinutes（hours 指定時のみ）'),
+	gaps: z
+		.array(z.object({ start: z.string(), end: z.string(), durationMinutes: z.number().int() }))
+		.optional()
+		.describe('欠損区間（長い順に最大 3 件）'),
+});
+
 export const GetFlowMetricsMetaSchemaOut = BaseMetaSchema.extend({
 	count: z.number().int(),
 	bucketMs: z.number().int(),
@@ -372,14 +394,11 @@ export const GetFlowMetricsMetaSchemaOut = BaseMetaSchema.extend({
 	serverTime: z.string().optional(),
 	hours: z.number().optional(),
 	mode: z.enum(['time_range']).optional(),
-	actualRange: z
-		.object({
-			start: z.string(),
-			end: z.string(),
-			durationMinutes: z.number().int(),
-		})
-		.optional(),
+	actualRange: TxCoverageRangeSchema.optional(),
+	/** 取得層の不完全性（部分失敗・アーカイブ未公開・カバレッジ欠損） */
 	warning: z.string().optional(),
+	/** 計算層の不完全性（集計値が欠損を含む区間から算出されている 等） */
+	warnings: z.array(z.string()).optional(),
 });
 
 export const GetFlowMetricsOutputSchema = toolResultSchema(GetFlowMetricsDataSchemaOut, GetFlowMetricsMetaSchemaOut);
