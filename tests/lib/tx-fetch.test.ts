@@ -337,10 +337,18 @@ describe('computeTxCoverage', () => {
 	});
 
 	it('閾値ちょうどの無約定は欠損としない（off-by-one）', () => {
-		// 既定閾値 5 分。ちょうど 5 分は許容、5 分 + 1ms から欠損
-		expect(computeTxCoverage(at([0, 5]))?.gaps).toHaveLength(0);
-		const overThreshold = [tx({ timestampMs: BASE_MS }), tx({ timestampMs: BASE_MS + 5 * 60_000 + 1 })];
+		// 既定閾値 15 分。ちょうど 15 分は許容、15 分 + 1ms から欠損
+		expect(computeTxCoverage(at([0, 15]))?.gaps).toHaveLength(0);
+		const overThreshold = [tx({ timestampMs: BASE_MS }), tx({ timestampMs: BASE_MS + 15 * 60_000 + 1 })];
 		expect(computeTxCoverage(overThreshold)?.gaps).toHaveLength(1);
+	});
+
+	it('閑散帯の無約定（実測最長 7.5 分）は欠損としない', () => {
+		// 2026-08-01 実測: JST 01:43:40〜01:51:12 の 7.5 分無約定。別系統の /candlestick でも
+		// volume=0 が 7 本連続しており、取得欠損ではなく本当に約定が無かった区間。
+		const quiet = [tx({ timestampMs: BASE_MS }), tx({ timestampMs: BASE_MS + 7.5 * 60_000 })];
+		expect(computeTxCoverage(quiet)?.gaps).toHaveLength(0);
+		expect(computeTxCoverage(quiet)?.coveredMinutes).toBe(8);
 	});
 
 	it('穴があるとき: covered は穴を含まず、span = covered + gap', () => {

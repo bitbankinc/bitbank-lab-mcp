@@ -316,13 +316,13 @@ describe('get_flow_metrics', () => {
 	});
 
 	it('handler: view=compact は非ゼロバケットと欠損バケットのみを返す（真のゼロは落とす）', async () => {
-		// 2約定を 10 分離す → 間の 9 バケットは欠損（ギャップ閾値 5 分超）
+		// 2約定を 20 分離す → 間の 19 バケットは欠損（ギャップ閾値 15 分超）
 		const payload = {
 			success: 1,
 			data: {
 				transactions: [
 					{ price: '5000000', amount: '0.1', side: 'buy', executed_at: '1700000000000' },
-					{ price: '5000100', amount: '0.2', side: 'sell', executed_at: '1700000600000' },
+					{ price: '5000100', amount: '0.2', side: 'sell', executed_at: '1700001200000' },
 				],
 			},
 		};
@@ -343,7 +343,7 @@ describe('get_flow_metrics', () => {
 		// 欠損バケットは黙って消えない
 		expect(buckets.some((b) => b.hasData === false)).toBe(true);
 		// content では連続する欠損が 1 行の区間表記に畳まれる
-		expect(res.content[0].text).toMatch(/⋯ 欠損 .+〜.+（9バケット, データなし）/);
+		expect(res.content[0].text).toMatch(/⋯ 欠損 .+〜.+（19バケット, データなし）/);
 		expect(res.content[0].text).toContain('no-data buckets shown as ranges');
 	});
 
