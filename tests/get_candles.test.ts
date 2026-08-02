@@ -502,6 +502,53 @@ describe('getCandles', () => {
 			// multi-day branch は YYYYMMDD 形式のまま既存挙動
 			expect(calledUrls.some((u) => u.endsWith('/btc_jpy/candlestick/1hour/20240115'))).toBe(true);
 		});
+
+		// anchor 年内の利用可能本数の見積りは「1/1 から anchor 日までの**暦日数**」で決まる。
+		// DST を挟む tz では ms 差の単純割り算だと 1 日ぶん少なく出る
+		// （NY 2025-01-01 00:00 EST → 06-16 00:00 EDT は暦日で 167 日だが ms 差は 166 日 23 時間）。
+		//
+		// この見積り (barsInAnchorYear) は yearsNeeded → needsMultiYear を経て **limit 上限**を
+		// 切り替える（multiYear=5000 / default=1000）。date 指定時は fetch key が UTC 年 window 側から
+		// 決まるため、見積りが観測できるのはこの limit 上限だけ（meta.multiYear は出力スキーマに
+		// 無く parse で落ちる）。境界 limit を挟んで ok / user エラーが反転することで
+		// barsInAnchorYear === floor(167 * 2190/365) === 1002 を一意に固定する。
+		describe('anchor 年の本数見積りは DST を跨いでも暦日数で数える', () => {
+			const buildYearMock = () =>
+				vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+					const m = String(url).match(/\/4hour\/(\d{4})$/);
+					const year = m ? Number(m[1]) : 2025;
+					const baseTs = Date.UTC(year, 0, 1);
+					const ohlcv = Array.from({ length: 2190 }, (_, i) => [
+						'100',
+						'110',
+						'90',
+						'105',
+						'1.0',
+						String(baseTs + i * 4 * 3_600_000),
+					]);
+					return {
+						ok: true,
+						status: 200,
+						statusText: 'OK',
+						json: async () => ({ success: 1, data: { candlestick: [{ ohlcv }] } }),
+					} as Response;
+				});
+
+			it('4hour + date=20250616 + tz=America/New_York + limit=1002: 1002 本で足りる → yearsNeeded=1 → limit 上限 1000 超過で user エラー', async () => {
+				buildYearMock();
+				const res = await getCandles('btc_jpy', '4hour', '20250616', 1002, 'America/New_York');
+				// ms 差ベース（166 日 → 996 本）だと 996 < 1002 で yearsNeeded=2 → 上限 5000 になり ok が返ってしまう
+				assertFail(res);
+				expect(res.meta?.errorType).toBe('user');
+				expect(res.summary).toContain('limit');
+			});
+
+			it('4hour + date=20250616 + tz=America/New_York + limit=1003: 1 本足りず yearsNeeded=2 → 上限 5000 で通る', async () => {
+				buildYearMock();
+				const res = await getCandles('btc_jpy', '4hour', '20250616', 1003, 'America/New_York');
+				assertOk(res);
+			});
+		});
 	});
 
 	it('複数日取得が必要な場合はバッチ取得するべき', async () => {
@@ -1729,6 +1776,30 @@ describe('getCandles', () => {
 			const res = await getCandles('btc_jpy', '1hour', '20251102', 24, 'America/New_York');
 			assertOk(res);
 			expect(res.data.normalized.length).toBeGreaterThan(0);
+		});
+
+		// 実在しない暦日 (20260230 等) の扱い。validateDate は形式 (/^\d{8}$/) しか見ず、
+		// GetCandlesInputSchema も date を z.string() で受けるため、この入力は実装まで到達する。
+		// 現行は dayjs.tz の繰り上げ解釈（2026-02-30 → 2026-03-02）で anchor / window を組む。
+		// 実在日として弾く方向へ倒すと「anchor 無効 → 最新側 limit 本」に化けて silent に結果が変わるため、
+		// 現行の繰り上げ挙動を回帰として固定する。
+		it('実在しない date (20260230) は繰り上げ解釈 (2026-03-02) の tz 暦日 window で fetch する', async () => {
+			buildPerUtcDayMock();
+			const res = await getCandles('btc_jpy', '1hour', '20260230', 24, 'Asia/Tokyo');
+			assertOk(res);
+
+			// JST 3/2 = UTC 3/1 15:00 〜 UTC 3/2 14:59 → 両 UTC 日を fetch する
+			const calledUrls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0]));
+			expect(calledUrls.some((u) => u.endsWith('/1hour/20260301'))).toBe(true);
+			expect(calledUrls.some((u) => u.endsWith('/1hour/20260302'))).toBe(true);
+			// 2 月側 (繰り上げ前の暦日) は要求しない
+			expect(calledUrls.some((u) => u.endsWith('/1hour/20260228'))).toBe(false);
+
+			// anchor も繰り上げ後の JST 3/2 終端で切られる
+			expect(res.data.normalized).toHaveLength(24);
+			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			expect(tsList[0]).toBe(hourMs('2026-03-01', 15));
+			expect(tsList.at(-1)).toBe(hourMs('2026-03-02', 14));
 		});
 	});
 
