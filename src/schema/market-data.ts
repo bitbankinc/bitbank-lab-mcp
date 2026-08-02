@@ -228,7 +228,8 @@ export const GetCandlesInputSchema = z.object({
 			'type により形式が異なる:\n' +
 				'- 1min/5min/15min/30min/1hour → YYYYMMDD（例: 20251022）\n' +
 				'- 4hour/8hour/12hour/1day/1week/1month → YYYY（例: 2025）\n' +
-				'date=YYYYMMDD は tz（既定 Asia/Tokyo）の暦日として解釈します。指定日の終端（23:59:59.999 in tz）以前の limit 本を返します。' +
+				'date=YYYYMMDD は tz（既定 Asia/Tokyo）の暦日として解釈します（get_transactions / get_flow_metrics の date は UTC 暦日で基準が異なります）。' +
+				'指定日の終端（23:59:59.999 in tz）以前の limit 本を返します。' +
 				'limit は日数ではなくローソク足本数です。例: 1hour, date=20251002, limit=24 は指定 tz の 10/2 24 本（00:00〜23:00）。\n' +
 				'省略時は最新。\n' +
 				'（互換: 年足系で YYYYMMDD を渡した場合は先頭4桁を年として使用）',
@@ -303,7 +304,11 @@ export const GetTransactionsInputSchema = BasePairInputSchema.extend({
 		.string()
 		.regex(/^\d{8}$/)
 		.optional()
-		.describe('YYYYMMDD; omit for latest'),
+		.describe(
+			'YYYYMMDD。**UTC 暦日**として解釈します（bitbank の約定アーカイブ /transactions/{YYYYMMDD} が UTC 暦日単位のため）。' +
+				'get_candles / validate_candle_data の date が tz 引数の暦日（既定 Asia/Tokyo）である点と基準が異なります。' +
+				'当該 UTC 日の完了後（JST 09:00 以降）に公開されるため、進行中の UTC 日を指定すると 404。省略時は latest（直近約60件）。',
+		),
 	minAmount: z.number().positive().optional().describe('約定数量の下限（limit 適用前にフィルタ）'),
 	maxAmount: z.number().positive().optional().describe('約定数量の上限（limit 適用前にフィルタ）'),
 	minPrice: z.number().positive().optional().describe('約定価格の下限（limit 適用前にフィルタ）'),
@@ -431,7 +436,13 @@ export const GetFlowMetricsInputSchema = BasePairInputSchema.extend({
 		.string()
 		.regex(/^\d{8}$/)
 		.optional()
-		.describe('YYYYMMDD; omit for latest'),
+		.describe(
+			'YYYYMMDD。**UTC 暦日**として解釈します（上流の約定アーカイブ /transactions/{YYYYMMDD} が UTC 暦日単位のため）。' +
+				'get_candles / validate_candle_data の date が tz 引数の暦日（既定 Asia/Tokyo）である点と基準が異なります。' +
+				'進行中の UTC 日を指定した場合は latest にフォールバックし warning を出します。省略時は latest。' +
+				'なお limit 上限（2000）より 1 UTC 日の約定数（BTC/JPY で 5,600〜8,000 件）が多いため、' +
+				'date 指定では 1 日全体をカバーできません。1 日を通した集計には hours を使ってください。',
+		),
 	bucketMs: z
 		.number()
 		.int()
