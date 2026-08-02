@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	type CalendarSpan,
+	diffCalendarDays,
 	endOfDayMs,
 	endOfYearMs,
 	enumerateDayKeys,
@@ -10,6 +11,7 @@ import {
 	isSupportedTimeZone,
 	isYearKeyFormat,
 	parseDayKey,
+	parseDayKeyAllowingOverflow,
 	parseYearKey,
 	recentCompletedDayKeys,
 	shiftDayKey,
@@ -230,6 +232,96 @@ describe('calendar: 暦日プリミティブ', () => {
 
 		it('形式が正しく tz が不正なら throw', () => {
 			expect(() => parseDayKey('20260707', 'Not/AZone')).toThrow(TypeError);
+		});
+	});
+
+	describe('parseDayKeyAllowingOverflow', () => {
+		it('実在する日付は parseDayKey と同じ区間を返す', () => {
+			for (const tz of [UTC, JST, NY]) {
+				expect(parseDayKeyAllowingOverflow('20260707', tz)).toEqual(parseDayKey('20260707', tz));
+			}
+		});
+
+		it.each([
+			['存在しない日 → 翌月へ繰り上げ', '20260230', '2026-03-02'],
+			['平年の 2/29 → 3/1', '20260229', '2026-03-01'],
+			['存在しない日付（月末超過）', '20260431', '2026-05-01'],
+			['12/32 → 翌年 1/1', '20251232', '2026-01-01'],
+			['13 月 → 翌年 1 月', '20261301', '2027-01-01'],
+		])('%s', (_label, key, expectedDate) => {
+			const span = parseDayKeyAllowingOverflow(key, UTC) as CalendarSpan;
+			expect(dayjs.utc(span.startMs).format('YYYY-MM-DD')).toBe(expectedDate);
+		});
+
+		it('繰り上げ後の日付も tz 暦日として扱う（JST は UTC より 9 時間手前）', () => {
+			const span = parseDayKeyAllowingOverflow('20260230', JST) as CalendarSpan;
+			expect(iso(span.startMs)).toBe('2026-03-01T15:00:00.000Z');
+			expect(iso(span.endMs)).toBe('2026-03-02T14:59:59.999Z');
+		});
+
+		it('閏年の 2/29 は繰り上げずそのまま', () => {
+			const span = parseDayKeyAllowingOverflow('20240229', UTC) as CalendarSpan;
+			expect(iso(span.startMs)).toBe('2024-02-29T00:00:00.000Z');
+		});
+
+		it.each([
+			['ハイフン区切り', '2026-07-07'],
+			['空文字', ''],
+			['YYYY 形式', '2026'],
+			['9 桁', '202607071'],
+		])('形式不正 (%s) は繰り上げの対象外で null', (_label, key) => {
+			expect(parseDayKeyAllowingOverflow(key, UTC)).toBeNull();
+		});
+
+		it('形式が正しく tz が不正なら throw', () => {
+			expect(() => parseDayKeyAllowingOverflow('20260707', 'Not/AZone')).toThrow(TypeError);
+		});
+	});
+
+	describe('diffCalendarDays', () => {
+		const ms = (iso8601: string) => dayjs.utc(iso8601).valueOf();
+
+		it('同じ暦日なら 0、翌日なら 1、前日なら -1', () => {
+			expect(diffCalendarDays(ms('2026-07-07T00:00:00Z'), ms('2026-07-07T23:59:59Z'), UTC)).toBe(0);
+			expect(diffCalendarDays(ms('2026-07-07T00:00:00Z'), ms('2026-07-08T00:00:00Z'), UTC)).toBe(1);
+			expect(diffCalendarDays(ms('2026-07-08T00:00:00Z'), ms('2026-07-07T00:00:00Z'), UTC)).toBe(-1);
+		});
+
+		it('tz が変われば同じ 2 瞬間でも暦日差が変わる', () => {
+			// 2026-07-07T15:30Z は UTC 暦日 7/7 / JST 暦日 7/8
+			const a = ms('2026-07-07T02:00:00Z');
+			const b = ms('2026-07-07T15:30:00Z');
+			expect(diffCalendarDays(a, b, UTC)).toBe(0);
+			expect(diffCalendarDays(a, b, JST)).toBe(1);
+		});
+
+		it('DST を跨いでも暦日数で数える（ms 差の割り算は 1 日ずれる）', () => {
+			// NY 2025-01-01 00:00 EST → 2025-06-16 00:00 EDT。暦日で 166 日ぶん離れているが
+			// 春の DST 開始で 1 時間短く、ms 差は 165 日 23 時間しかない。
+			const from = ms('2025-01-01T05:00:00Z');
+			const to = ms('2025-06-16T04:00:00Z');
+			expect(diffCalendarDays(from, to, NY)).toBe(166);
+			expect(Math.floor((to - from) / 86_400_000)).toBe(165);
+		});
+
+		it('DST 終了側（25 時間の日）を跨いでもずれない', () => {
+			// NY 2025-11-02 が 25 時間。11/01 → 11/03 は暦日で 2 日。
+			expect(diffCalendarDays(ms('2025-11-01T12:00:00Z'), ms('2025-11-03T12:00:00Z'), NY)).toBe(2);
+		});
+
+		it('閏日・年跨ぎを含む長い区間も暦日数で数える', () => {
+			expect(diffCalendarDays(ms('2024-01-01T00:00:00Z'), ms('2025-01-01T00:00:00Z'), UTC)).toBe(366);
+			expect(diffCalendarDays(ms('2025-01-01T00:00:00Z'), ms('2026-01-01T00:00:00Z'), UTC)).toBe(365);
+		});
+
+		it('30 分オフセットの DST tz でもずれない', () => {
+			expect(diffCalendarDays(ms('2026-04-03T12:00:00Z'), ms('2026-04-06T12:00:00Z'), LHI)).toBe(3);
+		});
+
+		it('非有限 ms / 不正 tz は TypeError', () => {
+			expect(() => diffCalendarDays(Number.NaN, 0, UTC)).toThrow(TypeError);
+			expect(() => diffCalendarDays(0, Number.POSITIVE_INFINITY, UTC)).toThrow(TypeError);
+			expect(() => diffCalendarDays(0, 0, 'Not/AZone')).toThrow(TypeError);
 		});
 	});
 

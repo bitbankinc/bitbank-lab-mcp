@@ -143,6 +143,28 @@ export function parseDayKey(key: string, tz: string): CalendarSpan | null {
 	return { startMs: d.startOf('day').valueOf(), endMs: d.endOf('day').valueOf() };
 }
 
+/**
+ * 暦日キーを tz 上の区間に変換する（**繰り上げ許容**版）。
+ *
+ * `parseDayKey` が実在しない日付を `null` で弾くのに対し、こちらはグレゴリオ暦の繰り上げで
+ * 解釈する（`20260230` → 2026-03-02、`20251232` → 2026-01-01）。形式不正は `null`。
+ *
+ * 入力の**形式だけ**を検証して実在日を見ない層を通った値を扱う呼び出し側のための入口。
+ * 現に `lib/validate.ts` の `validateDate` は `/^\d{8}$/` しか見ず、`get_candles` の `date` は
+ * 繰り上げ解釈のまま anchor と fetch 範囲を組んでいる。厳密解釈へ倒すと「anchor 無効 →
+ * 最新側 limit 本」のように結果が silent に変わるため、繰り上げるかどうかは
+ * **呼び出し側が関数の選択として明示する**。
+ *
+ * 既定は `parseDayKey`（実在日を要求する方）を使うこと。
+ */
+export function parseDayKeyAllowingOverflow(key: string, tz: string): CalendarSpan | null {
+	if (!isDayKeyFormat(key)) return null;
+	assertTimeZone(tz);
+	const d = dayjs.tz(`${key.slice(0, 4)}-${key.slice(4, 6)}-${key.slice(6, 8)}`, tz);
+	if (!d.isValid()) return null;
+	return { startMs: d.startOf('day').valueOf(), endMs: d.endOf('day').valueOf() };
+}
+
 /** 暦年キー（`YYYY`）を tz 上の区間に変換する。形式不正は `null`。 */
 export function parseYearKey(key: string, tz: string): CalendarSpan | null {
 	if (!isYearKeyFormat(key)) return null;
@@ -186,6 +208,20 @@ export function enumerateDayKeys(startMs: number, endMs: number, tz: string): Da
 		key = shiftDayKey(key, 1);
 	}
 	return keys;
+}
+
+/**
+ * 2 つの瞬間が属する tz 暦日の差（`toMs` の暦日 − `fromMs` の暦日、単位: 日）。
+ * 同じ暦日なら 0、`toMs` が翌日なら 1、前日なら -1。
+ *
+ * ミリ秒差を 86400000 で割ってはいけない。DST を挟むと 23h / 25h の日が出て 1 日ぶんずれる
+ * （`America/New_York` の 2025-01-01 → 06-16 は暦日で 167 日だが ms 差は 166 日 23 時間）。
+ * 暦日キーの日付演算で数えるためオフセットの変化に影響されない。
+ */
+export function diffCalendarDays(fromMs: number, toMs: number, tz: string): number {
+	const from = dayjs.utc(toDayKey(fromMs, tz), 'YYYYMMDD', true);
+	const to = dayjs.utc(toDayKey(toMs, tz), 'YYYYMMDD', true);
+	return to.diff(from, 'day');
 }
 
 /**
