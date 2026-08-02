@@ -16,7 +16,12 @@
  */
 
 import { toDisplayTime } from './datetime.js';
-import { completedUtcDayKeysInRange, currentUtcDayKey, recentCompletedUtcDayKeys } from './tx-archive.js';
+import {
+	completedUtcDayKeysInRange,
+	currentUtcDayKey,
+	currentUtcDayStartMs,
+	recentCompletedUtcDayKeys,
+} from './tx-archive.js';
 
 /** 正規化済み約定（`get_transactions` の `data.normalized` 要素） */
 export type Tx = {
@@ -148,48 +153,74 @@ export type TimeRangeFetchOptions = {
 	retryFailedDates?: { delayMs: number };
 };
 
+/**
+ * 取得する時間区間（**両端を含む**閉区間 `[sinceMs, untilMs]`）。
+ *
+ * 呼び出し側が「終端を含まない」区間を要求する場合は `untilMs` を 1ms 手前に丸めて渡すこと
+ * （`resolveTxTimeRange` の `until` がこの形）。区間を閉区間にしているのは、`hours` 指定
+ * （終端 = 現在時刻）の従来挙動を保つため。
+ */
+export type TxTimeRange = {
+	sinceMs: number;
+	untilMs: number;
+};
+
 export type TimeRangeFetch = {
 	sinceMs: number;
+	untilMs: number;
 	nowMs: number;
 	/** 進行中の UTC 暦日キー（この日のアーカイブは未公開） */
 	currentUtcDay: string;
 	/** 要求した完了済み UTC 暦日キー（昇順） */
 	dates: string[];
-	/** `[...dateResults, latestResult]`（呼び出し側の errorType 分類用に順序を保つ） */
+	/**
+	 * latest エンドポイントを叩いたか。
+	 * 要求区間が進行中の UTC 日にかからない（＝過去区間のみ）場合は false。
+	 * 呼び出し側の「進行中 UTC 日は latest 約60件のみ」warning はこのフラグで出し分ける。
+	 */
+	usedLatest: boolean;
+	/** `[...dateResults, latestResult?]`（呼び出し側の errorType 分類用に順序を保つ） */
 	results: unknown[];
-	/** `[...dates, 'latest']` */
+	/** `[...dates, 'latest'?]` */
 	labels: string[];
 	/** 日付アーカイブのみのマージ結果（authoritative: 時間範囲をカバー） */
 	dateMerge: TxMerge;
-	/** latest のみのマージ結果（supplement: 進行中 UTC 日の補完） */
+	/** latest のみのマージ結果（supplement: 進行中 UTC 日の補完）。未取得なら空 */
 	latestMerge: TxMerge;
 	/** date + latest を 1 パスでマージした結果 */
 	merged: TxMerge;
-	/** `merged.txs` を [sinceMs, nowMs] でフィルタし昇順 sort したもの */
+	/** `merged.txs` を [sinceMs, untilMs] でフィルタし昇順 sort したもの */
 	txs: Tx[];
 };
 
 /**
- * 直近 `hours` 時間分の約定を取得する。
+ * 指定した時間区間 `[sinceMs, untilMs]` の約定を取得する。
  *
  * bitbank の `/transactions/{YYYYMMDD}` は UTC 暦日アーカイブで、当該 UTC 日が完了する
  * まで 404 を返す（実測: docs/internal/bitbank-tx-archive-tz.md）。進行中の UTC 日は
  * 要求しても必ず 404 なので列挙から除外し、その区間は `/transactions` (latest) で補完する。
  * （JST 暦日で列挙すると JST 早朝＝UTC 日付更新前に進行中の UTC 日を要求して全滅する。）
+ *
+ * latest は **要求区間が進行中の UTC 日にかかる場合のみ**叩く。過去区間だけを要求された
+ * ときの latest は現在の約定しか返さず区間外なので、呼び出しぶんが無駄になる（rate limit も
+ * 消費する）。
  */
 export async function fetchTxTimeRange(
 	fetcher: TxFetcher,
-	hours: number,
+	range: TxTimeRange,
 	options: TimeRangeFetchOptions = {},
 ): Promise<TimeRangeFetch> {
 	const nowMs = options.nowMs ?? Date.now();
-	const sinceMs = nowMs - hours * 3600_000;
+	const { sinceMs, untilMs } = range;
 	const currentUtcDay = currentUtcDayKey(nowMs);
-	const dates = completedUtcDayKeysInRange(sinceMs, nowMs);
+	// 「進行中の UTC 日」の判定は untilMs ではなく実時刻 nowMs で行う
+	// （過去区間では untilMs の UTC 日は既に完了しておりアーカイブが公開されている）。
+	const dates = completedUtcDayKeysInRange(sinceMs, untilMs, nowMs);
+	const usedLatest = untilMs >= currentUtcDayStartMs(nowMs);
 
 	// 日付ベース取得（authoritative: 時間範囲をカバー）と latest（supplement: 直近数分の補完）を
 	// 区別する。当日分は日付指定だと直近数分が欠ける場合があるため latest も併用する。
-	const results = await Promise.all([...dates.map((ds) => fetcher(ds)), fetcher()]);
+	const results = await Promise.all([...dates.map((ds) => fetcher(ds)), ...(usedLatest ? [fetcher()] : [])]);
 
 	const retry = options.retryFailedDates;
 	if (retry) {
@@ -206,15 +237,28 @@ export async function fetchTxTimeRange(
 		}
 	}
 
-	const labels = [...dates, 'latest'];
+	const labels = usedLatest ? [...dates, 'latest'] : [...dates];
 	const dateResults = results.slice(0, dates.length);
 	const latestResults = results.slice(dates.length);
 	const dateMerge = mergeTxResults(dateResults, dates);
 	const latestMerge = mergeTxResults(latestResults, ['latest']);
 	const merged = mergeTxResults(results, labels);
-	const txs = sortTxsAsc(merged.txs.filter((t) => t.timestampMs >= sinceMs && t.timestampMs <= nowMs));
+	const txs = sortTxsAsc(merged.txs.filter((t) => t.timestampMs >= sinceMs && t.timestampMs <= untilMs));
 
-	return { sinceMs, nowMs, currentUtcDay, dates, results, labels, dateMerge, latestMerge, merged, txs };
+	return {
+		sinceMs,
+		untilMs,
+		nowMs,
+		currentUtcDay,
+		dates,
+		usedLatest,
+		results,
+		labels,
+		dateMerge,
+		latestMerge,
+		merged,
+		txs,
+	};
 }
 
 // ── 件数ベースの取得 ─────────────────────────────────────────

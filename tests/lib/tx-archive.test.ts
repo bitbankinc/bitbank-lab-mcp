@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	completedUtcDayKeysInRange,
 	currentUtcDayKey,
+	currentUtcDayStartMs,
 	isArchiveExpectedPublished,
 	recentCompletedUtcDayKeys,
 } from '../../lib/tx-archive.js';
@@ -74,6 +75,38 @@ describe('tx-archive: UTC 暦日アーカイブの日付キー導出', () => {
 
 		it('since > now は空配列（防御）', () => {
 			expect(completedUtcDayKeysInRange(NOW + 1000, NOW)).toEqual([]);
+		});
+
+		it('nowMs 明示時: 終端が過去なら終端の UTC 日も完了済みとして列挙する', () => {
+			// [7/5 00:00, 7/5 23:59:59.999] を 7/7 23:31 時点で要求 → 20260705 は公開済み
+			const sinceMs = Date.UTC(2026, 6, 5, 0, 0, 0);
+			const untilMs = Date.UTC(2026, 6, 6, 0, 0, 0) - 1;
+			expect(completedUtcDayKeysInRange(sinceMs, untilMs, NOW)).toEqual(['20260705']);
+		});
+
+		it('nowMs 省略時は untilMs を現在時刻とみなす（従来の呼び出しと同じ挙動）', () => {
+			// 第3引数が無ければ untilMs の UTC 日 = 進行中扱いになり列挙されない
+			const sinceMs = Date.UTC(2026, 6, 5, 0, 0, 0);
+			const untilMs = Date.UTC(2026, 6, 5, 12, 0, 0);
+			expect(completedUtcDayKeysInRange(sinceMs, untilMs)).toEqual([]);
+			expect(completedUtcDayKeysInRange(sinceMs, untilMs, NOW)).toEqual(['20260705']);
+		});
+
+		it('nowMs 明示時: 進行中の UTC 日は終端に含まれても除外する', () => {
+			const sinceMs = Date.UTC(2026, 6, 6, 0, 0, 0);
+			expect(completedUtcDayKeysInRange(sinceMs, NOW, NOW)).toEqual(['20260706']);
+		});
+	});
+
+	describe('currentUtcDayStartMs', () => {
+		it('その UTC 暦日の 00:00:00.000 を返す', () => {
+			expect(currentUtcDayStartMs(NOW)).toBe(Date.UTC(2026, 6, 7, 0, 0, 0));
+		});
+
+		it('UTC 日の境界ちょうどは自分自身を返す（off-by-one）', () => {
+			const boundary = Date.UTC(2026, 6, 8, 0, 0, 0);
+			expect(currentUtcDayStartMs(boundary)).toBe(boundary);
+			expect(currentUtcDayStartMs(boundary - 1)).toBe(Date.UTC(2026, 6, 7, 0, 0, 0));
 		});
 	});
 });

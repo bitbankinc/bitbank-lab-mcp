@@ -201,7 +201,14 @@ export default async function getFlowMetrics(
 			// 完了済み UTC 日アーカイブの列挙 + latest 補完 + dedup マージは lib/tx-fetch.ts に集約。
 			// 失敗ハンドリング（全滅 fail / 部分失敗 warning）の方針は本ツール側で判断する。
 			requestedMin = Math.round(hours * 60);
-			const range = await fetchTxTimeRange(txFetcher, hours, { retryFailedDates: { delayMs: 500 } });
+			// hours は現在時刻起点の相対指定。絶対区間への変換は呼び出し側で行い、
+			// 取得層（lib/tx-fetch.ts）には絶対区間だけを渡す。
+			const nowMs = Date.now();
+			const range = await fetchTxTimeRange(
+				txFetcher,
+				{ sinceMs: nowMs - hours * 3600_000, untilMs: nowMs },
+				{ nowMs, retryFailedDates: { delayMs: 500 } },
+			);
 			const { currentUtcDay, dates, dateMerge, latestMerge } = range;
 
 			// 完了済み UTC 日アーカイブ（authoritative）が全滅した場合は fail。
@@ -237,10 +244,13 @@ export default async function getFlowMetrics(
 					`⚠️ 日付ベース取得で ${dateMerge.totalCount}件中 ${dateMerge.failedCount}件失敗: ${formatTxFailures(dateMerge.failures)}`,
 				);
 			}
-			// 進行中の UTC 日の区間はアーカイブが存在しないため、常に latest（直近約60件）のみでの補完になる
-			warnMsgs.push(
-				`ℹ️ 進行中の UTC 日 (${currentUtcDay}) のアーカイブは未公開のため、この区間は /transactions (latest, 直近約60件) で補完しています`,
-			);
+			// 進行中の UTC 日の区間はアーカイブが存在しないため、常に latest（直近約60件）のみでの補完になる。
+			// 要求区間が進行中の UTC 日にかからない（過去区間のみ）場合は latest を叩かないので出さない。
+			if (range.usedLatest) {
+				warnMsgs.push(
+					`ℹ️ 進行中の UTC 日 (${currentUtcDay}) のアーカイブは未公開のため、この区間は /transactions (latest, 直近約60件) で補完しています`,
+				);
+			}
 			if (latestMerge.failedCount > 0) {
 				warnMsgs.push(
 					`⚠️ 最新約定の補完取得に失敗 (${formatTxFailures(latestMerge.failures)}) — 直近数分のデータが欠落している可能性があります`,

@@ -72,7 +72,10 @@ async function fetchTransactions(pair: string, hours?: number, limit?: number): 
 	const txFetcher = internalTxFetcher(pair);
 
 	if (hours != null && hours > 0) {
-		const range = await fetchTxTimeRange(txFetcher, hours);
+		// hours は現在時刻起点の相対指定。絶対区間への変換は呼び出し側で行い、
+		// 取得層（lib/tx-fetch.ts）には絶対区間だけを渡す。
+		const nowMs = Date.now();
+		const range = await fetchTxTimeRange(txFetcher, { sinceMs: nowMs - hours * 3600_000, untilMs: nowMs }, { nowMs });
 		const { results, merged } = range;
 		if (merged.txs.length === 0) {
 			const upstreamErr = extractUpstreamError(results);

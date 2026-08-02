@@ -174,6 +174,9 @@ describe('fetchTxTimeRange', () => {
 	/** 2026-07-08 09:30 JST = 2026-07-08 00:30 UTC。進行中 UTC 日 = 20260708 */
 	const NOW = Date.UTC(2026, 6, 8, 0, 30, 0);
 
+	/** hours 指定（現在時刻起点の相対窓）を絶対区間に変換する — 呼び出し側と同じ変換 */
+	const lastHours = (hours: number, nowMs: number = NOW) => ({ sinceMs: nowMs - hours * 3600_000, untilMs: nowMs });
+
 	it('進行中の UTC 日は列挙せず、完了済み UTC 日 + latest を叩く', async () => {
 		const calls: Array<string | undefined> = [];
 		const fetcher = vi.fn(async (date?: string) => {
@@ -181,12 +184,13 @@ describe('fetchTxTimeRange', () => {
 			return okResult([tx({ timestampMs: NOW - 60_000 })]);
 		});
 
-		const res = await fetchTxTimeRange(fetcher, 2, { nowMs: NOW });
+		const res = await fetchTxTimeRange(fetcher, lastHours(2), { nowMs: NOW });
 
 		expect(res.dates).toEqual(['20260707']);
 		expect(res.currentUtcDay).toBe('20260708');
 		expect(calls).toEqual(['20260707', undefined]);
 		expect(res.labels).toEqual(['20260707', 'latest']);
+		expect(res.usedLatest).toBe(true);
 	});
 
 	it('時間窓外の約定は除外し、昇順 sort して返す', async () => {
@@ -197,7 +201,7 @@ describe('fetchTxTimeRange', () => {
 			date ? okResult([future, tooOld]) : okResult([inWindow, tx({ timestampMs: NOW - 10 * 60_000 })]),
 		);
 
-		const res = await fetchTxTimeRange(fetcher, 1, { nowMs: NOW });
+		const res = await fetchTxTimeRange(fetcher, lastHours(1), { nowMs: NOW });
 
 		expect(res.txs.map((t) => t.timestampMs)).toEqual([NOW - 30 * 60_000, NOW - 10 * 60_000]);
 	});
@@ -205,7 +209,7 @@ describe('fetchTxTimeRange', () => {
 	it('date 群と latest のマージ結果を別々に取り出せる（警告文の出し分け用）', async () => {
 		const fetcher = vi.fn(async (date?: string) => (date ? failResult('upstream', 'HTTP 404') : okResult([tx()])));
 
-		const res = await fetchTxTimeRange(fetcher, 2, { nowMs: NOW });
+		const res = await fetchTxTimeRange(fetcher, lastHours(2), { nowMs: NOW });
 
 		expect(res.dateMerge.failedCount).toBe(1);
 		expect(res.dateMerge.failures[0].label).toBe('20260707');
@@ -221,7 +225,7 @@ describe('fetchTxTimeRange', () => {
 			return dateCalls === 1 ? failResult('network', 'HTTP 503') : okResult([tx({ timestampMs: NOW - 2000 })]);
 		});
 
-		const res = await fetchTxTimeRange(fetcher, 2, { nowMs: NOW, retryFailedDates: { delayMs: 0 } });
+		const res = await fetchTxTimeRange(fetcher, lastHours(2), { nowMs: NOW, retryFailedDates: { delayMs: 0 } });
 
 		expect(dateCalls).toBe(2);
 		expect(res.dateMerge.failedCount).toBe(0);
@@ -235,7 +239,7 @@ describe('fetchTxTimeRange', () => {
 			return failResult('network', 'HTTP 503');
 		});
 
-		const res = await fetchTxTimeRange(fetcher, 2, { nowMs: NOW });
+		const res = await fetchTxTimeRange(fetcher, lastHours(2), { nowMs: NOW });
 
 		expect(dateCalls).toBe(1);
 		expect(res.dateMerge.failedCount).toBe(1);
@@ -248,10 +252,80 @@ describe('fetchTxTimeRange', () => {
 			return okResult([tx({ timestampMs: NOW - 1000 })]);
 		});
 
-		const res = await fetchTxTimeRange(fetcher, 0.25, { nowMs: NOW });
+		const res = await fetchTxTimeRange(fetcher, lastHours(0.25), { nowMs: NOW });
 
 		expect(res.dates).toEqual([]);
 		expect(calls).toEqual([undefined]);
+	});
+
+	it('過去区間のみの要求では latest を叩かない（区間外の約定しか返らないため）', async () => {
+		const calls: Array<string | undefined> = [];
+		const fetcher = vi.fn(async (date?: string) => {
+			calls.push(date);
+			return okResult([tx({ timestampMs: Date.UTC(2026, 6, 6, 12, 0, 0) })]);
+		});
+
+		// 完了済み UTC 日 20260706 の丸 1 日（untilMs は閉区間の上端 = 23:59:59.999）
+		const res = await fetchTxTimeRange(
+			fetcher,
+			{ sinceMs: Date.UTC(2026, 6, 6, 0, 0, 0), untilMs: Date.UTC(2026, 6, 7, 0, 0, 0) - 1 },
+			{ nowMs: NOW },
+		);
+
+		expect(calls).toEqual(['20260706']);
+		expect(res.usedLatest).toBe(false);
+		expect(res.labels).toEqual(['20260706']);
+		expect(res.latestMerge.totalCount).toBe(0);
+		expect(res.latestMerge.failedCount).toBe(0);
+		expect(res.txs).toHaveLength(1);
+	});
+
+	it('過去区間でも「進行中の UTC 日」の判定は実時刻で行う（終端の日を未公開扱いしない）', async () => {
+		// untilMs の UTC 日 = 20260707。これを現在時刻とみなすと 20260707 が進行中と誤判定され、
+		// 実際には公開済みのアーカイブを列挙しなくなる。
+		const calls: Array<string | undefined> = [];
+		const fetcher = vi.fn(async (date?: string) => {
+			calls.push(date);
+			return okResult([tx({ timestampMs: Date.UTC(2026, 6, 7, 6, 0, 0) })]);
+		});
+
+		const res = await fetchTxTimeRange(
+			fetcher,
+			{ sinceMs: Date.UTC(2026, 6, 7, 0, 0, 0), untilMs: Date.UTC(2026, 6, 7, 12, 0, 0) },
+			{ nowMs: NOW },
+		);
+
+		expect(res.dates).toEqual(['20260707']);
+		expect(calls).toEqual(['20260707']);
+		expect(res.usedLatest).toBe(false);
+	});
+
+	it('区間が進行中 UTC 日にかかる場合は latest を叩く', async () => {
+		const calls: Array<string | undefined> = [];
+		const fetcher = vi.fn(async (date?: string) => {
+			calls.push(date);
+			return okResult([tx({ timestampMs: NOW - 60_000 })]);
+		});
+
+		const res = await fetchTxTimeRange(
+			fetcher,
+			{ sinceMs: Date.UTC(2026, 6, 7, 12, 0, 0), untilMs: Date.UTC(2026, 6, 8, 0, 10, 0) },
+			{ nowMs: NOW },
+		);
+
+		expect(res.usedLatest).toBe(true);
+		expect(calls).toEqual(['20260707', undefined]);
+	});
+
+	it('untilMs は閉区間の上端として扱う（境界の約定を落とさない）', async () => {
+		const untilMs = Date.UTC(2026, 6, 8, 0, 10, 0);
+		const fetcher = vi.fn(async (date?: string) =>
+			date ? okResult([]) : okResult([tx({ timestampMs: untilMs }), tx({ timestampMs: untilMs + 1, price: 1 })]),
+		);
+
+		const res = await fetchTxTimeRange(fetcher, { sinceMs: untilMs - 3600_000, untilMs }, { nowMs: NOW });
+
+		expect(res.txs.map((t) => t.timestampMs)).toEqual([untilMs]);
 	});
 });
 
