@@ -9,13 +9,19 @@
  * JST 基準で「今日 / 昨日」を組むと、JST 早朝（00:00〜09:00 = UTC 日付更新前）には
  * 進行中の UTC 日を要求してしまい必ず 404 になる。日付キーは必ず本モジュールの
  * 「完了済み UTC 暦日」ベースで導出すること。
+ *
+ * 本モジュールが持つのは上記のドメイン知識（アーカイブの粒度が UTC 暦日であること、
+ * 完了後に公開されること）だけで、暦日そのものの計算は `lib/calendar.ts` に委譲する。
  */
 
-import { dayjs } from './datetime.js';
+import { enumerateDayKeys, isDayKeyCompleted, recentCompletedDayKeys, startOfDayMs, toDayKey } from './calendar.js';
+
+/** アーカイブのグルーピング基準となる暦。bitbank の /transactions/{YYYYMMDD} は UTC 暦日単位。 */
+const ARCHIVE_TZ = 'UTC';
 
 /** nowMs が属する UTC 暦日キー (YYYYMMDD)。この日のアーカイブは未公開（404）。 */
 export function currentUtcDayKey(nowMs: number = Date.now()): string {
-	return dayjs.utc(nowMs).format('YYYYMMDD');
+	return toDayKey(nowMs, ARCHIVE_TZ);
 }
 
 /**
@@ -25,7 +31,7 @@ export function currentUtcDayKey(nowMs: number = Date.now()): string {
  * 取得区間が進行中の UTC 日にかかるか（= latest 補完が必要か）の判定に使う。
  */
 export function currentUtcDayStartMs(nowMs: number = Date.now()): number {
-	return dayjs.utc(nowMs).startOf('day').valueOf();
+	return startOfDayMs(nowMs, ARCHIVE_TZ);
 }
 
 /**
@@ -33,7 +39,7 @@ export function currentUtcDayStartMs(nowMs: number = Date.now()): number {
  * 進行中・未来の UTC 日は false。形式不正（YYYYMMDD 以外）も false。
  */
 export function isArchiveExpectedPublished(dateKey: string, nowMs: number = Date.now()): boolean {
-	return /^\d{8}$/.test(dateKey) && dateKey < currentUtcDayKey(nowMs);
+	return isDayKeyCompleted(dateKey, nowMs, ARCHIVE_TZ);
 }
 
 /**
@@ -41,10 +47,7 @@ export function isArchiveExpectedPublished(dateKey: string, nowMs: number = Date
  * 進行中の UTC 日（= currentUtcDayKey）は含めない。
  */
 export function recentCompletedUtcDayKeys(count: number, nowMs: number = Date.now()): string[] {
-	const utcNow = dayjs.utc(nowMs);
-	return Array.from({ length: Math.max(0, Math.floor(count)) }, (_, i) =>
-		utcNow.subtract(i + 1, 'day').format('YYYYMMDD'),
-	);
+	return recentCompletedDayKeys(count, nowMs, ARCHIVE_TZ);
 }
 
 /**
@@ -65,14 +68,5 @@ export function completedUtcDayKeysInRange(
 	nowMs: number = untilMs,
 ): string[] {
 	if (!Number.isFinite(sinceMs) || !Number.isFinite(untilMs) || sinceMs > untilMs) return [];
-	const current = currentUtcDayKey(nowMs);
-	const keys: string[] = [];
-	let d = dayjs.utc(sinceMs).startOf('day');
-	const end = dayjs.utc(untilMs).startOf('day');
-	while (d.valueOf() <= end.valueOf()) {
-		const key = d.format('YYYYMMDD');
-		if (key < current) keys.push(key);
-		d = d.add(1, 'day');
-	}
-	return keys;
+	return enumerateDayKeys(sinceMs, untilMs, ARCHIVE_TZ).filter((key) => isDayKeyCompleted(key, nowMs, ARCHIVE_TZ));
 }
