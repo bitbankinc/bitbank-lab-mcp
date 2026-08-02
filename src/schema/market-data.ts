@@ -458,7 +458,11 @@ export const GetFlowMetricsInputSchema = BasePairInputSchema.extend({
 		.max(MAX_TX_COUNT_LIMIT)
 		.optional()
 		.default(100)
-		.describe('取得する約定件数（バケット数ではない）。hours 指定時は無視されます'),
+		.describe(
+			'取得する約定件数（バケット数ではない）。**date / hours / since・until のいずれも指定しない件数ベース取得（＝直近 N 件）でのみ有効**です。' +
+				'区間指定パラメータを渡した場合は無視されます（いずれも区間の全件を集計）。' +
+				`上限 ${MAX_TX_COUNT_LIMIT} 件は BTC/JPY で 6〜8.5 時間分に相当します。それより長い窓は件数ではなく hours / since・until で指定してください`,
+		),
 	hours: z
 		.number()
 		.min(0.1)
@@ -477,10 +481,11 @@ export const GetFlowMetricsInputSchema = BasePairInputSchema.extend({
 		.describe(
 			'YYYYMMDD。**UTC 暦日**として解釈します（上流の約定アーカイブ /transactions/{YYYYMMDD} が UTC 暦日単位のため）。' +
 				'get_candles / validate_candle_data の date が tz 引数の暦日（既定 Asia/Tokyo）である点と基準が異なります。' +
-				'進行中の UTC 日を指定した場合は latest にフォールバックし warning を出します。省略時は latest。' +
-				'なお limit 上限（2000）より 1 UTC 日の約定数（BTC/JPY で 5,600〜8,000 件）が多いため、' +
-				'date 指定では 1 日全体をカバーできません。1 UTC 日全体を切り捨てなく集計するには since/until を使ってください' +
-				'（例: since=2026-08-01T00:00:00Z, until=2026-08-02T00:00:00Z）。since/until とは併用不可（併用時は user エラー）。',
+				'当該 UTC 暦日の**全件**（BTC/JPY で 5,600〜8,000 件）を集計します。limit は適用しません。' +
+				'UTC 暦日 1 日ちょうどを指定する簡便手段なので、複数日にまたがる区間や UTC 暦日の境界に揃わない区間' +
+				'（例: JST の 1 日）には since/until を使ってください（例: since=2026-08-01T00:00:00Z, until=2026-08-02T00:00:00Z）。' +
+				'進行中の UTC 日を指定した場合は latest（直近約60件。要求日の全件ではない）にフォールバックし warning を出します。省略時は latest。' +
+				'since/until とは併用不可（併用時は user エラー）。',
 		),
 	bucketMs: z
 		.number()
