@@ -1010,4 +1010,44 @@ describe('fetchCandlePriceData', () => {
 		expect(result.boundaryPrices.size).toBe(0);
 		expect(result.dailyPrices.size).toBe(0);
 	});
+
+	/**
+	 * 日次価格マップのキーは JST 暦日の 0:00。当日損益の起点（getJstPeriodBoundaries の
+	 * dayStartMs）と同じ暦日境界でなければ、資産推移の日次点がこのマップを引けず
+	 * 全点が現在価格フォールバックに落ちる（src/handlers/portfolio/calendar.ts 参照）。
+	 */
+	it('JST 0:00 前後の足を JST 暦日キーに正規化する（UTC 暦日ではない）', async () => {
+		/** JST の壁時計時刻を epoch ms に変換する（JST は DST を持たないので UTC+9 固定）。 */
+		const jstMs = (y: number, m: number, d: number, h = 0, min = 0, s = 0, ms = 0) =>
+			Date.UTC(y, m - 1, d, h - 9, min, s, ms);
+
+		const aug1 = jstMs(2026, 8, 1);
+		const aug2 = jstMs(2026, 8, 2);
+
+		mockedGetCandles.mockResolvedValue({
+			ok: true,
+			summary: 'ok',
+			data: {
+				normalized: [
+					// JST 8/1 23:59:59.999（= 2026-08-01T14:59:59.999Z）→ 8/1 のキー
+					{ open: 1_000_000, high: 1, low: 1, close: 1, volume: 1, timestamp: aug2 - 1 },
+					// JST 8/2 09:00（= 2026-08-02T00:00:00Z）→ UTC 暦日で丸めると別キーになる足
+					{ open: 3_000_000, high: 1, low: 1, close: 1, volume: 1, timestamp: jstMs(2026, 8, 2, 9) },
+				],
+			},
+			meta: { pair: 'btc_jpy', type: '1day', count: 2 },
+		});
+
+		const { fetchCandlePriceData } = await import('../../../src/handlers/portfolio/fetch.js');
+		// 当日 = JST 8/2。dayStart 価格は 8/2 00:00 以降の最初の足＝ JST 09:00 の足になる。
+		const result = await fetchCandlePriceData(['btc_jpy'], aug1, aug1, aug2);
+
+		const daily = result.dailyPrices.get('btc');
+		expect([...(daily?.keys() ?? [])]).toEqual([aug1, aug2]);
+		expect(daily?.get(aug1)).toBe(1_000_000);
+		expect(daily?.get(aug2)).toBe(3_000_000);
+
+		// 起点ちょうど（JST 8/2 00:00）より前の足は当日の始値に選ばれない
+		expect(result.boundaryPrices.get('btc')?.dayStart).toBe(3_000_000);
+	});
 });
