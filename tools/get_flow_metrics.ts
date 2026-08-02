@@ -3,8 +3,10 @@ import { formatSummary } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { isArchiveExpectedPublished } from '../lib/tx-archive.js';
 import {
+	applyTxLimit,
 	buildAggregateCoverageNote,
 	buildTxCoverageWarning,
+	buildTxTruncationWarning,
 	computeTxCoverage,
 	fetchLatestTxs,
 	fetchSupplementTxs,
@@ -14,6 +16,7 @@ import {
 	sortTxsAsc,
 	type Tx,
 	type TxFetcher,
+	type TxLimitApplication,
 } from '../lib/tx-fetch.js';
 import { createMeta, ensurePair, validateLimit } from '../lib/validate.js';
 import { GetFlowMetricsInputSchema, GetFlowMetricsOutputSchema } from '../src/schemas.js';
@@ -146,6 +149,9 @@ export function buildFlowMetricsText(input: BuildFlowMetricsTextInput): string {
 /** get_transactions の応答件数上限（public ツールの limit 上限と同値）。 */
 const PUBLIC_TX_LIMIT = 1000;
 
+/** 1 UTC 暦日の分数。date 指定時の要求スコープ（カバレッジ率の分母）。 */
+const UTC_DAY_MINUTES = 24 * 60;
+
 /** getTransactions の Result 型（date 指定パスで直接読むため） */
 type TxResult = Awaited<ReturnType<typeof getTransactions>>;
 
@@ -178,12 +184,22 @@ export default async function getFlowMetrics(
 	try {
 		let txs: Tx[];
 		let fetchWarning: string | undefined;
+		/** limit による切り捨ての実績（件数ベース取得時のみ）。meta と warning で申告する。 */
+		let limitApplication: TxLimitApplication | undefined;
+		/**
+		 * 要求した時間窓（分）。カバレッジ率の分母になる。
+		 * - hours 指定: hours×60 分
+		 * - date 指定: 当該 UTC 暦日 = 1440 分（limit で切れた場合に「1 日のうちどれだけ見たか」が出る）
+		 * - 件数ベース（date/hours なし）: 時間窓の要求が無いので undefined
+		 */
+		let requestedMin: number | undefined;
 		const txFetcher = internalTxFetcher(chk.pair);
 
 		if (hours != null && hours > 0) {
 			// === 時間範囲ベースの取得 ===
 			// 完了済み UTC 日アーカイブの列挙 + latest 補完 + dedup マージは lib/tx-fetch.ts に集約。
 			// 失敗ハンドリング（全滅 fail / 部分失敗 warning）の方針は本ツール側で判断する。
+			requestedMin = Math.round(hours * 60);
 			const range = await fetchTxTimeRange(txFetcher, hours, { retryFailedDates: { delayMs: 500 } });
 			const { currentUtcDay, dates, dateMerge, latestMerge } = range;
 
@@ -255,11 +271,19 @@ export default async function getFlowMetrics(
 								),
 							);
 						}
-						fetchWarning = `⚠️ date=${date} のアーカイブは未公開（/transactions/{YYYYMMDD} は UTC 暦日の完了後に公開）のため /transactions (latest) から取得しました`;
 						// 加工契約: 全ての取得パスで昇順 sort を保証する。
 						// 上流 getTransactions も内部 sort 済みだが、契約の単一ソースをこちらに置く。
 						// 取得は無制限だが limit はユーザーの明示要求なので最新側 limit 件に切る。
-						txs = sortTxsAsc(latestRes.data.normalized as Tx[]).slice(-lim.value);
+						limitApplication = applyTxLimit(sortTxsAsc(latestRes.data.normalized as Tx[]), lim.value);
+						txs = limitApplication.txs;
+						// latest フォールバックでは要求日のデータを返していないため、requestedMin
+						// （= UTC 暦日 1440 分）は設定しない。カバー率を出しても意味を成さない。
+						fetchWarning = [
+							`⚠️ date=${date} のアーカイブは未公開（/transactions/{YYYYMMDD} は UTC 暦日の完了後に公開）のため /transactions (latest) から取得しました`,
+							buildTxTruncationWarning(limitApplication, lim.value),
+						]
+							.filter(Boolean)
+							.join('\n');
 					} else {
 						return GetFlowMetricsOutputSchema.parse(
 							fail(txRes?.summary || 'failed', txRes?.meta?.errorType || 'internal'),
@@ -267,7 +291,15 @@ export default async function getFlowMetrics(
 					}
 				} else {
 					// 加工契約: 全ての取得パスで昇順 sort を保証する。
-					txs = sortTxsAsc(txRes.data.normalized as Tx[]).slice(-lim.value);
+					limitApplication = applyTxLimit(sortTxsAsc(txRes.data.normalized as Tx[]), lim.value);
+					txs = limitApplication.txs;
+					// 要求スコープは当該 UTC 暦日（1440 分）。limit で切れた場合、カバー率に
+					// 「1 日のうちどれだけを見たか」が現れる。
+					requestedMin = UTC_DAY_MINUTES;
+					fetchWarning = buildTxTruncationWarning(limitApplication, lim.value, {
+						scope: `date=${date}（UTC 暦日）`,
+						hint: '1 UTC 日全体の集計には hours を使ってください（hours 指定時は limit を適用しません）。',
+					});
 				}
 			} else {
 				// 日付指定なし: latest で取得し、不足なら完了済み UTC 日アーカイブで補完する
@@ -276,7 +308,9 @@ export default async function getFlowMetrics(
 
 				if (latest.txs.length >= lim.value) {
 					// 加工契約: 全ての取得パスで昇順 sort を保証する。
-					txs = sortTxsAsc(latest.txs).slice(-lim.value);
+					limitApplication = applyTxLimit(sortTxsAsc(latest.txs), lim.value);
+					txs = limitApplication.txs;
+					fetchWarning = buildTxTruncationWarning(limitApplication, lim.value, { scope: '/transactions (latest)' });
 				} else {
 					// latest の返却数が不足（bitbank の latest エンドポイントは約60件のみ返却）
 					const { merged } = await fetchSupplementTxs(txFetcher, lim.value, latest);
@@ -295,7 +329,12 @@ export default async function getFlowMetrics(
 							`⚠️ ${merged.totalCount}件中 ${merged.failedCount}件のAPI取得に失敗しました: ${formatTxFailures(merged.failures)}`,
 						);
 					}
-					txs = sortTxsAsc(merged.txs).slice(-lim.value);
+					limitApplication = applyTxLimit(sortTxsAsc(merged.txs), lim.value);
+					txs = limitApplication.txs;
+					const truncationWarning = buildTxTruncationWarning(limitApplication, lim.value, {
+						scope: 'latest + 完了済み UTC 日アーカイブ',
+					});
+					if (truncationWarning) warnMsgs.push(truncationWarning);
 					if (txs.length < lim.value) {
 						warnMsgs.push(
 							`ℹ️ 要求 ${lim.value}件に対し取得できたのは ${txs.length}件です（進行中の UTC 日のアーカイブは未公開のため取得不可）`,
@@ -418,7 +457,6 @@ export default async function getFlowMetrics(
 		const actualStartMs = txs[0]?.timestampMs;
 		const actualEndMs = txs[txs.length - 1]?.timestampMs;
 		const actualDurationMin = coverage?.spanMinutes ?? 0;
-		const requestedMin = hours != null && hours > 0 ? Math.round(hours * 60) : undefined;
 
 		// 取得層の注記（meta.warning）: 取得失敗・アーカイブ未公開区間・カバレッジ欠損。
 		// 旧実装の「直近約N分間分です。直近フローとして扱ってください」は、変えられない制約
@@ -562,6 +600,12 @@ export default async function getFlowMetrics(
 		}
 		if (calcWarnings.length > 0) {
 			metaExtra.warnings = calcWarnings;
+		}
+		// limit による切り捨ての明示（get_transactions の totalFetched / truncated と対応）。
+		// 黙って切ると集計値・カバレッジが部分データ由来であることが応答から分からない。
+		if (limitApplication) {
+			metaExtra.totalAvailable = limitApplication.totalAvailable;
+			metaExtra.truncated = limitApplication.truncated;
 		}
 		const meta = createMeta(chk.pair, metaExtra);
 		return GetFlowMetricsOutputSchema.parse(ok(summary, data, meta));

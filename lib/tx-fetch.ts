@@ -275,6 +275,53 @@ export async function fetchSupplementTxs(
 	return { supplementDates, results, labels, merged: mergeTxResults(results, labels) };
 }
 
+// ── 件数上限（limit）の適用 ──────────────────────────────────
+
+export type TxLimitApplication = {
+	/** limit 適用後の約定（最新側 limit 件） */
+	txs: Tx[];
+	/** limit 適用**前**に取得できていた件数 */
+	totalAvailable: number;
+	/** limit により切り捨てが発生したか */
+	truncated: boolean;
+};
+
+/**
+ * 件数ベース取得で `limit` を適用する（最新側 limit 件を残す）。
+ *
+ * 黙って切ると「指定した期間の全約定を集計した」ように見え、集計値もカバレッジ申告も
+ * 部分データ由来であることが応答から分からなくなる（`get_transactions` が
+ * `meta.truncated` / warning で解決済みの問題と同型）。呼び出し側が申告できるよう、
+ * 適用前の件数と切り捨ての有無を必ず返す。
+ *
+ * @param sorted timestampMs 昇順にソート済みの約定列
+ */
+export function applyTxLimit(sorted: Tx[], limit: number): TxLimitApplication {
+	const truncated = sorted.length > limit;
+	return {
+		txs: truncated ? sorted.slice(-limit) : sorted,
+		totalAvailable: sorted.length,
+		truncated,
+	};
+}
+
+/**
+ * `limit` による切り捨ての warning（取得層, ⚠️）。切り捨てが無ければ undefined。
+ *
+ * @param scope 切り捨て対象の説明（例: `date=20260801（UTC 暦日）`）
+ * @param hint  代替手段の案内（例: 1 日全体の集計には hours を使う）
+ */
+export function buildTxTruncationWarning(
+	app: TxLimitApplication,
+	limit: number,
+	options: { scope?: string; hint?: string } = {},
+): string | undefined {
+	if (!app.truncated) return undefined;
+	const scope = options.scope ? `${options.scope} の` : '';
+	const hint = options.hint ? ` ${options.hint}` : '';
+	return `⚠️ ${scope}約定 ${app.totalAvailable}件 のうち最新側 ${app.txs.length}件 のみを集計しています（limit=${limit}）。集計値・カバレッジ申告はこの区間のみが対象です。${hint}`.trimEnd();
+}
+
 // ── カバレッジ（実データ区間 / 欠損区間） ────────────────────
 
 /**
@@ -385,7 +432,10 @@ export function isGapRange(coverage: TxCoverage | null, startMs: number, endMs: 
 }
 
 export type TxCoverageWarningOptions = {
-	/** 要求した時間窓（分）。hours 指定時のみ。カバー率の分母になる */
+	/**
+	 * 要求した時間窓（分）。カバー率の分母になる。
+	 * 呼び出し側が要求スコープを持つ場合のみ指定する（時間範囲指定・暦日指定 等）。
+	 */
 	requestedMinutes?: number;
 	tz?: string;
 };

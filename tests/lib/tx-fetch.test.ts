@@ -6,8 +6,10 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+	applyTxLimit,
 	buildAggregateCoverageNote,
 	buildTxCoverageWarning,
+	buildTxTruncationWarning,
 	computeTxCoverage,
 	extractUpstreamError,
 	fetchLatestTxs,
@@ -418,5 +420,56 @@ describe('buildTxCoverageWarning / buildAggregateCoverageNote', () => {
 		expect(note).toContain('600分');
 		// 計算層は meta.warnings に入るので ⚠️ プレフィックスは付けない
 		expect(note.startsWith('⚠️')).toBe(false);
+	});
+});
+
+describe('applyTxLimit / buildTxTruncationWarning', () => {
+	const many = (n: number) => Array.from({ length: n }, (_, i) => tx({ timestampMs: BASE_MS + i * 60_000 }));
+
+	it('件数が limit 以下なら切り捨てない', () => {
+		const app = applyTxLimit(many(5), 10);
+		expect(app.txs).toHaveLength(5);
+		expect(app.totalAvailable).toBe(5);
+		expect(app.truncated).toBe(false);
+	});
+
+	it('ちょうど limit 件でも切り捨てない（off-by-one）', () => {
+		const app = applyTxLimit(many(10), 10);
+		expect(app.truncated).toBe(false);
+		expect(app.txs).toHaveLength(10);
+	});
+
+	it('limit 超過時は最新側 limit 件を残し、適用前の件数を保持する', () => {
+		const app = applyTxLimit(many(100), 10);
+		expect(app.txs).toHaveLength(10);
+		expect(app.totalAvailable).toBe(100);
+		expect(app.truncated).toBe(true);
+		// 残るのは最新側（末尾）
+		expect(app.txs[0].timestampMs).toBe(BASE_MS + 90 * 60_000);
+		expect(app.txs.at(-1)?.timestampMs).toBe(BASE_MS + 99 * 60_000);
+	});
+
+	it('空配列でも落ちない', () => {
+		const app = applyTxLimit([], 10);
+		expect(app.txs).toEqual([]);
+		expect(app.truncated).toBe(false);
+	});
+
+	it('buildTxTruncationWarning: 切り捨てが無ければ undefined', () => {
+		expect(buildTxTruncationWarning(applyTxLimit(many(5), 10), 10)).toBeUndefined();
+	});
+
+	it('buildTxTruncationWarning: 件数・limit・スコープ・代替手段を含む', () => {
+		const w = buildTxTruncationWarning(applyTxLimit(many(2500), 100), 100, {
+			scope: 'date=20260801（UTC 暦日）',
+			hint: '1 UTC 日全体の集計には hours を使ってください。',
+		});
+		expect(w).toContain('date=20260801（UTC 暦日）');
+		expect(w).toContain('2500件');
+		expect(w).toContain('100件');
+		expect(w).toContain('limit=100');
+		expect(w).toContain('hours');
+		// 集計値だけでなくカバレッジ申告も部分データ由来であることを明示する
+		expect(w).toContain('カバレッジ');
 	});
 });
