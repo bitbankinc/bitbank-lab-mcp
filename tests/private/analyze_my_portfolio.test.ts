@@ -1424,4 +1424,60 @@ describe('analyze_my_portfolio — toolDef handler', () => {
 		expect(text).toContain('monthly_equity_series');
 		expect(text).toContain('yearly_equity_series');
 	});
+
+	/**
+	 * 資産推移の日次点・月次点の終端は、リクエスト開始時に確定した boundaries から導く。
+	 *
+	 * boundaries は fetchCandlePriceData に渡す取得条件そのものなので、ここで時計を
+	 * 読み直すと、API 応答を待っている間に JST 00:00 を跨いだ場合に「取得済みの日次価格に
+	 * 存在しない翌日」が 1 点増え、その点だけ現在価格フォールバックに落ちる。
+	 */
+	it('リクエスト中に JST 00:00 を跨いでも日次点は取得時の暦日で止まる', async () => {
+		/** JST の壁時計時刻を epoch ms に変換する（JST は DST を持たないので UTC+9 固定）。 */
+		const jstMs = (y: number, m: number, d: number, h = 0, min = 0, s = 0, ms = 0) =>
+			Date.UTC(y, m - 1, d, h - 9, min, s, ms);
+		const beforeMidnight = jstMs(2026, 8, 2, 23, 59, 59, 900);
+
+		vi.useFakeTimers();
+		vi.setSystemTime(beforeMidnight);
+		try {
+			setupFetchMock();
+			// candlestick は boundaries 確定後に発行される（handler の fetchCandlePriceData）。
+			// その応答を待っている間に JST 00:00 を跨がせる。
+			const routed = globalThis.fetch;
+			let crossed = false;
+			globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+				const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+				if (!crossed && urlStr.includes('candlestick')) {
+					crossed = true;
+					vi.setSystemTime(jstMs(2026, 8, 3, 0, 0, 0, 100));
+				}
+				return routed(url as string);
+			}) as unknown as typeof fetch;
+
+			const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+			const result = await handler({
+				include_technical: false,
+				include_pnl: true,
+				include_deposit_withdrawal: false,
+			});
+
+			assertOk(result);
+			expect(crossed).toBe(true);
+
+			// 日次点は月初 (8/1) 〜 取得時の当日 (8/2) の 2 点 + 最終点（現在値）。
+			// 時計を読み直していると 8/3 が増えて 4 点になる。
+			const monthly = result.data.monthly_equity_series ?? [];
+			expect(monthly.map((p) => p.timestamp)).toEqual([
+				'2026-08-01T00:00:00+09:00',
+				'2026-08-02T00:00:00+09:00',
+				result.data.monthly_equity_series?.[monthly.length - 1]?.timestamp,
+			]);
+			// 月次点も同様に取得時の当月 (8月) で止まる。
+			const yearly = result.data.yearly_equity_series ?? [];
+			expect(yearly.at(-2)?.timestamp).toBe('2026-08-01T00:00:00+09:00');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
