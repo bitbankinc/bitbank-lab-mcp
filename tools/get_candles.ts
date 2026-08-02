@@ -1,4 +1,11 @@
-import { isSupportedTimeZone } from '../lib/calendar.js';
+import {
+	type CalendarSpan,
+	isDayKeyFormat,
+	isSupportedTimeZone,
+	isYearKeyFormat,
+	parseDayKeyAllowingOverflow,
+	parseYearKey,
+} from '../lib/calendar.js';
 import {
 	dedupeByTimestamp,
 	describeFailedChunks,
@@ -115,58 +122,32 @@ function normalizeAnchorTz(tz: string | undefined): string {
 }
 
 /**
- * date 指定時の「これ以下の足だけ返す」上限 timestamp (ms since epoch) を返す。
+ * date 指定時の対象期間を tz 暦の区間として返す（`{ startMs, endMs }`、endMs は inclusive）。
  *
- * tz 引数の暦日基準で解釈する（既定 Asia/Tokyo、空文字・不正 tz は Asia/Tokyo にフォールバック）:
- * - YYYYMMDD: その日の終端 23:59:59.999 (in tz)
- * - YYYY: その年の終端 12-31 23:59:59.999 (in tz)（YEARLY_TYPES でのみ用いる）
+ * **この関数が持つのは date の「文法」だけ**——どの形式をどの暦の単位として読むか——で、
+ * 区間そのものの計算は lib/calendar.ts に委ねる:
+ * - YYYYMMDD: その tz 暦日（00:00:00.000 〜 23:59:59.999 in tz）
+ * - YYYY: その tz 暦年（YEARLY_TYPES でのみ受け付ける。API が年単位で返す時間足だけの互換形式）
  * - 形式不一致: null（validateDate 通過後を前提に呼ぶため通常は起きない）
+ *
+ * 終端は「これ以下の足だけ返す」anchor に、開始は未来日の早期判定に使う。未来日判定を
+ * 終端ではなく開始で行うのは、終端で判定すると当日（進行中の tz 暦日）が『未来』扱いになり、
+ * 当日途中の部分データ取得という正当なユースケースを拒否してしまうため。
  *
  * bitbank /candlestick API は UTC 暦日でグルーピングする（docs/internal/bitbank-candle-tz.md）。
  * 「API は UTC キーで fetch、anchor は tz 暦日終端で filter」という二段構え（tz anchor 仕様）。
  * 旧実装（date を UTC 暦日終端のみで解釈）では、JST で date を指定したときに
  * 結果が最大 9 時間ズレる問題があった。
- */
-function computeAnchorEndMs(rawDate: string, type: string, tz: string = 'Asia/Tokyo'): number | null {
-	const safeTz = normalizeAnchorTz(tz);
-	if (/^\d{8}$/.test(rawDate)) {
-		const year = rawDate.slice(0, 4);
-		const month = rawDate.slice(4, 6);
-		const day = rawDate.slice(6, 8);
-		const d = dayjs.tz(`${year}-${month}-${day}`, safeTz);
-		return d.isValid() ? d.endOf('day').valueOf() : null;
-	}
-	if (YEARLY_TYPES.has(type) && /^\d{4}$/.test(rawDate)) {
-		const d = dayjs.tz(`${rawDate}-01-01`, safeTz);
-		return d.isValid() ? d.endOf('year').valueOf() : null;
-	}
-	return null;
-}
-
-/**
- * date 指定時の対象期間の「開始」timestamp (ms since epoch) を返す（未来日の早期判定用）。
  *
- * computeAnchorEndMs と対になる関数で、tz 暦日/暦年の先頭 00:00:00.000 (in tz) を返す:
- * - YYYYMMDD: その日の先頭
- * - YYYY: その年の 1/1 先頭（YEARLY_TYPES でのみ用いる）
- *
- * 未来日判定は「終端 > now」ではなく「開始 > now」で行う。終端で判定すると
- * 当日（進行中の tz 暦日）が『未来』扱いになり、当日途中の部分データ取得という
- * 正当なユースケースを拒否してしまう。
+ * **繰り上げ許容版の parseDayKey を使う理由**: validateDate は形式（`/^\d{8}$/`）しか見ず
+ * 実在日を検証しないため、20260230 のような入力がここまで到達する。現行はこれを
+ * グレゴリオ暦の繰り上げ（→ 3/2）で解釈しており、実在日必須の parseDayKey に替えると
+ * anchor が無効化されて「最新側 limit 本」に化ける（回帰テストで固定済み）。
  */
-function computeAnchorStartMs(rawDate: string, type: string, tz: string = 'Asia/Tokyo'): number | null {
+function computeAnchorSpan(rawDate: string, type: string, tz: string = DEFAULT_ANCHOR_TZ): CalendarSpan | null {
 	const safeTz = normalizeAnchorTz(tz);
-	if (/^\d{8}$/.test(rawDate)) {
-		const year = rawDate.slice(0, 4);
-		const month = rawDate.slice(4, 6);
-		const day = rawDate.slice(6, 8);
-		const d = dayjs.tz(`${year}-${month}-${day}`, safeTz);
-		return d.isValid() ? d.startOf('day').valueOf() : null;
-	}
-	if (YEARLY_TYPES.has(type) && /^\d{4}$/.test(rawDate)) {
-		const d = dayjs.tz(`${rawDate}-01-01`, safeTz);
-		return d.isValid() ? d.startOf('year').valueOf() : null;
-	}
+	if (isDayKeyFormat(rawDate)) return parseDayKeyAllowingOverflow(rawDate, safeTz);
+	if (YEARLY_TYPES.has(type) && isYearKeyFormat(rawDate)) return parseYearKey(rawDate, safeTz);
 	return null;
 }
 
@@ -306,7 +287,8 @@ export default async function getCandles(
 	// 単一 fetch（YEARLY_TYPES）では API が年単位で返すため slice(-limit) のみだと
 	// 「指定日以前 limit 件」ではなく「年末側 limit 件」を返してしまう問題への対処。
 	// anchor は anchorTz の暦日終端で切る（既定 Asia/Tokyo）。
-	const anchorEndMs = dateProvided ? computeAnchorEndMs(effectiveDate, String(type), anchorTz) : null;
+	const anchorSpan = dateProvided ? computeAnchorSpan(effectiveDate, String(type), anchorTz) : null;
+	const anchorEndMs = anchorSpan?.endMs ?? null;
 	const anchorActive = anchorEndMs != null;
 
 	// anchor 計算後の早期 fail（fetch 前に明らかに無効な範囲を弾く）:
@@ -315,16 +297,15 @@ export default async function getCandles(
 	//   終端ではなく開始で判定する（終端判定だと当日を『未来』として誤拒否する）。
 	// - サービス開始前: anchor が BITBANK_SERVICE_START_MS より前 → ヒューリスティックに無効と推定
 	// 上流 404 / 空配列として返すより user 向け原因を明示する方が調査が早い。
-	if (anchorEndMs != null) {
-		const anchorStartMs = computeAnchorStartMs(effectiveDate, String(type), anchorTz);
-		if (anchorStartMs != null && anchorStartMs > Date.now()) {
-			const isoLocal = toIsoWithTz(anchorStartMs, anchorTz) ?? String(anchorStartMs);
+	if (anchorSpan != null) {
+		if (anchorSpan.startMs > Date.now()) {
+			const isoLocal = toIsoWithTz(anchorSpan.startMs, anchorTz) ?? String(anchorSpan.startMs);
 			return fail(
 				`No candle data available for date=${effectiveDate} (date is in the future, starts at ${isoLocal} ${anchorTz})`,
 				'user',
 			);
 		}
-		if (anchorEndMs < BITBANK_SERVICE_START_MS) {
+		if (anchorSpan.endMs < BITBANK_SERVICE_START_MS) {
 			return fail(`No candle data available for date=${effectiveDate} (before bitbank service start)`, 'user');
 		}
 	}
