@@ -395,7 +395,7 @@ export const TxCoverageRangeSchema = z.object({
 		.int()
 		.optional()
 		.describe(
-			'要求した時間窓。hours 指定時はその時間数、date 指定（アーカイブ取得成功時）は当該 UTC 暦日の 1440 分。' +
+			'要求した時間窓（**分**）。hours 指定時は hours×60（例: hours=8 → 480）、date 指定（アーカイブ取得成功時）は当該 UTC 暦日の 1440。' +
 				'時間窓の要求が無いケース（件数ベース取得 / date 指定でアーカイブ未公開のため latest にフォールバックした場合）は省略',
 		),
 	coveragePct: z

@@ -188,7 +188,7 @@ export default async function getFlowMetrics(
 		let limitApplication: TxLimitApplication | undefined;
 		/**
 		 * 要求した時間窓（分）。カバレッジ率の分母になる。
-		 * - hours 指定: その時間数
+		 * - hours 指定: hours×60 分
 		 * - date 指定: 当該 UTC 暦日 = 1440 分（limit で切れた場合に「1 日のうちどれだけ見たか」が出る）
 		 * - 件数ベース（date/hours なし）: 時間窓の要求が無いので undefined
 		 */

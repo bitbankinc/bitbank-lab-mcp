@@ -935,7 +935,10 @@ export const AnalyzeVolumeProfileDataSchemaOut = z.object({
 			coveredMin: z.number().describe('実際に約定が存在する区間の合計'),
 			gapMin: z.number().describe('durationMin - coveredMin'),
 			segments: z.number().int().describe('連続して約定があった区間の数'),
-			requestedMin: z.number().optional().describe('要求した時間窓（hours 指定時のみ）'),
+			requestedMin: z
+				.number()
+				.optional()
+				.describe('要求した時間窓（**分**）。hours 指定時のみ、hours×60（例: hours=4 → 240）'),
 		}),
 		bins: z.number().int(),
 		valueAreaPct: z.number(),
