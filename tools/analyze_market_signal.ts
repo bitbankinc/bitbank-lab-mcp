@@ -262,8 +262,11 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 
 		// Flow metrics
 		const agg = flowRes.data.aggregates || {};
-		const buckets = (flowRes.data.series?.buckets || []) as Array<{ cvd: number }>;
-		const cvdSeries = buckets.map((b) => b.cvd);
+		const buckets = (flowRes.data.series?.buckets || []) as Array<{ cvd: number; hasData?: boolean }>;
+		// 欠損バケット（hasData=false）は CVD が据え置きで引き継がれるだけなので、含めると
+		// 「直近 horizon 本」が全部欠損のとき傾き 0 ＝「フロー中立」と誤読される。
+		// 観測のあるバケットだけを対象にする。
+		const cvdSeries = buckets.filter((b) => b.hasData !== false).map((b) => b.cvd);
 		const cvdSlice = cvdSeries.slice(-horizon);
 		const cvdSlope = cvdSlice.length >= 2 ? cvdSlice[cvdSlice.length - 1] - cvdSlice[0] : 0;
 		const cvdNormBase = Math.max(1, Math.max(...cvdSlice.map((v) => Math.abs(v))) || 1);
