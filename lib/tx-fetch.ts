@@ -446,19 +446,59 @@ export type TxCoverageWarningOptions = {
  * 「先頭〜末尾の N 分間分を取得」とだけ申告すると欠損区間をカバー済みに見せてしまうため、
  * 要求窓 / 実カバー / 欠損を必ずセットで出す。
  */
+/**
+ * 「要求窓を満たしていない」と判定するカバー率の閾値（%）。
+ *
+ * #8 で削除した旧注記（「直近約N分間分です…」）が使っていた 80% を踏襲する。旧注記は
+ * 枠組みこそ誤解を招いたが、カバー率 80% 未満で定量表示するという閾値自体は妥当だった。
+ */
+export const COVERAGE_SHORTFALL_WARN_PCT = 80;
+
+/**
+ * 要求した時間窓に対して実カバーが不足しているか（カバー率 < 80%）。
+ *
+ * 区間**内部**の欠損（gaps）とは独立した判定。gaps がゼロでも、窓の先頭・末尾側が
+ * 未カバーならこちらが true になる（例: hours=4 の窓が丸ごと進行中 UTC 日内にあり、
+ * latest 約60件 ≒ 34分ぶんしか取れないケース。実測: 2026-08-02）。
+ */
+export function hasCoverageShortfall(coverage: TxCoverage | null, requestedMinutes?: number): boolean {
+	if (!coverage || requestedMinutes == null || requestedMinutes <= 0) return false;
+	return (coverage.coveredMinutes / requestedMinutes) * 100 < COVERAGE_SHORTFALL_WARN_PCT;
+}
+
 export function buildTxCoverageWarning(
 	coverage: TxCoverage | null,
 	options: TxCoverageWarningOptions = {},
 ): string | undefined {
-	if (!coverage || coverage.gaps.length === 0) return undefined;
+	if (!coverage) return undefined;
+	const requested = options.requestedMinutes;
+	const hasGaps = coverage.gaps.length > 0;
+	// 内部欠損が無く、要求窓も（無い or 8 割以上）満たしているなら警告不要
+	if (!hasGaps && !hasCoverageShortfall(coverage, requested)) return undefined;
+
 	const tz = options.tz ?? 'Asia/Tokyo';
-	const largest = coverage.gaps.reduce((a, b) => (b.durationMinutes > a.durationMinutes ? b : a));
-	const largestLabel = `${toDisplayTime(largest.startMs, tz) ?? '?'}〜${toDisplayTime(largest.endMs, tz) ?? '?'}`;
 	const head =
-		options.requestedMinutes != null && options.requestedMinutes > 0
-			? `ℹ️ カバレッジ: 要求 ${options.requestedMinutes}分のうち実データがあるのは ${coverage.coveredMinutes}分（${Math.round((coverage.coveredMinutes / options.requestedMinutes) * 100)}%）です`
+		requested != null && requested > 0
+			? `ℹ️ カバレッジ: 要求 ${requested}分のうち実データがあるのは ${coverage.coveredMinutes}分（${Math.round((coverage.coveredMinutes / requested) * 100)}%）です`
 			: `ℹ️ カバレッジ: 取得区間のスパン ${coverage.spanMinutes}分のうち実データがあるのは ${coverage.coveredMinutes}分です`;
-	return `${head}。欠損 ${coverage.gapMinutes}分（${coverage.gaps.length}区間、最大 ${largest.durationMinutes}分: ${largestLabel}）`;
+	const parts: string[] = [head];
+
+	if (hasGaps) {
+		const largest = coverage.gaps.reduce((a, b) => (b.durationMinutes > a.durationMinutes ? b : a));
+		const largestLabel = `${toDisplayTime(largest.startMs, tz) ?? '?'}〜${toDisplayTime(largest.endMs, tz) ?? '?'}`;
+		parts.push(
+			`欠損 ${coverage.gapMinutes}分（${coverage.gaps.length}区間、最大 ${largest.durationMinutes}分: ${largestLabel}）`,
+		);
+	}
+
+	// 要求窓のうち、取得できた区間（先頭〜末尾）の外側にある未カバー分。内部欠損とは別勘定。
+	const outsideMinutes = requested != null ? Math.max(0, requested - coverage.spanMinutes) : 0;
+	if (outsideMinutes > 0) {
+		const rangeLabel = `${toDisplayTime(coverage.startMs, tz) ?? '?'}〜${toDisplayTime(coverage.endMs, tz) ?? '?'}`;
+		parts.push(`実データ区間（${rangeLabel}）の外側 ${outsideMinutes}分 は未カバーです`);
+	}
+
+	return parts.join('。');
 }
 
 /**
@@ -466,7 +506,21 @@ export function buildTxCoverageWarning(
  *
  * 取得層の欠損そのもの（`buildTxCoverageWarning`）とは別系統。`.claude/rules/tools.md` の
  * 2 系統ルールに従い、`meta.warning`（string）ではなく `meta.warnings`（string[]）に載せる。
+ *
+ * @param requestedMinutes 要求した時間窓（分）。カバー率 80% 未満なら
+ *   「窓全体を代表する値ではない」旨を追記する（内部欠損の有無と独立）。
  */
-export function buildAggregateCoverageNote(coverage: TxCoverage, metricsLabel: string): string {
-	return `${metricsLabel}は実データのある ${coverage.coveredMinutes}分（${coverage.segments.length}区間）のみから算出しています。欠損 ${coverage.gapMinutes}分の約定は含まれません`;
+export function buildAggregateCoverageNote(
+	coverage: TxCoverage,
+	metricsLabel: string,
+	requestedMinutes?: number,
+): string {
+	let note = `${metricsLabel}は実データのある ${coverage.coveredMinutes}分（${coverage.segments.length}区間）のみから算出しています`;
+	if (coverage.gapMinutes > 0) {
+		note += `。欠損 ${coverage.gapMinutes}分の約定は含まれません`;
+	}
+	if (hasCoverageShortfall(coverage, requestedMinutes)) {
+		note += `。要求した時間窓（${requestedMinutes}分）全体を代表する値ではありません`;
+	}
+	return note;
 }

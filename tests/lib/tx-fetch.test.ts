@@ -16,6 +16,7 @@ import {
 	fetchSupplementTxs,
 	fetchTxTimeRange,
 	formatTxFailures,
+	hasCoverageShortfall,
 	mergeTxResults,
 	partialFailureWarning,
 	sortTxsAsc,
@@ -471,5 +472,65 @@ describe('applyTxLimit / buildTxTruncationWarning', () => {
 		expect(w).toContain('hours');
 		// 集計値だけでなくカバレッジ申告も部分データ由来であることを明示する
 		expect(w).toContain('カバレッジ');
+	});
+});
+
+describe('hasCoverageShortfall / カバレッジ不足の警告', () => {
+	const at = (minutes: number[]) => minutes.map((m) => tx({ timestampMs: BASE_MS + m * 60_000 }));
+	/** 0〜spanMin 分に 1 分間隔で連続する約定列（内部ギャップなし） */
+	const contiguous = (spanMin: number) => at(Array.from({ length: spanMin + 1 }, (_, i) => i));
+
+	it('hasCoverageShortfall: 80% ちょうどは不足としない（off-by-one）', () => {
+		expect(hasCoverageShortfall(computeTxCoverage(contiguous(80)), 100)).toBe(false);
+		expect(hasCoverageShortfall(computeTxCoverage(contiguous(79)), 100)).toBe(true);
+	});
+
+	it('hasCoverageShortfall: requestedMinutes が無ければ常に false', () => {
+		expect(hasCoverageShortfall(computeTxCoverage(contiguous(10)))).toBe(false);
+		expect(hasCoverageShortfall(computeTxCoverage(contiguous(10)), 0)).toBe(false);
+		expect(hasCoverageShortfall(null, 100)).toBe(false);
+	});
+
+	it('内部欠損なし + 要求窓の8割未満 → 未カバーの定量警告が出る', () => {
+		// 実測（2026-08-02, hours=4）: latest 約60件 ≒ 34分 / 要求240分 = 14%
+		const w = buildTxCoverageWarning(computeTxCoverage(contiguous(34)), {
+			requestedMinutes: 240,
+			tz: 'Asia/Tokyo',
+		});
+		expect(w).toContain('要求 240分');
+		expect(w).toContain('34分（14%）');
+		expect(w).toContain('外側 206分 は未カバー');
+		// 内部欠損はゼロなので「欠損」の行は出さない
+		expect(w).not.toContain('欠損');
+	});
+
+	it('内部欠損なし + 要求窓の8割以上 → 警告なし（誤検知しない）', () => {
+		expect(buildTxCoverageWarning(computeTxCoverage(contiguous(80)), { requestedMinutes: 100 })).toBeUndefined();
+	});
+
+	it('内部欠損あり + 窓外の未カバーもあり → 両方を併記する', () => {
+		// 0〜10分 + 30〜40分（内部ギャップ 20分）、要求 100分 → 窓外 60分
+		const c = computeTxCoverage(at([0, 5, 10, 30, 35, 40]));
+		const w = buildTxCoverageWarning(c, { requestedMinutes: 100 });
+		expect(w).toContain('欠損 20分');
+		expect(w).toContain('外側 60分 は未カバー');
+	});
+
+	it('buildAggregateCoverageNote: 不足時は「窓全体を代表しない」旨を追記する', () => {
+		const c = computeTxCoverage(contiguous(34));
+		if (!c) throw new Error('coverage should exist');
+		const note = buildAggregateCoverageNote(c, '集計値（CVD）', 240);
+		expect(note).toContain('34分（1区間）のみから算出');
+		expect(note).toContain('要求した時間窓（240分）全体を代表する値ではありません');
+		// 内部欠損ゼロなら「欠損 N分」は出さない
+		expect(note).not.toContain('欠損');
+	});
+
+	it('buildAggregateCoverageNote: requestedMinutes 未指定なら従来どおり', () => {
+		const c = computeTxCoverage(at([0, 5, 10, 610, 615, 620]));
+		if (!c) throw new Error('coverage should exist');
+		const note = buildAggregateCoverageNote(c, '集計値（CVD）');
+		expect(note).toContain('欠損 600分');
+		expect(note).not.toContain('代表する値ではありません');
 	});
 });

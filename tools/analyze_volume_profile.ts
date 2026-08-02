@@ -24,6 +24,7 @@ import {
 	fetchSupplementTxs,
 	fetchTxTimeRange,
 	formatTxFailures,
+	hasCoverageShortfall,
 	partialFailureWarning,
 	sortTxsAsc,
 	type Tx,
@@ -445,9 +446,11 @@ export default async function analyzeVolumeProfile(
 		// 取得層（部分失敗・カバレッジ欠損）と計算層（集計値がカバー区間のみ由来）は別系統。
 		const fetchWarnings = [fetchResult.fetchWarning, coverageWarning].filter(Boolean) as string[];
 		const dataWarning = fetchWarnings.length > 0 ? fetchWarnings.join('\n') : undefined;
+		const coverageIncomplete =
+			coverage != null && (coverage.gaps.length > 0 || hasCoverageShortfall(coverage, requestedMin));
 		const calcWarnings =
-			coverage && coverage.gaps.length > 0
-				? [buildAggregateCoverageNote(coverage, '集計値（VWAP / POC / Value Area / 約定サイズ分布）')]
+			coverage && coverageIncomplete
+				? [buildAggregateCoverageNote(coverage, '集計値（VWAP / POC / Value Area / 約定サイズ分布）', requestedMin)]
 				: [];
 		const totalVolume = txs.reduce((s, t) => s + t.amount, 0);
 		const { low: priceLow, high: priceHigh } = priceRangeOf(txs);

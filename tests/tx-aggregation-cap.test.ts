@@ -281,15 +281,18 @@ describe('カバレッジ申告（hours=24, 進行中 UTC 日に穴があるケ�
 		expect(res.meta.warnings?.[0]).toContain('集計値');
 	});
 
-	it('欠損が無ければカバレッジ warning は出ない（誤検知しない）', async () => {
+	it('要求窓をほぼ満たしていればカバレッジ warning は出ない（誤検知しない）', async () => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(NOW);
-		// latest がアーカイブ末尾に連続する（＝穴なし）ケース
-		const contiguousLatest = buildTxs(ARCHIVE_START + ARCHIVE_COUNT * 20_000, LATEST_COUNT, 20_000, 900_001);
+		// アーカイブが窓の先頭〜UTC 日終端、latest が UTC 日開始〜現在を隙間なくカバーするケース。
+		// archive: 08:30 7/7 から 20 秒間隔で 2,790 件 → 23:59:40 7/7 まで
+		// latest:  00:00 7/8 から 5 分間隔で 103 件 → 08:30 7/8（= NOW）まで
+		const archiveFull = buildTxs(ARCHIVE_START, 2790, 20_000, 1);
+		const latestSpread = buildTxs(Date.UTC(2026, 6, 8, 0, 0, 0), 103, 300_000, 900_001);
 		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
 			const u = String(url);
-			if (u.endsWith('/transactions/20260707')) return jsonRes(payload(ARCHIVE_TXS));
-			if (u.endsWith('/transactions')) return jsonRes(payload(contiguousLatest));
+			if (u.endsWith('/transactions/20260707')) return jsonRes(payload(archiveFull));
+			if (u.endsWith('/transactions')) return jsonRes(payload(latestSpread));
 			return jsonRes({ success: 0, data: { code: 10000 } }, 404);
 		});
 
@@ -298,7 +301,55 @@ describe('カバレッジ申告（hours=24, 進行中 UTC 日に穴があるケ�
 		assertOk(res);
 		expect(res.meta.actualRange?.gapMinutes).toBe(0);
 		expect(res.meta.actualRange?.segments).toBe(1);
+		expect(res.meta.actualRange?.coveragePct).toBeGreaterThan(95);
 		expect(res.meta.warning).not.toContain('カバレッジ');
+		expect(res.meta.warnings).toBeUndefined();
+	});
+
+	it('内部欠損が無くても要求窓の8割未満なら不足を警告する（hours=4 実測の回帰）', async () => {
+		// 実測（2026-08-02, hours=4）: 窓が丸ごと進行中 UTC 日内にあり latest 約60件 ≒ 34分ぶん
+		// しか取れないケースで、内部ギャップがゼロのため旧実装は定量警告を一切出さなかった
+		// （原因を述べる「進行中の UTC 日…」の行のみで、14% というカバー率がどこにも出ない）。
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		// NOW は UTC 08:30 → hours=4 の窓 (04:30〜08:30) は進行中 UTC 日内 → latest のみ。
+		// LATEST_TXS は 1 秒間隔 60 件 ≒ 1 分の連続区間（内部ギャップなし）。
+		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 4);
+
+		assertOk(res);
+		const range = res.meta.actualRange;
+		expect(range?.gapMinutes).toBe(0);
+		expect(range?.segments).toBe(1);
+		expect(range?.requestedMinutes).toBe(240);
+		expect(range?.coveragePct).toBeLessThan(5);
+		// 取得層: カバー率と、実データ区間の外側が未カバーである旨を定量表示
+		expect(res.meta.warning).toContain('カバレッジ: 要求 240分');
+		expect(res.meta.warning).toContain('外側');
+		expect(res.meta.warning).toContain('未カバー');
+		expect(res.meta.warning).not.toContain('欠損 0分');
+		// 計算層: 集計値が窓全体を代表しないこと
+		expect(res.meta.warnings?.[0]).toContain('集計値');
+		expect(res.meta.warnings?.[0]).toContain('要求した時間窓（240分）全体を代表する値ではありません');
+	});
+
+	it('カバー率8割ちょうどは警告しない（off-by-one は lib 側でも固定）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		// hours=1（窓 60 分）に対し latest が 48 分（80%）をカバーする → 警告なし
+		const latest48min = buildTxs(NOW - 48 * 60_000, 49, 60_000, 900_001);
+		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+			const u = String(url);
+			if (u.endsWith('/transactions')) return jsonRes(payload(latest48min));
+			return jsonRes({ success: 0, data: { code: 10000 } }, 404);
+		});
+
+		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 1);
+
+		assertOk(res);
+		expect(res.meta.actualRange?.coveragePct).toBeCloseTo(80, 0);
+		expect(res.meta.warning ?? '').not.toContain('カバレッジ');
 		expect(res.meta.warnings).toBeUndefined();
 	});
 });
