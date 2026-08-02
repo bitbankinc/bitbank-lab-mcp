@@ -12,6 +12,7 @@ import {
 	fetchSupplementTxs,
 	fetchTxTimeRange,
 	formatTxFailures,
+	hasCoverageShortfall,
 	isGapRange,
 	sortTxsAsc,
 	type Tx,
@@ -468,11 +469,19 @@ export default async function getFlowMetrics(
 		if (coverageWarning) warnings.push(coverageWarning);
 		const dataWarning = warnings.length > 0 ? warnings.join('\n') : undefined;
 
-		// 計算層の注記（meta.warnings）: 集計値が欠損を含む区間から算出されている事実。
-		// 取得層（上記 dataWarning）とは別系統で出す（.claude/rules/tools.md）。
+		// 計算層の注記（meta.warnings）: 集計値が欠損を含む区間、または要求窓の一部からしか
+		// 算出されていない事実。取得層（上記 dataWarning）とは別系統で出す（.claude/rules/tools.md）。
+		const coverageIncomplete =
+			coverage != null && (coverage.gaps.length > 0 || hasCoverageShortfall(coverage, requestedMin));
 		const calcWarnings: string[] =
-			coverage && coverage.gaps.length > 0
-				? [buildAggregateCoverageNote(coverage, '集計値（totalTrades / CVD / アグレッサー比 / スパイク Z スコア）')]
+			coverage && coverageIncomplete
+				? [
+						buildAggregateCoverageNote(
+							coverage,
+							'集計値（totalTrades / CVD / アグレッサー比 / スパイク Z スコア）',
+							requestedMin,
+						),
+					]
 				: [];
 
 		// summary / content には 2 系統を別行で並べる（meta では別フィールド）
