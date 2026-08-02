@@ -1,10 +1,13 @@
 import {
 	type CalendarSpan,
+	enumerateDayKeys,
+	enumerateYearKeys,
 	isDayKeyFormat,
 	isSupportedTimeZone,
 	isYearKeyFormat,
 	parseDayKeyAllowingOverflow,
 	parseYearKey,
+	startOfYearMs,
 } from '../lib/calendar.js';
 import {
 	dedupeByTimestamp,
@@ -39,6 +42,11 @@ const TYPES: Set<CandleType | string> = new Set([
 	'1week',
 	'1month',
 ]);
+
+// bitbank /candlestick の chunk がグルーピングされる暦。UTC 暦日 / UTC 暦年で固定されており、
+// tz 引数（anchor / 表示の暦）とは独立（docs/internal/bitbank-candle-tz.md）。
+// anchorTz != 'UTC' のとき「tz 暦日」と「UTC 暦日」が最大 1 日ずれるのがこのツールの複雑さの根源。
+const FETCH_CHUNK_TZ = 'UTC';
 
 // 年単位でリクエストする時間足（YYYY形式）
 const YEARLY_TYPES: Set<string> = new Set(['4hour', '8hour', '12hour', '1day', '1week', '1month']);
@@ -149,25 +157,6 @@ function computeAnchorSpan(rawDate: string, type: string, tz: string = DEFAULT_A
 	if (isDayKeyFormat(rawDate)) return parseDayKeyAllowingOverflow(rawDate, safeTz);
 	if (YEARLY_TYPES.has(type) && isYearKeyFormat(rawDate)) return parseYearKey(rawDate, safeTz);
 	return null;
-}
-
-/**
- * [windowStartMs, windowEndMs] と交差する UTC 暦年 (YYYY) を昇順で返す。
- * YEARLY_TYPES の fetch key 導出に使う（bitbank API は UTC 年 chunk）。
- */
-function enumerateUtcYearsIntersectingWindow(windowStartMs: number, windowEndMs: number): string[] {
-	const keys: string[] = [];
-	let y = dayjs.utc(windowStartMs).year();
-	const endY = dayjs.utc(windowEndMs).year();
-	while (y <= endY) {
-		const yearStartMs = Date.UTC(y, 0, 1);
-		const yearEndMs = Date.UTC(y + 1, 0, 1) - 1;
-		if (yearStartMs <= windowEndMs && yearEndMs >= windowStartMs) {
-			keys.push(String(y));
-		}
-		y += 1;
-	}
-	return keys;
 }
 
 /**
@@ -369,13 +358,13 @@ export default async function getCandles(
 	// UTC 日数のスケール: limit 上限 (multiDay=10000) と intervalMs の積で決まる。
 	// 例: tz='America/New_York' × 1min × limit=10000 → 約 7 日分 + tz ズレ 1 日 = 8 UTC 日 → OK。
 	const multiDayUtcKeys: string[] = [];
-	if (isDailyType) {
-		const ymd = dateCheck.value;
-		const y = ymd.slice(0, 4);
-		const m = ymd.slice(4, 6);
-		const d = ymd.slice(6, 8);
-		const localDayStartMs = dayjs.tz(`${y}-${m}-${d}`, anchorTz).startOf('day').valueOf();
-		const localDayEndMs = dayjs.tz(`${y}-${m}-${d}`, anchorTz).endOf('day').valueOf();
+	// tz 暦日は anchor と同じく繰り上げ許容で読む（computeAnchorSpan と同じ理由）。
+	// 解釈できない場合は key set 空 = 単一 fetch 経路へ落とす（旧実装で window が NaN になり
+	// 列挙ループが 1 度も回らなかったのと同じ結果）。
+	const localDaySpan = isDailyType ? parseDayKeyAllowingOverflow(dateCheck.value, anchorTz) : null;
+	if (localDaySpan != null) {
+		const localDayStartMs = localDaySpan.startMs;
+		const localDayEndMs = localDaySpan.endMs;
 		const intervalMsForDaily = INTERVAL_MS[String(type)] ?? 3_600_000;
 		const lookbackStartMs = localDayEndMs - (limit - 1) * intervalMsForDaily;
 		// date 省略（realtime）は「現在時刻から遡って limit 本」も window に含める。
@@ -393,12 +382,10 @@ export default async function getCandles(
 		// 過半数失敗と誤判定されて取得済みデータごと捨てられる。
 		const windowEndMs = Math.min(localDayEndMs, Date.now());
 
-		let cursor = dayjs.utc(windowStartMs).startOf('day');
-		const endCursor = dayjs.utc(windowEndMs).startOf('day');
-		while (cursor.valueOf() <= endCursor.valueOf()) {
-			multiDayUtcKeys.push(cursor.format('YYYYMMDD'));
-			cursor = cursor.add(1, 'day');
-		}
+		// windowStart <= windowEnd は常に成立する（windowStart <= localDayStart であり、
+		// localDayStart > now なら未来日として fetch 前に fail 済み、date 省略時は当日なので
+		// localDayStart <= now）。よって enumerateDayKeys の「逆転窓は空配列」規則には掛からない。
+		multiDayUtcKeys.push(...enumerateDayKeys(windowStartMs, windowEndMs, FETCH_CHUNK_TZ));
 	}
 	// needsMultiDay 判定: UTC 暦日 range が 2 日以上 or limit > barsPerDay。
 	// 後者は実質的に前者を含意するが（limit が一日分を超えるなら時間軸も一日を跨ぐ）、
@@ -409,22 +396,18 @@ export default async function getCandles(
 	// 例: tz=America/New_York, date=2025, 4hour → NY 2025-12-31 夜の足は UTC 2026 年 chunk に入る。
 	const yearlyTzWindowActive = isYearlyType && dateProvided && anchorActive;
 	const multiYearUtcKeys: string[] = [];
-	if (yearlyTzWindowActive) {
+	if (yearlyTzWindowActive && anchorSpan != null) {
 		const intervalMsYearly = INTERVAL_MS[String(type)] ?? 86_400_000;
-		const year = effectiveDate.slice(0, 4);
-		let periodStartMs: number;
-		if (/^\d{8}$/.test(effectiveDate)) {
-			const month = effectiveDate.slice(4, 6);
-			const day = effectiveDate.slice(6, 8);
-			periodStartMs = dayjs.tz(`${year}-${month}-${day}`, anchorTz).startOf('year').valueOf();
-		} else {
-			periodStartMs = dayjs.tz(`${year}-01-01`, anchorTz).startOf('year').valueOf();
-		}
-		const lookbackStartMs = (anchorEndMs as number) - (limit - 1) * intervalMsYearly;
+		// anchor が YYYYMMDD でも YYYY でも「anchor が属する tz 暦年の頭」が起点。
+		// YYYY 指定では anchorSpan.startMs 自体が年頭なので同じ式で両形式を賄える。
+		const periodStartMs = startOfYearMs(anchorSpan.startMs, anchorTz);
+		const lookbackStartMs = anchorSpan.endMs - (limit - 1) * intervalMsYearly;
 		const windowStartMs = Math.min(periodStartMs, lookbackStartMs);
 		// 未来の UTC 年 chunk は存在しない（404 確定）ため現在時刻でクランプ（multi-day と同旨）。
-		const windowEndMs = Math.min(anchorEndMs as number, Date.now());
-		multiYearUtcKeys.push(...enumerateUtcYearsIntersectingWindow(windowStartMs, windowEndMs));
+		const windowEndMs = Math.min(anchorSpan.endMs, Date.now());
+		// multi-day と同じく windowStart <= windowEnd は常に成立する
+		// （periodStart / lookbackStart はいずれも anchor 終端以下で、periodStart > now なら未来日 fail 済み）。
+		multiYearUtcKeys.push(...enumerateYearKeys(windowStartMs, windowEndMs, FETCH_CHUNK_TZ));
 	}
 	// date 未指定時は従来どおり anchorYear から過去方向に yearsNeeded 分だけ fetch。
 	const useLegacyMultiYear = isYearlyType && needsMultiYear && !yearlyTzWindowActive;
