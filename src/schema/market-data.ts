@@ -407,7 +407,18 @@ export const GetFlowMetricsMetaSchemaOut = BaseMetaSchema.extend({
 	hours: z.number().optional(),
 	mode: z.enum(['time_range']).optional(),
 	actualRange: TxCoverageRangeSchema.optional(),
-	/** 取得層の不完全性（部分失敗・アーカイブ未公開・カバレッジ欠損） */
+	totalAvailable: z
+		.number()
+		.int()
+		.optional()
+		.describe(
+			'limit 適用前に取得できていた約定件数（件数ベース取得時のみ。hours 指定時は limit を適用しないため省略）',
+		),
+	truncated: z
+		.boolean()
+		.optional()
+		.describe('limit により切り捨てが発生したか。true のとき集計値・actualRange は切り捨て後の区間のみが対象'),
+	/** 取得層の不完全性（部分失敗・アーカイブ未公開・カバレッジ欠損・limit 切り捨て） */
 	warning: z.string().optional(),
 	/** 計算層の不完全性（集計値が欠損を含む区間から算出されている 等） */
 	warnings: z.array(z.string()).optional(),

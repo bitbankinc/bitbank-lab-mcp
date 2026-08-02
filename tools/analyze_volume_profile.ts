@@ -14,8 +14,10 @@ import { toDisplayTime, toIsoWithTz } from '../lib/datetime.js';
 import { formatPair, formatPercent, formatPrice } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import {
+	applyTxLimit,
 	buildAggregateCoverageNote,
 	buildTxCoverageWarning,
+	buildTxTruncationWarning,
 	computeTxCoverage,
 	extractUpstreamError,
 	fetchLatestTxs,
@@ -26,6 +28,7 @@ import {
 	sortTxsAsc,
 	type Tx,
 	type TxFetcher,
+	type TxLimitApplication,
 } from '../lib/tx-fetch.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import {
@@ -40,7 +43,9 @@ import getTransactions from './get_transactions.js';
 /** get_transactions の応答件数上限（public ツールの limit 上限と同値）。 */
 const PUBLIC_TX_LIMIT = 1000;
 
-type FetchResult = { ok: true; txs: Tx[]; fetchWarning?: string } | { ok: false; errorType: string; summary: string };
+type FetchResult =
+	| { ok: true; txs: Tx[]; fetchWarning?: string; limitApplication?: TxLimitApplication }
+	| { ok: false; errorType: string; summary: string };
 
 /**
  * 内部集計用の約定フェッチャ。
@@ -94,7 +99,16 @@ async function fetchTransactions(pair: string, hours?: number, limit?: number): 
 		if (upstreamErr) return { ok: false, ...upstreamErr };
 	}
 	// 取得は無制限だが limit はユーザーの明示要求なので最新側 limit 件に切る。
-	if (latest.txs.length >= lim) return { ok: true, txs: sortTxsAsc(latest.txs).slice(-lim) };
+	// 黙って切ると集計値が部分データ由来であることが応答から分からないため申告する。
+	if (latest.txs.length >= lim) {
+		const applied = applyTxLimit(sortTxsAsc(latest.txs), lim);
+		return {
+			ok: true,
+			txs: applied.txs,
+			limitApplication: applied,
+			fetchWarning: buildTxTruncationWarning(applied, lim, { scope: '/transactions (latest)' }),
+		};
+	}
 
 	const { results, merged } = await fetchSupplementTxs(txFetcher, lim, latest);
 	if (merged.txs.length === 0) {
@@ -104,10 +118,18 @@ async function fetchTransactions(pair: string, hours?: number, limit?: number): 
 	// 補完は best-effort: 何かしら取得できていれば fail せず、部分失敗は警告で明示する
 	// （latest 成功 + 補完失敗を「過半数失敗」として全体 fail すると、正当に取得できた
 	// 直近データまで捨ててしまう。補完アーカイブは公開遅延等で 404 になり得る）。
+	const applied = applyTxLimit(sortTxsAsc(merged.txs), lim);
 	return {
 		ok: true,
-		txs: sortTxsAsc(merged.txs).slice(-lim),
-		fetchWarning: partialFailureWarning(merged.totalCount, merged.failures),
+		txs: applied.txs,
+		limitApplication: applied,
+		fetchWarning:
+			[
+				partialFailureWarning(merged.totalCount, merged.failures),
+				buildTxTruncationWarning(applied, lim, { scope: 'latest + 完了済み UTC 日アーカイブ' }),
+			]
+				.filter(Boolean)
+				.join('\n') || undefined,
 	};
 }
 
@@ -519,6 +541,11 @@ export default async function analyzeVolumeProfile(
 		const metaExtra: Record<string, unknown> = { count: txs.length };
 		if (dataWarning) metaExtra.warning = dataWarning;
 		if (calcWarnings.length > 0) metaExtra.warnings = calcWarnings;
+		// limit による切り捨ての明示（get_flow_metrics / get_transactions と対応）
+		if (fetchResult.limitApplication) {
+			metaExtra.totalAvailable = fetchResult.limitApplication.totalAvailable;
+			metaExtra.truncated = fetchResult.limitApplication.truncated;
+		}
 		const meta = createMeta(chk.pair, metaExtra);
 		return AnalyzeVolumeProfileOutputSchema.parse(
 			ok<z.infer<typeof AnalyzeVolumeProfileDataSchemaOut>, z.infer<typeof AnalyzeVolumeProfileMetaSchemaOut>>(

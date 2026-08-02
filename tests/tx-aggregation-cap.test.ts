@@ -409,3 +409,138 @@ describe('欠損バケット（hasData）', () => {
 		expect(buckets.filter((b) => b.spike !== null)).toHaveLength(0);
 	});
 });
+
+/**
+ * limit による切り捨ての申告
+ *
+ * 件数ベース取得（date 指定 / 件数指定）は最新側 limit 件に切るが、旧実装はこれを
+ * **無言で**行っていた。1 UTC 日は BTC/JPY で 5,600〜8,000 件あるのに limit 上限は 2000 の
+ * ため、`date=YYYYMMDD` 指定では 1 日の 1/3 程度しか集計に入らない。しかも
+ * `meta.actualRange` が「実カバー = スパン」を報告するため、**完全にカバーしたように見えて
+ * いた**（#8/#9 で入れたカバレッジ申告が、切り捨てには反応しなかった）。
+ */
+describe('limit 切り捨ての申告', () => {
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	it('date 指定: 切り捨てを meta.truncated / totalAvailable で明示する', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		const res = await getFlowMetrics('btc_jpy', 100, '20260707', 60_000);
+
+		assertOk(res);
+		expect(res.data.aggregates.totalTrades).toBe(100);
+		expect(res.meta.totalAvailable).toBe(ARCHIVE_COUNT);
+		expect(res.meta.truncated).toBe(true);
+	});
+
+	it('date 指定: warning に件数・limit・hours への誘導が入る', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		const res = await getFlowMetrics('btc_jpy', 100, '20260707', 60_000);
+
+		assertOk(res);
+		expect(res.meta.warning).toContain('date=20260707（UTC 暦日）');
+		expect(res.meta.warning).toContain(`${ARCHIVE_COUNT}件`);
+		expect(res.meta.warning).toContain('limit=100');
+		// 1 日全体を見る代替手段まで案内する
+		expect(res.meta.warning).toContain('hours');
+	});
+
+	it('date 指定: 要求スコープは UTC 暦日（1440分）としてカバー率が出る', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		const res = await getFlowMetrics('btc_jpy', 100, '20260707', 60_000);
+
+		assertOk(res);
+		const range = res.meta.actualRange;
+		// 100件 × 20秒間隔 = 約33分。1 UTC 日 1440 分のごく一部しか見ていないことが数値に出る
+		expect(range?.requestedMinutes).toBe(1440);
+		expect(range?.coveredMinutes).toBeLessThan(60);
+		expect(range?.coveragePct).toBeLessThan(5);
+	});
+
+	it('切り捨てが無ければ truncated=false で warning も出さない（誤検知しない）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		const small = buildTxs(ARCHIVE_START, 50, 20_000, 1);
+		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+			const u = String(url);
+			if (u.endsWith('/transactions/20260707')) return jsonRes(payload(small));
+			if (u.endsWith('/transactions')) return jsonRes(payload(LATEST_TXS));
+			return jsonRes({ success: 0, data: { code: 10000 } }, 404);
+		});
+
+		const res = await getFlowMetrics('btc_jpy', 100, '20260707', 60_000);
+
+		assertOk(res);
+		expect(res.data.aggregates.totalTrades).toBe(50);
+		expect(res.meta.truncated).toBe(false);
+		expect(res.meta.totalAvailable).toBe(50);
+		expect(res.meta.warning ?? '').not.toContain('limit=');
+	});
+
+	it('件数ベース（latest + 補完）: 切り捨てを申告する', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000);
+
+		assertOk(res);
+		expect(res.data.aggregates.totalTrades).toBe(100);
+		expect(res.meta.truncated).toBe(true);
+		expect(res.meta.totalAvailable).toBe(TOTAL_TRADES);
+		expect(res.meta.warning).toContain('latest + 完了済み UTC 日アーカイブ');
+	});
+
+	it('件数ベース（latest のみで足りる）: 切り捨てを申告する', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		// latest は 60 件返す → limit=10 なら latest だけで足り、50 件が切り捨てられる
+		const res = await getFlowMetrics('btc_jpy', 10, undefined, 60_000);
+
+		assertOk(res);
+		expect(res.data.aggregates.totalTrades).toBe(10);
+		expect(res.meta.truncated).toBe(true);
+		expect(res.meta.totalAvailable).toBe(LATEST_COUNT);
+		expect(res.meta.warning).toContain('/transactions (latest)');
+	});
+
+	it('hours 指定では limit を適用しないため truncated を立てない', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 24);
+
+		assertOk(res);
+		expect(res.data.aggregates.totalTrades).toBe(TOTAL_TRADES);
+		expect(res.meta.truncated).toBeUndefined();
+		expect(res.meta.totalAvailable).toBeUndefined();
+	});
+
+	it('analyze_volume_profile: 件数ベースの切り捨てを申告する', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		const res = await analyzeVolumeProfile('btc_jpy', 0, 100, 20, 0.7);
+
+		assertOk(res);
+		expect(res.data.params.totalTrades).toBe(100);
+		expect(res.meta.truncated).toBe(true);
+		expect(res.meta.totalAvailable).toBe(TOTAL_TRADES);
+		expect(res.summary).toContain('limit=100');
+	});
+});
