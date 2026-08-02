@@ -432,7 +432,10 @@ export function isGapRange(coverage: TxCoverage | null, startMs: number, endMs: 
 }
 
 export type TxCoverageWarningOptions = {
-	/** 要求した時間窓（分）。hours 指定時のみ。カバー率の分母になる */
+	/**
+	 * 要求した時間窓（分）。カバー率の分母になる。
+	 * 呼び出し側が要求スコープを持つ場合のみ指定する（時間範囲指定・暦日指定 等）。
+	 */
 	requestedMinutes?: number;
 	tz?: string;
 };

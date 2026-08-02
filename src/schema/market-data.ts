@@ -390,8 +390,18 @@ export const TxCoverageRangeSchema = z.object({
 	coveredMinutes: z.number().int().describe('実際に約定が存在する区間の合計'),
 	gapMinutes: z.number().int().describe('durationMinutes - coveredMinutes'),
 	segments: z.number().int().describe('連続して約定があった区間の数'),
-	requestedMinutes: z.number().int().optional().describe('要求した時間窓（hours 指定時のみ）'),
-	coveragePct: z.number().optional().describe('coveredMinutes / requestedMinutes（hours 指定時のみ）'),
+	requestedMinutes: z
+		.number()
+		.int()
+		.optional()
+		.describe(
+			'要求した時間窓。hours 指定時はその時間数、date 指定（アーカイブ取得成功時）は当該 UTC 暦日の 1440 分。' +
+				'時間窓の要求が無いケース（件数ベース取得 / date 指定でアーカイブ未公開のため latest にフォールバックした場合）は省略',
+		),
+	coveragePct: z
+		.number()
+		.optional()
+		.describe('coveredMinutes / requestedMinutes（%）。requestedMinutes がある場合のみ'),
 	gaps: z
 		.array(z.object({ start: z.string(), end: z.string(), durationMinutes: z.number().int() }))
 		.optional()
