@@ -711,12 +711,19 @@ export const toolDef: ToolDefinition = {
 		const effectiveView = view ?? 'summary';
 		const buckets = (res?.data?.series?.buckets ?? []) as FlowMetricsBucket[];
 
-		// view=summary: バケットを structuredContent からも除外してトークン消費を抑える
+		// view は content だけを変え、structuredContent は変えない
+		// （docs/internal/view-vocabulary-unification.md §3-2 規約 4）。
+		// 旧実装は summary で series.buckets をキーごと削除し、compact で「非ゼロ ∪ 欠損」に
+		// フィルタしていた。動機はトークン削減だったが、LLM は structuredContent を参照しない
+		// （.claude/rules/tools.md）ため削減量はゼロで、必須フィールドを宣言する
+		// GetFlowMetricsDataSchemaOut を満たさない structuredContent だけが残っていた。
+		//
+		// 出口で宣言スキーマを通すことで、以後 view 分岐が structuredContent を加工したら
+		// CI で落ちる（getFlowMetrics 本体が既に parse 済みなので、ここでの parse は冪等）。
+		const structuredContent = GetFlowMetricsOutputSchema.parse(res) as Record<string, unknown>;
+
 		if (effectiveView === 'summary') {
-			const { buckets: _omit, ...restSeries } = (res.data.series ?? {}) as { buckets?: unknown };
-			const data = { ...res.data, series: restSeries } as typeof res.data;
-			const trimmed = { ...res, data };
-			return { content: [{ type: 'text', text: res.summary }], structuredContent: trimmed as Record<string, unknown> };
+			return { content: [{ type: 'text', text: res.summary }], structuredContent };
 		}
 
 		// 欠損バケットを通常行と同じ形（buy=0 sell=0）で出すと「約定ゼロ」と誤読される
@@ -725,19 +732,14 @@ export const toolDef: ToolDefinition = {
 				? `${b.displayTime || b.isoTime}  データなし（欠損区間）`
 				: `${b.displayTime || b.isoTime}  buy=${b.buyVolume} sell=${b.sellVolume} total=${b.totalVolume} cvd=${b.cvd}${b.spike ? ` spike=${b.spike}` : ''}`;
 
-		// view=compact: 非ゼロバケットのみ。ただし欠損バケットは落とさない
+		// view=compact: content のバケット行だけを非ゼロに絞る。ただし欠損バケットは落とさない
 		// （落とすと欠損区間が応答から消え、「閑散だった」と誤読される）。
+		// structuredContent は全バケットのまま（上記のとおり view で削らない）。
 		if (effectiveView === 'compact') {
-			const kept = buckets.filter((b) => b.buyVolume > 0 || b.sellVolume > 0 || b.hasData === false);
-			const data = {
-				...res.data,
-				series: { ...res.data.series, buckets: kept },
-			} as typeof res.data;
-			const trimmed = { ...res, data };
 			const { lines, shown, gapBuckets } = renderCompactBucketLines(buckets, fmt);
 			const gapNote = gapBuckets > 0 ? ` (+${gapBuckets} no-data buckets shown as ranges)` : '';
 			const text = `${res.summary}\n\nNon-zero ${shown}/${buckets.length} buckets${gapNote}:\n${lines.join('\n')}`;
-			return { content: [{ type: 'text', text }], structuredContent: trimmed as Record<string, unknown> };
+			return { content: [{ type: 'text', text }], structuredContent };
 		}
 
 		const agg = res?.data?.aggregates ?? {};
@@ -760,9 +762,9 @@ export const toolDef: ToolDefinition = {
 		text += `Totals: trades=${agg.totalTrades} buyVol=${agg.buyVolume} sellVol=${agg.sellVolume} net=${agg.netVolume} buy%=${(agg.aggressorRatio * 100 || 0).toFixed(1)} CVD=${agg.finalCvd}${warnStr}`;
 		if (effectiveView === 'buckets') {
 			text += `\n\nRecent ${last.length} buckets:\n${last.map(fmt).join('\n')}`;
-			return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
+			return { content: [{ type: 'text', text }], structuredContent };
 		}
 		text += `\n\nAll buckets:\n${buckets.map(fmt).join('\n')}`;
-		return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
+		return { content: [{ type: 'text', text }], structuredContent };
 	},
 };
