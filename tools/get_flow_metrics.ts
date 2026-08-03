@@ -597,32 +597,37 @@ export const toolDef: ToolDefinition = {
 			return { content: [{ type: 'text', text: res.summary }], structuredContent };
 		}
 
+		const fmt = (b: FlowMetricsBucket) =>
+			`${b.displayTime || b.isoTime}  buy=${b.buyVolume} sell=${b.sellVolume} total=${b.totalVolume} cvd=${b.cvd}${b.spike ? ` spike=${b.spike}` : ''}`;
+
 		// view=compact: content のバケット行だけを非ゼロに絞る（structuredContent は全バケットのまま）
 		if (effectiveView === 'compact') {
 			const nonZero = buckets.filter((b) => b.buyVolume > 0 || b.sellVolume > 0);
-			const fmt = (b: FlowMetricsBucket) =>
-				`${b.displayTime || b.isoTime}  buy=${b.buyVolume} sell=${b.sellVolume} total=${b.totalVolume} cvd=${b.cvd}${b.spike ? ` spike=${b.spike}` : ''}`;
 			const text = `${res.summary}\n\nNon-zero ${nonZero.length}/${buckets.length} buckets:\n${nonZero.map(fmt).join('\n')}`;
 			return { content: [{ type: 'text', text }], structuredContent };
 		}
 
+		// view=buckets / full は res.summary をベースにする（compact と同じ形）。
+		// 旧実装は res.summary を捨てて短いヘッダを組み直していたため、最終約定価格・スパイク上位
+		// 3 件・4 行フッタ（含まれるもの / 含まれないもの / 補完ツール / 加工契約）が上位 view でだけ
+		// 消えていた（docs/internal/view-vocabulary-unification.md §1-3 の P3）。
+		// content[0].text は LLM への唯一のチャネル（§2-0）なので、これは「表示が変わる」ではなく
+		// 「LLM が情報を失う」に等しい。§3-2 規約 3（上位 view は下位の上位集合）に従い上位集合にする。
 		const agg = res?.data?.aggregates ?? {};
-		const n = Number(bucketsN ?? 10);
-		const last = buckets.slice(-n);
-		const fmt = (b: FlowMetricsBucket) =>
-			`${b.displayTime || b.isoTime}  buy=${b.buyVolume} sell=${b.sellVolume} total=${b.totalVolume} cvd=${b.cvd}${b.spike ? ` spike=${b.spike}` : ''}`;
 		const actualRange = res?.meta?.actualRange;
 		const rangeStr = actualRange
 			? ` 実取得範囲: ${actualRange.start}〜${actualRange.end}（${actualRange.durationMinutes}分間）`
 			: '';
-		const warnStr = res?.meta?.warning ? `\n${res.meta.warning}` : '';
-		let text = `${String(pair).toUpperCase()} Flow Metrics (bucketMs=${res?.data?.params?.bucketMs ?? bucketMs})${rangeStr}\n`;
-		text += `Totals: trades=${agg.totalTrades} buyVol=${agg.buyVolume} sellVol=${agg.sellVolume} net=${agg.netVolume} buy%=${(agg.aggressorRatio * 100 || 0).toFixed(1)} CVD=${agg.finalCvd}${warnStr}`;
-		if (effectiveView === 'buckets') {
-			text += `\n\nRecent ${last.length} buckets:\n${last.map(fmt).join('\n')}`;
-			return { content: [{ type: 'text', text }], structuredContent };
-		}
-		text += `\n\nAll buckets:\n${buckets.map(fmt).join('\n')}`;
+		// バケット行の読み方（間隔・実取得範囲・Totals）をバケット本体の直前に置く。
+		// 取得層の warning 行はここでは重ねない——res.summary が同じ warning を同じ文言で
+		// 既に含んでいるため（重複は LLM のノイズになる）。
+		const bucketHeader =
+			`${String(pair).toUpperCase()} Flow Metrics (bucketMs=${res?.data?.params?.bucketMs ?? bucketMs})${rangeStr}\n` +
+			`Totals: trades=${agg.totalTrades} buyVol=${agg.buyVolume} sellVol=${agg.sellVolume} net=${agg.netVolume} buy%=${(agg.aggressorRatio * 100 || 0).toFixed(1)} CVD=${agg.finalCvd}`;
+
+		const shownBuckets = effectiveView === 'buckets' ? buckets.slice(-Number(bucketsN ?? 10)) : buckets;
+		const body = `${effectiveView === 'buckets' ? `Recent ${shownBuckets.length} buckets` : 'All buckets'}:\n${shownBuckets.map(fmt).join('\n')}`;
+		const text = `${res.summary}\n\n${bucketHeader}\n\n${body}`;
 		return { content: [{ type: 'text', text }], structuredContent };
 	},
 };
