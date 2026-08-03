@@ -49,7 +49,18 @@ describe('tool-registry', () => {
 	it('docs/tools.md のツール一覧表と registry が実ファイル同士で一致する', () => {
 		const docs = readFileSync(new URL('../docs/tools.md', import.meta.url), 'utf8');
 		const actualNames = allToolDefs.map((toolDef) => toolDef.name);
-		const docsToolNames = Array.from(docs.matchAll(/^\|\s*`([^`]+)`\s*\|/gm), (match) => match[1]).filter((name) =>
+
+		// 抽出は「カテゴリ別ツール」節に限定する。同節が**ツール一覧表**（＝ registry と 1:1 で
+		// 対応すべき唯一のカタログ）で、以降の節はツール名を 1 列目に置く**参考表**を持つため
+		// （例:「view の共通語彙」の階梯表・非推奨の値の表）。ファイル全体から拾うと、
+		// カタログではない表を足しただけで件数・重複の検証が落ちる。
+		// 節が見つからなければ抽出は空になり、下の件数検証で落ちる（検査が黙って無効化されない）。
+		const catalogStart = docs.search(/^## カテゴリ別ツール/m);
+		const rest = docs.slice(catalogStart < 0 ? docs.length : catalogStart + 1);
+		const nextHeading = rest.search(/^## /m);
+		const catalog = nextHeading < 0 ? rest : rest.slice(0, nextHeading);
+
+		const docsToolNames = Array.from(catalog.matchAll(/^\|\s*`([^`]+)`\s*\|/gm), (match) => match[1]).filter((name) =>
 			actualNames.includes(name),
 		);
 

@@ -610,9 +610,9 @@ PR 2  上位集合の保証               ─┴ 同一ファイルを触るた�
         ↓
 PR 3  語彙統一 Phase 1（破壊的変更はここに全部集約）                            ✅ 完了
         ↓
-PR 4  呼び出し側の追従 + ドキュメント                                          ← 次はここ
+PR 4  呼び出し側の追従 + ドキュメント                                            ✅ 完了
         ↓（1 リリース以上 かつ 3 ヶ月以上あける）
-PR 5  Phase 2（alias 削除）
+PR 5  Phase 2（alias 削除）                                                    ← 次はここ
 PR 6  Phase 3（軽量 summary の opt-in 追加、需要ベース・任意）
 ```
 
@@ -817,7 +817,7 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 | PR 1 | §5-2 | **完了** | [#20](https://github.com/tjackiet/bitbank-lab-mcp/pull/20) | **P4**（`view` が `structuredContent` の契約を変える）— ただし `get_candles(view=items)` の封筒逸脱は**未解消**。§5-0 分割の原則 2 により PR 3 へ持ち越し |
 | PR 2 | §5-3 | **完了** | [#22](https://github.com/tjackiet/bitbank-lab-mcp/pull/22) | **P3**（重い view が軽い view の上位集合になっていない） |
 | PR 3 | §5-5 | **完了** | — | **P1 / P2 / P5 / P7** ＋ **P4 の残り**（`get_candles(view=items)` の封筒） |
-| PR 4 | §5-6 | 未着手 | — | （呼び出し側追従とドキュメント。指摘の解消ではない） |
+| PR 4 | §5-6 | **完了** | — | （呼び出し側追従とドキュメント。指摘の解消ではない） |
 | PR 5 | §5-7 | 未着手 | — | （Phase 2: alias 削除） |
 | PR 6 | §5-8 | 未着手 | — | （Phase 3: 軽量 `summary` の opt-in 追加。§6-2 次第で実施しない） |
 
@@ -973,11 +973,54 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
   > **参考**: 本ドキュメント §1-6（挙動）/ §3-4（判断）/ §6-3（決定）、実装は
   > `src/handlers/getTickersJpyHandler.ts`。
 
-### 7-4. 完了済み PR のブリーフの扱い
+### 7-4. PR 4 で実際に入ったもの
 
-§5-1 / §5-2 / §5-3 / §5-5（PR 0〜3）のブリーフに書かれた行番号は**着手時点の値のまま**にしてある。
+ブリーフ（§5-6）との差分を残す。PR 5 以降のセッションが前提にできる**現状**は以下:
+
+- **プロンプト**: `src/prompts/intermediate.ts` の `get_flow_metrics(view=compact)` →
+  `view=full, nonZeroOnly=true`、`get_transactions(view=summary)` → `view=full`。
+  `detect_patterns(view=detailed)` は新語彙でも有効値なので**変更なし**。
+- **`src/prompts/reports.ts`（おはようレポート）は `view=full` のみにし、`format=json` は付けなかった。**
+  ブリーフ（§5-6 ②）と §4-5 の表は写像先を `view=full` + `format=json` と書いていたが、
+  これは「旧 `items` と `content` を一致させる」場合の写像であって、
+  **このプロンプトが必要としているものではない**。用途はスパークライン用に 24 本の close を得ることで、
+  `view=full`（既定・`format=text`）のサマリ本文が `📋 全24件のOHLCV` として全 24 本を
+  1 行 1 本の圧縮形式で含む（`tools/get_candles.ts:808-822`。基準は本 PR 着手時点の `main` = `f8ac35f`）。`format=json` にすると
+  同じ 24 本が 10 行/本の pretty JSON になり（§1-1）、しかも `content` からサマリ本文・
+  価格レンジ・キーポイント・出来高統計・フッタが**消える**。
+  §2-0 の帰結 3（`format=json` はトークン削減オプションではない）をプロンプト側に適用した結果、
+  **JSON を要求する理由が無く、`format` を落とすほうが軽く、かつ LLM が受け取る情報は増える。**
+  `view="full"` を明示のまま残したのは、「24 本すべてを取る」という意図を呼び出し例に残すため
+  （既定値と同値なので挙動は変わらない）。
+- **`tests/prompts_contract.test.ts` の正規表現は変更不要だった。** `VIEW_ARG_RE` の bare 値は
+  `[\w-]+` でカンマの手前で止まるため、`view=full, nonZeroOnly=true` から `view` の値だけを
+  `full` として抽出する（`nonZeroOnly` は `view=` 接頭辞が無いのでそもそも当たらない）。
+  同テストの「viewBox 等の別語を誤検出しない」ケースは `view="items"` を含むテキストを
+  フィクスチャに持つが、これは**抽出の検証であって値の有効性検証ではない**（`extractViewUsages`
+  の戻り値を直接見ており enum を引かない）ので、alias 削除後もそのまま通る。
+- **`docs/tools.md` に「`view` の共通語彙」節を新設**（従来 `view` の記載はゼロだった）。
+  階梯 / `full` が全件列挙とは限らない条件 / `structuredContent` を削らない契約 /
+  `format`・`nonZeroOnly` の位置づけ / 階梯外の値 / 生データ系の既定が全件列挙である理由 /
+  ツール別の値と既定 / **非推奨の値と写像先の表**を書いた。
+  `get_tickers_jpy` の `view` は本語彙の対象外である旨も明記した（§6-3 / §7-3-1）。
+- **`.claude/rules/tools.md` に「`view` の規約」節を追記**（規約 1〜7）。§3-2 の規約と
+  §6-6 のテスト方式を開発者向けに要約し、`src/schema/base.ts` の共通文言と
+  各共通テストへの導線を張った。あわせて handler チェックリストの
+  `view=items` という例示を `format=json` に差し替えた（旧値を規約文書に残さないため）。
+
+**PR 5 への申し送り**: §7-3 の PR 5 作業表の項目 5（プロンプト / ドキュメント）は
+「旧値が残っていないか再確認」だが、**`docs/tools.md` の「非推奨の値（`0.4.0` で削除予定）」表は
+意図的に旧値を載せている**（移行ガイドのため）。PR 5 ではこの表と、`get_transactions` の
+`summary` に関する注意書きを**削除する**こと。同様に `src/schema/market-data.ts` の
+`bucketsN` の description にある「（および deprecated な `view=buckets`）」も PR 5 の対象。
+`src/handlers/getTickersJpyHandler.ts` のコメントにある `view=items` は
+**`get_tickers_jpy` の対象外の `view`** なので PR 5 でも触らない（§6-3）。
+
+### 7-5. 完了済み PR のブリーフの扱い
+
+§5-1 / §5-2 / §5-3 / §5-5 / §5-6（PR 0〜4）のブリーフに書かれた行番号は**着手時点の値のまま**にしてある。
 実施済みの作業指示なので、追随させる意味が無いため。
-**未着手 PR のブリーフ（§5-6 以降）の行番号は `main` の現在値に追随させる**——
+**未着手 PR のブリーフ（§5-7 以降）の行番号は `main` の現在値に追随させる**——
 そちらは仕様書として読まれるため。更新時は基準コミットを併記すること。
 
 同じ理由で、完了済みブリーフ内の**規約への言及も着手時点の表現のまま**にしてある
