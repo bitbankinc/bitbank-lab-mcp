@@ -4,11 +4,14 @@ import {
 	BasePairInputSchema,
 	CandleSchema,
 	CandleTypeEnum,
+	deprecatedViewNote,
 	FailResultSchema,
+	FORMAT_PARAM_NOTE,
 	MAX_TX_COUNT_LIMIT,
 	TX_RANGE_SINCE_SCHEMA,
 	TX_RANGE_UNTIL_SCHEMA,
 	toolResultSchema,
+	VIEW_CONTRACT_NOTE,
 } from './base.js';
 
 // === Ticker ===
@@ -247,7 +250,17 @@ export const GetCandlesInputSchema = z.object({
 		.describe(
 			'デフォルト 200。1〜10000 の整数。type により実上限が変わる: 1min〜1hour は最大 10000（複数日取得）、4hour〜1month は最大 5000（複数年取得）、それ以外は 1000。実上限を超えると user エラー。',
 		),
-	view: z.enum(['full', 'items']).optional().default('full'),
+	view: z
+		.enum(['full', 'items'])
+		.optional()
+		.default('full')
+		.describe(
+			`${VIEW_CONTRACT_NOTE}\n` +
+				'- full（既定）: サマリ本文（全 OHLCV を 1 行 1 本の圧縮形式で列挙）＋ 価格レンジ / キーポイント / 出来高統計 / フッタ ＋ 先頭 5 本の JSON サンプル。本ツールの最重量。\n' +
+				`- items: ${deprecatedViewNote('view=full + format=json')}。挙動は view=full + format=json と同じ（content は全件の pretty JSON のみで、サマリ本文・価格レンジ・キーポイント・出来高統計・フッタは出ない）。\n` +
+				'集計だけを返す軽量 summary は未実装（量を絞る手段は limit）。',
+		),
+	format: z.enum(['text', 'json']).optional().default('text').describe(FORMAT_PARAM_NOTE),
 	tz: z
 		.string()
 		.optional()
@@ -316,7 +329,17 @@ export const GetTransactionsInputSchema = BasePairInputSchema.extend({
 	maxAmount: z.number().positive().optional().describe('約定数量の上限（limit 適用前にフィルタ）'),
 	minPrice: z.number().positive().optional().describe('約定価格の下限（limit 適用前にフィルタ）'),
 	maxPrice: z.number().positive().optional().describe('約定価格の上限（limit 適用前にフィルタ）'),
-	view: z.enum(['summary', 'items']).optional().default('summary'),
+	view: z
+		.enum(['full', 'summary', 'items'])
+		.optional()
+		.default('full')
+		.describe(
+			`${VIEW_CONTRACT_NOTE}\n` +
+				'- full（既定）: 返却した全約定を 1 行 1 件で列挙 ＋ 件数サマリ ＋ 切り捨て警告 ＋ スコープフッタ。本ツールの最重量。\n' +
+				`- summary: ${deprecatedViewNote('view=full')}。旧既定値で、実体は full と同じ全件列挙（挙動は完全に不変で、名前だけを階梯に合わせた）。集計のみの軽量 summary は将来別リリースで opt-in 専用として新設予定。\n` +
+				`- items: ${deprecatedViewNote('view=full + format=json')}。挙動は view=full + format=json と同じ（content は全件の pretty JSON のみで、件数サマリとスコープフッタは出ない）。`,
+		),
+	format: z.enum(['text', 'json']).optional().default('text').describe(FORMAT_PARAM_NOTE),
 });
 
 // === Depth (raw depth for analysis/visualization) ===
@@ -496,14 +519,38 @@ export const GetFlowMetricsInputSchema = BasePairInputSchema.extend({
 		.default(60_000)
 		.describe('バケットの時間幅（ミリ秒）。デフォルト60000=1分間隔'),
 	view: z
-		.enum(['summary', 'compact', 'buckets', 'full'])
+		.enum(['summary', 'detailed', 'full', 'compact', 'buckets'])
 		.optional()
 		.default('summary')
 		.describe(
-			'content に出すバケット行の量だけを制御します（structuredContent には view に関わらず全バケットが入ります）。' +
-				'summary: バケット行なし（集計値のみ） / compact: 非ゼロバケットのみ（欠損は区間表記で保持） / buckets: 直近 N バケット / full: 全バケット',
+			`${VIEW_CONTRACT_NOTE}\n` +
+				'本ツールの主対象はバケット列なので、view が決めるのは content のバケット行の量です（集計値・警告・フッタは全 view に出ます）。\n' +
+				'- summary（既定）: 集計値のみ。バケット行は content に出ない。\n' +
+				'- detailed: 集計値 ＋ 直近 bucketsN 件のバケット行（既定 10 / 上限 100）。それより前のバケット行は content に出ない。\n' +
+				'- full: 集計値 ＋ 全バケット行。本ツールの最重量。\n' +
+				`- compact: ${deprecatedViewNote('view=full + nonZeroOnly=true')}。挙動は view=full + nonZeroOnly=true と同じ。\n` +
+				`- buckets: ${deprecatedViewNote('view=detailed')}。挙動は view=detailed と同じ。`,
 		),
-	bucketsN: z.number().int().min(1).max(100).optional().default(10),
+	nonZeroOnly: z
+		.boolean()
+		.optional()
+		.default(false)
+		.describe(
+			'true にすると content のバケット行を非ゼロ（buy または sell > 0）のみに絞ります。量ではなく絞り込みの軸なので view とは独立に指定できます。' +
+				'欠損バケット（hasData=false）は落とさず、連続区間を `⋯ 欠損 A〜B（Nバケット, データなし）` の 1 行に畳んで残します' +
+				'（黙って消すと「閑散だった」と誤読されるため）。' +
+				'structuredContent は変わりません（全バケットのまま）。view=summary との併用は no-op（バケット行が無いため。エラーにはしません）。',
+		),
+	bucketsN: z
+		.number()
+		.int()
+		.min(1)
+		.max(100)
+		.optional()
+		.default(10)
+		.describe(
+			'view=detailed（および deprecated な view=buckets）で content に出す直近バケット行の件数。他の view では無視されます。',
+		),
 	tz: z.string().optional().default('Asia/Tokyo'),
 });
 

@@ -23,13 +23,21 @@
  * `detect_patterns` の `debug` は定義上「出力の置換」であり、上位集合である必要がない。
  * 平易な言い換えである `beginner` に専門用語のフッタを足すのは、その view の目的に反する。
  *
- * 対象ツールは P3 が指摘した 2 つ。他ツールの階梯（`detect_patterns` 等）への横展開は
- * PR 3 の受け入れ基準②で、本ファイルのヘルパをそのまま使って行う（§5-5）。
+ * 対象ツールは P3 が指摘した 2 つ（PR 2）＋ `detect_patterns`（PR 3 の受け入れ基準②で、
+ * 本ファイルのヘルパをそのまま使って横展開した。§5-5）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// detect_patterns は上流ツールをモックして、パターン件数と warning をフィクスチャで固定する
+// （実データ経由だと検出件数が 5 件を超えるか保証できず、detailed ⊊ full を検証できない）。
+vi.mock('../tools/detect_patterns.js', () => ({ default: vi.fn() }));
+
 import { dayjs } from '../lib/datetime.js';
+import { toolDef as detectPatternsTool } from '../src/handlers/detectPatternsHandler.js';
 import { toolDef as volatilityTool } from '../src/handlers/getVolatilityMetricsHandler.js';
+import detectPatterns from '../tools/detect_patterns.js';
 import { toolDef as flowMetricsTool } from '../tools/get_flow_metrics.js';
+import { asMockResult } from './_assertResult.js';
 
 // ── 定型要素の抽出・正規化（§6-6） ────────────────────────
 
@@ -76,6 +84,33 @@ function bucketRowKeys(text: string): Set<string> {
 	for (const line of text.split('\n')) {
 		const m = line.match(/^(.+?)\s{2}(?:buy=|データなし)/u);
 		if (m) keys.add(m[1]);
+	}
+	return keys;
+}
+
+/**
+ * 検出パターン行の識別キー（`type@開始日~終了日`）。§6-6 の「レコード集合の包含」で
+ * 指定されている `pattern type + range` をそのまま使う——表示上の連番（`1.` `2.` …）を
+ * キーに含めると並び替えや件数変更で落ちる脆いテストになるため。
+ *
+ * 1 パターンは `N. <type> (パターン整合度: X)` の見出し行と、それに続く
+ * `- 期間: YYYY-MM-DD ~ YYYY-MM-DD` 行の組で出る。見出し行が無い view（summary）では
+ * 何も抽出されない（= 空集合）。
+ */
+function patternRowKeys(text: string): Set<string> {
+	const keys = new Set<string>();
+	let pendingType: string | null = null;
+	for (const line of text.split('\n')) {
+		const title = line.match(/^\d+\.\s+(\S+)\s+\(パターン整合度:/u);
+		if (title) {
+			pendingType = title[1];
+			continue;
+		}
+		const period = line.match(/^\s*-\s*期間:\s*(\S+)\s*~\s*(\S+)/u);
+		if (period && pendingType) {
+			keys.add(`${pendingType}@${period[1]}~${period[2]}`);
+			pendingType = null;
+		}
 	}
 	return keys;
 }
@@ -156,6 +191,54 @@ const runFlow = (view: string, bucketsN = 2) => {
 	return flowMetricsTool.handler({ pair: 'btc_jpy', limit: 5, date: '20240101', bucketMs: 60_000, view, bucketsN });
 };
 
+/**
+ * 検出パターン 7 件（`detailed` の上限 5 件を超える件数）＋ 取得層 / 計算層の warning。
+ *
+ * - 7 件にするのは `detailed`（上位 5 件）⊊ `full`（全件）を成立させるため。
+ *   5 件以下だと両者が同じ集合になり、包含テストが自明に通ってしまう。
+ * - warning を入れるのは `fixedElements` の注記行が空集合にならないようにするため
+ *   （空集合同士の包含は何も検証していないのと同じ）。
+ * - `structureRange` / `confirmation` / `precedingTrend` は持たせない——
+ *   持たせると期間行が `文脈期間` / `形成期間` に分岐し、`patternRowKeys` が使う
+ *   `- 期間: A ~ B` 行が出なくなる。
+ */
+const PATTERN_COUNT = 7;
+function patternsFixture() {
+	return {
+		ok: true,
+		summary: 'ok',
+		data: {
+			patterns: Array.from({ length: PATTERN_COUNT }, (_, i) => ({
+				type: i % 2 === 0 ? 'double_top' : 'double_bottom',
+				confidence: 0.9 - i * 0.02,
+				timeframe: '1day',
+				timeframeLabel: '日足',
+				range: {
+					start: dayjs.utc('2026-01-01T00:00:00Z').add(i, 'day').toISOString(),
+					end: dayjs.utc('2026-01-20T00:00:00Z').add(i, 'day').toISOString(),
+				},
+				status: 'completed',
+			})),
+			overlays: { ranges: [] },
+			warnings: [],
+			statistics: {},
+		},
+		meta: {
+			pair: 'btc_jpy',
+			type: '1day',
+			count: PATTERN_COUNT,
+			visualization_hints: { preferred_style: 'line', highlight_patterns: [] },
+			warning: '取得層: 180本中20本が欠損しています',
+			warnings: ['計算層: スイング検出に必要なバー数が不足しています'],
+		},
+	};
+}
+
+const runPatterns = (view: string) => {
+	vi.mocked(detectPatterns).mockResolvedValue(asMockResult(patternsFixture()));
+	return detectPatternsTool.handler({ pair: 'btc_jpy', type: '1day', limit: 180, view });
+};
+
 const runVolatility = (view: string) => {
 	mockCandles();
 	return volatilityTool.handler({
@@ -179,8 +262,12 @@ describe('階梯上の view の content は下位 view の上位集合（§3-2 �
 		vi.restoreAllMocks();
 	});
 
-	// ── get_flow_metrics: summary < buckets < full ────────
-	// （compact は量ではなく絞り込みなので階梯外。§3-4）
+	// ── get_flow_metrics: summary < buckets(= detailed) < full ────────
+	// PR 3 で `buckets` は `detailed` の、`compact` は `full` + `nonZeroOnly=true` の
+	// deprecated alias になった（§4-4）。ここは**旧値のまま**呼び続ける——alias 期間中は
+	// 旧値を送るクライアントの content も階梯規約を満たしている必要があるため。
+	// 写像そのものは tests/view-alias-mapping.test.ts が検証する。
+	// （nonZeroOnly は量ではなく絞り込みなので階梯外。§3-4）
 
 	it('get_flow_metrics: 定型要素が summary ⊆ buckets ⊆ full', async () => {
 		const byView = await collectContentByView(['summary', 'buckets', 'full'] as const, (view) => runFlow(view));
@@ -251,22 +338,21 @@ describe('階梯上の view の content は下位 view の上位集合（§3-2 �
 		}
 	});
 
-	it('get_flow_metrics: compact（階梯外の絞り込み）も res.summary の定型要素を保つ', async () => {
-		// compact は量ではなく絞り込みの指定なので階梯には乗らない（§3-4）が、
-		// PR 3 での写像先は階梯上の `view=full` + `nonZeroOnly=true`（§4-4）なので、
-		// 定型要素を落としていないことは今の時点で固定しておく。
+	it('get_flow_metrics: nonZeroOnly（絞り込みの軸）も res.summary の定型要素を保つ', async () => {
+		// nonZeroOnly は量ではなく絞り込みの指定なので階梯には乗らない（§3-4）が、
+		// 階梯上の view（full）と組み合わせて使う以上、定型要素は落とせない。
 		//
-		// **PR 3 への申し送り**: compact は元から res.summary ベースだったので本 PR で content は
-		// 変えていない。一方 full には本 PR で `Flow Metrics (bucketMs=…)` / `Totals:` の 2 行
-		// ヘッダが（res.summary とともに）入ったため、`full` + `nonZeroOnly=true` の content は
-		// 旧 compact に対してこの 2 行ぶん増える。§3-3 の「旧 compact と完全一致」は
-		// **バケット行（欠損の区間畳み込みを含む）の一致**として読むこと——ヘッダを削ると
-		// 今度は §3-2 規約 3（上位集合）に反する。
+		// PR 2 で full に `Flow Metrics (bucketMs=…)` / `Totals:` の 2 行ヘッダが入ったため、
+		// `full` + `nonZeroOnly=true` の content は旧 `compact` に対してこの 2 行ぶん増える。
+		// §3-3 の「旧 compact と完全一致」は**バケット行（欠損の区間畳み込みを含む）の一致**として
+		// 読むこと——ヘッダを削ると今度は §3-2 規約 3（上位集合）に反する。
+		// 「バケット行が旧 compact と一致し、差分がヘッダ 2 行ちょうどであること」は
+		// tests/view-alias-mapping.test.ts で byte 単位で固定してある。
 		const byView = await collectContentByView(['summary', 'compact'] as const, (view) => runFlow(view));
 		expectSupersetOf(
 			fixedElements(byView.get('compact') as string),
 			fixedElements(byView.get('summary') as string),
-			'compact ⊇ summary',
+			'full + nonZeroOnly ⊇ summary',
 		);
 	});
 
@@ -303,6 +389,63 @@ describe('階梯上の view の content は下位 view の上位集合（§3-2 �
 		}
 		expect(byView.get('full')).toContain('【Series】');
 		expect(byView.get('detailed')).not.toContain('【Series】');
+	});
+
+	// ── detect_patterns: summary < detailed < full ────────
+	// （debug は階梯外。出力を置換するので上位集合である必要がない。§3-2 規約 3）
+
+	it('detect_patterns: 定型要素が summary ⊆ detailed ⊆ full', async () => {
+		const byView = await collectContentByView(['summary', 'detailed', 'full'] as const, (view) => runPatterns(view));
+		const [summary, detailed, full] = [byView.get('summary'), byView.get('detailed'), byView.get('full')] as string[];
+
+		// 抽出が空振り（空集合同士で自明に通る）していないことを先に固定する。
+		// detect_patterns は 📌 フッタを持たないので、注記行は取得層 / 計算層の ⚠️ 2 本。
+		const summaryElements = fixedElements(summary);
+		expect([...summaryElements].filter((e) => e.startsWith('⚠️'))).toHaveLength(2);
+		expect(summaryElements).toContain('pair=BTC_JPY');
+
+		expectSupersetOf(fixedElements(detailed), fixedElements(summary), 'detailed ⊇ summary');
+		expectSupersetOf(fixedElements(full), fixedElements(detailed), 'full ⊇ detailed');
+	});
+
+	it('detect_patterns: パターン行のキー集合が summary ⊆ detailed ⊆ full', async () => {
+		const byView = await collectContentByView(['summary', 'detailed', 'full'] as const, (view) => runPatterns(view));
+		const keys = {
+			summary: patternRowKeys(byView.get('summary') as string),
+			detailed: patternRowKeys(byView.get('detailed') as string),
+			full: patternRowKeys(byView.get('full') as string),
+		};
+
+		// summary は個々のパターンを出さない（= 空集合）。detailed は上位 5 件、full は全 7 件。
+		// detailed が 5 件で頭打ちになる件数のフィクスチャでないと detailed ⊊ full を検証できない。
+		expect(keys.summary.size).toBe(0);
+		expect(keys.detailed.size).toBe(5);
+		expect(keys.full.size).toBe(PATTERN_COUNT);
+		expectSupersetOf(keys.detailed, keys.summary, 'detailed ⊇ summary（パターン行）');
+		expectSupersetOf(keys.full, keys.detailed, 'full ⊇ detailed（パターン行）');
+	});
+
+	it('detect_patterns: 取得層 / 計算層の ⚠️ 注記行が detailed / full でも残る', async () => {
+		const byView = await collectContentByView(['summary', 'detailed', 'full'] as const, (view) => runPatterns(view));
+		const summaryNotes = annotationLines(byView.get('summary') as string);
+
+		expect(summaryNotes).toHaveLength(2);
+		for (const view of ['detailed', 'full'] as const) {
+			const text = byView.get(view) as string;
+			expectSupersetOf(new Set(annotationLines(text)), new Set(summaryNotes), `${view} ⊇ summary（注記行）`);
+			// 同じ warning を再掲して LLM のノイズにしない
+			expect(text.split('取得層: 180本中20本が欠損').length - 1, `view=${view} で warning が重複`).toBe(1);
+		}
+	});
+
+	it('detect_patterns: debug は階梯外なので検出パターンを出さない', async () => {
+		// 「出力の置換」であり full の上位集合ではない（§1-4 / §3-4）。
+		// P3 の見落としではなく意図した設計であることを、ここで固定しておく。
+		const byView = await collectContentByView(['debug'] as const, (view) => runPatterns(view));
+		const text = byView.get('debug') as string;
+
+		expect(patternRowKeys(text).size).toBe(0);
+		expect(text).toContain('【Swings】');
 	});
 
 	describe('最新足が形成中（provisional）の場合', () => {

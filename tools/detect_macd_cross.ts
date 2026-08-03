@@ -4,7 +4,7 @@ import { formatSummary } from '../lib/formatter.js';
 import { lastCrossover } from '../lib/indicators.js';
 import { fail, failFromError, failFromValidation, ok, toStructured } from '../lib/result.js';
 import { ALLOWED_PAIRS, ensurePair } from '../lib/validate.js';
-import type { Pair } from '../src/schemas.js';
+import { type Pair, VIEW_CONTRACT_NOTE } from '../src/schemas.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
 import analyzeIndicators from './analyze_indicators.js';
 
@@ -606,7 +606,16 @@ screen（スクリーニング用）:
 		market: z.enum(['all', 'jpy']).default('all').describe('スクリーニング時の対象市場'),
 		pairs: z.array(z.string()).optional().describe('スクリーニング時の対象ペア限定'),
 		lookback: z.number().int().min(1).max(10).default(3),
-		view: z.enum(['summary', 'detailed']).optional().default('summary'),
+		view: z
+			.enum(['summary', 'detailed'])
+			.optional()
+			.default('summary')
+			.describe(
+				`${VIEW_CONTRACT_NOTE}\n` +
+					'**pair 省略時（複数銘柄スクリーニングモード）でのみ有効。** pair 指定の単一ペア深掘りモードでは無視されます。\n' +
+					'- summary（既定）: スクリーニング結果のテキスト。1 クロスごとの明細は content に出ない。\n' +
+					'- detailed: summary ＋ 1 クロス 1 行の明細。本ツールの最重量。',
+			),
 		includeForming: z.boolean().optional().default(true).describe('単一ペア: forming検出'),
 		includeStats: z.boolean().optional().default(true).describe('単一ペア: 過去統計'),
 		historyDays: z.number().int().min(10).max(365).optional().default(90).describe('単一ペア: 統計対象期間'),

@@ -100,7 +100,16 @@ describe('GetTransactionsInputSchema', () => {
 		const result = GetTransactionsInputSchema.parse({});
 		expect(result.pair).toBe('btc_jpy');
 		expect(result.limit).toBe(100);
-		expect(result.view).toBe('summary');
+		// default は summary → full に変わったが**挙動は不変**（docs/internal/view-vocabulary-unification.md §3-5）。
+		// 旧 summary は名前に反して「全件列挙」で実体が full だったため、名前だけを階梯に合わせた。
+		// 旧値は 0.4.0 まで alias として受理し続ける（写像テストは tests/view-alias-mapping.test.ts）。
+		expect(result.view).toBe('full');
+		expect(result.format).toBe('text');
+	});
+
+	it('deprecated alias（summary / items）も受理し続ける', () => {
+		expect(GetTransactionsInputSchema.parse({ view: 'summary' }).view).toBe('summary');
+		expect(GetTransactionsInputSchema.parse({ view: 'items' }).view).toBe('items');
 	});
 
 	it('date フォーマットを検証する', () => {
