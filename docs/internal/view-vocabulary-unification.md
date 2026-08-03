@@ -275,11 +275,23 @@ candidates は `accepted` 優先で 200 件まで）。全 view で `meta.debug`
 |---|---|---|
 | `summary` | 集計値・結論のみ。明細・系列は `content` に出さない | 最軽量 |
 | `detailed` | 代表的な明細（上位 N 件 / 直近 N 件） | 中段 |
-| `full` | **全件列挙。常に最重量** | 上限 |
+| `full` | **そのツールの主対象を全件出す。常にそのツールの最重量** | 上限 |
+
+ここでいう**主対象**は「そのツールの結論を構成するレコード列」を指す
+（candles = ローソク足、transactions = 約定、flow_metrics = バケット、patterns = 検出パターン）。
+**主対象がレコード列でないツールでは `full` は全件列挙にならない。**
+該当するのは `get_volatility_metrics` で、同ツールの結論は `aggregates` と `rolling`（スカラー値）であり、
+`data.series.{ts,close,ret}` は指標計算の入力（＝ `get_candles` の再掲）であって出力の主対象ではない。
+したがって `full` は系列の**統計値**（件数 / 期間 / Close レンジ / リターンの平均・標準偏差）までを出し、
+系列そのものは列挙しない（§1-5）。**これは規約違反ではなく定義どおりの帰結**で、
+「`full` は常にそのツールの最重量」は満たしている。系列そのものが必要な場合は `get_candles` を使う。
+（`full` で系列を列挙する案も採れるが、limit 上限 500 本 × 3 系列で `get_candles` の重複になるため
+採らない。異論があれば §6-7 で扱う）
 
 **階梯の規約（実装 PR で機械的に守らせる対象）**
 
 1. **順序は不変**: `summary` ≤ `detailed` ≤ `full`。`full` は例外なく「そのツールの最重量」。
+   「最重量」であることは全ツール共通、「全件列挙」であることは主対象がレコード列のツールに限る（上記）。
 2. **中間の rung は省略してよい**。全ツールが 3 段すべてを実装する必要はない（例: `get_candles` は
    `summary` / `full` の 2 段）。ただし順序を飛び越えた意味づけは禁止。
 3. **上位集合であること**（P3 の解消）: `detailed` の `content` は `summary` の内容を含み、
@@ -299,7 +311,7 @@ candidates は `accepted` 優先で 200 件まで）。全 view で `meta.debug`
    LLM への唯一のチャネルなので、`view=summary` は「短い表示」ではなく
    「LLM が明細を受け取らない」を意味する。各ツールの description に
    「この view では〇〇が `content` に出ない」を明記し、選択の結果を呼び出し側が予測できるようにする。
-5. **同じ語の意味はツールを跨いで一定**。`summary` が別ツールで「全件」を意味してはならない。
+6. **同じ語の意味はツールを跨いで一定**。`summary` が別ツールで「全件」を意味してはならない。
 
 ### 3-3. 量以外の軸（別パラメータへ切り出す）
 
@@ -310,6 +322,30 @@ candidates は `accepted` 優先で 200 件まで）。全 view で `meta.debug`
 
 `format=json` は「`content` を pretty JSON にする」だけで、量は `view` が決める。
 これにより現状表現できない組み合わせ（`view=summary` かつ JSON など）も自然に表現できる。
+
+#### `nonZeroOnly` の応答契約（`get_flow_metrics` のみ）
+
+旧 `compact` は `content` と `structuredContent` の**両方**を変えていたため、写像先の契約を
+曖昧にすると「不変」を主張できない。以下を確定仕様とする。
+
+| 対象 | `nonZeroOnly=false`（既定） | `nonZeroOnly=true` |
+|---|---|---|
+| `content` のバケット行 | 全バケットを 1 行ずつ。欠損は `データなし（欠損区間）` の**個別行** | 非ゼロバケットのみ 1 行ずつ。**`hasData===false` の連続区間は 1 行の区間表記に畳む**（`⋯ 欠損 A〜B（Nバケット, データなし）`）。真のゼロ（`hasData===true` かつ buy=sell=0）は出さない |
+| `structuredContent.data.series.buckets` | 全バケット | **全バケット（変わらない）** ← §3-2 規約 4 |
+| `meta` | 変化なし | 変化なし。**`meta.omitted` は付けない**（`structuredContent` から何も省いていないため） |
+| `view=summary` との併用 | — | **no-op**（`content` にバケット行が無い）。エラーにはしない |
+| `view=detailed` との併用 | 直近 `bucketsN` 件を 1 行ずつ | 直近 `bucketsN` 件に上記フィルタを適用 |
+
+**実装上の必須要件**: `view=full` + `nonZeroOnly=true` の `content` は、旧 `compact` の `content` と
+**完全一致**させる。「全バケットをフィルタしてから `full` のレンダラに渡す」という素朴な実装では
+**欠損の畳み込みが失われて N 行に展開され、一致しない**（旧 compact は区間 1 行）。
+既存の `renderCompactBucketLines`（`tools/get_flow_metrics.ts:65-91`）を再利用すること。
+真のゼロと欠損区間を含むフィクスチャでの一致テストを PR 3 の受け入れ基準にする。
+
+**旧 `compact` からの差分は `structuredContent` のみ**: 旧 `compact` は `series.buckets` を
+「非ゼロ ∪ 欠損」でフィルタしていた（`:731-736`）。規約 4 によりこのフィルタは廃止する。
+ただし**この差分は PR 1 の時点で先に発生する**（PR 1 が P4 修正としてフィルタを外す）。
+したがって §4-4 の alias 写像で「不変」と言うときは、**PR 1 適用後の挙動に対して不変**を意味する。
 
 ### 3-4. ツール固有値の判断（吸収 / 残す）と理由
 
@@ -362,7 +398,7 @@ candidates は `accepted` 優先で 200 件まで）。全 view で `meta.debug`
 
 ### 3-6. 移行後の全体像
 
-```
+```text
 view（量の 1 軸・全ツール共通）
   summary  <  detailed  <  full          ← full は常に最重量
     ├ 上位ビューは下位ビューの上位集合
@@ -407,7 +443,7 @@ Phase 2 で削除、Phase 3 以降で「集計のみ」として再導入する�
 
 | Phase | リリース目安 | 内容 | 破壊性 |
 |---|---|---|---|
-| **1** | 次のマイナー（例 `0.2.0`） | 統一語彙を導入。旧値は **deprecated alias** として受理し、ハンドラ入口で新値に正規化。`format` / `nonZeroOnly` を追加。P3（上位集合）と P4（`structuredContent` 非依存）を修正。description を統一文言に | **非破壊**（旧値は動く。既定挙動も不変） |
+| **1** | 次のマイナー（例 `0.2.0`） | 統一語彙を導入。旧値は **deprecated alias** として受理し、ハンドラ入口で新値に正規化。`format` / `nonZeroOnly` を追加。P3（上位集合）と P4（`structuredContent` 非依存）を修正。description を統一文言に | **互換性に影響あり**（`content` は既定・旧値経由とも不変。ただし `structuredContent` は変わる → §4-5） |
 | **2** | 次の次のマイナー（例 `0.3.0`、Phase 1 から最低 1 リリース かつ 3 ヶ月以上あける） | 旧 alias を enum から削除 | **破壊的**（旧値は validation error） |
 | **3** | 需要ベース（別議論） | `get_candles` / `get_transactions` に軽量 `summary` を **opt-in 専用**で新設（既定は `full` のまま。§3-5） | **非破壊**（enum 値の追加のみ） |
 
@@ -416,26 +452,38 @@ Phase 2 で削除、Phase 3 以降で「集計のみ」として再導入する�
 
 ### 4-4. Phase 1 の alias 写像表
 
-| ツール | 旧値 | 新しい指定 | 挙動 |
-|---|---|---|---|
-| `get_candles` | `items` | `view=full` + `format=json` | 不変 |
-| `get_transactions` | `summary`（既定） | `view=full` | 不変 |
-| `get_transactions` | `items` | `view=full` + `format=json` | 不変 |
-| `get_flow_metrics` | `compact` | `view=full` + `nonZeroOnly=true` | 不変 |
-| `get_flow_metrics` | `buckets` | `view=detailed` | 不変 |
-| `detect_patterns` | — | 変更なし | 不変 |
-| `get_volatility_metrics` | — | 変更なし | 不変（P3 修正でフッタが増える） |
+**`content` と `structuredContent` を分けて記載する。**「不変」を一語で片付けると、
+旧 `compact` / 旧 `items` のように `structuredContent` も変えていた値で嘘になる。
+
+| ツール | 旧値 | 新しい指定 | `content` | `structuredContent` |
+|---|---|---|---|---|
+| `get_candles` | `items` | `view=full` + `format=json` | 不変 | **変わる**: `{ items, meta }` → `Result` 封筒（`ok`/`summary`/`data`/`meta`）。Phase 1 唯一の shape 破壊 |
+| `get_transactions` | `summary`（既定） | `view=full` | 不変 | 不変 |
+| `get_transactions` | `items` | `view=full` + `format=json` | 不変 | 不変（元から `Result` 封筒） |
+| `get_flow_metrics` | `compact` | `view=full` + `nonZeroOnly=true` | 不変（§3-3 の必須要件を満たす実装であること） | **PR 1 で変更済み**: 「非ゼロ ∪ 欠損」フィルタを廃止し全バケット。Phase 1 での追加変更なし |
+| `get_flow_metrics` | `buckets` | `view=detailed` | 不変 | 不変 |
+| `detect_patterns` | — | 変更なし | 不変 | 不変 |
+| `get_volatility_metrics` | — | 変更なし | PR 2 でフッタが**増える** | 不変 |
 
 ### 4-5. 破壊的変更の影響範囲
 
-**外部（Phase 2 で影響）**
+影響はフェーズと消費対象（`content` / `structuredContent`）で分かれる。
+**「Phase 1 は非破壊、Phase 2 が破壊的」という単純な二分ではない。**
 
-- MCP クライアントが `view` に旧値を渡している場合、validation error。
-- `structuredContent` を消費するクライアント: Phase 1 の P4 修正で
-  `get_flow_metrics view=summary` に `series.buckets` が**戻る**（従来キーごと欠落）。
-  `get_candles view=full&format=json` は `{ items, meta }` ではなく `Result` 封筒を返すようになる
-  （旧 `items` の shape に依存しているクライアントは要修正）。**この 2 点は Phase 1 時点で影響が出る**ため、
-  Phase 1 を「完全非破壊」とは呼べない。CHANGELOG では Phase 1 でも明記する。
+**Phase 1 で影響が出るもの（`structuredContent` の消費者のみ）**
+
+- `get_flow_metrics(view=summary)` に `series.buckets` が**戻る**（従来はキーごと欠落。PR 1）。
+  `view=compact` の `series.buckets` が全バケットになる（従来は「非ゼロ ∪ 欠損」フィルタ済み。PR 1）。
+- `get_candles` の旧 `view=items` → `view=full` + `format=json` で `structuredContent` が
+  `{ items, meta }` から `Result` 封筒に変わる（PR 3）。**旧 shape に依存するクライアントは要修正。**
+  `structuredContent.items` → `structuredContent.data.normalized` の読み替えが必要。
+- `content` は既定・旧値経由とも**不変**（§4-4）。LLM 側の応答は Phase 1 では変わらない
+  （`get_volatility_metrics` でフッタが増える分を除く）。
+
+**Phase 2 で影響が出るもの**
+
+- MCP クライアントが `view` に旧値（`items` / `compact` / `buckets` / `get_transactions` の
+  `summary`）を渡している場合、validation error。サイレントに新値へ倒れることはない。
 
 **リポジトリ内（実装 PR で同時に直す）**
 
@@ -496,7 +544,7 @@ Phase 2 で削除、Phase 3 以降で「集計のみ」として再導入する�
 
 ### 5-0. 全体像
 
-```
+```text
 PR 0  prompts の無効値修正         ── 独立・即時マージ可（設計合意を待たない）
 PR 1  structuredContent の切り離し ─┐
 PR 2  上位集合の保証               ─┴ 同一ファイルを触るため PR 1 → PR 2 の順
@@ -583,7 +631,7 @@ PR 3 の着手前に §6 の以下を確定させる。**実装セッション�
 | **読むもの** | 本ドキュメント全体（特に §3 と §4）＋ 決定ゲートの結論 |
 | **触るファイル** | `src/schema/market-data.ts:250, 319, 498-504`、`src/schema/patterns.ts:65`、`src/schema/analysis.ts:24`、`tools/get_candles.ts:882-923`、`tools/get_transactions.ts:320-374`、`tools/get_flow_metrics.ts:677-767`、`tools/detect_macd_cross.ts:609`（description のみ） |
 | **内容** | ① enum を統一語彙に変更（§3-5 の表）② 旧値を deprecated alias として受理し、ハンドラ入口で正規化（§4-4 の写像表）③ `format` / `nonZeroOnly` を追加（§3-3）④ `get_transactions` の default を `full` に（挙動不変）⑤ `get_candles(view=full, format=json)` の `structuredContent` を `Result` 封筒に統一（**唯一の shape 破壊。PR 1 から持ち越した分**）⑥ description を統一文言に。「この view では〇〇が `content` に出ない」「`full` は常に最重量」「`detect_macd_cross` の `view` は `pair` 省略時のみ有効」を明記 |
-| **受け入れ基準** | ① §4-4 の写像表どおり、旧値と新値で出力が完全一致するテスト ② 階梯の単調性テスト（`len(content[summary]) ≤ len(content[detailed]) ≤ len(content[full])`）③ 既定の応答が変わらないこと（既存テストを無改変で通すことを挙動不変の証明とする。`tests/get_candles.test.ts` / `get_transactions.test.ts` / `get_flow_metrics*.test.ts`） |
+| **受け入れ基準** | ① §4-4 の写像表どおり、旧値と新値で `content` / `structuredContent` が一致するテスト（`compact` → `full`+`nonZeroOnly` は**真のゼロと欠損区間を含むフィクスチャ**で `content` 完全一致を検証。§3-3 の必須要件）② 階梯の包含テスト（§6-6 の方式。**文字列長の比較では検証しない**）③ 既定の応答が変わらないこと（既存テストを無改変で通すことを挙動不変の証明とする。`tests/get_candles.test.ts` / `get_transactions.test.ts` / `get_flow_metrics*.test.ts`） |
 | **やらないこと** | 既定を軽いほうへ倒す（§3-5）。alias の削除（PR 5）。軽量 `summary` の新設（PR 6） |
 | **CHANGELOG** | `### Schema (breaking)`。文面案は §4-6 |
 | **依存** | PR 1、PR 2、決定ゲート |
@@ -648,11 +696,28 @@ PR 3 の着手前に §6 の以下を確定させる。**実装セッション�
    現時点で validation error になる無効値。語彙統一を待たず単独で直せる
    （本ドキュメントの PR はドキュメントのみのため未修正。**PR 0**（§5-1）として切り出し済み）。
    差し替え先の推奨値と根拠は §5-1 を参照。
-6. **階梯規約の機械的な担保**: 「`full` が最重量」「上位ビューは上位集合」「`structuredContent` は
-   view 非依存」をテストで固定するか（例: 各ツールの view を総当りして
-   `len(summary) ≤ len(detailed) ≤ len(full)` と `structuredContent` の同一性を検証する
-   共通テスト）。`.claude/hooks/post-ts-lint.sh` の banned-patterns と同じ発想で、
+6. **階梯規約の機械的な担保**: 「上位ビューは上位集合」「`structuredContent` は view 非依存」を
+   テストで固定するか。`.claude/hooks/post-ts-lint.sh` の banned-patterns と同じ発想で、
    規約を人手のレビューに委ねない。
+
+   **文字列長の比較（`len(summary) ≤ len(detailed) ≤ len(full)`）は使わない。**
+   長さは上位集合性を検証しない——`detailed` がフッタや警告行を落としても、明細が増えていれば
+   長さの条件は通ってしまう（P3 はまさにその形の欠陥だった）。逆に文言を 1 語変えただけで
+   落ちる脆いテストにもなる。代わりに**要素の包含**で検証する:
+
+   - **定型要素の包含**: 各 view の `content` から安定した要素——フッタ行（`📌` 始まり）、
+     警告行（`⚠️` / `ℹ️` 始まり）、ヘッダの主要フィールド（pair / 最終値 / 期間）——を
+     抽出・正規化し、`extract(summary) ⊆ extract(detailed) ⊆ extract(full)` を検証する。
+   - **レコード集合の包含**: バケット / パターン / ローソク足など列挙されるレコードは、
+     行から識別キー（timestamp や pattern type + range）を抽出した集合で包含を検証する。
+     行の文言ではなくキー集合で比較すれば、表示形式の変更で落ちない。
+   - **`structuredContent` の同一性**: 階梯上の view 間で deep-equal。階梯外 view
+     （`debug` / `beginner`）は「足す」ことのみ許容なので、**下位集合ではなく上位集合**
+     （既存キーが全て残っていること）を検証する（§3-2 規約 4）。
+
+7. **`get_volatility_metrics` の `full` で系列そのものを `content` に出すか。**
+   本提案は出さない（§3-2。主対象がレコード列ではなく、系列は `get_candles` の再掲のため）。
+   出す場合は上限本数と形式（全件か間引きか）を決める必要がある。
 
 ---
 
