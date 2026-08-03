@@ -905,6 +905,17 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
     `summary` → `full` に。挙動不変（§3-5）であることをコメントに残した。
   - `tests/prompts_contract.test.ts` の「無効値の負例」を `get_flow_metrics(view=detailed)` から
     `view=verbose` に。P6 の実例だった `detailed` は語彙統一で**有効値になった**ため負例に使えない。
+- **レビュー（CodeRabbit）で入れた修正**:
+  - **`VIEW_CONTRACT_NOTE` から「`structuredContent` は `view` に依存しない」を削除した。**
+    §3-2 規約 4 が禁じているのは*削る*ことだけで、*足す*のは許容されている。
+    `detect_patterns(detailed / debug)` と `detect_macd_cross(detailed)` は実際に足しているため、
+    共有文言のままでは **description が実装に対して嘘**になっていた（呼び出し側が
+    「`resultsDetailed` は `view` を問わず入る」と誤解する）。「フィールドを**削る**ことはない」に
+    改め、足す 2 ツールには各 view の説明で**何を足すか**を明記した。
+  - CHANGELOG の写像表に「不変」の基準（どの時点との比較か）を明記し、
+    `get_candles` の shape 変更は「`format` が `structuredContent` を変える」ではなく
+    「旧 `items` だけの逸脱の解消」であることを 3 通りの表で一意にした。
+  - 上記 PR 5 の作業範囲の表（enum を先に閉じる順序）は、この指摘を受けて追加したもの。
 
 #### 7-3-1. PR 3 で見つけた未解消の指摘（follow-up）
 
@@ -914,6 +925,15 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
   対象外なので新設した階梯包含テストでは落ちない。**PR 3 では直していない**——
   修正すると既定 view（`detailed`）の `content` が変わり、
   §5-5 の受け入れ基準③「既定の応答が変わらないこと」に反するため。P3 の残件として別途扱う。
+- **`format=json` のとき warning / 形成中足注記だけ JSON の外に出る。** `get_candles` /
+  `get_transactions` は `content[0]` を素の JSON 配列に保ち、`meta.warning` と形成中足注記を
+  `content[1]` 以降の別ブロックに置く。**LLM から見えなくなっているわけではない**——`content` は
+  配列で、MCP ホストは全 text ブロックをモデルに渡す（`.claude/rules/tools.md` の
+  「`content[0].text` だけが LLM に見える」は `structuredContent` が見えないことの言い換え）。
+  ただし「JSON を要求した呼び出しに対して warning だけ形式が違う」のは一貫性を欠くので、
+  `{ items, warning?, provisional? }` のような封筒に揃える案がある。
+  **本 PR ではやらない**——`content` が旧 `items` と完全一致であることが alias 写像の要件
+  （§4-4）で、既存テストもその構造を固定しているため。**alias を削除する PR 5 と同時に行う**のが適切。
 - **`get_tickers_jpy` の `view`（`items` / `ranked`）は名前が誤用**（射影であって量でも形式でもない）。
   §6-3 の決定どおり本統一の対象外。**当リポジトリは GitHub Issues が無効化されているため
   issue を立てられなかった**ので、切り出す内容を下記に残す（Issues を有効化した時点でそのまま起票できる）。
