@@ -55,7 +55,11 @@ describe('tool-registry', () => {
 		// （例:「view の共通語彙」の階梯表・非推奨の値の表）。ファイル全体から拾うと、
 		// カタログではない表を足しただけで件数・重複の検証が落ちる。
 		// 節が見つからなければ抽出は空になり、下の件数検証で落ちる（検査が黙って無効化されない）。
+		// 見出しはプレフィックス一致で拾うので、見出し内のツール数（「全 49 ツール…」）が変わっても
+		// 影響しない。見出しそのものを改名した場合は空抽出になり、テストが明示的に落ちる。
 		const catalogStart = docs.search(/^## カテゴリ別ツール/m);
+		// slice の +1 は、カテゴリ別ツール見出し自身が下の「次の `## ` 見出し」検索に
+		// マッチしてしまい、範囲が長さ 0 になるのを避けるため。
 		const rest = docs.slice(catalogStart < 0 ? docs.length : catalogStart + 1);
 		const nextHeading = rest.search(/^## /m);
 		const catalog = nextHeading < 0 ? rest : rest.slice(0, nextHeading);
