@@ -284,11 +284,17 @@ candidates は `accepted` 優先で 200 件まで）。全 view で `meta.debug`
    `summary` / `full` の 2 段）。ただし順序を飛び越えた意味づけは禁止。
 3. **上位集合であること**（P3 の解消）: `detailed` の `content` は `summary` の内容を含み、
    `full` は `detailed` を含む。フッタ・警告・最終値のような定型情報を上位ビューで落とさない。
-4. **`view` は `content` だけを変える**（P4 の解消）: `structuredContent` は view に依存させない。
-   §2-0 のとおり `structuredContent` を削っても LLM のトークンは減らないため、**そもそも
-   view に応じて削る動機が無い**。それでも落とす必要が生じた場合は、**スキーマ側を optional に
-   したうえで `meta.omitted: ['series.buckets']` のように省略を申告する**。黙って必須フィールドを
-   消さない（本リポジトリの既存方針——欠損を黙って消さない——と同じ扱い）。
+   **この規約は階梯上の値（`summary` / `detailed` / `full`）にのみ適用する。**
+   階梯外の値（`debug` / `beginner`）は定義上「出力の置換」なので上位集合である必要はない
+   （`beginner` に専門用語のフッタを足すのは、その view の目的に反する）。
+4. **`view` は `structuredContent` からフィールドを削ってはならない**（P4 の解消）。
+   §2-0 のとおり削っても LLM のトークンは減らないため、**そもそも view に応じて削る動機が無い**。
+   一方、**階梯外の view がその view でしか計算しないデータを*足す*のは許容する**
+   （`detect_patterns(debug)` の `data.candidates`、`detect_macd_cross(detailed)` の
+   `data.resultsDetailed` 等）。削る＝既存消費者が壊れる / 足す＝壊れない、の非対称性による。
+   それでも落とす必要が生じた場合は、**スキーマ側を optional にしたうえで
+   `meta.omitted: ['series.buckets']` のように省略を申告する**。黙って必須フィールドを消さない
+   （本リポジトリの既存方針——欠損を黙って消さない——と同じ扱い）。
 5. **軽い rung は情報を減らす、という自覚を description に書く**: §2-0 のとおり `content` が
    LLM への唯一のチャネルなので、`view=summary` は「短い表示」ではなく
    「LLM が明細を受け取らない」を意味する。各ツールの description に
@@ -482,21 +488,152 @@ Phase 2 で削除、Phase 3 以降で「集計のみ」として再導入する�
 
 ---
 
-## 5. 実装 PR の分割案
+## 5. 実装計画（PR 分割）
 
-| PR | 内容 | 依存 |
+**前提: 各 PR は別セッションで実施する。** セッション間で文脈は引き継がれないため、
+各 PR は「本ドキュメントの指定セクションを読めば単独で着手できる」粒度に切る。
+以下の各ブリーフはそのまま実装セッションへの指示として使える。
+
+### 5-0. 全体像
+
+```
+PR 0  prompts の無効値修正         ── 独立・即時マージ可（設計合意を待たない）
+PR 1  structuredContent の切り離し ─┐
+PR 2  上位集合の保証               ─┴ 同一ファイルを触るため PR 1 → PR 2 の順
+        ↓
+   【決定ゲート】§6 の 1 / 3 / 4 / 6 をレビューで確定（実装セッションでは決められない）
+        ↓
+PR 3  語彙統一 Phase 1（破壊的変更はここに全部集約）
+        ↓
+PR 4  呼び出し側の追従 + ドキュメント
+        ↓（1 リリース以上 かつ 3 ヶ月以上あける）
+PR 5  Phase 2（alias 削除）
+PR 6  Phase 3（軽量 summary の opt-in 追加、需要ベース・任意）
+```
+
+**分割の原則**
+
+1. **バグ修正（PR 0〜2）を語彙変更（PR 3）より先に出す。** 内部バグの修正と外部契約の変更を
+   同じレビューに混ぜない。前者は挙動の是正、後者は互換性の判断で、レビューの観点が違う。
+2. **破壊的変更を PR 3 に 1 回だけ集約する。** 特に `get_candles(view=items)` の
+   `structuredContent` 封筒（§1-1）は PR 1 では**直さない**。`items` は PR 3 で
+   `view=full` + `format=json` に置き換わるので、そこで一緒に変えれば
+   外部クライアントが受ける破壊は 1 回で済む。PR 1 で直すと 2 回になる。
+3. **PR 1 / 2 は同一ファイル（`tools/get_flow_metrics.ts`、`getVolatilityMetricsHandler.ts`）を
+   触るため並行しない。** PR 0 だけは独立で、いつ出してもよい。
+
+### 5-1. PR 0 — `src/prompts/intermediate.ts` の無効値修正
+
+| 項目 | 内容 |
+|---|---|
+| **目的** | P6 の解消。現在エラーになる指示を直す |
+| **読むもの** | 本ドキュメント §1-3、§2-1 の P6 |
+| **触るファイル** | `src/prompts/intermediate.ts:90` |
+| **内容** | `get_flow_metrics(..., view=detailed)` は同ツールの enum（`summary`/`compact`/`buckets`/`full`）に存在せず、そのまま呼ぶと validation error。**現行の**有効値へ差し替える |
+| **判断が要る点** | 差し替え先。プロンプトの用途は「CVD 推移・スパイク・直近 1-3 時間重視」で `limit=300` / `bucketMs=60000`（＝最大約 300 バケット）。**`compact`（非ゼロバケットのみ、欠損は区間表記で保持）を推奨**。`full` は 300 行で用途に対して重く、`buckets`（既定 10 件）は「CVD 推移」を見るには短い |
+| **受け入れ基準** | 差し替え後の値が `GetFlowMetricsInputSchema` の enum に含まれる。プロンプト経由の呼び出しが validation error にならないことをテストで固定する |
+| **やらないこと** | 語彙の変更。他プロンプトの整理。PR 3 の後に PR 4 で新語彙へ再度追従させる |
+| **依存** | なし。単独マージ可 |
+
+### 5-2. PR 1 — `structuredContent` を `view` から切り離す
+
+| 項目 | 内容 |
+|---|---|
+| **目的** | P4 の解消と再発防止 |
+| **読むもの** | §1-3、§2-0、§3-2 の規約 4 |
+| **触るファイル** | `tools/get_flow_metrics.ts:711-741`、`src/schema/market-data.ts`（必要なら） |
+| **内容** | ① `view=summary` の `series.buckets` 削除をやめる（`:715-720`）② `view=compact` の `structuredContent` 側フィルタをやめる（`:731-736`）。`content` の絞り込みは維持する ③ ハンドラの出口で `GetFlowMetricsOutputSchema.parse()` を通し、以後のスキーマ drift を CI で検出できるようにする |
+| **受け入れ基準** | 同一入力に対し `view` を変えても `structuredContent` が deep-equal（`get_flow_metrics` / `get_candles` / `get_transactions` / `get_volatility_metrics` を総当りする共通テストを追加）。ただし §3-2 規約 4 のとおり**階梯外 view がフィールドを足すのは許容**なので、`detect_patterns(debug)` の `data.candidates` と `detect_macd_cross(detailed)` の `data.resultsDetailed` は例外として明示する |
+| **やらないこと** | `get_candles(view=items)` の封筒（`{ items, meta }`）の修正 → **PR 3 へ**（分割の原則 2）。`detect_patterns(detailed)` の `usage_example` は「足す」側なので現状維持 |
+| **CHANGELOG** | `### Fixed`。`get_flow_metrics(view=summary)` の `structuredContent` に `series.buckets` が**戻る**こと、`view=compact` の `structuredContent` が全バケットになることを明記（`## [Unreleased]` の既存記述と矛盾しないよう更新する） |
+| **依存** | なし |
+
+### 5-3. PR 2 — 上位集合の保証（`content` 側）
+
+| 項目 | 内容 |
+|---|---|
+| **目的** | P3 の解消 |
+| **読むもの** | §1-3、§1-5、§2-0、§3-2 の規約 3 |
+| **触るファイル** | `tools/get_flow_metrics.ts:743-766`、`src/handlers/getVolatilityMetricsHandler.ts:88-131, 247-262` |
+| **内容** | ① `get_flow_metrics` の `buckets` / `full` が `res.summary` を捨てて再構築している箇所を、`res.summary` をベースにする形に変える（最終約定価格・スパイク上位 3 件・4 行フッタが復活する）② `get_volatility_metrics` の `detailed` / `full` で 4 行フッタを維持する |
+| **受け入れ基準** | 「階梯上の各 view の `content` が、下位 view の定型要素（フッタ / 警告行 / 最終値）を含む」テストを追加 |
+| **やらないこと** | `beginner`（volatility）と `debug`（patterns）は**階梯外なので対象にしない**（§3-2 規約 3）。平易な言い換えである `beginner` に専門的なフッタを足すのはその view の目的に反する |
+| **小項目** | `buildVolatilitySummaryText()`（`getVolatilityMetricsHandler.ts:72-77`）は本番未使用（§2-0）。**削除せず「本番未使用。PR 6 の軽量 summary の土台」というコメントを付ける**。PR 6 をやらないと決まった時点で削除する |
+| **CHANGELOG** | `### Fixed`。既定の `content` が変わるツールは無いこと（増える方向のみ）を明記 |
+| **依存** | PR 1（同一ファイル） |
+
+### 5-4. 決定ゲート（レビューで確定させる）
+
+PR 3 の着手前に §6 の以下を確定させる。**実装セッションでは決められない**（外部契約の判断のため）。
+
+| # | 決めること | 未確定だと困ること |
 |---|---|---|
-| 1 | **P4 の修正**（`view` を `structuredContent` から切り離す）。`get_flow_metrics` の `series.buckets` 削除をやめ、`get_candles(items)` の封筒を戻す。語彙は変えない | なし |
-| 2 | **P3 の修正**（上位集合の保証）。`get_flow_metrics` の `buckets` / `full`、`get_volatility_metrics` の `detailed` / `full` / `beginner` でフッタ・最終値・スパイク詳細を落とさない | なし |
-| 3 | **語彙統一 Phase 1**。enum 変更 + alias + `format` / `nonZeroOnly` 追加 + description 統一 | 1, 2 |
-| 4 | **リポジトリ内呼び出し側の追従**（`src/prompts/*`、`docs/tools.md` に共通語彙節を追加） | 3 |
-| 5 | **Phase 2**（alias 削除）。別リリース | 3, 4 |
+| §6-1 | `format` を新パラメータにするか、`view` の値（例 `full_json`）のままにするか | PR 3 の入力スキーマ全体が変わる |
+| §6-3 | `get_tickers_jpy` の `view` を対象に含めるか | PR 3 の対象ツール数が変わる |
+| §6-4 | alias の猶予期間（本提案は「最低 1 リリース かつ 3 ヶ月」） | PR 5 の実施時期が決まらない |
+| §6-6 | 階梯規約をテストで機械的に固定するか | PR 1〜3 のテスト設計が変わる |
 
-PR 1 / 2 を先に出すことで、語彙変更（外部契約）と挙動修正（内部バグ）をレビュー単位で分離できる。
+§6-2（軽量 `summary` を新設するか）は PR 6 の要否であり、PR 3 は待たない。
+
+### 5-5. PR 3 — 語彙統一 Phase 1
+
+| 項目 | 内容 |
+|---|---|
+| **目的** | P1 / P2 / P5 / P7 の解消。**破壊的変更はこの PR に集約する** |
+| **読むもの** | 本ドキュメント全体（特に §3 と §4）＋ 決定ゲートの結論 |
+| **触るファイル** | `src/schema/market-data.ts:250, 319, 498-504`、`src/schema/patterns.ts:65`、`src/schema/analysis.ts:24`、`tools/get_candles.ts:882-923`、`tools/get_transactions.ts:320-374`、`tools/get_flow_metrics.ts:677-767`、`tools/detect_macd_cross.ts:609`（description のみ） |
+| **内容** | ① enum を統一語彙に変更（§3-5 の表）② 旧値を deprecated alias として受理し、ハンドラ入口で正規化（§4-4 の写像表）③ `format` / `nonZeroOnly` を追加（§3-3）④ `get_transactions` の default を `full` に（挙動不変）⑤ `get_candles(view=full, format=json)` の `structuredContent` を `Result` 封筒に統一（**唯一の shape 破壊。PR 1 から持ち越した分**）⑥ description を統一文言に。「この view では〇〇が `content` に出ない」「`full` は常に最重量」「`detect_macd_cross` の `view` は `pair` 省略時のみ有効」を明記 |
+| **受け入れ基準** | ① §4-4 の写像表どおり、旧値と新値で出力が完全一致するテスト ② 階梯の単調性テスト（`len(content[summary]) ≤ len(content[detailed]) ≤ len(content[full])`）③ 既定の応答が変わらないこと（既存テストを無改変で通すことを挙動不変の証明とする。`tests/get_candles.test.ts` / `get_transactions.test.ts` / `get_flow_metrics*.test.ts`） |
+| **やらないこと** | 既定を軽いほうへ倒す（§3-5）。alias の削除（PR 5）。軽量 `summary` の新設（PR 6） |
+| **CHANGELOG** | `### Schema (breaking)`。文面案は §4-6 |
+| **依存** | PR 1、PR 2、決定ゲート |
+
+### 5-6. PR 4 — 呼び出し側の追従とドキュメント
+
+| 項目 | 内容 |
+|---|---|
+| **触るファイル** | `src/prompts/intermediate.ts:90-91, 128`、`src/prompts/reports.ts:16`、`docs/tools.md`、`.claude/rules/tools.md` |
+| **内容** | ① PR 0 で直したプロンプトを新語彙へ ② `reports.ts` の `get_candles(view="items")` を `view=full, format=json` へ ③ `docs/tools.md` に「view の共通語彙」節を新設（現在 `view` の記載はゼロ）④ `.claude/rules/tools.md` に規約を追記——「`view` は量の 1 軸」「`full` は常に最重量」「`view` は `structuredContent` からフィールドを削らない」「階梯上の view は下位の上位集合」 |
+| **受け入れ基準** | リポジトリ内に旧値の参照が残っていない（`view: 'items'` / `'compact'` / `'buckets'` の grep がテスト以外でゼロ） |
+| **依存** | PR 3 |
+
+### 5-7. PR 5 — Phase 2（alias 削除）
+
+| 項目 | 内容 |
+|---|---|
+| **実施時期** | PR 3 のリリースから**最低 1 リリース かつ 3 ヶ月**後（§4-1）。同一リリースに畳まない |
+| **内容** | 旧 alias を enum から削除。`get_transactions` の `summary` もここで消える（意味の差し替えを避けるため、再導入は PR 6 以降。§4-2） |
+| **受け入れ基準** | 旧値を渡すと validation error になることをテストで固定（サイレントに新値へ倒れないこと） |
+| **CHANGELOG** | `### Schema (breaking)` |
+| **依存** | PR 3、PR 4 |
+
+### 5-8. PR 6 — Phase 3（軽量 `summary` の opt-in 追加、任意）
+
+| 項目 | 内容 |
+|---|---|
+| **前提** | §6-2 で「用意する」と決まった場合のみ。需要ベース |
+| **内容** | `get_candles` / `get_transactions` に集計のみの `summary` を追加。**既定にはしない**（§2-0 / §3-5） |
+| **受け入れ基準** | 既定（`full`）の応答が 1 バイトも変わらないこと |
+| **依存** | PR 5（`get_transactions` の `summary` は alias 削除後にのみ再導入可能） |
+
+### 5-9. 実施順のまとめ
+
+| # | PR | 破壊性 | 決定ゲート後か | 並行可否 |
+|---|---|---|---|---|
+| 0 | prompts 無効値修正 | なし | 不要 | いつでも単独 |
+| 1 | structuredContent 切り離し | なし（フィールドが戻る） | 不要 | PR 0 と並行可 |
+| 2 | 上位集合の保証 | なし（`content` が増える） | 不要 | PR 1 の後 |
+| 3 | 語彙統一 Phase 1 | **あり**（enum / `get_candles` の shape） | **必要** | PR 2 の後 |
+| 4 | 呼び出し側追従 + docs | なし | — | PR 3 の後 |
+| 5 | Phase 2（alias 削除） | **あり** | — | PR 4 の 1 リリース + 3 ヶ月後 |
+| 6 | Phase 3（軽量 summary） | なし（追加のみ） | §6-2 次第 | PR 5 の後 |
 
 ---
 
 ## 6. レビューで決めたいこと / follow-up
+
+1〜4 と 6 は **PR 3（語彙統一 Phase 1）着手前の決定ゲート**（§5-4）。実装セッションでは決められない。
+5 は決定不要で、**PR 0 として単独で先行できる**（§5-1）。
 
 1. **`format` を新パラメータとして足すか、`view` の値のまま（例 `full_json`）にするか。**
    本提案は前者。後者はパラメータが増えない代わりに、量と形式の直積が enum 値の数だけ増える。
@@ -508,8 +645,9 @@ PR 1 / 2 を先に出すことで、語彙変更（外部契約）と挙動修�
    本提案は対象外（射影の指定であり量ではないため）。含めるなら `includeRanked: boolean` への改名を推奨。
 4. **alias の猶予期間**（本提案は「最低 1 リリース かつ 3 ヶ月」）。
 5. **P6 の即時修正**: `src/prompts/intermediate.ts:90` の `get_flow_metrics(view=detailed)` は
-   現時点で validation error になる無効値。語彙統一を待たず単独で直す価値がある
-   （本 PR はドキュメントのみのため未修正）。
+   現時点で validation error になる無効値。語彙統一を待たず単独で直せる
+   （本ドキュメントの PR はドキュメントのみのため未修正。**PR 0**（§5-1）として切り出し済み）。
+   差し替え先の推奨値と根拠は §5-1 を参照。
 6. **階梯規約の機械的な担保**: 「`full` が最重量」「上位ビューは上位集合」「`structuredContent` は
    view 非依存」をテストで固定するか（例: 各ツールの view を総当りして
    `len(summary) ≤ len(detailed) ≤ len(full)` と `structuredContent` の同一性を検証する
