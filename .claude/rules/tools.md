@@ -81,6 +81,10 @@ const summary = prependWarnings(baseSummary, upstream, { separator: '\n' });
 - 「`full` = 全件列挙」は**主対象がレコード列のツールに限る**。主対象がスカラー値のツール
   （`get_volatility_metrics`）では `full` が全件列挙にならないが、最重量である限り規約違反ではない。
 - 同じ語の意味はツールを跨いで一定にする。`summary` を「全件列挙」の意味で使わない。
+- **`get_tickers_jpy` の `view`（`ranked` / `items`）は本語彙の対象外**。量ではなく**射影**
+  （並び順と `data.ranked` の有無）を指しており、`view` という名前自体が誤用のため改名待ち。
+  **`summary` / `full` に機械的に移し替えない**——既存の契約が壊れる。改名するなら
+  `includeRanked: boolean` 等へ（`docs/internal/view-vocabulary-unification.md` §6-3 / §7-3-1）。
 
 ### 2. `view` は `structuredContent` からフィールドを削らない
 

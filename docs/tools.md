@@ -193,11 +193,13 @@ API の応答をそのまま、または軽量整形して返す。指標計算�
 
 `get_volatility_metrics` の結論は `aggregates` / `rolling`（スカラー値）で、`data.series` は指標計算の入力（＝ `get_candles` の再掲）であって出力の主対象ではありません。`full` でも系列を列挙しないのはこのためで、「`full` は常にそのツールの最重量」は満たしています。系列そのものが必要な場合は `get_candles` を使ってください。
 
-### `view` が変えるのは `content` だけ
+### `view` は `structuredContent` からフィールドを削らない
 
-`view` が `structuredContent` から**フィールドを削ることはありません**。`view=summary` で呼んでも、`structuredContent` に入るデータは `view=full` と同じです。
+`view` が `structuredContent` から**既存のフィールドを削ることはありません**。軽い `view` で呼んでも、重い `view` で得られるデータが欠けることはありません。
 
-逆方向は許容しています——**その view でしか計算しないデータを*足す*ツールはあります**（`detect_patterns` の `detailed` / `debug`、`detect_macd_cross` の `detailed`）。何を足すかは各ツールの `view` の説明に書いてあります。
+**追加はあります。** その view でしか計算しないデータを*足す*ツールがあります（`detect_patterns` の `detailed` / `debug`、`detect_macd_cross` の `detailed`）。何を足すかは各ツールの `view` の説明に書いてあるので、`structuredContent` を読むクライアントはそちらを確認してください。
+
+つまり契約は**「削らない。ただし足すことはある」**であって、「`structuredContent` は `view` に依存しない」ではありません。後者だと読むと、`detect_macd_cross(view=summary)` に `data.resultsDetailed` が入ると誤解します。
 
 **`content[0].text` は LLM に渡る唯一のチャネル**なので、軽い `view` は「短い表示」ではなく**「LLM が明細を受け取らない」**を意味します。表示を詰めるつもりで `summary` にすると、モデルは明細を見ないまま回答します。
 
