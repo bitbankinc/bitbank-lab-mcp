@@ -10,7 +10,10 @@ import {
 import { stddev } from '../../lib/math.js';
 import { prependProvisionalNote } from '../../lib/provisional-bar.js';
 import { extractUpstreamWarning, prependWarnings } from '../../lib/warning-propagation.js';
-import getVolatilityMetrics, { WILDER_ATR_PERIOD } from '../../tools/get_volatility_metrics.js';
+import getVolatilityMetrics, {
+	VOLATILITY_METRICS_FOOTER,
+	WILDER_ATR_PERIOD,
+} from '../../tools/get_volatility_metrics.js';
 import { GetVolMetricsInputSchema } from '../schemas.js';
 import type { ToolDefinition } from '../tool-definition.js';
 
@@ -68,7 +71,15 @@ export function buildVolatilityBeginnerText(input: VolViewInput): string {
 		.join('\n');
 }
 
-/** summary ビューのテキスト組み立て */
+/**
+ * 一行要約のテキスト組み立て。
+ *
+ * **本番未使用（テストからのみ参照）。PR 6（軽量 summary の opt-in 追加）の土台として残す**
+ * （docs/internal/view-vocabulary-unification.md §5-3 小項目 / §2-0）。
+ * `view=summary` は上流の `res.summary` をそのまま流す——`content[0].text` が LLM への唯一の
+ * チャネルなので、既定 view をこの一行要約に落とすと LLM が rolling window 別 RV / ATR を
+ * 受け取れなくなる。PR 6 をやらないと決めた時点で削除する。
+ */
 export function buildVolatilitySummaryText(input: VolViewInput): string {
 	const { pair, type, sampleSize, rvAnn, pkAnn, gkAnn, rsAnn, atrAbs, tagsAll } = input;
 	const fp = (x: number | null) => formatPercent(x, { multiply: true });
@@ -84,7 +95,14 @@ export interface VolDetailedInput extends VolViewInput {
 	};
 }
 
-/** detailed/full ビューのテキスト組み立て */
+/**
+ * detailed/full ビューのテキスト組み立て。
+ *
+ * 本文は summary（上流 `res.summary`）とは別立てで組み直すが、**4 行フッタは落とさない**
+ * （docs/internal/view-vocabulary-unification.md §3-2 規約 3: 階梯上の view は下位の上位集合）。
+ * `content[0].text` が LLM への唯一のチャネル（§2-0）なので、上位 view でフッタが消えるのは
+ * 「表示が変わる」ではなく「LLM が『含まれないもの』『ATR の定義』『補完ツール』を失う」に等しい。
+ */
 export function buildVolatilityDetailedText(input: VolDetailedInput, view: 'detailed' | 'full'): string {
 	const { pair, type, lastClose, ann, annFactor, sampleSize, rvAnn, pkAnn, gkAnn, rsAnn, atrAbs, tagsAll, rolling } =
 		input;
@@ -127,7 +145,9 @@ export function buildVolatilityDetailedText(input: VolDetailedInput, view: 'deta
 		const std = retArr.length ? stddev(retArr, true) : null;
 		text += `\n\n【Series】\nTotal: ${sampleSize ?? cArr.length} candles\nFirst: ${firstIso} , Last: ${lastIso}\nClose range: ${minClose != null ? Number(minClose).toLocaleString('ja-JP') : 'n/a'} - ${maxClose != null ? Number(maxClose).toLocaleString('ja-JP') : 'n/a'} JPY\nReturns: mean=${formatPercent(mean, { multiply: true, digits: 2 })}, std=${formatPercent(std, { multiply: true, digits: 2 })}${ann ? ' (base interval)' : ''}`;
 	}
-	return text;
+	// summary と同じ 4 行フッタ（含まれるもの / 含まれないもの / ATR の定義 / 補完ツール）で締める。
+	// 文言は tools/get_volatility_metrics.ts の単一ソースを参照する（view 間で食い違わせない）。
+	return `${text}\n\n${VOLATILITY_METRICS_FOOTER}`;
 }
 
 export const toolDef: ToolDefinition = {
