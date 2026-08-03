@@ -109,9 +109,10 @@ enum 値の変更は破壊的変更になるため、移行方針まで含めて
    を**必須**で宣言している。ハンドラの加工後に再 parse していないため実行時エラーにはならないが、
    **宣言スキーマを満たさない `structuredContent` が出ている**。`compact` も同様に、宣言上は全バケットの
    はずが部分集合になる。
-4. **削減の実効性が薄い。** `structuredContent` から `buckets` を落とす動機はトークン削減だが、
-   本リポジトリの前提（`.claude/rules/tools.md`「LLM は `structuredContent` を参照できない」）が
-   正しいなら、LLM 側のトークンは減らない。減るのはホストが `structuredContent` も文脈に載せる場合のみ。
+4. **削減の実効性が無い。** `structuredContent` から `buckets` を落とす動機はトークン削減だが、
+   本リポジトリの前提（§2-0、`.claude/rules/tools.md`「LLM は `structuredContent` を参照できない」）
+   の下では **LLM 側のトークンは 1 つも減らない**（元から見ていない）。減るのはホストが
+   `structuredContent` も文脈に載せる場合のみで、その代償として非 LLM クライアントの契約が壊れている。
 
 ---
 
@@ -194,6 +195,53 @@ candidates は `accepted` 優先で 200 件まで）。全 view で `meta.debug`
 
 ## 2. 構造的な問題（設計判断の根拠）
 
+### 2-0. 前提: `content` が LLM への唯一のチャネル
+
+`view` の設計を議論する前に、本リポジトリが既に採用している制約を明示しておく。
+**`view` の階梯は「表示密度のつまみ」ではなく「LLM に届く情報量のつまみ」である。**
+
+`.claude/rules/tools.md`（「content テキストにデータを含める（重要）」）:
+
+> LLM は `structuredContent` を参照できない。`content[0].text` だけが LLM に見える。
+> `ok(summary, data, meta)` をそのまま返すと `summary` 一行だけを `content` に入れるため、
+> LLM はデータを一切受け取れずハルシネーションを起こす。
+
+これはルール文書だけの話ではなく、実装側にも同じ判断が横断的に残っている。
+
+| 箇所 | コメント |
+|---|---|
+| `tools/get_candles.ts:807-808` | テキスト summary に全ローソク足データを含める（MCP クライアントが `structuredContent.data` を読めない場合に対応） |
+| `tools/get_transactions.ts:248` | テキスト summary に全取引データを含める（LLM が `structuredContent.data` を読めない対策） |
+| `tools/get_volatility_metrics.ts:331` | テキスト summary にボラティリティ詳細を含める（同上） |
+| `tools/get_orderbook.ts:448` | raw mode: 全レベルをテキストに含める（同上） |
+| `tools/get_tickers_jpy.ts:24` | テキスト summary にティッカー全件を含める（同上） |
+| `tools/detect_patterns.ts:295, 445` | LLM が `content` から読み取れるように詳細を含める |
+
+**決定的な痕跡**: `get_volatility_metrics` には軽量な一行要約 `buildVolatilitySummaryText()`
+（`src/handlers/getVolatilityMetricsHandler.ts:72-77`）が実装されているが、
+**`view=summary` はそれを使わず上流の重い `res.summary` をそのまま流している**（`:237-245`）。
+コメントに理由が残っている——「LLM が default view で rolling window 別 RV/ATR を読めるようにするため」。
+`buildVolatilitySummaryText` は現在テストからしか参照されておらず、本番経路では実質デッドコード。
+**一度作った軽量 rung が「LLM に情報が届かなくなる」という理由で差し戻された実例**である。
+
+（リポジトリ履歴はスカッシュ済み（168 commits、初期化コミットに集約）で、この判断の commit 単位の
+経緯は追えない。上記のルール文書・コード内コメント・差し戻しの痕跡が一次ソースになる。）
+
+#### 設計への帰結（3 点）
+
+1. **軽い view は「同じ情報を短く」ではなく「情報が減る」。** したがって
+   **生データ系ツール（`get_candles` / `get_transactions`）の既定を軽いほうへ倒してはならない。**
+   §3-5 の「既定を変えない」は消極的な互換性配慮ではなく、この制約からの積極的な帰結。
+2. **`structuredContent` を削ってもトークンは減らない。** §1-3 の
+   `get_flow_metrics(view=summary)` による `series.buckets` 削除は、LLM 側のトークンを 1 つも減らさず
+   （LLM は元から見ていない）、**非 LLM クライアントの契約だけを壊している**（P4）。
+   削減の目的と手段が噛み合っていない。
+3. **`format=json` はトークン削減オプションではない。** 同じデータを pretty JSON にすると
+   散文の圧縮形式より必ず増える（§1-1 の実測比 7.4 倍）。`format` は
+   「機械可読性のために**トークンを払う**オプション」として description に書く。
+
+### 2-1. 問題一覧
+
 | # | 問題 | 根拠 |
 |---|---|---|
 | **P1** | **`full` が「既定」と「最重量」の両方を指す** | §1-1（既定・270 行）と §1-3（最重量・1,443 行）。LLM が `view=full` のトークン量を見積れない |
@@ -237,9 +285,14 @@ candidates は `accepted` 優先で 200 件まで）。全 view で `meta.debug`
 3. **上位集合であること**（P3 の解消）: `detailed` の `content` は `summary` の内容を含み、
    `full` は `detailed` を含む。フッタ・警告・最終値のような定型情報を上位ビューで落とさない。
 4. **`view` は `content` だけを変える**（P4 の解消）: `structuredContent` は view に依存させない。
-   トークン削減のために落とす必要がある場合は、**スキーマ側を optional にしたうえで
-   `meta.omitted: ['series.buckets']` のように省略を申告する**。黙って必須フィールドを消さない。
-   （本リポジトリの既存方針——欠損を黙って消さない——と同じ扱い）
+   §2-0 のとおり `structuredContent` を削っても LLM のトークンは減らないため、**そもそも
+   view に応じて削る動機が無い**。それでも落とす必要が生じた場合は、**スキーマ側を optional に
+   したうえで `meta.omitted: ['series.buckets']` のように省略を申告する**。黙って必須フィールドを
+   消さない（本リポジトリの既存方針——欠損を黙って消さない——と同じ扱い）。
+5. **軽い rung は情報を減らす、という自覚を description に書く**: §2-0 のとおり `content` が
+   LLM への唯一のチャネルなので、`view=summary` は「短い表示」ではなく
+   「LLM が明細を受け取らない」を意味する。各ツールの description に
+   「この view では〇〇が `content` に出ない」を明記し、選択の結果を呼び出し側が予測できるようにする。
 5. **同じ語の意味はツールを跨いで一定**。`summary` が別ツールで「全件」を意味してはならない。
 
 ### 3-3. 量以外の軸（別パラメータへ切り出す）
@@ -283,12 +336,23 @@ candidates は `accepted` 優先で 200 件まで）。全 view で `meta.debug`
 | `detect_macd_cross` | `summary`(既定) / `detailed` | 変更なし | `summary` | **なし** |
 | `get_tickers_jpy` | `ranked`(既定) / `items` | 対象外（§3-4） | `ranked` | **なし** |
 
-**default を軽いほうへ倒す変更は、語彙統一とは別の判断として切り離す。**
+**生データ系ツールの default は、語彙統一の後も軽いほうへ倒さない。**
 `get_candles` / `get_transactions` が既定で全件を `content` に載せているのは、
-「LLM は `content[0].text` しか読めない」という本リポジトリの設計方針（`.claude/rules/tools.md`）に
-基づく意図的な選択であり、既定を `summary` に落とすと**応答内容が変わって既存プロンプト・
-外部クライアントの前提が崩れる**。語彙統一（名前の問題）と既定の軽量化（挙動の問題）を
-同じ PR で混ぜない。後者は Phase 3 で独立に議論する。
+§2-0 の制約——`content[0].text` が LLM への唯一のチャネル——からの意図的な帰結であり、
+「重すぎる既定」ではなく「LLM がデータを受け取れる唯一の既定」である。既定を `summary` に
+落とすと、応答が短くなるのではなく**LLM が OHLCV / 約定明細を一切受け取らなくなる**
+（`get_volatility_metrics` で一度差し戻された失敗と同じ道をたどる、§2-0）。
+
+したがって Phase 3 で新設する `summary` は **opt-in 専用**とし、既定にはしない。
+用途は「明細が要らないと呼び出し側が分かっている場合」に限られる——例えば
+価格レンジ・出来高統計だけが欲しい場合や、別ツールへ渡す前の存在確認。
+
+**例外は `get_flow_metrics` の既定 `summary`。** ここだけは既定で系列（バケット）を
+`content` に載せないが、これは妥当である。同ツールの結論は `aggregates`（CVD / アグレッサー比 /
+スパイク上位 3 件）に集約されており、バケット列はそこから導かれた中間データだからである。
+「明細が結論を持つツール（candles / transactions）」と「集計が結論を持つツール（flow_metrics）」で
+既定が分かれるのは不整合ではなく、**どちらも『既定で LLM に結論が届く』という同じ基準の帰結**。
+統一語彙の description にはこの基準を書き、既定値だけを見比べて不揃いと誤読されないようにする。
 
 ### 3-6. 移行後の全体像
 
@@ -339,7 +403,7 @@ Phase 2 で削除、Phase 3 以降で「集計のみ」として再導入する�
 |---|---|---|---|
 | **1** | 次のマイナー（例 `0.2.0`） | 統一語彙を導入。旧値は **deprecated alias** として受理し、ハンドラ入口で新値に正規化。`format` / `nonZeroOnly` を追加。P3（上位集合）と P4（`structuredContent` 非依存）を修正。description を統一文言に | **非破壊**（旧値は動く。既定挙動も不変） |
 | **2** | 次の次のマイナー（例 `0.3.0`、Phase 1 から最低 1 リリース かつ 3 ヶ月以上あける） | 旧 alias を enum から削除 | **破壊的**（旧値は validation error） |
-| **3** | 需要ベース（別議論） | `get_candles` / `get_transactions` に軽量 `summary` を新設。既定を軽いほうへ倒すかを独立に判断 | 追加は非破壊 / 既定変更は挙動変更 |
+| **3** | 需要ベース（別議論） | `get_candles` / `get_transactions` に軽量 `summary` を **opt-in 専用**で新設（既定は `full` のまま。§3-5） | **非破壊**（enum 値の追加のみ） |
 
 `0.x` 系なので SemVer 上はマイナーで破壊的変更を出せるが、**Phase 1 と Phase 2 を同一リリースに
 畳まない**ことを条件とする（alias 期間があること自体が移行方針の実体であるため）。
@@ -408,8 +472,11 @@ Phase 2 で削除、Phase 3 以降で「集計のみ」として再導入する�
 >   （`get_transactions(view=items)` は元から封筒を保持しており、こちらは不変）
 > - **`get_transactions` の default が `summary` → `full` に変わる（挙動は不変）。**
 >   従来の `summary` は「返却した全約定を 1 行 1 件で列挙」であり、実体は `full`。
->   `summary`（集計のみ）は将来別リリースで新設予定。
+>   `summary`（集計のみ）は将来別リリースで **opt-in 専用**として新設予定（既定にはしない）。
 >   **同じ語の意味を差し替えないため、`summary` は alias 期間の削除後にのみ再導入する。**
+> - **生データ系ツールの既定は今後も全件列挙のまま。** `content[0].text` が LLM への唯一の
+>   チャネルであり（`.claude/rules/tools.md`）、既定を軽くすることは「短くする」ではなく
+>   「LLM が明細を受け取らなくなる」を意味するため。
 > - 既定の応答内容が変わるツールは無い（`get_volatility_metrics` の `detailed` / `full` /
 >   `beginner` で欠落していた 4 行フッタが復活する点を除く）。
 
@@ -433,8 +500,10 @@ PR 1 / 2 を先に出すことで、語彙変更（外部契約）と挙動修�
 
 1. **`format` を新パラメータとして足すか、`view` の値のまま（例 `full_json`）にするか。**
    本提案は前者。後者はパラメータが増えない代わりに、量と形式の直積が enum 値の数だけ増える。
-2. **`get_transactions` の `summary` 再導入をやるか**（Phase 3）。やらないなら
-   `get_transactions` は `full` のみになり、量の制御は `limit` に一本化される。
+2. **`get_candles` / `get_transactions` に軽量 `summary` を新設するか**（Phase 3）。
+   §2-0 の制約により**既定にはしない**ことは確定なので、争点は「opt-in の rung を用意する価値が
+   あるか」だけ。やらないなら両ツールは `full` のみになり、量の制御は `limit` に一本化される
+   （`view` パラメータ自体を廃止して `format` だけ残す選択肢もある）。
 3. **`get_tickers_jpy` の `view`（`items` / `ranked`）を本統一に含めるか。**
    本提案は対象外（射影の指定であり量ではないため）。含めるなら `includeRanked: boolean` への改名を推奨。
 4. **alias の猶予期間**（本提案は「最低 1 リリース かつ 3 ヶ月」）。
@@ -460,3 +529,5 @@ PR 1 / 2 を先に出すことで、語彙変更（外部契約）と挙動修�
 | 出力スキーマ（契約） | `src/schema/market-data.ts:208-221, 275-293, 366-380` |
 | debug 配列の cap | `tools/detect_patterns.ts:280-292`（cap=200、accepted 優先） |
 | リポジトリ内の `view` 利用 | `src/prompts/intermediate.ts:90-91, 128` / `src/prompts/reports.ts:16` |
+| `content` が唯一のチャネルである根拠 | `.claude/rules/tools.md`「content テキストにデータを含める（重要）」/ `tools/get_candles.ts:807-808` / `tools/get_transactions.ts:248` / `tools/get_volatility_metrics.ts:331` / `tools/get_orderbook.ts:448` / `tools/get_tickers_jpy.ts:24` / `tools/detect_patterns.ts:295, 445` |
+| 軽量 rung の差し戻し痕跡 | `src/handlers/getVolatilityMetricsHandler.ts:72-77`（`buildVolatilitySummaryText`、本番未使用）と `:237-245`（上流 summary を流す判断とその理由） |
