@@ -464,11 +464,13 @@ describe('欠損バケット（hasData）', () => {
 /**
  * limit による切り捨ての申告
  *
- * 件数ベース取得（date 指定 / 件数指定）は最新側 limit 件に切るが、旧実装はこれを
- * **無言で**行っていた。1 UTC 日は BTC/JPY で 5,600〜8,000 件あるのに limit 上限は 2000 の
- * ため、`date=YYYYMMDD` 指定では 1 日の 1/3 程度しか集計に入らない。しかも
- * `meta.actualRange` が「実カバー = スパン」を報告するため、**完全にカバーしたように見えて
- * いた**（#8/#9 で入れたカバレッジ申告が、切り捨てには反応しなかった）。
+ * 件数ベース取得（区間指定なし = 直近 N 件）は最新側 limit 件に切るが、旧実装はこれを
+ * **無言で**行っていた。しかも `meta.actualRange` が「実カバー = スパン」を報告するため、
+ * **完全にカバーしたように見えていた**（#8/#9 で入れたカバレッジ申告が、切り捨てには
+ * 反応しなかった）。
+ *
+ * `date` 指定も当初は同じ経路で limit を適用していたが、現在は適用しない
+ * （下の「date 指定: limit を適用しない」を参照）。
  */
 describe('limit 切り捨ての申告', () => {
 	afterEach(() => {
@@ -476,53 +478,11 @@ describe('limit 切り捨ての申告', () => {
 		vi.restoreAllMocks();
 	});
 
-	it('date 指定: 切り捨てを meta.truncated / totalAvailable で明示する', async () => {
+	it('件数ベース: 切り捨てが無ければ truncated=false で warning も出さない（誤検知しない）', async () => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(NOW);
-		mockUpstream();
-
-		const res = await getFlowMetrics('btc_jpy', 100, '20260707', 60_000);
-
-		assertOk(res);
-		expect(res.data.aggregates.totalTrades).toBe(100);
-		expect(res.meta.totalAvailable).toBe(ARCHIVE_COUNT);
-		expect(res.meta.truncated).toBe(true);
-	});
-
-	it('date 指定: warning に件数・limit・hours への誘導が入る', async () => {
-		vi.useFakeTimers({ toFake: ['Date'] });
-		vi.setSystemTime(NOW);
-		mockUpstream();
-
-		const res = await getFlowMetrics('btc_jpy', 100, '20260707', 60_000);
-
-		assertOk(res);
-		expect(res.meta.warning).toContain('date=20260707（UTC 暦日）');
-		expect(res.meta.warning).toContain(`${ARCHIVE_COUNT}件`);
-		expect(res.meta.warning).toContain('limit=100');
-		// 1 日全体を見る代替手段まで案内する
-		expect(res.meta.warning).toContain('hours');
-	});
-
-	it('date 指定: 要求スコープは UTC 暦日（1440分）としてカバー率が出る', async () => {
-		vi.useFakeTimers({ toFake: ['Date'] });
-		vi.setSystemTime(NOW);
-		mockUpstream();
-
-		const res = await getFlowMetrics('btc_jpy', 100, '20260707', 60_000);
-
-		assertOk(res);
-		const range = res.meta.actualRange;
-		// 100件 × 20秒間隔 = 約33分。1 UTC 日 1440 分のごく一部しか見ていないことが数値に出る
-		expect(range?.requestedMinutes).toBe(1440);
-		expect(range?.coveredMinutes).toBeLessThan(60);
-		expect(range?.coveragePct).toBeLessThan(5);
-	});
-
-	it('切り捨てが無ければ truncated=false で warning も出さない（誤検知しない）', async () => {
-		vi.useFakeTimers({ toFake: ['Date'] });
-		vi.setSystemTime(NOW);
-		const small = buildTxs(ARCHIVE_START, 50, 20_000, 1);
+		// latest 60 件 + 補完アーカイブ 30 件 = 90 件を limit=100 で要求 → 切り捨ては起きない
+		const small = buildTxs(ARCHIVE_START, 30, 20_000, 1);
 		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
 			const u = String(url);
 			if (u.endsWith('/transactions/20260707')) return jsonRes(payload(small));
@@ -530,12 +490,12 @@ describe('limit 切り捨ての申告', () => {
 			return jsonRes({ success: 0, data: { code: 10000 } }, 404);
 		});
 
-		const res = await getFlowMetrics('btc_jpy', 100, '20260707', 60_000);
+		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000);
 
 		assertOk(res);
-		expect(res.data.aggregates.totalTrades).toBe(50);
+		expect(res.data.aggregates.totalTrades).toBe(LATEST_COUNT + 30);
 		expect(res.meta.truncated).toBe(false);
-		expect(res.meta.totalAvailable).toBe(50);
+		expect(res.meta.totalAvailable).toBe(LATEST_COUNT + 30);
 		expect(res.meta.warning ?? '').not.toContain('limit=');
 	});
 
@@ -593,5 +553,182 @@ describe('limit 切り捨ての申告', () => {
 		expect(res.meta.truncated).toBe(true);
 		expect(res.meta.totalAvailable).toBe(TOTAL_TRADES);
 		expect(res.summary).toContain('limit=100');
+	});
+});
+
+/**
+ * date 指定: limit を適用しない
+ *
+ * `since` / `until` の導入で区間指定パラメータが 3 系統になった際、`limit` の扱いが
+ * `date` だけ不揃いになっていた（`hours` / `since`・`until` は非適用、`date` は適用）。
+ * 既定 `limit` は 100 なので `get_flow_metrics(date=20260801)` は「その UTC 日の**最新側
+ * 100 件**」＝末尾約 20 分ぶんを返しており、日付を指定した意図とはまず一致しない。
+ * 切り捨て自体は `meta.truncated` / warning で申告されていたが、既定の挙動として不適切
+ * だった（上限 2000 に上げても 1 UTC 日 5,600〜8,000 件には届かない）。
+ *
+ * ここでも上流 fetch だけをモックし、実際の limit 適用ロジックを通す。
+ */
+describe('date 指定: limit を適用しない（UTC 暦日の全件を集計）', () => {
+	/** 1 UTC 日（20260707）を 30 秒間隔で埋める。2,880 件 = limit 上限 2000 超 */
+	const FULL_DAY_COUNT = 2880;
+	const FULL_DAY_TXS = buildTxs(Date.UTC(2026, 6, 7, 0, 0, 0), FULL_DAY_COUNT, 30_000, 1);
+
+	/** 完了済み UTC 日 20260707 のアーカイブが 1 日を隙間なく埋めているケース */
+	function mockFullDayArchive() {
+		return vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+			const u = String(url);
+			if (u.endsWith('/transactions/20260707')) return jsonRes(payload(FULL_DAY_TXS));
+			if (u.endsWith('/transactions')) return jsonRes(payload(LATEST_TXS));
+			return jsonRes({ success: 0, data: { code: 10000 } }, 404);
+		});
+	}
+
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	it('既定 limit（100）でも UTC 暦日の全件が集計される（旧: 最新側100件）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockFullDayArchive();
+
+		const res = await getFlowMetrics('btc_jpy', 100, '20260707', 60_000);
+
+		assertOk(res);
+		expect(res.data.aggregates.totalTrades).toBe(FULL_DAY_COUNT);
+		// limit 上限（2000）を超える日でも切れない
+		expect(res.data.aggregates.totalTrades).toBeGreaterThan(2000);
+	});
+
+	it('limit の値を変えても集計結果は変わらない（date 指定では無視される）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockFullDayArchive();
+
+		const small = await getFlowMetrics('btc_jpy', 1, '20260707', 60_000);
+		const large = await getFlowMetrics('btc_jpy', 2000, '20260707', 60_000);
+
+		assertOk(small);
+		assertOk(large);
+		expect(small.data.aggregates.totalTrades).toBe(FULL_DAY_COUNT);
+		expect(large.data.aggregates.totalTrades).toBe(FULL_DAY_COUNT);
+		expect(small.data.aggregates.finalCvd).toBe(large.data.aggregates.finalCvd);
+	});
+
+	it('切り捨て warning を出さず meta.truncated / totalAvailable も付けない', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockFullDayArchive();
+
+		const res = await getFlowMetrics('btc_jpy', 100, '20260707', 60_000);
+
+		assertOk(res);
+		// hours / since・until と同じく、切り捨てが起きない経路では申告フィールドを付けない
+		expect(res.meta.truncated).toBeUndefined();
+		expect(res.meta.totalAvailable).toBeUndefined();
+		expect(res.meta.warning ?? '').not.toContain('limit=');
+		expect(res.meta.warning ?? '').not.toContain('のみを集計しています');
+	});
+
+	it('requestedMinutes=1440 / coveragePct はほぼ100% でカバレッジ警告も出ない', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockFullDayArchive();
+
+		const res = await getFlowMetrics('btc_jpy', 100, '20260707', 60_000);
+
+		assertOk(res);
+		const range = res.meta.actualRange;
+		expect(range?.requestedMinutes).toBe(1440);
+		expect(range?.coveragePct).toBeGreaterThanOrEqual(95);
+		expect(range?.gapMinutes).toBe(0);
+		expect(range?.segments).toBe(1);
+		// 1 UTC 日をほぼ完全にカバーしているので取得層・計算層とも警告なし
+		expect(res.meta.warning).toBeUndefined();
+		expect(res.meta.warnings).toBeUndefined();
+	});
+
+	it('アーカイブが 1 日を埋めていなければカバー率に出る（欠損は従来どおり申告）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		// ARCHIVE_TXS は 08:30 UTC から 20 秒間隔 2,500 件 ＝ 833 分ぶんしかない
+		mockUpstream();
+
+		const res = await getFlowMetrics('btc_jpy', 100, '20260707', 60_000);
+
+		assertOk(res);
+		// 全件を集計したうえで、1 日 1440 分のうち 833 分しか実データが無いことが数値に出る
+		expect(res.data.aggregates.totalTrades).toBe(ARCHIVE_COUNT);
+		expect(res.meta.actualRange?.requestedMinutes).toBe(1440);
+		expect(res.meta.actualRange?.coveragePct).toBeCloseTo(57.8, 0);
+		expect(res.meta.warning).toContain('カバレッジ: 要求 1440分');
+		expect(res.meta.warnings?.[0]).toContain('集計値');
+	});
+
+	/**
+	 * アーカイブ未公開（進行中・未来の UTC 日）→ latest フォールバックの仕様。
+	 *
+	 * この分岐は「その日のデータ」を返していない。ここだけ limit を効かせると、同じ date
+	 * 指定でもアーカイブが公開済みか否か（＝呼んだ時刻と上流の公開タイミング）で limit が
+	 * 効いたり効かなかったりし、呼び出し側から区別できない非決定的な挙動になる。よって
+	 * **date 指定である限り取得元によらず limit は適用しない** = latest の全件を返す。
+	 */
+	it('アーカイブ未公開 → latest フォールバックでも limit を適用しない（latest の全件）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW); // 進行中 UTC 日 = 20260708
+		mockUpstream(); // /transactions/20260708 は 404
+
+		const res = await getFlowMetrics('btc_jpy', 10, '20260708', 60_000);
+
+		assertOk(res);
+		// limit=10 でも latest の全件（約60件）が集計される
+		expect(res.data.aggregates.totalTrades).toBe(LATEST_COUNT);
+		expect(res.meta.truncated).toBeUndefined();
+		expect(res.meta.totalAvailable).toBeUndefined();
+	});
+
+	it('latest フォールバックは要求日の全件ではないことを warning で明示する', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		const res = await getFlowMetrics('btc_jpy', 10, '20260708', 60_000);
+
+		assertOk(res);
+		expect(res.meta.warning).toContain('date=20260708 のアーカイブは未公開');
+		expect(res.meta.warning).toContain('直近約60件');
+		expect(res.meta.warning).toContain('要求した UTC 暦日の全件ではありません');
+	});
+
+	it('latest フォールバックでは requestedMinutes / coveragePct を出さない（要求日を返していないため）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		mockUpstream();
+
+		const res = await getFlowMetrics('btc_jpy', 10, '20260708', 60_000);
+
+		assertOk(res);
+		const range = res.meta.actualRange;
+		expect(range).toBeDefined();
+		// 1 UTC 日（1440分）を分母にすると「latest 約60件で 4% しか取れなかった」と読めてしまうが、
+		// そもそも要求日のデータではないのでカバー率を出す意味が無い
+		expect(range?.requestedMinutes).toBeUndefined();
+		expect(range?.coveragePct).toBeUndefined();
+	});
+
+	it('アーカイブ公開済みの日の取得失敗は従来どおり fail（latest に化けない）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(NOW);
+		// 完了済み UTC 日 20260707 が 503 → latest フォールバックはしない
+		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+			const u = String(url);
+			if (u.endsWith('/transactions')) return jsonRes(payload(LATEST_TXS));
+			return jsonRes({ success: 0, data: { code: 10000 } }, 503);
+		});
+
+		const res = await getFlowMetrics('btc_jpy', 100, '20260707', 60_000);
+
+		expect(res.ok).toBe(false);
 	});
 });

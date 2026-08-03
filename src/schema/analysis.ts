@@ -4,6 +4,7 @@ import {
 	BasePairInputSchema,
 	CandleTypeEnum,
 	FailResultSchema,
+	MAX_TX_COUNT_LIMIT,
 	TrendLabelEnum,
 	TX_RANGE_SINCE_SCHEMA,
 	TX_RANGE_UNTIL_SCHEMA,
@@ -868,10 +869,13 @@ export const AnalyzeVolumeProfileInputSchema = BasePairInputSchema.extend({
 		.number()
 		.int()
 		.min(50)
-		.max(2000)
+		.max(MAX_TX_COUNT_LIMIT)
 		.optional()
 		.default(500)
-		.describe('取得する約定件数。hours / since・until 指定時は無視'),
+		.describe(
+			'取得する約定件数。**hours / since・until のいずれも指定しない件数ベース取得（＝直近 N 件）でのみ有効**で、区間指定時は無視されます（区間の全件を集計）。' +
+				`上限 ${MAX_TX_COUNT_LIMIT} 件は BTC/JPY で 6〜8.5 時間分に相当します。それより長い窓は件数ではなく hours / since・until で指定してください`,
+		),
 	bins: z.number().int().min(5).max(100).optional().default(20).describe('Volume Profile の価格帯分割数'),
 	valueAreaPct: z
 		.number()

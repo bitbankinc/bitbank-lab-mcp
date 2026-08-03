@@ -22,7 +22,12 @@ import {
 	type TxTimeRangeResolved,
 } from '../lib/tx-fetch.js';
 import { createMeta, ensurePair, validateLimit } from '../lib/validate.js';
-import { GetFlowMetricsInputSchema, GetFlowMetricsOutputSchema, MAX_TX_RANGE_DAYS } from '../src/schemas.js';
+import {
+	GetFlowMetricsInputSchema,
+	GetFlowMetricsOutputSchema,
+	MAX_TX_COUNT_LIMIT,
+	MAX_TX_RANGE_DAYS,
+} from '../src/schemas.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
 import getTransactions from './get_transactions.js';
 
@@ -188,13 +193,17 @@ export default async function getFlowMetrics(
 	try {
 		let txs: Tx[];
 		let fetchWarning: string | undefined;
-		/** limit による切り捨ての実績（件数ベース取得時のみ）。meta と warning で申告する。 */
+		/**
+		 * limit による切り捨ての実績。**件数ベース取得（区間指定なし）でのみ立つ。**
+		 * meta.totalAvailable / meta.truncated と warning で申告する。
+		 */
 		let limitApplication: TxLimitApplication | undefined;
 		/**
 		 * 要求した時間窓（分）。カバレッジ率の分母になる。
 		 * - hours 指定: hours×60 分
 		 * - since/until 指定: (until - since) / 60000 分
-		 * - date 指定: 当該 UTC 暦日 = 1440 分（limit で切れた場合に「1 日のうちどれだけ見たか」が出る）
+		 * - date 指定: 当該 UTC 暦日 = 1440 分（全件を集計するので通常はほぼ 100%。下回るのは
+		 *   アーカイブ側に欠損がある場合）
 		 * - 件数ベース（date/hours/since なし）: 時間窓の要求が無いので undefined
 		 */
 		let requestedMin: number | undefined;
@@ -266,100 +275,102 @@ export default async function getFlowMetrics(
 			if (warnMsgs.length > 0) fetchWarning = warnMsgs.join('\n');
 
 			txs = fetched.txs;
-		} else {
-			// === 件数ベース取得 ===
-			const lim = validateLimit(limit, 1, 2000);
-			if (!lim.ok) return failFromValidation(lim, GetFlowMetricsOutputSchema);
-
-			if (date) {
-				// 明示的な日付指定がある場合はそのまま取得。
-				// /transactions/{YYYYMMDD} は UTC 暦日アーカイブで、当該 UTC 日が完了するまで未公開
-				// （404）。進行中・未来の UTC 日（JST の「今日」に加え、JST 早朝は「昨日」も該当）を
-				// 指定された場合は latest にフォールバックする。
-				const txRes = (await txFetcher(date)) as TxResult;
-				const archivePublished = isArchiveExpectedPublished(date);
-				if (!txRes?.ok) {
-					if (!archivePublished) {
-						const latestRes = (await txFetcher()) as TxResult;
-						if (!latestRes?.ok) {
-							return GetFlowMetricsOutputSchema.parse(
-								fail(
-									`date=${date} のアーカイブは未公開（UTC 暦日完了後に公開）で、latest 取得も失敗: ${txRes?.summary || 'unknown'} / ${latestRes?.summary || 'unknown'}`,
-									latestRes?.meta?.errorType || 'upstream',
-								),
-							);
-						}
-						// 加工契約: 全ての取得パスで昇順 sort を保証する。
-						// 上流 getTransactions も内部 sort 済みだが、契約の単一ソースをこちらに置く。
-						// 取得は無制限だが limit はユーザーの明示要求なので最新側 limit 件に切る。
-						limitApplication = applyTxLimit(sortTxsAsc(latestRes.data.normalized as Tx[]), lim.value);
-						txs = limitApplication.txs;
-						// latest フォールバックでは要求日のデータを返していないため、requestedMin
-						// （= UTC 暦日 1440 分）は設定しない。カバー率を出しても意味を成さない。
-						fetchWarning = [
-							`⚠️ date=${date} のアーカイブは未公開（/transactions/{YYYYMMDD} は UTC 暦日の完了後に公開）のため /transactions (latest) から取得しました`,
-							buildTxTruncationWarning(limitApplication, lim.value),
-						]
-							.filter(Boolean)
-							.join('\n');
-					} else {
+		} else if (date) {
+			// === 暦日（date）ベースの取得 ===
+			// **limit は適用しない**（hours / since・until と同じ扱い）。当該 UTC 日の全件を集計する。
+			// 1 UTC 日は BTC/JPY で実測 5,609〜8,040 件あり、limit 上限 2000 を掛けると「その日の
+			// 最新側 2,000 件」＝末尾 6〜8.5 時間分しか集計に入らない。既定 limit=100 なら末尾 100 件
+			// （約 20 分）で、日付を指定した意図とはまず一致しない。区間指定パラメータの扱いを揃える。
+			//
+			// /transactions/{YYYYMMDD} は UTC 暦日アーカイブで、当該 UTC 日が完了するまで未公開
+			// （404）。進行中・未来の UTC 日（JST の「今日」に加え、JST 早朝は「昨日」も該当）を
+			// 指定された場合は latest にフォールバックする。
+			const txRes = (await txFetcher(date)) as TxResult;
+			const archivePublished = isArchiveExpectedPublished(date);
+			if (!txRes?.ok) {
+				if (!archivePublished) {
+					const latestRes = (await txFetcher()) as TxResult;
+					if (!latestRes?.ok) {
 						return GetFlowMetricsOutputSchema.parse(
-							fail(txRes?.summary || 'failed', txRes?.meta?.errorType || 'internal'),
+							fail(
+								`date=${date} のアーカイブは未公開（UTC 暦日完了後に公開）で、latest 取得も失敗: ${txRes?.summary || 'unknown'} / ${latestRes?.summary || 'unknown'}`,
+								latestRes?.meta?.errorType || 'upstream',
+							),
 						);
 					}
-				} else {
 					// 加工契約: 全ての取得パスで昇順 sort を保証する。
-					limitApplication = applyTxLimit(sortTxsAsc(txRes.data.normalized as Tx[]), lim.value);
-					txs = limitApplication.txs;
-					// 要求スコープは当該 UTC 暦日（1440 分）。limit で切れた場合、カバー率に
-					// 「1 日のうちどれだけを見たか」が現れる。
-					requestedMin = UTC_DAY_MINUTES;
-					fetchWarning = buildTxTruncationWarning(limitApplication, lim.value, {
-						scope: `date=${date}（UTC 暦日）`,
-						hint: '1 UTC 日全体の集計には hours を使ってください（hours 指定時は limit を適用しません）。',
-					});
+					// 上流 getTransactions も内部 sort 済みだが、契約の単一ソースをこちらに置く。
+					//
+					// **latest フォールバックでも limit は適用しない**（= latest の全件、約60件を返す）。
+					// ここだけ limit を効かせると、同じ date 指定でもアーカイブが公開済みか否か——つまり
+					// 呼んだ時刻と上流の公開タイミング——で limit が効いたり効かなかったりする。呼び出し側
+					// からは区別できない非決定的な挙動になるため、date 指定である限り取得元によらず
+					// limit は適用しない。実害も無い: latest は約60件で既定 limit（100）を下回るため
+					// 適用しても通常は何も切れず、小さい limit を渡したときにだけ「未公開日の警告付き
+					// 結果がさらに黙って削られる」方向にしか働かない。
+					txs = sortTxsAsc(latestRes.data.normalized as Tx[]);
+					// latest フォールバックでは要求日のデータを返していないため、requestedMin
+					// （= UTC 暦日 1440 分）は設定しない。カバー率を出しても意味を成さない。
+					fetchWarning =
+						`⚠️ date=${date} のアーカイブは未公開（/transactions/{YYYYMMDD} は UTC 暦日の完了後に公開）のため ` +
+						`/transactions (latest, 直近約60件) から取得しました。要求した UTC 暦日の全件ではありません`;
+				} else {
+					return GetFlowMetricsOutputSchema.parse(
+						fail(txRes?.summary || 'failed', txRes?.meta?.errorType || 'internal'),
+					);
 				}
 			} else {
-				// 日付指定なし: latest で取得し、不足なら完了済み UTC 日アーカイブで補完する
-				// （列挙・マージは lib/tx-fetch.ts。失敗ハンドリングの方針は本ツール側）。
-				const latest = await fetchLatestTxs(txFetcher);
+				// 加工契約: 全ての取得パスで昇順 sort を保証する。
+				txs = sortTxsAsc(txRes.data.normalized as Tx[]);
+				// 要求スコープは当該 UTC 暦日（1440 分）。全件を集計するのでカバー率は通常ほぼ 100%
+				// になり、下回った場合はアーカイブ側の欠損を意味する。
+				requestedMin = UTC_DAY_MINUTES;
+			}
+		} else {
+			// === 件数ベース取得（区間指定なし = 直近 N 件）===
+			// limit が効くのはこの経路だけ。上限 MAX_TX_COUNT_LIMIT の根拠は定数側のコメント参照。
+			const lim = validateLimit(limit, 1, MAX_TX_COUNT_LIMIT);
+			if (!lim.ok) return failFromValidation(lim, GetFlowMetricsOutputSchema);
 
-				if (latest.txs.length >= lim.value) {
-					// 加工契約: 全ての取得パスで昇順 sort を保証する。
-					limitApplication = applyTxLimit(sortTxsAsc(latest.txs), lim.value);
-					txs = limitApplication.txs;
-					fetchWarning = buildTxTruncationWarning(limitApplication, lim.value, { scope: '/transactions (latest)' });
-				} else {
-					// latest の返却数が不足（bitbank の latest エンドポイントは約60件のみ返却）
-					const { merged } = await fetchSupplementTxs(txFetcher, lim.value, latest);
-					// 全て失敗した場合は network エラーとして返す
-					if (merged.txs.length === 0 && merged.failedCount > 0) {
-						return GetFlowMetricsOutputSchema.parse(
-							fail(`upstream fetch all failed (${formatTxFailures(merged.failures)})`, 'network'),
-						);
-					}
-					// 補完は best-effort: 何かしら取得できていれば fail せず、失敗と件数不足を警告で明示する。
-					// （latest 成功 + 補完失敗を「過半数失敗」として全体 fail すると、正当に取得できた
-					// 直近データまで捨ててしまう。補完アーカイブは公開遅延等で 404 になり得る。）
-					const warnMsgs: string[] = [];
-					if (merged.failedCount > 0) {
-						warnMsgs.push(
-							`⚠️ ${merged.totalCount}件中 ${merged.failedCount}件のAPI取得に失敗しました: ${formatTxFailures(merged.failures)}`,
-						);
-					}
-					limitApplication = applyTxLimit(sortTxsAsc(merged.txs), lim.value);
-					txs = limitApplication.txs;
-					const truncationWarning = buildTxTruncationWarning(limitApplication, lim.value, {
-						scope: 'latest + 完了済み UTC 日アーカイブ',
-					});
-					if (truncationWarning) warnMsgs.push(truncationWarning);
-					if (txs.length < lim.value) {
-						warnMsgs.push(
-							`ℹ️ 要求 ${lim.value}件に対し取得できたのは ${txs.length}件です（進行中の UTC 日のアーカイブは未公開のため取得不可）`,
-						);
-					}
-					if (warnMsgs.length > 0) fetchWarning = warnMsgs.join('\n');
+			// latest で取得し、不足なら完了済み UTC 日アーカイブで補完する
+			// （列挙・マージは lib/tx-fetch.ts。失敗ハンドリングの方針は本ツール側）。
+			const latest = await fetchLatestTxs(txFetcher);
+
+			if (latest.txs.length >= lim.value) {
+				// 加工契約: 全ての取得パスで昇順 sort を保証する。
+				limitApplication = applyTxLimit(sortTxsAsc(latest.txs), lim.value);
+				txs = limitApplication.txs;
+				fetchWarning = buildTxTruncationWarning(limitApplication, lim.value, { scope: '/transactions (latest)' });
+			} else {
+				// latest の返却数が不足（bitbank の latest エンドポイントは約60件のみ返却）
+				const { merged } = await fetchSupplementTxs(txFetcher, lim.value, latest);
+				// 全て失敗した場合は network エラーとして返す
+				if (merged.txs.length === 0 && merged.failedCount > 0) {
+					return GetFlowMetricsOutputSchema.parse(
+						fail(`upstream fetch all failed (${formatTxFailures(merged.failures)})`, 'network'),
+					);
 				}
+				// 補完は best-effort: 何かしら取得できていれば fail せず、失敗と件数不足を警告で明示する。
+				// （latest 成功 + 補完失敗を「過半数失敗」として全体 fail すると、正当に取得できた
+				// 直近データまで捨ててしまう。補完アーカイブは公開遅延等で 404 になり得る。）
+				const warnMsgs: string[] = [];
+				if (merged.failedCount > 0) {
+					warnMsgs.push(
+						`⚠️ ${merged.totalCount}件中 ${merged.failedCount}件のAPI取得に失敗しました: ${formatTxFailures(merged.failures)}`,
+					);
+				}
+				limitApplication = applyTxLimit(sortTxsAsc(merged.txs), lim.value);
+				txs = limitApplication.txs;
+				const truncationWarning = buildTxTruncationWarning(limitApplication, lim.value, {
+					scope: 'latest + 完了済み UTC 日アーカイブ',
+				});
+				if (truncationWarning) warnMsgs.push(truncationWarning);
+				if (txs.length < lim.value) {
+					warnMsgs.push(
+						`ℹ️ 要求 ${lim.value}件に対し取得できたのは ${txs.length}件です（進行中の UTC 日のアーカイブは未公開のため取得不可）`,
+					);
+				}
+				if (warnMsgs.length > 0) fetchWarning = warnMsgs.join('\n');
 			}
 		}
 		if (!Array.isArray(txs) || txs.length === 0) {
@@ -653,7 +664,8 @@ export const toolDef: ToolDefinition = {
 		`\n\n期間指定の使い分け:` +
 		`\n- **hours**: 現在時刻起点の相対窓（最大24h）。「直近N時間」の分析用。` +
 		`\n- **since / until**: オフセット付き ISO8601 の絶対時刻区間（例: since=2026-08-01T00:00:00Z, until=2026-08-02T00:00:00Z）。**過去の特定区間を全件**集計する唯一の手段。until は排他（[since, until)）で省略時は現在時刻まで。最大 ${MAX_TX_RANGE_DAYS} 日。limit は適用しない。` +
-		`\n- **date**: UTC 暦日 1 日。ただし limit 上限（2000）が 1 日の約定数（5,600〜8,000 件）に届かないため 1 日全体はカバーできない。1 日全体は since/until を使うこと。` +
+		`\n- **date**: UTC 暦日 1 日（YYYYMMDD）。当該 UTC 日の**全件**（5,600〜8,000 件）を集計する。limit は適用しない。UTC 暦日ちょうどを指定する簡便手段なので、複数日にまたがる区間や UTC 暦日の境界に揃わない区間（例: JST の 1 日）には since/until を使うこと。` +
+		`\n- **limit**: date / hours / since・until の**いずれも指定しない件数ベース取得（直近 N 件）でのみ有効**（上限 ${MAX_TX_COUNT_LIMIT} 件 ≒ BTC/JPY で 6〜8.5 時間分）。区間指定と併用しても無視される。それより長い窓は件数ではなく hours / since・until で指定すること。` +
 		`\n- **since/until は hours とも date とも併用不可**（併用すると user エラー）。暗黙の優先順位を置くと、要求と異なる区間の集計値が無言で返るため。なお hours と date の同時指定だけは従来どおりエラーにせず hours が優先される（date は無視される）。` +
 		`\n- since/until に YYYYMMDD 形式は使えない。暦日の基準がツール間で割れている（本ツールの date は UTC 暦日、get_candles の date は tz 引数の暦日）ため、絶対時刻はオフセット必須の ISO8601 のみ受け付ける。` +
 		`\n\nデータソース制約（bitbank 側仕様）: 約定アーカイブ /transactions/{YYYYMMDD} は UTC 暦日単位で、当該 UTC 日の完了後にのみ公開される。完了済み UTC 日は**全件**（1日あたり数千件）を集計に使う。進行中の UTC 日（JST 09:00 で切り替わる）の約定は /transactions (latest, 直近約60件) でしか取得できないため、当日区間のカバレッジは限定的（warning で明示される）。` +

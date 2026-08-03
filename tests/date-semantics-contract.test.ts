@@ -56,12 +56,31 @@ describe('date パラメータの暦基準が description に明記されてい�
 		});
 	}
 
-	it('get_flow_metrics: date では 1 UTC 日全体をカバーできないことが書かれている', () => {
-		// limit 上限 2000 < 1 UTC 日の約定数（BTC/JPY 5,600〜8,000 件）のため、
-		// date 指定は最新側に切り詰められる。切り捨てなく 1 日を集計できる代替手段
-		// （since/until の絶対区間指定）への誘導まで含めて明記する。
+	it('get_flow_metrics: date が当該 UTC 日の全件を集計する（limit 非適用）ことが書かれている', () => {
+		// 以前は「limit 上限 2000 < 1 UTC 日の約定数のため 1 日全体をカバーできない」という
+		// **自分の欠陥を回避手段で説明する** description だった。date は limit を適用しなく
+		// なったので、まず何をするかを書く。
+		const desc = dateDescription(getFlowMetricsDef.inputSchema);
+		expect(desc).toContain('全件');
+		expect(desc).toContain('limit は適用しません');
+		expect(desc).not.toMatch(/カバーできません/);
+	});
+
+	it('get_flow_metrics: date でも since/until が必要なケースへの誘導が残っている', () => {
+		// 複数日にまたがる区間や、UTC 暦日の境界に揃わない区間（JST の 1 日など）は
+		// date では表現できない。誘導を落とすと LLM が date で代用しようとする。
 		const desc = dateDescription(getFlowMetricsDef.inputSchema);
 		expect(desc).toContain('since/until');
-		expect(desc).toMatch(/カバーできません|1 日全体/);
+		expect(desc).toMatch(/複数日|境界/);
+	});
+
+	it('get_flow_metrics: limit が件数ベース取得でのみ有効であることが書かれている', () => {
+		// 区間指定パラメータ（date / hours / since・until）はいずれも limit を適用しない。
+		// limit の適用範囲が description から読めないと、date + limit で少数サンプルを
+		// 取ろうとする（旧挙動では実際にそう動いていた）。
+		const shape = (getFlowMetricsDef.inputSchema as { shape?: Record<string, { description?: string }> })?.shape;
+		const desc = shape?.limit?.description ?? '';
+		expect(desc).toContain('件数ベース取得');
+		expect(desc).toMatch(/date \/ hours \/ since・until/);
 	});
 });

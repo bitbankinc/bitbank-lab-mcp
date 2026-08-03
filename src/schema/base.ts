@@ -74,6 +74,29 @@ export const ISO8601_WITH_OFFSET_PATTERN =
  */
 export const MAX_TX_RANGE_DAYS = 7;
 
+/**
+ * 約定集計ツール（`get_flow_metrics` / `analyze_volume_profile`）の**件数ベース取得**で
+ * `limit` に指定できる最大件数。件数ベース取得＝区間指定パラメータ（`date` / `hours` /
+ * `since`・`until`）をどれも渡さない呼び出しのこと。区間指定はいずれも `limit` を適用せず
+ * 区間の全件を集計するため、`limit` の用途は「直近 N 件」だけである。
+ *
+ * 2000 を据え置く根拠:
+ * - **十分に長い**: BTC/JPY の 1 UTC 日は実測 5,609〜8,040 件なので、2,000 件 ≒ 6〜8.5 時間分。
+ *   これより長い窓を「件数」で表現しても要求は曖昧になるだけで、時間で指定するほうが一意
+ *   （`hours` / `since`・`until` は `limit` を適用しない）。
+ * - **取得コストが跳ねない**: 件数ベースは latest（約60件）+ 完了済み UTC 日アーカイブの補完で
+ *   賄う。`lib/tx-fetch.ts` の `fetchSupplementTxs` は `limit > 500` のとき 2 日ぶんを補完する
+ *   （約 11,000〜16,000 件）ので、2,000 件はその 2 リクエストで確実に満たせる。上限を上げると
+ *   3 日目以降のアーカイブ取得が必要になり、リクエスト数と rate limit を消費する割に、
+ *   同じ範囲は `since`・`until` で切り捨てなく取れる。
+ * - **下げる実益がない**: 応答は時間バケット / 価格帯の集計なのでトークン量は件数に比例しない。
+ *   下げても得るものが無い一方、既存の呼び出しを壊す。
+ *
+ * 判定は各ツールの `validateLimit(limit, 1, MAX_TX_COUNT_LIMIT)`。定数をこちらに置いている
+ * のは、この値が入力スキーマの `.max()` と description の両方に現れるため。
+ */
+export const MAX_TX_COUNT_LIMIT = 2000;
+
 /** 約定集計ツール共通: 絶対時刻区間の開始（含む） */
 export const TX_RANGE_SINCE_SCHEMA = z
 	.string()
