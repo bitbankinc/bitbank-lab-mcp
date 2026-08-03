@@ -38,8 +38,12 @@ upstream remote の登録と fetch のみ）。
 - つまり upstream のリリース運用は「**tag は打つが version bump をコミットしない**」という形。
   `release.yml` は `push: tags:['v*']` で発火するので、tag だけで publish は回る。
   ただし `src/server.ts` が `package.json` を単一ソースにした（`31a8480`）ため、
-  **今後は `serverInfo.version` が常に `0.1.1` を申告する**。drift はハードコードから
-  「bump し忘れ」へ移っただけで、解消していない。リリース時の bump をコミットする運用が要る。
+  **`serverInfo.version` は `package.json` の値をそのまま申告する = 計測時点では `0.1.1`。**
+  値は `package.json` を更新すれば当然変わるが、**bump をコミットしない運用が続く限り、
+  tag を何本打っても申告値は `0.1.1` から動かない。** drift はハードコードから
+  「bump し忘れ」へ移っただけで、解消していない。
+  **運用要件: リリース時に `package.json`（およびプラグインマニフェスト 4 種）の version bump を
+  コミットに含める。** そこまで揃えて初めて `31a8480` の修正が意図どおり効く。
 
 ## 計測条件
 
@@ -49,8 +53,13 @@ upstream remote の登録と fetch のみ）。
 | fork main | `f8ac35f`（2026-07-29 21:50 +0900） |
 | upstream/main | `31a8480`（2026-07-31 17:24 +0900）= tag `v0.3.1` |
 | 作業ブランチ HEAD | `6794ef1`（view 語彙統一 PR #24 マージ後） |
-| upstream 取得 | `git remote add upstream http://local_proxy@127.0.0.1:41729/git/bitbankinc/bitbank-lab-mcp` → `git fetch upstream`（origin と同じプロキシパターンで到達可） |
+| upstream 取得 | `https://github.com/bitbankinc/bitbank-lab-mcp.git` を `upstream` remote に登録 → `git fetch upstream`（下記注記） |
 | 衝突判定 | `git merge-tree --merge-base=<base> <ours> <theirs>`（in-memory。ワークツリー・ブランチとも不変） |
+
+> **注記（プロキシ経由の到達）**: 本調査はサンドボックス環境で実施したため、実際の fetch は origin と同じ
+> セッションローカルな git プロキシ（`http://local_proxy@127.0.0.1:<port>/git/bitbankinc/bitbank-lab-mcp`）
+> 経由で行った。**ポート番号はセッションごとに変わり、他の環境からは再利用できない。**
+> upstream は public リポジトリなので、通常の環境では上記の GitHub URL をそのまま使えばよい。
 
 ---
 
@@ -67,7 +76,7 @@ upstream remote の登録と fetch のみ）。
 
 ### 1-2. upstream の 3 commit
 
-```
+```text
 31a8480 2026-07-31 fix: serverInfo.version を package.json 由来にし 0.4.2 の drift を解消 (#24)
 4cea084 2026-07-30 docs: .coderabbit.yaml 冒頭コメントを実態に合わせて是正（機能変更なし） (#20)
 e47e54d 2026-07-30 sync: MCP 2026-07-28 対応一式（SDK v2 + MRTR / UI 自己復元 / HITL 強化） (#22)
@@ -132,7 +141,7 @@ git 側で追加で見えたのは `.coderabbit.yaml` / `CHANGELOG.md` / `tests/
 
 view 作業（`f646835..HEAD`、PR #18〜#24）を upstream/main へ 3-way で載せると 5 ファイルが衝突する。
 
-```
+```text
 git merge-tree --merge-base=f646835 upstream/main HEAD
   CONFLICT (content): CHANGELOG.md
   CONFLICT (content): src/schema/base.ts
@@ -278,7 +287,7 @@ buckets: 直近 N バケット / full: 全バケット'` のままで、§1-3 �
 upstream/main の `compact`（`tools/get_flow_metrics.ts:594-605`）にこの挙動は**無い**。
 `renderCompactBucketLines` という関数自体が upstream に存在しない。upstream の `compact` は
 
-```
+```ts
 const nonZero = buckets.filter((b) => b.buyVolume > 0 || b.sellVolume > 0);
 ```
 
@@ -313,7 +322,7 @@ const nonZero = buckets.filter((b) => b.buyVolume > 0 || b.sellVolume > 0);
 
 ### 4-2. 具体的な手順
 
-```
+```bash
 # fork 内に upstream/main ベースのブランチを作る（fork main は触らない）
 git fetch upstream
 git checkout -b view-vocab/upstream-base upstream/main
@@ -394,7 +403,9 @@ base リポジトリ側で実行され、secrets を必要としないため for
 ## 付録: 本調査で使ったコマンド
 
 ```bash
-git remote add upstream http://local_proxy@127.0.0.1:41729/git/bitbankinc/bitbank-lab-mcp
+# upstream は public。通常の環境ではこの URL をそのまま使う
+# （本調査ではサンドボックスのセッションローカルな git プロキシ経由。「計測条件」の注記を参照）
+git remote add upstream https://github.com/bitbankinc/bitbank-lab-mcp.git
 git fetch upstream
 
 git merge-base main upstream/main                      # → 2c28e03 (= tag v0.2.1)
