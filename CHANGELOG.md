@@ -25,6 +25,12 @@
 - `run_backtest` の `savePng: true` 時の `outputDir` を許可 root 配下のみに制限（`/mnt/user-data/outputs`・サーバー作業ディレクトリ配下、および環境変数 `BACKTEST_OUTPUT_DIR_ALLOWLIST` で運用側が追加した root）。許可外パスはバックテスト実行前にエラーを返す。判定は `..`・シンボリックリンクを解決した実パスで行うためトラバーサル・symlink では迂回できない。**既定設定の動作は不変**で、許可外ディレクトリへ出力していた場合のみ環境変数での明示許可が必要（#15）。
 - チャートファイル名生成（`generateBacktestChartFilename`）に、パス区切り・ドット等を除去する防御的サニタイズを追加。ファイル名の安全性を上流の pair バリデーションに依存させないための多層防御（#15）。
 
+### Documentation
+- `docs/tools.md` に「`view` の共通語彙」節を新設（従来 `view` の記載はゼロだった）。階梯 / `full` が全件列挙とは限らない条件 / `structuredContent` を削らない契約 / `format`・`nonZeroOnly` の位置づけ / 階梯外の値 / 生データ系の既定が全件列挙である理由 / ツール別の値と既定 / **非推奨の値と写像先の表**を書いた。`get_tickers_jpy` の `view` は本語彙の対象外である旨も明記。
+- `.claude/rules/tools.md` に「`view` の規約」節（規約 1〜7）を追記。`src/schema/base.ts` の共通文言と各共通テストへの導線を張り、handler チェックリストの `view=items` という例示を `format=json` に差し替えた（旧値を規約文書に残さないため）。
+- `docs/internal/view-vocabulary-unification.md` を追加（設計の一次ソース）。`view` 語彙の調査結果・統一設計・移行方針・alias 写像表・実施状況。
+- MCP プロンプトを新語彙へ追従: 「中級：BTCのフロー分析をして」の `get_flow_metrics(view=compact)` → `view=full, nonZeroOnly=true` / `get_transactions(view=summary)` → `view=full`、「🌅 おはようレポート」の `get_candles(view="items")` → `view="full"`。**おはようレポートに `format=json` は付けていない**——用途はスパークライン用に 24 本の close を得ることで、`view=full`（既定）のサマリ本文が 24 本すべてを 1 行 1 本の圧縮形式で含む。`format=json` にすると同じ 24 本が 10 行/本の pretty JSON になり、しかも `content` からサマリ本文・価格レンジ・キーポイント・出来高統計・フッタが消える（**JSON を要求する理由が無く、付けないほうが軽く、かつ LLM が受け取る情報は増える**）。
+
 ### Schema (breaking)
 - **`view` の語彙をツール間で統一した。** `view` は**出力量の 1 軸**のみを表し、`summary` < `detailed` < `full` の順序で、**`full` は常にそのツールの最重量**を意味する。従来は同じ語が別の重さを指していた（`get_candles` の `full` は既定の通常表示、`get_flow_metrics` の `full` は全バケット列挙、`get_transactions` の `summary` は全件列挙）。LLM が `view` からトークン量を見積れず、`src/prompts/intermediate.ts` は `get_flow_metrics` に存在しない `view=detailed` を指示していた。
 - **旧値は deprecated alias として受理する**（`get_candles.items` / `get_transactions.summary` / `get_transactions.items` / `get_flow_metrics.compact` / `get_flow_metrics.buckets`）。写像は次のとおりで、**旧値経由の `content` はバケット行・明細とも変わらない**。削除目標バージョンは `DEPRECATED_VIEW_REMOVAL_TARGET`（`src/schema/base.ts`）を単一ソースにした。
