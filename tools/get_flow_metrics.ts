@@ -742,9 +742,13 @@ export const toolDef: ToolDefinition = {
 			return { content: [{ type: 'text', text }], structuredContent };
 		}
 
+		// view=buckets / full も res.summary をベースにする（compact と同じ形）。
+		// 旧実装は res.summary を捨てて短いヘッダを組み直していたため、最終約定価格・スパイク上位
+		// 3 件・4 行フッタ（含まれるもの / 含まれないもの / 補完ツール / 加工契約）が上位 view でだけ
+		// 消えていた（docs/internal/view-vocabulary-unification.md §1-3 の P3）。
+		// content[0].text は LLM への唯一のチャネル（§2-0）なので、これは「表示が変わる」ではなく
+		// 「LLM が情報を失う」に等しい。§3-2 規約 3（上位 view は下位の上位集合）に従い上位集合にする。
 		const agg = res?.data?.aggregates ?? {};
-		const n = Number(bucketsN ?? 10);
-		const last = buckets.slice(-n);
 		const actualRange = res?.meta?.actualRange;
 		// スパン（穴を含む）と実カバー時間を必ず並記する。durationMinutes だけを出すと
 		// 欠損区間をカバー済みとして申告することになる。
@@ -753,18 +757,20 @@ export const toolDef: ToolDefinition = {
 					actualRange.gapMinutes > 0 ? `, 欠損${actualRange.gapMinutes}分` : ''
 				}${actualRange.requestedMinutes != null ? ` / 要求${actualRange.requestedMinutes}分` : ''}）`
 			: '';
-		// 取得層 (meta.warning) と計算層 (meta.warnings) は別行で出す（.claude/rules/tools.md）。
-		// 各行は本体側で ℹ️ / ⚠️ を付与済みなので、ここでは prefix を触らない。
-		const metaWarnings = (res?.meta as { warnings?: string[] })?.warnings ?? [];
-		const warnLines = [...(res?.meta?.warning ? [res.meta.warning] : []), ...metaWarnings.map((w) => `⚠️ ${w}`)];
-		const warnStr = warnLines.length > 0 ? `\n${warnLines.join('\n')}` : '';
-		let text = `${String(pair).toUpperCase()} Flow Metrics (bucketMs=${res?.data?.params?.bucketMs ?? bucketMs})${rangeStr}\n`;
-		text += `Totals: trades=${agg.totalTrades} buyVol=${agg.buyVolume} sellVol=${agg.sellVolume} net=${agg.netVolume} buy%=${(agg.aggressorRatio * 100 || 0).toFixed(1)} CVD=${agg.finalCvd}${warnStr}`;
+		// バケット行の読み方（間隔・実取得範囲・Totals）をバケット本体の直前に置く。
+		// 取得層 (meta.warning) / 計算層 (meta.warnings) の warning 行はここでは重ねない——
+		// res.summary が同じ 2 系統を同じ文言で既に含んでいるため（重複は LLM のノイズになる）。
+		const bucketHeader =
+			`${String(pair).toUpperCase()} Flow Metrics (bucketMs=${res?.data?.params?.bucketMs ?? bucketMs})${rangeStr}\n` +
+			`Totals: trades=${agg.totalTrades} buyVol=${agg.buyVolume} sellVol=${agg.sellVolume} net=${agg.netVolume} buy%=${(agg.aggressorRatio * 100 || 0).toFixed(1)} CVD=${agg.finalCvd}`;
+
 		if (effectiveView === 'buckets') {
-			text += `\n\nRecent ${last.length} buckets:\n${last.map(fmt).join('\n')}`;
+			const n = Number(bucketsN ?? 10);
+			const last = buckets.slice(-n);
+			const text = `${res.summary}\n\n${bucketHeader}\n\nRecent ${last.length} buckets:\n${last.map(fmt).join('\n')}`;
 			return { content: [{ type: 'text', text }], structuredContent };
 		}
-		text += `\n\nAll buckets:\n${buckets.map(fmt).join('\n')}`;
+		const text = `${res.summary}\n\n${bucketHeader}\n\nAll buckets:\n${buckets.map(fmt).join('\n')}`;
 		return { content: [{ type: 'text', text }], structuredContent };
 	},
 };
