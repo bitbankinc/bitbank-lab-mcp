@@ -308,19 +308,26 @@ candidates は `accepted` 優先で 200 件まで）。全 view で `meta.debug`
    （`beginner` に専門用語のフッタを足すのは、その view の目的に反する）。
 4. **`view` は `structuredContent` からフィールドを削ってはならない**（P4 の解消）。
    §2-0 のとおり削っても LLM のトークンは減らないため、**そもそも view に応じて削る動機が無い**。
-   一方、**階梯外の view がその view でしか計算しないデータを*足す*のは許容する**
+   一方、**その view でしか計算しないデータを*足す*のは許容する**
    （`detect_patterns(debug)` の `data.candidates`、`detect_macd_cross(detailed)` の
    `data.resultsDetailed` 等）。削る＝既存消費者が壊れる / 足す＝壊れない、の非対称性による。
    それでも落とす必要が生じた場合は、**スキーマ側を optional にしたうえで
    `meta.omitted: ['series.buckets']` のように省略を申告する**。黙って必須フィールドを消さない
    （本リポジトリの既存方針——欠損を黙って消さない——と同じ扱い）。
 
+   **「足す」の許容は view の階梯位置を問わない。** 上記の非対称性は階梯上か階梯外かに
+   依存しないため。実際、許容している 3 件のうち 2 件（`detect_patterns(detailed)` の
+   `usage_example`、`detect_macd_cross(detailed)` の `data.resultsDetailed` / `screenedDetailed`）は
+   **階梯上**の `detailed` である（§3-4 / §3-5 のとおり両ツールの `detailed` は階梯上）。
+   規約 3（上位集合）が階梯上の値にのみ適用されるのは `content` の話であり、
+   `structuredContent` を対象とする本規約とはスコープが違う。混同しないこと。
+
    **フィールドは 3 分類で扱う**（「削る / 足す」の 2 分類では `meta.view` を分類できない）:
 
    | 分類 | 例 | 可否 | 規約テストでの扱い |
    |---|---|---|---|
    | **削る** | `get_flow_metrics(summary)` の `data.series.buckets` | **禁止** | deep-equal で検出する |
-   | **足す** | `detect_patterns(debug)` の `data.candidates`、`detect_patterns(detailed)` の `usage_example`、`detect_macd_cross(detailed)` の `data.resultsDetailed` / `screenedDetailed` | 階梯外 view のみ許容 | 「既存キーが全て残っていること（下位集合でないこと）」＋「足しているキーが既知のものに限られること」を検証する |
+   | **足す** | `detect_patterns(debug)` の `data.candidates`、`detect_patterns(detailed)` の `usage_example`、`detect_macd_cross(detailed)` の `data.resultsDetailed` / `screenedDetailed` | **許容**（階梯位置を問わない。例の後ろ 2 件は階梯上の `detailed`） | 「既存キーが全て残っていること（下位集合でないこと）」＋「足しているキーが既知のものに限られること」を検証する |
    | **入力のエコー** | `detect_macd_cross` の `meta.view` | **許容**（値が view ごとに変わってよい） | 比較対象から**除外**し、除外した事実と理由をテスト内に明記する |
 
    **入力のエコー**とは、要求パラメータをそのまま `meta` に返すフィールドを指す。
@@ -469,6 +476,12 @@ nonZeroOnly（絞り込み）: boolean                       … get_flow_metric
 Phase 2 で削除、Phase 3 以降で「集計のみ」として再導入する。
 
 ### 4-3. フェーズ計画
+
+**Phase は「リリース単位」であって PR 単位ではない。** Phase 1（次のマイナー）には
+**PR 1 / PR 2 / PR 3 が全て入る**（§5-0）。したがって「Phase 1 で P3 と P4 を修正」は
+PR 2 が P3 を、PR 1 が P4 を担当するという意味で、PR 3 の担当（P1 / P2 / P5 / P7）とは矛盾しない。
+§5-5 の見出し「PR 3 — 語彙統一 Phase 1」は **Phase 1 のうち語彙変更を担う PR** の意であり、
+「PR 3 ＝ Phase 1 の全体」ではない。PR と指摘の対応は §7 の表を唯一のソースとすること。
 
 | Phase | リリース目安 | 内容 | 破壊性 |
 |---|---|---|---|
@@ -755,9 +768,13 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
    - **レコード集合の包含**: バケット / パターン / ローソク足など列挙されるレコードは、
      行から識別キー（timestamp や pattern type + range）を抽出した集合で包含を検証する。
      行の文言ではなくキー集合で比較すれば、表示形式の変更で落ちない。
-   - **`structuredContent` の同一性**: 階梯上の view 間で deep-equal。階梯外 view
-     （`debug` / `beginner`）は「足す」ことのみ許容なので、**下位集合ではなく上位集合**
-     （既存キーが全て残っていること）を検証する（§3-2 規約 4）。
+   - **`structuredContent` の同一性**: 何も足さない view 同士は deep-equal。
+     **フィールドを足す view は、階梯上か階梯外かを問わず**「足す」扱いなので、
+     **下位集合ではなく上位集合**（既存キーが全て残っていること）＋
+     **足しているキーが既知のものに限られること**を検証する（§3-2 規約 4）。
+     階梯上の値だからといって deep-equal を要求しない——`detect_patterns(detailed)` の
+     `usage_example` と `detect_macd_cross(detailed)` の `data.resultsDetailed` /
+     `screenedDetailed` が該当する。
      入力のエコー（`meta.view` 等）は比較対象から除外する——§3-2 規約 4 の 3 分類表を参照。
 
 7. **`get_volatility_metrics` の `full` で系列そのものを `content` に出すか。**
@@ -788,7 +805,11 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 
 - `get_flow_metrics` のハンドラは全 `view` で同一の `structuredContent` を返す。
   `view=summary` の `series.buckets` 削除と `view=compact` の「非ゼロ ∪ 欠損」フィルタは廃止。
-  **`content` は全 `view` で不変**（`compact` の絞り込み表示・欠損の区間表記も従来どおり）。
+- **`content` は PR 1 の前後で、全 `view` について 1 バイトも変わっていない**
+  （`compact` の絞り込み表示・欠損の区間表記も従来どおり）。
+  これは「`view` を跨いで `content` が同一」という意味ではない——`content` の量を決めるのは
+  引き続き `view` であり（`summary` はバケット行なし / `compact` は非ゼロのみ / `full` は全件）、
+  **`view` に依存しなくなったのは `structuredContent` だけ**である。
 - ハンドラ出口で `GetFlowMetricsOutputSchema.parse()` を通す。以後 `view` 分岐が
   `structuredContent` を加工すると CI で落ちる。
 - `tests/view-structured-content-invariance.test.ts` を新設。
@@ -802,12 +823,17 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
   `detect_macd_cross` の `meta.view` が「削られても足されてもいないが値が変わる」フィールドで、
   当時の 2 分類では扱いを決められなかったため。本ドキュメント側にも反映済み。
 
-### 7-2. 完了済み PR のブリーフの行番号について
+### 7-2. 完了済み PR のブリーフの扱い
 
 §5-1 / §5-2（PR 0 / PR 1）のブリーフに書かれた行番号は**着手時点の値のまま**にしてある。
 実施済みの作業指示なので、追随させる意味が無いため。
 **未着手 PR のブリーフ（§5-3 以降）の行番号は `main` の現在値に追随させる**——
 そちらは仕様書として読まれるため。更新時は基準コミットを併記すること。
+
+同じ理由で、完了済みブリーフ内の**規約への言及も着手時点の表現のまま**にしてある
+（例: §5-2 は「階梯外 view がフィールドを足すのは許容」と書いているが、
+これは §3-2 規約 4 で**階梯位置を問わない**と改めた）。
+**規約の現行解釈は §3-2 を唯一のソースとすること。**
 
 ---
 
