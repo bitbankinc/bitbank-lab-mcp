@@ -500,7 +500,8 @@ export const GetFlowMetricsInputSchema = BasePairInputSchema.extend({
 		.optional()
 		.default('summary')
 		.describe(
-			'summary: 集計値のみ (buckets 省略) / compact: 非ゼロバケットのみ / buckets: 直近 N バケット / full: 全バケット',
+			'content に出すバケット行の量だけを制御します（structuredContent には view に関わらず全バケットが入ります）。' +
+				'summary: バケット行なし（集計値のみ） / compact: 非ゼロバケットのみ（欠損は区間表記で保持） / buckets: 直近 N バケット / full: 全バケット',
 		),
 	bucketsN: z.number().int().min(1).max(100).optional().default(10),
 	tz: z.string().optional().default('Asia/Tokyo'),
