@@ -297,7 +297,9 @@ describe('get_flow_metrics', () => {
 		expect(res.content[0].text).toContain('All buckets');
 	});
 
-	it('handler: view=summary は buckets を structuredContent から除外する', async () => {
+	// view は content だけを変える。structuredContent は宣言スキーマ
+	// （GetFlowMetricsDataSchemaOut は series.buckets を必須で宣言）どおり全バケットを保つ。
+	it('handler: view=summary でも structuredContent には全バケットが入る（content からは省く）', async () => {
 		mockFetch(txPayload());
 		const res = (await toolDef.handler({
 			pair: 'btc_jpy',
@@ -307,15 +309,16 @@ describe('get_flow_metrics', () => {
 			view: 'summary',
 		})) as {
 			content: Array<{ text: string }>;
-			structuredContent: { ok: boolean; data: { series: Record<string, unknown> } };
+			structuredContent: { ok: boolean; data: { series: { buckets: FlowMetricsBucket[] } } };
 		};
 		expect(res.structuredContent.ok).toBe(true);
-		expect('buckets' in res.structuredContent.data.series).toBe(false);
-		// content テキストにもバケット行が含まれない
+		expect('buckets' in res.structuredContent.data.series).toBe(true);
+		expect(res.structuredContent.data.series.buckets).toHaveLength(3);
+		// content テキストにはバケット行が含まれない
 		expect(res.content[0].text).not.toContain('📋 全');
 	});
 
-	it('handler: view=compact は非ゼロバケットのみを返す', async () => {
+	it('handler: view=compact は content のバケット行のみ絞る（structuredContent は全バケット）', async () => {
 		// ゼロ埋めバケットを生むため、時間的に離れた2約定のみで bucketMs を小さめに
 		const payload = {
 			success: 1,
@@ -333,9 +336,16 @@ describe('get_flow_metrics', () => {
 			date: '20240101',
 			bucketMs: 60_000,
 			view: 'compact',
-		})) as { structuredContent: { data: { series: { buckets: FlowMetricsBucket[] } } } };
+		})) as {
+			content: Array<{ text: string }>;
+			structuredContent: { data: { series: { buckets: FlowMetricsBucket[] } } };
+		};
 		const buckets = res.structuredContent.data.series.buckets;
-		expect(buckets.every((b) => b.buyVolume > 0 || b.sellVolume > 0)).toBe(true);
+		// structuredContent は絞らない: 0〜10 分の 11 バケット全件（ゼロ埋めバケットも残る）
+		expect(buckets).toHaveLength(11);
+		expect(buckets.some((b) => b.buyVolume === 0 && b.sellVolume === 0)).toBe(true);
+		// content 側は従来どおり非ゼロの 2 件だけ
+		expect(res.content[0].text).toContain('Non-zero 2/11 buckets:');
 	});
 
 	it('handler: 失敗時はそのまま返す', async () => {

@@ -582,26 +582,28 @@ export const toolDef: ToolDefinition = {
 		const effectiveView = view ?? 'summary';
 		const buckets = (res?.data?.series?.buckets ?? []) as FlowMetricsBucket[];
 
-		// view=summary: バケットを structuredContent からも除外してトークン消費を抑える
+		// view は content だけを変え、structuredContent は変えない
+		// （docs/internal/view-vocabulary-unification.md §3-2 規約 4）。
+		// 旧実装は summary で series.buckets をキーごと削除し、compact で非ゼロバケットに
+		// フィルタしていた。動機はトークン削減だったが、LLM は structuredContent を参照しない
+		// （.claude/rules/tools.md）ため削減量はゼロで、必須フィールドを宣言する
+		// GetFlowMetricsDataSchemaOut を満たさない structuredContent だけが残っていた。
+		//
+		// 出口で宣言スキーマを通すことで、以後 view 分岐が structuredContent を加工したら
+		// CI で落ちる（getFlowMetrics 本体が既に parse 済みなので、ここでの parse は冪等）。
+		const structuredContent = GetFlowMetricsOutputSchema.parse(res) as Record<string, unknown>;
+
 		if (effectiveView === 'summary') {
-			const { buckets: _omit, ...restSeries } = (res.data.series ?? {}) as { buckets?: unknown };
-			const data = { ...res.data, series: restSeries } as typeof res.data;
-			const trimmed = { ...res, data };
-			return { content: [{ type: 'text', text: res.summary }], structuredContent: trimmed as Record<string, unknown> };
+			return { content: [{ type: 'text', text: res.summary }], structuredContent };
 		}
 
-		// view=compact: 非ゼロバケットのみ
+		// view=compact: content のバケット行だけを非ゼロに絞る（structuredContent は全バケットのまま）
 		if (effectiveView === 'compact') {
 			const nonZero = buckets.filter((b) => b.buyVolume > 0 || b.sellVolume > 0);
-			const data = {
-				...res.data,
-				series: { ...res.data.series, buckets: nonZero },
-			} as typeof res.data;
-			const trimmed = { ...res, data };
 			const fmt = (b: FlowMetricsBucket) =>
 				`${b.displayTime || b.isoTime}  buy=${b.buyVolume} sell=${b.sellVolume} total=${b.totalVolume} cvd=${b.cvd}${b.spike ? ` spike=${b.spike}` : ''}`;
 			const text = `${res.summary}\n\nNon-zero ${nonZero.length}/${buckets.length} buckets:\n${nonZero.map(fmt).join('\n')}`;
-			return { content: [{ type: 'text', text }], structuredContent: trimmed as Record<string, unknown> };
+			return { content: [{ type: 'text', text }], structuredContent };
 		}
 
 		const agg = res?.data?.aggregates ?? {};
@@ -618,9 +620,9 @@ export const toolDef: ToolDefinition = {
 		text += `Totals: trades=${agg.totalTrades} buyVol=${agg.buyVolume} sellVol=${agg.sellVolume} net=${agg.netVolume} buy%=${(agg.aggressorRatio * 100 || 0).toFixed(1)} CVD=${agg.finalCvd}${warnStr}`;
 		if (effectiveView === 'buckets') {
 			text += `\n\nRecent ${last.length} buckets:\n${last.map(fmt).join('\n')}`;
-			return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
+			return { content: [{ type: 'text', text }], structuredContent };
 		}
 		text += `\n\nAll buckets:\n${buckets.map(fmt).join('\n')}`;
-		return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
+		return { content: [{ type: 'text', text }], structuredContent };
 	},
 };
