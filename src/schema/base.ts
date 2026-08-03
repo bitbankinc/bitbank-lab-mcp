@@ -129,10 +129,19 @@ export const TX_RANGE_UNTIL_SCHEMA = z
  * `content[0].text` が LLM への唯一のチャネル（`.claude/rules/tools.md`）なので、
  * 軽い view は「短い表示」ではなく「LLM が明細を受け取らない」を意味する。
  * そのため各 view には「この view では〇〇が content に出ない」を必ず併記する（§3-2 規約 5）。
+ *
+ * **`structuredContent` について「view に依存しない」とは書かない。** §3-2 規約 4 が禁じているのは
+ * *削る*ことだけで、**その view でしか計算しないデータを*足す*のは許容**されている
+ * （`detect_patterns(detailed)` の `usage_example` / `(debug)` の `data.candidates`、
+ * `detect_macd_cross(detailed)` の `data.resultsDetailed` / `data.screenedDetailed`）。
+ * 「依存しない」と書くと、これらのツールで description が実装に対して嘘になる——
+ * 呼び出し側が「`resultsDetailed` は `view` を問わず入る」と誤解する。
+ * 足すツールは各 view の説明に**何を足すか**を明記すること。
  */
 export const VIEW_CONTRACT_NOTE =
-	'view は content の量のみを制御します（structuredContent は view に依存しません）。' +
-	'量は summary < detailed < full の順で、full は常にそのツールの最重量です。' +
+	'view は content の量を制御します。量は summary < detailed < full の順で、full は常にそのツールの最重量です。' +
+	'view が structuredContent から**フィールドを削ることはありません**' +
+	'（その view でしか計算しないデータを足すツールはあり、その場合は当該 view の説明に明記しています）。' +
 	'content[0].text は LLM への唯一のチャネルなので、軽い view は「短い表示」ではなく「LLM が明細を受け取らない」を意味します。';
 
 /**

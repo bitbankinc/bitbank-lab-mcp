@@ -37,7 +37,6 @@ import { toolDef as detectPatternsTool } from '../src/handlers/detectPatternsHan
 import { toolDef as volatilityTool } from '../src/handlers/getVolatilityMetricsHandler.js';
 import detectPatterns from '../tools/detect_patterns.js';
 import { toolDef as flowMetricsTool } from '../tools/get_flow_metrics.js';
-import { asMockResult } from './_assertResult.js';
 
 // ── 定型要素の抽出・正規化（§6-6） ────────────────────────
 
@@ -203,7 +202,12 @@ const runFlow = (view: string, bucketsN = 2) => {
  *   `- 期間: A ~ B` 行が出なくなる。
  */
 const PATTERN_COUNT = 7;
-function patternsFixture() {
+/** `debug` view が `【Swings】` に描画するスイング（1 本だけ入れて行の有無を検証可能にする）。 */
+const DEBUG_SWING = { kind: 'H', idx: 3, price: 100, isoTime: '2026-01-05T00:00:00.000Z' } as const;
+
+// 戻り値を上流ツールの出力型で縛る。手書きフィクスチャが production の shape から
+// 黙って drift すると、この層（ツール横断の契約検証）の assert が全て素通りするため。
+function patternsFixture(): Awaited<ReturnType<typeof detectPatterns>> {
 	return {
 		ok: true,
 		summary: 'ok',
@@ -230,12 +234,13 @@ function patternsFixture() {
 			visualization_hints: { preferred_style: 'line', highlight_patterns: [] },
 			warning: '取得層: 180本中20本が欠損しています',
 			warnings: ['計算層: スイング検出に必要なバー数が不足しています'],
+			debug: { swings: [{ ...DEBUG_SWING }], candidates: [] },
 		},
 	};
 }
 
 const runPatterns = (view: string) => {
-	vi.mocked(detectPatterns).mockResolvedValue(asMockResult(patternsFixture()));
+	vi.mocked(detectPatterns).mockResolvedValue(patternsFixture());
 	return detectPatternsTool.handler({ pair: 'btc_jpy', type: '1day', limit: 180, view });
 };
 
@@ -445,7 +450,11 @@ describe('階梯上の view の content は下位 view の上位集合（§3-2 �
 		const text = byView.get('debug') as string;
 
 		expect(patternRowKeys(text).size).toBe(0);
+		// 見出しは swings が空でも出るので、それだけ見ても「置換された」ことの証明にならない。
+		// フィクスチャの swing が実際に描画されているところまで見る。
 		expect(text).toContain('【Swings】');
+		expect(text).toContain(String(DEBUG_SWING.price));
+		expect(text).toMatch(new RegExp(`${DEBUG_SWING.kind}\\b`, 'u'));
 	});
 
 	describe('最新足が形成中（provisional）の場合', () => {

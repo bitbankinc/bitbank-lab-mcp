@@ -211,6 +211,10 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 			'full/text': { view: 'full', format: 'text' },
 			'full/json': { view: 'full', format: 'json' },
 			'items(alias)': { view: 'items' },
+			// alias は format 指定より優先される（get_candles の effectiveFormat）。
+			// content の形は変わるが structuredContent は同一、が本テストの主張。
+			'items(alias)/text': { view: 'items', format: 'text' },
+			'items(alias)/json': { view: 'items', format: 'json' },
 		} as const;
 		const entries = await collectByView(Object.keys(variants) as Array<keyof typeof variants>, async (label) => {
 			mockCandles(10);

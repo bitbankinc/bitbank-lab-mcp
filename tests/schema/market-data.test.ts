@@ -61,7 +61,17 @@ describe('GetCandlesInputSchema', () => {
 		const result = GetCandlesInputSchema.parse({ pair: 'btc_jpy', type: '1day' });
 		expect(result.limit).toBe(200);
 		expect(result.view).toBe('full');
+		expect(result.format).toBe('text');
 		expect(result.tz).toBe('Asia/Tokyo');
+	});
+
+	it('deprecated alias（items）を受理し、enum 外は拒否する', () => {
+		// alias 期間中も enum は**閉じたまま**であること。ここを固定しないと、
+		// 誰かが view を z.string() に緩めてもテストが通り、ハンドラ側の
+		// alias 正規化が「唯一の受理経路」でなくなったことに気づけない。
+		expect(GetCandlesInputSchema.parse({ pair: 'btc_jpy', type: '1day', view: 'items' }).view).toBe('items');
+		expect(() => GetCandlesInputSchema.parse({ pair: 'btc_jpy', type: '1day', view: 'summary' })).toThrow();
+		expect(() => GetCandlesInputSchema.parse({ pair: 'btc_jpy', type: '1day', format: 'yaml' })).toThrow();
 	});
 
 	it('カスタム limit を受け入れる', () => {
@@ -107,9 +117,11 @@ describe('GetTransactionsInputSchema', () => {
 		expect(result.format).toBe('text');
 	});
 
-	it('deprecated alias（summary / items）も受理し続ける', () => {
+	it('deprecated alias（summary / items）を受理し、enum 外は拒否する', () => {
 		expect(GetTransactionsInputSchema.parse({ view: 'summary' }).view).toBe('summary');
 		expect(GetTransactionsInputSchema.parse({ view: 'items' }).view).toBe('items');
+		expect(() => GetTransactionsInputSchema.parse({ view: 'verbose' })).toThrow();
+		expect(() => GetTransactionsInputSchema.parse({ format: 'yaml' })).toThrow();
 	});
 
 	it('date フォーマットを検証する', () => {
@@ -128,7 +140,17 @@ describe('GetFlowMetricsInputSchema', () => {
 		expect(result.limit).toBe(100);
 		expect(result.bucketMs).toBe(60_000);
 		expect(result.view).toBe('summary');
+		expect(result.nonZeroOnly).toBe(false);
+		expect(result.bucketsN).toBe(10);
 		expect(result.tz).toBe('Asia/Tokyo');
+	});
+
+	it('deprecated alias（compact / buckets）を受理し、enum 外は拒否する', () => {
+		expect(GetFlowMetricsInputSchema.parse({ view: 'compact' }).view).toBe('compact');
+		expect(GetFlowMetricsInputSchema.parse({ view: 'buckets' }).view).toBe('buckets');
+		expect(GetFlowMetricsInputSchema.parse({ view: 'detailed' }).view).toBe('detailed');
+		expect(() => GetFlowMetricsInputSchema.parse({ view: 'verbose' })).toThrow();
+		expect(() => GetFlowMetricsInputSchema.parse({ nonZeroOnly: 'true' })).toThrow();
 	});
 
 	it('hours を受け入れる', () => {

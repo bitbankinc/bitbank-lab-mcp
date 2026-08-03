@@ -614,7 +614,9 @@ screen（スクリーニング用）:
 				`${VIEW_CONTRACT_NOTE}\n` +
 					'**pair 省略時（複数銘柄スクリーニングモード）でのみ有効。** pair 指定の単一ペア深掘りモードでは無視されます。\n' +
 					'- summary（既定）: スクリーニング結果のテキスト。1 クロスごとの明細は content に出ない。\n' +
-					'- detailed: summary ＋ 1 クロス 1 行の明細。本ツールの最重量。',
+					'- detailed: summary ＋ 1 クロス 1 行の明細。本ツールの最重量。' +
+					'structuredContent に data.resultsDetailed / data.screenedDetailed を**足す**（summary では入らない）。\n' +
+					'なお meta.view は要求した view をそのままエコーするので view ごとに値が変わる。',
 			),
 		includeForming: z.boolean().optional().default(true).describe('単一ペア: forming検出'),
 		includeStats: z.boolean().optional().default(true).describe('単一ペア: 過去統計'),

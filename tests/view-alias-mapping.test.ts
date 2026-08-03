@@ -69,8 +69,21 @@ function responseOf(res: unknown): { content: Array<{ type: string; text: string
  * どちらも検証できない。「非ゼロだけにフィルタしてから full のレンダラに渡す」素朴な実装は
  * 欠損 19 バケットが 19 行に展開されるため、ここで落ちる。
  */
+/**
+ * bitbank `/transactions` の 1 行。**数値も含めて全て文字列**で返る
+ * （`price` / `amount` / `executed_at`）。フィクスチャをこの型で縛って、
+ * 実 API と乖離したモック（例: `executed_at` を数値で書く）が入らないようにする。
+ */
+type BitbankTxRow = {
+	transaction_id?: number;
+	price: string;
+	amount: string;
+	side: 'buy' | 'sell';
+	executed_at: string;
+};
+
 const FLOW_T0 = 1_700_000_000_000;
-const FLOW_TX_ROWS = [
+const FLOW_TX_ROWS: BitbankTxRow[] = [
 	{ price: '5000000', amount: '0.1', side: 'buy', executed_at: String(FLOW_T0) },
 	{ price: '5000100', amount: '0.2', side: 'sell', executed_at: String(FLOW_T0 + 2 * 60_000) },
 	{ price: '5000200', amount: '0.3', side: 'buy', executed_at: String(FLOW_T0 + 22 * 60_000) },
@@ -194,6 +207,9 @@ describe('deprecated view alias の写像（§4-4）', () => {
 			const withFlag = responseOf(await runFlow({ view: 'buckets', bucketsN: 5, nonZeroOnly: true }));
 			const mapped = responseOf(await runFlow({ view: 'detailed', bucketsN: 5 }));
 			expect(withFlag.content).toEqual(mapped.content);
+			// structuredContent も突き合わせる。content だけ見ていると、レンダリングは false で
+			// 行いつつ呼び出し値の true を meta にエコーする実装が素通りしてしまう。
+			expect(withFlag.structured).toEqual(mapped.structured);
 		});
 
 		it('view=summary + nonZeroOnly=true は no-op（エラーにしない）', async () => {
@@ -223,12 +239,17 @@ describe('deprecated view alias の写像（§4-4）', () => {
 
 	// ── get_transactions ──────────────────────────────────
 
-	const TX_ROWS = [
-		{ transaction_id: 1, price: '5000000', amount: '0.1', side: 'buy', executed_at: 1_700_000_000_000 },
-		{ transaction_id: 2, price: '5000100', amount: '0.2', side: 'sell', executed_at: 1_700_000_060_000 },
-		{ transaction_id: 3, price: '5000200', amount: '0.3', side: 'buy', executed_at: 1_700_000_120_000 },
+	// executed_at は上流が文字列で返す（FLOW_TX_ROWS と同じ形）。数値で書くと
+	// 「モックは実際の API レスポンス構造と乖離しない」に反し、文字列 → 数値の
+	// 正規化を素通りさせてしまう。
+	const TX_ROWS: BitbankTxRow[] = [
+		{ transaction_id: 1, price: '5000000', amount: '0.1', side: 'buy', executed_at: String(FLOW_T0) },
+		{ transaction_id: 2, price: '5000100', amount: '0.2', side: 'sell', executed_at: String(FLOW_T0 + 60_000) },
+		{ transaction_id: 3, price: '5000200', amount: '0.3', side: 'buy', executed_at: String(FLOW_T0 + 120_000) },
 	];
 
+	// rows は `unknown[]`。drop 警告のテストで**意図的に契約違反の行**を混ぜるため、
+	// ここだけは BitbankTxRow で縛らない（縛ると異常系が書けなくなる）。
 	function runTransactions(args: Record<string, unknown>, rows: unknown[] = TX_ROWS) {
 		mockFetchJson({ success: 1, data: { transactions: rows } });
 		return transactionsTool.handler({ pair: 'btc_jpy', limit: 10, date: '20240101', ...args });
@@ -322,6 +343,20 @@ describe('deprecated view alias の写像（§4-4）', () => {
 
 			expect(mapped.content).toEqual(legacy.content);
 			expect(JSON.parse(mapped.content[0].text)).toHaveLength(14);
+		});
+
+		it('items + format=text でも JSON が出る（alias が format 指定より優先される）', async () => {
+			// `view=items` の写像先は `view=full` + `format=json` なので、同時に渡された
+			// `format=text` は写像が決める json に上書きされる（get_flow_metrics の
+			// `compact` + `nonZeroOnly=false` と同じ扱い。旧値は「量 + 形式」を 1 語で決めていたため）。
+			// alias 期間中に呼び出し側が偶然踏みうる唯一の分岐なので固定しておく。
+			const rows = pastRows(30);
+			const withText = responseOf(await runCandles({ view: 'items', format: 'text', date: '2024' }, rows));
+			const mapped = responseOf(await runCandles({ view: 'full', format: 'json', date: '2024' }, rows));
+
+			expect(withText.content).toEqual(mapped.content);
+			expect(withText.structured).toEqual(mapped.structured);
+			expect(JSON.parse(withText.content[0].text)).toHaveLength(14);
 		});
 
 		it('items → view=full + format=json: 形成中足注記の別ブロックも含めて一致', async () => {

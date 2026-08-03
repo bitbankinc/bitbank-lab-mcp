@@ -870,9 +870,23 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 - **新パラメータ**: `format`（`text` / `json`。`get_candles` / `get_transactions`）、
   `nonZeroOnly`（boolean。`get_flow_metrics`）。
 - **alias 正規化はハンドラ入口の 1 箇所だけ**（`normalizeFlowMetricsView()` /
-  各ハンドラの `effectiveFormat`）。以降の分岐は新語彙しか見ないので、PR 5 の削除は
-  正規化を消すだけで済む。**旧値と新パラメータを同時に渡された場合は写像先が決める値を優先する**
+  各ハンドラの `effectiveFormat`）。以降の分岐は新語彙しか見ない。
+  **旧値と新パラメータを同時に渡された場合は写像先が決める値を優先する**
   （`compact` + `nonZeroOnly=false` のような自己矛盾を作らないため）。
+
+  **PR 5（alias 削除）で触る箇所は正規化だけではない。順序も含めて以下が全部要る**——
+  **enum を先に閉じないまま正規化だけ消すと、旧値が enum を通過して新語彙しか扱わない分岐に
+  到達する**（`get_flow_metrics` なら `compact` が `detailed` でも `full` でもないので
+  全バケット列挙に落ちる、`get_candles` なら `items` が `format=text` 扱いになる）。
+  黙って別の応答が返るので、§4-2 が避けようとしたサイレント破壊そのものになる。
+
+  | # | 対象 | 内容 |
+  |---|---|---|
+  | 1 | `src/schema/market-data.ts` の enum | `get_flow_metrics` から `compact` / `buckets`、`get_transactions` から `summary` / `items`、`get_candles` から `items` を削除（**これを最初に行う**） |
+  | 2 | 同 description | deprecated 行を削除。`deprecatedViewNote()` の呼び出しが残っていないかで機械的に確認できる |
+  | 3 | ハンドラ | `normalizeFlowMetricsView()` の alias 分岐、`get_candles` / `get_transactions` の `view === 'items' ? 'json' : …` を削除 |
+  | 4 | テスト | `tests/view-alias-mapping.test.ts` を「旧値は validation error」の検証に置き換える（サイレントに新値へ倒れないこと）。`tests/view-content-superset.test.ts` の `get_flow_metrics` は旧値（`buckets` / `compact`）で呼んでいるので新語彙へ書き換える |
+  | 5 | プロンプト / ドキュメント | `src/prompts/*` と `docs/tools.md` に旧値が残っていないか（PR 4 で追従済みのはずだが再確認する） |
 - **`nonZeroOnly=true` の行生成は `renderCompactBucketLines()` を再利用**する。
   `full` の見出しは旧 `compact` と同一文言（`Non-zero X/Y buckets{gapNote}:`）。
   `detailed` + `nonZeroOnly=true`（旧 enum では表現できなかった組み合わせ）だけは
