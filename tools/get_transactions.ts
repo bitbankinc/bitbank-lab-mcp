@@ -335,8 +335,11 @@ export const toolDef: ToolDefinition = {
 		maxAmount?: number;
 		minPrice?: number;
 		maxPrice?: number;
-		view?: 'full' | 'summary' | 'items';
-		format?: 'text' | 'json';
+		// リテラルを手書きせず Zod スキーマから導出する。手書きにすると PR 5 で enum から
+		// alias（`summary` / `items`）を消しても型が変わらず、下の alias 分岐が黙って生き残る
+		// （§7-3 の PR 5 作業表）。
+		view?: z.infer<typeof GetTransactionsInputSchema>['view'];
+		format?: z.infer<typeof GetTransactionsInputSchema>['format'];
 	}) => {
 		// フィルタはコア関数側で limit の前に適用される（handler 層では絞り込まない）。
 		const res = await getTransactions(pair, limit, date, { minAmount, maxAmount, minPrice, maxPrice });

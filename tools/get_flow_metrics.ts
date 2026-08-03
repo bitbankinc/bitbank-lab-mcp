@@ -1,3 +1,4 @@
+import type { z } from 'zod';
 import { dayjs, toDisplayTime, toIsoTime, toIsoWithTz } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
@@ -90,8 +91,16 @@ export function renderCompactBucketLines(
 	return { lines, shown, gapBuckets };
 }
 
-/** `GetFlowMetricsInputSchema.view` の受理値（新語彙 + deprecated alias）。 */
-export type FlowMetricsView = 'summary' | 'detailed' | 'full' | 'compact' | 'buckets';
+/**
+ * `GetFlowMetricsInputSchema.view` の受理値（新語彙 + deprecated alias）。
+ *
+ * **リテラルを手書きせず Zod スキーマから導出する。** 手書きにすると、PR 5 で enum から
+ * alias（`compact` / `buckets`）を消しても型は変わらず、`normalizeFlowMetricsView` の
+ * alias 分岐が**コンパイルを通ったまま生き残る**。導出しておけば enum を閉じた瞬間に
+ * 「型に重なりが無い比較」として該当分岐が全て型エラーになり、消し忘れを機械的に潰せる
+ * （§7-3 の PR 5 作業表が「enum を先に閉じる」と書いているのはこの順序を使うため）。
+ */
+export type FlowMetricsView = NonNullable<z.infer<typeof GetFlowMetricsInputSchema>['view']>;
 
 /** alias 正規化後の view（量の階梯だけが残る）。 */
 export type FlowMetricsCanonicalView = 'summary' | 'detailed' | 'full';

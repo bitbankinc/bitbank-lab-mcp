@@ -1,3 +1,4 @@
+import type { z } from 'zod';
 import {
 	type CalendarSpan,
 	diffCalendarDays,
@@ -892,8 +893,10 @@ export const toolDef: ToolDefinition = {
 		type: '1min' | '5min' | '15min' | '30min' | '1hour' | '4hour' | '8hour' | '12hour' | '1day' | '1week' | '1month';
 		date?: string;
 		limit?: number;
-		view?: 'full' | 'items';
-		format?: 'text' | 'json';
+		// リテラルを手書きせず Zod スキーマから導出する。手書きにすると PR 5 で enum から
+		// `items` を消しても型が変わらず、下の alias 分岐が黙って生き残る（§7-3 の PR 5 作業表）。
+		view?: z.infer<typeof GetCandlesInputSchema>['view'];
+		format?: z.infer<typeof GetCandlesInputSchema>['format'];
 		tz?: string;
 	}) => {
 		const result = await getCandles(pair, type, date, limit, tz);

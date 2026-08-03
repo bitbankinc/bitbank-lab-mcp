@@ -887,6 +887,22 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
   | 3 | ハンドラ | `normalizeFlowMetricsView()` の alias 分岐、`get_candles` / `get_transactions` の `view === 'items' ? 'json' : …` を削除 |
   | 4 | テスト | `tests/view-alias-mapping.test.ts` を「旧値は validation error」の検証に置き換える（サイレントに新値へ倒れないこと）。`tests/view-content-superset.test.ts` の `get_flow_metrics` は旧値（`buckets` / `compact`）で呼んでいるので新語彙へ書き換える |
   | 5 | プロンプト / ドキュメント | `src/prompts/*` と `docs/tools.md` に旧値が残っていないか（PR 4 で追従済みのはずだが再確認する） |
+
+  **順序 1 → 3 は型で強制される。** 3 ツールのハンドラ引数の `view` / `format` 型は
+  リテラルを手書きせず **Zod スキーマから導出**してある
+  （`NonNullable<z.infer<typeof GetFlowMetricsInputSchema>['view']>` 等）。
+  enum を閉じた瞬間に alias 分岐が全て `TS2367: This comparison appears to be unintentional
+  because the types … have no overlap` になるので、**消し忘れた分岐は typecheck で必ず落ちる**。
+  実際に enum から `compact` / `items` を消して確認済み:
+
+  ```
+  tools/get_flow_metrics.ts(123,6): error TS2367: … 'FlowMetricsView | undefined' and '"compact"' have no overlap.
+  tools/get_candles.ts(908,44):     error TS2367: … '"full" | undefined' and '"items"' have no overlap.
+  tools/get_transactions.ts(372,44): error TS2367: … '"full" | undefined' and '"items"' have no overlap.
+  ```
+
+  （手書きリテラルのままだと enum を消しても typecheck が通り、alias 分岐が黙って生き残る。
+  PR 3 のレビュー中にこの drift を実測して塞いだ。）
 - **`nonZeroOnly=true` の行生成は `renderCompactBucketLines()` を再利用**する。
   `full` の見出しは旧 `compact` と同一文言（`Non-zero X/Y buckets{gapNote}:`）。
   `detailed` + `nonZeroOnly=true`（旧 enum では表現できなかった組み合わせ）だけは
