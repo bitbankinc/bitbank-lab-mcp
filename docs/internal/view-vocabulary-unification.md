@@ -1,7 +1,8 @@
 # `view` 語彙の統一 — 調査結果と設計提案
 
 `view` パラメータの値がツール間で不揃いで、**同じ語が異なる重さを指している**問題の調査記録と設計提案。
-本ドキュメントは**設計提案までで、コードは変更していない**。実装は本ドキュメントの合意後に別 PR で行う。
+起票時点では設計提案のみでコードは変更していなかった。**Phase 1（PR 0〜3）は実装済み**——
+実施状況と「各 PR で実際に入ったもの」は §7 を参照すること。
 
 対象は MCP のツール入力スキーマ（`inputSchema`）として外部クライアントに公開される `view` の enum 値。
 enum 値の変更は破壊的変更になるため、移行方針まで含めて先に合意する。
@@ -371,8 +372,19 @@ candidates は `accepted` 優先で 200 件まで）。全 view で `meta.debug`
 | `view=summary` との併用 | — | **no-op**（`content` にバケット行が無い）。エラーにはしない |
 | `view=detailed` との併用 | 直近 `bucketsN` 件を 1 行ずつ | 直近 `bucketsN` 件に上記フィルタを適用 |
 
-**実装上の必須要件**: `view=full` + `nonZeroOnly=true` の `content` は、旧 `compact` の `content` と
-**完全一致**させる。「全バケットをフィルタしてから `full` のレンダラに渡す」という素朴な実装では
+**実装上の必須要件**: `view=full` + `nonZeroOnly=true` の**バケット行**——どのバケットを出すか /
+欠損の連続区間の 1 行への畳み込み / 真のゼロ（`hasData=true` かつ buy=sell=0）の除外——は
+旧 `compact` と**完全一致**させる。ヘッダ・フッタ・注記行は §3-2 規約 3（上位集合）に従い、
+旧 `compact` に対して**増える方向の差分のみ許容**する（**減ってはならない**）。
+
+> **なぜ「content 全体の完全一致」ではないか。** 本節の初版はそう書いていたが、
+> **PR 2（#22）以降そのままでは成立しない。** PR 2 で `full` / `buckets` が `res.summary` ベースに
+> なった結果、`full` にはバケット行の直前に 2 行のヘッダ
+> （`PAIR Flow Metrics (bucketMs=…) 実取得範囲…` と `Totals: …`）が入る。`compact` は元から
+> `res.summary` ベースでこのヘッダを持たないため、`full` + `nonZeroOnly=true` はこの 2 行ぶん増える。
+> **ヘッダを削って完全一致させるのは誤り**——今度は §3-2 規約 3 に反する。
+
+「全バケットをフィルタしてから `full` のレンダラに渡す」という素朴な実装では
 **欠損の畳み込みが失われて N 行に展開され、一致しない**（旧 compact は区間 1 行）。
 既存の `renderCompactBucketLines`（`tools/get_flow_metrics.ts:65-91`）を再利用すること。
 真のゼロと欠損区間を含むフィクスチャでの一致テストを PR 3 の受け入れ基準にする。
@@ -502,7 +514,7 @@ PR 2 が P3 を、PR 1 が P4 を担当するという意味で、PR 3 の担当
 | `get_candles` | `items` | `view=full` + `format=json` | 不変 | **変わる**: `{ items, meta }` → `Result` 封筒（`ok`/`summary`/`data`/`meta`）。Phase 1 唯一の shape 破壊 |
 | `get_transactions` | `summary`（既定） | `view=full` | 不変 | 不変 |
 | `get_transactions` | `items` | `view=full` + `format=json` | 不変 | 不変（元から `Result` 封筒） |
-| `get_flow_metrics` | `compact` | `view=full` + `nonZeroOnly=true` | 不変（§3-3 の必須要件を満たす実装であること） | **PR 1 で変更済み**: 「非ゼロ ∪ 欠損」フィルタを廃止し全バケット。Phase 1 での追加変更なし |
+| `get_flow_metrics` | `compact` | `view=full` + `nonZeroOnly=true` | **バケット行は不変。ヘッダ 2 行が増える**（`PAIR Flow Metrics (bucketMs=…)` / `Totals:`。PR 2 で `full` に入ったもの）。§3-3 の必須要件を満たす実装であること | **PR 1 で変更済み**: 「非ゼロ ∪ 欠損」フィルタを廃止し全バケット。Phase 1 での追加変更なし |
 | `get_flow_metrics` | `buckets` | `view=detailed` | 不変 | 不変 |
 | `detect_patterns` | — | 変更なし | 不変 | 不変 |
 | `get_volatility_metrics` | — | 変更なし | PR 2 でフッタが**増える** | 不変 |
@@ -519,8 +531,10 @@ PR 2 が P3 を、PR 1 が P4 を担当するという意味で、PR 3 の担当
 - `get_candles` の旧 `view=items` → `view=full` + `format=json` で `structuredContent` が
   `{ items, meta }` から `Result` 封筒に変わる（PR 3）。**旧 shape に依存するクライアントは要修正。**
   `structuredContent.items` → `structuredContent.data.normalized` の読み替えが必要。
-- `content` は既定・旧値経由とも**不変**（§4-4）。LLM 側の応答は Phase 1 では変わらない
-  （`get_volatility_metrics` でフッタが増える分を除く）。
+- `content` は既定・旧値経由とも**減らない**（§4-4）。増える方向の差分は 2 つある——
+  `get_volatility_metrics` の `detailed` / `full` でフッタ 4 行が復活し（PR 2）、
+  `get_flow_metrics` の旧 `compact`（→ `full` + `nonZeroOnly=true`）でヘッダ 2 行が増える（PR 2）。
+  既定の `view` で `content` が変わるツールは無い。
 
 **Phase 2 で影響が出るもの**
 
@@ -589,14 +603,14 @@ PR 2 が P3 を、PR 1 が P4 を担当するという意味で、PR 3 の担当
 ```text
 PR 0  prompts の無効値修正         ── 独立・即時マージ可（設計合意を待たない）   ✅ 完了 #19
 PR 1  structuredContent の切り離し ─┐                                          ✅ 完了 #20
-PR 2  上位集合の保証               ─┴ 同一ファイルを触るため PR 1 → PR 2 の順   ← 次はここ
+PR 2  上位集合の保証               ─┴ 同一ファイルを触るため PR 1 → PR 2 の順   ✅ 完了 #22
         ↓
    【決定ゲート】§6 の 1 / 3 / 4 をレビューで確定（実装セッションでは決められない）
-                 ※ §6-6 は PR 1 で決定済み（§5-4）
+                 ※ §6-6 は PR 1 で決定済み（§5-4）                             ✅ 確定（§7-2）
         ↓
-PR 3  語彙統一 Phase 1（破壊的変更はここに全部集約）
+PR 3  語彙統一 Phase 1（破壊的変更はここに全部集約）                            ✅ 完了
         ↓
-PR 4  呼び出し側の追従 + ドキュメント
+PR 4  呼び出し側の追従 + ドキュメント                                          ← 次はここ
         ↓（1 リリース以上 かつ 3 ヶ月以上あける）
 PR 5  Phase 2（alias 削除）
 PR 6  Phase 3（軽量 summary の opt-in 追加、需要ベース・任意）
@@ -653,16 +667,17 @@ PR 6  Phase 3（軽量 summary の opt-in 追加、需要ベース・任意）
 | **CHANGELOG** | `### Fixed`。既定の `content` が変わるツールは無いこと（増える方向のみ）を明記 |
 | **依存** | PR 1（同一ファイル） |
 
-### 5-4. 決定ゲート（レビューで確定させる）
+### 5-4. 決定ゲート（レビューで確定させる）— **全て確定済み**
 
 PR 3 の着手前に §6 の以下を確定させる。**実装セッションでは決められない**（外部契約の判断のため）。
+**PR 3 着手前のレビューで 1 / 3 / 4 が確定した**（結論は §6 の各項に追記済み）。
 
-| # | 決めること | 未確定だと困ること |
-|---|---|---|
-| §6-1 | `format` を新パラメータにするか、`view` の値（例 `full_json`）のままにするか | PR 3 の入力スキーマ全体が変わる |
-| §6-3 | `get_tickers_jpy` の `view` を対象に含めるか | PR 3 の対象ツール数が変わる |
-| §6-4 | alias の猶予期間（本提案は「最低 1 リリース かつ 3 ヶ月」） | PR 5 の実施時期が決まらない |
-| ~~§6-6~~ | ~~階梯規約をテストで機械的に固定するか~~ | **決定済み → 下記** |
+| # | 決めること | 未確定だと困ること | 結論 |
+|---|---|---|---|
+| §6-1 | `format` を新パラメータにするか、`view` の値（例 `full_json`）のままにするか | PR 3 の入力スキーマ全体が変わる | **新パラメータにする** |
+| §6-3 | `get_tickers_jpy` の `view` を対象に含めるか | PR 3 の対象ツール数が変わる | **対象外**（改名は別 issue） |
+| §6-4 | alias の猶予期間（本提案は「最低 1 リリース かつ 3 ヶ月」） | PR 5 の実施時期が決まらない | **最低 1 リリース かつ 3 ヶ月。`0.2.0` 導入 → `0.4.0` 削除** |
+| ~~§6-6~~ | ~~階梯規約をテストで機械的に固定するか~~ | **決定済み → 下記** | **固定する** |
 
 §6-2（軽量 `summary` を新設するか）は PR 6 の要否であり、PR 3 は待たない。
 
@@ -685,7 +700,7 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 | **読むもの** | 本ドキュメント全体（特に §3 と §4）＋ 決定ゲートの結論 |
 | **触るファイル** | `src/schema/market-data.ts:250, 319, 498-505`、`src/schema/patterns.ts:65`、`src/schema/analysis.ts:24`、`tools/get_candles.ts:882-923`、`tools/get_transactions.ts:320-374`、`tools/get_flow_metrics.ts:677-769`、`tools/detect_macd_cross.ts:609`（description のみ）。加えて PR 1 で追加した `tests/view-structured-content-invariance.test.ts` の `get_candles` ケース（下記⑤で逸脱が解消するため、他ツールと同じ deep-equal 検証に置き換える）。**行番号は PR #20 マージ後の `main` = `26e7a0a` 時点** |
 | **内容** | ① enum を統一語彙に変更（§3-5 の表）② 旧値を deprecated alias として受理し、ハンドラ入口で正規化（§4-4 の写像表）③ `format` / `nonZeroOnly` を追加（§3-3）④ `get_transactions` の default を `full` に（挙動不変）⑤ `get_candles(view=full, format=json)` の `structuredContent` を `Result` 封筒に統一（**唯一の shape 破壊。PR 1 から持ち越した分**）⑥ description を統一文言に。「この view では〇〇が `content` に出ない」「`full` は常に最重量」「`detect_macd_cross` の `view` は `pair` 省略時のみ有効」を明記 |
-| **受け入れ基準** | ① §4-4 の写像表どおり、旧値と新値で `content` / `structuredContent` が一致するテスト（`compact` → `full`+`nonZeroOnly` は**真のゼロと欠損区間を含むフィクスチャ**で `content` 完全一致を検証。§3-3 の必須要件）② 階梯の包含テスト（§6-6 の方式。**文字列長の比較では検証しない**）③ 既定の応答が変わらないこと（既存テストを無改変で通すことを挙動不変の証明とする。`tests/get_candles.test.ts` / `get_transactions.test.ts` / `get_flow_metrics*.test.ts`） |
+| **受け入れ基準** | ① §4-4 の写像表どおり、旧値と新値で `content` / `structuredContent` が一致するテスト（`compact` → `full`+`nonZeroOnly` は**真のゼロと欠損区間を含むフィクスチャ**で**バケット行**の一致を検証し、差分がヘッダ 2 行ちょうどで**旧 `compact` の要素が消えていない**ことも見る。§3-3 の必須要件）② 階梯の包含テスト（§6-6 の方式。**文字列長の比較では検証しない**）③ 既定の応答が変わらないこと（既存テストを無改変で通すことを挙動不変の証明とする。`tests/get_candles.test.ts` / `get_transactions.test.ts` / `get_flow_metrics*.test.ts`） |
 | **やらないこと** | 既定を軽いほうへ倒す（§3-5）。alias の削除（PR 5）。軽量 `summary` の新設（PR 6） |
 | **CHANGELOG** | `### Schema (breaking)`。文面案は §4-6 |
 | **依存** | PR 1、PR 2、決定ゲート |
@@ -734,18 +749,25 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 
 ## 6. レビューで決めたいこと / follow-up
 
-**PR 3（語彙統一 Phase 1）着手前に残る決定ゲートは 1 / 3 / 4 の 3 つ**（§5-4）。実装セッションでは決められない。
+**1 / 3 / 4 は PR 3 着手前のレビューで確定済み**（下記の各項に結論を追記した）。
 2 は PR 6 の要否であり PR 3 は待たない。**5 と 6 は対応済み**（それぞれ PR 0 / #19、PR 1 / #20。§7）。
 
 1. **`format` を新パラメータとして足すか、`view` の値のまま（例 `full_json`）にするか。**
    本提案は前者。後者はパラメータが増えない代わりに、量と形式の直積が enum 値の数だけ増える。
+   → **決定: 新パラメータにする（PR 3 で実装済み）。** `view` を量の 1 軸に保つため。
+   `full_json` 方式は量×形式の直積が enum に載り、`summary_json` が要る時点で破綻する。
 2. **`get_candles` / `get_transactions` に軽量 `summary` を新設するか**（Phase 3）。
    §2-0 の制約により**既定にはしない**ことは確定なので、争点は「opt-in の rung を用意する価値が
    あるか」だけ。やらないなら両ツールは `full` のみになり、量の制御は `limit` に一本化される
    （`view` パラメータ自体を廃止して `format` だけ残す選択肢もある）。
 3. **`get_tickers_jpy` の `view`（`items` / `ranked`）を本統一に含めるか。**
    本提案は対象外（射影の指定であり量ではないため）。含めるなら `includeRanked: boolean` への改名を推奨。
+   → **決定: 対象外。** `ranked` / `items` は射影であり量でも形式でもない。
+   `view` という名前自体が誤用なので、**改名は別 issue として切り出す**（PR 3 では変更しない）。
 4. **alias の猶予期間**（本提案は「最低 1 リリース かつ 3 ヶ月」）。
+   → **決定: 最低 1 リリース かつ 3 ヶ月。** `0.2.0` で導入し **`0.4.0` で削除**を目標とし、
+   この目標バージョンを各 deprecated 値の description に明記する
+   （実装は `DEPRECATED_VIEW_REMOVAL_TARGET`（`src/schema/base.ts`）を単一ソースにした）。
 5. ~~**P6 の即時修正**~~ → **対応済み（PR 0 / #19）。決定不要だった項目。**
    `src/prompts/intermediate.ts:90` の `get_flow_metrics(view=detailed)` は validation error に
    なる無効値だったため、`view=compact` に差し替えた。あわせて再発防止テスト
@@ -793,8 +815,8 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 |---|---|---|---|---|
 | PR 0 | §5-1 | **完了** | [#19](https://github.com/tjackiet/bitbank-lab-mcp/pull/19) | **P6**（`src/prompts/intermediate.ts` の無効な `view=detailed` → `view=compact`） |
 | PR 1 | §5-2 | **完了** | [#20](https://github.com/tjackiet/bitbank-lab-mcp/pull/20) | **P4**（`view` が `structuredContent` の契約を変える）— ただし `get_candles(view=items)` の封筒逸脱は**未解消**。§5-0 分割の原則 2 により PR 3 へ持ち越し |
-| PR 2 | §5-3 | 未着手 | — | P3（重い view が軽い view の上位集合になっていない） |
-| PR 3 | §5-5 | 未着手 | — | P1 / P2 / P5 / P7 ＋ P4 の残り（`get_candles(view=items)` の封筒） |
+| PR 2 | §5-3 | **完了** | [#22](https://github.com/tjackiet/bitbank-lab-mcp/pull/22) | **P3**（重い view が軽い view の上位集合になっていない） |
+| PR 3 | §5-5 | **完了** | — | **P1 / P2 / P5 / P7** ＋ **P4 の残り**（`get_candles(view=items)` の封筒） |
 | PR 4 | §5-6 | 未着手 | — | （呼び出し側追従とドキュメント。指摘の解消ではない） |
 | PR 5 | §5-7 | 未着手 | — | （Phase 2: alias 削除） |
 | PR 6 | §5-8 | 未着手 | — | （Phase 3: 軽量 `summary` の opt-in 追加。§6-2 次第で実施しない） |
@@ -823,11 +845,139 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
   `detect_macd_cross` の `meta.view` が「削られても足されてもいないが値が変わる」フィールドで、
   当時の 2 分類では扱いを決められなかったため。本ドキュメント側にも反映済み。
 
-### 7-2. 完了済み PR のブリーフの扱い
+### 7-2. PR 2（#22）で実際に入ったもの
 
-§5-1 / §5-2（PR 0 / PR 1）のブリーフに書かれた行番号は**着手時点の値のまま**にしてある。
+ブリーフ（§5-3）との差分を残す。PR 3 が前提にできる**現状**は以下:
+
+- `get_flow_metrics` の `buckets` / `full` が `res.summary` ベースになった。最終約定価格・
+  スパイク上位 3 件・4 行フッタが復活する。**バケット行の直前に置く 2 行ヘッダ
+  （`PAIR Flow Metrics (bucketMs=…) 実取得範囲…` / `Totals: …`）は従来どおり残る**——
+  つまり `full` は `compact` に対してこの 2 行ぶん多い。これが §3-3 の
+  「旧 `compact` と完全一致」を成立しなくさせた変更で、PR 3 で要件文言を訂正した（下記 7-3）。
+- `get_volatility_metrics` の `detailed` / `full` で 4 行フッタを維持する。文言は
+  `VOLATILITY_METRICS_FOOTER` を単一ソースにした。
+- `tests/view-content-superset.test.ts` を新設。**文字列長の比較は使わない**（§6-6）。
+  定型要素（`fixedElements`）とレコードキー（`bucketRowKeys`）の集合包含で検証する。
+- 階梯外（`beginner` / `debug`）は対象外という判断をテストで固定した。
+
+### 7-3. PR 3 で実際に入ったもの
+
+ブリーフ（§5-5）との差分を残す。PR 4 以降のセッションが前提にできる**現状**は以下:
+
+- **enum**: `get_flow_metrics` = `summary` / `detailed` / `full` /
+  `compact`(dep) / `buckets`(dep)、`get_transactions` = `full`(既定) / `summary`(dep) / `items`(dep)、
+  `get_candles` = `full`(既定) / `items`(dep)。新語彙を先頭、deprecated を後ろに置いている。
+- **新パラメータ**: `format`（`text` / `json`。`get_candles` / `get_transactions`）、
+  `nonZeroOnly`（boolean。`get_flow_metrics`）。
+- **alias 正規化はハンドラ入口の 1 箇所だけ**（`normalizeFlowMetricsView()` /
+  各ハンドラの `effectiveFormat`）。以降の分岐は新語彙しか見ない。
+  **旧値と新パラメータを同時に渡された場合は写像先が決める値を優先する**
+  （`compact` + `nonZeroOnly=false` のような自己矛盾を作らないため）。
+
+  **PR 5（alias 削除）で触る箇所は正規化だけではない。順序も含めて以下が全部要る**——
+  **enum を先に閉じないまま正規化だけ消すと、旧値が enum を通過して新語彙しか扱わない分岐に
+  到達する**（`get_flow_metrics` なら `compact` が `detailed` でも `full` でもないので
+  全バケット列挙に落ちる、`get_candles` なら `items` が `format=text` 扱いになる）。
+  黙って別の応答が返るので、§4-2 が避けようとしたサイレント破壊そのものになる。
+
+  | # | 対象 | 内容 |
+  |---|---|---|
+  | 1 | `src/schema/market-data.ts` の enum | `get_flow_metrics` から `compact` / `buckets`、`get_transactions` から `summary` / `items`、`get_candles` から `items` を削除（**これを最初に行う**） |
+  | 2 | 同 description | deprecated 行を削除。`deprecatedViewNote()` の呼び出しが残っていないかで機械的に確認できる |
+  | 3 | ハンドラ | `normalizeFlowMetricsView()` の alias 分岐、`get_candles` / `get_transactions` の `view === 'items' ? 'json' : …` を削除 |
+  | 4 | テスト | `tests/view-alias-mapping.test.ts` を「旧値は validation error」の検証に置き換える（サイレントに新値へ倒れないこと）。`tests/view-content-superset.test.ts` の `get_flow_metrics` は旧値（`buckets` / `compact`）で呼んでいるので新語彙へ書き換える |
+  | 5 | プロンプト / ドキュメント | `src/prompts/*` と `docs/tools.md` に旧値が残っていないか（PR 4 で追従済みのはずだが再確認する） |
+
+  **順序 1 → 3 は型で強制される。** 3 ツールのハンドラ引数の `view` / `format` 型は
+  リテラルを手書きせず **Zod スキーマから導出**してある
+  （`NonNullable<z.infer<typeof GetFlowMetricsInputSchema>['view']>` 等）。
+  enum を閉じた瞬間に alias 分岐が全て `TS2367: This comparison appears to be unintentional
+  because the types … have no overlap` になるので、**消し忘れた分岐は typecheck で必ず落ちる**。
+  実際に enum から `compact` / `items` を消して確認済み:
+
+  ```
+  tools/get_flow_metrics.ts(123,6): error TS2367: … 'FlowMetricsView | undefined' and '"compact"' have no overlap.
+  tools/get_candles.ts(908,44):     error TS2367: … '"full" | undefined' and '"items"' have no overlap.
+  tools/get_transactions.ts(372,44): error TS2367: … '"full" | undefined' and '"items"' have no overlap.
+  ```
+
+  （手書きリテラルのままだと enum を消しても typecheck が通り、alias 分岐が黙って生き残る。
+  PR 3 のレビュー中にこの drift を実測して塞いだ。）
+- **`nonZeroOnly=true` の行生成は `renderCompactBucketLines()` を再利用**する。
+  `full` の見出しは旧 `compact` と同一文言（`Non-zero X/Y buckets{gapNote}:`）。
+  `detailed` + `nonZeroOnly=true`（旧 enum では表現できなかった組み合わせ）だけは
+  `Recent N buckets, non-zero M{gapNote}:` という別の見出しにしてある。
+- **`get_candles` の `structuredContent` を `Result` 封筒に統一した**（Phase 1 唯一の shape 破壊）。
+  これで `tests/view-structured-content-invariance.test.ts` の逸脱ケースは無くなり、
+  他ツールと同じ deep-equal に置き換えた。
+- **description の共通文言は `src/schema/base.ts` に集約**した
+  （`VIEW_CONTRACT_NOTE` / `FORMAT_PARAM_NOTE` / `deprecatedViewNote()` /
+  `DEPRECATED_VIEW_REMOVAL_TARGET = '0.4.0'`）。PR 5 の削除時はこの定数を辿れば対象が全て出る。
+- **テスト**: `tests/view-alias-mapping.test.ts` を新設（§4-4 の写像表を固定）。
+  `tests/view-content-superset.test.ts` に `detect_patterns`（`summary` ⊆ `detailed` ⊆ `full`）を
+  ヘルパそのままで横展開し、`patternRowKeys()`（§6-6 の「pattern type + range」）を足した。
+- **ブリーフに無かった変更が 2 件**（いずれも既存テストの前提が本 PR の変更対象そのものだったため）:
+  - `tests/schema/market-data.test.ts` の `GetTransactionsInputSchema` の default 期待値を
+    `summary` → `full` に。挙動不変（§3-5）であることをコメントに残した。
+  - `tests/prompts_contract.test.ts` の「無効値の負例」を `get_flow_metrics(view=detailed)` から
+    `view=verbose` に。P6 の実例だった `detailed` は語彙統一で**有効値になった**ため負例に使えない。
+- **レビュー（CodeRabbit）で入れた修正**:
+  - **`VIEW_CONTRACT_NOTE` から「`structuredContent` は `view` に依存しない」を削除した。**
+    §3-2 規約 4 が禁じているのは*削る*ことだけで、*足す*のは許容されている。
+    `detect_patterns(detailed / debug)` と `detect_macd_cross(detailed)` は実際に足しているため、
+    共有文言のままでは **description が実装に対して嘘**になっていた（呼び出し側が
+    「`resultsDetailed` は `view` を問わず入る」と誤解する）。「フィールドを**削る**ことはない」に
+    改め、足す 2 ツールには各 view の説明で**何を足すか**を明記した。
+  - CHANGELOG の写像表に「不変」の基準（どの時点との比較か）を明記し、
+    `get_candles` の shape 変更は「`format` が `structuredContent` を変える」ではなく
+    「旧 `items` だけの逸脱の解消」であることを 3 通りの表で一意にした。
+  - 上記 PR 5 の作業範囲の表（enum を先に閉じる順序）は、この指摘を受けて追加したもの。
+
+#### 7-3-1. PR 3 で見つけた未解消の指摘（follow-up）
+
+- **`detect_patterns(summary)` にしか出ない情報がある。** `直近30日: N件、直近90日: N件` と
+  `検討パターン: …` は `detailed` / `full` に出ない。§3-2 規約 3（上位集合）に照らすと違反だが、
+  §6-6 が定めた検証方式（定型要素 = `📌` / `⚠️` / `ℹ️` 行 ＋ ヘッダ主要フィールド）の
+  対象外なので新設した階梯包含テストでは落ちない。**PR 3 では直していない**——
+  修正すると既定 view（`detailed`）の `content` が変わり、
+  §5-5 の受け入れ基準③「既定の応答が変わらないこと」に反するため。P3 の残件として別途扱う。
+- **`format=json` のとき warning / 形成中足注記だけ JSON の外に出る。** `get_candles` /
+  `get_transactions` は `content[0]` を素の JSON 配列に保ち、`meta.warning` と形成中足注記を
+  `content[1]` 以降の別ブロックに置く。**LLM から見えなくなっているわけではない**——`content` は
+  配列で、MCP ホストは全 text ブロックをモデルに渡す（`.claude/rules/tools.md` の
+  「`content[0].text` だけが LLM に見える」は `structuredContent` が見えないことの言い換え）。
+  ただし「JSON を要求した呼び出しに対して warning だけ形式が違う」のは一貫性を欠くので、
+  `{ items, warning?, provisional? }` のような封筒に揃える案がある。
+  **本 PR ではやらない**——`content` が旧 `items` と完全一致であることが alias 写像の要件
+  （§4-4）で、既存テストもその構造を固定しているため。**alias を削除する PR 5 と同時に行う**のが適切。
+- **`get_tickers_jpy` の `view`（`items` / `ranked`）は名前が誤用**（射影であって量でも形式でもない）。
+  §6-3 の決定どおり本統一の対象外。**当リポジトリは GitHub Issues が無効化されているため
+  issue を立てられなかった**ので、切り出す内容を下記に残す（Issues を有効化した時点でそのまま起票できる）。
+
+  > **タイトル**: `get_tickers_jpy` の `view`（items / ranked）は名前が誤用 — `includeRanked` 等へ改名する
+  >
+  > `view` は統一後の語彙では**出力量の 1 軸**（`summary` < `detailed` < `full`、`full` は常に最重量）だが、
+  > `get_tickers_jpy` の `items` / `ranked` は**射影**（並び順と `data.ranked` の有無）を指しており
+  > この定義に当てはまらない。text の量は両者ほぼ同じ（§1-6）。同じ `view` という名前で公開されている以上、
+  > 呼び出し側からは「量のつまみ」に見えてしまう。
+  > さらに `view=items` が `structuredContent` から `data.ranked` を落としている点は
+  > §3-2 規約 4（`view` は `structuredContent` からフィールドを削ってはならない）にも反する。
+  >
+  > **提案**: `view` を廃止し `includeRanked: boolean`（既定 `true`）へ改名する。
+  > 並び順・件数は既にある `sortBy` / `limit` が担当している。破壊的変更なので、
+  > 旧 `view` 値の削除（`0.4.0`、PR 5）と足並みを揃えるのが自然。
+  >
+  > **PR 3 のスコープ外にした根拠**: PR 3 は「量の語彙の統一」が対象で、射影の問題は別軸。
+  > 1 つの PR に混ぜるとレビューの観点（互換性の判断 vs. パラメータ設計）が混ざる。
+  >
+  > **参考**: 本ドキュメント §1-6（挙動）/ §3-4（判断）/ §6-3（決定）、実装は
+  > `src/handlers/getTickersJpyHandler.ts`。
+
+### 7-4. 完了済み PR のブリーフの扱い
+
+§5-1 / §5-2 / §5-3 / §5-5（PR 0〜3）のブリーフに書かれた行番号は**着手時点の値のまま**にしてある。
 実施済みの作業指示なので、追随させる意味が無いため。
-**未着手 PR のブリーフ（§5-3 以降）の行番号は `main` の現在値に追随させる**——
+**未着手 PR のブリーフ（§5-6 以降）の行番号は `main` の現在値に追随させる**——
 そちらは仕様書として読まれるため。更新時は基準コミットを併記すること。
 
 同じ理由で、完了済みブリーフ内の**規約への言及も着手時点の表現のまま**にしてある

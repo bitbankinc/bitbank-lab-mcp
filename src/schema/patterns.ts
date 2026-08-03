@@ -1,5 +1,12 @@
 import { z } from 'zod';
-import { BaseMetaSchema, BasePairInputSchema, CandleTypeEnum, FailResultSchema, toolResultSchema } from './base.js';
+import {
+	BaseMetaSchema,
+	BasePairInputSchema,
+	CandleTypeEnum,
+	FailResultSchema,
+	toolResultSchema,
+	VIEW_CONTRACT_NOTE,
+} from './base.js';
 
 // === Pattern Detection ===
 /**
@@ -62,7 +69,17 @@ export const DetectPatternsInputSchema = BasePairInputSchema.extend({
 	swingDepth: z.number().int().min(1).max(10).optional().default(7),
 	tolerancePct: z.number().min(0).max(0.1).optional().default(0.04),
 	minBarsBetweenSwings: z.number().int().min(1).max(30).optional().default(5),
-	view: z.enum(['summary', 'detailed', 'full', 'debug']).optional().default('detailed'),
+	view: z
+		.enum(['summary', 'detailed', 'full', 'debug'])
+		.optional()
+		.default('detailed')
+		.describe(
+			`${VIEW_CONTRACT_NOTE}\n` +
+				'- summary: ヘッダ ＋ 分類内訳 ＋ 直近30日/90日件数 ＋ 期間 ＋ 検討パターン。個々のパターンの詳細は content に出ない。\n' +
+				'- detailed（既定）: 上位 5 件の詳細。6 件目以降は content に出ない。structuredContent に usage_example を**足す**。\n' +
+				'- full: 全件の詳細（double_top / double_bottom では山谷 3 点の pivot 行も出る）。本ツールの最重量。\n' +
+				'- debug（**階梯外**）: swings / candidates のみ。**検出パターンは content に出ない**——出力を置換する view なので full の上位集合ではない。structuredContent に data.candidates を**足す**。',
+		),
 	// New: relevance filter for "current-involved" long-term patterns
 	requireCurrentInPattern: z.boolean().optional().default(false),
 	currentRelevanceDays: z.number().int().min(1).max(365).optional().default(7),

@@ -1,3 +1,4 @@
+import type { z } from 'zod';
 import { dayjs, toDisplayTime, toIsoTime, toIsoWithTz } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
@@ -88,6 +89,62 @@ export function renderCompactBucketLines(
 		i++;
 	}
 	return { lines, shown, gapBuckets };
+}
+
+/**
+ * `GetFlowMetricsInputSchema.view` の受理値（新語彙 + deprecated alias）。
+ *
+ * **リテラルを手書きせず Zod スキーマから導出する。** 手書きにすると、PR 5 で enum から
+ * alias（`compact` / `buckets`）を消しても型は変わらず、`normalizeFlowMetricsView` の
+ * alias 分岐が**コンパイルを通ったまま生き残る**。導出しておけば enum を閉じた瞬間に
+ * 「型に重なりが無い比較」として該当分岐が全て型エラーになり、消し忘れを機械的に潰せる
+ * （§7-3 の PR 5 作業表が「enum を先に閉じる」と書いているのはこの順序を使うため）。
+ */
+export type FlowMetricsView = NonNullable<z.infer<typeof GetFlowMetricsInputSchema>['view']>;
+
+/** alias 正規化後の view（量の階梯だけが残る）。 */
+export type FlowMetricsCanonicalView = 'summary' | 'detailed' | 'full';
+
+/**
+ * deprecated alias（`compact` / `buckets`）を新語彙へ正規化する（§4-4 の写像表）。
+ *
+ * - `compact` → `view=full` + `nonZeroOnly=true`（絞り込みは量の軸ではないので別パラメータへ切り出した）
+ * - `buckets` → `view=detailed`（「直近 N 件」は階梯の中段そのもの）
+ *
+ * alias は削除目標 0.4.0 まで受理し続ける。**正規化はハンドラ入口の 1 箇所だけで行い**、
+ * 以降の分岐は新語彙しか見ない——alias を各分岐に散らすと削除時に取りこぼす。
+ * 旧値と一緒に `nonZeroOnly` を明示された場合は、写像が決める値を優先する
+ * （`compact` は定義上「非ゼロのみ」であり、`compact` + `nonZeroOnly=false` は自己矛盾のため）。
+ */
+export function normalizeFlowMetricsView(
+	view: FlowMetricsView | undefined,
+	nonZeroOnly: boolean | undefined,
+): { view: FlowMetricsCanonicalView; nonZeroOnly: boolean } {
+	if (view === 'compact') return { view: 'full', nonZeroOnly: true };
+	if (view === 'buckets') return { view: 'detailed', nonZeroOnly: false };
+	return { view: view ?? 'summary', nonZeroOnly: nonZeroOnly === true };
+}
+
+/**
+ * `nonZeroOnly=true` のバケット行ブロック（見出し + 行）を組み立てる。
+ *
+ * **必ず `renderCompactBucketLines` を通す。** 「非ゼロだけにフィルタしてから 1 行ずつ出す」
+ * 素朴な実装では欠損の連続区間が区間 1 行に畳まれず N 行に展開され、旧 `compact` と一致しない。
+ * `full` の見出しは旧 `compact` と同一文言（`Non-zero X/Y buckets…`）にして、
+ * 旧値経由のバケット行が 1 バイトも変わらないようにしている（§4-4）。
+ */
+function renderNonZeroSection(
+	buckets: FlowMetricsBucket[],
+	fmt: (b: FlowMetricsBucket, index: number) => string,
+	view: FlowMetricsCanonicalView,
+): string {
+	const { lines, shown, gapBuckets } = renderCompactBucketLines(buckets, fmt);
+	const gapNote = gapBuckets > 0 ? ` (+${gapBuckets} no-data buckets shown as ranges)` : '';
+	const heading =
+		view === 'detailed'
+			? `Recent ${buckets.length} buckets, non-zero ${shown}${gapNote}`
+			: `Non-zero ${shown}/${buckets.length} buckets${gapNote}`;
+	return `${heading}:\n${lines.join('\n')}`;
 }
 
 export interface BuildFlowMetricsTextInput {
@@ -680,6 +737,7 @@ export const toolDef: ToolDefinition = {
 		date,
 		bucketMs,
 		view,
+		nonZeroOnly,
 		bucketsN,
 		tz,
 		hours,
@@ -690,7 +748,8 @@ export const toolDef: ToolDefinition = {
 		limit?: number;
 		date?: string;
 		bucketMs?: number;
-		view?: 'summary' | 'compact' | 'buckets' | 'full';
+		view?: FlowMetricsView;
+		nonZeroOnly?: boolean;
 		bucketsN?: number;
 		tz?: string;
 		hours?: number;
@@ -708,7 +767,7 @@ export const toolDef: ToolDefinition = {
 		);
 		if (!res?.ok) return res;
 
-		const effectiveView = view ?? 'summary';
+		const { view: effectiveView, nonZeroOnly: effectiveNonZeroOnly } = normalizeFlowMetricsView(view, nonZeroOnly);
 		const buckets = (res?.data?.series?.buckets ?? []) as FlowMetricsBucket[];
 
 		// view は content だけを変え、structuredContent は変えない
@@ -722,6 +781,9 @@ export const toolDef: ToolDefinition = {
 		// CI で落ちる（getFlowMetrics 本体が既に parse 済みなので、ここでの parse は冪等）。
 		const structuredContent = GetFlowMetricsOutputSchema.parse(res) as Record<string, unknown>;
 
+		// nonZeroOnly は view=summary では no-op（バケット行が無いのでフィルタ対象が存在しない）。
+		// エラーにはしない——量（view）と絞り込み（nonZeroOnly）は直交する軸で、
+		// 「絞り込みの結果として何も出ない」は矛盾ではないため（§3-3）。
 		if (effectiveView === 'summary') {
 			return { content: [{ type: 'text', text: res.summary }], structuredContent };
 		}
@@ -732,17 +794,7 @@ export const toolDef: ToolDefinition = {
 				? `${b.displayTime || b.isoTime}  データなし（欠損区間）`
 				: `${b.displayTime || b.isoTime}  buy=${b.buyVolume} sell=${b.sellVolume} total=${b.totalVolume} cvd=${b.cvd}${b.spike ? ` spike=${b.spike}` : ''}`;
 
-		// view=compact: content のバケット行だけを非ゼロに絞る。ただし欠損バケットは落とさない
-		// （落とすと欠損区間が応答から消え、「閑散だった」と誤読される）。
-		// structuredContent は全バケットのまま（上記のとおり view で削らない）。
-		if (effectiveView === 'compact') {
-			const { lines, shown, gapBuckets } = renderCompactBucketLines(buckets, fmt);
-			const gapNote = gapBuckets > 0 ? ` (+${gapBuckets} no-data buckets shown as ranges)` : '';
-			const text = `${res.summary}\n\nNon-zero ${shown}/${buckets.length} buckets${gapNote}:\n${lines.join('\n')}`;
-			return { content: [{ type: 'text', text }], structuredContent };
-		}
-
-		// view=buckets / full も res.summary をベースにする（compact と同じ形）。
+		// view=detailed / full は res.summary をベースにする（旧 compact と同じ形）。
 		// 旧実装は res.summary を捨てて短いヘッダを組み直していたため、最終約定価格・スパイク上位
 		// 3 件・4 行フッタ（含まれるもの / 含まれないもの / 補完ツール / 加工契約）が上位 view でだけ
 		// 消えていた（docs/internal/view-vocabulary-unification.md §1-3 の P3）。
@@ -764,13 +816,13 @@ export const toolDef: ToolDefinition = {
 			`${String(pair).toUpperCase()} Flow Metrics (bucketMs=${res?.data?.params?.bucketMs ?? bucketMs})${rangeStr}\n` +
 			`Totals: trades=${agg.totalTrades} buyVol=${agg.buyVolume} sellVol=${agg.sellVolume} net=${agg.netVolume} buy%=${(agg.aggressorRatio * 100 || 0).toFixed(1)} CVD=${agg.finalCvd}`;
 
-		if (effectiveView === 'buckets') {
-			const n = Number(bucketsN ?? 10);
-			const last = buckets.slice(-n);
-			const text = `${res.summary}\n\n${bucketHeader}\n\nRecent ${last.length} buckets:\n${last.map(fmt).join('\n')}`;
-			return { content: [{ type: 'text', text }], structuredContent };
-		}
-		const text = `${res.summary}\n\n${bucketHeader}\n\nAll buckets:\n${buckets.map(fmt).join('\n')}`;
+		// view が「どのバケットを候補にするか」（量）、nonZeroOnly が「候補をどう絞るか」を決める。
+		// 2 軸を分けたので detailed + nonZeroOnly も表現できる（旧 enum では表現できなかった組み合わせ）。
+		const shownBuckets = effectiveView === 'detailed' ? buckets.slice(-Number(bucketsN ?? 10)) : buckets;
+		const body = effectiveNonZeroOnly
+			? renderNonZeroSection(shownBuckets, fmt, effectiveView)
+			: `${effectiveView === 'detailed' ? `Recent ${shownBuckets.length} buckets` : 'All buckets'}:\n${shownBuckets.map(fmt).join('\n')}`;
+		const text = `${res.summary}\n\n${bucketHeader}\n\n${body}`;
 		return { content: [{ type: 'text', text }], structuredContent };
 	},
 };

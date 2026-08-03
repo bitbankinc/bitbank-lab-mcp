@@ -152,18 +152,19 @@ describe('prompts の view 値がツールの Zod enum と一致する', () => {
 			{
 				name: 'テスト用',
 				description: 'テスト用',
-				// get_flow_metrics の enum は summary / compact / buckets / full なので detailed は無効
+				// get_flow_metrics の enum は summary / detailed / full / compact / buckets なので verbose は無効。
+				// （P6 の実例だった view=detailed は、語彙統一で **有効値になった** ので負例に使えない）
 				messages: [
 					{
 						role: 'user',
-						content: [{ type: 'text', text: 'get_flow_metrics(pair=btc_jpy, view=detailed)' }],
+						content: [{ type: 'text', text: 'get_flow_metrics(pair=btc_jpy, view=verbose)' }],
 					},
 				],
 			},
 		];
 		const errors = findInvalidViewUsages(collectViewUsages(invalid));
 		expect(errors).toHaveLength(1);
-		expect(errors[0]).toContain('get_flow_metrics(view=detailed) は無効');
+		expect(errors[0]).toContain('get_flow_metrics(view=verbose) は無効');
 	});
 
 	it('未登録ツール・view 非対応ツールへの view 指定も検出される', () => {

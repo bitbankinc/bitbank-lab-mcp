@@ -121,6 +121,51 @@ export const TX_RANGE_UNTIL_SCHEMA = z
 			'since 無しの until 単独指定は user エラー。未来時刻も user エラー（現在時刻までを対象にするなら until を省略する）',
 	);
 
+// === view の共通語彙（docs/internal/view-vocabulary-unification.md §3-2 / §3-3） ===
+
+/**
+ * 全ツール共通の `view` 契約。各ツールの `view` description の先頭に置く。
+ *
+ * `content[0].text` が LLM への唯一のチャネル（`.claude/rules/tools.md`）なので、
+ * 軽い view は「短い表示」ではなく「LLM が明細を受け取らない」を意味する。
+ * そのため各 view には「この view では〇〇が content に出ない」を必ず併記する（§3-2 規約 5）。
+ *
+ * **`structuredContent` について「view に依存しない」とは書かない。** §3-2 規約 4 が禁じているのは
+ * *削る*ことだけで、**その view でしか計算しないデータを*足す*のは許容**されている
+ * （`detect_patterns(detailed)` の `usage_example` / `(debug)` の `data.candidates`、
+ * `detect_macd_cross(detailed)` の `data.resultsDetailed` / `data.screenedDetailed`）。
+ * 「依存しない」と書くと、これらのツールで description が実装に対して嘘になる——
+ * 呼び出し側が「`resultsDetailed` は `view` を問わず入る」と誤解する。
+ * 足すツールは各 view の説明に**何を足すか**を明記すること。
+ */
+export const VIEW_CONTRACT_NOTE =
+	'view は content の量を制御します。量は summary < detailed < full の順で、full は常にそのツールの最重量です。' +
+	'view が structuredContent から**フィールドを削ることはありません**' +
+	'（その view でしか計算しないデータを足すツールはあり、その場合は当該 view の説明に明記しています）。' +
+	'content[0].text は LLM への唯一のチャネルなので、軽い view は「短い表示」ではなく「LLM が明細を受け取らない」を意味します。';
+
+/**
+ * deprecated な `view` 値を削除する目標バージョン（§6-4 の決定: 最低 1 リリース かつ 3 ヶ月）。
+ * 0.2.0 で alias として導入し、0.4.0 で削除する。
+ */
+export const DEPRECATED_VIEW_REMOVAL_TARGET = '0.4.0';
+
+/** deprecated な `view` 値の description に付ける定型文（写像先と削除目標バージョンを明示する）。 */
+export function deprecatedViewNote(replacement: string): string {
+	return `非推奨。${replacement} を使うこと。${DEPRECATED_VIEW_REMOVAL_TARGET} で削除予定`;
+}
+
+/**
+ * `format` パラメータの共通 description（§3-3）。
+ *
+ * `format=json` は**トークン削減オプションではない**。同じデータを pretty JSON にすると
+ * 散文の圧縮形式より必ず増える（実測で約 7.4 倍。§2-0）。
+ */
+export const FORMAT_PARAM_NOTE =
+	'content の形式。text（既定）: 散文 / json: pretty JSON。' +
+	'json は機械可読性のために**トークンを払う**オプションで、同じデータでも text より必ず多くなります（削減オプションではありません）。' +
+	'量は format ではなく view と limit が決めます。';
+
 /** 全ツール共通のエラー分岐 */
 export const FailResultSchema = z.object({
 	ok: z.literal(false),
