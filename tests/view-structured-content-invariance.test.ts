@@ -155,11 +155,14 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 		vi.restoreAllMocks();
 	});
 
-	it('get_flow_metrics: summary / compact / buckets / full で同一', async () => {
-		const entries = await collectByView(['summary', 'compact', 'buckets', 'full'] as const, async (view) => {
-			mockTransactions();
-			return flowMetricsTool.handler({ pair: 'btc_jpy', limit: 3, date: '20240101', bucketMs: 60_000, view });
-		});
+	it('get_flow_metrics: summary / detailed / full（+ deprecated alias）で同一', async () => {
+		const entries = await collectByView(
+			['summary', 'detailed', 'full', 'compact', 'buckets'] as const,
+			async (view) => {
+				mockTransactions();
+				return flowMetricsTool.handler({ pair: 'btc_jpy', limit: 3, date: '20240101', bucketMs: 60_000, view });
+			},
+		);
 		expectSameStructuredContent(entries);
 		// 回帰の本体: 旧実装は summary で series.buckets をキーごと削除していた。
 		for (const [view, structured] of entries) {
@@ -169,8 +172,8 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 		}
 	});
 
-	it('get_transactions: summary / items で同一', async () => {
-		const entries = await collectByView(['summary', 'items'] as const, async (view) => {
+	it('get_transactions: full（+ deprecated alias の summary / items）で同一', async () => {
+		const entries = await collectByView(['full', 'summary', 'items'] as const, async (view) => {
 			mockTransactions();
 			return transactionsTool.handler({ pair: 'btc_jpy', limit: 3, date: '20240101', view });
 		});
@@ -196,28 +199,44 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 	});
 
 	/**
-	 * get_candles(view=items) は structuredContent を `{ items, meta }` に差し替え、
-	 * Result 封筒（ok / summary / data.{raw,keyPoints,volumeStats}）を落とす既知の逸脱。
+	 * get_candles は語彙統一前は唯一の逸脱だった——`view=items` が structuredContent を
+	 * `{ items, meta }` に差し替え、Result 封筒（ok / summary / data.{raw,keyPoints,volumeStats}）を
+	 * 落としていた。`items` を `view=full` + `format=json` へ置き換えるのと同時に直したので
+	 * （外部クライアントが受ける破壊を 1 回に集約するため。§5-0 分割の原則 2）、
+	 * 他ツールと同じ deep-equal で検証する。
 	 *
-	 * **本 PR では直さない**（docs/internal/view-vocabulary-unification.md §5-0 分割の原則 2）。
-	 * items は PR 3 で `view=full` + `format=json` に置き換わるため、そこで一緒に直せば
-	 * 外部クライアントが受ける破壊は 1 回で済む。ここで直すと 2 回になる。
-	 *
-	 * それまでの間、逸脱の形をそのまま固定しておく。PR 3 でこのテストは
-	 * expectSameStructuredContent（他ツールと同じ形）に置き換わる。
+	 * `format` は content の**形式**を選ぶパラメータであって structuredContent の契約を
+	 * 変えるパラメータではない（§3-2 規約 4 は view についての規約だが、根拠——LLM は
+	 * structuredContent を参照しないので削ってもトークンは減らない——は format にもそのまま当たる）。
+	 * したがって view × format の全組み合わせで同一であることを要求する。
 	 */
-	it('get_candles: view=items は既知の逸脱として封筒を落とす（PR 3 で解消予定）', async () => {
-		const entries = await collectByView(['full', 'items'] as const, async (view) => {
+	it('get_candles: view × format（deprecated alias の items を含む）で同一', async () => {
+		const variants = {
+			'full/text': { view: 'full', format: 'text' },
+			'full/json': { view: 'full', format: 'json' },
+			'items(alias)': { view: 'items' },
+			// alias は format 指定より優先される（get_candles の effectiveFormat）。
+			// content の形は変わるが structuredContent は同一、が本テストの主張。
+			'items(alias)/text': { view: 'items', format: 'text' },
+			'items(alias)/json': { view: 'items', format: 'json' },
+		} as const;
+		const entries = await collectByView(Object.keys(variants) as Array<keyof typeof variants>, async (label) => {
 			mockCandles(10);
-			return candlesTool.handler({ pair: 'btc_jpy', type: '1day', date: '2025', limit: 10, view });
+			return candlesTool.handler({ pair: 'btc_jpy', type: '1day', date: '2025', limit: 10, ...variants[label] });
 		});
-		const [[, full], [, items]] = entries;
+		expectSameStructuredContent(entries);
 
-		expect(Object.keys(full).sort()).toEqual(['data', 'meta', 'ok', 'summary']);
-		// 既知の逸脱: 封筒ごと差し替わり、data.normalized が items へ移動している
-		expect(Object.keys(items).sort()).toEqual(['items', 'meta']);
-		expect(items.items).toEqual((full.data as { normalized: unknown }).normalized);
-		expect(items.meta).toEqual(full.meta);
+		// 回帰の本体: 旧 items は封筒ごと差し替わり `{ items, meta }` になっていた。
+		for (const [label, structured] of entries) {
+			expect(Object.keys(structured).sort(), `${label} の structuredContent が Result 封筒でない`).toEqual([
+				'data',
+				'meta',
+				'ok',
+				'summary',
+			]);
+			// 旧 structuredContent.items の読み替え先
+			expect(Array.isArray((structured.data as { normalized: unknown }).normalized)).toBe(true);
+		}
 	});
 
 	// ── 明示された例外: 階梯外 view が「足す」のは許容（§3-2 規約 4） ──

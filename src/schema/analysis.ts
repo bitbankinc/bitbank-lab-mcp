@@ -6,6 +6,7 @@ import {
 	FailResultSchema,
 	TrendLabelEnum,
 	toolResultSchema,
+	VIEW_CONTRACT_NOTE,
 } from './base.js';
 
 // === Volatility Metrics ===
@@ -18,7 +19,18 @@ export const GetVolMetricsInputSchema = z.object({
 	annualize: z.boolean().optional().default(true),
 	tz: z.string().optional().default('Asia/Tokyo'),
 	cacheTtlMs: z.number().int().optional().default(60_000),
-	view: z.enum(['summary', 'detailed', 'full', 'beginner']).optional().default('summary'),
+	view: z
+		.enum(['summary', 'detailed', 'full', 'beginner'])
+		.optional()
+		.default('summary')
+		.describe(
+			`${VIEW_CONTRACT_NOTE}\n` +
+				'本ツールの結論は aggregates / rolling（スカラー値）なので、**full でも系列そのものは content に出ない**（系列が必要なら get_candles を使う）。\n' +
+				'- summary（既定）: 集計 ＋ ローリング分析 ＋ 4 行フッタ。窓ごとの内訳・Assessment は content に出ない。\n' +
+				'- detailed: summary ＋ 【Volatility Metrics】/【Rolling Trends】/【Assessment】の内訳。系列の統計値は content に出ない。\n' +
+				'- full: detailed ＋ 【Series】（件数 / 期間 / Close レンジ / リターンの平均・標準偏差）。本ツールの最重量。\n' +
+				'- beginner（**階梯外**）: 平易な日本語 4 行。**専門用語・指標名・フッタは content に出ない**——読者向けレジスタを変える view であり、量の階梯には乗らない。',
+		),
 });
 
 export const GetVolMetricsDataSchemaOut = z.object({

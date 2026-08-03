@@ -229,6 +229,7 @@ export const toolDef: ToolDefinition = {
 		minPrice,
 		maxPrice,
 		view,
+		format,
 	}: {
 		pair?: string;
 		limit?: number;
@@ -237,7 +238,10 @@ export const toolDef: ToolDefinition = {
 		maxAmount?: number;
 		minPrice?: number;
 		maxPrice?: number;
-		view?: 'summary' | 'items';
+		// リテラルを手書きせず Zod スキーマから導出する。手書きにすると alias 削除時に enum から
+		// alias（`summary` / `items`）を消しても型が変わらず、下の alias 分岐が黙って生き残る。
+		view?: z.infer<typeof GetTransactionsInputSchema>['view'];
+		format?: z.infer<typeof GetTransactionsInputSchema>['format'];
 	}) => {
 		const res = await getTransactions(pair, limit, date);
 		if (!res?.ok) return res;
@@ -267,7 +271,13 @@ export const toolDef: ToolDefinition = {
 		const summary = hasFilter
 			? `${formatPair(pair ?? 'btc_jpy')} フィルタ後 ${items.length}件 (buy=${fBuys} sell=${fSells})${warningBlock}${filteredBody}${TX_SCOPE_FOOTER}`
 			: res.summary;
-		if (view === 'items') {
+		// deprecated alias を新語彙へ正規化する（§4-4）。正規化はここ 1 箇所だけ。
+		//  - `summary` → `full`: 旧既定値だが実体は全件列挙で、`full` と挙動は完全に同じ。
+		//    名前だけを階梯（summary < detailed < full）に合わせた。集計のみの軽量 summary は
+		//    「同じ語の意味を差し替えない」ため alias 削除後にのみ再導入する（§4-2）。
+		//  - `items` → `full` + `format=json`: 量ではなく形式の指定なので別パラメータへ切り出した。
+		const effectiveFormat: 'text' | 'json' = view === 'items' ? 'json' : (format ?? 'text');
+		if (effectiveFormat === 'json') {
 			const text = JSON.stringify(items, null, 2);
 			const content: Array<{ type: 'text'; text: string }> = [{ type: 'text', text }];
 			if (res.meta?.warning) {

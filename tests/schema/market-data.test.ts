@@ -100,7 +100,11 @@ describe('GetTransactionsInputSchema', () => {
 		const result = GetTransactionsInputSchema.parse({});
 		expect(result.pair).toBe('btc_jpy');
 		expect(result.limit).toBe(100);
-		expect(result.view).toBe('summary');
+		// 語彙統一で既定を summary → full に改名した。**挙動は完全に不変**——旧 summary は
+		// 実体が全件列挙で full と同じであり、名前だけを階梯（summary < detailed < full）に
+		// 合わせた（docs/internal/view-vocabulary-unification.md §3-5）。
+		expect(result.view).toBe('full');
+		expect(result.format).toBe('text');
 	});
 
 	it('date フォーマットを検証する', () => {

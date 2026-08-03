@@ -26,6 +26,22 @@
 - チャートファイル名生成（`generateBacktestChartFilename`）に、パス区切り・ドット等を除去する防御的サニタイズを追加。ファイル名の安全性を上流の pair バリデーションに依存させないための多層防御（#15）。
 
 ### Schema (breaking)
+- **`view` の語彙をツール間で統一した。** `view` は**出力量の 1 軸**のみを表し、`summary` < `detailed` < `full` の順序で、**`full` は常にそのツールの最重量**を意味する。従来は同じ語が別の重さを指していた（`get_candles` の `full` は既定の通常表示、`get_flow_metrics` の `full` は全バケット列挙、`get_transactions` の `summary` は全件列挙）。LLM が `view` からトークン量を見積れず、`src/prompts/intermediate.ts` は `get_flow_metrics` に存在しない `view=detailed` を指示していた。
+- **旧値は deprecated alias として受理する**（`get_candles.items` / `get_transactions.summary` / `get_transactions.items` / `get_flow_metrics.compact` / `get_flow_metrics.buckets`）。写像は次のとおりで、**旧値経由の `content` はバケット行・明細とも変わらない**。削除目標バージョンは `DEPRECATED_VIEW_REMOVAL_TARGET`（`src/schema/base.ts`）を単一ソースにした。
+
+  | ツール | 旧値 | 新しい指定 | `content` | `structuredContent` |
+  |---|---|---|---|---|
+  | `get_candles` | `items` | `view=full` + `format=json` | 不変 | **変わる**（下記） |
+  | `get_transactions` | `summary`（旧既定） | `view=full` | 不変 | 不変 |
+  | `get_transactions` | `items` | `view=full` + `format=json` | 不変 | 不変 |
+  | `get_flow_metrics` | `compact` | `view=full` + `nonZeroOnly=true` | **バケット行は不変。ヘッダ 2 行が増える** | 不変 |
+  | `get_flow_metrics` | `buckets` | `view=detailed` | 不変 | 不変 |
+
+- **量以外の軸を別パラメータへ切り出した**: `format`（`text` / `json`。`get_candles` / `get_transactions`）、`nonZeroOnly`（boolean。`get_flow_metrics`）。`debug`（`detect_patterns`）と `beginner`（`get_volatility_metrics`）は出力を**置換**する**階梯外の値**として `view` に残す。`get_tickers_jpy` の `view`（`items` / `ranked`）は量でも形式でもなく**射影**なので本統一の対象外（改名は別途）。
+- **`get_candles(view=items)` の `structuredContent` shape が変わる。** 旧 `items` は `{ items, meta }` を返し `ok` / `summary` / `data.{raw,keyPoints,volumeStats}` を落としていたが、`view=full` + `format=json` では他ツールと同じ `Result` 封筒を返す。**旧 shape に依存するクライアントは `structuredContent.items` → `structuredContent.data.normalized` に読み替えが必要。**（`get_transactions(view=items)` は元から封筒を保持しており不変）
+- **`get_transactions` の default が `summary` → `full` に変わる（挙動は不変）。** 従来の `summary` は「返却した全約定を 1 行 1 件で列挙」であり、実体は `full` だった。集計のみの軽量 `summary` は将来別リリースで **opt-in 専用**として新設予定で、**同じ語の意味を差し替えないため alias 期間の削除後にのみ再導入する**。
+- **生データ系ツール（`get_candles` / `get_transactions`）の既定は今後も全件列挙のまま。** `content[0].text` が LLM への唯一のチャネルであり（`.claude/rules/tools.md`）、既定を軽くすることは「短くする」ではなく「LLM が明細を受け取らなくなる」を意味するため。同じ理由で `format=json` は**トークン削減オプションではない**（同じデータでも pretty JSON は散文の圧縮形式より必ず増える）。この位置づけを各 description に明記した。
+- **既定の応答内容が変わるツールは無い。** 各ツールのハンドラ引数の `view` / `format` 型はリテラルを手書きせず Zod スキーマから導出してあるため、alias を enum から消した時点で残った alias 分岐は `TS2367` で必ず typecheck が落ちる（消し忘れを機械的に潰せる）。
 - `GetOrderbookDataSchemaOut` を `{ raw, normalized }` 固定の object から `z.discriminatedUnion('mode', [Summary, Pressure, Statistics, Raw])` に変更。実装 (`tools/get_orderbook.ts`) は元々 mode 別に完全に異なる shape の `data` を返していたが、スキーマ側が追従していなかったため `z.infer<typeof GetOrderbookDataSchemaOut>` を消費する外部クライアントには契約不一致だった。これに合わせて `data.mode` を必須の discriminator として明示。`get_orderbook` 末尾で `GetOrderbookOutputSchema.parse()` 経由のリターンに切り替え、スキーマ drift が CI で検出されるようにした。
 - 併せて `GetOrderbookMetaSchemaOut` の `count`（実装で一度もセットされていなかった）を削除し、実装で実際に常設している `mode` を必須フィールドに追加。
 - `get_orderbook` statistics mode の `ranges[].ratio` を `number | null` に変更（旧: `number`、その後一時的に `number | Infinity`）。`askVolume === 0 && bidVolume > 0` のとき `Infinity` を返していたが `JSON.stringify(Infinity)` が `null` になり MCP wire format と乖離するため、実装側 (`tools/get_orderbook.ts` `buildStatistics`) で `null` に正規化。「買い優勢 / strong / 売り板=0 で算出不能」の意味は `interpretation` / `summary.overall` / `summary.strength` / `content` テキストで保持する。schema は `z.number().nullable()`。
