@@ -65,7 +65,10 @@ const summary = prependWarnings(baseSummary, upstream, { separator: '\n' });
       （window / 期間 / warning / warnings）を落とさない。
 - [ ] `content[0].text` の先頭に warning 行が含まれているか目視確認。
 - [ ] `JSON.stringify(data)` を含める場合は **JSON より前** に warning 行を出す。
-- [ ] 加工ツールの場合、`format=json` 等の代替ビューでも warning 行が消えないようにする。
+- [ ] 加工ツールの場合、**そのツールがサポートする代替出力**（`view` の各値、`format` を
+      持つなら `format=json` 等）でも warning 行が消えないようにする。
+      `format` は現状 `get_candles` / `get_transactions` にしか無いので、加工ツールの
+      チェック項目としては「そのツールが実際に持つ出力の切り替え軸」に読み替えること。
 
 ## `view` の規約（新規ツール・既存ツールとも）
 
