@@ -13,7 +13,7 @@ const OHAYO_TEXT = `今朝の BTC/JPY を「なんとなく把握」する軽量
 
 【ツール（この 3 つだけ。追加呼び出し禁止）】
 1. get_ticker(pair="btc_jpy") — 現在値(last)・24h 始値(open)・24h 高安・取得時刻。前日比(24h) はこの 24h変動 (last−open)/open を使う
-2. get_candles(pair="btc_jpy", type="1hour", limit=24, view="items") — 直近 24h（24 本）の close。ミニスパークライン用（view="items" で 24 本すべて取得）
+2. get_candles(pair="btc_jpy", type="1hour", limit=24, view="full") — 直近 24h（24 本）の close。ミニスパークライン用（view="full" は既定値で、サマリ本文が 24 本すべての OHLCV を 1 行 1 本で含む）
 3. analyze_market_signal(pair="btc_jpy") — 地合い判定。総合スコア（-100〜+100）と bullish/neutral/bearish を 1 行に要約する用途のみ（数値テーブルは展開しない）
 
 【前日比（24h・データ由来。状態保存はしない）】

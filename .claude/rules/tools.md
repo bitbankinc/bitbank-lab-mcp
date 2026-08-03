@@ -65,7 +65,92 @@ const summary = prependWarnings(baseSummary, upstream, { separator: '\n' });
       （window / 期間 / warning / warnings）を落とさない。
 - [ ] `content[0].text` の先頭に warning 行が含まれているか目視確認。
 - [ ] `JSON.stringify(data)` を含める場合は **JSON より前** に warning 行を出す。
-- [ ] 加工ツールの場合、`view=items` 等の代替ビューでも warning 行が消えないようにする。
+- [ ] 加工ツールの場合、**そのツールがサポートする代替出力**（`view` の各値、`format` を
+      持つなら `format=json` 等）でも warning 行が消えないようにする。
+      `format` は現状 `get_candles` / `get_transactions` にしか無いので、加工ツールの
+      チェック項目としては「そのツールが実際に持つ出力の切り替え軸」に読み替えること。
+
+## `view` の規約（新規ツール・既存ツールとも）
+
+`view` は**ツールを跨いで語彙を統一してある**（`docs/internal/view-vocabulary-unification.md` §3-2 / §3-3）。
+`view` を持つツールを追加・修正するときは以下を守る。description の共通文言は
+**`src/schema/base.ts`**（`VIEW_CONTRACT_NOTE` / `FORMAT_PARAM_NOTE` / `deprecatedViewNote()`）を使い、
+ツールごとに書き起こさない。
+
+### 1. `view` は「量」の 1 軸。`full` は常に最重量
+
+- 階梯は `summary` < `detailed` < `full` で、**`full` はそのツールの最重量**。例外を作らない。
+- 中間の段は省略してよい（`get_candles` は `full` のみ）。**順序を飛び越えた意味づけは禁止。**
+- 「`full` = 全件列挙」は**主対象がレコード列のツールに限る**。主対象がスカラー値のツール
+  （`get_volatility_metrics`）では `full` が全件列挙にならないが、最重量である限り規約違反ではない。
+- 同じ語の意味はツールを跨いで一定にする。`summary` を「全件列挙」の意味で使わない。
+- **`get_tickers_jpy` の `view`（`ranked` / `items`）は本語彙の対象外**。量ではなく**射影**
+  （並び順と `data.ranked` の有無）を指しており、`view` という名前自体が誤用のため改名待ち。
+  **`summary` / `full` に機械的に移し替えない**——既存の契約が壊れる。改名するなら
+  `includeRanked: boolean` 等へ（`docs/internal/view-vocabulary-unification.md` §6-3 / §7-3-1）。
+
+### 2. `view` は `structuredContent` からフィールドを削らない
+
+削っても LLM のトークンは 1 つも減らない（LLM は `structuredContent` を見ていない）ので、
+**削る動機がそもそも無い。** 削るのは非 LLM クライアントの契約を壊すだけ。
+フィールドは 3 分類で扱う:
+
+| 分類 | 例 | 可否 |
+|---|---|---|
+| **削る** | `view=summary` で `data.series.buckets` を落とす | **禁止**。どうしても必要ならスキーマを optional 化し `meta.omitted: ['series.buckets']` で申告する |
+| **足す** | `detect_patterns(debug)` の `data.candidates`、`detect_macd_cross(detailed)` の `data.resultsDetailed` | **許容**（階梯上か階梯外かを問わない）。**何を足すかを当該 view の description に書く** |
+| **入力のエコー** | `detect_macd_cross` の `meta.view` | **許容**。値が view ごとに変わってよい（規約テストでは比較対象から除外し、理由をテスト内に明記する） |
+
+「足す」を許容するのは、削る＝既存消費者が壊れる / 足す＝壊れない、という非対称性による。
+**エコーを口実にデータを差し替えない**——入力値そのものを返すだけでなくなった時点で、
+そのフィールドは *削る* か *足す* のどちらかに分類される。
+
+### 3. 階梯上の view は下位 view の上位集合
+
+`detailed` の `content` は `summary` の内容を含み、`full` は `detailed` を含む。
+**フッタ・警告行・最終値のような定型情報を上位 view で落とさない。**
+上流の `res.summary` を捨ててテキストを組み直すと、ここが黙って壊れる（実際に壊れていた）。
+
+この規約は**階梯上の値にのみ適用する。** 階梯外の値（`detect_patterns` の `debug`、
+`get_volatility_metrics` の `beginner`）は定義上「出力の置換」なので上位集合である必要はない。
+
+### 4. 量以外の軸を `view` の値に混ぜない
+
+| 軸 | 表現 | 例 |
+|---|---|---|
+| 量 | `view` | `summary` / `detailed` / `full` |
+| 形式 | 別パラメータ | `format: 'text' \| 'json'` |
+| 絞り込み | 別パラメータ | `nonZeroOnly: boolean` |
+| 置換 | `view` の階梯外の値 | `debug` / `beginner` |
+
+**置換だけは `view` の値、それ以外の直交軸は別パラメータ**にする。置換をブール値
+（`debug: true`）に切り出すと「`view=full` + `debug=true`」が追加なのか置換なのか曖昧になるため。
+
+### 5. 「この view では〇〇が content に出ない」を description に書く
+
+`content[0].text` が LLM への唯一のチャネルなので、軽い view は「短い表示」ではなく
+**「LLM が明細を受け取らない」**を意味する。各 view の説明に何が出ないかを明記して、
+呼び出し側が選択の結果を予測できるようにする。
+
+### 6. 規約はテストで機械的に固定する
+
+人手のレビューに委ねない。既存の共通テストに新しいツールを追加する:
+
+- `tests/view-structured-content-invariance.test.ts` — 規約 2（`structuredContent` の非削除）
+- `tests/view-content-superset.test.ts` — 規約 3（上位集合）。**文字列長の比較は使わない**
+  （フッタが消えても明細が増えれば通ってしまう）。定型要素とレコードキーの集合包含で検証する
+- `tests/prompts_contract.test.ts` — プロンプトが指示する `view` が enum に存在すること
+
+### 7. enum 値を変える場合
+
+外部クライアントに公開されている契約なので、**改名は alias 猶予期間を置く**
+（`deprecatedViewNote()` で写像先と削除目標バージョン `DEPRECATED_VIEW_REMOVAL_TARGET` を明記）。
+**同じ語の意味を差し替える変更は alias では救えない**——旧値を送り続けたクライアントに黙って別の
+応答が返る。一度 enum から削除して validation error を経由させ、別リリースで再導入する。
+
+**ハンドラ引数の `view` / `format` の型はリテラルを手書きせず Zod スキーマから導出する**
+（`z.infer<typeof XxxInputSchema>['view']`）。手書きだと enum から値を消しても型が変わらず、
+alias 分岐が黙って生き残る。導出しておけば typecheck が `TS2367` で必ず落とす。
 
 ## Public ツール
 

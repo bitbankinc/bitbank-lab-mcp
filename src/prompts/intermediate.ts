@@ -87,8 +87,8 @@ export const intermediatePrompts: PromptDef[] = [
 		messages: userMessage(`BTCのフロー分析をやって
 
 【ツール】
-1) get_flow_metrics(pair=btc_jpy, limit=300, bucketMs=60000, view=compact)
-2) get_transactions(pair=btc_jpy, limit=200, view=summary) — 必要時
+1) get_flow_metrics(pair=btc_jpy, limit=300, bucketMs=60000, view=full, nonZeroOnly=true)
+2) get_transactions(pair=btc_jpy, limit=200, view=full) — 必要時
 
 【用途】デイトレ〜短期スイングの地合い確認。
         執行タイミング判断（数秒～数分の売買）には鮮度が不足するため非推奨。
