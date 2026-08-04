@@ -1,3 +1,4 @@
+import type { z } from 'zod';
 import {
 	dedupeByTimestamp,
 	describeFailedChunks,
@@ -918,31 +919,42 @@ export const toolDef: ToolDefinition = {
 		date,
 		limit,
 		view,
+		format,
 		tz,
 	}: {
 		pair: string;
 		type: '1min' | '5min' | '15min' | '30min' | '1hour' | '4hour' | '8hour' | '12hour' | '1day' | '1week' | '1month';
 		date?: string;
 		limit?: number;
-		view?: 'full' | 'items';
+		// リテラルを手書きせず Zod スキーマから導出する。手書きにすると alias 削除時に enum から
+		// `items` を消しても型が変わらず、下の alias 分岐が黙って生き残る。
+		view?: z.infer<typeof GetCandlesInputSchema>['view'];
+		format?: z.infer<typeof GetCandlesInputSchema>['format'];
 		tz?: string;
 	}) => {
 		const result = await getCandles(pair, type, date, limit, tz);
 		if (!result.ok) return result;
-		if (view === 'items') {
+		// deprecated alias `view=items` を `view=full` + `format=json` へ正規化する（§4-4）。
+		// 正規化はここ 1 箇所だけで行い、以降の分岐は新語彙（format）しか見ない。
+		// `items` は量ではなく形式の指定であり、しかも full より重い（実測 7.4 倍）ため
+		// 量の語彙に置くと必ず誤読される。
+		const effectiveFormat: 'text' | 'json' = view === 'items' ? 'json' : (format ?? 'text');
+		if (effectiveFormat === 'json') {
 			const items = result?.data?.normalized ?? [];
 			const content: Array<{ type: 'text'; text: string }> = [{ type: 'text', text: JSON.stringify(items, null, 2) }];
 			// 取得層の warning（multi-day/multi-year の部分失敗等）と形成中足の注記（meta.provisional）を
-			// items view でも保持する。落とすと LLM がデータ不完全性・最新足の未確定性に気づけず
+			// format=json でも保持する。落とすと LLM がデータ不完全性・最新足の未確定性に気づけず
 			// ハルシネーションを起こす（.claude/rules/tools.md「代替ビューで warning 行を落とさない」）。
 			// 順序は ⚠️ warning → ℹ️ 形成中注記（summary と同じ優先度）。content[0] は JSON のまま保つ。
 			const meta = result.meta as { warning?: string; provisional?: boolean } | undefined;
 			if (meta?.warning) content.push({ type: 'text', text: meta.warning });
 			if (meta?.provisional) content.push({ type: 'text', text: PROVISIONAL_BAR_NOTE });
-			return {
-				content,
-				structuredContent: { items, meta: result.meta } as Record<string, unknown>,
-			};
+			// structuredContent は他ツールと同じ Result 封筒に統一する（本変更唯一の shape 破壊）。
+			// 旧 view=items は `{ items, meta }` を返し ok / summary / data.{raw,keyPoints,volumeStats}
+			// を落としていた。`format` は content の形式を選ぶパラメータであって
+			// structuredContent の契約を変えるパラメータではない（§3-2 規約 4）。
+			// 旧 shape の消費者は structuredContent.items → structuredContent.data.normalized に読み替える。
+			return { content, structuredContent: toStructured(result) };
 		}
 		try {
 			const items = Array.isArray(result?.data?.normalized) ? result.data.normalized : [];

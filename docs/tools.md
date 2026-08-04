@@ -162,6 +162,104 @@ API の応答をそのまま、または軽量整形して返す。指標計算�
 
 ---
 
+## `view` の共通語彙
+
+複数のツールが `view` パラメータを持ちますが、**`view` が表すのは「`content` に出す量」だけ**です。量以外の軸（形式・絞り込み）は別のパラメータに分かれています。
+
+### 階梯
+
+| 値 | 意味 |
+|---|---|
+| `summary` | 集計値・結論のみ。明細・系列は `content` に出ない（最軽量） |
+| `detailed` | 代表的な明細（上位 N 件 / 直近 N 件） |
+| `full` | そのツールの主対象を全部出す。**常にそのツールの最重量** |
+
+- 順序は `summary` < `detailed` < `full` で固定。**`full` が他の値より軽いツールはありません。**
+- **中間の段は無くてもよい**（`get_candles` は `full` のみ、`detect_macd_cross` は `summary` / `detailed` の 2 段）。段が欠けていても順序の意味は変わりません。
+- **上位の view は下位の上位集合**です。`view` を上げてフッタ・警告行・最終値が消えることはありません。
+- 同じ語の意味はツールを跨いで一定です。あるツールの `summary` が別ツールでは「全件」を指す、ということはありません。
+
+### `full` = 全件列挙とは限らない
+
+`full` が「全件列挙」になるのは、**そのツールの主対象がレコード列の場合だけ**です。ここでいう主対象とは「そのツールの結論を構成するレコード列」を指します。
+
+| ツール | `full` が `content` に出すもの |
+|---|---|
+| `get_candles` | 全ローソク足 |
+| `get_transactions` | 全約定 |
+| `get_flow_metrics` | 全バケット行 |
+| `detect_patterns` | 全検出パターン（`double_top` / `double_bottom` は山谷 3 点の pivot 行も） |
+| `get_volatility_metrics` | **系列の統計値まで**（件数 / 期間 / Close レンジ / リターンの平均・標準偏差）。**系列そのものは出ない** |
+
+`get_volatility_metrics` の結論は `aggregates` / `rolling`（スカラー値）で、`data.series` は指標計算の入力（＝ `get_candles` の再掲）であって出力の主対象ではありません。`full` でも系列を列挙しないのはこのためで、「`full` は常にそのツールの最重量」は満たしています。系列そのものが必要な場合は `get_candles` を使ってください。
+
+### `view` は `structuredContent` からフィールドを削らない
+
+`view` が `structuredContent` から**既存のフィールドを削ることはありません**。軽い `view` で呼んでも、重い `view` で得られるデータが欠けることはありません。
+
+**追加はあります。** その view でしか計算しないデータを*足す*ツールがあります（`detect_patterns` の `detailed` / `debug`、`detect_macd_cross` の `detailed`）。何を足すかは各ツールの `view` の説明に書いてあるので、`structuredContent` を読むクライアントはそちらを確認してください。
+
+つまり契約は**「削らない。ただし足すことはある」**であって、「`structuredContent` は `view` に依存しない」ではありません。後者だと読むと、`detect_macd_cross(view=summary)` に `data.resultsDetailed` が入ると誤解します。
+
+**`content[0].text` は LLM に渡る唯一のチャネル**なので、軽い `view` は「短い表示」ではなく**「LLM が明細を受け取らない」**を意味します。表示を詰めるつもりで `summary` にすると、モデルは明細を見ないまま回答します。
+
+### 量以外の軸は別パラメータ
+
+| パラメータ | 型 / 既定 | 対象ツール | 変えるもの |
+|---|---|---|---|
+| `format` | `text` / `json`（既定 `text`） | `get_candles` / `get_transactions` | **形式**。`content` を pretty JSON にする |
+| `nonZeroOnly` | boolean（既定 `false`） | `get_flow_metrics` | **絞り込み**。バケット行を非ゼロ（buy または sell > 0）のみにする |
+
+- `format=json` は**トークン削減オプションではありません。** 同じデータを pretty JSON にすると散文の圧縮形式より必ず増えます（`get_candles` の実測で約 7.4 倍）。機械可読性のために**トークンを払う**オプションです。量を決めるのは `view` と `limit` です。
+- `nonZeroOnly=true` は約定が 1 件も無かった区間のバケット（出来高 0）も `content` から落とします。区間の連続性を確認したい場合は `structuredContent.data.series.buckets`（全バケットのまま）を見てください。`view=summary` との併用は no-op（バケット行が無いため。エラーにはなりません）。
+- どちらも `view` と独立に指定できます（`view=detailed` + `nonZeroOnly=true` のような組み合わせも可）。
+
+### 階梯外の値（出力の置換）
+
+一部のツールには、量の階梯に乗らない `view` があります。**これらは「もっと詳しく」ではなく「別のものを出す」**もので、上位集合の規約は適用されません。
+
+| ツール | 値 | 何に置き換わるか |
+|---|---|---|
+| `detect_patterns` | `debug` | 検出パターンが `content` から消え、swings / candidates の一覧に入れ替わる |
+| `get_volatility_metrics` | `beginner` | 平易な日本語 4 行。専門用語・指標名・フッタは出ない（読者向けレジスタの指定） |
+
+### 生データ系ツールの既定が全件列挙な理由
+
+`get_candles` / `get_transactions` は**既定（`view=full`）で全件を `content` に載せます**。これは重すぎる既定ではなく意図した設計です。`content[0].text` が LLM への唯一のチャネルなので、既定を軽くすることは「応答を短くする」ではなく**「LLM が OHLCV / 約定明細を一切受け取らなくなる」**を意味します。量を絞りたい場合は `view` ではなく **`limit`** を使ってください（両ツールに集計のみの軽量 `view` は現状ありません）。
+
+`get_flow_metrics` の既定が `summary`（バケット行なし）なのは不整合ではありません。同ツールの結論は `aggregates`（CVD / アグレッサー比 / スパイク上位 3 件）に集約されていて、バケット列はそこから導かれた中間データだからです。**どちらも「既定で LLM に結論が届く」という同じ基準の帰結**です。
+
+### ツール別の値と既定
+
+| ツール | 階梯上の値（**太字**が既定） | 階梯外 | 備考 |
+|---|---|---|---|
+| `get_candles` | **`full`** | — | 量を絞るのは `limit` |
+| `get_transactions` | **`full`** | — | 量を絞るのは `limit` |
+| `get_flow_metrics` | **`summary`** / `detailed` / `full` | — | `detailed` の件数は `bucketsN`（既定 10 / 上限 100） |
+| `detect_patterns` | `summary` / **`detailed`** / `full` | `debug` | |
+| `get_volatility_metrics` | **`summary`** / `detailed` / `full` | `beginner` | |
+| `detect_macd_cross` | **`summary`** / `detailed` | — | **`pair` 省略時（複数銘柄スクリーニング）でのみ有効。** `pair` 指定の単一ペア深掘りモードでは無視される |
+
+> `get_tickers_jpy` にも `view`（`ranked` / `items`）がありますが、これは量ではなく**射影**（並び順と `data.ranked` の有無）の指定で、**本節の語彙には含まれません。** `view` という名前自体が誤用のため改名を検討中です。並び順・件数は `sortBy` / `limit` で指定してください。
+
+### 非推奨の値（`0.6.0` で削除予定）
+
+移行期間中は受理されますが、下表の**写像先の挙動になります**。新しい指定へ移行してください。
+
+| ツール | 非推奨の値 | 新しい指定 |
+|---|---|---|
+| `get_candles` | `items` | `view=full` + `format=json` |
+| `get_transactions` | `summary` | `view=full` |
+| `get_transactions` | `items` | `view=full` + `format=json` |
+| `get_flow_metrics` | `compact` | `view=full` + `nonZeroOnly=true` |
+| `get_flow_metrics` | `buckets` | `view=detailed` |
+
+**`get_transactions` の `summary` は特に注意してください。** 旧既定値で実体は「全件列挙」（＝ `full`）でしたが、`summary` という語は階梯上「集計のみ」を意味します。削除後、別リリースで**集計のみの `summary`**（opt-in 専用。既定にはしない）として再導入される予定があるため、`summary` を渡し続けると将来別の応答になります。全件が必要なら今のうちに `view=full` へ移してください。
+
+設計の経緯と判断根拠は [docs/internal/view-vocabulary-unification.md](internal/view-vocabulary-unification.md) を参照。
+
+---
+
 ## ヒント（参考）
 - `analyze_market_signal` で全体を把握 → 必要に応じて各専門ツールへ
 - チャートは必ず `render_chart_svg` の `data.svg` をそのまま表示（自前描画はしない）

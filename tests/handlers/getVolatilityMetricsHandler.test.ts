@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../tools/get_volatility_metrics.js', () => ({
+// 差し替えるのはツール本体（default export）だけ。named export（WILDER_ATR_PERIOD /
+// VOLATILITY_METRICS_FOOTER）は handler が description・フッタ文言として実値を参照するため、
+// importOriginal で実物を残す（列挙式だと named export を足すたびに mock が壊れる）。
+vi.mock('../../tools/get_volatility_metrics.js', async (importOriginal) => ({
+	...(await importOriginal<typeof import('../../tools/get_volatility_metrics.js')>()),
 	default: vi.fn(),
-	// Handler が description 文字列で参照するため named export も mock に含める
-	WILDER_ATR_PERIOD: 14,
 }));
 
 import {
