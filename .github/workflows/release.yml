@@ -93,7 +93,7 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
           VERSION="${TAG#v}"
-          npm version "$VERSION" --no-git-tag-version
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Publish
         run: npm publish --provenance --access public --tag ${{ steps.dist-tag.outputs.tag }}
