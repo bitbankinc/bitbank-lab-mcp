@@ -62,6 +62,9 @@
     "botters-lab"
   ],
   "author": "Bitbank, Inc.",
+  "overrides": {
+  "fast-uri": "^3.1.5"
+  },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "^1.29.0",
