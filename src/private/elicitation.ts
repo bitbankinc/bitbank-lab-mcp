@@ -29,13 +29,15 @@
  *   - 「`structuredContent` は LLM 非可視」をホストの仕様保証として扱わない。
  *     SEP-1624 / 各ホスト挙動の詳細は docs/private-api.md「content /
  *     structuredContent / `_meta` の役割と HITL の境界」節を参照。
+ *   - SEP-1865 iframe 起源の tools/call をサーバー側で識別できないため、
+ *     token を structuredContent に載せる UI 実行経路（旧 trust-host モード）は
+ *     採用しない。execute は elicitation / MRTR の accept のみ。
  */
 
 import { type InputRequiredResult, inputRequired, inputResponse } from '@modelcontextprotocol/server';
 import { toStructured } from '../../lib/result.js';
 import type { Result } from '../schema/types.js';
 import type { McpResponse, ToolHandlerExtra } from '../tool-definition.js';
-import { isHostApprovalTrusted } from './config.js';
 import { type ConfirmRequestState, consumeNonce, digestArgs, mintConfirmState } from './request-state.js';
 
 /** inputResponses の confirm 応答を引くためのキー */
@@ -113,6 +115,16 @@ function stripConfirmationTokenFields(value: Record<string, unknown>): Record<st
 	return result;
 }
 
+/**
+ * `create_order` / `cancel_order` / `cancel_orders` の MCP tools/call ハンドラが返す拒否メッセージ。
+ * LLM / UI からの直接実行をサーバー側で拒否し、elicitation/MRTR 経路のみ許可する。
+ */
+export const DIRECT_EXECUTE_FORBIDDEN_MESSAGE =
+	'このツールは MCP tools/call（LLM / UI）からは実行できません。preview_* 経由の elicitation/MRTR 確認でのみ実行されます。';
+
+/** MCP tools/call 経由の直接実行を拒否するときの errorType */
+export const DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE = 'direct_execute_forbidden';
+
 export interface WithElicitedConfirmationOptions {
 	/** ハンドラに渡される MCP リクエストコンテキスト */
 	extra: ToolHandlerExtra | undefined;
@@ -156,23 +168,6 @@ export interface WithElicitedConfirmationOptions {
 	 * `content[0].text` 側は caller の責任で token を含めないこと。
 	 */
 	fallback: McpResponse;
-	/**
-	 * `BITBANK_TRUST_HOST_APPROVAL=1`（`isHostApprovalTrusted()`）が true、かつ
-	 * クライアントが elicitation 非対応のときに `fallback` の代わりに返されるレスポンス。
-	 * SEP-1865 iframe ボタン経由の execute を許す妥協モード:
-	 *   - `confirmation_token` / `expires_at` を含む `structuredContent` を返す（strip しない）
-	 *   - 通常の `fallback` は LLM が触れない preview-only セマンティクス、
-	 *     こちらは LLM にも token が見える前提で iframe ボタンへの案内テキストを含める
-	 *
-	 * セキュリティ前提:
-	 *   - LLM は preview_* 経由でしか execute ツールを呼ばない（description で明示）
-	 *   - ホスト（Claude Desktop 等）のツール承認 UI が最終 gate
-	 *
-	 * 詳細は docs/adr/0007-hitl-confirmation-token-delivery.md を参照。
-	 * オプトインフラグが false のとき、または本フィールド未指定のときは無視され、
-	 * 従来通り `fallback` が返る。
-	 */
-	trustHostFallback?: McpResponse;
 }
 
 /**
@@ -203,12 +198,6 @@ export async function withElicitedConfirmation(
 		structuredContent: stripConfirmationTokenFields(opts.fallback.structuredContent),
 	};
 	const safeDeclinedStructured = stripConfirmationTokenFields(opts.declinedStructured);
-
-	// elicitation 非対応 + BITBANK_TRUST_HOST_APPROVAL=1 + trustHostFallback 指定の三者揃いで
-	// 「ホスト承認 UI を最終 gate として信頼する」妥協モードに入る。
-	// この経路では token を strip せず caller が用意したレスポンスをそのまま返す。
-	// 詳細は docs/adr/0007-hitl-confirmation-token-delivery.md を参照。
-	const trustHostFallback = isHostApprovalTrusted() ? opts.trustHostFallback : undefined;
 
 	// ── round 2: confirm 応答つき再入 ──
 	const view = inputResponse(readInputResponses(opts.extra), CONFIRM_KEY);
@@ -253,16 +242,15 @@ export async function withElicitedConfirmation(
 
 	// ── round 1: 確認要求の発行 ──
 	if (!clientSupportsElicitation(opts.extra)) {
-		return trustHostFallback ?? safeFallback;
+		return safeFallback;
 	}
 
 	let requestState: string;
 	try {
 		requestState = await mintConfirmState(opts.action, opts.bindArgs);
 	} catch {
-		// mint が想定外に失敗した場合はフォールバックに進む。
-		// trust-host モード ON なら iframe ボタン経路を残す trustHostFallback を返す。
-		return trustHostFallback ?? safeFallback;
+		// mint が想定外に失敗した場合はフォールバックに進む（実行不可通知）。
+		return safeFallback;
 	}
 
 	return inputRequired({

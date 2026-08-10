@@ -80,7 +80,7 @@ bitbank-lab-mcp を **Claude Desktop** に登録し、AI に市場データを�
 
 &#x20;**C. 取引注文・注文キャンセル実行（要 APIキー）:**
 
-B に加えて、AI からの発注・注文キャンセルまで実行。実行前に必ず確認ステップが入ります。
+B に加えて、elicitation / MRTR 対応ホスト上での発注・注文キャンセルまで実行。実行前に必ず確認ステップ（preview → ユーザー明示 accept）が入ります。
 
 ```json
 {
@@ -90,8 +90,7 @@ B に加えて、AI からの発注・注文キャンセルまで実行。実行
       "args": ["-y", "bitbank-lab-mcp"],
       "env": {
         "BITBANK_API_KEY": "your_api_key",
-        "BITBANK_API_SECRET": "your_api_secret",
-        "BITBANK_TRUST_HOST_APPROVAL": "1"
+        "BITBANK_API_SECRET": "your_api_secret"
       }
     }
   }
@@ -151,7 +150,7 @@ bitbank 側で **「参照」権限のみ**のキーを発行して設定しま�
 {% endtab %}
 
 {% tab title="取引あり（発注・キャンセル）" %}
-bitbank 側で **「参照」+「取引」権限**のキーを発行します。さらに Claude Desktop で発注の確認ボタン（確認 UI）を有効にするため、`BITBANK_TRUST_HOST_APPROVAL` を追加します。
+bitbank 側で **「参照」+「取引」権限**のキーを発行します。発注・取消は elicitation / MRTR 対応ホスト上でのユーザー明示確認でのみ実行されます。
 
 ```json
 {
@@ -161,8 +160,7 @@ bitbank 側で **「参照」+「取引」権限**のキーを発行します。
       "args": ["-y", "bitbank-lab-mcp"],
       "env": {
         "BITBANK_API_KEY": "your_api_key",
-        "BITBANK_API_SECRET": "your_api_secret",
-        "BITBANK_TRUST_HOST_APPROVAL": "1"
+        "BITBANK_API_SECRET": "your_api_secret"
       }
     }
   }
@@ -170,8 +168,7 @@ bitbank 側で **「参照」+「取引」権限**のキーを発行します。
 ```
 
 {% hint style="warning" %}
-* `BITBANK_TRUST_HOST_APPROVAL` の値は文字列の `"1"` のみ有効です（`"true"` などは無効）。
-* 発注は preview → 確認ボタン → 実行の 2 段階確認を必ず経由します。取引ツールの承認ダイアログでは**「常に許可（Always allow）」を選ばず**、毎回内容を確認してください。詳細は [取引の安全設計](../private-api/safety.md) を参照してください。
+* 発注は preview → elicitation/MRTR でのユーザー明示 accept → 実行の流れです。確認トークンはクライアントに返らないため、LLM が preview から直接 execute することはできません。旧 `BITBANK_TRUST_HOST_APPROVAL` は無効です。詳細は [取引の安全設計](../private-api/safety.md) を参照してください。
 * **「出金」権限は絶対に有効化しないでください**（本サーバーは出金系ツールを実装していないため不要です）。
 {% endhint %}
 {% endtab %}

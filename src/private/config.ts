@@ -25,22 +25,13 @@ export function getPrivateApiConfig(): PrivateApiConfig | null {
 }
 
 /**
- * 「ホスト承認 UI を最終 gate と認める」モードのフラグ。
+ * @deprecated `BITBANK_TRUST_HOST_APPROVAL` による UI 実行経路は撤去済み。
  *
- * `BITBANK_TRUST_HOST_APPROVAL=1` のとき、preview_* 系ツールは
- * `confirmation_token` / `expires_at` を `structuredContent` に含めて返す
- * （旧挙動相当）。SEP-1865 対応ホスト上で iframe ボタンを動作させるための
- * オプトイン妥協モード。
- *
- * セキュリティ上の含意:
- *   - LLM が `structuredContent` 経由で token を入手可能になる
- *   - 「LLM は preview_* 経由でしか execute ツールを呼ばない」という前提と、
- *     「ホスト（Claude Desktop 等）のツール承認 UI が必ず人間の click を要求する」
- *     前提に依存する
- *   - 詳細は docs/adr/0007-hitl-confirmation-token-delivery.md を参照
- *
- * デフォルト（unset）では従来通り token を strip するセーフ側挙動を保つ。
+ * SEP-1865 iframe 起源の `tools/call` をサーバー側で安全に識別できないため、
+ * token を `structuredContent` に載せる妥協モードはセキュリティ上無効化した。
+ * 環境変数が設定されていても常に `false` を返す（後方互換のため関数は残す）。
+ * 取引実行は elicitation / MRTR 経路のみ許可する。詳細は ADR-0007。
  */
 export function isHostApprovalTrusted(): boolean {
-	return process.env.BITBANK_TRUST_HOST_APPROVAL === '1';
+	return false;
 }

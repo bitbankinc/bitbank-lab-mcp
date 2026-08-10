@@ -8,9 +8,13 @@
 import { nowIso } from '../../lib/datetime.js';
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
 import { logTradeAction } from '../../lib/logger.js';
-import { fail, ok, toStructured } from '../../lib/result.js';
+import { fail, ok } from '../../lib/result.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import { validateToken } from '../../src/private/confirmation.js';
+import {
+	DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE,
+	DIRECT_EXECUTE_FORBIDDEN_MESSAGE,
+} from '../../src/private/elicitation.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
 import { CancelOrdersInputSchema, CancelOrdersOutputSchema } from '../../src/private/schemas.js';
 import { failPrivateToolError } from '../../src/private/tool-error.js';
@@ -105,19 +109,13 @@ export const toolDef: ToolDefinition = {
 	name: 'cancel_orders',
 	description:
 		'[Cancel Orders / Bulk Cancel] 複数の注文を一括キャンセル（最大30件）。キャンセル後の注文情報を返す。Private API。' +
-		' ⚠️ LLM はこのツールを直接呼び出してはならない。常に preview_cancel_orders 経由（elicitation 対応ホストではネイティブダイアログ、SEP-1865 対応ホストでは iframe の「キャンセルを確定する」ボタン）でのみ呼び出すこと。' +
-		' デフォルト設定では confirmation_token はクライアントに返らないため、LLM が直接呼び出してもトークン検証で拒否される（HITL の第二防衛線）。' +
-		' `BITBANK_TRUST_HOST_APPROVAL=1` の妥協モードでは token が見える場合があるが、その場合もユーザーの明示的な確認操作が前提。',
+		' ⚠️ このツールは MCP tools/call（LLM / UI）からは実行できない。' +
+		' 一括キャンセルは必ず preview_cancel_orders 経由の elicitation/MRTR 確認（ユーザーの明示 accept）でのみ行われる。' +
+		' confirmation_token はクライアントに返らないため、直接呼び出してもトークン検証または本ハンドラの拒否で失敗する。',
 	inputSchema: CancelOrdersInputSchema,
-	handler: async (args) => {
-		const result = await cancelOrders(
-			args as { pair: string; order_ids: number[]; confirmation_token: string; token_expires_at: number },
-		);
-		if (!result.ok) return result;
-		const text = `${result.summary}\n${JSON.stringify(result.data, null, 2)}`;
-		return {
-			content: [{ type: 'text', text }],
-			structuredContent: toStructured(result),
-		};
+	handler: async () => {
+		// MCP tools/call（LLM / UI）経由は常に拒否。
+		// preview_cancel_orders の elicitation accept は cancelOrders() を直接呼ぶためここを通らない。
+		return CancelOrdersOutputSchema.parse(fail(DIRECT_EXECUTE_FORBIDDEN_MESSAGE, DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE));
 	},
 };

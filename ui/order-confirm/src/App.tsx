@@ -48,9 +48,9 @@ interface PreviewArgs {
 }
 
 interface PreviewResultData {
-	// confirmation_token / expires_at は server 側の BITBANK_TRUST_HOST_APPROVAL=1
-	// オプトインモードでのみ含まれる。デフォルト（無効化時）と elicitation 経路の
-	// fallback では server が strip するため undefined になりうる。
+	// confirmation_token / expires_at はサーバーがクライアントへ返さない（HITL は
+	// elicitation/MRTR のみ）。旧 trust-host モードはセキュリティ上撤去済み。
+	// UI はプレビュー表示のみ行い、execute ボタン経路は無効。
 	// 詳細は docs/adr/0007-hitl-confirmation-token-delivery.md。
 	confirmation_token?: string;
 	expires_at?: number;
