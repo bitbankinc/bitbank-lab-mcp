@@ -5,6 +5,7 @@
  * ticker 連携で円評価額・構成比を自動算出する。
  */
 
+import { normalizeAssetCodes } from '../../lib/asset-code.js';
 import { toNum } from '../../lib/conversions.js';
 import { nowIso } from '../../lib/datetime.js';
 import { formatPrice } from '../../lib/formatter.js';
@@ -24,8 +25,13 @@ export default async function getMyAssets(args: { include_jpy_valuation?: boolea
 		const rawAssets = await client.get<{ assets: RawAsset[] }>('/v1/user/assets');
 		const timestamp = nowIso();
 
+		// 取得境界での asset 正規化。JPY 判定（`a.asset === 'jpy'`）と `prices.get(a.asset)` が
+		// 小文字前提のため、ここで揃える（`lib/asset-code.ts` 参照）。
+		// 出力の asset も小文字契約のまま（表示は下の `toUpperCase()` が担当）。
+		const normalizedAssets = normalizeAssetCodes(rawAssets.assets);
+
 		// ゼロでない資産のみ抽出
-		const nonZeroAssets = rawAssets.assets.filter((a) => {
+		const nonZeroAssets = normalizedAssets.filter((a) => {
 			const amount = toNum(a.onhand_amount);
 			return amount != null && amount > 0;
 		});
