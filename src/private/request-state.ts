@@ -35,6 +35,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { createRequestStateCodec, type ServerContext } from '@modelcontextprotocol/server';
+import { BoundedExpiringSet } from '../../lib/bounded-expiring-set.js';
 
 /** requestState の payload。秘匿情報は含めない（署名のみで暗号化されないため）。 */
 export interface ConfirmRequestState {
@@ -46,8 +47,13 @@ export interface ConfirmRequestState {
 /** 確認待ちの有効期限（秒）。人間の確認操作を待つ時間として confirmation token より長め。 */
 const REQUEST_STATE_TTL_SECONDS = 300;
 
-/** nonce の使用済み記録の保持期間（ms）。requestState TTL と揃える。 */
-const NONCE_RETENTION_MS = REQUEST_STATE_TTL_SECONDS * 1000;
+/**
+ * nonce の使用済み記録の保持期間（ms）。requestState TTL と揃える。
+ *
+ * これより長く覚えても replay 防御には寄与しない（期限切れ requestState は
+ * SDK の verify フックが先に落とすため、nonce 検証まで到達しない）。
+ */
+export const NONCE_RETENTION_MS = REQUEST_STATE_TTL_SECONDS * 1000;
 
 /**
  * mint / verify で同じ束縛文字列を返す。
@@ -106,23 +112,94 @@ export function mintConfirmState(action: string, args: Record<string, unknown>, 
 	);
 }
 
-/** 使用済み nonce（one-time-use 強制）。値は記録時刻 + 保持期間。 */
-const usedNonces = new Map<string, number>();
+/**
+ * 使用済み nonce（one-time-use 強制）。TTL + 件数上限つきの共通データ構造に載せる。
+ *
+ * **件数上限**: `BoundedExpiringSet` の既定値（`DEFAULT_MAX_ENTRIES` = 10,000）をそのまま使い、
+ * ここで別の定数を定義し直さない。同じ数値が 2 箇所に散ると運用時の上書き
+ * （環境変数 `REPLAY_GUARD_MAX_ENTRIES`）が片方にしか効かなくなるため、上限値の定義は
+ * lib 側の 1 箇所に集約する。
+ *
+ * 既定値が nonce にもそのまま当てはまる根拠（lib 側の算出根拠を nonce の値で再確認したもの）:
+ *   - 保持期間 = `NONCE_RETENTION_MS` = `REQUEST_STATE_TTL_SECONDS`(300 秒) × 1000。
+ *     lib 側の算出が前提にしている「保持期間 最長 300 秒」と一致する。
+ *   - 想定ピーク確認レート 20 件/秒（HITL 確認は人手起点。自動化クライアントの連投に 20 倍のマージン）
+ *   → 300 秒 × 20 件/秒 = 6,000 件。切り上げて 10,000 件（約 2MB）。
+ *
+ * **生存 nonce は追い出さない**。容量を空けるために未期限切れの記録を退避すると、その nonce は
+ * 「未使用」に巻き戻り replay が黙って通る。上限に達したら `add` を失敗させ、呼び出し側
+ * （`withElicitedConfirmation`）に確認を拒否させる（fail-closed）。
+ *
+ * **purge は 2 系統**: アクセス時 purge（`consumeNonce` → `add`）に加えて、無アクセス期間でも
+ * 記録が TTL 超過後に残り続けないよう定期 purge タイマー（`startNonceCleanupTimer`）を回す。
+ */
+const usedNonces = new BoundedExpiringSet();
+
+/** `consumeNonce` が失敗した理由。 */
+export type NonceConsumeFailureReason =
+	/** 同じ nonce が保持期間内に既に使われている（= replay） */
+	| 'already_used'
+	/** 件数上限に達しており、期限切れを purge しても空きを作れなかった */
+	| 'capacity_exceeded'
+	/** 記録の有効期限が非有限値だった（現行の呼び出し経路では発生しない。下記コメント参照） */
+	| 'invalid_expiry';
 
 /**
- * nonce を消費する。未使用なら true を返して使用済みに登録し、
- * 使用済み（replay）なら false を返す。
+ * `consumeNonce` の結果。判別可能ユニオンなので `consumed` で絞り込まないと `reason` を読めず、
+ * 「消費できなかったのに実行してしまう」書き方にならない。
  */
-export function consumeNonce(nonce: string, nowMs: number = Date.now()): boolean {
-	for (const [key, expiresAt] of usedNonces) {
-		if (nowMs > expiresAt) usedNonces.delete(key);
-	}
-	if (usedNonces.has(nonce)) return false;
-	usedNonces.set(nonce, nowMs + NONCE_RETENTION_MS);
-	return true;
+export type NonceConsumeResult =
+	| { readonly consumed: true }
+	| { readonly consumed: false; readonly reason: NonceConsumeFailureReason };
+
+/**
+ * nonce を消費する（one-time-use 強制）。
+ *
+ * **fail-closed**: 使用済みとして登録できたときだけ `{ consumed: true }` を返す。
+ * replay も容量超過も「消費できなかった」として扱い、呼び出し側は理由を問わず確認を通さない。
+ * ただし理由は返す — 容量超過は引数の変更でも期限切れでもない一時的な事象なので、
+ * 呼び出し側が「時間をおいて再試行」と案内できるようにする。
+ *
+ * 容量超過で失敗した場合、その nonce は消費されていない（生存エントリを追い出さないため
+ * 記録の中身も無傷）。空きが出れば同じ確認をやり直せる。
+ *
+ * `invalid_expiry` は `expiresAtMs` が非有限のときの理由だが、ここでは有限な `nowMs` から
+ * 内部で算出しているため現行経路では返らない（`nowMs` 自体が非有限なら `add` が `TypeError` を
+ * 投げる＝実行されない）。将来の変更で発生したときに `already_used` に紛れて見えなくならないよう、
+ * 潰さずそのまま伝播させる。
+ *
+ * nonce 本文はログにもエラー文言にも出さない（`.claude/rules/sensitive-data.md` の CRITICAL 分類）。
+ */
+export function consumeNonce(nonce: string, nowMs: number = Date.now()): NonceConsumeResult {
+	const res = usedNonces.add(nonce, nowMs + NONCE_RETENTION_MS, nowMs);
+	if (res.added) return { consumed: true };
+	return { consumed: false, reason: res.reason === 'already_recorded' ? 'already_used' : res.reason };
+}
+
+/**
+ * 使用済み nonce の定期 purge を開始する（重複起動しない）。
+ * 起動箇所は `src/tool-registry.ts`（`confirmation.ts` の `startCleanupTimer` と同じ場所）。
+ */
+export function startNonceCleanupTimer(): void {
+	usedNonces.startCleanupTimer();
+}
+
+/** 使用済み nonce の定期 purge を停止する（複数回呼んでも安全）。 */
+export function stopNonceCleanupTimer(): void {
+	usedNonces.stopCleanupTimer();
+}
+
+/** 定期 purge タイマーが稼働中かどうか（テスト用）。 */
+export function _isNonceCleanupTimerActive(): boolean {
+	return usedNonces.isCleanupTimerActive();
 }
 
 /** 使用済み nonce をクリアする（テスト用）。 */
 export function _resetUsedNonces(): void {
 	usedNonces.clear();
+}
+
+/** 使用済み nonce の記録件数を返す（テスト用。nonce 本文は返さない）。 */
+export function _usedNonceCount(): number {
+	return usedNonces.size();
 }
