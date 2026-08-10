@@ -65,6 +65,76 @@ describe('BoundedExpiringSet — add / has の基本', () => {
 	});
 });
 
+describe('BoundedExpiringSet — 非有限のタイムスタンプ', () => {
+	it.each([
+		['NaN', Number.NaN],
+		['Infinity', Number.POSITIVE_INFINITY],
+		['-Infinity', Number.NEGATIVE_INFINITY],
+	])('非有限の expiresAtMs（%s）は invalid_expiry で拒否する', (_label, expiresAt) => {
+		const s = new BoundedExpiringSet();
+
+		expect(s.add('a', expiresAt, NOW)).toEqual({ added: false, reason: 'invalid_expiry' });
+		expect(s.size()).toBe(0);
+		expect(s.has('a', NOW)).toBe(false);
+		expect(s.stats().invalidExpiryTotal).toBe(1);
+	});
+
+	it('非有限の expiresAtMs は状態を一切変更しない（purge も走らない）', () => {
+		const s = new BoundedExpiringSet();
+		s.add('alive', NOW + TTL, NOW);
+		s.add('expired', NOW + TTL, NOW);
+
+		// 期限切れが混ざった状態で不正な add → 先頭走査すら走らせない
+		expect(s.add('x', Number.NaN, NOW + TTL + 1).added).toBe(false);
+		expect(s.size()).toBe(2);
+		expect(s.stats().purgedTotal).toBe(0);
+	});
+
+	it('NaN の expiresAtMs が「永久に生存するエントリ」にならない', () => {
+		const s = new BoundedExpiringSet({ maxEntries: 1 });
+		s.add('nan', Number.NaN, NOW);
+
+		// 記録されていれば has が true になり、purgeExpired でも消せず容量を専有し続ける
+		expect(s.has('nan', NOW + TTL * 1000)).toBe(false);
+		expect(s.purgeExpired(NOW + TTL * 1000)).toBe(0);
+		expect(s.add('other', NOW + TTL, NOW)).toEqual({ added: true });
+	});
+
+	it('Infinity の expiresAtMs が先頭走査を止めない（高速パスが死なない）', () => {
+		const s = new BoundedExpiringSet();
+		s.add('inf', Number.POSITIVE_INFINITY, NOW); // 拒否される
+		s.add('a', NOW + TTL, NOW);
+
+		// 先頭に不滅エントリが居座っていれば 'a' は掃除されない
+		s.add('b', NOW + TTL * 3, NOW + TTL + 1);
+		expect(s.has('a', NOW + TTL + 1)).toBe(false);
+		expect(s.size()).toBe(1);
+	});
+
+	it.each([
+		['NaN', Number.NaN],
+		['Infinity', Number.POSITIVE_INFINITY],
+		['-Infinity', Number.NEGATIVE_INFINITY],
+	])('非有限の nowMs（%s）は TypeError を投げる', (_label, now) => {
+		const s = new BoundedExpiringSet();
+		s.add('a', NOW + TTL, NOW);
+
+		expect(() => s.add('b', NOW + TTL, now)).toThrow(TypeError);
+		expect(() => s.has('a', now)).toThrow(TypeError);
+		expect(() => s.purgeExpired(now)).toThrow(TypeError);
+
+		// 投げた後も記録は無傷（生存エントリが消えて replay が通る、を防ぐ）
+		expect(s.size()).toBe(1);
+		expect(s.has('a', NOW)).toBe(true);
+	});
+
+	it('TypeError のメッセージに key を含めない', () => {
+		const s = new BoundedExpiringSet();
+		expect(() => s.add('secret-token', NOW + TTL, Number.NaN)).toThrow(/nowMs must be a finite number/);
+		expect(() => s.add('secret-token', NOW + TTL, Number.NaN)).not.toThrow(/secret-token/);
+	});
+});
+
 describe('BoundedExpiringSet — 期限切れの除去', () => {
 	it('期限切れが purgeExpired で消える', () => {
 		const s = new BoundedExpiringSet();
@@ -278,6 +348,29 @@ describe('BoundedExpiringSet — 定期 purge タイマー', () => {
 		s.stopCleanupTimer();
 	});
 
+	it.each([
+		['0', 0],
+		['負値', -1_000],
+		['NaN', Number.NaN],
+		['Infinity', Number.POSITIVE_INFINITY],
+	])('不正な purgeIntervalMs（%s）は既定間隔にフォールバックする', (_label, interval) => {
+		vi.useFakeTimers();
+		vi.setSystemTime(NOW);
+
+		const s = new BoundedExpiringSet({ purgeIntervalMs: interval });
+		s.add('a', NOW + 500);
+		s.startCleanupTimer();
+
+		// 不正値がそのまま使われていれば、既定間隔より手前で purge されるか永久に走らない
+		vi.advanceTimersByTime(DEFAULT_PURGE_INTERVAL_MS - 1);
+		expect(s.size()).toBe(1);
+
+		vi.advanceTimersByTime(1);
+		expect(s.size()).toBe(0);
+
+		s.stopCleanupTimer();
+	});
+
 	it('停止後は purge が走らない', () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(NOW);
@@ -354,7 +447,7 @@ describe('BoundedExpiringSet — stats', () => {
 		s.add('secret-token', NOW + TTL, NOW);
 
 		const stats = s.stats();
-		expect(stats).toEqual({ size: 1, maxEntries: 2, purgedTotal: 0, rejectedTotal: 0 });
+		expect(stats).toEqual({ size: 1, maxEntries: 2, purgedTotal: 0, rejectedTotal: 0, invalidExpiryTotal: 0 });
 		expect(JSON.stringify(stats)).not.toContain('secret-token');
 	});
 
