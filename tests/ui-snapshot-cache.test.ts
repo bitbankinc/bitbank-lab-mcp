@@ -2,11 +2,17 @@
  * src/ui-snapshot-cache.ts のユニットテスト。
  *
  * MCP Apps ウィジェットの pull 型 hydration に使うスナップショットの
- * 保存・取得・TTL・上書きを検証する。
+ * 保存・取得・TTL・セッション境界を検証する。
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { _resetUiSnapshots, clearUiSnapshot, getUiSnapshot, storeUiSnapshot } from '../src/ui-snapshot-cache.js';
+import {
+	_resetUiSnapshots,
+	clearUiSnapshot,
+	getUiSnapshot,
+	storeUiSnapshot,
+	uiSnapshotKey,
+} from '../src/ui-snapshot-cache.js';
 
 const URI = 'ui://order/confirm.html';
 const TTL_MS = 5 * 60_000;
@@ -26,11 +32,11 @@ describe('ui-snapshot-cache', () => {
 		expect(getUiSnapshot(URI)).toBe(structured);
 	});
 
-	it('同一 URI は最新の内容で上書きされる', () => {
-		storeUiSnapshot(URI, { ok: true, summary: 'old' });
+	it('同一セッション・同一 URI は最新の内容で上書きされる', () => {
+		storeUiSnapshot(URI, { ok: true, summary: 'old' }, { sessionId: 'session-a' });
 		const latest = { ok: true, summary: 'new' };
-		storeUiSnapshot(URI, latest);
-		expect(getUiSnapshot(URI)).toBe(latest);
+		storeUiSnapshot(URI, latest, { sessionId: 'session-a' });
+		expect(getUiSnapshot(URI, { sessionId: 'session-a' })).toBe(latest);
 	});
 
 	it('URI ごとに独立して保持される', () => {
@@ -56,16 +62,21 @@ describe('ui-snapshot-cache', () => {
 		expect(getUiSnapshot(URI, { nowMs: now })).toBeNull();
 	});
 
-	it('保存時と異なる sessionId からの取得は拒否する（セッションバインド）', () => {
-		storeUiSnapshot(URI, { ok: true }, { sessionId: 'session-a' });
+	it('session A の UI スナップショットを session B が取得できない', () => {
+		storeUiSnapshot(URI, { ok: true, summary: 'a' }, { sessionId: 'session-a' });
 		expect(getUiSnapshot(URI, { sessionId: 'session-b' })).toBeNull();
-		// セッションレス呼び出しも不一致として拒否
 		expect(getUiSnapshot(URI)).toBeNull();
-		// 同一セッションのみ取得できる
-		expect(getUiSnapshot(URI, { sessionId: 'session-a' })).not.toBeNull();
+		expect(getUiSnapshot(URI, { sessionId: 'session-a' })).toMatchObject({ summary: 'a' });
 	});
 
-	it('clearUiSnapshot は指定 URI のみ破棄する', () => {
+	it('別セッションが同一 URI を保存しても相互に上書きしない', () => {
+		storeUiSnapshot(URI, { ok: true, summary: 'a' }, { sessionId: 'session-a' });
+		storeUiSnapshot(URI, { ok: true, summary: 'b' }, { sessionId: 'session-b' });
+		expect(getUiSnapshot(URI, { sessionId: 'session-a' })).toMatchObject({ summary: 'a' });
+		expect(getUiSnapshot(URI, { sessionId: 'session-b' })).toMatchObject({ summary: 'b' });
+	});
+
+	it('clearUiSnapshot は指定 URI のみ破棄する（stdio）', () => {
 		storeUiSnapshot('ui://order/confirm.html', { ok: true, summary: 'order' });
 		storeUiSnapshot('ui://cancel/confirm.html', { ok: true, summary: 'cancel' });
 		clearUiSnapshot('ui://cancel/confirm.html');
@@ -73,8 +84,21 @@ describe('ui-snapshot-cache', () => {
 		expect(getUiSnapshot('ui://order/confirm.html')).not.toBeNull();
 	});
 
+	it('session A の clear は session B の同一 URI を削除しない', () => {
+		storeUiSnapshot(URI, { ok: true, summary: 'a' }, { sessionId: 'session-a' });
+		storeUiSnapshot(URI, { ok: true, summary: 'b' }, { sessionId: 'session-b' });
+		clearUiSnapshot(URI, { sessionId: 'session-a' });
+		expect(getUiSnapshot(URI, { sessionId: 'session-a' })).toBeNull();
+		expect(getUiSnapshot(URI, { sessionId: 'session-b' })).toMatchObject({ summary: 'b' });
+	});
+
 	it('セッションレス（stdio）同士は一致として扱い取得できる', () => {
 		storeUiSnapshot(URI, { ok: true });
 		expect(getUiSnapshot(URI)).not.toBeNull();
+	});
+
+	it('uiSnapshotKey は sessionId + resourceUri 相当', () => {
+		expect(uiSnapshotKey('sess-1', URI)).toBe(`sess-1\0${URI}`);
+		expect(uiSnapshotKey(undefined, URI)).toBe(`\0${URI}`);
 	});
 });
