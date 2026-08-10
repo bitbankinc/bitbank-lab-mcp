@@ -115,7 +115,7 @@ nvm/volta などのバージョン管理ツールをお使いの方には特に�
 
 **C. 取引注文・注文キャンセル実行（要 API キー）:**
 
-B に加えて、AI からの発注・注文キャンセルまで実行。実行前に必ず確認ステップ（preview → execute の 2 段階確認）が入ります。
+B に加えて、elicitation / MRTR 対応ホスト上での発注・注文キャンセルまで実行。実行前に必ず確認ステップ（preview → ユーザー明示 accept）が入ります。
 
 ```json
 {
@@ -125,8 +125,7 @@ B に加えて、AI からの発注・注文キャンセルまで実行。実行
       "args": ["-y", "bitbank-lab-mcp"],
       "env": {
         "BITBANK_API_KEY": "your_api_key",
-        "BITBANK_API_SECRET": "your_api_secret",
-        "BITBANK_TRUST_HOST_APPROVAL": "1"
+        "BITBANK_API_SECRET": "your_api_secret"
       }
     }
   }
@@ -137,7 +136,7 @@ B に加えて、AI からの発注・注文キャンセルまで実行。実行
 >
 > ※ **「出金」権限は有効化しないことを強く推奨します**。本サーバーは出金系ツール未実装のため不要です。
 
-`BITBANK_TRUST_HOST_APPROVAL`（値は文字列の `"1"` のみ有効）は、Claude Desktop の確認ボタンから発注/キャンセルを実行できるようにするオプトインです。有効化すると確認トークンが LLM からも見える経路で返るため、理論上は LLM が確認ボタンを経ずに実行を試みる余地を受け入れることになります。ただしトークンは**プレビューした注文 1 件のみ有効・期限 60 秒・使い捨て**で、実行前には毎回ホストの承認ダイアログが最終ゲートとして入るため、影響は限定的です。このゲートを保つため、**取引ツールは「常に許可（Always allow）」にせず毎回確認**してください。
+発注・取消の実行は **elicitation / MRTR 対応クライアント**でのみサーバー側に強制されます。確認トークンはクライアントに返らないため、LLM が preview 応答から直接 execute することはできません。旧 `BITBANK_TRUST_HOST_APPROVAL` オプトイン（iframe に token を載せる妥協モード）はセキュリティ上撤去済みです（設定しても無視されます）。
 
 詳細: [ADR-0007](docs/adr/0007-hitl-confirmation-token-delivery.md) / [Private API ガイド](docs/private-api.md)。
 
@@ -244,7 +243,7 @@ Claude Desktop の UI に表示される名前は `claude_desktop_config.json` �
 }
 ```
 
-API キーが不要な場合は `env` ブロックごと削除して OK。セクション 1 の A〜C と同様に、取引実行まで使う場合のみ `BITBANK_TRUST_HOST_APPROVAL` を検討してください。
+API キーが不要な場合は `env` ブロックごと削除して OK。セクション 1 の A〜C と同様に、取引実行まで使う場合は elicitation / MRTR 対応クライアントを使ってください（旧 `BITBANK_TRUST_HOST_APPROVAL` は不要・無効です）。
 
 #### Claude Code（CLI から登録する場合）
 
@@ -376,11 +375,11 @@ API キーは [bitbank 設定画面](https://app.bitbank.cc/account/api) で発�
 | ポートフォリオ | `analyze_my_portfolio` | 損益分析・パフォーマンス | 参照 |
 | 入出金 | `get_my_deposit_withdrawal` | 入出金履歴 | 参照 |
 | 信用取引 | `get_margin_status`, `get_margin_positions`, `get_margin_trade_history` | 証拠金・ポジション・約定履歴 | 参照 |
-| 発注 | `preview_order` → `create_order` | 2ステップ確認付き発注 | 取引 |
-| キャンセル | `preview_cancel_order` → `cancel_order` | 2ステップ確認付きキャンセル | 取引 |
-| 一括キャンセル | `preview_cancel_orders` → `cancel_orders` | 2ステップ確認付き一括キャンセル | 取引 |
+| 発注 | `preview_order`（→ elicitation/MRTR accept） | ユーザー明示確認後にサーバー内で発注 | 取引 |
+| キャンセル | `preview_cancel_order`（→ elicitation/MRTR accept） | ユーザー明示確認後にサーバー内でキャンセル | 取引 |
+| 一括キャンセル | `preview_cancel_orders`（→ elicitation/MRTR accept） | ユーザー明示確認後にサーバー内で一括キャンセル | 取引 |
 
-取引操作（発注・キャンセル）は **preview → execute の2ステップ確認**が必須です。preview ツールが発行する確認トークン（HMAC-SHA256、デフォルト60秒有効）なしでは実行できません。
+取引操作（発注・キャンセル）は **preview → elicitation/MRTR でのユーザー明示 accept** が必須です。確認トークンはクライアントに返らず、`create_order` / `cancel_order` / `cancel_orders` を MCP `tools/call` から直接呼んでもサーバー側で拒否されます。
 
 詳細: [docs/private-api.md](docs/private-api.md)
 
