@@ -560,8 +560,11 @@ export function reconstructHoldingsAtDate(
 			holdings.set(asset, current - (qty - feeBase));
 			holdings.set('jpy', currentJpy + qty * price + feeQuote);
 		} else {
-			// Reverse sell: add back crypto, remove JPY received
-			holdings.set(asset, current + qty);
+			// Reverse sell: 売りで実際に減った base 量は qty + feeBase（base 建て手数料も base から引かれる）。
+			// それを巻き戻す。買い側の `qty - feeBase` と符号だけが逆の対称形。
+			// 冒頭の方針コメントのとおり売りの feeBase は API 仕様上ゼロだが、
+			// 非ゼロが来ても算術的に正しくなるよう防御的に加算する。
+			holdings.set(asset, current + qty + feeBase);
 			holdings.set('jpy', currentJpy - qty * price + feeQuote);
 		}
 	}
