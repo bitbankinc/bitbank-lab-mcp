@@ -35,6 +35,7 @@ export default async function cancelOrder(
 		token_expires_at: number;
 	},
 	route: 'elicitation' | 'ui-button' | 'direct-text' = 'direct-text',
+	scope: { sessionId?: string } = {},
 ) {
 	const { pair, order_id, confirmation_token, token_expires_at } = args;
 
@@ -84,8 +85,8 @@ export default async function cancelOrder(
 		});
 
 		// 実行済み preview のスナップショットを無効化する（再描画で復元された古い確認
-		// カードからの二重キャンセル → bitbank 70019 を防ぐ）。
-		clearUiSnapshot('ui://cancel/confirm.html');
+		// カードからの二重キャンセル → bitbank 70019 を防ぐ）。同一セッションのみ削除。
+		clearUiSnapshot('ui://cancel/confirm.html', scope);
 
 		return CancelOrderOutputSchema.parse(
 			ok(

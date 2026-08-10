@@ -25,6 +25,8 @@
  *     （多層防御。caller convention だけに依存しない最終ガード）。
  *   - `requestState` は署名のみで暗号化されない（クライアント / LLM から可視）ため、
  *     token を含めない。nonce + 引数 digest のみを載せ、再入時に検証する。
+ *     加えて SDK codec の `bind` で呼び出し元セッション／認証 principal と
+ *     元の MCP method に束縛する（越境再利用を fail-closed で拒否）。
  *     詳細は src/private/request-state.ts と ADR-0007 を参照。
  *   - 「`structuredContent` は LLM 非可視」をホストの仕様保証として扱わない。
  *     SEP-1624 / 各ホスト挙動の詳細は docs/private-api.md「content /
@@ -34,7 +36,12 @@
  *     採用しない。execute は elicitation / MRTR の accept のみ。
  */
 
-import { type InputRequiredResult, inputRequired, inputResponse } from '@modelcontextprotocol/server';
+import {
+	type InputRequiredResult,
+	inputRequired,
+	inputResponse,
+	type ServerContext,
+} from '@modelcontextprotocol/server';
 import { toStructured } from '../../lib/result.js';
 import type { Result } from '../schema/types.js';
 import type { McpResponse, ToolHandlerExtra } from '../tool-definition.js';
@@ -247,7 +254,9 @@ export async function withElicitedConfirmation(
 
 	let requestState: string;
 	try {
-		requestState = await mintConfirmState(opts.action, opts.bindArgs);
+		// bind（method / sessionId / principal）のため、verify 時と同じ ServerContext を渡す。
+		// stdio では sessionId / principal が空でも mint↔verify で一致し既存挙動を維持する。
+		requestState = await mintConfirmState(opts.action, opts.bindArgs, (opts.extra ?? {}) as ServerContext);
 	} catch {
 		// mint が想定外に失敗した場合はフォールバックに進む（実行不可通知）。
 		return safeFallback;

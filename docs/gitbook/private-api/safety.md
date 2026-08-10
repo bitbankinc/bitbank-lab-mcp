@@ -27,6 +27,7 @@ description: 発注・キャンセルを守る2ステップ確認（HITL）と�
 * 確認トークンは **HMAC-SHA256** で生成されます（`BITBANK_API_SECRET` を鍵に使用）が、**クライアントには返りません**。
 * 有効期限は **デフォルト60秒**（`ORDER_CONFIRM_TTL_MS` 環境変数で変更可能）。
 * preview 時と実行時でパラメータが一致しない場合は**改ざんとして拒否**されます。
+* `requestState` は呼び出し元セッション（または認証 principal）と MCP method に束縛され、別セッションでの再利用を拒否します（stdio では従来どおり）。
 * キャンセルにも同じ確認フローが適用されます（`preview_cancel_order` / `preview_cancel_orders`）。
 * `create_order` / `cancel_order` / `cancel_orders` を MCP `tools/call` から直接呼んでもサーバー側で拒否されます。
 

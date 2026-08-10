@@ -5,6 +5,7 @@
 - **Updated**:
   - 2026-07-29（MCP 2026-07-28 仕様の正式リリースを受けて「Future direction」を final 仕様と SDK 状況に合わせて更新。同日、SDK v2 移行 + MRTR 経路の実装を完了）
   - 2026-08-10（`BITBANK_TRUST_HOST_APPROVAL` による token 露出 / UI execute 経路を撤去。execute は elicitation/MRTR のみ）
+  - 2026-08-10（`requestState` を SDK `bind` で session/principal + MCP method に束縛。UI スナップショットキーを `sessionId + resourceUri` 化）
 - **Decision**: 取引系 HITL の `confirmation_token` はサーバープロセス内に閉じ、クライアントへ返さない。execute は elicitation / MRTR（SEP-2322）のユーザー明示 accept のみで行う。SEP-1865 iframe 起源の `tools/call` をサーバー側で安全に識別できないため、token を `structuredContent` に載せる UI 実行経路（旧 `BITBANK_TRUST_HOST_APPROVAL=1`）は採用しない。
 
 ## Context
@@ -80,7 +81,9 @@ description に「直接呼び出してはならない」と書くことは補�
 > **2026-07-29 更新**: SEP-2322 は MCP 2026-07-28 仕様として正式リリースされ final となった。
 > MRTR 経路は実装済み（第一選択）。
 
-`requestState` は秘匿保証が無いため token を載せない。nonce + 引数 digest を署名して載せ、HMAC / 期限（SDK verify フック）+ action / digest / one-time nonce（`withElicitedConfirmation`）で検証する。
+`requestState` は秘匿保証が無いため token を載せない。nonce + 引数 digest を署名して載せ、HMAC / 期限 / bind（呼び出し元セッションまたは認証 principal + 元の MCP method。SDK `createRequestStateCodec.bind`）+ action / digest / one-time nonce（`withElicitedConfirmation`）で検証する。stdio（sessionId 未設定）では既存挙動を維持し、HTTP 等で sessionId / principal が得られる場合は越境再利用を fail-closed で拒否する。
+
+UI スナップショット（`src/ui-snapshot-cache.ts`）も `sessionId + resourceUri` をキーにし、別セッションによる取得・上書き・削除を防ぐ。
 
 UI 起源の安全な識別（origin marker 等）が MCP 仕様に入り、サーバー側で認証可能になった場合に限り、iframe 実行経路の再検討余地がある。現状の仕様では再導入しない。
 

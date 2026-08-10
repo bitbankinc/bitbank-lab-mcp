@@ -54,6 +54,7 @@ export default async function createOrder(
 		token_expires_at: number;
 	},
 	route: CreateOrderRoute = 'direct-text',
+	scope: { sessionId?: string } = {},
 ) {
 	const {
 		pair,
@@ -191,8 +192,8 @@ export default async function createOrder(
 		const summary = lines.join('\n');
 
 		// 実行済み preview のスナップショットを無効化（発注済み内容の確認カードが
-		// 復元されて二重発注を誘発するのを防ぐ）。
-		clearUiSnapshot('ui://order/confirm.html');
+		// 復元されて二重発注を誘発するのを防ぐ）。同一セッションのエントリのみ削除。
+		clearUiSnapshot('ui://order/confirm.html', scope);
 
 		return CreateOrderOutputSchema.parse(
 			ok(

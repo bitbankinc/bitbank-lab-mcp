@@ -85,6 +85,21 @@ describe('handler', () => {
 		expect(sameSession.structuredContent).toMatchObject({ summary: 'other session' });
 	});
 
+	it('session A のスナップショットを session B が取得できない（キー分離）', async () => {
+		storeUiSnapshot(URI, { ok: true, summary: 'a' }, { sessionId: 'session-a' });
+		storeUiSnapshot(URI, { ok: true, summary: 'b' }, { sessionId: 'session-b' });
+
+		const fromB = (await toolDef.handler({ resource_uri: URI }, { sessionId: 'session-b' })) as {
+			structuredContent: Record<string, unknown>;
+		};
+		expect(fromB.structuredContent).toMatchObject({ summary: 'b' });
+
+		const fromA = (await toolDef.handler({ resource_uri: URI }, { sessionId: 'session-a' })) as {
+			structuredContent: Record<string, unknown>;
+		};
+		expect(fromA.structuredContent).toMatchObject({ summary: 'a' });
+	});
+
 	it('URI ごとに独立したスナップショットを返す', async () => {
 		const orderSnap = { ok: true, summary: 'order' };
 		storeUiSnapshot('ui://order/confirm.html', orderSnap);

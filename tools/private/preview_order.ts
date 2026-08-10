@@ -320,6 +320,7 @@ export const toolDef: ToolDefinition = {
 						token_expires_at: result.data.expires_at!,
 					},
 					'elicitation',
+					{ sessionId: (extra as { sessionId?: string } | undefined)?.sessionId },
 				),
 			onDeclinedText: 'ユーザーが発注をキャンセルしました（elicitation）',
 			declinedStructured: toStructured(result),
