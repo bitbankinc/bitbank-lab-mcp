@@ -678,6 +678,8 @@ export function buildEquitySeries(
  *   正値 = 純入金（口座に資金流入）、負値 = 純出金。
  * - withdrawal_fee_jpy: 出金時に失った手数料の合計。
  *   adjusted_change から net_flow を引いた結果にこのコストが残る。
+ * - unpriced_assets: 価格を解決できず集計から落ちた暗号資産のシンボル（該当なしなら undefined）。
+ *   落ちた入出庫は 0 円計上と等価で net_flow_jpy が過小になるため、黙って落とさず申告する。
  *
  * 暗号資産の入出庫は現在価格で仮評価。
  */
@@ -693,17 +695,23 @@ export function calcPeriodNetFlow(
 
 	let netFlow = 0;
 	let withdrawalFee = 0;
+	// 価格を解決できなかった資産（JPY 建て換算ができず集計に載せられなかったもの）。
+	// 数量ゼロ・数値不正で寄与しない入出庫は元から金額に影響しないため対象外とする。
+	const unpricedAssets = new Set<string>();
 
 	// Deposits (inflow)
 	for (const d of completedDeposits) {
 		if (d.asset === 'jpy') {
 			netFlow += Number(d.amount);
+			continue;
+		}
+		const price = prices.get(d.asset);
+		const amount = Number(d.amount);
+		if (!Number.isFinite(amount) || amount <= 0) continue;
+		if (price) {
+			netFlow += amount * price;
 		} else {
-			const price = prices.get(d.asset);
-			const amount = Number(d.amount);
-			if (price && Number.isFinite(amount) && amount > 0) {
-				netFlow += amount * price;
-			}
+			unpricedAssets.add(d.asset);
 		}
 	}
 
@@ -713,22 +721,29 @@ export function calcPeriodNetFlow(
 		if (w.asset === 'jpy') {
 			netFlow -= Number(w.amount);
 			withdrawalFee += fee;
-		} else {
-			const price = prices.get(w.asset);
-			const amount = Number(w.amount);
-			if (price && Number.isFinite(amount) && amount > 0) {
-				netFlow -= amount * price;
-				if (fee > 0) {
-					withdrawalFee += fee * price;
-				}
+			continue;
+		}
+		const price = prices.get(w.asset);
+		const amount = Number(w.amount);
+		if (!Number.isFinite(amount) || amount <= 0) continue;
+		if (price) {
+			netFlow -= amount * price;
+			if (fee > 0) {
+				withdrawalFee += fee * price;
 			}
+		} else {
+			// 元本だけでなく出金手数料も JPY 換算できていない（withdrawal_fee_jpy も過小になる）
+			unpricedAssets.add(w.asset);
 		}
 	}
 
-	return {
+	const result: PeriodNetFlowResult = {
 		net_flow_jpy: Math.round(netFlow),
 		withdrawal_fee_jpy: Math.round(withdrawalFee),
 	};
+	// 該当なしのときはキーごと省き、従来の出力（2 フィールド）と完全一致させる。
+	if (unpricedAssets.size > 0) result.unpriced_assets = [...unpricedAssets].sort();
+	return result;
 }
 
 // ── 期間別パフォーマンス（評価額比較） ──
@@ -780,6 +795,8 @@ function pickBoundaryPrice(
  *
  * 出力フィールド順・桁丸めは旧インライン実装と完全一致させている
  * （JSON.stringify 結果が変わらないよう注意）。
+ * `unpriced_flow_assets` は後から足したフィールドなので既存キーの後ろに置き、
+ * 価格をすべて解決できたときはキーごと省いて旧出力と JSON 一致させる。
  */
 export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerformanceContext): PeriodPerformance {
 	const startHoldings = reconstructHoldingsAtDate(ctx.currentHoldings, ctx.trades, spec.startMs, ctx.dwData);
@@ -792,7 +809,7 @@ export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerforman
 	const flow = calcPeriodNetFlow(ctx.dwData, spec.startMs, ctx.currentPrices);
 	const change = ctx.currentValue - startValue;
 	const adjusted = change - flow.net_flow_jpy;
-	return {
+	const performance: PeriodPerformance = {
 		start_value_jpy: startValue,
 		current_value_jpy: ctx.currentValue,
 		change_jpy: change,
@@ -805,4 +822,6 @@ export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerforman
 		period_end: ctx.nowIso,
 		note: PERFORMANCE_NOTE,
 	};
+	if (flow.unpriced_assets) performance.unpriced_flow_assets = flow.unpriced_assets;
+	return performance;
 }

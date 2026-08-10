@@ -21,6 +21,7 @@ import {
 	calcDepositWithdrawalSummary,
 	calcMarginPnl,
 	calcPeriodMarginPnl,
+	calcPeriodNetFlow,
 	calcPeriodRealizedPnl,
 	calcPnl,
 	getJstPeriodBoundaries,
@@ -888,6 +889,113 @@ describe('calcDepositWithdrawalSummary', () => {
 	});
 });
 
+// ── 期間ネットフロー ──
+
+describe('calcPeriodNetFlow', () => {
+	function makeDwData(overrides: Partial<DepositWithdrawalData> = {}): DepositWithdrawalData {
+		return {
+			deposits: [],
+			withdrawals: [],
+			warnings: [],
+			allFailed: false,
+			isComplete: true,
+			...overrides,
+		};
+	}
+
+	it('価格を引けない暗号資産の入庫: 資産名が unpriced_assets に載る（0 円計上を黙って落とさない）', () => {
+		const dw = makeDwData({
+			deposits: [makeDeposit({ uuid: 'd-doge', asset: 'doge', amount: '1000', confirmed_at: 2000 })],
+		});
+		const result = calcPeriodNetFlow(dw, 1000, new Map());
+		expect(result.net_flow_jpy).toBe(0); // 価格不明なので計上されない（＝過小になる）
+		expect(result.unpriced_assets).toEqual(['doge']);
+	});
+
+	it('価格を引けない暗号資産の出庫: 資産名が unpriced_assets に載る', () => {
+		const dw = makeDwData({
+			withdrawals: [makeWithdrawal({ uuid: 'w-doge', asset: 'doge', amount: '1000', fee: '5', requested_at: 2000 })],
+		});
+		const result = calcPeriodNetFlow(dw, 1000, new Map());
+		expect(result.net_flow_jpy).toBe(0);
+		// 出金手数料も JPY 換算できていない
+		expect(result.withdrawal_fee_jpy).toBe(0);
+		expect(result.unpriced_assets).toEqual(['doge']);
+	});
+
+	it('価格が全て引ける場合: unpriced_assets は付かず従来どおり 2 フィールドのみ', () => {
+		const dw = makeDwData({
+			deposits: [makeDeposit({ uuid: 'd-btc', asset: 'btc', amount: '0.5', confirmed_at: 2000 })],
+			withdrawals: [makeWithdrawal({ uuid: 'w-eth', asset: 'eth', amount: '1', fee: '0.005', requested_at: 2000 })],
+		});
+		const prices = new Map([
+			['btc', 10_000_000],
+			['eth', 400_000],
+		]);
+		const result = calcPeriodNetFlow(dw, 1000, prices);
+		// 入庫 5_000_000 - 出庫 400_000 = 4_600_000、手数料 0.005 * 400_000 = 2_000
+		expect(result).toEqual({ net_flow_jpy: 4_600_000, withdrawal_fee_jpy: 2_000 });
+		expect(Object.keys(result)).toEqual(['net_flow_jpy', 'withdrawal_fee_jpy']);
+	});
+
+	it('dw が null: warning なしで従来どおり { net_flow_jpy: 0, withdrawal_fee_jpy: 0 }', () => {
+		const result = calcPeriodNetFlow(null, 1000, new Map());
+		expect(result).toEqual({ net_flow_jpy: 0, withdrawal_fee_jpy: 0 });
+		expect(Object.keys(result)).toEqual(['net_flow_jpy', 'withdrawal_fee_jpy']);
+	});
+
+	it('JPY の入出金は価格解決の対象外: prices が空でも warning を出さない', () => {
+		const dw = makeDwData({
+			deposits: [makeDeposit({ uuid: 'd-jpy', asset: 'jpy', amount: '1000000', confirmed_at: 2000 })],
+			withdrawals: [makeWithdrawal({ uuid: 'w-jpy', asset: 'jpy', amount: '200000', fee: '550', requested_at: 2000 })],
+		});
+		const result = calcPeriodNetFlow(dw, 1000, new Map());
+		expect(result.net_flow_jpy).toBe(800_000);
+		expect(result.withdrawal_fee_jpy).toBe(550);
+		expect(result.unpriced_assets).toBeUndefined();
+	});
+
+	it('同一資産が複数件落ちても資産名は重複しない（昇順で返る）', () => {
+		const dw = makeDwData({
+			deposits: [
+				makeDeposit({ uuid: 'd-doge-1', asset: 'doge', amount: '1000', confirmed_at: 2000 }),
+				makeDeposit({ uuid: 'd-doge-2', asset: 'doge', amount: '2000', confirmed_at: 3000 }),
+				makeDeposit({ uuid: 'd-mona', asset: 'mona', amount: '10', confirmed_at: 3000 }),
+			],
+			withdrawals: [makeWithdrawal({ uuid: 'w-doge', asset: 'doge', amount: '500', requested_at: 4000 })],
+		});
+		const result = calcPeriodNetFlow(dw, 1000, new Map());
+		expect(result.unpriced_assets).toEqual(['doge', 'mona']);
+	});
+
+	it('期間外・未完了の入出庫は価格が無くても warning に載らない', () => {
+		const dw = makeDwData({
+			deposits: [
+				makeDeposit({ uuid: 'd-old', asset: 'doge', amount: '1000', confirmed_at: 500 }), // sinceMs 未満
+				makeDeposit({ uuid: 'd-pending', asset: 'mona', amount: '10', status: 'CONFIRMED', confirmed_at: 2000 }),
+			],
+			withdrawals: [
+				makeWithdrawal({ uuid: 'w-old', asset: 'doge', amount: '500', requested_at: 500 }),
+				makeWithdrawal({ uuid: 'w-pending', asset: 'mona', amount: '5', status: 'PROCESSING', requested_at: 2000 }),
+			],
+		});
+		const result = calcPeriodNetFlow(dw, 1000, new Map());
+		expect(result).toEqual({ net_flow_jpy: 0, withdrawal_fee_jpy: 0 });
+	});
+
+	it('数量ゼロ・数値不正の入出庫は金額に寄与しないため warning に載らない', () => {
+		const dw = makeDwData({
+			deposits: [
+				makeDeposit({ uuid: 'd-zero', asset: 'doge', amount: '0', confirmed_at: 2000 }),
+				makeDeposit({ uuid: 'd-nan', asset: 'mona', amount: 'abc', confirmed_at: 2000 }),
+			],
+			withdrawals: [makeWithdrawal({ uuid: 'w-zero', asset: 'doge', amount: '0', requested_at: 2000 })],
+		});
+		const result = calcPeriodNetFlow(dw, 1000, new Map());
+		expect(result.unpriced_assets).toBeUndefined();
+	});
+});
+
 // ── 期間別パフォーマンス（評価額比較） ──
 
 describe('buildPeriodPerformance', () => {
@@ -1139,6 +1247,70 @@ describe('buildPeriodPerformance', () => {
 			'period_end',
 			'note',
 		]);
+	});
+
+	it('価格を引けない入出庫がある場合: unpriced_flow_assets が末尾に足される（既存キー順は不変）', () => {
+		// 期間内に DOGE 入庫があるが currentPrices に DOGE が無い
+		// → net_flow_jpy には計上されず、資産名だけが申告される
+		const dw: DepositWithdrawalData = {
+			deposits: [{ uuid: 'd-doge', asset: 'doge', amount: '1000', status: 'DONE', found_at: 1500, confirmed_at: 1500 }],
+			withdrawals: [],
+			warnings: [],
+			allFailed: false,
+			isComplete: true,
+		};
+		const ctx = makeCtx({
+			currentHoldings: [{ asset: 'btc', amount: '1' }],
+			dwData: dw,
+			candlePriceData: {
+				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
+				dailyPrices: new Map(),
+			},
+			currentPrices: new Map([['btc', 12_000_000]]),
+			currentValue: 12_000_000,
+		});
+		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
+		expect(result.unpriced_flow_assets).toEqual(['doge']);
+		expect(result.net_flow_jpy).toBe(0);
+		// 追加キーは末尾。既存キーの並びは変わらない
+		expect(Object.keys(result)).toEqual([
+			'start_value_jpy',
+			'current_value_jpy',
+			'change_jpy',
+			'change_pct',
+			'net_flow_jpy',
+			'withdrawal_fee_jpy',
+			'adjusted_change_jpy',
+			'adjusted_change_pct',
+			'period_start',
+			'period_end',
+			'note',
+			'unpriced_flow_assets',
+		]);
+	});
+
+	it('価格を全て引ける場合: unpriced_flow_assets はキーごと出ない（JSON が従来と一致）', () => {
+		const dw: DepositWithdrawalData = {
+			deposits: [{ uuid: 'd-jpy', asset: 'jpy', amount: '500000', status: 'DONE', found_at: 1500, confirmed_at: 1500 }],
+			withdrawals: [],
+			warnings: [],
+			allFailed: false,
+			isComplete: true,
+		};
+		const ctx = makeCtx({
+			currentHoldings: [{ asset: 'btc', amount: '1' }],
+			dwData: dw,
+			candlePriceData: {
+				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
+				dailyPrices: new Map(),
+			},
+			currentPrices: new Map([['btc', 12_000_000]]),
+			currentValue: 12_500_000,
+		});
+		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
+		expect(result.unpriced_flow_assets).toBeUndefined();
+		expect(Object.keys(result)).not.toContain('unpriced_flow_assets');
+		expect(JSON.stringify(result)).not.toContain('unpriced_flow_assets');
 	});
 });
 

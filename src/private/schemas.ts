@@ -312,6 +312,12 @@ const PeriodPerformanceSchema = z
 		period_start: z.string().describe('期間の開始日時（ISO8601 JST）'),
 		period_end: z.string().describe('期間の終了日時（ISO8601 JST）'),
 		note: z.string().describe('計算方法・注意事項の説明'),
+		unpriced_flow_assets: z
+			.array(z.string())
+			.optional()
+			.describe(
+				'net_flow_jpy の算出時に現在価格を解決できなかった暗号資産シンボル一覧（小文字）。該当資産の入出庫は 0 円計上と等価で net_flow_jpy が過小になり、adjusted_change_jpy も同じ向きにずれる。全て解決できた場合は undefined。',
+			),
 	})
 	.optional();
 
@@ -415,6 +421,12 @@ export const AnalyzeMyPortfolioMetaSchema = z.object({
 		.optional()
 		.describe(
 			'equity series 構築時に現在価格にフォールバックした資産シンボル一覧（小文字）。equitySeriesQuality が partial_fallback / fallback_only のときのみ存在。',
+		),
+	warnings: z
+		.array(z.string())
+		.optional()
+		.describe(
+			'計算層の不完全性（価格を解決できず集計から落ちた入出庫など）。取得層の不完全性を表す各種 *FetchFailed / *Truncated フラグとは別系統で、summary 先頭にも別行で出力される。該当なしのときは undefined。',
 		),
 });
 
