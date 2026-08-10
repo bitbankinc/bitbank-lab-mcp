@@ -351,6 +351,10 @@ describe('cancel_order — 非 PrivateApiError の generic catch', () => {
 
 describe('cancel_order — handler (toolDef)', () => {
 	it('MCP tools/call 経由は valid token でも常に拒否する', async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValue(new Response(JSON.stringify(mockBitbankSuccess(canceledOrderResponse())), { status: 200 }));
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
 		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_id: 2001 });
 
 		const { toolDef } = await import('../../tools/private/cancel_order.js');
@@ -364,9 +368,17 @@ describe('cancel_order — handler (toolDef)', () => {
 		expect((result as { ok: boolean }).ok).toBe(false);
 		expect((result as { summary: string }).summary).toContain('MCP tools/call');
 		expect((result as { meta: { errorType: string } }).meta.errorType).toBe('direct_execute_forbidden');
+		expect(JSON.stringify(result)).not.toContain('confirmation_token');
+		expect(JSON.stringify(result)).not.toContain(confirmation_token);
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
 	it('invalid token でも同様に direct_execute_forbidden で拒否する', async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValue(new Response(JSON.stringify(mockBitbankSuccess(canceledOrderResponse())), { status: 200 }));
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
+
 		const { toolDef } = await import('../../tools/private/cancel_order.js');
 		const result = await toolDef.handler({
 			pair: 'btc_jpy',
@@ -377,5 +389,7 @@ describe('cancel_order — handler (toolDef)', () => {
 
 		expect((result as { ok: boolean }).ok).toBe(false);
 		expect((result as { meta: { errorType: string } }).meta.errorType).toBe('direct_execute_forbidden');
+		expect(JSON.stringify(result)).not.toContain('confirmation_token');
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 });

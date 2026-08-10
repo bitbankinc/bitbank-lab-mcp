@@ -15,8 +15,13 @@ description: 発注・キャンセルを守る2ステップ確認（HITL）と�
 発注・キャンセルは **preview → ユーザー明示確認（elicitation / MRTR）→ execute** が必須です。AI が単独で注文を確定することはできません。
 
 ```text
+発注:
 1. preview_order   → 注文内容を表示（確認トークンはサーバー内のみ）
 2. ユーザー accept → 同一ハンドラ内で create_order を実行
+
+キャンセル:
+1. preview_cancel_order / preview_cancel_orders → キャンセル内容を表示
+2. ユーザー accept                             → 同一ハンドラ内で cancel_order / cancel_orders を実行
 ```
 
 * 確認トークンは **HMAC-SHA256** で生成されます（`BITBANK_API_SECRET` を鍵に使用）が、**クライアントには返りません**。
