@@ -132,6 +132,25 @@ export const DIRECT_EXECUTE_FORBIDDEN_MESSAGE =
 /** MCP tools/call 経由の直接実行を拒否するときの errorType */
 export const DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE = 'direct_execute_forbidden';
 
+/**
+ * round 2 の requestState 検証に失敗したときの案内文（恒久的な失敗）。
+ * 引数の差し替え・別 action への流用・nonce の replay・期限切れをまとめてこの文言にする
+ * （どれが原因かを返すと、攻撃者に requestState の当たり判定を与えてしまう）。
+ */
+export const CONFIRM_STATE_INVALID_MESSAGE =
+	'確認情報が無効なため実行しませんでした（引数の変更・再利用・期限切れの可能性）。preview からやり直してください。';
+
+/**
+ * 使用済み nonce の記録が件数上限に達していて確認を通せなかったときの案内文（一時的な失敗）。
+ *
+ * 上の恒久的な失敗と文言を分ける理由: 容量超過は引数の変更でも期限切れでもないため、同じ文言に
+ * 畳むと「preview からやり直す」→ また同じ失敗、をユーザーが繰り返すことになる。実際には
+ * nonce は消費されておらず（生存エントリは追い出さない）、期限切れ記録が purge されて空きが
+ * 出れば回復するので、待って再試行するよう案内する。
+ */
+export const CONFIRM_CAPACITY_EXCEEDED_MESSAGE =
+	'確認処理が一時的に受け付けられないため実行しませんでした（確認待ちの記録が上限に達しています）。しばらく時間をおいてから preview をやり直してください。';
+
 export interface WithElicitedConfirmationOptions {
 	/** ハンドラに渡される MCP リクエストコンテキスト */
 	extra: ToolHandlerExtra | undefined;
@@ -212,20 +231,32 @@ export async function withElicitedConfirmation(
 		// requestState（verify フックで HMAC / 期限検証済み）の文脈バインドを検証する。
 		// 検証はユーザー応答の内容より先に行い、nonce は accept / decline を問わず消費する
 		// （拒否された確認の requestState を後から accept 付きで replay させない）。
+		//
+		// 短絡は意図的に維持する: action / argsDigest が一致しない再入では consumeNonce を
+		// 呼ばない（= nonce を消費しない）。「accept / decline を問わず消費する」は
+		// **この確認に対する応答**が対象であって、別文脈の requestState を投げ込まれたときまで
+		// 消費する意図ではない。ここで消費すると (1) 他の pending 確認の nonce を第三者の再入で
+		// 焼き潰せてしまい、(2) 引数を変えるだけの再入で使用済み記録の容量を埋められる。
+		// どちらも拒否は変わらないので、消費しない方が安全側。
 		const state = readConfirmState(opts.extra);
-		const bound =
-			state !== undefined &&
-			state.action === opts.action &&
-			state.argsDigest === digestArgs(opts.action, opts.bindArgs) &&
-			consumeNonce(state.nonce);
-		if (!bound) {
+		const consumption =
+			state !== undefined && state.action === opts.action && state.argsDigest === digestArgs(opts.action, opts.bindArgs)
+				? consumeNonce(state.nonce)
+				: undefined;
+		if (consumption?.consumed !== true) {
+			// fail-closed: 消費できなかった理由を問わず execute しない。文言だけは
+			// 一時的な失敗（容量超過）と恒久的な失敗（引数変更・replay・期限切れ）で分ける。
+			// どちらの経路でも nonce 本文はメッセージに含めない。
+			//
+			// 容量超過の残存リスク（許容する）: 上限に達している間は decline でも nonce を記録できず、
+			// その requestState は TTL 内なら再提示され得る（accept 付き replay を「拒否済みだから」では
+			// 弾けない）。空きが無い限り execute は一切通らないので実行そのものは起きず、記録できる
+			// ようになった時点で通常どおり one-time-use に戻る。記録のために生存 nonce を追い出す方が
+			// 危険（確定した replay を通す）なので、こちらを選ぶ。
+			const text =
+				consumption?.reason === 'capacity_exceeded' ? CONFIRM_CAPACITY_EXCEEDED_MESSAGE : CONFIRM_STATE_INVALID_MESSAGE;
 			return {
-				content: [
-					{
-						type: 'text',
-						text: '確認情報が無効なため実行しませんでした（引数の変更・再利用・期限切れの可能性）。preview からやり直してください。',
-					},
-				],
+				content: [{ type: 'text', text }],
 				structuredContent: safeDeclinedStructured,
 			};
 		}
