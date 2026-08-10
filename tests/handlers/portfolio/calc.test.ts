@@ -514,6 +514,40 @@ describe('reconstructHoldingsAtDate', () => {
 		const result = reconstructHoldingsAtDate(currentHoldings, trades, 1000, dw);
 		expect(result.has('btc')).toBe(false);
 	});
+
+	it('入庫→出庫を経由した口座でも期初保有を過大に復元しない（入庫相の途中ゼロ床クランプ禁止）', () => {
+		// 時系列: 0 BTC → deposit 2 → withdrawal 1 → 現在 1 BTC（履歴と残高は整合）
+		// 両イベントより前へ巻き戻すと期初は 0。
+		// 旧実装は入庫相で 1-2=-1 を delete してしまい、出庫相で 0+1=1 と過大復元していた。
+		const currentHoldings = [{ asset: 'btc', amount: '1' }];
+		const dw: DepositWithdrawalData = {
+			deposits: [
+				makeDeposit({
+					uuid: 'dep-then-out',
+					asset: 'btc',
+					amount: '2',
+					status: 'DONE',
+					found_at: 2000,
+					confirmed_at: 2000,
+				}),
+			],
+			withdrawals: [
+				makeWithdrawal({
+					uuid: 'wd-after-dep',
+					asset: 'btc',
+					amount: '1',
+					fee: '0',
+					status: 'DONE',
+					requested_at: 3000,
+				}),
+			],
+			warnings: [],
+			allFailed: false,
+			isComplete: true,
+		};
+		const result = reconstructHoldingsAtDate(currentHoldings, [], 1000, dw);
+		expect(result.has('btc')).toBe(false);
+	});
 });
 
 // ── 信用 PnL 集計 ──
