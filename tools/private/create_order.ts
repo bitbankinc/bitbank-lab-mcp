@@ -78,8 +78,9 @@ export default async function createOrder(
 
 	const tokenError = validateToken(confirmation_token, 'create_order', tokenParams, token_expires_at);
 	if (tokenError) {
-		// token_already_used / token_expired / token_invalid をそのまま errorType に伝播。
-		// 二重発注は errorType=token_already_used で検出可能。
+		// token_already_used / token_expired / token_invalid / token_store_full を
+		// そのまま errorType に伝播。二重発注は errorType=token_already_used で検出可能。
+		// token_store_full は使用済み記録が満杯で再利用を検知できない状態（fail-closed）。
 		return CreateOrderOutputSchema.parse(fail(tokenError.message, tokenError.code));
 	}
 
