@@ -100,6 +100,44 @@ describe('get_my_assets', () => {
 		expect(result.summary).toContain('ticker');
 	});
 
+	/**
+	 * API が返す asset は取得境界で小文字へ正規化する（`lib/asset-code.ts`）。
+	 * 出力の表記契約は「structuredContent は小文字 / サマリー表示は大文字」で、
+	 * 正規化を入れても現行の小文字レスポンスに対しては何も変わらない。
+	 */
+	describe('API asset の取得境界正規化', () => {
+		it('小文字レスポンスでは出力の asset 表記が変わらない', async () => {
+			setupFetchMock({});
+
+			const { default: getMyAssets } = await import('../../tools/private/get_my_assets.js');
+			const result = await getMyAssets({ include_jpy_valuation: true });
+
+			assertOk(result);
+			expect(result.data.assets.map((a) => a.asset)).toEqual(['btc', 'eth', 'jpy', 'xrp']);
+			// サマリー表示は従来どおり大文字
+			expect(result.summary).toContain('BTC:');
+			expect(result.summary).toContain('JPY:');
+		});
+
+		it('大文字レスポンスでも structuredContent の asset は小文字契約を保つ', async () => {
+			setupFetchMock({
+				assetsResponse: mockBitbankSuccess({
+					assets: rawAssetsResponse.assets.map((a) => ({ ...a, asset: a.asset.toUpperCase() })),
+				}),
+			});
+
+			const { default: getMyAssets } = await import('../../tools/private/get_my_assets.js');
+			const result = await getMyAssets({ include_jpy_valuation: true });
+
+			assertOk(result);
+			expect(result.data.assets.map((a) => a.asset)).toEqual(['btc', 'eth', 'jpy', 'xrp']);
+			// JPY 判定 (`a.asset === 'jpy'`) と prices.get(asset) が外れないこと
+			expect(result.data.assets.find((a) => a.asset === 'jpy')?.jpy_value).toBe(500_000);
+			expect(result.data.assets.find((a) => a.asset === 'btc')?.jpy_value).toBe(0.6 * 15_500_000);
+			expect(result.summary).toContain('BTC:');
+		});
+	});
+
 	it('PrivateApiError で fail を返す', async () => {
 		setupFetchMock({
 			assetsResponse: mockBitbankError(20001),
