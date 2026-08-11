@@ -13,6 +13,7 @@
  */
 
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
+import { isJpyQuotedPair } from '../../lib/pair-code.js';
 import { fail, ok, toStructured } from '../../lib/result.js';
 import { generateToken } from '../../src/private/confirmation.js';
 import { withElicitedConfirmation } from '../../src/private/elicitation.js';
@@ -26,7 +27,7 @@ import getOrder from './get_order.js';
 function formatOrderDetailLines(order: OrderResponse, pair: string): string[] {
 	const sideLabel = order.side === 'buy' ? '買' : '売';
 	const posLabel = formatOrderPositionLabel(order.position_side);
-	const isJpy = pair.includes('jpy');
+	const isJpy = isJpyQuotedPair(pair);
 	const price = order.price ? (isJpy ? formatPrice(Number(order.price)) : order.price) : '成行';
 	const amount = order.start_amount ?? order.executed_amount ?? '?';
 	const lines: string[] = [];

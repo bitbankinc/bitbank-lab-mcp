@@ -9,7 +9,7 @@
 
 import { nowIso, toIsoMs } from '../../lib/datetime.js';
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
-import { withNormalizedPair } from '../../lib/pair-code.js';
+import { isJpyQuotedPair, withNormalizedPair } from '../../lib/pair-code.js';
 import { ok, toStructured } from '../../lib/result.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
@@ -21,7 +21,7 @@ import type { ToolDefinition } from '../../src/tool-definition.js';
 function formatOrderSummary(o: OrderResponse, pair: string): string {
 	const sideLabel = o.side === 'buy' ? '買' : '売';
 	const posLabel = formatOrderPositionLabel(o.position_side);
-	const isJpy = pair.includes('jpy');
+	const isJpy = isJpyQuotedPair(pair);
 	const price = o.price ? (isJpy ? formatPrice(Number(o.price)) : o.price) : '成行';
 	const amount = o.start_amount ?? o.executed_amount;
 	const lines: string[] = [];

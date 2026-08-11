@@ -663,7 +663,8 @@ drift 時に「ミラー要更新」issue を起票する。
 
 ## pair シンボルの表記（取得境界で小文字へ正規化する）
 
-**API が返す `pair` は取得境界で小文字へ正規化して扱う。** 正規化は `lib/pair-code.ts` の
+**API が返す `pair` は取得境界で正規化して扱う。正規化 = 前後の空白除去 + 小文字化**の 2 つだけ
+（`normalizePair` / `normalizeAssetCode` と同じ契約）。正規化は `lib/pair-code.ts` の
 `normalizePairCode` / `withNormalizedPair` / `normalizePairCodes` に集約し、
 **消費側に `.toLowerCase()` を撒かない**（asset コードと同方針）。
 
@@ -693,6 +694,7 @@ drift 時に「ミラー要更新」issue を起票する。
 | `tools/private/get_margin_trade_history.ts` | 単発・ページネーション両経路の `trades[].pair` |
 | `tools/private/get_my_orders.ts` | `active_orders` の `orders[].pair` |
 | `tools/private/get_margin_positions.ts` | `margin/positions` の `positions[].pair` |
+| `tools/private/get_margin_status.ts` | `margin/status` の `available_balances[].pair` |
 | `tools/private/get_order.ts` / `get_orders_info.ts` | `order.pair` / `orders[].pair` |
 | `tools/private/create_order.ts` / `cancel_order.ts` / `cancel_orders.ts` | 発注・キャンセル応答の `order.pair` / `orders[].pair`（出力契約のみ。リクエストの `pair` はユーザー入力のまま） |
 | `lib/pairs.ts`（先行実装） | `/spot/pairs` の `name`（`String(raw.name).toLowerCase()`） |
@@ -705,26 +707,34 @@ asset から組んだ `${asset}_jpy` と `paginateTrades` が正規化した `t.
 ### 取得境界でやらないこと
 
 - **`ALLOWED_PAIRS` による検証**（`ensurePair`）。入力の受け口の仕事であり、口座に非対応 pair
-  （上場廃止ペア等）の履歴があっても取得層で落としてはならない。取得境界でやるのは小文字化のみで、
-  **drop も throw もしない**。
+  （上場廃止ペア等）の履歴があっても取得層で落としてはならない。取得境界でやるのは
+  **前後の空白除去 + 小文字化の 2 つだけ**で、**drop も throw もしない**。
 - **形式検証**（`lib/validate.ts` の `normalizePair` は不正形式で `null` を返す設計）。取得境界に
   そのまま流用しない。
 
 ### 表記の契約（変えないこと）
 
 - `structuredContent` / `data` の `pair` は**小文字**（`trades[].pair` / `orders[].pair` /
-  `positions[].pair` / `holdings[].pair` 等）。
+  `positions[].pair` / `holdings[].pair` / `available_balances[].pair` 等）。
 - 表示層（サマリー文字列）は従来どおり `formatPair`（`lib/formatter.ts`、`toUpperCase()`）で**大文字**。
 - 規約テスト: `tests/lib/pair-code.test.ts`、`tests/handlers/portfolio/pair-normalization.test.ts`、
   各 Private ツールテストの「API pair の取得境界正規化」describe。
 
-### 本ルールの対象外
+### ユーザー入力 pair の扱い（本ルールとは別レイヤー）
 
-- **ユーザー入力の pair**（`lib/validate.ts` の `normalizePair` / `ensurePair`）。入力の受け口であり
-  別レイヤー。API レスポンスの受け口である本ルールと混ぜない。
-  なお `get_margin_positions` はユーザー入力 pair を API 応答と `===` 比較する（クライアント側フィルタ）
-  ため、**入力側も `normalizePair` を通して同じ小文字空間に乗せる**（`ensurePair` は使わない。
-  ALLOWED_PAIRS に無い上場廃止ペアの建玉を照会できなくなるため）。
+ユーザー入力 pair の正規化・検証は `lib/validate.ts` の `normalizePair` / `ensurePair` の担当で、
+API レスポンスの受け口である本ルールと混ぜない。ただし**入力 pair が API 応答由来の値と
+突き合わされる／JPY 判定に使われる**経路では、入力側も同じ小文字空間に乗せる必要がある。
+
+| 経路 | 扱い |
+|---|---|
+| `get_margin_positions` のクライアント側フィルタ（`p.pair === pair`） | 入力を `normalizePair` に通す。`ensurePair` は使わない（ALLOWED_PAIRS に無い上場廃止ペアの建玉を照会できなくなる）。形式不正は `?? args.pair` で素通しし API の判断に委ねる。**この経路は正規化後の値を API リクエストの `pair` パラメータにも使う**（bitbank は小文字を期待するため改善方向） |
+| `get_order` / `get_orders_info` / `create_order` / `cancel_order` / `cancel_orders` / `preview_order` / `preview_cancel_order` の JPY 建て判定 | `lib/pair-code.ts` の `isJpyQuotedPair`（内部で `normalizePairCode` を通す）を使う。**API リクエストに送る `pair` はユーザー入力のまま**で、正規化するのは判定と応答側のみ |
+
+`isJpyQuotedPair` は「消費側に `.toLowerCase()` を撒く」ことにはあたらない。撒くのが禁物なのは
+*API レスポンスの正規化*（取得境界の責務）であって、こちらは取得境界を通らないユーザー入力を
+判定側で吸収するもの。判定条件は既存の `includes('jpy')` を保つ（`lib/price.ts` の
+`isJpyPair` = `endsWith('_jpy')` とは用途が違うので統合しない）。
 
 ## 機密フィールドの取り扱い（出力から除外必須）
 

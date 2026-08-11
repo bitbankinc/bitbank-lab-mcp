@@ -7,6 +7,7 @@
 
 import { nowIso } from '../../lib/datetime.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
+import { normalizePairCodes } from '../../lib/pair-code.js';
 import { ok } from '../../lib/result.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import { GetMarginStatusInputSchema, GetMarginStatusOutputSchema } from '../../src/private/schemas.js';
@@ -144,7 +145,9 @@ export default async function getMarginStatus(_args: Record<string, unknown>) {
 			losscut_percentage: raw.losscut_percentage,
 			buy_credit: raw.buy_credit,
 			sell_credit: raw.sell_credit,
-			available_balances: raw.available_balances ?? [],
+			// 取得境界での pair 正規化（`lib/pair-code.ts`）。`data.available_balances[].pair` は
+			// structuredContent に公開されるので小文字契約を保つ。表示は formatPair で従来どおり大文字。
+			available_balances: normalizePairCodes(raw.available_balances ?? []),
 			timestamp,
 		};
 
