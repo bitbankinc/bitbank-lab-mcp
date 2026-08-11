@@ -393,3 +393,34 @@ describe('cancel_order — handler (toolDef)', () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 });
+
+/**
+ * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
+ * `data.order.pair` の小文字契約を保つのが目的。表示・JPY 判定は引数の `pair`
+ * （ユーザー入力）由来なので出力の他の部分は不変。防御的正規化（現行 API は小文字）。
+ */
+describe('cancel_order — API pair の取得境界正規化', () => {
+	it('小文字レスポンスでは出力が変わらない（回帰なし）', async () => {
+		setupFetchMock(mockBitbankSuccess(canceledOrderResponse()));
+		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_id: 2001 });
+
+		const { default: cancelOrder } = await import('../../tools/private/cancel_order.js');
+		const result = await cancelOrder({ pair: 'btc_jpy', order_id: 2001, confirmation_token, token_expires_at });
+
+		assertOk(result);
+		expect(result.data.order.pair).toBe('btc_jpy');
+		expect(result.summary).toContain('BTC/JPY');
+	});
+
+	it('大文字レスポンスでも structuredContent の pair は小文字契約を保つ', async () => {
+		setupFetchMock(mockBitbankSuccess(canceledOrderResponse({ pair: 'BTC_JPY' })));
+		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_id: 2001 });
+
+		const { default: cancelOrder } = await import('../../tools/private/cancel_order.js');
+		const result = await cancelOrder({ pair: 'btc_jpy', order_id: 2001, confirmation_token, token_expires_at });
+
+		assertOk(result);
+		expect(result.data.order.pair).toBe('btc_jpy');
+		expect(result.summary).toContain('BTC/JPY');
+	});
+});

@@ -1813,3 +1813,172 @@ describe('analyze_my_portfolio — API asset の取得境界正規化', () => {
 		expect(upperResult.summary).toBe(lowerResult.summary);
 	});
 });
+
+/**
+ * API が返す pair シンボルの取得境界正規化（`lib/pair-code.ts`）のハンドラレベル検証。
+ *
+ * 約定履歴の `pair` と `tickers_jpy` の `pair` は取得境界で小文字へ揃える。揃えないと
+ * `'BTC_JPY'.replace('_jpy', '')` が**何も置換しない**ため、pair 由来の asset が
+ * `lib/asset-code.ts` で正規化した小文字 asset と割れ、
+ *   - `prices` のキーが `BTC_JPY` になって評価額が算出できない
+ *   - `calcPnl` の `t.pair === 'btc_jpy'` が 0 件マッチで平均取得単価・実現損益が消える
+ *   - PR #37 の `unpriced_flow_assets` warning が全銘柄に対して誤検知する
+ * が同時に起きる（`docs/internal/bitbank-api-fields.md` 参照）。
+ *
+ * 現行 API は小文字を返すため、これは防御的正規化。小文字レスポンスでの出力不変も併せて固定する。
+ */
+describe('analyze_my_portfolio — API pair の取得境界正規化', () => {
+	/** 2026-05-16 12:00 JST */
+	const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
+	/** 年初より前の買い（期初保有の復元・期間実現損益に影響しない位置） */
+	const buyMs = Date.UTC(2025, 5, 1, 0, 0, 0, 0);
+	/** 2026-05-16 10:00 JST。当日・当月・当年のいずれの期間にも入る入庫 */
+	const inPeriodMs = Date.UTC(2026, 4, 16, 1, 0, 0, 0);
+
+	const assetsResponse = {
+		assets: [
+			{
+				asset: 'btc',
+				free_amount: '0.6',
+				amount_precision: 8,
+				onhand_amount: '0.6',
+				locked_amount: '0',
+				withdrawing_amount: '0',
+				withdrawal_fee: { min: '0.0006', max: '0.0006' },
+				stop_deposit: false,
+				stop_withdrawal: false,
+				collateral_ratio: '0.95',
+			},
+			{
+				asset: 'jpy',
+				free_amount: '500000',
+				amount_precision: 0,
+				onhand_amount: '500000',
+				locked_amount: '0',
+				withdrawing_amount: '0',
+				withdrawal_fee: { under: '550', over: '770', threshold: '30000' },
+				stop_deposit: false,
+				stop_withdrawal: false,
+				collateral_ratio: '1',
+			},
+		],
+	};
+
+	function tradesResponse(pair: string) {
+		return {
+			trades: [
+				{
+					trade_id: 1,
+					pair,
+					order_id: 1,
+					side: 'buy',
+					type: 'limit',
+					amount: '0.6',
+					price: '10000000',
+					maker_taker: 'maker',
+					fee_amount_base: '0',
+					fee_amount_quote: '0',
+					fee_occurred_amount_quote: '0',
+					executed_at: buyMs,
+				},
+			],
+		};
+	}
+
+	/** 期間内の BTC 入庫。価格を解決できないと unpriced_flow_assets に載る */
+	const depositsResponse = {
+		deposits: [
+			{ uuid: 'dep-btc', asset: 'btc', amount: '0.1', status: 'DONE', found_at: inPeriodMs, confirmed_at: inPeriodMs },
+		],
+	};
+
+	/** tickers_jpy の pair だけ大文字にした版 */
+	function tickersWithPairCase(uppercase: boolean) {
+		return {
+			...tickersJpy,
+			data: tickersJpy.data.map((t) => ({ ...t, pair: uppercase ? t.pair.toUpperCase() : t.pair })),
+		};
+	}
+
+	function mockAll(uppercase: boolean) {
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			const margin = maybeMarginAccountResponse(urlStr);
+			if (margin) return margin;
+
+			if (urlStr.includes('tickers_jpy')) {
+				return new Response(JSON.stringify(tickersWithPairCase(uppercase)), { status: 200 });
+			}
+			if (urlStr.includes('candlestick')) {
+				return new Response(JSON.stringify(candlesBtcJpy1day120), { status: 200 });
+			}
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(assetsResponse)), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				const payload = urlStr.includes('type=margin')
+					? { trades: [] }
+					: tradesResponse(uppercase ? 'BTC_JPY' : 'btc_jpy');
+				return new Response(JSON.stringify(mockBitbankSuccess(payload)), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(depositsResponse)), { status: 200 });
+			}
+			if (urlStr.includes('withdrawal_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ withdrawals: [] })), { status: 200 });
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+	}
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('大文字 pair のレスポンスでも評価額・取得原価・warning が壊れない', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		mockAll(true);
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		const btc = result.data.holdings.find((h) => h.asset === 'btc');
+		// prices のキーが BTC_JPY だと評価額が undefined になる
+		expect(btc?.jpy_value).toBe(0.6 * 15_500_000);
+		// calcPnl の `t.pair === 'btc_jpy'` が 0 件マッチだと以下が全て消える
+		expect(btc?.trade_count).toBe(1);
+		expect(btc?.avg_buy_price).toBe(10_000_000);
+		expect(btc?.cost_basis).toBe(6_000_000);
+		expect(btc?.pair).toBe('btc_jpy');
+		// pair 由来の asset が `lib/asset-code.ts` の小文字 asset と割れていない
+		expect(result.data.holdings.map((h) => h.asset).sort()).toEqual(['btc', 'jpy']);
+		// PR #37 の warning 経路。BTC の価格は引けているので誤検知してはいけない
+		expect(result.data.daily_performance?.unpriced_flow_assets).toBeUndefined();
+		expect(result.meta.warnings).toBeUndefined();
+		expect(result.data.daily_performance?.net_flow_jpy).toBe(Math.round(0.1 * 15_500_000));
+	});
+
+	it('大文字レスポンスと小文字レスポンスで data / summary が完全一致する', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const args = { include_technical: false, include_pnl: true, include_deposit_withdrawal: true };
+
+		mockAll(true);
+		const upperResult = await handler(args);
+		mockAll(false);
+		const lowerResult = await handler(args);
+
+		assertOk(upperResult);
+		assertOk(lowerResult);
+		expect(upperResult.data).toEqual(lowerResult.data);
+		expect(upperResult.summary).toBe(lowerResult.summary);
+	});
+});

@@ -1208,3 +1208,46 @@ describe('create_order — 事前再検証（ペア仕様 / トリガー価格�
 		expect(result.summary).toContain('注文発注完了');
 	});
 });
+
+/**
+ * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
+ * `data.order.pair` の小文字契約を保つのが目的。リクエストボディの `pair` と表示・JPY 判定は
+ * ユーザー入力のままで不変。防御的正規化（現行 API は小文字）。
+ */
+describe('create_order — API pair の取得境界正規化', () => {
+	const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
+
+	async function placeOrder() {
+		const { confirmation_token, token_expires_at } = validToken(params);
+		const { default: createOrder } = await import('../../tools/private/create_order.js');
+		return createOrder({
+			...params,
+			side: params.side as 'buy' | 'sell',
+			type: params.type as 'limit',
+			confirmation_token,
+			token_expires_at,
+		});
+	}
+
+	it('小文字レスポンスでは出力が変わらない（回帰なし）', async () => {
+		setupFetchMockSequence([{ body: orderSuccessResponse({ side: 'buy', type: 'limit', price: '14000000' }) }]);
+
+		const result = await placeOrder();
+
+		assertOk(result);
+		expect(result.data.order.pair).toBe('btc_jpy');
+		expect(result.summary).toContain('BTC/JPY');
+	});
+
+	it('大文字レスポンスでも structuredContent の pair は小文字契約を保つ', async () => {
+		setupFetchMockSequence([
+			{ body: orderSuccessResponse({ pair: 'BTC_JPY', side: 'buy', type: 'limit', price: '14000000' }) },
+		]);
+
+		const result = await placeOrder();
+
+		assertOk(result);
+		expect(result.data.order.pair).toBe('btc_jpy');
+		expect(result.summary).toContain('BTC/JPY');
+	});
+});
