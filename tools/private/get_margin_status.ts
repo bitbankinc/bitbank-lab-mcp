@@ -7,6 +7,7 @@
 
 import { nowIso } from '../../lib/datetime.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
+import { normalizePairCodes } from '../../lib/pair-code.js';
 import { ok } from '../../lib/result.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import { GetMarginStatusInputSchema, GetMarginStatusOutputSchema } from '../../src/private/schemas.js';
@@ -58,6 +59,11 @@ export default async function getMarginStatus(_args: Record<string, unknown>) {
 		const raw = await client.get<RawMarginStatus>('/v1/user/margin/status');
 		const timestamp = nowIso();
 
+		// 取得境界での pair 正規化（`lib/pair-code.ts`）。以降はサマリー表示・`data` とも
+		// **この 1 つの値だけ**を使い、`raw.available_balances` を読み直さない。
+		// 読み直すと片方だけ未正規化になり、どちらが担保されているか読めなくなる。
+		const availableBalances = normalizePairCodes(raw.available_balances ?? []);
+
 		const hasWarning = WARNING_STATUSES.has(raw.status);
 		const statusLabel = STATUS_LABELS[raw.status] ?? raw.status;
 
@@ -102,7 +108,6 @@ export default async function getMarginStatus(_args: Record<string, unknown>) {
 		lines.push(
 			`与信 — 買建: ${formatPrice(Number(raw.buy_credit))} 円 / 売建: ${formatPrice(Number(raw.sell_credit))} 円`,
 		);
-		const availableBalances = raw.available_balances ?? [];
 		if (availableBalances.length > 0) {
 			lines.push('新規建て可能額（ペアごと）:');
 			for (const b of availableBalances) {
@@ -144,7 +149,8 @@ export default async function getMarginStatus(_args: Record<string, unknown>) {
 			losscut_percentage: raw.losscut_percentage,
 			buy_credit: raw.buy_credit,
 			sell_credit: raw.sell_credit,
-			available_balances: raw.available_balances ?? [],
+			// 上の取得境界で正規化済みの値をそのまま使う（`structuredContent` は小文字契約）。
+			available_balances: availableBalances,
 			timestamp,
 		};
 

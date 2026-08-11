@@ -293,3 +293,81 @@ describe('get_margin_positions — handler (toolDef)', () => {
 		expect((result as { ok: boolean }).ok).toBe(true);
 	});
 });
+
+/**
+ * pair の正規化は 2 レイヤーある。同じ 1 行（`p.pair === pair`）の両側なのでまとめて固定する。
+ *
+ * - **API 応答側**: 取得境界で小文字化（`lib/pair-code.ts`）。揃えないとフィルタが全件落とし、
+ *   JPY 建て判定（`p.pair.includes('jpy')`）も外れて平均取得価格が円フォーマットされない。
+ * - **ユーザー入力側**: `lib/validate.ts` の `normalizePair`。`BTC_JPY` と入力されると
+ *   応答側（小文字）と `===` が一致せず建玉が全件消える。`ensurePair` は使わない
+ *   （ALLOWED_PAIRS に無い上場廃止ペアの建玉を照会できなくなるため）。
+ */
+describe('get_margin_positions — pair の正規化', () => {
+	const upperResponse = {
+		...rawMarginPositionsResponse,
+		positions: rawMarginPositionsResponse.positions.map((p) => ({ ...p, pair: p.pair.toUpperCase() })),
+	};
+
+	it('小文字レスポンス + 小文字入力では出力が変わらない（回帰なし）', async () => {
+		setupFetchMock(mockBitbankSuccess(rawMarginPositionsResponse));
+
+		const { default: getMarginPositions } = await import('../../tools/private/get_margin_positions.js');
+		const result = await getMarginPositions({ pair: 'btc_jpy' });
+
+		assertOk(result);
+		expect(result.data.positions.map((p) => p.pair)).toEqual(['btc_jpy']);
+		expect(result.meta.pair).toBe('btc_jpy');
+		expect(result.summary).toContain('BTC/JPY');
+		expect(result.summary).toContain('¥15,000,000');
+	});
+
+	it('大文字レスポンスでも pair フィルタが建玉を返す', async () => {
+		setupFetchMock(mockBitbankSuccess(upperResponse));
+
+		const { default: getMarginPositions } = await import('../../tools/private/get_margin_positions.js');
+		const result = await getMarginPositions({ pair: 'btc_jpy' });
+
+		assertOk(result);
+		// 正規化前は 'BTC_JPY' === 'btc_jpy' が偽で建玉が全件消えていた
+		expect(result.data.positions.map((p) => p.pair)).toEqual(['btc_jpy']);
+		expect(result.meta.positionCount).toBe(1);
+	});
+
+	it('大文字レスポンスでも JPY 建て判定が崩れない（平均取得価格の円フォーマット）', async () => {
+		setupFetchMock(mockBitbankSuccess(upperResponse));
+
+		const { default: getMarginPositions } = await import('../../tools/private/get_margin_positions.js');
+		const result = await getMarginPositions({});
+
+		assertOk(result);
+		expect(result.data.positions.map((p) => p.pair)).toEqual(['btc_jpy', 'eth_jpy']);
+		expect(result.summary).toContain('¥15,000,000');
+		expect(result.summary).not.toContain(' 15000000 ');
+	});
+
+	it('ユーザー入力が大文字でも建玉を返す（入力レイヤーの正規化）', async () => {
+		setupFetchMock(mockBitbankSuccess(rawMarginPositionsResponse));
+
+		const { default: getMarginPositions } = await import('../../tools/private/get_margin_positions.js');
+		const result = await getMarginPositions({ pair: 'BTC_JPY' });
+
+		assertOk(result);
+		expect(result.data.positions.map((p) => p.pair)).toEqual(['btc_jpy']);
+		expect(result.meta.pair).toBe('btc_jpy');
+	});
+
+	it('ALLOWED_PAIRS に無い pair でも取得層で落とさない（上場廃止ペアの建玉）', async () => {
+		const delisted = {
+			...rawMarginPositionsResponse,
+			positions: [{ ...rawMarginPositionsResponse.positions[0], pair: 'MONA_JPY' }],
+		};
+		setupFetchMock(mockBitbankSuccess(delisted));
+
+		const { default: getMarginPositions } = await import('../../tools/private/get_margin_positions.js');
+		const result = await getMarginPositions({ pair: 'mona_jpy' });
+
+		assertOk(result);
+		expect(result.data.positions.map((p) => p.pair)).toEqual(['mona_jpy']);
+	});
+});

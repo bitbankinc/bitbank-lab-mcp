@@ -14,6 +14,7 @@
 import { nowIso, toIsoMs } from '../../lib/datetime.js';
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
 import { logTradeAction } from '../../lib/logger.js';
+import { isJpyQuotedPair, withNormalizedPair } from '../../lib/pair-code.js';
 import { fail, ok } from '../../lib/result.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import { validateToken } from '../../src/private/confirmation.js';
@@ -48,13 +49,17 @@ export default async function cancelOrder(
 	const client = getDefaultClient();
 
 	try {
-		const rawOrder = await client.post<OrderResponse>('/v1/user/spot/cancel_order', {
-			pair,
-			order_id,
-		});
+		// 取得境界での pair 正規化（`lib/pair-code.ts`）。`data.order.pair` は小文字契約で返す。
+		// 表示・JPY 判定は引数の `pair`（ユーザー入力）を使うので、ここは出力契約のためだけ。
+		const rawOrder = withNormalizedPair(
+			await client.post<OrderResponse>('/v1/user/spot/cancel_order', {
+				pair,
+				order_id,
+			}),
+		);
 
 		const timestamp = nowIso();
-		const isJpy = pair.includes('jpy');
+		const isJpy = isJpyQuotedPair(pair);
 		const sideLabel = rawOrder.side === 'buy' ? '買' : '売';
 		const posLabel = formatOrderPositionLabel(rawOrder.position_side);
 		const price = rawOrder.price ? (isJpy ? formatPrice(Number(rawOrder.price)) : rawOrder.price) : '成行';

@@ -8,6 +8,7 @@
 import { nowIso } from '../../lib/datetime.js';
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
 import { logTradeAction } from '../../lib/logger.js';
+import { isJpyQuotedPair, normalizePairCodes } from '../../lib/pair-code.js';
 import { fail, ok } from '../../lib/result.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import { validateToken } from '../../src/private/confirmation.js';
@@ -48,8 +49,10 @@ export default async function cancelOrders(
 		});
 
 		const timestamp = nowIso();
-		const orders = rawData.orders;
-		const isJpy = pair.includes('jpy');
+		// 取得境界での pair 正規化（`lib/pair-code.ts`）。`data.orders[].pair` は小文字契約で返す。
+		// 表示・JPY 判定は引数の `pair`（ユーザー入力）を使うので、ここは出力契約のためだけ。
+		const orders = normalizePairCodes(rawData.orders);
+		const isJpy = isJpyQuotedPair(pair);
 
 		const lines: string[] = [];
 		lines.push(`一括キャンセル完了: ${formatPair(pair)} ${orders.length}件`);
