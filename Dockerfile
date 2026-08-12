@@ -13,6 +13,12 @@ RUN npm ci
 RUN mkdir -p assets && \
     cp node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js assets/lightweight-charts.standalone.js
 
+# serverInfo.version is read from package.json at runtime, but the repo value is a
+# placeholder (0.0.0-dev). The release workflow passes the tag version as a build arg.
+# Kept after `npm ci` so the install layer stays cached across releases.
+ARG VERSION=0.0.0-dev
+RUN npm pkg set version="$VERSION"
+
 # Copy the rest of the application's source code
 COPY --chown=node:node src ./src
 COPY --chown=node:node tools ./tools
