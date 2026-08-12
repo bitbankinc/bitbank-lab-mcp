@@ -12,6 +12,11 @@
 git tag v0.5.0 && git push origin v0.5.0
 ```
 
+> **`package.json` の `version` は手で更新しないこと。**
+> publish 時にワークフローが `npm version "$VERSION" --no-git-tag-version` でタグから設定します。
+> リポジトリ上の値は `0.0.0-dev` のプレースホルダで、公開バージョンとは一致しません。
+> 手で更新すると「変更なし」エラーでリリースが失敗します。
+
 | ステップ | 内容 |
 |---|---|
 | 1. CI gate | lint / typecheck / test をタグ時点のコードで再実行 |
