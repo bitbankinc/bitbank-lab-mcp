@@ -153,14 +153,20 @@ MCP 仕様（SEP-1624 の整理）では `CallToolResult.content` と `structure
 1. **LLM が判断すべき情報は `content[0].text` に厚く載せる。** 件数・主要フィールド・warning・打ち切り状態・ユーザー確認が必要な旨は、`content` を読んだだけで判断できるようにする。`.claude/rules/tools.md` の「content テキストにデータを含める」も参照。
 2. **`structuredContent` は UI / 機械処理 / 将来クライアント向けの補助データ**として扱う。「LLM 非可視」を安全境界とは**みなさない**。設計上 `structuredContent` を読むのは UI ウィジェット・Inspector・スクリプトと想定する。
 3. **CRITICAL 情報（`BITBANK_API_KEY` / `BITBANK_API_SECRET` / `ACCESS-SIGNATURE` 等）は `content` / `structuredContent` / `_meta` のどこにも載せない。** `.claude/rules/sensitive-data.md` の CRITICAL 区分に従う。
-4. **`confirmation_token`** は CRITICAL 寄りの「実行鍵」。後述の「`confirmation_token` の受け渡し」節に従い、`content` / `structuredContent` / `_meta` のいずれにも載せず、elicitation / MRTR 経路のみでサーバー内完結させる。
+4. **`confirmation_token`** は CRITICAL 寄りの「実行鍵」。**`content` / `structuredContent` には決して載せない。** `_meta` にのみ載せる経路はオプトイン + MCP Apps UI 宣言の 2 段ゲート下でだけ開く（後述の「`confirmation_token` の受け渡し」節）。
 
 #### `confirmation_token` の受け渡し
 
 `confirmation_token` は本来「ユーザーの最終確認を経たことの証拠」であり、LLM が独断で引用して `create_order` を呼べる文字列にしてはならない。実装は次の階層で扱う（設計判断の背景は `docs/adr/0007-hitl-confirmation-token-delivery.md` を参照）:
 
 1. **第一選択（elicitation / MRTR を扱えるホスト）** — MRTR（SEP-2322）スタイルで実装。round 1 で `preview_order` が `input_required`（confirm 要求 + 署名付き `requestState`）を返し、クライアントがユーザー確認を取って元の呼び出しを再試行（round 2）すると、`requestState` の検証（action / 引数 digest / one-time nonce。加えて SDK bind による呼び出し元セッションまたは認証 principal + 元の MCP method。`src/private/request-state.ts`）を経て同一ハンドラ内で `create_order` を呼び出して完結。**トークンはサーバープロセス内に閉じ、LLM/クライアントには返らない**（`requestState` は署名のみで暗号化されないため token を載せない）。2025 系クライアントには SDK v2 の legacy shim が `input_required` を従来の `elicitation/create` push に自動変換するため、elicitation 対応版はどちらの世代でもこの経路。
-2. **フォールバック（elicitation / MRTR 非対応ホスト）** — `content` / `structuredContent` / `_meta` のいずれにも `confirmation_token` / `expires_at` を返さない。プレビュー内容だけを返し、「このホストでは取引実行に対応していない」旨を `content[0].text` に明記する。LLM が `create_order` / `cancel_order` / `cancel_orders` を直接呼んでも、MCP ハンドラが `direct_execute_forbidden` で拒否する（加えて token 検証でも拒否される）。
+2. **MCP Apps ホスト向けオプトイン経路（elicitation 非対応 + `BITBANK_MCP_APPS_EXECUTE=1`）** — `confirmation_token` / `expires_at` を**ツール結果の `_meta` にのみ**載せて iframe へ配送し、確認カードのボタンからの `create_order` / `cancel_order` / `cancel_orders` を通す。**`content` / `structuredContent` には載せない**（`stripConfirmationTokenFields` は多層防御として維持）。有効化には次の 2 つが**両方**必要:
+   - 環境変数 `BITBANK_MCP_APPS_EXECUTE=1`（既定 off。`isAppUiExecuteEnabled()`）
+   - クライアントが `extensions["io.modelcontextprotocol/ui"].mimeTypes` に `text/html;profile=mcp-app` を宣言していること（キーの存在だけでは不可。`clientSupportsAppUi()`）
+
+   サーバーは iframe 起源と LLM 起源の `tools/call` を区別できないため、**トークン所持そのものが認可の実体**になる。この設計は「ホストが `_meta` をモデルコンテキストに入れない」という**観測された挙動**への依存であり、仕様上の保証ではない。だから既定 off。詳細と計測値は ADR-0007。
+   `_meta` に載るのは **elicitation 非対応と判定した経路だけ**なので、elicitation 対応ホストには一切載らない（優先順位は逆転しない）。
+3. **フォールバック（どちらの経路も使えないホスト）** — `content` / `structuredContent` / `_meta` のいずれにも `confirmation_token` / `expires_at` を返さない。プレビュー内容だけを返し、「このホストでは取引実行に対応していない」旨を `content[0].text` に明記する。LLM が `create_order` / `cancel_order` / `cancel_orders` を直接呼んでも、MCP ハンドラが `direct_execute_forbidden` で拒否する（加えて token 検証でも拒否される）。
 
 なお `content[0].text` には常に以下を載せる（LLM のハルシネーション防止）:
 
@@ -170,15 +176,30 @@ MCP 仕様（SEP-1624 の整理）では `CallToolResult.content` と `structure
 
 これにより、LLM が `structuredContent` をまったく見られないクライアント（Cursor / Windsurf 系）でも、ユーザー確認の必要性と概要を理解した上で対話を継続できる。
 
-#### 旧 `BITBANK_TRUST_HOST_APPROVAL=1` モード（撤去済み）
+#### 旧 `BITBANK_TRUST_HOST_APPROVAL=1` モード（撤去済み・復活しない）
 
-かつて elicitation 非対応だが SEP-1865 iframe を持つホスト向けに、token を `structuredContent` へ載せるオプトインを用意していた。iframe 起源の `tools/call` をサーバー側で識別できないため、token 漏洩 = HITL バイパスが成立する。**2026-08-10 以降、このモードは無効**（環境変数を設定しても無視され、token は常に strip される）。詳細は ADR-0007。
+かつて elicitation 非対応だが SEP-1865 iframe を持つホスト向けに、token を **`structuredContent` へ**載せるオプトインを用意していた。`structuredContent` をモデルコンテキストに入れるホスト（VS Code、OpenAI Apps SDK 慣習のホスト全般）では LLM が token を直接読めるため、token 漏洩 = HITL バイパスが成立する。**2026-08-10 以降このモードは無効**（環境変数を設定しても無視され、token は常に strip される）。
+
+**2026-08-13 に再導入した MCP Apps 実行経路（`BITBANK_MCP_APPS_EXECUTE=1`）は別物**である。載せ先が `structuredContent` ではなく `_meta` に限定され、クライアントの MCP Apps UI 宣言（MIME 型込み）も要求する。`isHostApprovalTrusted()` は常に `false` を返すまま据え置きで、新経路の判定には一切関与しない。詳細は ADR-0007。
+
+#### トークンが漏れた場合の被害範囲
+
+`_meta` 経路を有効化した場合でも、既存の束縛はすべて維持される:
+
+| 防御 | 効果 |
+|---|---|
+| HMAC パラメータ束縛 | プレビュー済みの内容以外は実行できない（金額・数量・ペア・方向を攻撃者が選べない） |
+| TTL 60 秒（上限 5 分） | 期限切れは `token_expired` |
+| ワンタイム | 2 回目は `token_already_used`（二重発注しない） |
+| action 束縛 | `cancel_order` のトークンを `create_order` に流用できない |
+
+したがって最悪ケースは **「ユーザーが直前にプレビューしたその注文 1 件、または `preview_cancel_orders` でプレビューした注文 ID 集合 1 セットが、60 秒以内に 1 回だけ実行される」** に限定される。
 
 #### 将来の代替案 / 移行計画
 
 - **SEP-2322 (Multi Round-Trip Requests)** — MCP 2026-07-28 仕様で正式導入（final）。**本リポジトリは SDK v2（`@modelcontextprotocol/server` 2.0.0）へ移行し、第一選択の経路として実装済み**（上記「`confirmation_token` の受け渡し」節を参照）。`requestState` は秘匿保証が無いため token を載せず、nonce + 引数 digest を署名して載せ、受信時に HMAC / 期限 / bind（セッションまたは認証 principal + MCP method）+ action / digest / one-time nonce（`withElicitedConfirmation`）で検証して replay / 別文脈再利用を防ぐ。詳細は `docs/adr/0007-hitl-confirmation-token-delivery.md`
 - **サーバー側 pending action store + UI origin 認証** — SEP-1865 で UI 起源を安全に識別できる仕様が整った場合の再検討候補。現状の仕様では採用しない
-- **`_meta` 経由の UI 専用チャネル** — OpenAI Apps SDK 慣習。MCP 基本仕様としては「`_meta` は LLM 非可視」を保証しないため、これ単体で安全境界とはしない
+- **`_meta` 経由の UI 専用チャネル** — 2026-08-13 にオプトインで採用済み（上記経路 2）。MCP 基本仕様としては「`_meta` は LLM 非可視」を保証しないため、**既定 off のオプトインとして**扱い、単体の安全境界とはみなさない（TTL / ワンタイム / パラメータ束縛と併用して初めて被害範囲が限定される）
 - **elicitation 非対応ホストの明示的サポート縮退** — 「HITL 強制が必要なホストは elicitation か SEP-2322 のどちらかを要求する」とする現行方針
 
 ### 検証の責務分担（preview と create）

@@ -6,6 +6,19 @@ import type { Result } from './schemas.js';
 export interface McpResponse {
 	content: Array<{ type: string; text: string }>;
 	structuredContent: Record<string, unknown>;
+	/**
+	 * **ツール結果レベル**の `_meta`（`CallToolResult._meta`）。指定時は `server.ts` の
+	 * `respond()` がそのまま応答へ透過する。
+	 *
+	 * ⚠️ `ToolDefinition._meta`（`registerTool` に渡すツール定義側のメタ。`ui.resourceUri` 等）
+	 * とは**別物**。あちらは tools/list に載るツールの静的メタデータ、こちらは 1 回の
+	 * tools/call の結果に付随するメタデータ。
+	 *
+	 * MCP Apps ホストはこれを iframe へ転送し、モデルコンテキストには入れない
+	 * （ext-apps / OpenAI Apps SDK の双方で一致する慣習）。確認トークンの配送に使う。
+	 * 保証ではなくホスト実装の観測された挙動に依存する点は ADR-0007 を参照。
+	 */
+	_meta?: Record<string, unknown>;
 }
 
 /**
