@@ -18,6 +18,12 @@
  *   同じキーを再び `add` できる。呼び出し側は「記録の有無」とは別に、token / nonce 自身の
  *   有効期限も必ず検証すること（`validateToken` が期限チェックを先に行うのと同じ理由）。
  *
+ * 非有限のタイムスタンプ:
+ *   `expiresAtMs` は confirmation フローでクライアントを往復しうる値なので、外部由来として扱う。
+ *   非有限値（NaN / ±Infinity）は**状態を一切変更する前に**弾き、`invalid_expiry` で拒否する。
+ *   `nowMs` は呼び出し側の時計（既定 `Date.now()`）なので、非有限値はプログラミングエラーとして
+ *   `TypeError` を投げる。どちらも黙って劣化させると replay が通る（理由は各メソッドのコメント）。
+ *
  * ログ:
  *   このモジュールは key の本文を保持するだけで、**どこにも出力しない**。
  *   token / nonce は `.claude/rules/sensitive-data.md` の CRITICAL 分類にあたるため、
@@ -66,7 +72,9 @@ export type AddRejectReason =
 	/** 同じ key が生存中の記録として既に存在する（= replay） */
 	| 'already_recorded'
 	/** 件数上限に達しており、期限切れを purge しても空きを作れなかった */
-	| 'capacity_exceeded';
+	| 'capacity_exceeded'
+	/** `expiresAtMs` が非有限値（NaN / ±Infinity）だった */
+	| 'invalid_expiry';
 
 /**
  * `add` の結果。
@@ -86,6 +94,8 @@ export interface BoundedExpiringSetStats {
 	purgedTotal: number;
 	/** 容量超過で拒否した `add` の累計 */
 	rejectedTotal: number;
+	/** 非有限の `expiresAtMs` で拒否した `add` の累計（改竄・呼び出し側バグの検知用） */
+	invalidExpiryTotal: number;
 }
 
 export interface BoundedExpiringSetOptions {
@@ -117,6 +127,18 @@ function normalizePurgeInterval(value: number | undefined): number {
 	return value;
 }
 
+/**
+ * `nowMs` が非有限だと期限比較（`nowMs > expiresAt` / `nowMs <= expiresAt`）が全て false になり、
+ * 「生存エントリを期限切れとみなして削除 → 同じ key を再記録できる」= replay が黙って通る。
+ * `nowMs` は呼び出し側の時計（既定 `Date.now()`）でありユーザー入力ではないので、
+ * 劣化させずプログラミングエラーとして投げる。メッセージに key は含めない。
+ */
+function assertFiniteNow(nowMs: number, method: string): void {
+	if (!Number.isFinite(nowMs)) {
+		throw new TypeError(`BoundedExpiringSet.${method}: nowMs must be a finite number`);
+	}
+}
+
 export class BoundedExpiringSet {
 	/**
 	 * key → expiresAt(ms)。
@@ -133,6 +155,7 @@ export class BoundedExpiringSet {
 	private cleanupTimerId: ReturnType<typeof setInterval> | null = null;
 	private purgedTotal = 0;
 	private rejectedTotal = 0;
+	private invalidExpiryTotal = 0;
 
 	constructor(opts: BoundedExpiringSetOptions = {}) {
 		this.maxEntriesValue = normalizeMaxEntries(opts.maxEntries ?? envMaxEntries());
@@ -150,15 +173,32 @@ export class BoundedExpiringSet {
 	 * - 未記録（または記録が期限切れ）かつ空きがある → `{ added: true }`
 	 * - 生存中の記録が既にある → `{ added: false, reason: 'already_recorded' }`（replay）
 	 * - 期限切れを purge しても空きが作れない → `{ added: false, reason: 'capacity_exceeded' }`
+	 * - `expiresAtMs` が非有限値 → `{ added: false, reason: 'invalid_expiry' }`（状態は変更しない）
 	 *
 	 * 容量を空けるために生存エントリを追い出すことはない。呼び出し側は
 	 * `added === false` の場合、理由を問わず対象の操作を拒否すること。
 	 *
 	 * @param key - 記録するキー（token / nonce 等）。ログには出さない。
-	 * @param expiresAtMs - 記録の有効期限（epoch ms）。過去を渡した場合は直後に期限切れ扱いになる。
-	 * @param nowMs - 現在時刻（テスト用にオーバーライド可能）
+	 * @param expiresAtMs - 記録の有効期限（epoch ms）。有限値のみ受け付ける。過去を渡した場合は
+	 *   直後に期限切れ扱いになる。TTL の上限クランプは呼び出し側の責務
+	 *   （`confirmation.ts` の `MAX_TTL_MS` 等）で、ここでは長さの妥当性までは見ない。
+	 * @param nowMs - 現在時刻（テスト用にオーバーライド可能）。非有限値は `TypeError`。
+	 * @throws {TypeError} `nowMs` が非有限値の場合
 	 */
 	add(key: string, expiresAtMs: number, nowMs: number = Date.now()): AddResult {
+		assertFiniteNow(nowMs, 'add');
+
+		// 非有限の expiresAt は「状態を触る前」に弾く（下の purgeExpiredPrefix より必ず先）。
+		//   NaN      … 全比較が false になるため has() / purgeExpired() からは「永久に生存」に見える一方、
+		//              purgeExpiredPrefix では期限切れ扱いで削除される。判定が経路ごとに食い違い、
+		//              記録済みのはずの key が黙って消えて replay が通る。
+		//   Infinity … 期限切れにならず容量を専有し続ける。さらに先頭走査がそこで打ち切られるため、
+		//              高速パスが恒久的に機能しなくなる。
+		if (!Number.isFinite(expiresAtMs)) {
+			this.invalidExpiryTotal++;
+			return { added: false, reason: 'invalid_expiry' };
+		}
+
 		// 通常経路の掃除。先頭が生存していれば比較 1 回で抜けるので、
 		// エントリ数に比例した CPU 消費（= CPU 側の攻撃面）を避けられる。
 		this.purgeExpiredPrefix(nowMs);
@@ -188,8 +228,11 @@ export class BoundedExpiringSet {
 	/**
 	 * key が生存中の記録として存在するか。期限切れは「存在しない」として扱い、
 	 * 該当エントリはこの場で除去する（アクセス時 purge、O(1)）。
+	 *
+	 * @throws {TypeError} `nowMs` が非有限値の場合
 	 */
 	has(key: string, nowMs: number = Date.now()): boolean {
+		assertFiniteNow(nowMs, 'has');
 		const expiresAt = this.store.get(key);
 		if (expiresAt == null) return false;
 		if (nowMs > expiresAt) {
@@ -200,8 +243,13 @@ export class BoundedExpiringSet {
 		return true;
 	}
 
-	/** 期限切れエントリを全走査で除去し、除去件数を返す。 */
+	/**
+	 * 期限切れエントリを全走査で除去し、除去件数を返す。
+	 *
+	 * @throws {TypeError} `nowMs` が非有限値の場合
+	 */
 	purgeExpired(nowMs: number = Date.now()): number {
+		assertFiniteNow(nowMs, 'purgeExpired');
 		let purged = 0;
 		for (const [key, expiresAt] of this.store) {
 			if (nowMs > expiresAt) {
@@ -217,6 +265,9 @@ export class BoundedExpiringSet {
 	 * 挿入順の先頭側から期限切れを除去し、最初の生存エントリで打ち切る。
 	 * TTL が一定という前提の下では全期限切れを除去できる（前提が崩れた場合の
 	 * 取りこぼしは `add` の容量到達時に `purgeExpired` がカバーする）。
+	 *
+	 * 事前条件: `nowMs` が有限であること（呼び出し元の `add` が検証済み）。
+	 * 格納値も `add` が有限値のみ通すので、比較が NaN で崩れることはない。
 	 */
 	private purgeExpiredPrefix(nowMs: number): number {
 		let purged = 0;
@@ -247,6 +298,7 @@ export class BoundedExpiringSet {
 			maxEntries: this.maxEntriesValue,
 			purgedTotal: this.purgedTotal,
 			rejectedTotal: this.rejectedTotal,
+			invalidExpiryTotal: this.invalidExpiryTotal,
 		};
 	}
 
