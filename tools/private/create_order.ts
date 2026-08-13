@@ -22,6 +22,7 @@
 import { nowIso } from '../../lib/datetime.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
 import { logTradeAction } from '../../lib/logger.js';
+import { withNormalizedPair } from '../../lib/pair-code.js';
 import { fetchPairsSpec, validateOrderConstraints } from '../../lib/pairs.js';
 import { fail, ok } from '../../lib/result.js';
 import { validateTriggerPrice } from '../../lib/trigger-price.js';
@@ -128,7 +129,9 @@ export default async function createOrder(
 		if (trigger_price) body.trigger_price = trigger_price;
 		if (position_side) body.position_side = position_side;
 
-		const rawOrder = await client.post<OrderResponse>('/v1/user/spot/order', body);
+		// 取得境界での pair 正規化（`lib/pair-code.ts`）。`data.order.pair` は小文字契約で返す。
+		// リクエストボディの `pair` はユーザー入力のまま（正規化は応答側だけ）。
+		const rawOrder = withNormalizedPair(await client.post<OrderResponse>('/v1/user/spot/order', body));
 
 		const timestamp = nowIso();
 		const isJpy = pair.includes('jpy');

@@ -8,6 +8,7 @@
 
 import { toNum } from './conversions.js';
 import { BITBANK_API_BASE } from './http.js';
+import { normalizePairCode } from './pair-code.js';
 
 /** tickers_jpy レスポンスの最小形 */
 interface TickersJpyResponse {
@@ -48,7 +49,11 @@ export async function fetchTickerPricesMap(): Promise<TickerPricesResult> {
 
 		const prices = new Map<string, number>();
 		for (const item of json.data) {
-			const asset = item.pair.replace('_jpy', '');
+			// 取得境界での pair 正規化。ここで作るキーは `portfolio/calc.ts` の `prices.get(asset)` や
+			// `calcPeriodNetFlow` の価格解決で `lib/asset-code.ts` 側の小文字 asset と突き合わされる。
+			// 大文字だと `BTC_JPY` がキーになって全銘柄で lookup が外れる
+			// （＝ `unpriced_flow_assets` warning の誤検知）。`lib/pair-code.ts` 参照。
+			const asset = normalizePairCode(item.pair).replace('_jpy', '');
 			const last = toNum(item.last);
 			if (last != null && last > 0) {
 				prices.set(asset, last);

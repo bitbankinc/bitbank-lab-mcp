@@ -9,6 +9,7 @@
 
 import { nowIso, toIsoMs } from '../../lib/datetime.js';
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
+import { normalizePairCodes } from '../../lib/pair-code.js';
 import { fail, ok, toStructured } from '../../lib/result.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
@@ -35,7 +36,9 @@ export default async function getOrdersInfo(args: { pair: string; order_ids: num
 		});
 
 		const timestamp = nowIso();
-		const orders = rawData.orders;
+		// 取得境界での pair 正規化（`lib/pair-code.ts`）。`data.orders[].pair` は小文字契約で返す。
+		// 表示・JPY 判定は引数の `pair`（ユーザー入力）を使うので、ここは出力契約のためだけ。
+		const orders = normalizePairCodes(rawData.orders);
 		const isJpy = pair.includes('jpy');
 
 		const lines: string[] = [];

@@ -13,6 +13,7 @@
 
 import { nowIso, parseIso8601, toIsoMs } from '../../lib/datetime.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
+import { normalizePairCodes } from '../../lib/pair-code.js';
 import { fail, ok } from '../../lib/result.js';
 import { paginateTrades } from '../../src/handlers/portfolio/fetch.js';
 import type { RawTrade } from '../../src/handlers/portfolio/types.js';
@@ -66,7 +67,10 @@ export default async function getMyTradeHistory(args: {
 				'/v1/user/spot/trade_history',
 				Object.keys(params).length > 0 ? params : undefined,
 			);
-			const rawBatch = rawData.trades ?? [];
+			// 取得境界での pair 正規化。下の JPY 判定（`t.pair.includes('jpy')`）が価格フォーマットを
+			// 決めるため、大文字が来ると円建て表示が崩れる（`lib/pair-code.ts` 参照）。
+			// ページネーション経路は paginateTrades 側で正規化済み。
+			const rawBatch = normalizePairCodes(rawData.trades ?? []);
 			// 信用約定（position_side 付き）の混入を防御的に除外（paginateTrades と対称）。
 			rawTrades = rawBatch.filter((t) => t.position_side == null);
 			// isComplete はフィルタ前の API レスポンス件数で判定する。フィルタ後を使うと

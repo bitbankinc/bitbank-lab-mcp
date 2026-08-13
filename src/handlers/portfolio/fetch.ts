@@ -7,6 +7,7 @@
 
 import { normalizeAssetCodes } from '../../../lib/asset-code.js';
 import { dayjs } from '../../../lib/datetime.js';
+import { normalizePairCodes } from '../../../lib/pair-code.js';
 import { fetchTickerPricesMap } from '../../../lib/tickers.js';
 import analyzeIndicators from '../../../tools/analyze_indicators.js';
 import getCandles from '../../../tools/get_candles.js';
@@ -146,7 +147,10 @@ export async function paginateTrades(
 		};
 		const result = await tryGet<{ trades: RawTrade[] }>(client, '/v1/user/spot/trade_history', params);
 		if (!result.ok) break;
-		const batch = result.data.trades || [];
+		// 取得境界での pair 正規化。消費側（portfolio/calc.ts）は `t.pair === \`${asset}_jpy\`` の
+		// 突き合わせと `t.pair.replace('_jpy', '')` による asset 導出を小文字前提で行うため、
+		// ここで前提を担保する（防御的正規化。現行 API は小文字を返す。`lib/pair-code.ts` 参照）。
+		const batch = normalizePairCodes(result.data.trades || []);
 		// 信用約定（position_side 付き）が混入した場合に備え、現物のみに絞る。
 		const spotOnly = batch.filter((t) => t.position_side == null);
 		const newRecords = spotOnly.filter((t) => !seenIds.has(t.trade_id));
@@ -203,7 +207,8 @@ export async function paginateMarginTrades(
 			fetchFailed = true;
 			break;
 		}
-		const batch = result.data.trades || [];
+		// paginateTrades と同じ理由で取得境界で pair を小文字化する。
+		const batch = normalizePairCodes(result.data.trades || []);
 		// type=margin が無視された場合に備え、position_side != null で margin 約定のみに絞る。
 		const marginOnly = batch.filter((t) => t.position_side != null);
 		const newRecords = marginOnly.filter((t) => !seenIds.has(t.trade_id));
@@ -336,6 +341,12 @@ export async function fetchTickerPrices(): Promise<Map<string, number>> {
  * 1dayキャンドルから期初始値 + 全日次始値マップを一括取得する。
  * boundaryPrices: 既存の年初/月初/日初パフォーマンス計算用。
  * dailyPrices: 資産推移時系列（equity series）構築用。asset → (candleTimestampMs → openPrice)。
+ *
+ * **前提: `pairs` は小文字で渡すこと。** ここは API レスポンスの受け口ではなく呼び出し元由来の
+ * 値を受けるだけなので、正規化は行わない（`analyzeMyPortfolioHandler` は正規化済み asset から
+ * 組んだ `${asset}_jpy` と、`paginateTrades` が正規化した `t.pair` のみを渡す）。
+ * 下の `pair.replace('_jpy', '')` で導出する asset は、そのまま `boundaryPrices` /
+ * `dailyPrices` のキーになり `lib/asset-code.ts` 側の小文字空間と join される。
  */
 export async function fetchCandlePriceData(
 	pairs: string[],
