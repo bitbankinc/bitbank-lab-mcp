@@ -10,6 +10,7 @@
  * - ページネーション対応: 100件上限を超えるデータも自動取得（最大10ページ=1000件/チャネル）
  */
 
+import { normalizeAssetCodes } from '../../lib/asset-code.js';
 import { nowIso, parseIso8601, toIsoMs } from '../../lib/datetime.js';
 import { getErrorMessage } from '../../lib/error.js';
 import { formatPrice } from '../../lib/formatter.js';
@@ -310,8 +311,12 @@ export default async function getMyDepositWithdrawal(args: {
 		}
 
 		// UUID で重複排除（暗号資産クエリに JPY が含まれるケースに備える）
-		allDeposits = deduplicateByUuid(allDeposits);
-		allWithdrawals = deduplicateByUuid(allWithdrawals);
+		// 併せて取得境界での asset 正規化を行う。全フェッチ経路（特定通貨 / 全通貨 ×
+		// 単発 / ページネーション）がここに合流するため、この 1 箇所で前提を担保できる。
+		// 以降の JPY / 暗号資産の振り分け（`d.asset === 'jpy'`）と出力の asset は小文字前提
+		// （防御的正規化。現行 API は小文字を返す。`lib/asset-code.ts` 参照）。
+		allDeposits = normalizeAssetCodes(deduplicateByUuid(allDeposits));
+		allWithdrawals = normalizeAssetCodes(deduplicateByUuid(allWithdrawals));
 
 		const timestamp = nowIso();
 

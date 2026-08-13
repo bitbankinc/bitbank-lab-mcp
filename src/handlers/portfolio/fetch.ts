@@ -5,6 +5,7 @@
  * Public API（ticker・キャンドル）の取得、テクニカル分析の取得を担当。
  */
 
+import { normalizeAssetCodes } from '../../../lib/asset-code.js';
 import { dayjs } from '../../../lib/datetime.js';
 import { fetchTickerPricesMap } from '../../../lib/tickers.js';
 import analyzeIndicators from '../../../tools/analyze_indicators.js';
@@ -44,7 +45,10 @@ async function paginateDeposits(
 		if (!result.ok) {
 			return { deposits: all, complete: false, error: result.error };
 		}
-		const batch = result.data.deposits || [];
+		// 取得境界での asset 正規化。以降の消費側（portfolio/calc.ts）は小文字前提で
+		// JPY 判定・prices 検索・holdings キーを組むため、ここで前提を担保する
+		// （防御的正規化。現行 API は小文字を返す。`lib/asset-code.ts` 参照）。
+		const batch = normalizeAssetCodes(result.data.deposits || []);
 		const newRecords = batch.filter((d) => !seenIds.has(d.uuid));
 		for (const d of newRecords) seenIds.add(d.uuid);
 		all.push(...newRecords);
@@ -79,7 +83,8 @@ async function paginateWithdrawals(
 		if (!result.ok) {
 			return { withdrawals: all, complete: false, error: result.error };
 		}
-		const batch = result.data.withdrawals || [];
+		// paginateDeposits と同じ理由で取得境界で asset を小文字化する。
+		const batch = normalizeAssetCodes(result.data.withdrawals || []);
 		const newRecords = batch.filter((w) => !seenIds.has(w.uuid));
 		for (const w of newRecords) seenIds.add(w.uuid);
 		all.push(...newRecords);

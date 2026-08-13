@@ -618,6 +618,48 @@ drift 時に「ミラー要更新」issue を起票する。
 
 ---
 
+## asset コードの表記（取得境界で小文字へ正規化する）
+
+**API が返す `asset` は取得境界で小文字へ正規化して扱う。** 正規化は `lib/asset-code.ts` の
+`normalizeAssetCode` / `normalizeAssetCodes` に集約し、**消費側に `.toLowerCase()` を撒かない**。
+
+理由: リポジトリ全体が「API が返す asset は小文字」という前提の上に立っている。生の `asset` を
+小文字リテラル（`'jpy'`）と比較する、あるいは Map のキーに使う箇所が 20 箇所以上あり
+（`portfolio/calc.ts` の JPY 判定 / holdings キー / `prices.get(asset)`、`analyzeMyPortfolioHandler.ts`
+の `${asset}_jpy` 組み立て等）、大文字が 1 つ混ざるだけで
+`net_flow_jpy`・`net_jpy_invested`・期初保有の復元・損益計算が**同時に**壊れる。
+1 箇所ずつ直すと「守っているつもり」の箇所が増え、どこが担保されているか読めなくなる。
+
+**これは防御的正規化であり、現行 API は小文字を返す。** 根拠: 本ミラーの公式 JSON 例
+（`/v1/user/assets` の `"asset": "jpy"`）、および `tests/fixtures/private-api.ts` の全フィクスチャ。
+大文字が実際に来る確証はない。前提をコードに明文化し、破れたときに黙って数値が壊れないようにするのが目的。
+
+### 正規化を入れている取得境界
+
+| 境界 | 対象 |
+|---|---|
+| `src/handlers/portfolio/fetch.ts` `paginateDeposits` / `paginateWithdrawals` | `deposits[].asset` / `withdrawals[].asset` |
+| `src/handlers/analyzeMyPortfolioHandler.ts` | `/v1/user/assets` の `assets[].asset` |
+| `tools/private/get_my_assets.ts` | `/v1/user/assets` の `assets[].asset` |
+| `tools/private/get_my_deposit_withdrawal.ts` | 全フェッチ経路が合流する UUID 重複排除の直後 |
+
+### 表記の契約（変えないこと）
+
+- `structuredContent` / `data` の `asset` は**小文字**（`get_my_assets` / `get_my_deposit_withdrawal` /
+  `analyze_my_portfolio` の `holdings[].asset`、`unpriced_flow_assets` 等）。
+- 表示層（サマリー文字列・warning 行・保有銘柄一覧）は従来どおり `toUpperCase()` で**大文字**。
+- 規約テスト: `tests/lib/asset-code.test.ts`、`tests/handlers/portfolio/asset-normalization.test.ts`、
+  各 Private ツールテストの「API asset の取得境界正規化」describe。
+
+### 本ルールの対象外
+
+- **ユーザー入力の pair 正規化**（`lib/validate.ts` の `normalizePair`）。入力の受け口であり別レイヤー。
+  API レスポンスの受け口である本ルールと混ぜない。
+- **約定履歴の `pair`**（`trade_history` の `btc_jpy` 等）。asset コードではなく pair 文字列なので
+  pair レイヤーの話。現状は正規化していない。
+- **ticker 由来の価格マップのキー**（`lib/tickers.ts`）。`tickers_jpy` の pair 文字列から
+  `_jpy` を落として作るため構造的に小文字であり、asset コードの取得境界ではない。
+
 ## 機密フィールドの取り扱い（出力から除外必須）
 
 実 API は出金履歴で以下を返すが、**ツール出力に含めてはならない**（`.claude/rules/sensitive-data.md`）。
@@ -641,6 +683,7 @@ drift 時に「ミラー要更新」issue を起票する。
 - ドリフト検知 CI: [`.github/workflows/bitbank-api-docs-drift.yml`](../../.github/workflows/bitbank-api-docs-drift.yml)
 - 姉妹 doc（暦日・TZ 実測）: [`bitbank-candle-tz.md`](./bitbank-candle-tz.md)
 - Raw 型: `src/handlers/portfolio/types.ts`
+- asset コードの取得境界正規化: `lib/asset-code.ts`
 - Zod スキーマ（単一ソース）: `src/private/schemas.ts`
 - フィクスチャ: `tests/fixtures/private-api.ts`
 - 手数料カテゴリ（A/B 見積り=`lib/fees.ts`, C=パススルー）: `.claude/rules/fees.md`

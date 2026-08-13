@@ -7,6 +7,7 @@
  *   - portfolio/calc.ts   — 純粋計算ロジック
  */
 
+import { normalizeAssetCodes } from '../../lib/asset-code.js';
 import { dayjs, nowIso } from '../../lib/datetime.js';
 import { formatPair, formatPercent, formatPrice, formatPriceJPY } from '../../lib/formatter.js';
 import { ok } from '../../lib/result.js';
@@ -113,8 +114,13 @@ export default async function analyzeMyPortfolioHandler(args: {
 			fetchTickerPrices(),
 		]);
 
+		// 取得境界での asset 正規化。以降は holdings の Map キー・`${asset}_jpy` の組み立て・
+		// `prices.get(asset)` がすべて小文字前提で走る（`lib/asset-code.ts` 参照）。
+		// 大文字が混ざると BTC / btc で保有キーが割れて二重計上になるため、ここで揃える。
+		const assets = normalizeAssetCodes(rawAssets.assets);
+
 		// ゼロでない資産（JPY 含む）
-		const nonZeroAssets = rawAssets.assets.filter((a) => {
+		const nonZeroAssets = assets.filter((a) => {
 			const amount = Number(a.onhand_amount);
 			return Number.isFinite(amount) && amount > 0;
 		});

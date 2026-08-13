@@ -60,6 +60,7 @@ afterEach(() => {
 
 /** URL パターンでルーティングする fetch モック */
 function setupFetchMock(opts?: {
+	assets?: unknown;
 	assetsFail?: boolean;
 	tradesFail?: boolean;
 	marginTradesFail?: boolean;
@@ -90,7 +91,7 @@ function setupFetchMock(opts?: {
 			if (opts?.assetsFail) {
 				return new Response(JSON.stringify(mockBitbankError(20001)), { status: 400 });
 			}
-			return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
+			return new Response(JSON.stringify(mockBitbankSuccess(opts?.assets ?? rawAssetsResponse)), { status: 200 });
 		}
 
 		// Private API: margin status — assets パスに包含されないよう、trade_history より前に判定
@@ -1594,5 +1595,165 @@ describe('analyze_my_portfolio — toolDef handler', () => {
 		expect((structured.data.yearly_equity_series as unknown[]).length).toBeGreaterThan(0);
 		expect(text).toContain('monthly_equity_series');
 		expect(text).toContain('yearly_equity_series');
+	});
+});
+
+/**
+ * API が返す asset コードの取得境界正規化（`lib/asset-code.ts`）のハンドラレベル検証。
+ *
+ * `/v1/user/assets` と入出金履歴の asset は取得境界で小文字へ揃える。揃えないと
+ * `reconstructHoldingsAtDate` の holdings キーが `BTC` / `btc` に割れ、期初評価額・
+ * 純入出金・warning が同時に壊れる（`docs/internal/bitbank-api-fields.md` 参照）。
+ *
+ * 現行 API は小文字を返すため、これは防御的正規化。小文字レスポンスでの出力不変も併せて固定する。
+ */
+describe('analyze_my_portfolio — API asset の取得境界正規化', () => {
+	/** 2026-05-16 12:00 JST。当日・当月・当年のいずれの期間にも入る入出庫を作れる基準時刻 */
+	const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
+	/** 2026-05-16 10:00 JST（当日 0:00 JST 以降なので daily / monthly / yearly すべてに入る） */
+	const inPeriodMs = Date.UTC(2026, 4, 16, 1, 0, 0, 0);
+
+	/** btc は tickers_jpy fixture に存在するので価格を解決できる（warning の誤検知を切り分けるため） */
+	function assetsResponse(btc: string, jpy: string) {
+		return {
+			assets: [
+				{
+					asset: btc,
+					free_amount: '0.6',
+					amount_precision: 8,
+					onhand_amount: '0.6',
+					locked_amount: '0',
+					withdrawing_amount: '0',
+					withdrawal_fee: { min: '0.0006', max: '0.0006' },
+					stop_deposit: false,
+					stop_withdrawal: false,
+					collateral_ratio: '0.95',
+				},
+				{
+					asset: jpy,
+					free_amount: '500000',
+					amount_precision: 0,
+					onhand_amount: '500000',
+					locked_amount: '0',
+					withdrawing_amount: '0',
+					withdrawal_fee: { under: '550', over: '770', threshold: '30000' },
+					stop_deposit: false,
+					stop_withdrawal: false,
+					collateral_ratio: '1',
+				},
+			],
+		};
+	}
+
+	/** 期間内の入出庫。出庫は保有復元で巻き戻されるので holdings キーの分裂が観測できる */
+	function dwResponses(btc: string, jpy: string) {
+		return {
+			deposits: {
+				deposits: [
+					{
+						uuid: 'dep-btc',
+						asset: btc,
+						amount: '0.1',
+						status: 'DONE',
+						found_at: inPeriodMs,
+						confirmed_at: inPeriodMs,
+					},
+					{
+						uuid: 'dep-jpy',
+						asset: jpy,
+						amount: '300000',
+						status: 'DONE',
+						found_at: inPeriodMs,
+						confirmed_at: inPeriodMs,
+					},
+				],
+			},
+			withdrawals: {
+				withdrawals: [
+					{ uuid: 'wd-btc', asset: btc, amount: '0.2', fee: '0.0006', status: 'DONE', requested_at: inPeriodMs },
+				],
+			},
+		};
+	}
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('大文字混在のレスポンスでも保有が二重計上されず asset は小文字で返る', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		const dw = dwResponses('BTC', 'JPY');
+		setupFetchMock({ assets: assetsResponse('BTC', 'JPY'), deposits: dw.deposits, withdrawals: dw.withdrawals });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		// holdings キーが BTC / btc に割れず、1 資産 1 エントリ（structuredContent は小文字契約）
+		const assets = result.data.holdings.map((h) => h.asset);
+		expect(assets).toEqual([...new Set(assets)]);
+		expect(assets.sort()).toEqual(['btc', 'jpy']);
+		// 保有 0.6 BTC が価格に突き合わさる（大文字のままだと prices.get('BTC') が外れて欠落する）
+		expect(result.data.holdings.find((h) => h.asset === 'btc')?.jpy_value).toBe(0.6 * 15_500_000);
+		expect(result.data.total_jpy_value).toBe(0.6 * 15_500_000 + 500_000);
+		// JPY 入金が fiat として純入出金に載り、BTC 入出庫も価格解決できるので warning は出ない
+		expect(result.meta.warnings).toBeUndefined();
+		expect(result.data.daily_performance?.unpriced_flow_assets).toBeUndefined();
+		expect(result.data.daily_performance?.net_flow_jpy).toBe(Math.round(300_000 + 0.1 * 15_500_000 - 0.2 * 15_500_000));
+	});
+
+	it('大文字レスポンスと小文字レスポンスで data / summary が完全一致する', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+
+		// getDefaultClient は fetch を構築時に束縛するため、同一 mock 内でレスポンスを切り替える
+		// （setupFetchMock を 2 回呼ぶと 2 回目の差し替えがクライアントに届かない）。
+		let uppercase = true;
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			const margin = maybeMarginAccountResponse(urlStr);
+			if (margin) return margin;
+
+			const [btc, jpy] = uppercase ? ['BTC', 'JPY'] : ['btc', 'jpy'];
+			const dw = dwResponses(btc, jpy);
+
+			if (urlStr.includes('tickers_jpy')) {
+				return new Response(JSON.stringify(tickersJpy), { status: 200 });
+			}
+			if (urlStr.includes('candlestick')) {
+				return new Response(JSON.stringify(candlesBtcJpy1day120), { status: 200 });
+			}
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(assetsResponse(btc, jpy))), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				const payload = urlStr.includes('type=margin') ? { trades: [] } : rawTradeHistoryResponse;
+				return new Response(JSON.stringify(mockBitbankSuccess(payload)), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(dw.deposits)), { status: 200 });
+			}
+			if (urlStr.includes('withdrawal_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(dw.withdrawals)), { status: 200 });
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const args = { include_technical: false, include_pnl: true, include_deposit_withdrawal: true };
+
+		const upperResult = await handler(args);
+		uppercase = false;
+		const lowerResult = await handler(args);
+
+		assertOk(upperResult);
+		assertOk(lowerResult);
+		expect(upperResult.data).toEqual(lowerResult.data);
+		expect(upperResult.summary).toBe(lowerResult.summary);
 	});
 });
