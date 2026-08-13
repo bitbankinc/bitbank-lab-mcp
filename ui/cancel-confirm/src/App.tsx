@@ -2,9 +2,9 @@
  * 注文キャンセル確認 UI（MCP Apps / SEP-1865）
  *
  * preview_cancel_order / preview_cancel_orders の結果を受け取り、
- * キャンセル対象の注文情報を表示。
- * 「キャンセルを確定する」で `app.callServerTool('cancel_order' | 'cancel_orders', ...)`
- * を呼び出し、ホストの同一サーバー接続経由で実際のキャンセルを行う。
+ * キャンセル対象の注文情報をプレビュー表示するのみ。
+ * 実際のキャンセルは elicitation / MRTR クライアント側の確認フローでのみ実行される。
+ * この iframe から cancel_order / cancel_orders を呼び出す経路はない。
  */
 
 import {
@@ -14,11 +14,8 @@ import {
 	applyHostStyleVariables,
 	getDocumentTheme,
 } from '@modelcontextprotocol/ext-apps';
-import dayjs from 'dayjs';
 import { useEffect, useRef, useState } from 'react';
 
-/** cancel_order(s) 呼び出しの timeout（ms）。サーバー側のツール timeout 60s より少し短く設定 */
-const CANCEL_ORDER_TIMEOUT_MS = 45_000;
 /** ui/initialize（ホスト接続）応答待ちの診断タイムアウト（ms） */
 const CONNECT_TIMEOUT_MS = 7_000;
 /** 接続成立後、ツール結果通知が届かない場合に pull 復元へ切り替えるまでの時間（ms）。
@@ -62,12 +59,7 @@ interface OrderDetail {
 }
 
 interface PreviewResultData {
-	// confirmation_token / expires_at はサーバーがクライアントへ返さない（HITL は
-	// elicitation/MRTR のみ）。旧 trust-host モードはセキュリティ上撤去済み。
-	// UI はプレビュー表示のみ行い、execute ボタン経路は無効。
-	// 詳細は docs/adr/0007-hitl-confirmation-token-delivery.md。
-	confirmation_token?: string;
-	expires_at?: number;
+	// confirmation_token / expires_at はサーバーが返さない。UI はプレビュー表示のみ。
 	preview: SinglePreview | BulkPreview;
 	order?: OrderDetail;
 }
@@ -79,7 +71,7 @@ interface PreviewResult {
 	meta?: { action?: Action };
 }
 
-type Status = 'idle' | 'submitting' | 'success' | 'error' | 'cancelled' | 'expired';
+type Status = 'idle' | 'error';
 
 function formatPair(pair: string): string {
 	return pair.toUpperCase().replace('_', '/');
@@ -128,8 +120,6 @@ export function App() {
 	const [action, setAction] = useState<Action | null>(null);
 	const [preview, setPreview] = useState<SinglePreview | BulkPreview | null>(null);
 	const [order, setOrder] = useState<OrderDetail | null>(null);
-	const [token, setToken] = useState<string | null>(null);
-	const [tokenExpiresAt, setTokenExpiresAt] = useState<number | null>(null);
 	const [status, setStatus] = useState<Status>('idle');
 	const [message, setMessage] = useState<string>('');
 	const appRef = useRef<McpApp | null>(null);
@@ -149,14 +139,10 @@ export function App() {
 		// （get_ui_snapshot）の両経路で共通に使う。
 		//
 		// preview_cancel_order(s) の結果のみ取り込む。
-		// meta.action と preview の存在でフィルタし、cancel_order(s) の結果では
-		// state をリセットしないようにする。
+		// meta.action と preview の存在でフィルタする。
 		//
-		// confirmation_token は意図的に structuredContent には含めない設計
-		// （docs/private-api.md「confirmation_token の受け渡し」参照）。
-		// SEP-1865 経由の UI 実行経路は pending action store 整備後に解禁予定で、
-		// 現状 token が来ないホストでは preview 内容のみ表示し、
-		// 「このホストでは確認 UI 未対応」案内を出す。
+		// サーバーは confirmation_token を返さない。SEP-1865 iframe からの execute
+		// 経路はなく、プレビュー表示のみ行う。
 		const applyPreviewStructured = (structured: PreviewResult | undefined) => {
 			const metaAction = structured?.meta?.action;
 			if (
@@ -169,15 +155,13 @@ export function App() {
 				setAction(metaAction);
 				setPreview(structured.data.preview);
 				setOrder(structured.data.order ?? null);
-				if (structured.data.confirmation_token && structured.data.expires_at != null) {
-					setToken(structured.data.confirmation_token);
-					setTokenExpiresAt(structured.data.expires_at);
-				} else {
-					setToken(null);
-					setTokenExpiresAt(null);
-				}
 				setStatus('idle');
 				setMessage('');
+				return;
+			}
+			if (structured?.ok === false && !hasPreviewRef.current) {
+				setStatus('error');
+				setMessage(structured.summary ?? 'キャンセルプレビューに失敗しました。');
 			}
 		};
 
@@ -244,65 +228,18 @@ export function App() {
 		};
 	}, []);
 
-	const handleConfirm = async () => {
-		if (!preview || !token || tokenExpiresAt == null || !action) return;
-		if (Date.now() > tokenExpiresAt) {
-			setStatus('expired');
-			setMessage(
-				'確認トークンの有効期限が切れました。もう一度 preview_cancel_order(s) を実行してください。',
-			);
-			return;
-		}
-		const app = appRef.current;
-		if (!app) {
-			setStatus('error');
-			setMessage('ホストに接続していません。');
-			return;
-		}
-		setStatus('submitting');
-		setMessage('');
-		try {
-			const args: Record<string, unknown> = {
-				pair: preview.pair,
-				confirmation_token: token,
-				token_expires_at: tokenExpiresAt,
-			};
-			if (isBulkPreview(preview)) {
-				args.order_ids = preview.order_ids;
-			} else {
-				args.order_id = preview.order_id;
-			}
-
-			const result = await app.callServerTool(
-				{ name: action, arguments: args },
-				{ timeout: CANCEL_ORDER_TIMEOUT_MS },
-			);
-			if (result.isError) {
-				const text = result.content?.find((c) => c.type === 'text')?.text ?? 'キャンセルに失敗しました';
-				setStatus('error');
-				setMessage(text);
-				return;
-			}
-			const structured = result.structuredContent as { ok?: boolean; summary?: string } | undefined;
-			if (structured?.ok === false) {
-				setStatus('error');
-				setMessage(structured.summary ?? 'キャンセルに失敗しました');
-				return;
-			}
-			setStatus('success');
-			setMessage(structured?.summary ?? 'キャンセルを受け付けました');
-		} catch (err) {
-			setStatus('error');
-			setMessage(err instanceof Error ? err.message : 'キャンセル中に予期しないエラーが発生しました');
-		}
-	};
-
-	const handleAbort = () => {
-		setStatus('cancelled');
-		setMessage('このキャンセル操作は取り消されました。');
-	};
-
 	if (!preview || !action) {
+		if (status === 'error') {
+			return (
+				<div className="app">
+					<div className="card">
+						<div className="status status-error" role="alert" aria-live="assertive" aria-atomic="true">
+							❌ {message}
+						</div>
+					</div>
+				</div>
+			);
+		}
 		// 段階別の診断メッセージ。ホスト側の MCP Apps 実装に問題がある場合、
 		// どこで止まっているか（接続 or 結果配信）をユーザーがこの表示だけで判別できる。
 		const waitingText =
@@ -321,7 +258,6 @@ export function App() {
 	}
 
 	const isBulk = isBulkPreview(preview);
-	const isTerminal = status === 'success' || status === 'cancelled' || status === 'expired';
 
 	return (
 		<div className="app">
@@ -406,61 +342,9 @@ export function App() {
 				)}
 
 				<div className="warn">
-					⚠️ この操作は取り消せません。確定するとサーバーで cancel_{isBulk ? 'orders' : 'order'} が実行されます。
+					⚠️ この操作は取り消せません。この iframe はプレビュー表示のみです。実際のキャンセルは
+					elicitation / MRTR 対応クライアントでの確認フローでのみ実行されます。
 				</div>
-
-				{status === 'success' && (
-					<div className="status status-success" role="status" aria-live="polite" aria-atomic="true">
-						✅ {message}
-					</div>
-				)}
-				{status === 'error' && (
-					<div className="status status-error" role="alert" aria-live="assertive" aria-atomic="true">
-						❌ {message}
-					</div>
-				)}
-				{status === 'cancelled' && (
-					<div className="status status-cancelled" role="status" aria-live="polite" aria-atomic="true">
-						{message}
-					</div>
-				)}
-				{status === 'expired' && (
-					<div className="status status-error" role="alert" aria-live="assertive" aria-atomic="true">
-						⏰ {message}
-					</div>
-				)}
-
-				{!isTerminal && token != null && (
-					<div className="actions">
-						<button
-							type="button"
-							className="btn btn-secondary"
-							onClick={handleAbort}
-							disabled={status === 'submitting'}
-						>
-							やめる
-						</button>
-						<button
-							type="button"
-							className="btn btn-primary"
-							onClick={handleConfirm}
-							disabled={status === 'submitting'}
-						>
-							{status === 'submitting' ? '送信中…' : 'キャンセルを確定する'}
-						</button>
-					</div>
-				)}
-
-				{!isTerminal && token == null && (
-					<div className="warn">
-						このホストではキャンセル確定 UI が未対応のため、プレビュー表示のみです。実際に
-						キャンセルするには Claude Desktop など elicitation 対応クライアントで同じ操作を実行してください。
-					</div>
-				)}
-
-				{tokenExpiresAt != null && !isTerminal && (
-					<p className="muted">確認トークン有効期限: {dayjs(tokenExpiresAt).format('HH:mm:ss')}</p>
-				)}
 			</div>
 		</div>
 	);

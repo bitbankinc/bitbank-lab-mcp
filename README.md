@@ -375,11 +375,11 @@ API キーは [bitbank 設定画面](https://app.bitbank.cc/account/api) で発�
 | ポートフォリオ | `analyze_my_portfolio` | 損益分析・パフォーマンス | 参照 |
 | 入出金 | `get_my_deposit_withdrawal` | 入出金履歴 | 参照 |
 | 信用取引 | `get_margin_status`, `get_margin_positions`, `get_margin_trade_history` | 証拠金・ポジション・約定履歴 | 参照 |
-| 発注 | `preview_order` → `create_order` | 2ステップ確認付き発注 | 取引 |
-| キャンセル | `preview_cancel_order` → `cancel_order` | 2ステップ確認付きキャンセル | 取引 |
-| 一括キャンセル | `preview_cancel_orders` → `cancel_orders` | 2ステップ確認付き一括キャンセル | 取引 |
+| 発注 | `preview_order`（→ elicitation/MRTR accept） | ユーザー明示確認後にサーバー内で発注 | 取引 |
+| キャンセル | `preview_cancel_order`（→ elicitation/MRTR accept） | ユーザー明示確認後にサーバー内でキャンセル | 取引 |
+| 一括キャンセル | `preview_cancel_orders`（→ elicitation/MRTR accept） | ユーザー明示確認後にサーバー内で一括キャンセル | 取引 |
 
-取引操作（発注・キャンセル）は **preview → execute の2ステップ確認**が必須です。preview ツールが発行する確認トークン（HMAC-SHA256、デフォルト60秒有効）なしでは実行できません。
+取引操作（発注・キャンセル）は **preview → elicitation/MRTR でのユーザー明示 accept** が必須です。確認トークンはクライアントに返らず、`create_order` / `cancel_order` / `cancel_orders` を MCP `tools/call` から直接呼んでもサーバー側で拒否されます。
 
 詳細: [docs/private-api.md](docs/private-api.md)
 

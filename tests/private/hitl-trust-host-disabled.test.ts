@@ -113,7 +113,8 @@ function countOrderApiCalls(): number {
 	const fetchMock = globalThis.fetch as unknown as { mock: { calls: Array<[unknown]> } };
 	return fetchMock.mock.calls.filter((c) => {
 		const url = String(c[0]);
-		return url.includes('/user/spot/order') && !url.includes('order_info') && !url.includes('cancel');
+		// 発注は POST /v1/user/spot/order（クエリ無し）。GET 照会 (`/order?`) は除外する。
+		return url.includes('/v1/user/spot/order') && !url.includes('?') && !url.includes('cancel');
 	}).length;
 }
 
@@ -319,7 +320,7 @@ describe('HITL: elicitation accept 時だけ execute される', () => {
 			content: { text: string }[];
 		};
 		expect(accepted.content[0]?.text).toMatch(/キャンセル/);
-		expect(countCancelApiCalls()).toBeGreaterThan(0);
+		expect(countCancelApiCalls()).toBe(1);
 	});
 
 	it('preview_cancel_orders: accept のみ一括取消される', async () => {
@@ -337,7 +338,7 @@ describe('HITL: elicitation accept 時だけ execute される', () => {
 			content: { text: string }[];
 		};
 		expect(accepted.content[0]?.text).toMatch(/キャンセル/);
-		expect(countCancelApiCalls()).toBeGreaterThan(0);
+		expect(countCancelApiCalls()).toBe(1);
 	});
 
 	it('期限切れ token では内部 createOrder も実行されない', async () => {

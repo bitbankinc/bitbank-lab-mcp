@@ -449,6 +449,9 @@ describe('create_order — handler (toolDef)', () => {
 	it('MCP tools/call 経由は valid token でも常に拒否する', async () => {
 		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
 		const { confirmation_token, token_expires_at } = validToken(params);
+		const fetchMock = setupFetchMockSequence([
+			{ body: orderSuccessResponse({ side: 'buy', type: 'limit', price: '14000000' }) },
+		]);
 
 		const { toolDef } = await import('../../tools/private/create_order.js');
 		const result = await toolDef.handler({
@@ -460,9 +463,17 @@ describe('create_order — handler (toolDef)', () => {
 		expect((result as { ok: boolean }).ok).toBe(false);
 		expect((result as { summary: string }).summary).toContain('MCP tools/call');
 		expect((result as { meta: { errorType: string } }).meta.errorType).toBe('direct_execute_forbidden');
+		expect(JSON.stringify(result)).not.toContain('confirmation_token');
+		expect(JSON.stringify(result)).not.toContain(confirmation_token);
+		// handler は createOrder() を呼ばないため注文 API は一切叩かれない
+		expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/user/spot/order'))).toBe(false);
 	});
 
 	it('invalid token でも同様に direct_execute_forbidden で拒否する', async () => {
+		const fetchMock = setupFetchMockSequence([
+			{ body: orderSuccessResponse({ side: 'buy', type: 'limit', price: '14000000' }) },
+		]);
+
 		const { toolDef } = await import('../../tools/private/create_order.js');
 		const result = await toolDef.handler({
 			pair: 'btc_jpy',
@@ -476,6 +487,8 @@ describe('create_order — handler (toolDef)', () => {
 
 		expect((result as { ok: boolean }).ok).toBe(false);
 		expect((result as { meta: { errorType: string } }).meta.errorType).toBe('direct_execute_forbidden');
+		expect(JSON.stringify(result)).not.toContain('confirmation_token');
+		expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/user/spot/order'))).toBe(false);
 	});
 });
 

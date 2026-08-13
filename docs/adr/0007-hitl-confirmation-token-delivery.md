@@ -27,7 +27,7 @@ bitbank の Private API は注文発注・キャンセル（`create_order` / `ca
 
 ### 2 層の経路
 
-```
+```text
 1. elicitation / MRTR 対応ホスト  → ネイティブ確認ダイアログで完結（token は server 内に閉じる）
 2. それ以外                       → preview のみ返す（execute 不可。token は返さない）
 ```
