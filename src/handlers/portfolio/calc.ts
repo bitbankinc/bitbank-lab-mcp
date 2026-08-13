@@ -550,12 +550,8 @@ export function reconstructHoldingsAtDate(
 
 		if (t.side === 'buy') {
 			// Reverse buy: 買いで実際に増えた base 量は qty - feeBase。それを巻き戻す。
-			const newAmount = current - (qty - feeBase);
-			if (newAmount < 1e-12) {
-				holdings.delete(asset);
-			} else {
-				holdings.set(asset, newAmount);
-			}
+			// 途中経過が負でも保持する（出庫相などで相殺される繰り越しを落とさない）。
+			holdings.set(asset, current - (qty - feeBase));
 			holdings.set('jpy', currentJpy + qty * price + feeQuote);
 		} else {
 			// Reverse sell: add back crypto, remove JPY received
@@ -571,12 +567,8 @@ export function reconstructHoldingsAtDate(
 
 		for (const d of completedDeposits) {
 			const current = holdings.get(d.asset) ?? 0;
-			const newAmount = current - Number(d.amount);
-			if (newAmount < 1e-12) {
-				holdings.delete(d.asset);
-			} else {
-				holdings.set(d.asset, newAmount);
-			}
+			// 約定相と同様、途中のゼロ床クランプはしない（全相終了後に掃除）。
+			holdings.set(d.asset, current - Number(d.amount));
 		}
 
 		for (const w of completedWithdrawals) {
@@ -586,7 +578,7 @@ export function reconstructHoldingsAtDate(
 		}
 	}
 
-	// Clean up negative/zero holdings
+	// Clean up negative/zero holdings（3 相すべて適用後の最終パスのみ）
 	for (const [asset, amount] of holdings) {
 		if (amount < 1e-12) holdings.delete(asset);
 	}
