@@ -69,6 +69,8 @@ function setupFetchMock(opts?: {
 	marginStatus?: unknown;
 	marginPositionsFail?: boolean;
 	marginPositions?: unknown;
+	deposits?: unknown;
+	withdrawals?: unknown;
 }) {
 	globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
 		const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
@@ -132,7 +134,9 @@ function setupFetchMock(opts?: {
 			if (opts?.dwFail) {
 				return new Response(JSON.stringify(mockBitbankError(10007)), { status: 200 });
 			}
-			return new Response(JSON.stringify(mockBitbankSuccess(rawDepositHistoryResponse)), { status: 200 });
+			return new Response(JSON.stringify(mockBitbankSuccess(opts?.deposits ?? rawDepositHistoryResponse)), {
+				status: 200,
+			});
 		}
 
 		// Private API: withdrawal history
@@ -140,7 +144,9 @@ function setupFetchMock(opts?: {
 			if (opts?.dwFail) {
 				return new Response(JSON.stringify(mockBitbankError(10007)), { status: 200 });
 			}
-			return new Response(JSON.stringify(mockBitbankSuccess(rawWithdrawalHistoryResponse)), { status: 200 });
+			return new Response(JSON.stringify(mockBitbankSuccess(opts?.withdrawals ?? rawWithdrawalHistoryResponse)), {
+				status: 200,
+			});
 		}
 
 		// fallback
@@ -1363,6 +1369,171 @@ describe('analyze_my_portfolio — equity series データ品質', () => {
 		expect(result.data.monthly_equity_series).toBeUndefined();
 		expect(result.data.yearly_equity_series).toBeUndefined();
 		expect(result.meta.equitySeriesQuality).toBeUndefined();
+	});
+});
+
+/**
+ * 純入出金（calcPeriodNetFlow）で価格を解決できなかった暗号資産の申告。
+ *
+ * 価格が引けない入出庫は net_flow_jpy から黙って落ちる（= 0 円計上と等価）ため、
+ * adjusted_change_jpy も同じ向きにずれる。読み手が欠落に気づけるよう、計算層 warning
+ * （`.claude/rules/tools.md` の meta.warnings 系統）として資産名だけを申告する。
+ */
+describe('analyze_my_portfolio — 純入出金の価格解決 warning', () => {
+	/** 2026-05-16 12:00 JST。当日・当月・当年のいずれの期間にも入る入出庫を作れる基準時刻 */
+	const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
+	/** 2026-05-16 10:00 JST（当日 0:00 JST 以降なので daily / monthly / yearly すべてに入る） */
+	const inPeriodMs = Date.UTC(2026, 4, 16, 1, 0, 0, 0);
+
+	/** ticker に存在しない資産（doge / mona）の入出庫。tickers_jpy fixture は btc / eth / xrp のみ */
+	const unpricedDeposits = {
+		deposits: [
+			{
+				uuid: 'dep-doge',
+				asset: 'doge',
+				amount: '1000',
+				status: 'DONE',
+				found_at: inPeriodMs,
+				confirmed_at: inPeriodMs,
+			},
+		],
+	};
+	const unpricedWithdrawals = {
+		withdrawals: [
+			{ uuid: 'wd-mona', asset: 'mona', amount: '10', fee: '0.1', status: 'DONE', requested_at: inPeriodMs },
+		],
+	};
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('価格を引けない入出庫がある: 資産名が meta.warnings と summary 先頭に出る', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		setupFetchMock({ deposits: unpricedDeposits, withdrawals: unpricedWithdrawals });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		// 計算層 warning（meta.warnings）に資産名が載る。金額は含めない
+		expect(result.meta.warnings).toHaveLength(1);
+		const warning = result.meta.warnings?.[0] ?? '';
+		expect(warning).toContain('DOGE');
+		expect(warning).toContain('MONA');
+		expect(warning).not.toContain('1000');
+		expect(warning).not.toContain('10');
+
+		// data 側にも資産名が残る（3 期間とも同じ入出庫が対象）
+		expect(result.data.daily_performance?.unpriced_flow_assets).toEqual(['doge', 'mona']);
+		expect(result.data.monthly_performance?.unpriced_flow_assets).toEqual(['doge', 'mona']);
+		expect(result.data.yearly_performance?.unpriced_flow_assets).toEqual(['doge', 'mona']);
+
+		// LLM が見落とさないよう summary 先頭付近に出す
+		const firstLines = result.summary.split('\n').slice(0, 3).join('\n');
+		expect(firstLines).toContain('⚠️');
+		expect(firstLines).toContain('DOGE, MONA');
+	});
+
+	it('価格を全て引ける場合: warning は出ず unpriced_flow_assets も付かない', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		// btc は tickers_jpy fixture に存在するので価格を解決できる
+		setupFetchMock({
+			deposits: {
+				deposits: [
+					{
+						uuid: 'dep-btc',
+						asset: 'btc',
+						amount: '0.1',
+						status: 'DONE',
+						found_at: inPeriodMs,
+						confirmed_at: inPeriodMs,
+					},
+				],
+			},
+			withdrawals: { withdrawals: [] },
+		});
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		expect(result.meta.warnings).toBeUndefined();
+		expect(result.data.daily_performance?.unpriced_flow_assets).toBeUndefined();
+		expect(result.data.yearly_performance?.unpriced_flow_assets).toBeUndefined();
+		expect(result.summary).not.toContain('純入出金に計上できませんでした');
+		// 入庫は価格が引けているので net_flow に載る（0.1 BTC * 15_500_000 = 1_550_000）
+		expect(result.data.daily_performance?.net_flow_jpy).toBe(1_550_000);
+	});
+
+	/**
+	 * このツールに `view` / `format` は無く、出力の切り替え軸は 3 つの include_* だけ。
+	 * warning が消える組み合わせでは、warning の対象になる値（performance / 純入出金）
+	 * 自体が出力されない — 過小な数値だけが warning なしで残る経路が無いことを固定する。
+	 */
+	it('include_pnl=false / include_deposit_withdrawal=false: 過小な純入出金が warning なしで出ることはない', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		setupFetchMock({ deposits: unpricedDeposits, withdrawals: unpricedWithdrawals });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+
+		// include_pnl=false: performance を構築しないので純入出金自体が出力されない
+		const noPnl = await handler({
+			include_technical: false,
+			include_pnl: false,
+			include_deposit_withdrawal: true,
+		});
+		assertOk(noPnl);
+		expect(noPnl.meta.warnings).toBeUndefined();
+		expect(noPnl.data.daily_performance).toBeUndefined();
+		expect(noPnl.data.yearly_performance).toBeUndefined();
+		expect(noPnl.data.monthly_performance).toBeUndefined();
+
+		// include_deposit_withdrawal=false: 入出金を読まないので落ちる入出庫が無い
+		const noDw = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+		assertOk(noDw);
+		expect(noDw.meta.warnings).toBeUndefined();
+		expect(noDw.data.daily_performance?.net_flow_jpy).toBe(0);
+		expect(noDw.data.daily_performance?.unpriced_flow_assets).toBeUndefined();
+	});
+
+	it('toolDef: content[0].text の warning 行が JSON より前に出る', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		setupFetchMock({ deposits: unpricedDeposits, withdrawals: unpricedWithdrawals });
+
+		const { toolDef } = await import('../../tools/private/analyze_my_portfolio.js');
+		const result = await toolDef.handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		const text = (result as { content: Array<{ type: string; text: string }> }).content[0].text;
+		const warningIndex = text.indexOf('DOGE, MONA');
+		const jsonIndex = text.indexOf('\n{');
+		expect(warningIndex).toBeGreaterThanOrEqual(0);
+		expect(jsonIndex).toBeGreaterThan(0);
+		expect(warningIndex).toBeLessThan(jsonIndex);
+		// 先頭付近（1〜3 行目）に出ること
+		expect(text.split('\n').slice(0, 3).join('\n')).toContain('⚠️');
+		// data の JSON にも資産名が残る（structuredContent を見ないクライアント向け）
+		expect(text).toContain('unpriced_flow_assets');
 	});
 });
 
