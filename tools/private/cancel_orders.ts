@@ -29,6 +29,7 @@ export default async function cancelOrders(
 		token_expires_at: number;
 	},
 	route: 'elicitation' | 'ui-button' | 'direct-text' = 'direct-text',
+	scope: { sessionId?: string } = {},
 ) {
 	const { pair, order_ids, confirmation_token, token_expires_at } = args;
 
@@ -82,8 +83,8 @@ export default async function cancelOrders(
 			route,
 		});
 
-		// 実行済み preview のスナップショットを無効化（cancel_order と同趣旨）。
-		clearUiSnapshot('ui://cancel/confirm.html');
+		// 実行済み preview のスナップショットを無効化（cancel_order と同趣旨）。同一セッションのみ。
+		clearUiSnapshot('ui://cancel/confirm.html', scope);
 
 		return CancelOrdersOutputSchema.parse(
 			ok(

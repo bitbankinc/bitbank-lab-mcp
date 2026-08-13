@@ -139,6 +139,7 @@ export const toolDef: ToolDefinition = {
 						token_expires_at: result.data.expires_at!,
 					},
 					'elicitation',
+					{ sessionId: (extra as { sessionId?: string } | undefined)?.sessionId },
 				),
 			onDeclinedText: 'ユーザーがキャンセル操作を取り消しました（elicitation）',
 			declinedStructured: toStructured(result),

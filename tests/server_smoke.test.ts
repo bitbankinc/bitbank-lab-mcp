@@ -459,11 +459,12 @@ describe('server.ts smoke', () => {
 		await server.tools[2].handler({});
 		expect(getUiSnapshot('ui://cancel/confirm.html')).toMatchObject({ ok: false });
 
-		// スナップショットは呼び出し元接続の sessionId にバインドされる
+		// スナップショットは sessionId + resourceUri をキーに独立保持する。
+		// sess-1 への保存は stdio（sessionId なし）エントリを上書きしない。
 		await server.tools[0].handler({}, { sessionId: 'sess-1' });
 		expect(getUiSnapshot('ui://order/confirm.html', { sessionId: 'sess-1' })).toMatchObject({ ok: true });
 		expect(getUiSnapshot('ui://order/confirm.html', { sessionId: 'other-session' })).toBeNull();
-		expect(getUiSnapshot('ui://order/confirm.html')).toBeNull();
+		expect(getUiSnapshot('ui://order/confirm.html')).toMatchObject({ ok: true });
 	});
 
 	it('ハンドラには ctx と内部 Server を合流させた extra が渡る', async () => {
