@@ -1,9 +1,8 @@
 # ADR-0007: 取引系 HITL の確認トークン受け渡し設計
 
-- **Status**: **Proposed**（2026-08-13 改訂案: MCP Apps ホスト限定・オプトインで `_meta` 経由の iframe 実行経路を再導入）
-  - 直前の Accepted 版は「2026-08-10 の Decision（Superseded）」節に保持する。**下記「レビュー判断事項」A / B が
-    未決の間は Proposed のままとし、実装に着手しない。** 未決のまま Accepted にすると、この ADR を満たしつつ
-    動かない実行経路を出荷できてしまう
+- **Status**: Accepted（2026-08-13 改訂: MCP Apps ホスト限定・オプトインで `_meta` 経由の iframe 実行経路を再導入）
+  - 直前の Accepted 版は「2026-08-10 の Decision（Superseded）」節に保持する。
+  - レビュー判断事項 A / B は 2026-08-13 に確定済み（下記「確定した判断事項」節）。
 - **Date**: 2026-05-29
 - **Updated**:
   - 2026-07-29（MCP 2026-07-28 仕様の正式リリースを受けて「Future direction」を final 仕様と SDK 状況に合わせて更新。同日、SDK v2 移行 + MRTR 経路の実装を完了）
@@ -11,7 +10,7 @@
   - 2026-08-10（`requestState` を SDK `bind` で session/principal + MCP method に束縛。UI スナップショットキーを `sessionId + resourceUri` 化）
   - **2026-08-13（本改訂）**: ホスト実測を受けて Decision を差し替え。`_meta` **限定**・**オプトイン**・**MCP Apps UI 宣言ホスト限定**（`mimeTypes` に `text/html;profile=mcp-app` を含むこと）で iframe ボタンからの execute を再導入する。`structuredContent` への token 再露出は引き続き禁止
 
-## Decision（2026-08-13 改訂案 — Proposed）
+## Decision（2026-08-13 改訂 — 現行）
 
 取引系 HITL の `confirmation_token` は、**既定ではこれまでどおりサーバープロセス内に閉じる**。
 elicitation / MRTR（SEP-2322）対応ホストでは従来どおりネイティブ確認ダイアログのみで execute する（第一選択・変更なし）。
@@ -284,9 +283,9 @@ SDK 更新で静かに壊れうる箇所なので回帰を張る）。
 > この 1 本は手動 / nightly（`npm run test:e2e`）でのみ実行される。PR でのゲートは
 > 上記 1〜8 の単体・結合テストが担う。
 
-## レビュー判断事項（実装前に確定させたい）
+## 確定した判断事項（2026-08-13 レビューで決定）
 
-### A. pull 型 hydration（`get_ui_snapshot`）へトークンを載せるか
+### A. pull 型 hydration（`get_ui_snapshot`）へトークンを載せる — **採用**
 
 **背景**: 一部ホスト（2026-07-28 ロールアウト後の Claude Desktop で確認済み）は
 `ui/notifications/tool-result` を iframe に配信しない。そのため iframe は接続後 2.5 秒で
@@ -317,9 +316,11 @@ MIME 型）を課す。根拠は、これがチャネルを増やさず（同じ
 **代替案（push 限定）**: `get_ui_snapshot` は従来どおり `structuredContent` のみ返す。露出面は最小だが、
 Desktop で機能しない可能性が残り、その場合は「壊れていることに気づけないまま出荷」になる。
 
-**本 ADR は推奨案を前提に書いているが、ここは明示的にレビューで確定させたい。**
+**決定: 推奨案を採用した。** `get_ui_snapshot` は preview 側とまったく同じ 2 段ゲートを通したうえで
+`_meta` を返し、`expires_at` を過ぎたら `_meta` を落とす（`structuredContent` は TTL 内で返し続ける）。
+実装は `src/ui-snapshot-cache.ts` の `getUiSnapshotMeta` と `tools/get_ui_snapshot.ts`。
 
-### B. `confirmation_token` を session / principal に束縛するか
+### B. `confirmation_token` の session / principal 束縛 — **今回は見送り（HTTP 化時の必須前提として記録）**
 
 MRTR の `requestState` は `bind` で session/principal + method に束縛されているが、
 `confirmation_token`（`confirmation.ts`）にはこの束縛が無い。経路 2 では preview と execute が
@@ -328,8 +329,10 @@ MRTR の `requestState` は `bind` で session/principal + method に束縛さ�
 **現状の実効リスクはゼロに近い**: 本サーバーは `StdioServerTransport` のみで起動し
 （`src/server.ts`）、`sessionId` は常に undefined、principal も無い。束縛を足しても今日は no-op。
 
-**推奨**: 今回のスコープでは追加せず、**HTTP トランスポートを追加する際の必須前提として本 ADR に記録する**
-（スコープを膨らませず、忘れないようにする）。ここもレビューで確定させたい。
+**決定: 推奨どおり今回は追加しない。** ただし**これは HTTP トランスポート追加時の必須前提**であり、
+`StdioServerTransport` 以外を `src/server.ts` に足す変更では、同じ PR で
+`confirmation_token` の bind（`bindRequestStateContext` 相当）を実装すること。
+stdio のままなら `sessionId` が常に undefined なので、束縛を足しても効果は無い。
 
 ## Consequences
 
@@ -415,3 +418,20 @@ claude.ai 向けトラッカーが Desktop の直接の窓口とみなせる）�
 - 詳細実装ドキュメント: `docs/private-api.md`「`confirmation_token` の受け渡し」節
 - 共通フロー実装: `src/private/elicitation.ts`
 - 撤去済み環境変数の判定（常に false のまま）: `src/private/config.ts` の `isHostApprovalTrusted()`
+
+## 実装マップ（2026-08-13）
+
+| 責務 | 実装 |
+|---|---|
+| オプトイン判定（ゲート 1） | `src/private/config.ts` の `isAppUiExecuteEnabled()` |
+| MCP Apps UI capability 判定（ゲート 2） | `src/private/elicitation.ts` の `clientSupportsAppUi()` |
+| 2 段 AND の合成 | `src/private/elicitation.ts` の `isAppUiExecuteAllowed()` |
+| `_meta` キー / 型 / 読み取り（サーバー・UI 共有） | `src/mcp-apps-meta.ts` |
+| `_meta` の付与（elicitation 非対応時のみ） | `src/private/elicitation.ts` の `withConfirmationMeta()` |
+| 結果レベル `_meta` の透過 | `src/server.ts` の `respond()` |
+| スナップショットの `_meta` 保持と期限 | `src/ui-snapshot-cache.ts` の `getUiSnapshotMeta()` |
+| pull 型 hydration のゲート | `tools/get_ui_snapshot.ts` |
+| execute ハンドラの条件付き解錠 | `tools/private/{create_order,cancel_order,cancel_orders}.ts` |
+| iframe のボタン | `ui/{order,cancel}-confirm/src/App.tsx` |
+| 不変条件のテスト | `tests/private/mcp-apps-execute.test.ts`（PR で走る） |
+| wire レベルの `_meta` 透過回帰 | `tests/e2e/mcp-apps-meta.test.ts`（手動 / nightly のみ） |

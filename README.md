@@ -115,7 +115,7 @@ nvm/volta などのバージョン管理ツールをお使いの方には特に�
 
 **C. 取引注文・注文キャンセル実行（要 API キー）:**
 
-B に加えて、elicitation / MRTR 対応ホスト上での発注・注文キャンセルまで実行。実行前に必ず確認ステップ（preview → ユーザー明示 accept）が入ります。
+B に加えて、対応ホスト上での発注・注文キャンセルまで実行。実行前に必ず確認ステップ（preview → ユーザーの明示確認）が入ります。
 
 ```json
 {
@@ -136,7 +136,30 @@ B に加えて、elicitation / MRTR 対応ホスト上での発注・注文キ�
 >
 > ※ **「出金」権限は有効化しないことを強く推奨します**。本サーバーは出金系ツール未実装のため不要です。
 
-発注・取消の実行は **elicitation / MRTR 対応クライアント**でのみサーバー側に強制されます。確認トークンはクライアントに返らないため、LLM が preview 応答から直接 execute することはできません。旧 `BITBANK_TRUST_HOST_APPROVAL` オプトイン（iframe に token を載せる妥協モード）はセキュリティ上撤去済みです（設定しても無視されます）。
+発注・取消の実行には**ユーザーの明示確認が必須**です。確認トークンは `content` / `structuredContent` に載らないため、LLM が preview 応答から直接 execute することはできません。旧 `BITBANK_TRUST_HOST_APPROVAL` オプトイン（iframe に token を `structuredContent` で載せる妥協モード）はセキュリティ上撤去済みで、設定しても無視されます。
+
+確認の経路はクライアントによって変わります。
+
+| クライアント | 実行経路 |
+|---|---|
+| elicitation / MRTR 対応 | ネイティブ確認ダイアログで完結（**第一選択**。追加設定不要） |
+| MCP Apps UI 対応（Claude Desktop 等） | `BITBANK_MCP_APPS_EXECUTE=1` を設定した場合のみ、確認カードのボタンで実行（**既定は無効**） |
+| どちらも非対応 | プレビューのみ。実行は bitbank アプリ/ウェブで |
+
+<details>
+<summary><b>⚠️ <code>BITBANK_MCP_APPS_EXECUTE=1</code> を設定する前に読んでください</b></summary>
+
+このオプションは、確認トークンをツール結果の `_meta` にのみ載せて iframe へ渡し、確認カードのボタンからの実行を許可します。安全性は「**ホストが `_meta` をモデル（LLM）に渡さない**」という前提に依存します。
+
+* **仕様上の保証ではありません。** MCP Apps 仕様の該当記述は "Best Practices" の箇条書きで、MUST / SHOULD を伴いません。適合要件ではなく意図の説明です
+* **ホストのアップデートで壊れても、サーバー側では検知できません。** ホストが `_meta` をモデルコンテキストに含めるようになった瞬間に前提は崩れますが、その変化はサーバーから観測できません。**壊れ方は静かです**
+* この領域は実装が流動的です（`structuredContent` の喪失回帰など、関連トラッカーに 2026-05〜08 の issue が複数）
+
+万一トークンが漏れた場合でも、被害は **「直前にプレビューした注文 1 件（一括取消ならプレビュー済みの注文 ID 集合 1 セット）が、60 秒以内に 1 回だけ実行される」** に限定されます。トークンは注文内容に HMAC で束縛されており、攻撃者が金額・数量・ペア・方向を選ぶことはできません。
+
+**以上を理解したうえで有効化してください。既定では無効です。** 詳細は [ADR-0007](docs/adr/0007-hitl-confirmation-token-delivery.md)。
+
+</details>
 
 詳細: [ADR-0007](docs/adr/0007-hitl-confirmation-token-delivery.md) / [Private API ガイド](docs/private-api.md)。
 
@@ -243,7 +266,7 @@ Claude Desktop の UI に表示される名前は `claude_desktop_config.json` �
 }
 ```
 
-API キーが不要な場合は `env` ブロックごと削除して OK。セクション 1 の A〜C と同様に、取引実行まで使う場合は elicitation / MRTR 対応クライアントを使ってください（旧 `BITBANK_TRUST_HOST_APPROVAL` は不要・無効です）。
+API キーが不要な場合は `env` ブロックごと削除して OK。セクション 1 の A〜C と同様に、取引実行まで使う場合は確認フローに対応したクライアントが必要です（旧 `BITBANK_TRUST_HOST_APPROVAL` は不要・無効です）。
 
 #### Claude Code（CLI から登録する場合）
 
@@ -375,11 +398,11 @@ API キーは [bitbank 設定画面](https://app.bitbank.cc/account/api) で発�
 | ポートフォリオ | `analyze_my_portfolio` | 損益分析・パフォーマンス | 参照 |
 | 入出金 | `get_my_deposit_withdrawal` | 入出金履歴 | 参照 |
 | 信用取引 | `get_margin_status`, `get_margin_positions`, `get_margin_trade_history` | 証拠金・ポジション・約定履歴 | 参照 |
-| 発注 | `preview_order`（→ elicitation/MRTR accept） | ユーザー明示確認後にサーバー内で発注 | 取引 |
-| キャンセル | `preview_cancel_order`（→ elicitation/MRTR accept） | ユーザー明示確認後にサーバー内でキャンセル | 取引 |
-| 一括キャンセル | `preview_cancel_orders`（→ elicitation/MRTR accept） | ユーザー明示確認後にサーバー内で一括キャンセル | 取引 |
+| 発注 | `preview_order`（→ ユーザー確認） | ユーザー明示確認後に発注 | 取引 |
+| キャンセル | `preview_cancel_order`（→ ユーザー確認） | ユーザー明示確認後にキャンセル | 取引 |
+| 一括キャンセル | `preview_cancel_orders`（→ ユーザー確認） | ユーザー明示確認後に一括キャンセル | 取引 |
 
-取引操作（発注・キャンセル）は **preview → elicitation/MRTR でのユーザー明示 accept** が必須です。確認トークンはクライアントに返らず、`create_order` / `cancel_order` / `cancel_orders` を MCP `tools/call` から直接呼んでもサーバー側で拒否されます。
+取引操作（発注・キャンセル）は **preview → ユーザーの明示確認**が必須です。確認トークンは `content` / `structuredContent` に載らず、`create_order` / `cancel_order` / `cancel_orders` を MCP `tools/call` から直接呼んでもサーバー側で拒否されます。
 
 詳細: [docs/private-api.md](docs/private-api.md)
 

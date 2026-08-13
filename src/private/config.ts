@@ -30,8 +30,32 @@ export function getPrivateApiConfig(): PrivateApiConfig | null {
  * SEP-1865 iframe 起源の `tools/call` をサーバー側で安全に識別できないため、
  * token を `structuredContent` に載せる妥協モードはセキュリティ上無効化した。
  * 環境変数が設定されていても常に `false` を返す（後方互換のため関数は残す）。
- * 取引実行は elicitation / MRTR 経路のみ許可する。詳細は ADR-0007。
+ *
+ * **`isAppUiExecuteEnabled()` とは別物**。2026-08-13 に再導入した MCP Apps 実行経路は
+ * token を `_meta` にのみ載せる別設計で、本関数とは一切連動しない（ADR-0007）。
+ * 「撤去済み・設定しても無視される」という本変数の意味は変更していない。
  */
 export function isHostApprovalTrusted(): boolean {
 	return false;
+}
+
+/**
+ * MCP Apps（SEP-1865）ホスト向けの `_meta` 経由 execute 経路が有効かを返す。
+ *
+ * `BITBANK_MCP_APPS_EXECUTE=1` を設定した場合のみ true（既定 off）。これは
+ * **有効化ゲート 2 段のうち 1 段目（運用者の明示的オプトイン）**であり、
+ * これだけでは token は配送されない。2 段目のクライアント capability 判定
+ * （`clientSupportsAppUi`。`src/private/elicitation.ts`）と AND で評価すること。
+ *
+ * セキュリティ上の前提（ADR-0007）:
+ *   - この経路は「結果 `_meta` は LLM に渡らない」というホスト実装の**観測された挙動**に
+ *     依存する。ext-apps 仕様の該当記述は Best Practices 配下で MUST/SHOULD を伴わないため
+ *     適合要件ではない。ホストのアップデートで壊れてもサーバー側では検知できない
+ *   - したがって既定 off。有効化は運用者の明示的な判断とする
+ *
+ * `'1'` 以外（`true` / `yes` 等）は受け付けない。表記ゆれを許すと「設定したつもりで
+ * 有効になっていない / その逆」が起きるが、取引実行の解錠スイッチでそれは許容できない。
+ */
+export function isAppUiExecuteEnabled(): boolean {
+	return process.env.BITBANK_MCP_APPS_EXECUTE?.trim() === '1';
 }

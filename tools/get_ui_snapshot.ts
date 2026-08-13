@@ -6,14 +6,19 @@
  * 届かない場合に本ツールを `app.callServerTool` で呼び、直近の preview 応答を
  * 取得して自力で描画する。
  *
- * 返す内容は「ホストへ送信済みのツール応答の structuredContent」そのものであり、
- * 新たな情報露出は無い（詳細は src/ui-snapshot-cache.ts のヘッダコメント参照）。
+ * 返す内容は「ホストへ送信済みのツール応答」そのものであり、新たな情報露出は無い
+ * （詳細は src/ui-snapshot-cache.ts のヘッダコメント参照）。
+ *
+ * `_meta` については有効化ゲート（`isAppUiExecuteAllowed`）を通した場合のみ返す。
+ * MCP Apps 実行経路が有効なとき、`_meta` には確認トークンが含まれうるため
+ * （push 配信が効かないホスト向けの pull 復元。ADR-0007 レビュー判断事項 A）。
  */
 
 import { fail } from '../lib/result.js';
+import { isAppUiExecuteAllowed } from '../src/private/elicitation.js';
 import { GetUiSnapshotInputSchema } from '../src/schema/ui.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
-import { getUiSnapshot } from '../src/ui-snapshot-cache.js';
+import { getUiSnapshot, getUiSnapshotMeta } from '../src/ui-snapshot-cache.js';
 
 export const toolDef: ToolDefinition = {
 	name: 'get_ui_snapshot',
@@ -33,6 +38,10 @@ export const toolDef: ToolDefinition = {
 		if (!snapshot) {
 			return fail('表示できるスナップショットがありません。preview ツールを再実行してください', 'snapshot_not_found');
 		}
+		// `_meta` は確認トークンを含みうるため、preview 側とまったく同じ 2 段ゲート
+		// （オプトイン AND MCP Apps UI 宣言 + MIME 型）を通した場合のみ返す。
+		// ゲートが閉じていれば従来どおり structuredContent だけを返す。
+		const meta = isAppUiExecuteAllowed(extra) ? getUiSnapshotMeta(resource_uri, { sessionId }) : null;
 		return {
 			content: [
 				{
@@ -41,6 +50,7 @@ export const toolDef: ToolDefinition = {
 				},
 			],
 			structuredContent: snapshot,
+			...(meta ? { _meta: meta } : {}),
 		};
 	},
 };

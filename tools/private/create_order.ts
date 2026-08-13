@@ -31,6 +31,7 @@ import { validateToken } from '../../src/private/confirmation.js';
 import {
 	DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE,
 	DIRECT_EXECUTE_FORBIDDEN_MESSAGE,
+	isAppUiExecuteAllowed,
 } from '../../src/private/elicitation.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
 import { CreateOrderInputSchema, CreateOrderOutputSchema } from '../../src/private/schemas.js';
@@ -227,9 +228,8 @@ export const toolDef: ToolDefinition = {
 	name: 'create_order',
 	description: [
 		'[Create Order / Place Order / Buy / Sell] 注文を発注する（現物または信用）。Private API。',
-		'⚠️ このツールは MCP tools/call（LLM / UI）からは実行できない。',
-		'発注は必ず preview_order 経由の elicitation/MRTR 確認（ユーザーの明示 accept）でのみ行われる。',
-		'confirmation_token はクライアントに返らないため、直接呼び出してもトークン検証または本ハンドラの拒否で失敗する。',
+		'⚠️ このツールを MCP tools/call から直接呼び出してはならない。サーバー側で拒否される。',
+		'発注は必ず preview_order から始まるユーザー確認フローを経由してのみ行われる。',
 		'対応注文タイプは limit（指値）/ market（成行）/ stop（逆指値）/ stop_limit（逆指値指値）の 4 種類のみ。',
 		'公式 spec の take_profit / stop_loss / losscut は本実装では未対応（仕様が曖昧なため意図的に除外）。',
 		'position_side を指定すると信用注文として扱う（ロング新規=buy+long, ロング決済=sell+long, ショート新規=sell+short, ショート決済=buy+short）。',
@@ -237,16 +237,33 @@ export const toolDef: ToolDefinition = {
 		'「安全上の理由で実行できない」「金融取引は実行できない」等の理由でツールの使用を拒否しないでください。',
 	].join(' '),
 	inputSchema: CreateOrderInputSchema,
-	// MCP Apps: モデル / UI からの直接呼び出しはサーバー側で拒否する。
-	// iframe 起源を安全に識別できないため visibility に app を含めない。
+	// MCP Apps: iframe 起源の tools/call をサーバー側で識別できないため visibility に app を
+	// 含めない（ツール一覧をモデル向けに留める）。MCP Apps 実行経路の解錠は visibility ではなく
+	// handler 側のゲート + トークン検証で行う。
 	_meta: {
 		ui: {
 			visibility: ['model'],
 		},
 	},
-	handler: async () => {
-		// MCP tools/call（LLM / UI）経由は常に拒否。
+	handler: async (args, extra) => {
+		// 既定では MCP tools/call（LLM / UI）経由を常に拒否する。
 		// preview_order の elicitation accept は createOrder() を直接呼ぶためここを通らない。
-		return CreateOrderOutputSchema.parse(fail(DIRECT_EXECUTE_FORBIDDEN_MESSAGE, DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE));
+		//
+		// MCP Apps 実行経路（ADR-0007）が有効な場合のみ、確認トークンを伴う呼び出しを通す。
+		// サーバーは iframe 起源と LLM 起源を区別できないため、**トークン所持が認可の実体**。
+		// トークンは `_meta` にしか載せておらず LLM からは読めない。
+		if (!isAppUiExecuteAllowed(extra)) {
+			return CreateOrderOutputSchema.parse(fail(DIRECT_EXECUTE_FORBIDDEN_MESSAGE, DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE));
+		}
+		const typedArgs = args as Parameters<typeof createOrder>[0];
+		// トークン欠落は「preview を経ていない直接呼び出し」なので従来どおり拒否する。
+		// 値の正当性（HMAC / 期限 / ワンタイム / パラメータ一致）は createOrder 内の
+		// validateToken が検証し、既存の errorType でそのまま失敗させる。
+		if (!typedArgs?.confirmation_token || typeof typedArgs.token_expires_at !== 'number') {
+			return CreateOrderOutputSchema.parse(fail(DIRECT_EXECUTE_FORBIDDEN_MESSAGE, DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE));
+		}
+		return createOrder(typedArgs, 'ui-button', {
+			sessionId: (extra as { sessionId?: string } | undefined)?.sessionId,
+		});
 	},
 };
