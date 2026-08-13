@@ -30,5 +30,5 @@ description: AIクライアント別の詳細なセットアップ手順への�
 | 変数 | 既定 | 用途 |
 | --- | --- | --- |
 | `LOG_LEVEL` | `info` | `debug` を指定すると詳細ログを出力。トラブル調査時に使用。 |
-| `BITBANK_TRUST_HOST_APPROVAL` | unset（無効） | `1` を設定すると、elicitation 非対応だが iframe 確認 UI を持つホストでも preview の確認ボタンから発注/キャンセルを実行できる妥協モード。前提とリスクは [取引の安全設計](../private-api/safety.md) を参照。 |
+| `BITBANK_TRUST_HOST_APPROVAL` | unset（無視） | **撤去済み。** 設定しても効果なし。旧 iframe に token を載せる妥協モードはセキュリティ上無効化した。取引実行は elicitation / MRTR のみ。詳細は [取引の安全設計](../private-api/safety.md)。 |
 | `BITBANK_API_KEY` / `BITBANK_API_SECRET` | unset | Private ツールを有効化する API キー。両方そろって初めて有効になる。 |

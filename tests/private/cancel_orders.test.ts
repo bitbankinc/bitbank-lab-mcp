@@ -336,24 +336,7 @@ describe('cancel_orders — 非 PrivateApiError の generic catch', () => {
 });
 
 describe('cancel_orders — handler (toolDef)', () => {
-	it('handler が失敗時に result をそのまま返す', async () => {
-		const { toolDef } = await import('../../tools/private/cancel_orders.js');
-		const result = await toolDef.handler({
-			pair: 'btc_jpy',
-			order_ids: [3001],
-			confirmation_token: 'invalid',
-			token_expires_at: Date.now() + 60000,
-		});
-
-		expect((result as { ok: boolean }).ok).toBe(false);
-	});
-
-	it('handler が成功時に content + structuredContent を返す', async () => {
-		setupFetchMock(
-			mockBitbankSuccess({
-				orders: [canceledOrder(3001)],
-			}),
-		);
+	it('MCP tools/call 経由は valid token でも常に拒否する', async () => {
 		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_ids: [3001] });
 
 		const { toolDef } = await import('../../tools/private/cancel_orders.js');
@@ -364,7 +347,21 @@ describe('cancel_orders — handler (toolDef)', () => {
 			token_expires_at,
 		});
 
-		expect(result).toHaveProperty('content');
-		expect(result).toHaveProperty('structuredContent');
+		expect((result as { ok: boolean }).ok).toBe(false);
+		expect((result as { summary: string }).summary).toContain('MCP tools/call');
+		expect((result as { meta: { errorType: string } }).meta.errorType).toBe('direct_execute_forbidden');
+	});
+
+	it('invalid token でも同様に direct_execute_forbidden で拒否する', async () => {
+		const { toolDef } = await import('../../tools/private/cancel_orders.js');
+		const result = await toolDef.handler({
+			pair: 'btc_jpy',
+			order_ids: [3001],
+			confirmation_token: 'invalid',
+			token_expires_at: Date.now() + 60000,
+		});
+
+		expect((result as { ok: boolean }).ok).toBe(false);
+		expect((result as { meta: { errorType: string } }).meta.errorType).toBe('direct_execute_forbidden');
 	});
 });

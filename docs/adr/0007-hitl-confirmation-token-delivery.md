@@ -1,9 +1,11 @@
 # ADR-0007: 取引系 HITL の確認トークン受け渡し設計
 
-- **Status**: Accepted
+- **Status**: Accepted（2026-08-10 更新: trust-host UI 実行経路をセキュリティ上撤去）
 - **Date**: 2026-05-29
-- **Updated**: 2026-07-29（MCP 2026-07-28 仕様の正式リリースを受けて「Future direction」を final 仕様と SDK 状況に合わせて更新。同日、SDK v2 移行 + MRTR 経路の実装を完了 — 「移行計画」の実装済み注記を参照）
-- **Decision**: 取引系 HITL の `confirmation_token` 配送を 3 層構造で扱う。デフォルトはサーバープロセス内に閉じ、`BITBANK_TRUST_HOST_APPROVAL=1` のオプトインで SEP-1865 iframe ボタン経路を有効化する。長期的には MCP SEP-2322 (Multi Round-Trip Requests / `InputRequiredResult`) への置き換えを想定する。
+- **Updated**:
+  - 2026-07-29（MCP 2026-07-28 仕様の正式リリースを受けて「Future direction」を final 仕様と SDK 状況に合わせて更新。同日、SDK v2 移行 + MRTR 経路の実装を完了）
+  - 2026-08-10（`BITBANK_TRUST_HOST_APPROVAL` による token 露出 / UI execute 経路を撤去。execute は elicitation/MRTR のみ）
+- **Decision**: 取引系 HITL の `confirmation_token` はサーバープロセス内に閉じ、クライアントへ返さない。execute は elicitation / MRTR（SEP-2322）のユーザー明示 accept のみで行う。SEP-1865 iframe 起源の `tools/call` をサーバー側で安全に識別できないため、token を `structuredContent` に載せる UI 実行経路（旧 `BITBANK_TRUST_HOST_APPROVAL=1`）は採用しない。
 
 ## Context
 
@@ -13,147 +15,80 @@ bitbank の Private API は注文発注・キャンセル（`create_order` / `ca
 
 1. **MCP の仕様面**: `structuredContent` / `content` / `_meta` のいずれも基本仕様では「LLM 可視」を排除する保証が無い。OpenAI Apps SDK は `_meta` を iframe 専用とする慣習を持つが、これは MCP 基本仕様の保証ではなく、ホスト個別の挙動。
 2. **SEP-1865 (MCP Apps / iframe UI)**: iframe ↔ サーバー間の `tools/call` には origin marker が無く、サーバーから「iframe 起源の呼び出しか LLM 起源の呼び出しか」を識別できない。
-3. **elicitation**: サーバーがクライアントに `elicitInput` を投げてネイティブダイアログを出す機能。`getClientCapabilities().elicitation` で advertise されているクライアントでのみ動作する。Claude Desktop / claude-ai は 2026-05 時点で advertise していないことを実機ログで確認。
+3. **elicitation / MRTR**: サーバーがクライアントに確認要求を返し、ユーザー応答付きで再試行する経路。`getClientCapabilities().elicitation`（または MRTR envelope）で advertise されているクライアントでのみ動作する。
 4. **歴史的経緯**:
    - 旧実装は `confirmation_token` を `structuredContent.data` に含めて返していた → iframe がそれを読んでボタンを描画し `app.callServerTool('create_order', { token })` で実行
    - この設計は LLM が `structuredContent` を読み取れる場合に HITL バイパス可能（インジェクション攻撃で「preview の直後に create_order を直接呼ぶ」誘導が成立）
    - 2026-05-21 のセキュリティ修正 (#532 / commits `f0e1cce` / `85d21c7`) で token を `structuredContent` から strip するよう変更。同時に elicitation 経路を主流にした
-   - しかし主要クライアントが elicitation を advertise していないため、Claude Desktop / claude-ai で発注経路そのものが消失した（spec 適合だが UX 破綻）
+   - 主要クライアントが elicitation を advertise していなかったため、`BITBANK_TRUST_HOST_APPROVAL=1` オプトインで token 再露出する妥協モードを一時的に用意した
+   - **しかし tool description やホスト承認 UI は認可制御にならない**。token が見えれば LLM / 任意クライアントがユーザーの iframe ボタン押下なしに execute を呼べる。2026-08-10 にこの妥協モードを撤去した
 
 ## Decision
 
-### 3 層の経路を順位制で並べる
+### 2 層の経路
 
 ```
-1. elicitation 対応ホスト         → ネイティブダイアログで完結（token は server 内に閉じる）
-2. trust-host-approval モード     → iframe ボタン経路（token を structuredContent に含めて返す）
-3. それ以外                       → preview のみ返す（execute 不可）
+1. elicitation / MRTR 対応ホスト  → ネイティブ確認ダイアログで完結（token は server 内に閉じる）
+2. それ以外                       → preview のみ返す（execute 不可。token は返さない）
 ```
 
 経路の選択は `src/private/elicitation.ts` の `withElicitedConfirmation` に集約。
 
-### `BITBANK_TRUST_HOST_APPROVAL=1` の意味づけ
+### `BITBANK_TRUST_HOST_APPROVAL` の扱い（撤去）
 
-「ホスト（Claude Desktop / claude-ai 等）のツール承認 UI を最終 gate として信頼する」というユーザーの明示的なオプトイン宣言として扱う。
+環境変数 `BITBANK_TRUST_HOST_APPROVAL=1` を設定しても **効果はない**（`isHostApprovalTrusted()` は常に `false`）。後方互換のため関数名と env 読み取りの痕跡は残すが、token を `structuredContent` に載せる経路は存在しない。
 
-このモードでは:
-- `confirmation_token` / `expires_at` が `structuredContent.data` に含まれる
-- iframe (SEP-1865) が token を読んで `app.callServerTool` を呼ぶ経路が動く
-- LLM も `structuredContent` 経由で token を見られるが、ホストのツール承認 UI が（"Allow always" を押さない限り）人間クリックを要求する前提で運用する
+理由:
+- SEP-1865 では UI 起源の `tools/call` をサーバー側で認証できない
+- 「ホスト承認 UI を信頼する」「LLM は description に従う」は強制力のある認可ではない
+- したがって UI 経由 execute を許すと、token 漏洩 = HITL バイパスが成立する
+
+### execute ツールの MCP ハンドラ拒否
+
+`create_order` / `cancel_order` / `cancel_orders` の `toolDef.handler`（MCP `tools/call`）は常に `direct_execute_forbidden` で拒否する。
+preview の elicitation accept は各関数の default export をプロセス内で直接呼び出すため、この拒否の外にある。
 
 ### LLM への明示的な制約
 
-`create_order` / `cancel_order` / `cancel_orders` のツール description に強い文言を入れる:
-
-> ⚠️ LLM はこのツールを直接呼び出してはならない。常に preview_* 経由でのみ呼び出すこと。
-
-これは強制力こそ無いが、LLM の自制を促す soft gate として機能する。
+description に「直接呼び出してはならない」と書くことは補助に過ぎず、**認可の根拠にしない**。強制はサーバー側の token 非露出 + MCP handler 拒否で行う。
 
 ## Consequences
 
 ### Pros
 
-- デフォルト挙動は spec 適合・安全側（token を露出しない）
-- 個人責任で UX を取りたいユーザーは env 1 つで opt-in できる
-- elicitation 対応クライアントが増えれば自動的に経路 1 にシフトする（コード変更不要）
-- 短期 / 中期 / 長期の移行パスが明確
-- 既存テストはすべて維持される（デフォルト挙動は変わらない）
+- デフォルトも trust-host 設定時も、token がクライアントに漏れない
+- LLM / 任意クライアントが preview 応答から execute を成立させられない
+- ユーザーの明示確認は elicitation/MRTR の accept としてサーバー側で検証される
+- decline / cancel / replay / 期限切れは execute しない
 
 ### Cons
 
-- `BITBANK_TRUST_HOST_APPROVAL=1` 時のセキュリティは「ホスト承認 UI が機能する」という仕様外の前提に依存する
-- "Allow always" を押すユーザーには HITL gate が事実上無効化される（READMEで警告）
-- 3 経路の分岐ロジックが `withElicitedConfirmation` 内に存在し続ける（SEP-2322 移行までの暫定）
+- elicitation / MRTR 非対応ホストではチャット内での発注・取消ができない（preview のみ。手動は bitbank アプリ/ウェブ）
+- SEP-1865 確認カードの「確定」ボタン経路は使えない（プレビュー表示のみ）
 
 ### 想定リスクの境界
 
 | リスク | 評価 |
 |---|---|
-| 1 回のバイパスで失える金額 | 1 件分の注文。bitbank 側の残高・最小/最大数量制限内 |
-| アカウント全資産が一発で消える | × token は注文 1 件にしか効かない、有効期限短い |
-| 不可逆性 | 約定すれば取り消し不可（指値だけは未約定中にキャンセル可） |
-| 検知容易性 | 会話ログに `create_order` 実行が残るので事後検知容易 |
-| 損失上限 | 入金額 / 利用可能保証金で頭打ち |
+| preview 応答からの HITL バイパス | × token / 同等 credential を返さない |
+| MCP tools/call での直接 execute | × handler が常に拒否 |
+| elicitation accept の replay | × one-time nonce で拒否 |
+| アカウント全資産が一発で消える | × accept は 1 件（または preview した ID 集合）にバインド |
 
-## Future direction: SEP-2322 (Multi Round-Trip Requests) への移行
+## Future direction: SEP-2322 (Multi Round-Trip Requests)
 
 > **2026-07-29 更新**: SEP-2322 は MCP 2026-07-28 仕様として正式リリースされ final となった。
-> 以下は RC 時点の記述を final 仕様・SDK 状況に合わせて更新したもの。
+> MRTR 経路は実装済み（第一選択）。
 
-2026-07-28 仕様で導入された **MRTR（`resultType: "input_required"`）** が本問題の構造的な解決策となる。
-仕様上、MRTR はサーバー発リクエスト（`elicitation/create` / `sampling/createMessage` / `roots/list`）を
-置き換えるものと位置づけられ、現行の経路 1（`elicitInput`）は旧方式となった。
-（正式な非推奨リスト入りは Roots / Sampling / Logging。非推奨機能には最低 12 ヶ月の猶予があり、
-`elicitation/create` も当面は動作継続する。）
+`requestState` は秘匿保証が無いため token を載せない。nonce + 引数 digest を署名して載せ、HMAC / 期限（SDK verify フック）+ action / digest / one-time nonce（`withElicitedConfirmation`）で検証する。
 
-フローは 2 リクエスト構成:
-
-1. ツール呼び出しに対し、サーバーが `resultType: "input_required"` + `inputRequests`（キー付き確認要求）+
-   `requestState`（不透明 blob）を返す
-2. クライアントはユーザー回答を集め、同一キーの `inputResponses` と echo した `requestState` を付けて
-   **元のツール呼び出しを再試行**する（JSON-RPC id は別。`requestState` に必要な文脈を載せる、
-   またはサーバー側状態への検証可能なハンドルとすることで、プロトコルセッションに依存せず
-   任意のサーバーインスタンスが再開できる）
-
-```json
-{
-  "resultType": "input_required",
-  "inputRequests": {
-    "confirm": {
-      "type": "elicitation",
-      "message": "この注文を発注しますか？",
-      "requestedSchema": { "type": "boolean" }
-    }
-  },
-  "requestState": "<opaque server-controlled blob>"
-}
-```
-
-`requestState` はクライアントが中身を解釈せず verbatim に echo する不透明 blob だが、
-**final 仕様は「opaque だが secret ではない」と明記しており、LLM / クライアントから可視になり得る**。
-したがって `confirmation_token` / `expires_at` を格納する場合は平文や HMAC 付き平文ではなく
-**暗号化する（または token 本体はサーバー内に保持し、署名付き参照 ID のみを格納する）**。
-改ざん検知だけなら HMAC で足りるが、本件は token の LLM 不可視性が要件のため暗号化が基本。
-また暗号化の有無や参照 ID 方式かにかかわらず、echo されて戻る `requestState` は
-**攻撃者制御入力として扱い、受信時に必ず検証したうえで、認証済みユーザー・元のメソッド/引数・
-有効期限・one-time-use 状態に暗号学的にバインドする**（裸の署名付き参照 ID だけでは
-replay や別文脈での再利用を防げない）。
-（RC 時点の本 ADR は「LLM 不可視のまま round trip できる」としていたが、これは平文格納では成立しない。）
-
-### 移行計画
-
-- ~~**〜2026-07-28**: SEP-2322 final 確定を待つ~~ → **完了**（2026-07-28 仕様として正式リリース済み）
-- **SDK 状況（2026-07-29 時点）**: TypeScript SDK は v2 系の新パッケージ
-  （`@modelcontextprotocol/server` 2.0.0、2026-07-27 公開）が 2026-07-28 仕様と
-  `inputRequired.elicit()` API を実装。現行使用中の v1 系（`@modelcontextprotocol/sdk` 1.x）には
-  来ない見込みのため、MRTR 経路の実装には **SDK v2 移行**（パッケージ分割・`serverInfo` の
-  `_meta` 移動・出力拡張子変更等の破壊的変更を含む）が前提となる。
-- ~~**移行着手の判断基準**（2026-Q4 目安に再評価）~~ → **前倒しで着手・実装済み**（2026-07-29）。
-  Anthropic が Claude 製品（Claude Desktop / Claude Code / claude.ai）への 2026-07-28 対応
-  ロールアウトを発表したため（https://claude.com/blog/bringing-mcp-2026-07-28-to-claude ）、
-  「ホスト対応が律速」の前提が崩れ、待つ理由がなくなった。
-- ~~**SDK v2 移行後**~~ → **実装済み**: SDK v2（`@modelcontextprotocol/server` 2.0.0 固定）へ移行し、
-  `withElicitedConfirmation` を「`input_required` 返し」（MRTR）スタイルへ書き換えた。
-  SDK v2 の legacy shim（デフォルト有効）が MRTR スタイルの戻り値を 2025 系クライアント向けに
-  `elicitation/create` へ自動変換するため、ハンドラは MRTR のみで両世代に対応する
-  （`elicitInput` の直接呼び出しは廃止）。
-  優先順位は `MRTR（旧クライアントへは shim が elicitation 変換）> trust-host-approval > fallback`。
-  `requestState` には token を載せず（署名のみで暗号化されないため）、nonce + 引数 digest を
-  署名して載せ、HMAC / 期限（SDK verify フック）+ action / digest / one-time nonce
-  （`withElicitedConfirmation`）の 2 層で検証する。実装は `src/private/request-state.ts` /
-  `src/private/elicitation.ts` / `src/server.ts`。
-- **クライアント実装が広く出揃ったタイミング**: `BITBANK_TRUST_HOST_APPROVAL` モードを deprecate → 撤去
-
-トラッキング:
-- 仕様（final）: https://modelcontextprotocol.io/seps/2322-MRTR
-- リリース記事: https://blog.modelcontextprotocol.io/posts/2026-07-28/
-- TS SDK v2: https://github.com/modelcontextprotocol/typescript-sdk/releases を月 1 で確認
-  （`server@2.0.x` のパッチ状況と、主要ホストの MRTR 対応状況をあわせて見る）
+UI 起源の安全な識別（origin marker 等）が MCP 仕様に入り、サーバー側で認証可能になった場合に限り、iframe 実行経路の再検討余地がある。現状の仕様では再導入しない。
 
 ## 関連
 
 - 旧設計のセキュリティ修正: PR #532, commits `f0e1cce`, `85d21c7`
 - UI 案内表示への調整 / `extra.server` 渡し方の修正: PR #585, #586
+- trust-host 経路の撤去: 本 ADR の 2026-08-10 更新
 - 詳細実装ドキュメント: `docs/private-api.md`「`confirmation_token` の受け渡し」節
 - 共通フロー実装: `src/private/elicitation.ts`
-- 環境変数判定: `src/private/config.ts` の `isHostApprovalTrusted()`
+- 環境変数判定（常に false）: `src/private/config.ts` の `isHostApprovalTrusted()`

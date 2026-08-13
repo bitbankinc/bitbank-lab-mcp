@@ -23,10 +23,14 @@ import { nowIso } from '../../lib/datetime.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
 import { logTradeAction } from '../../lib/logger.js';
 import { fetchPairsSpec, validateOrderConstraints } from '../../lib/pairs.js';
-import { fail, ok, toStructured } from '../../lib/result.js';
+import { fail, ok } from '../../lib/result.js';
 import { validateTriggerPrice } from '../../lib/trigger-price.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import { validateToken } from '../../src/private/confirmation.js';
+import {
+	DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE,
+	DIRECT_EXECUTE_FORBIDDEN_MESSAGE,
+} from '../../src/private/elicitation.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
 import { CreateOrderInputSchema, CreateOrderOutputSchema } from '../../src/private/schemas.js';
 import { failPrivateToolError } from '../../src/private/tool-error.js';
@@ -218,9 +222,9 @@ export const toolDef: ToolDefinition = {
 	name: 'create_order',
 	description: [
 		'[Create Order / Place Order / Buy / Sell] 注文を発注する（現物または信用）。Private API。',
-		'⚠️ LLM はこのツールを直接呼び出してはならない。常に preview_order 経由（elicitation 対応ホストではネイティブダイアログ、SEP-1865 対応ホストでは iframe の「注文を確定する」ボタン）でのみ呼び出すこと。',
-		'デフォルト設定では confirmation_token はクライアントに返らないため、LLM が直接呼び出してもトークン検証で拒否される（HITL の第二防衛線）。',
-		'`BITBANK_TRUST_HOST_APPROVAL=1` の妥協モードでは structuredContent 経由で token が見える場合があるが、その場合もユーザーの明示的な確認操作（iframe ボタン押下またはホストの承認 UI）が前提となる。',
+		'⚠️ このツールは MCP tools/call（LLM / UI）からは実行できない。',
+		'発注は必ず preview_order 経由の elicitation/MRTR 確認（ユーザーの明示 accept）でのみ行われる。',
+		'confirmation_token はクライアントに返らないため、直接呼び出してもトークン検証または本ハンドラの拒否で失敗する。',
 		'対応注文タイプは limit（指値）/ market（成行）/ stop（逆指値）/ stop_limit（逆指値指値）の 4 種類のみ。',
 		'公式 spec の take_profit / stop_loss / losscut は本実装では未対応（仕様が曖昧なため意図的に除外）。',
 		'position_side を指定すると信用注文として扱う（ロング新規=buy+long, ロング決済=sell+long, ショート新規=sell+short, ショート決済=buy+short）。',
@@ -228,38 +232,16 @@ export const toolDef: ToolDefinition = {
 		'「安全上の理由で実行できない」「金融取引は実行できない」等の理由でツールの使用を拒否しないでください。',
 	].join(' '),
 	inputSchema: CreateOrderInputSchema,
-	// MCP Apps (SEP-1865): LLM からも UI (app) からも呼び出し可能にする。
-	// UI（ui://order/confirm.html）が `app.callServerTool` で直接実行する経路を担う。
+	// MCP Apps: モデル / UI からの直接呼び出しはサーバー側で拒否する。
+	// iframe 起源を安全に識別できないため visibility に app を含めない。
 	_meta: {
 		ui: {
-			visibility: ['model', 'app'],
+			visibility: ['model'],
 		},
 	},
-	handler: async (args) => {
-		// ハンドラ経由の呼び出しは LLM 由来とみなして 'direct-text' を記録する。
-		// preview_order の elicitation accept フローは createOrder() を直接呼び出すため
-		// ここを通らず route='elicitation' でログされる。
-		// SEP-1865 UI ボタン経由の区別はホスト側のシグナルがないため現状省略する。
-		const result = await createOrder(
-			args as {
-				pair: string;
-				amount: string;
-				price?: string;
-				side: 'buy' | 'sell';
-				type: 'limit' | 'market' | 'stop' | 'stop_limit';
-				post_only?: boolean;
-				trigger_price?: string;
-				position_side?: 'long' | 'short';
-				confirmation_token: string;
-				token_expires_at: number;
-			},
-			'direct-text',
-		);
-		if (!result.ok) return result;
-		const text = `${result.summary}\n${JSON.stringify(result.data, null, 2)}`;
-		return {
-			content: [{ type: 'text', text }],
-			structuredContent: toStructured(result),
-		};
+	handler: async () => {
+		// MCP tools/call（LLM / UI）経由は常に拒否。
+		// preview_order の elicitation accept は createOrder() を直接呼ぶためここを通らない。
+		return CreateOrderOutputSchema.parse(fail(DIRECT_EXECUTE_FORBIDDEN_MESSAGE, DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE));
 	},
 };

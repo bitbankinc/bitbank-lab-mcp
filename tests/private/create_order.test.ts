@@ -446,7 +446,23 @@ describe('create_order — 未対応の注文タイプ（take_profit / stop_loss
 });
 
 describe('create_order — handler (toolDef)', () => {
-	it('handler が失敗時に result をそのまま返す', async () => {
+	it('MCP tools/call 経由は valid token でも常に拒否する', async () => {
+		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
+		const { confirmation_token, token_expires_at } = validToken(params);
+
+		const { toolDef } = await import('../../tools/private/create_order.js');
+		const result = await toolDef.handler({
+			...params,
+			confirmation_token,
+			token_expires_at,
+		});
+
+		expect((result as { ok: boolean }).ok).toBe(false);
+		expect((result as { summary: string }).summary).toContain('MCP tools/call');
+		expect((result as { meta: { errorType: string } }).meta.errorType).toBe('direct_execute_forbidden');
+	});
+
+	it('invalid token でも同様に direct_execute_forbidden で拒否する', async () => {
 		const { toolDef } = await import('../../tools/private/create_order.js');
 		const result = await toolDef.handler({
 			pair: 'btc_jpy',
@@ -459,23 +475,7 @@ describe('create_order — handler (toolDef)', () => {
 		});
 
 		expect((result as { ok: boolean }).ok).toBe(false);
-	});
-
-	it('handler が成功時に content + structuredContent を返す', async () => {
-		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
-		const { confirmation_token, token_expires_at } = validToken(params);
-
-		setupFetchMockSequence([{ body: orderSuccessResponse({ side: 'buy', type: 'limit', price: '14000000' }) }]);
-
-		const { toolDef } = await import('../../tools/private/create_order.js');
-		const result = await toolDef.handler({
-			...params,
-			confirmation_token,
-			token_expires_at,
-		});
-
-		expect(result).toHaveProperty('content');
-		expect(result).toHaveProperty('structuredContent');
+		expect((result as { meta: { errorType: string } }).meta.errorType).toBe('direct_execute_forbidden');
 	});
 });
 

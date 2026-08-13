@@ -425,48 +425,48 @@ describe('withElicitedConfirmation', () => {
 		});
 	});
 
-	describe('trust-host-approval モード（BITBANK_TRUST_HOST_APPROVAL=1）', () => {
-		const trustHostFallback = {
-			content: [{ type: 'text', text: 'TRUST_HOST_TEXT' }],
-			structuredContent: { confirmation_token: 'iframe-token', expires_at: 123 } as Record<string, unknown>,
-		};
-
-		it('フラグ OFF なら trustHostFallback は無視され fallback が返る', async () => {
+	describe('trust-host-approval モードは無効（BITBANK_TRUST_HOST_APPROVAL は無視）', () => {
+		it('フラグ OFF なら fallback が返り token は剥がされる', async () => {
 			delete process.env.BITBANK_TRUST_HOST_APPROVAL;
 			const result = (await withElicitedConfirmation({
 				...baseOpts,
 				extra: round1Ctx(false),
 				onConfirmed: vi.fn(),
-				fallback: makeFallback(),
-				trustHostFallback,
-			})) as { content: { text: string }[] };
+				fallback: {
+					content: [{ type: 'text', text: 'FALLBACK_TEXT' }],
+					structuredContent: { confirmation_token: 'should-strip', expires_at: 1 } as Record<string, unknown>,
+				},
+			})) as { content: { text: string }[]; structuredContent: Record<string, unknown> };
 
 			expect(result.content[0]?.text).toBe('FALLBACK_TEXT');
+			expect(result.structuredContent.confirmation_token).toBeUndefined();
 		});
 
-		it('フラグ ON + elicitation 非対応なら trustHostFallback を token 付きのまま返す', async () => {
+		it('フラグ ON でも elicitation 非対応時は token を strip した fallback のみ返す', async () => {
 			process.env.BITBANK_TRUST_HOST_APPROVAL = '1';
 			const result = (await withElicitedConfirmation({
 				...baseOpts,
 				extra: round1Ctx(false),
 				onConfirmed: vi.fn(),
-				fallback: makeFallback(),
-				trustHostFallback,
+				fallback: {
+					content: [{ type: 'text', text: 'FALLBACK_TEXT' }],
+					structuredContent: { confirmation_token: 'iframe-token', expires_at: 123 } as Record<string, unknown>,
+				},
 			})) as { content: { text: string }[]; structuredContent: Record<string, unknown> };
 
-			expect(result.content[0]?.text).toBe('TRUST_HOST_TEXT');
-			// 妥協モードでは token を strip しない（iframe ボタン経路を成立させる）
-			expect(result.structuredContent.confirmation_token).toBe('iframe-token');
+			// 旧 trust-host 経路は撤去。常に safeFallback（token strip）を返す
+			expect(result.content[0]?.text).toBe('FALLBACK_TEXT');
+			expect(result.structuredContent.confirmation_token).toBeUndefined();
+			expect(result.structuredContent.expires_at).toBeUndefined();
 		});
 
-		it('フラグ ON + elicitation 対応ホストでは通常の MRTR 経路が優先される（trustHostFallback は無視）', async () => {
+		it('フラグ ON + elicitation 対応ホストでは通常の MRTR 経路が優先される', async () => {
 			process.env.BITBANK_TRUST_HOST_APPROVAL = '1';
 			const result = await withElicitedConfirmation({
 				...baseOpts,
 				extra: round1Ctx(true),
 				onConfirmed: vi.fn(),
 				fallback: makeFallback(),
-				trustHostFallback,
 			});
 
 			expect(isInputRequiredResult(result)).toBe(true);
