@@ -206,3 +206,40 @@ describe('get_margin_status — handler (toolDef)', () => {
 		expect((result as { ok: boolean }).ok).toBe(true);
 	});
 });
+
+/**
+ * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
+ * `data.available_balances[].pair` は structuredContent に公開されるので小文字契約を保つ。
+ * 表示は `formatPair`（`toUpperCase()`）なので従来どおり大文字。防御的正規化（現行 API は小文字）。
+ */
+describe('get_margin_status — API pair の取得境界正規化', () => {
+	it('小文字レスポンスでは出力が変わらない（回帰なし）', async () => {
+		setupFetchMock(mockBitbankSuccess(rawMarginStatusResponse));
+
+		const { default: getMarginStatus } = await import('../../tools/private/get_margin_status.js');
+		const result = await getMarginStatus({});
+
+		assertOk(result);
+		expect(result.data.available_balances).toEqual(rawMarginStatusResponse.available_balances);
+	});
+
+	it('大文字レスポンスでも structuredContent の pair は小文字契約を保つ', async () => {
+		setupFetchMock(
+			mockBitbankSuccess({
+				...rawMarginStatusResponse,
+				available_balances: rawMarginStatusResponse.available_balances.map((b) => ({
+					...b,
+					pair: b.pair.toUpperCase(),
+				})),
+			}),
+		);
+
+		const { default: getMarginStatus } = await import('../../tools/private/get_margin_status.js');
+		const result = await getMarginStatus({});
+
+		assertOk(result);
+		expect(result.data.available_balances.map((b) => b.pair)).toEqual(['btc_jpy', 'eth_jpy']);
+		// 数量フィールドは触らない
+		expect(result.data.available_balances[0]).toEqual({ pair: 'btc_jpy', long: '500000', short: '450000' });
+	});
+});

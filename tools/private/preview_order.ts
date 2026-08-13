@@ -12,6 +12,7 @@
 
 import { estimateOrderFee } from '../../lib/fees.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
+import { isJpyQuotedPair } from '../../lib/pair-code.js';
 import { fetchPairsSpec, type PairSpec, validateOrderConstraints } from '../../lib/pairs.js';
 import { fail, ok, toStructured } from '../../lib/result.js';
 import { validateTriggerPrice } from '../../lib/trigger-price.js';
@@ -139,7 +140,7 @@ export default async function previewOrder(args: {
 	const { token, expiresAt } = generateToken('create_order', tokenParams);
 
 	// プレビュー表示
-	const isJpy = pair.includes('jpy');
+	const isJpy = isJpyQuotedPair(pair);
 	const sideLabel = side === 'buy' ? '買' : '売';
 	const fmtPrice = price ? (isJpy ? formatPrice(Number(price)) : price) : '成行';
 	const isMargin = !!position_side;

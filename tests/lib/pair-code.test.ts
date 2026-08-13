@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { normalizePairCode, normalizePairCodes, withNormalizedPair } from '../../lib/pair-code.js';
+import { isJpyQuotedPair, normalizePairCode, normalizePairCodes, withNormalizedPair } from '../../lib/pair-code.js';
 
 describe('normalizePairCode', () => {
 	it('大文字を小文字へ正規化する', () => {
@@ -31,9 +31,9 @@ describe('normalizePairCode', () => {
 	});
 
 	/**
-	 * 取得境界でやるのは小文字化のみ。形式検証（`lib/validate.ts` の `normalizePair`）や
-	 * ALLOWED_PAIRS 検証（`ensurePair`）を持ち込まない——口座に非対応 pair
-	 * （上場廃止ペア等）の履歴があっても取得層で落としてはならない。
+	 * 取得境界でやるのは「前後の空白除去 + 小文字化」の 2 つのみ。形式検証
+	 * （`lib/validate.ts` の `normalizePair`）や ALLOWED_PAIRS 検証（`ensurePair`）を
+	 * 持ち込まない——口座に非対応 pair（上場廃止ペア等）の履歴があっても取得層で落としてはならない。
 	 */
 	it('形式不正・未対応 pair も drop / throw せず小文字化して通す', () => {
 		expect(normalizePairCode('NOTAPAIR')).toBe('notapair');
@@ -103,5 +103,21 @@ describe('normalizePairCodes', () => {
 		const result = normalizePairCodes(records);
 		expect(result[0]).toBe(records[0]);
 		expect(result[1]).toBe(records[1]);
+	});
+});
+
+describe('isJpyQuotedPair', () => {
+	it("小文字 pair を従来どおり判定する（includes('jpy') 挙動の保存）", () => {
+		expect(isJpyQuotedPair('btc_jpy')).toBe(true);
+		expect(isJpyQuotedPair('eth_btc')).toBe(false);
+		// 既存の includes 判定は base 側 JPY も真になる。lib/price.ts の isJpyPair
+		// （endsWith('_jpy')）とは条件が違うので、ここで挙動を固定しておく
+		expect(isJpyQuotedPair('jpy_btc')).toBe(true);
+	});
+
+	it('大文字・前後空白のユーザー入力でも判定が崩れない', () => {
+		expect(isJpyQuotedPair('BTC_JPY')).toBe(true);
+		expect(isJpyQuotedPair('  Btc_Jpy ')).toBe(true);
+		expect(isJpyQuotedPair('ETH_BTC')).toBe(false);
 	});
 });

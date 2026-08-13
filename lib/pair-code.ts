@@ -34,14 +34,34 @@
  */
 
 /**
- * API 由来の pair シンボルを小文字へ正規化する。
+ * API 由来の pair シンボルを正規化する。**正規化 = 前後の空白除去 + 小文字化**の 2 つだけ。
  *
- * 前後の空白も落とす（`normalizePair` / `normalizeAssetCode` と同方針）。pair は
- * 英数字と `_` のみのため、ロケール依存の `toLocaleLowerCase` ではなく `toLowerCase` を使う。
- * 形式検証はしない（取得境界でやるのは小文字化のみ）。
+ * `trim()` も含むのは `normalizePair`（`lib/validate.ts`）/ `normalizeAssetCode` と同方針。
+ * pair は英数字と `_` のみのため、ロケール依存の `toLocaleLowerCase` ではなく `toLowerCase` を使う。
+ * 形式検証・ALLOWED_PAIRS 検証はしない（取得境界でやるのはこの 2 つのみ。drop も throw もしない）。
  */
 export function normalizePairCode(raw: string): string {
 	return raw.trim().toLowerCase();
+}
+
+/**
+ * pair が JPY 建てかを判定する。
+ *
+ * 各 Private ツールの価格フォーマット分岐（`isJpy ? formatPrice(...) : 生文字列`）が
+ * 従来 `pair.includes('jpy')` を直書きしていたのを 1 箇所に集約したもの。判定前に
+ * `normalizePairCode` を通すので、**ユーザー入力由来の pair でも API 応答由来の pair でも安全**。
+ *
+ * これは「消費側に `.toLowerCase()` を撒く」ことにはあたらない。撒くのが禁物なのは
+ * *API レスポンスの正規化*であって（それは取得境界の責務）、ここで扱うのは
+ * `get_order` / `create_order` 等がユーザー入力の `pair` から直接 JPY 判定している経路
+ * ——取得境界を通らない値なので、判定側で吸収するしかない。
+ *
+ * `lib/price.ts` の `isJpyPair`（`endsWith('_jpy')`）とは判定条件が違う。あちらは
+ * 丸め桁数の決定用で quote 通貨が JPY かを見る。こちらは既存の `includes('jpy')` 挙動を
+ * そのまま保つ（`jpy_btc` のような base 側 JPY も真になる）。統合はしない。
+ */
+export function isJpyQuotedPair(pair: string): boolean {
+	return normalizePairCode(pair).includes('jpy');
 }
 
 /**

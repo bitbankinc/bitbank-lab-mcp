@@ -22,7 +22,7 @@
 import { nowIso } from '../../lib/datetime.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
 import { logTradeAction } from '../../lib/logger.js';
-import { withNormalizedPair } from '../../lib/pair-code.js';
+import { isJpyQuotedPair, withNormalizedPair } from '../../lib/pair-code.js';
 import { fetchPairsSpec, validateOrderConstraints } from '../../lib/pairs.js';
 import { fail, ok } from '../../lib/result.js';
 import { validateTriggerPrice } from '../../lib/trigger-price.js';
@@ -134,7 +134,7 @@ export default async function createOrder(
 		const rawOrder = withNormalizedPair(await client.post<OrderResponse>('/v1/user/spot/order', body));
 
 		const timestamp = nowIso();
-		const isJpy = pair.includes('jpy');
+		const isJpy = isJpyQuotedPair(pair);
 		const sideLabel = side === 'buy' ? '買' : '売';
 		const fmtPrice = price ? (isJpy ? formatPrice(Number(price)) : price) : '成行';
 

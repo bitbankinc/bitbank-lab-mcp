@@ -14,7 +14,7 @@
 import { nowIso, toIsoMs } from '../../lib/datetime.js';
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
 import { logTradeAction } from '../../lib/logger.js';
-import { withNormalizedPair } from '../../lib/pair-code.js';
+import { isJpyQuotedPair, withNormalizedPair } from '../../lib/pair-code.js';
 import { fail, ok } from '../../lib/result.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import { validateToken } from '../../src/private/confirmation.js';
@@ -59,7 +59,7 @@ export default async function cancelOrder(
 		);
 
 		const timestamp = nowIso();
-		const isJpy = pair.includes('jpy');
+		const isJpy = isJpyQuotedPair(pair);
 		const sideLabel = rawOrder.side === 'buy' ? '買' : '売';
 		const posLabel = formatOrderPositionLabel(rawOrder.position_side);
 		const price = rawOrder.price ? (isJpy ? formatPrice(Number(rawOrder.price)) : rawOrder.price) : '成行';
