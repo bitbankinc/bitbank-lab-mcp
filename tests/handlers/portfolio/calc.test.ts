@@ -9,6 +9,7 @@
  * 平均取得単価を過小に記録していた。本テストは:
  *   - 買い側 fee_amount_base が holdingQty に反映されること
  *   - 売り側 fee_amount_quote が realized_pnl に従来通り反映されること
+ *   - 保有復元では売り側 fee_amount_base も巻き戻されること（API 仕様上ゼロだが防御的に対称化）
  *   - fee_amount_base = 0 のときは旧挙動と等価であること
  * を、calcPnl / calcPeriodRealizedPnl / reconstructHoldingsAtDate の 3 関数で検証する。
  */
@@ -425,6 +426,69 @@ describe('reconstructHoldingsAtDate', () => {
 		const result = reconstructHoldingsAtDate(currentHoldings, trades, 1000, null);
 		expect(result.get('btc')).toBeCloseTo(2.0, 9);
 		expect(result.get('jpy')).toBe(5_005_000);
+	});
+
+	it('reverse sell で fee_amount_base > 0 のとき base 建て手数料も巻き戻される', () => {
+		// 売りの base 建て手数料は API 仕様上ゼロだが、非ゼロが来ても正しく扱う（防御的）。
+		// 期間内 sell (t=2000): amount=0.5, price=12M, fee_quote=5000, fee_base=0.002
+		//   売りで実際に減った BTC = 0.5 + 0.002 = 0.502
+		//   期間前 BTC = 1.5 + 0.5 + 0.002 = 2.002
+		//   期間前 JPY = 11_000_000 - 0.5 * 12_000_000 + 5_000 = 5_005_000（quote 側は不変）
+		const currentHoldings = [
+			{ asset: 'btc', amount: '1.5' },
+			{ asset: 'jpy', amount: '11000000' },
+		];
+		const trades: RawTrade[] = [
+			makeTrade({
+				trade_id: 1,
+				executed_at: 2000,
+				side: 'sell',
+				amount: '0.5',
+				price: '12000000',
+				fee_amount_quote: '5000',
+				fee_amount_base: '0.002',
+			}),
+		];
+		const result = reconstructHoldingsAtDate(currentHoldings, trades, 1000, null);
+		expect(result.get('btc')).toBeCloseTo(2.002, 9);
+		expect(result.get('jpy')).toBe(5_005_000);
+	});
+
+	it('買い・売り両方に fee_amount_base があるとき期初保有が正確に復元される', () => {
+		// 時系列（期初: 0.5 BTC / 20_000_000 JPY）:
+		//   buy  t=2000: amount=1,   price=10M, fee_base=0.001 → BTC 0.5+0.999=1.499, JPY 10_000_000
+		//   sell t=3000: amount=0.5, price=12M, fee_base=0.0005, fee_quote=3000
+		//                → BTC 1.499-0.5005=0.9985, JPY 10_000_000+5_997_000=15_997_000
+		// 逆算（新しい順）:
+		//   sell 巻き戻し: BTC 0.9985+0.5+0.0005=1.499, JPY 15_997_000-6_000_000+3_000=10_000_000
+		//   buy  巻き戻し: BTC 1.499-(1-0.001)=0.5,     JPY 10_000_000+10_000_000=20_000_000
+		// 売り側 feeBase を無視すると BTC が 0.4995 となり期初と一致しない。
+		const currentHoldings = [
+			{ asset: 'btc', amount: '0.9985' },
+			{ asset: 'jpy', amount: '15997000' },
+		];
+		const trades: RawTrade[] = [
+			makeTrade({
+				trade_id: 1,
+				executed_at: 2000,
+				side: 'buy',
+				amount: '1',
+				price: '10000000',
+				fee_amount_base: '0.001',
+			}),
+			makeTrade({
+				trade_id: 2,
+				executed_at: 3000,
+				side: 'sell',
+				amount: '0.5',
+				price: '12000000',
+				fee_amount_quote: '3000',
+				fee_amount_base: '0.0005',
+			}),
+		];
+		const result = reconstructHoldingsAtDate(currentHoldings, trades, 1000, null);
+		expect(result.get('btc')).toBeCloseTo(0.5, 9);
+		expect(result.get('jpy')).toBe(20_000_000);
 	});
 
 	it('不正な amount を持つ currentHoldings エントリは Number.isFinite ガードで除外される', () => {
