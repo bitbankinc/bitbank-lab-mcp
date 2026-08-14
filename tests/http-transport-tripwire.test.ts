@@ -20,6 +20,11 @@
  * これは**厳密な証明ではなく tripwire** である。`*ServerTransport` という命名を外れた
  * 独自クラスや、別モジュール経由の接続は検知できない。目的は「気づかずに通ってしまう」を
  * 減らすことであって、迂回不能な関門を作ることではない。
+ *
+ * 検知は「実際のインスタンス化（`new *ServerTransport(`）」と「import 文」に限定する。
+ * 生の識別子を拾うと、`server.ts` のコメントに「HTTP を足すときは…」と書いただけで落ちる。
+ * CLAUDE.md がこの要件を明記している以上そういうコメントは書かれうるし、**誤検知する
+ * tripwire は最初に消される**ので、取りこぼしよりノイズの方が害が大きい。
  */
 
 import fs from 'node:fs';
@@ -53,16 +58,21 @@ const REQUIREMENT = [
 ].join('\n');
 
 describe('トランスポート追加の tripwire（ADR-0007 判断事項 B）', () => {
-	it('src/server.ts が使うトランスポートは StdioServerTransport だけ', () => {
-		const transports = [...new Set(SERVER_SOURCE.match(/\b\w*ServerTransport\b/g) ?? [])].sort();
+	// `new` を伴う実際のインスタンス化だけを見る（コメントや文字列中の言及では落とさない）。
+	it('src/server.ts がインスタンス化するトランスポートは StdioServerTransport だけ', () => {
+		const transports = [...SERVER_SOURCE.matchAll(/\bnew\s+(\w*ServerTransport)\s*\(/g)]
+			.map((m) => m[1])
+			.filter((v, i, a) => a.indexOf(v) === i)
+			.sort();
 
 		expect(transports, REQUIREMENT).toEqual(['StdioServerTransport']);
 	});
 
 	// クラス名の網に掛からない追加（`createStreamableHttpServer()` 等）も、SDK の
 	// サブパス import は変わるので、そちら側からも押さえる。
+	// 行頭の import 文に限定し、散文中の同じ文字列は拾わない。
 	it('src/server.ts が読み込む SDK サブパスは stdio だけ', () => {
-		const subpaths = [...SERVER_SOURCE.matchAll(/from '@modelcontextprotocol\/server(\/[^']*)?'/g)]
+		const subpaths = [...SERVER_SOURCE.matchAll(/^\s*import[^;]*?from\s+'@modelcontextprotocol\/server(\/[^']*)?'/gm)]
 			.map((m) => m[1] ?? '(root)')
 			.filter((v, i, a) => a.indexOf(v) === i)
 			.sort();
