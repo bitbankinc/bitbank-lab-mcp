@@ -304,6 +304,66 @@ describe('不変条件 5: elicitation 対応ホストにはオプトイン on �
 			expect(JSON.stringify(result)).not.toContain('confirmation_token');
 		});
 	}
+
+	// pull 型 hydration（get_ui_snapshot）は preview とは**別リクエスト**なので、
+	// 「elicitation 非対応と判定したあとだけ `_meta` を付ける」という preview 側の構造では
+	// 守れない。スナップショットはリクエスト A（elicitation 非宣言）で作られ、リクエスト B
+	// （elicitation 宣言）から読み出せてしまうため、取得側でも同じ条件を課す必要がある。
+	const SNAPSHOT_URI = 'ui://order/confirm.html';
+
+	async function seedTokenSnapshot() {
+		const { storeUiSnapshot, _resetUiSnapshots } = await import('../../src/ui-snapshot-cache.js');
+		_resetUiSnapshots();
+		const expiresAt = Date.now() + 60_000;
+		storeUiSnapshot(
+			SNAPSHOT_URI,
+			{ ok: true, data: { preview: { pair: 'btc_jpy' } } },
+			{},
+			{ [META_KEY]: { confirmation_token: 'tok_seed', expires_at: expiresAt } },
+			expiresAt,
+		);
+	}
+
+	it('get_ui_snapshot: initialize で elicitation を宣言するホストには _meta に載らない', async () => {
+		process.env.BITBANK_MCP_APPS_EXECUTE = '1';
+		await seedTokenSnapshot();
+		const { toolDef } = await import('../../tools/get_ui_snapshot.js');
+		const ctx = { server: { getClientCapabilities: () => ({ elicitation: {}, ...APP_UI_CAPS }) } };
+
+		const result = (await toolDef.handler({ resource_uri: SNAPSHOT_URI }, ctx)) as HandlerResult;
+
+		expect(result._meta).toBeUndefined();
+		expect(JSON.stringify(result)).not.toContain('tok_seed');
+		// プレビューの再描画は従来どおり生きている（安全側に倒しすぎない）
+		expect(result.structuredContent).toBeDefined();
+	});
+
+	// リクエストごとに capability が変わりうる 2026-07-28 系ではこちらが実際に到達する経路。
+	it('get_ui_snapshot: envelope で elicitation を宣言するリクエストにも載らない', async () => {
+		process.env.BITBANK_MCP_APPS_EXECUTE = '1';
+		await seedTokenSnapshot();
+		const { toolDef } = await import('../../tools/get_ui_snapshot.js');
+
+		const result = (await toolDef.handler(
+			{ resource_uri: SNAPSHOT_URI },
+			envelopeCtx({ elicitation: {}, ...APP_UI_CAPS }),
+		)) as HandlerResult;
+
+		expect(result._meta).toBeUndefined();
+		expect(JSON.stringify(result)).not.toContain('tok_seed');
+		expect(result.structuredContent).toBeDefined();
+	});
+
+	// 逆側の固定: elicitation 非対応なら従来どおり載る（過剰に塞いで経路 2 を殺していないこと）
+	it('get_ui_snapshot: elicitation 非対応ホストには従来どおり載る', async () => {
+		process.env.BITBANK_MCP_APPS_EXECUTE = '1';
+		await seedTokenSnapshot();
+		const { toolDef } = await import('../../tools/get_ui_snapshot.js');
+
+		const result = (await toolDef.handler({ resource_uri: SNAPSHOT_URI }, appUiCtx())) as HandlerResult;
+
+		expect(metaToken(result)).toBe('tok_seed');
+	});
 });
 
 describe('不変条件 6: トークン無しの直接呼び出しは direct_execute_forbidden', () => {
@@ -371,13 +431,15 @@ describe('不変条件 7: 不正・期限切れ・使用済み・別注文のト
 
 	it('改ざんされたトークンは token_invalid', async () => {
 		const payload = await mintOrderToken();
+		// 末尾 1 文字を**必ず別の文字**に差し替える。固定文字（例: 常に '0'）にすると、
+		// HMAC hex の末尾が元からその文字だったとき改ざん後が原文と一致し、正しく検証が
+		// 通ってしまう（`expiresAt` が実行ごとに変わるため約 1/16 でランダムに落ちる）。
+		// `tests/private/request-state.test.ts` の tamper と同じ書き方に揃える。
+		const token = payload.confirmation_token;
+		const tampered = `${token.slice(0, -1)}${token.endsWith('0') ? '1' : '0'}`;
 		const { toolDef } = await import('../../tools/private/create_order.js');
 		const result = (await toolDef.handler(
-			{
-				...ORDER_ARGS,
-				confirmation_token: `${payload.confirmation_token.slice(0, -1)}0`,
-				token_expires_at: payload.expires_at,
-			},
+			{ ...ORDER_ARGS, confirmation_token: tampered, token_expires_at: payload.expires_at },
 			appUiCtx(),
 		)) as { ok: boolean; meta?: { errorType?: string } };
 		expect(result.ok).toBe(false);

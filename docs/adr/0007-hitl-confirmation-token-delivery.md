@@ -267,7 +267,12 @@ LLM はトークンを入手できないので実害には直結しないが、*
    `text/html;profile=mcp-app` を含まないホストには載らない
 4. capability の取得元が食い違う場合（envelope が非対応 × `initialize` が対応、およびその逆）に
    envelope が優先される
-5. **elicitation を宣言したホストには、オプトイン on でもトークンが載らない**（優先順位の不変条件）
+5. **elicitation を宣言したホストには、オプトイン on でもトークンが載らない**（優先順位の不変条件）。
+   preview 系だけでなく **`get_ui_snapshot` にも適用する**。preview 側は「elicitation 非対応と判定した
+   あとの fallback 経路でだけ `_meta` を付ける」という構造で保証できるが、pull 型 hydration は
+   **別リクエスト**なので構造では守れない。リクエスト A（elicitation 非宣言）で作られたトークン付き
+   スナップショットを、リクエスト B（elicitation 宣言）が読み出せてしまうため、取得側でも
+   `isAppUiExecuteAllowed && !clientSupportsElicitation` を課す
 6. トークン無しの `create_order` / `cancel_order` / `cancel_orders` 直接呼び出しが
    `direct_execute_forbidden` で拒否される（ゲート on / off の両方で）
 7. 不正・期限切れ・使用済み・別注文（`argsDigest` / HMAC パラメータ不一致）のトークンでの実行が拒否される
@@ -298,6 +303,13 @@ SDK 更新で静かに壊れうる箇所なので回帰を張る）。
 名前空間キーで返す。ゲートは preview 側とまったく同じ 2 段（オプトイン AND MCP Apps UI 宣言 +
 MIME 型）を課す。根拠は、これがチャネルを増やさず（同じ結果 `_meta`）、境界も増やさない
 （スナップショットは既に `sessionId + resourceUri` 束縛・実行成功時に `clearUiSnapshot`）ため。
+
+> **2026-08-14 追記**: 「preview 側とまったく同じ 2 段」では**不足していた**。preview 側で
+> トークンが実際に載る条件は 2 段ゲートに加えて「elicitation 非対応であること」であり、
+> それは条件式ではなく `withElicitedConfirmation` の**構造**（fallback 経路でだけ `_meta` を
+> 付ける）で表現されている。`get_ui_snapshot` は 2 段ゲートしか見ていなかったため、
+> リクエスト間で capability が変わるホスト（2026-07-28 系の per-request envelope）では
+> 不変条件 5 が破れる。取得側にも `!clientSupportsElicitation` を明示的に課すよう修正した。
 トークン自体の TTL 60 秒・ワンタイム・パラメータ束縛はそのまま効く。
 
 **ただし保持期間を揃える必要がある。** スナップショットの TTL は 5 分（`SNAPSHOT_TTL_MS`）だが
@@ -316,8 +328,9 @@ MIME 型）を課す。根拠は、これがチャネルを増やさず（同じ
 **代替案（push 限定）**: `get_ui_snapshot` は従来どおり `structuredContent` のみ返す。露出面は最小だが、
 Desktop で機能しない可能性が残り、その場合は「壊れていることに気づけないまま出荷」になる。
 
-**決定: 推奨案を採用した。** `get_ui_snapshot` は preview 側とまったく同じ 2 段ゲートを通したうえで
-`_meta` を返し、`expires_at` を過ぎたら `_meta` を落とす（`structuredContent` は TTL 内で返し続ける）。
+**決定: 推奨案を採用した。** `get_ui_snapshot` は 2 段ゲート **AND elicitation 非対応**
+（`isAppUiExecuteAllowed && !clientSupportsElicitation`）を通したうえで `_meta` を返し、
+`expires_at` を過ぎたら `_meta` を落とす（`structuredContent` は TTL 内で返し続ける）。
 実装は `src/ui-snapshot-cache.ts` の `getUiSnapshotMeta` と `tools/get_ui_snapshot.ts`。
 
 ### B. `confirmation_token` の session / principal 束縛 — **今回は見送り（HTTP 化時の必須前提として記録）**

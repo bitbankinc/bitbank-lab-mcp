@@ -9,13 +9,13 @@
  * 返す内容は「ホストへ送信済みのツール応答」そのものであり、新たな情報露出は無い
  * （詳細は src/ui-snapshot-cache.ts のヘッダコメント参照）。
  *
- * `_meta` については有効化ゲート（`isAppUiExecuteAllowed`）を通した場合のみ返す。
- * MCP Apps 実行経路が有効なとき、`_meta` には確認トークンが含まれうるため
- * （push 配信が効かないホスト向けの pull 復元。ADR-0007 レビュー判断事項 A）。
+ * `_meta` については有効化ゲート（`isAppUiExecuteAllowed`）に加えて、**elicitation 非対応で
+ * あること**まで確認した場合のみ返す。MCP Apps 実行経路が有効なとき、`_meta` には確認トークンが
+ * 含まれうるため（push 配信が効かないホスト向けの pull 復元。ADR-0007 判断事項 A）。
  */
 
 import { fail } from '../lib/result.js';
-import { isAppUiExecuteAllowed } from '../src/private/elicitation.js';
+import { clientSupportsElicitation, isAppUiExecuteAllowed } from '../src/private/elicitation.js';
 import { GetUiSnapshotInputSchema } from '../src/schema/ui.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
 import { getUiSnapshot, getUiSnapshotMeta } from '../src/ui-snapshot-cache.js';
@@ -38,10 +38,22 @@ export const toolDef: ToolDefinition = {
 		if (!snapshot) {
 			return fail('表示できるスナップショットがありません。preview ツールを再実行してください', 'snapshot_not_found');
 		}
-		// `_meta` は確認トークンを含みうるため、preview 側とまったく同じ 2 段ゲート
-		// （オプトイン AND MCP Apps UI 宣言 + MIME 型）を通した場合のみ返す。
-		// ゲートが閉じていれば従来どおり structuredContent だけを返す。
-		const meta = isAppUiExecuteAllowed(extra) ? getUiSnapshotMeta(resource_uri, { sessionId }) : null;
+		// `_meta` は確認トークンを含みうるため、**preview 側が実際にトークンを載せる条件と
+		// 同じもの**を通した場合のみ返す。2 段ゲート（オプトイン AND MCP Apps UI 宣言 + MIME 型）
+		// に加え、elicitation 非対応であることまで要求する。
+		//
+		// preview 側（`withElicitedConfirmation`）は「elicitation 非対応と判定したあとの
+		// fallback 経路でのみ `_meta` を付ける」という**構造**で不変条件 5（elicitation を
+		// 宣言したホストにはトークンを一切載せない。ADR-0007）を保証している。pull 型 hydration は
+		// preview とは別リクエストなので同じ構造では守れず、ここで条件式として揃える必要がある。
+		// 揃えないと「リクエスト A（elicitation 非宣言）で作られたトークン付きスナップショットを、
+		// リクエスト B（elicitation 宣言）が読み出す」経路で不変条件 5 が破れる。
+		//
+		// ゲートが閉じていれば従来どおり structuredContent だけを返す（プレビューの再描画は生きる）。
+		const meta =
+			isAppUiExecuteAllowed(extra) && !clientSupportsElicitation(extra)
+				? getUiSnapshotMeta(resource_uri, { sessionId })
+				: null;
 		return {
 			content: [
 				{
