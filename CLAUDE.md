@@ -23,6 +23,12 @@ npm run typecheck           # tsc --noEmit
 - 全ツールは `Result<T, M>` パターン（`ok()` / `fail()`）で返す
 - `lib/` に共通ユーティリティがある処理は、外部ライブラリの直接利用や自前実装をせず `lib/` を使う
 - 対応ペアは JPY 建てのみ（表示層が円前提）。非 JPY 建て対応は別途、表示層の quote 通貨移行が前提（`lib/validate.ts` の `ALLOWED_PAIRS`、ガードは `tests/lib/validate.test.ts`）。
+- **stdio 以外のトランスポート（HTTP 等）を `src/server.ts` に足す変更は、同じ PR で
+  `confirmation_token` の session / principal 束縛を実装しない限り入れない**（ADR-0007 判断事項 B）。
+  トークンの HMAC は `action + params + expiresAt` のみで session 束縛が無く、UI スナップショットの
+  キーと MRTR の bind は未設定 sessionId を空文字に畳んでいる。stdio は 1 接続なので今日は無害だが、
+  HTTP を足した瞬間に別クライアントからの execute を弾けなくなる。ガードは
+  `tests/http-transport-tripwire.test.ts`（必要な実装内容が失敗メッセージに出る）。
 
 ## リポジトリルール
 
