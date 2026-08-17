@@ -12,6 +12,10 @@
   - 2026-08-14（**文書のみ**。Decision は変更しない）: ワンタイム性の保証範囲を明文化。壁時計の非単調性 /
     プロセス再起動・複数プロセス / `getUiSnapshotMeta` の壁時計依存を**既知の制約**として記録し、
     いずれも現時点では修正しない判断と、コードを触る場合の優先順位を併記した
+  - 2026-08-17（**文書のみ**。Decision は変更しない）: 計測 4 を追加。`ui.resourceUri` を持たない
+    通常ツールの結果 `_meta` もモデルに渡らないことを実測し、`get_ui_snapshot` 経由の漏洩懸念を否定した。
+    あわせて pull hydration がコールド接続時に実際に使われることを実測し、判断事項 A の
+    「配信しない」という断定を訂正した
 
 ## Decision（2026-08-13 改訂 — 現行）
 
@@ -89,6 +93,10 @@ PR #31 以降、**Claude Desktop から発注・取消ができない**。previe
 | `structuredContent` | 渡らなかった |
 | ツール結果 `_meta` | 渡らなかった |
 
+**対象は preview 系（`_meta.ui.resourceUri` を持つ App ツール）のみ。**
+`ui.resourceUri` を持たない**通常ツール**の結果 `_meta` は本計測の対象外だった
+（この穴を埋めたのが計測 4）。
+
 ### 計測 2: elicitation / MRTR の可否（Claude Desktop 実測 / 2026-08）
 
 capability ゲートを持たない probe で `input_required` を返した結果:
@@ -132,6 +140,43 @@ MCP Apps（SEP-1865）の仕様本文 `specification/2026-01-26/apps.mdx` に該
 
 **つまり OpenAI 慣習では `structuredContent` はモデル可視。** チャネルの扱いはベンダー間で一致していないが、
 **`_meta` を「モデルに出さない」とする点だけは両陣営で一致している。** これが `_meta` 限定にする根拠。
+
+### 計測 4: 通常ツールの `_meta` 可視性 / pull hydration の実使用（Claude Desktop 実測 / 2026-08-17）
+
+計測 1 は preview 系（App ツール）だけが対象で、`get_ui_snapshot` のような
+**`ui.resourceUri` を持たない通常ツール**の結果 `_meta` は未計測だった。
+`get_ui_snapshot` はモデルに列挙される通常ツールでありながら確認トークンを含む `_meta` を返すため、
+「ホストがツール種別で `_meta` の宛先を分けているなら、こちらはモデルに漏れる」という疑いが残っていた。
+
+計測 1 と同じマーカー方式で、`ui.resourceUri` を持たない一時ツール（`probe_meta`）を用意して測った。
+
+| チャネル | マーカー | モデルに渡ったか |
+|---|---|---|
+| `content[0].text` | `MARKER-CONTENT-A1` | **渡った** |
+| `structuredContent` | `MARKER-STRUCT-B2` | 渡らなかった |
+| ツール結果 `_meta` | `MARKER-META-C3` | **渡らなかった** |
+
+ツール実行ログで実際に呼ばれたことを確認済み（モデルの申告のみに依存していない）。
+
+**結論: ホストはツール種別で `_meta` の宛先を分けていない。** 通常ツールの `_meta` も
+App ツールと同じくモデルに渡らない。したがって `get_ui_snapshot` 経由でトークンがモデルへ
+漏れる経路は、少なくとも現行ビルドでは存在しない。計測 1 のベースライン（`content` のみ可視）も
+現行ビルドで再現した。
+
+#### pull hydration は実際に使われている
+
+同日、`get_ui_snapshot` が実行されるかをツール実行ログで数えた。
+
+| 条件 | `get_ui_snapshot` の呼び出し |
+|---|---|
+| ウォーム（他ツールを多数実行した後の preview） | 0 件 |
+| **コールドスタート（Desktop 再起動直後の 1 枚目）** | **1 件** |
+
+**判断事項 A の前提は生きているが、記述が不正確だった。** 「一部ホストは
+`ui/notifications/tool-result` を iframe に配信しない」と断定していたが、正しくは
+**「コールド接続時に `RESULT_WAIT_HINT_MS`（2.5 秒）以内に間に合わないことがある」**である。
+pull hydration を使ったカードもボタン実行に成功しており（監査ログの `route: 'ui-button'` で確認）、
+**トークンを `get_ui_snapshot` の `_meta` から外すと、Desktop 再起動後の 1 回目の発注が失敗する。**
 
 ## Decision の詳細
 
@@ -300,12 +345,19 @@ SDK 更新で静かに壊れうる箇所なので回帰を張る）。
 
 ### A. pull 型 hydration（`get_ui_snapshot`）へトークンを載せる — **採用**
 
-**背景**: 一部ホスト（2026-07-28 ロールアウト後の Claude Desktop で確認済み）は
-`ui/notifications/tool-result` を iframe に配信しない。そのため iframe は接続後 2.5 秒で
-`get_ui_snapshot` を呼んで直近の preview 応答を自力で復元する（`src/ui-snapshot-cache.ts`）。
-スナップショットは `structuredContent` しか保持していないため、**push 配信が効かないホストでは
+**背景**: 一部ホスト（2026-07-28 ロールアウト後の Claude Desktop）は
+`ui/notifications/tool-result` が iframe に**間に合わないことがある**。そのため iframe は接続後
+2.5 秒（`RESULT_WAIT_HINT_MS`）待って preview が届いていなければ `get_ui_snapshot` を呼び、
+直近の preview 応答を自力で復元する（`src/ui-snapshot-cache.ts`）。
+スナップショットは `structuredContent` しか保持していないため、**push が間に合わなかった場合は
 `_meta` のトークンが iframe に届かず、ボタンは押せてもトークンを持たない**。
 つまり push 経路だけに賭けると、**まさに今回ターゲットにしているホストで機能しない可能性がある。**
+
+> **2026-08-17 追記（記述の訂正）**: 本節は当初「配信しない」と断定していたが、計測 4 の実測は
+> **ウォーム 0 件 / コールドスタート 1 件**であり、正しくは「コールド接続時に
+> `RESULT_WAIT_HINT_MS` 以内に間に合わないことがある」だった。上の本文はこれに合わせて訂正済み。
+> **判断そのものは有効**——pull hydration は実際に使われており、トークンを `get_ui_snapshot`
+> から外すと Desktop 再起動後の 1 回目の発注が失敗する。モデルへの漏洩懸念も計測 4 で否定された。
 
 **推奨**: スナップショットに `_meta` も保持し、`get_ui_snapshot` の結果 `_meta` として同じ
 名前空間キーで返す。ゲートは preview 側とまったく同じ 2 段（オプトイン AND MCP Apps UI 宣言 +
@@ -502,7 +554,18 @@ CI が保証していない性質を保証しているように見せてしま�
 | SEP-1865 に origin marker が入る | 「iframe 起源」をサーバー側で認証できるようになり、トークン提示への依存を減らせる | 仕様追従で対応 |
 
 **再測定のトリガー**: Claude Desktop のメジャー更新時、および ext-apps 仕様の版が上がったとき。
-計測 1（3 チャネルに互いに素なマーカーを載せてモデルに問う）を再実行して結果をこの ADR に追記する。
+
+**計測 1 と計測 4 の両方を再実行し、それぞれの結果をこの ADR に追記する。** どちらも
+「3 チャネルに互いに素なマーカーを載せてモデルに問う」同じ手順だが、**対象ツールが違う**。
+
+| | 対象 | 何を確かめるか |
+|---|---|---|
+| 計測 1 | preview 系（`_meta.ui.resourceUri` を持つ App ツール） | 経路 2 の push 配送でトークンがモデルに漏れないこと |
+| 計測 4 | `ui.resourceUri` を持たない通常ツール（`get_ui_snapshot` と同じ形） | pull hydration の配送でトークンがモデルに漏れないこと |
+
+トークンは preview 系と `get_ui_snapshot` の **2 経路**で `_meta` に載るため、**片方だけの計測では
+足りない**。計測 1 のみを再実行すると、通常ツールの `_meta` がモデル可視になる変更を検知できず、
+HITL バイパスの成立を見逃す。
 
 ## Future direction: SEP-2322 (Multi Round-Trip Requests)
 
