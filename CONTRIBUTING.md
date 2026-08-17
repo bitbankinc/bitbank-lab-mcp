@@ -1,5 +1,28 @@
 # コントリビューションガイド
 
+## 秘密情報の誤コミット防止（gitleaks）
+
+pre-commit フック（lefthook）が、ステージ済みの**内容**を gitleaks で走査する。
+CI の Security Audit と同じルールセットで、鍵がリポジトリに入る前に commit を止める。
+
+**gitleaks のインストールが必須。** 未導入だと pre-commit が失敗する（黙ってスキップはしない）:
+
+```bash
+brew install gitleaks          # macOS
+# その他: https://github.com/gitleaks/gitleaks#installing
+gitleaks version
+```
+
+- **誤検知だった場合**: 実鍵でないことを確認したうえで、行末に `gitleaks:allow` を付けるか、
+  `.gitleaksignore` に fingerprint と理由コメントを追加する。
+- **一時的に回避する場合**: `LEFTHOOK_SKIP_GITLEAKS=1 git commit ...`。回避した理由を PR に必ず明記すること。
+
+### なぜ pre-commit で止める必要があるか
+
+CI の gitleaks（`.github/workflows/security.yml`）は push 後にしか走らない。その時点で
+コードは既に GitHub に到達し、CodeRabbit などリポジトリ全体を参照するレビューツールにも
+渡っている。CI は最後の網であって、送信を防ぐ位置にはいない。commit 時点で止めるのが本命の防御。
+
 ## 依存パッケージのクールダウン運用
 
 ### 方針
