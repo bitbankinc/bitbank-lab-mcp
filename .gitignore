@@ -1,5 +1,17 @@
 node_modules
+
+# 認証情報・秘密鍵（ローカル検証用キーの誤コミット防止）
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+credentials.json
+
 logs/
 reports/
 cache/
