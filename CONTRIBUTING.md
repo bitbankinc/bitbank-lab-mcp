@@ -5,7 +5,8 @@
 pre-commit フック（lefthook）が、ステージ済みの**内容**を gitleaks で走査する。
 CI の Security Audit と同じルールセットで、鍵がリポジトリに入る前に commit を止める。
 
-**gitleaks のインストールが必須。** 未導入だと pre-commit が失敗する（黙ってスキップはしない）:
+**gitleaks のインストールを強く推奨する。** 未導入でも commit は通るが、その場合
+ローカルの秘密情報チェックは効いていない（警告を出してスキップする）:
 
 ```bash
 brew install gitleaks          # macOS
@@ -13,15 +14,27 @@ brew install gitleaks          # macOS
 gitleaks version
 ```
 
-- **誤検知だった場合**: 実鍵でないことを確認したうえで、行末に `gitleaks:allow` を付けるか、
-  `.gitleaksignore` に fingerprint と理由コメントを追加する。
-- **一時的に回避する場合**: `LEFTHOOK_SKIP_GITLEAKS=1 git commit ...`。回避した理由を PR に必ず明記すること。
+### 環境変数
 
-### なぜ pre-commit で止める必要があるか
+| 変数 | 効果 |
+|---|---|
+| `LEFTHOOK_REQUIRE_GITLEAKS=1` | gitleaks 未導入を**エラー**として commit を中断する。厳格に運用したい場合に設定する |
+| `LEFTHOOK_SKIP_GITLEAKS=1` | スキャン自体をスキップする。回避した理由を PR に必ず明記すること |
 
-CI の gitleaks（`.github/workflows/security.yml`）は push 後にしか走らない。その時点で
-コードは既に GitHub に到達し、CodeRabbit などリポジトリ全体を参照するレビューツールにも
-渡っている。CI は最後の網であって、送信を防ぐ位置にはいない。commit 時点で止めるのが本命の防御。
+いずれも値が `1` のときだけ有効。`0` や `false` を設定しても既定の動作のままになる。
+
+**誤検知だった場合**は、実鍵でないことを確認したうえで、行末に `gitleaks:allow` を付けるか、
+`.gitleaksignore` に fingerprint と理由コメントを追加する。`LEFTHOOK_SKIP_GITLEAKS` での
+回避は最後の手段とする。
+
+### なぜ pre-commit で止めるのか
+
+一度 commit すると、鍵は git 履歴に残る。push 前に気づいても、除去には履歴の書き換えと
+鍵の失効・再発行が必要で、push 後であればなおさら手間が増える。
+
+CI の gitleaks（`.github/workflows/security.yml`）は全履歴をスキャンする最終防衛線だが、
+そこで検知した時点では既に履歴に入っている。**履歴に入る前に止められる唯一の場所が
+pre-commit** なので、ここを本命の防御と位置づけている。
 
 ## 依存パッケージのクールダウン運用
 
