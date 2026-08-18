@@ -8,6 +8,7 @@ import { DEFAULT_MAX_ENTRIES } from '../../lib/bounded-expiring-set.js';
 import {
 	_isCleanupTimerActive,
 	_resetUsedTokens,
+	_rotateProcessNonce,
 	_usedTokenCapacity,
 	_usedTokenCount,
 	generateToken,
@@ -201,6 +202,57 @@ describe('validateToken', () => {
 		const second = validateToken(token, 'create_order', params, expiresAt, now + 2000);
 		expect(second?.code).toBe('token_already_used');
 		expect(second?.message).toContain('既に使用されています');
+	});
+
+	it('プロセス再起動後は使用済みトークンが再び通らない（token_invalid）', () => {
+		const now = 1700000000000;
+		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit' };
+		const { token, expiresAt } = generateToken('create_order', params, now);
+		expect(validateToken(token, 'create_order', params, expiresAt, now + 1000)).toBeNull();
+
+		// プロセス再起動を模擬する。usedTokens はメモリ上にしか無いので一緒に消える。
+		// per-process nonce が無ければ、ここで同じトークンがもう一度通ってしまう。
+		_rotateProcessNonce();
+		_resetUsedTokens();
+
+		const afterRestart = validateToken(token, 'create_order', params, expiresAt, now + 2000);
+		expect(afterRestart?.code).toBe('token_invalid');
+	});
+
+	it('プロセス再起動後は未使用トークンも無効になる（fail-closed）', () => {
+		const now = 1700000000000;
+		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit' };
+		const { token, expiresAt } = generateToken('create_order', params, now);
+
+		_rotateProcessNonce();
+
+		// 期限内で一度も使っていないが、鍵が変わっているので通らない。
+		// 経路 1（elicitation）の pending 確認が再起動で失効するのと同じ挙動。
+		expect(validateToken(token, 'create_order', params, expiresAt, now + 1000)?.code).toBe('token_invalid');
+	});
+
+	it('プロセス再起動後に発行し直したトークンは通る', () => {
+		const now = 1700000000000;
+		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit' };
+
+		_rotateProcessNonce();
+
+		const { token, expiresAt } = generateToken('create_order', params, now);
+		expect(validateToken(token, 'create_order', params, expiresAt, now + 1000)).toBeNull();
+	});
+
+	it('同じ secret でも nonce が違えば別のトークンになる（別プロセス相当）', () => {
+		const now = 1700000000000;
+		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit' };
+
+		const first = generateToken('create_order', params, now);
+		_rotateProcessNonce();
+		const second = generateToken('create_order', params, now);
+
+		// action / params / expiresAt がすべて同一でもトークンは一致しない。
+		// これが無いと、同じ secret を持つ別プロセスが互いのトークンを検証できてしまう。
+		expect(second.expiresAt).toBe(first.expiresAt);
+		expect(second.token).not.toBe(first.token);
 	});
 
 	it('使用済みトークンは usedTokens に登録される', () => {

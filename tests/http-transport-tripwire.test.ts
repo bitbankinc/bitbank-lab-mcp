@@ -7,8 +7,10 @@
  *
  * なぜ必須前提なのか:
  *   - `confirmation_token` の HMAC ペイロードは `action + params + expiresAt` だけで、
- *     session も principal も含まない（`src/private/confirmation.ts`）。
- *     同じ secret を持つプロセス／セッションであれば、誰が提示しても検証を通る。
+ *     **session も principal も含まない**（`src/private/confirmation.ts`）。
+ *     署名鍵には per-process nonce が入っているが（2026-08-17 追加）、**それは session 束縛では
+ *     ない**——HTTP では 1 プロセスに複数セッションが同居するため、同一プロセス内であれば
+ *     誰が提示しても検証を通る。プロセス境界が閉じたことと session 境界は別問題。
  *   - UI スナップショットのキーは `sessionId ?? ''`（`src/ui-snapshot-cache.ts`）、
  *     MRTR の bind も同じく `?? ''`（`src/private/request-state.ts`）で、
  *     **未設定の sessionId と空文字が同一キーに畳まれる**。
@@ -44,6 +46,7 @@ const REQUIREMENT = [
 	'',
 	'  (a) confirmation_token の HMAC に session / principal を含める',
 	'      現状 src/private/confirmation.ts の payload は action + params + expiresAt のみ。',
+	'      署名鍵の per-process nonce は session 束縛ではない（HTTP では 1 プロセスに複数セッションが同居する）。',
 	'      束縛が無いと、別クライアントが持ち出したトークンでも validateToken を通ります。',
 	'',
 	'  (b) 未設定の sessionId を空文字に畳まない（未設定は fail-closed）',
