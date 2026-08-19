@@ -40,8 +40,8 @@ pre-commit:
     # 既に GitHub / CodeRabbit へ送信済みなので、commit 時点で止めるのがここの役割。
     gitleaks:
       run: |
-        if [ -n "${LEFTHOOK_SKIP_GITLEAKS:-}" ]; then
-          echo "WARN: gitleaks scan skipped (LEFTHOOK_SKIP_GITLEAKS is set)."
+        if [ "${LEFTHOOK_SKIP_GITLEAKS:-}" = "1" ]; then
+          echo "WARN: gitleaks scan skipped (LEFTHOOK_SKIP_GITLEAKS=1)."
           exit 0
         fi
         if ! command -v gitleaks >/dev/null 2>&1; then
