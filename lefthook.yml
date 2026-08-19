@@ -27,9 +27,28 @@ pre-commit:
         for f in {staged_files}; do
           base="$(basename "$f")"
           case "$base" in
-            .env|.env.*|*.pem|*.key|credentials.json)
+            .env.example) ;;
+            .env|.env.*|*.pem|*.key|id_rsa|id_rsa.*|id_ed25519|id_ed25519.*|credentials.json)
               echo "ERROR: Potential secret file staged: $f"
               exit 1
               ;;
           esac
         done
+    # 上の secrets-check はファイル名しか見ない。ソース中にベタ書きされた鍵は
+    # gitleaks でステージ済みの「中身」を CI と同じルールで走査する。
+    # CI (.github/workflows/security.yml) は push 後にしか回らず、その時点で
+    # 既に GitHub / CodeRabbit へ送信済みなので、commit 時点で止めるのがここの役割。
+    gitleaks:
+      run: |
+        if [ -n "${LEFTHOOK_SKIP_GITLEAKS:-}" ]; then
+          echo "WARN: gitleaks scan skipped (LEFTHOOK_SKIP_GITLEAKS is set)."
+          exit 0
+        fi
+        if ! command -v gitleaks >/dev/null 2>&1; then
+          echo "ERROR: gitleaks not found — staged secret scan cannot run."
+          echo "  install: brew install gitleaks  /  https://github.com/gitleaks/gitleaks#installing"
+          echo "  誤検知の場合は行末 'gitleaks:allow' か .gitleaksignore で除外する。"
+          echo "  どうしても回避が必要なときのみ LEFTHOOK_SKIP_GITLEAKS=1 git commit ...（理由を PR に明記）"
+          exit 1
+        fi
+        gitleaks git --staged --redact --verbose --no-banner --exit-code 1
