@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -99,6 +100,32 @@ describe('ログ出力先', () => {
 
 		const [file] = vi.mocked(fs.appendFileSync).mock.calls[0] as [string, string];
 		expect(path.dirname(file)).toBe(EXPECTED_LOG_DIR);
+	});
+
+	// 上の 2 つは「絶対パスであること」までしか見ておらず、`path.resolve('./logs')` のような
+	// **絶対パスだが cwd 依存** の実装を素通りさせる。実際に cwd を動かしてモジュールを
+	// 読み直し、出力先が変わらないことまで確認する（vitest の cwd は通常
+	// PACKAGE_ROOT と一致するため、cwd を変えないと差が出ない）。
+	it('cwd を別ディレクトリへ移しても出力先が変わらない', async () => {
+		const originalCwd = process.cwd();
+		try {
+			process.chdir(os.tmpdir());
+			expect(process.cwd()).not.toBe(PACKAGE_ROOT);
+
+			// LOG_DIR はモジュール評価時に一度だけ解決されるので、読み直して再評価させる
+			vi.resetModules();
+			const reloaded = await import('../../lib/logger.js');
+
+			vi.mocked(fs.appendFileSync).mockClear();
+			reloaded.logToolRun({ tool: 'get_ticker', input: {}, result: { ok: true }, ms: 1 });
+			reloaded.logTradeAction({ type: 'create_order', pair: 'btc_jpy', status: 'UNFILLED', confirmed: true });
+
+			const dirs = vi.mocked(fs.appendFileSync).mock.calls.map(([file]) => path.dirname(file as string));
+			expect(dirs).toHaveLength(2);
+			for (const dir of dirs) expect(dir).toBe(EXPECTED_LOG_DIR);
+		} finally {
+			process.chdir(originalCwd);
+		}
 	});
 });
 
