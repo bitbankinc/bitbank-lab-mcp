@@ -9,14 +9,16 @@
   - 2026-07-29（MCP 2026-07-28 仕様の正式リリースを受けて「Future direction」を final 仕様と SDK 状況に合わせて更新。同日、SDK v2 移行 + MRTR 経路の実装を完了）
   - 2026-08-10（`BITBANK_TRUST_HOST_APPROVAL` による token 露出 / UI execute 経路を撤去。execute は elicitation/MRTR のみ）
   - 2026-08-10（`requestState` を SDK `bind` で session/principal + MCP method に束縛。UI スナップショットキーを `sessionId + resourceUri` 化）
-  - **2026-08-13（本改訂）**: ホスト実測を受けて Decision を差し替え。`_meta` **限定**・**オプトイン**・**MCP Apps UI 宣言ホスト限定**で iframe ボタンからの execute を再導入する。`structuredContent` への token 再露出は引き続き禁止
+  - **2026-08-13（本改訂）**: ホスト実測を受けて Decision を差し替え。`_meta` **限定**・**オプトイン**・**MCP Apps UI 宣言ホスト限定**（`mimeTypes` に `text/html;profile=mcp-app` を含むこと）で iframe ボタンからの execute を再導入する。`structuredContent` への token 再露出は引き続き禁止
 
 ## Decision（2026-08-13 改訂案 — Proposed）
 
 取引系 HITL の `confirmation_token` は、**既定ではこれまでどおりサーバープロセス内に閉じる**。
 elicitation / MRTR（SEP-2322）対応ホストでは従来どおりネイティブ確認ダイアログのみで execute する（第一選択・変更なし）。
 
-そのうえで、**elicitation を宣言しないが MCP Apps UI（SEP-1865）を宣言するホスト**に限り、
+そのうえで、**elicitation を宣言せず、かつ MCP Apps UI（SEP-1865）を本サーバーの UI リソースの MIME 型込みで
+宣言するホスト**（`extensions["io.modelcontextprotocol/ui"].mimeTypes` が `text/html;profile=mcp-app` を含む。
+**キーの存在だけでは不可**。詳細は「有効化ゲート」節）に限り、
 **運用者の明示的オプトイン**（新規環境変数 `BITBANK_MCP_APPS_EXECUTE=1`）がある場合のみ、
 `confirmation_token` / `expires_at` を**ツール結果の `_meta` にのみ**載せて iframe へ配送し、
 `create_order` / `cancel_order` / `cancel_orders` の MCP handler を**有効なトークンを伴う呼び出しに限って**解錠する。
