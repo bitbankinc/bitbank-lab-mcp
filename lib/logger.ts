@@ -1,9 +1,26 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { nowIso, today } from './datetime.js';
 
-const LOG_DIR = process.env.LOG_DIR || './logs';
+/**
+ * パッケージルート（`lib/` の 1 つ上）。
+ * `package.json` の `files` が `bin/` `src/` `lib/` を並列に含むため、
+ * 開発時も publish 後もこの相対関係は変わらない。
+ */
+const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * ログ出力先。**cwd 相対（`./logs`）にしてはいけない。**
+ *
+ * MCP サーバーはホストが spawn するため cwd はホスト依存で、Claude Desktop（macOS）では
+ * `/` になる。その状態で `./logs` を使うと `/logs` の作成が EACCES で失敗し、
+ * 下の `catch` が例外を握り潰すため **`logTradeAction` の取引監査ログごと黙って消える**
+ * （実際に 2026-08 のオプトイン運用で 1 行も残っていなかった）。
+ * 明示指定が無い場合はパッケージルート基準で解決する。
+ */
+const LOG_DIR = process.env.LOG_DIR || path.join(PACKAGE_ROOT, 'logs');
 const LOG_LEVEL = (process.env.LOG_LEVEL || 'info').toLowerCase();
 const LEVELS: Record<string, number> = { error: 0, warn: 1, info: 2, debug: 3 };
 const THRESH = LEVELS[LOG_LEVEL] ?? LEVELS.info;
@@ -17,6 +34,34 @@ function writeJsonl(file: string, obj: unknown) {
 	fs.appendFileSync(file, `${JSON.stringify(obj)}\n`);
 }
 
+/** 書き込み失敗の通知は 1 回だけ出す（失敗が続く環境で stderr を埋めないため） */
+let writeFailureNotified = false;
+
+/**
+ * ログ書き込み失敗を運用者に伝える。ログ出力自体は best-effort のまま
+ * （ツール実行やレスポンスは止めない）だが、**黙って捨てない**。
+ *
+ * 出力先は必ず **stderr**。stdio トランスポートでは stdout が JSON-RPC ストリーム
+ * そのもので、混ぜるとプロトコルが壊れる（`src/env.ts` の dotenv `quiet` と同じ理由）。
+ *
+ * メッセージにはファイルパスと失敗理由のみを含め、ログレコード本文は載せない
+ * （`.claude/rules/sensitive-data.md`）。
+ */
+function notifyWriteFailure(file: string, err: unknown): void {
+	if (writeFailureNotified) return;
+	writeFailureNotified = true;
+	const reason = err instanceof Error ? err.message : String(err);
+	process.stderr.write(
+		`[bitbank-lab-mcp] ログを書き込めません: ${file} (${reason})\n` +
+			'  LOG_DIR で書き込み可能なディレクトリを指定してください。以降この警告は表示されません。\n',
+	);
+}
+
+/** テスト用: 通知済みフラグを戻す */
+export function _resetWriteFailureNotice(): void {
+	writeFailureNotified = false;
+}
+
 // ── チェーンハッシュ（取引操作ログ専用） ──
 
 let lastTradeHash = '0'.repeat(64);
@@ -26,9 +71,12 @@ function writeTradeJsonl(file: string, record: Record<string, unknown>) {
 	ensureDir(path.dirname(file));
 	const withChain = { ...record, _prevHash: lastTradeHash };
 	const json = JSON.stringify(withChain);
-	lastTradeHash = createHash('sha256').update(json).digest('hex');
-	const finalRecord = { ...withChain, _hash: lastTradeHash };
-	fs.appendFileSync(file, `${JSON.stringify(finalRecord)}\n`);
+	const hash = createHash('sha256').update(json).digest('hex');
+	fs.appendFileSync(file, `${JSON.stringify({ ...withChain, _hash: hash })}\n`);
+	// 追記が成功したときだけチェーンを進める。先に進めてしまうと、書き込みに失敗した
+	// レコードの hash を次レコードの `_prevHash` が指すことになり、実際には改ざんが
+	// 無いのに verify_log_integrity がチェーン断絶として検出する。
+	lastTradeHash = hash;
 }
 
 export function log(level: 'error' | 'warn' | 'info' | 'debug', event: Record<string, unknown>): void {
@@ -38,8 +86,9 @@ export function log(level: 'error' | 'warn' | 'info' | 'debug', event: Record<st
 	const record = { ts: nowIso(), level, ...event } as const;
 	try {
 		writeJsonl(file, record);
-	} catch {
-		// best-effort: ignore log failures
+	} catch (err) {
+		// best-effort: ログ失敗でツール実行は止めない。ただし黙って捨てず初回だけ stderr に出す。
+		notifyWriteFailure(file, err);
 	}
 }
 
@@ -114,7 +163,9 @@ export function logTradeAction(action: {
 	};
 	try {
 		writeTradeJsonl(file, record);
-	} catch {
-		// best-effort
+	} catch (err) {
+		// best-effort: 監査ログの失敗で発注・取消そのものは止めない。ただし
+		// 「監査証跡が残っていない」ことに運用者が気づけるよう必ず通知する。
+		notifyWriteFailure(file, err);
 	}
 }

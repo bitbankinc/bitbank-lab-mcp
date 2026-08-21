@@ -18,6 +18,21 @@ permissions:
   contents: write
   packages: write
 
+# リリース対象の tag。workflow_dispatch の入力を優先し、tag push では ref 名を使う。
+#
+# 旧実装は `${GITHUB_REF_NAME:-<input>}` だったが、GITHUB_REF_NAME は常に設定されるため
+# `:-` のフォールバックは発動せず、workflow_dispatch では起動元ブランチ名（例: main）が
+# TAG として扱われていた。
+#
+# **`run:` の中で `${{ }}` を直接展開しない。** workflow_dispatch の `tag` は手入力で、
+# 式展開はシェルがパースする**前**に起きるため、引用符やメタ文字を含む値で任意コマンドを
+# 注入できる（zizmor template-injection）。npm-publish は `id-token: write` を持つので、
+# 注入されたコードは OIDC provenance に到達し得る。
+# env 経由なら値はシェルに解釈されないので、`run:` からは必ず "$RELEASE_TAG" で参照する。
+# `with:` はシェルではないため式のまま書いてよい。
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
 jobs:
   # ──────────────────────────────────────────────
   # 1. CI gate — re-run full checks on tag code
@@ -25,10 +40,14 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
+      # workflow_dispatch では起動時に選んだ ref と入力 tag が食い違い得る。
+      # checkout を入力 tag に固定しないと、別のコードをその tag として publish できる。
+      # `refs/tags/` を必ず付ける。**未修飾 ref は branch が tag より優先される**ため、
+      # 修飾しないと tag と同名の branch を作るだけでガードを迂回できてしまう。
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
 
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -65,10 +84,14 @@ jobs:
       id-token: write   # OIDC token for npm provenance
       contents: read
     steps:
+      # workflow_dispatch では起動時に選んだ ref と入力 tag が食い違い得る。
+      # checkout を入力 tag に固定しないと、別のコードをその tag として publish できる。
+      # `refs/tags/` を必ず付ける。**未修飾 ref は branch が tag より優先される**ため、
+      # 修飾しないと tag と同名の branch を作るだけでガードを迂回できてしまう。
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
 
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -86,7 +109,7 @@ jobs:
       - name: Determine dist-tag
         id: dist-tag
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          TAG="$RELEASE_TAG"
           if echo "$TAG" | grep -qE '-(alpha|beta|rc)'; then
             echo "tag=beta" >> "$GITHUB_OUTPUT"
           else
@@ -95,12 +118,14 @@ jobs:
 
       - name: Set version from tag
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          TAG="$RELEASE_TAG"
           VERSION="${TAG#v}"
           npm version "$VERSION" --no-git-tag-version
 
       - name: Publish
-        run: npm publish --provenance --access public --tag ${{ steps.dist-tag.outputs.tag }}
+        env:
+          DIST_TAG: ${{ steps.dist-tag.outputs.tag }}
+        run: npm publish --provenance --access public --tag "$DIST_TAG"
 
   # ──────────────────────────────────────────────
   # 3. Build & push Docker image to GHCR
@@ -112,10 +137,14 @@ jobs:
     env:
       REGISTRY: ghcr.io
     steps:
+      # workflow_dispatch では起動時に選んだ ref と入力 tag が食い違い得る。
+      # checkout を入力 tag に固定しないと、別のコードをその tag として publish できる。
+      # `refs/tags/` を必ず付ける。**未修飾 ref は branch が tag より優先される**ため、
+      # 修飾しないと tag と同名の branch を作るだけでガードを迂回できてしまう。
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
 
       # GHCR image names must be lowercase; owner may contain uppercase after org transfer
       - name: Set image name
@@ -124,15 +153,15 @@ jobs:
       - name: Determine tag metadata
         id: meta
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          TAG="$RELEASE_TAG"
           VERSION="${TAG#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           if echo "$TAG" | grep -qE '-(alpha|beta|rc)'; then
             echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "tags=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:beta" >> "$GITHUB_OUTPUT"
+            echo "tags=$REGISTRY/$IMAGE_NAME:${VERSION},$REGISTRY/$IMAGE_NAME:beta" >> "$GITHUB_OUTPUT"
           else
             echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "tags=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> "$GITHUB_OUTPUT"
+            echo "tags=$REGISTRY/$IMAGE_NAME:${VERSION},$REGISTRY/$IMAGE_NAME:latest" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Log in to GHCR
@@ -151,8 +180,6 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: |
@@ -171,13 +198,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
           fetch-depth: 0
 
       - name: Determine release metadata
         id: meta
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          TAG="$RELEASE_TAG"
           if echo "$TAG" | grep -qE '-(alpha|beta|rc)'; then
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
           else
