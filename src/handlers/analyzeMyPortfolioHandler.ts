@@ -104,15 +104,12 @@ function buildMarginPositionsBlock(info: MarginAccountInfo): string[] {
 
 /** 理由コードごとの「入出金履歴が使えない原因」を表す句（各文言の共通パーツ）。 */
 const FLOW_UNAVAILABLE_CAUSE: Record<PortfolioFlowUnavailableReason, string> = {
-	withdrawal_history_not_fetched: '入出金履歴を取得していない',
 	dw_fetch_failed: '入出金履歴の取得に失敗した',
 	dw_history_incomplete: '入出金履歴を全件取得できなかった',
 };
 
 /** 理由コードごとの「なぜ取得原価を確定できないか」の説明文（summary / warning 共通）。 */
 const FLOW_UNAVAILABLE_NOTE: Record<PortfolioFlowUnavailableReason, string> = {
-	withdrawal_history_not_fetched:
-		'入出金履歴を取得していないため取得原価を確定できません。include_deposit_withdrawal: true で再実行してください',
 	dw_fetch_failed:
 		'入出金履歴の取得に失敗したため取得原価を確定できません（一部チャネルのみの失敗を含む）。時間をおいて再実行してください',
 	dw_history_incomplete: '入出金履歴が多く全件取得できなかったため取得原価を確定できません（再実行しても解消しません）',
@@ -198,7 +195,14 @@ export default async function analyzeMyPortfolioHandler(args: {
 			? paginateMarginTrades(client)
 			: Promise.resolve({ trades: [] as RawMarginTrade[], truncated: false, fetchFailed: false });
 
-		const dwPromise = include_deposit_withdrawal ? fetchDepositWithdrawal(client) : Promise.resolve(null);
+		// 入出金履歴は「入出金分析セクションを出すか」ではなく「損益計算に要るか」で取得する。
+		// 取得原価（移動平均法）は暗号資産出庫を原価の按分減少として処理し、期初評価額と
+		// 資産推移シリーズは入出金の巻き戻しを前提にしているため、include_pnl=true の時点で
+		// 入出金履歴は必須の入力になる。include_deposit_withdrawal は表示セクションのみ制御する。
+		// 追加の API 呼び出し（最大 4 チャネル × ページネーション）は下の Promise.all に載せて
+		// 約定履歴・信用約定・信用口座情報と並列に走らせ、レイテンシ増を最小化する。
+		const dwPromise =
+			include_pnl || include_deposit_withdrawal ? fetchDepositWithdrawal(client) : Promise.resolve(null);
 
 		// 信用口座状態・建玉サマリも並列取得（取得失敗時は warning として summary に反映）。
 		// 信用約定 fetch とは独立してフェイルする可能性があるため別フラグで管理する。
@@ -218,16 +222,19 @@ export default async function analyzeMyPortfolioHandler(args: {
 		const marginStatusFetchFailed = marginAccountInfo.statusFetchFailed;
 		const marginPositionsFetchFailed = marginAccountInfo.positionsFetchFailed;
 
-		// 入出金分析状態と、入出金履歴を損益計算に使えるかの判定。
-		// 取得原価（移動平均法）は暗号資産出庫を原価の按分減少として扱うため、出庫履歴が
-		// 無いと出庫済み数量の原価が残留して cost_basis が過大化し、評価損益が壊れる。
-		// そこで holdings のマッピングより前に理由コードを確定し、信頼できない値は出さない。
+		// 入出金分析セクションの状態（表示側の契約）。include_deposit_withdrawal=false なら
+		// 履歴を取得済みでも not_requested になる——セクションを出さないという意味だから。
 		const depositWithdrawalStatus = resolveDepositWithdrawalStatus(include_deposit_withdrawal, dwData);
+		// 入出金履歴を損益計算に供給できたか（計算側の状態）。表示フラグとは独立で、
+		// 「取得を試みて成功したか」だけを見る。部分失敗・打ち切りでも true になるので、
+		// 取得原価を信頼してよいかは flowUnavailableReason 側で判定する。
+		const dwFetchedForPnl = include_pnl && dwData != null && !dwData.allFailed;
+		// 取得原価（移動平均法）は暗号資産出庫を原価の按分減少として扱うため、出庫履歴が
+		// 欠けると出庫済み数量の原価が残留して cost_basis が過大化し、評価損益が壊れる。
+		// そこで holdings のマッピングより前に理由コードを確定し、信頼できない値は出さない。
 		// include_pnl=false なら損益・期間パフォーマンス自体を出さないので抑止対象が無い。
-		// ここで理由コードを立てると「入出金を取れば原価が出る」という誤った案内になる
-		// （実際には include_pnl も必要）ため、損益を出す構成のときだけ立てる。
 		const flowUnavailableReason: PortfolioFlowUnavailableReason | undefined = include_pnl
-			? flowUnavailableReasonFor(depositWithdrawalStatus, dwData)
+			? flowUnavailableReasonFor(dwData)
 			: undefined;
 
 		// 期間パフォーマンス用: 全関連ペアのキャンドルデータを早期フェッチ開始
@@ -598,11 +605,15 @@ export default async function analyzeMyPortfolioHandler(args: {
 		}
 
 		// 4. 入出金ベースのリターン計算（Phase 4）
+		// ここから下は入出金**分析セクション**なので include_deposit_withdrawal で閉じる。
+		// 損益計算側は上で dwData を直接使っており、このフラグの影響を受けない。
+		// 取得失敗を伝える dwWarnings もセクション側の文言なのでここに含める。損益側で
+		// 取得が欠けたことは flowUnavailableReason 由来の警告が別途 content 先頭に出る。
 		let dwSummary: DepositWithdrawalSummary | undefined;
 		let yearlyDWSummary: PeriodDWSummary | undefined;
 		let monthlyDWSummary: PeriodDWSummary | undefined;
 		const dwWarnings: string[] = [];
-		if (dwData) {
+		if (include_deposit_withdrawal && dwData) {
 			if (dwData.allFailed) {
 				// 全リクエスト失敗: trade_only フォールバック + 警告
 				dwWarnings.push('入出金履歴の取得に全て失敗したため、約定ベースの分析のみです');
@@ -773,7 +784,13 @@ export default async function analyzeMyPortfolioHandler(args: {
 			// not_requested
 			lines.push(`入出金分析状態: not_requested`);
 			lines.push(`分析基準: trade_only`);
-			lines.push('※ 入出金分析は未リクエスト。約定ベースの分析のみです');
+			// 「入出金分析セクションが無い」と「損益が入出金を見ていない」は別。後者と読まれると
+			// LLM が取得原価を疑って再取得を促してしまうため、供給済みならその旨を明示する。
+			lines.push(
+				dwFetchedForPnl
+					? '※ 入出金分析セクションは未リクエスト（include_deposit_withdrawal=false）。ただし損益計算には入出金履歴を取得して使用しているため、取得原価・評価損益・純入出金は入出金を反映した値です'
+					: '※ 入出金分析は未リクエスト。約定ベースの分析のみです',
+			);
 		}
 
 		// 入出金ベースの口座全体リターン（Phase 4）
@@ -990,6 +1007,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 			hasPnl: include_pnl && allTrades.length > 0,
 			hasTechnical: include_technical && (technical?.length ?? 0) > 0,
 			depositWithdrawalStatus,
+			dwFetchedForPnl,
 			periodBasis: 'jst' as const,
 			tradesTruncated,
 			marginTradesTruncated,

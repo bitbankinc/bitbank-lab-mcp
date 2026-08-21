@@ -1014,38 +1014,40 @@ describe('resolveDepositWithdrawalStatus / flowUnavailableReasonFor', () => {
 
 	const someDeposit = { uuid: 'd', asset: 'jpy', amount: '1000', status: 'DONE', found_at: 1, confirmed_at: 1 };
 
-	it('include_deposit_withdrawal=false: not_requested → withdrawal_history_not_fetched', () => {
-		const status = resolveDepositWithdrawalStatus(false, null);
-		expect(status).toBe('not_requested');
-		expect(flowUnavailableReasonFor(status, null)).toBe('withdrawal_history_not_fetched');
+	it('include_deposit_withdrawal=false: セクションは not_requested でも理由コードは立たない', () => {
+		// 表示フラグは取得可否を握らない。損益を出す構成なら履歴は取得済みなので、
+		// 取得結果（ここでは取得成功・履歴あり）だけで原価の信頼性が決まる。
+		const dw = makeDw({ deposits: [someDeposit] });
+		expect(resolveDepositWithdrawalStatus(false, dw)).toBe('not_requested');
+		expect(flowUnavailableReasonFor(dw)).toBeUndefined();
 	});
 
 	it('取得成功かつ履歴あり: available → 理由コードなし（取得原価を出してよい）', () => {
 		const dw = makeDw({ deposits: [someDeposit] });
 		const status = resolveDepositWithdrawalStatus(true, dw);
 		expect(status).toBe('available');
-		expect(flowUnavailableReasonFor(status, dw)).toBeUndefined();
+		expect(flowUnavailableReasonFor(dw)).toBeUndefined();
 	});
 
 	it('取得成功・警告なし・履歴 0 件: no_history → 理由コードなし（本当に出庫ゼロ）', () => {
 		const dw = makeDw();
 		const status = resolveDepositWithdrawalStatus(true, dw);
 		expect(status).toBe('no_history');
-		expect(flowUnavailableReasonFor(status, dw)).toBeUndefined();
+		expect(flowUnavailableReasonFor(dw)).toBeUndefined();
 	});
 
 	it('全リクエスト失敗: fallback → dw_fetch_failed', () => {
 		const dw = makeDw({ allFailed: true });
 		const status = resolveDepositWithdrawalStatus(true, dw);
 		expect(status).toBe('fallback');
-		expect(flowUnavailableReasonFor(status, dw)).toBe('dw_fetch_failed');
+		expect(flowUnavailableReasonFor(dw)).toBe('dw_fetch_failed');
 	});
 
 	it('partial failure で履歴 0 件: fallback（warning ありは「本当に 0 件」と区別できない）', () => {
 		const dw = makeDw({ warnings: ['一部失敗'] });
 		const status = resolveDepositWithdrawalStatus(true, dw);
 		expect(status).toBe('fallback');
-		expect(flowUnavailableReasonFor(status, dw)).toBe('dw_fetch_failed');
+		expect(flowUnavailableReasonFor(dw)).toBe('dw_fetch_failed');
 	});
 
 	it('partial failure だが履歴が残っている: status は available のまま理由コードは dw_fetch_failed', () => {
@@ -1055,7 +1057,7 @@ describe('resolveDepositWithdrawalStatus / flowUnavailableReasonFor', () => {
 		const dw = makeDw({ deposits: [someDeposit], warnings: ['暗号資産出庫履歴の取得に失敗: 10007'] });
 		const status = resolveDepositWithdrawalStatus(true, dw);
 		expect(status).toBe('available');
-		expect(flowUnavailableReasonFor(status, dw)).toBe('dw_fetch_failed');
+		expect(flowUnavailableReasonFor(dw)).toBe('dw_fetch_failed');
 	});
 
 	it('件数上限で打ち切られた履歴: available のまま dw_history_incomplete', () => {
@@ -1063,12 +1065,15 @@ describe('resolveDepositWithdrawalStatus / flowUnavailableReasonFor', () => {
 		const dw = makeDw({ deposits: [someDeposit], isComplete: false });
 		const status = resolveDepositWithdrawalStatus(true, dw);
 		expect(status).toBe('available');
-		expect(flowUnavailableReasonFor(status, dw)).toBe('dw_history_incomplete');
+		expect(flowUnavailableReasonFor(dw)).toBe('dw_history_incomplete');
 	});
 
-	it('include=true でも dw が null: fallback（想定外の欠落を available に倒さない）', () => {
+	it('dw が null: status は fallback、理由コードは dw_fetch_failed', () => {
+		// 損益を出す構成では入出金履歴を常に取得するので、null は取得が落ちたときだけ。
+		// 表示フラグの値に関わらず「未取得」ではなく「取得失敗」として扱う。
 		expect(resolveDepositWithdrawalStatus(true, null)).toBe('fallback');
-		expect(flowUnavailableReasonFor('fallback', null)).toBe('dw_fetch_failed');
+		expect(resolveDepositWithdrawalStatus(false, null)).toBe('not_requested');
+		expect(flowUnavailableReasonFor(null)).toBe('dw_fetch_failed');
 	});
 });
 
@@ -1399,8 +1404,9 @@ describe('buildPeriodPerformance', () => {
 		expect(result.change_pct).toBe(20);
 	});
 
-	it('dwData が null で理由コード未指定: withdrawal_history_not_fetched に落ちる', () => {
-		// flow_measured=false なら必ず理由が付く、という契約を守る
+	it('dwData が null で理由コード未指定: dw_fetch_failed に落ちる', () => {
+		// flow_measured=false なら必ず理由が付く、という契約を守る。
+		// 損益を出す構成では入出金履歴を常に取得するので、dwData が null なのは取得が落ちたとき。
 		const ctx = makeCtx({
 			currentHoldings: [{ asset: 'btc', amount: '1' }],
 			candlePriceData: {
@@ -1412,7 +1418,7 @@ describe('buildPeriodPerformance', () => {
 		});
 		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
 		expect(result.flow_measured).toBe(false);
-		expect(result.flow_unavailable_reason).toBe('withdrawal_history_not_fetched');
+		expect(result.flow_unavailable_reason).toBe('dw_fetch_failed');
 		expect(result.net_flow_jpy).toBeNull();
 	});
 
@@ -1420,7 +1426,7 @@ describe('buildPeriodPerformance', () => {
 		// 0 除算回避の undefined（キーごと落ちる）と、未計測の null を取り違えないこと
 		const ctx = makeCtx({
 			currentHoldings: [],
-			flowUnavailableReason: 'withdrawal_history_not_fetched',
+			flowUnavailableReason: 'dw_fetch_failed',
 			currentValue: 1_000_000,
 		});
 		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
