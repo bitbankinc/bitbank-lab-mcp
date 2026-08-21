@@ -2370,6 +2370,75 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 	});
 
 	/**
+	 * 換算結果を出力するセクションが 1 つも無い構成では、価格解決自体を走らせない。
+	 *
+	 * `include_deposit_withdrawal=false`（入出金セクションを閉じる）かつ入出金履歴の部分失敗で
+	 * 純入出金が未計測（`buildPeriodPerformance` が `unmeasuredNetFlow` に短絡）になると、
+	 * 換算値はどの出力にも現れない。それでも candle を追加取得すると、
+	 * (1) 出力に出ない値のためにレイテンシを払い、(2) meta / summary が
+	 * 「どこにも出ていない評価額」を申告してしまう（読み手が探しても見つからない）。
+	 */
+	it('換算結果を出力するセクションが無い構成では価格解決も申告も行わない', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+
+		// 暗号資産出庫チャネルだけ落として部分失敗にする（allFailed=false / warnings あり
+		// → flowUnavailableReason=dw_fetch_failed で純入出金が未計測になる）。
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			const marginResponse = maybeMarginAccountResponse(urlStr);
+			if (marginResponse) return marginResponse;
+			if (urlStr.includes('tickers_jpy')) {
+				return new Response(JSON.stringify(tickersWithBtc(15_500_000)), { status: 200 });
+			}
+			if (urlStr.includes('candlestick')) {
+				return new Response(JSON.stringify(candles1day([{ tsMs: Date.UTC(2026, 4, 15), open: 20_000_000 }])), {
+					status: 200,
+				});
+			}
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				const payload = urlStr.includes('type=margin') ? { trades: [] } : rawTradeHistoryResponse;
+				return new Response(JSON.stringify(mockBitbankSuccess(payload)), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history')) {
+				// 年初以降（= 純入出金の母集合に入る）の DONE 暗号資産入庫。
+				// candle は当日を含まないので、解決を試みれば現在価格フォールバックに落ちる。
+				return new Response(JSON.stringify(mockBitbankSuccess(btcDeposit(recentFlowMs))), { status: 200 });
+			}
+			if (urlStr.includes('withdrawal_history')) {
+				if (!urlStr.includes('asset=jpy')) {
+					return new Response(JSON.stringify(mockBitbankError(10007)), { status: 200 });
+				}
+				return new Response(JSON.stringify(mockBitbankSuccess({ withdrawals: [] })), { status: 200 });
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		// 前提: 純入出金は未計測で、入出金セクションも出ていない = 換算値の出力先が無い
+		expect(result.meta.flowDataUnavailableReason).toBe('dw_fetch_failed');
+		expect(result.data.daily_performance?.flow_measured).toBe(false);
+		expect(result.data.daily_performance?.flow_valuation).toBeUndefined();
+		expect(result.data.deposit_withdrawal_summary).toBeUndefined();
+
+		// 出力に現れない換算を申告しない
+		expect(result.meta.flowValuationBasis).toBeUndefined();
+		expect(result.meta.flowValuationFallbackCount).toBeUndefined();
+		expect((result.meta.warnings ?? []).some((w: string) => w.includes('現在価格で仮評価'))).toBe(false);
+		expect(result.summary).not.toContain('現在価格で仮評価');
+	});
+
+	/**
 	 * `PERFORMANCE_NOTE` と summary の注記行は LLM が評価方式を読む唯一のチャネル
 	 * （`structuredContent` は見えない）。文言が現在価格ベースのまま取り残されないよう固定する。
 	 */

@@ -475,16 +475,29 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// 直近 400 日窓（fetchCandlePriceData）で解けない分だけ年単位 chunk を追加取得する。
 		// 現在価格で仮評価すると誤差が相場と連動して動く系統的バイアスになるため（#53 の機序 6）。
 		//
-		// 追加取得の母集合は「実際に換算が要る入出庫」だけに絞る:
-		//   - 入出金分析セクションを出す構成 → 全履歴（口座全体リターンが全履歴を集計するため）
-		//   - 出さない構成 → 年初以降のみ（期間ネットフローの最長期間が年初来）
+		// 追加取得の母集合は「換算結果を実際に出力するセクションがある入出庫」だけに絞る:
+		//   - 入出金分析セクション（dwSummary / *_dw_summary / 口座全体リターン）→ 全履歴
+		//   - 期間ネットフロー → 最長でも年初来（yearly が最広の期間）
+		// どちらも消費しない構成では価格解決そのものを行わない。走らせてしまうと、
+		// (1) 出力に現れない換算のために candle 取得のレイテンシを払い、
+		// (2) meta / summary が「どの出力にも載っていない評価額」を申告して読み手を迷わせる。
+		// 具体例: include_deposit_withdrawal=false（セクションを閉じる）＋ 入出金履歴の部分失敗で
+		// buildPeriodPerformance が未計測に短絡するケース。
 		// candlePricePromise の await をここに引き上げるが、in-flight の promise を待つ位置は
 		// 元の 6.6 と同じで、間に別の I/O は挟まっていない。
 		const candlePriceData = await candlePricePromise;
-		const flowValuationTargets = collectFlowValuationTargets(
-			dwData,
-			include_deposit_withdrawal ? undefined : boundaries.yearStartMs,
-		);
+		// 部分失敗・打ち切りでも dwSummary は出るので、セクション側の消費判定に
+		// flowUnavailableReason は使わない（原価が信頼できないことと、入出金サマリーを
+		// 出せることは別問題 — flowUnavailableReasonFor の doc 参照）。
+		const dwSectionUsesFlow = include_deposit_withdrawal && dwData != null && !dwData.allFailed;
+		// 純入出金側は flowUnavailableReason があると buildPeriodPerformance が
+		// unmeasuredNetFlow() に短絡するため、その時点で消費者ではなくなる。
+		const netFlowUsesFlow = include_pnl && flowUnavailableReason == null;
+		const flowValuationTargets = dwSectionUsesFlow
+			? collectFlowValuationTargets(dwData)
+			: netFlowUsesFlow
+				? collectFlowValuationTargets(dwData, boundaries.yearStartMs)
+				: [];
 		const flowPricing: FlowPricing = {
 			dailyPrices: await fetchFlowDatePrices(candlePriceData.dailyPrices, flowValuationTargets),
 			currentPrices: prices,
