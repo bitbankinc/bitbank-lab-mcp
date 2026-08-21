@@ -16,7 +16,7 @@
  */
 
 import { formatPair } from '../../lib/formatter.js';
-import { ok, toStructured } from '../../lib/result.js';
+import { fail, ok, toStructured } from '../../lib/result.js';
 import { generateToken } from '../../src/private/confirmation.js';
 import { withElicitedConfirmation } from '../../src/private/elicitation.js';
 import { PreviewCancelOrdersInputSchema, PreviewCancelOrdersOutputSchema } from '../../src/private/schemas.js';
@@ -73,6 +73,14 @@ export const toolDef: ToolDefinition = {
 		const result = previewCancelOrders(typedArgs);
 		if (!result.ok) return result;
 
+		// スキーマ上 optional だが preview 成功時は必ず生成される。ここで 1 度だけ narrowing し、
+		// 以降の非 null 断定を無くす。万一生成されていなければ fail-closed で実行させない
+		// （トークン無しで execute 経路へ進ませないため）。
+		const { confirmation_token, expires_at } = result.data;
+		if (!confirmation_token || expires_at == null) {
+			return PreviewCancelOrdersOutputSchema.parse(fail('確認トークンを生成できませんでした', 'internal'));
+		}
+
 		// elicitation 非対応 かつ MCP Apps 実行経路も無効なホスト向けのフォールバック。
 		// キャンセル実行はこのホストでは行えない旨を明示し、トークンの存在は仄めかさない。
 		const fallbackText = [
@@ -107,8 +115,8 @@ export const toolDef: ToolDefinition = {
 				cancelOrders(
 					{
 						...typedArgs,
-						confirmation_token: result.data.confirmation_token!,
-						token_expires_at: result.data.expires_at!,
+						confirmation_token,
+						token_expires_at: expires_at,
 					},
 					'elicitation',
 					{ sessionId: (extra as { sessionId?: string } | undefined)?.sessionId },
@@ -122,8 +130,8 @@ export const toolDef: ToolDefinition = {
 			// MCP Apps ホスト向けのトークン配送。実際に載るのは有効化ゲート 2 段を
 			// 満たし、かつ elicitation 非対応と判定された場合のみ（helper 側で制御）。
 			metaConfirmation: {
-				confirmation_token: result.data.confirmation_token!,
-				expires_at: result.data.expires_at!,
+				confirmation_token,
+				expires_at,
 			},
 			appUiFallbackText,
 		});
