@@ -207,6 +207,30 @@ export const PortfolioFlowUnavailableReasonEnum = z.enum([
 /** @see PortfolioFlowUnavailableReasonEnum */
 export type PortfolioFlowUnavailableReason = z.infer<typeof PortfolioFlowUnavailableReasonEnum>;
 
+/**
+ * 取得原価を確定できなかった理由コード（`holdings[].cost_basis_unavailable_reason` の単一ソース）。
+ *
+ * 入出金履歴の取得起因（`PortfolioFlowUnavailableReasonEnum`）を包含する上位集合で、
+ * 復元数量と実残高の数量不変条件（`qtyInvariantHolds`）が破れたときの乖離要因を追加する。
+ * 数量乖離側の 3 値は銘柄単位でのみ立ち、入出金取得系フィールド
+ * （`*_performance.flow_unavailable_reason` / `meta.flowDataUnavailableReason`）には現れない。
+ */
+export const PortfolioCostBasisUnavailableReasonEnum = z.enum([
+	...PortfolioFlowUnavailableReasonEnum.options,
+	/** 復元数量が実残高と乖離しており、該当銘柄に DONE の暗号資産入庫がある（入庫は原価計算に入らない） */
+	'has_crypto_deposits',
+	/** 復元数量が実残高と乖離しており、約定履歴または入出金履歴が件数上限で打ち切られている */
+	'history_truncated',
+	/** 復元数量が実残高と乖離しているが、原因を特定できない（例: 履歴に現れない出庫） */
+	'unknown',
+]);
+
+/** @see PortfolioCostBasisUnavailableReasonEnum */
+export type PortfolioCostBasisUnavailableReason = z.infer<typeof PortfolioCostBasisUnavailableReasonEnum>;
+
+/** 数量不変条件の乖離検出で立つ理由コード（上位集合のうち入出金取得起因を除いたもの） */
+export type PortfolioQtyMismatchReason = Exclude<PortfolioCostBasisUnavailableReason, PortfolioFlowUnavailableReason>;
+
 /** analyze_my_portfolio の入出金分析状態（meta.depositWithdrawalStatus の単一ソース） */
 export const DepositWithdrawalStatusEnum = z.enum(['available', 'fallback', 'no_history', 'not_requested']);
 
@@ -225,9 +249,15 @@ const HoldingPnlSchema = z.object({
 	unrealized_pnl_pct: z.number().optional().describe('評価損益率（%）'),
 	realized_pnl: z.number().optional().describe('実現損益（JPY）'),
 	trade_count: z.number().optional().describe('約定件数'),
-	cost_basis_unavailable_reason: PortfolioFlowUnavailableReasonEnum.optional().describe(
-		'取得原価を確定できなかった理由。設定されている場合 avg_buy_price / cost_basis / unrealized_pnl / unrealized_pnl_pct はいずれも undefined（信頼できない値を確定値として出さないための抑止）。dw_fetch_failed=入出金 API の取得に失敗（一部チャネルのみの失敗を含む）, dw_history_incomplete=件数上限で全履歴を取得できていない。include_deposit_withdrawal=false でも入出金履歴は損益計算のために取得されるため、同フラグ由来でこの値が立つことはない',
+	cost_basis_unavailable_reason: PortfolioCostBasisUnavailableReasonEnum.optional().describe(
+		'取得原価を確定できなかった理由。設定されている場合 avg_buy_price / cost_basis / unrealized_pnl / unrealized_pnl_pct はいずれも undefined（信頼できない値を確定値として出さないための抑止）。dw_fetch_failed=入出金 API の取得に失敗（一部チャネルのみの失敗を含む）, dw_history_incomplete=件数上限で入出金の全履歴を取得できていない, has_crypto_deposits=復元数量が実残高と乖離しており該当銘柄に DONE の暗号資産入庫がある（入庫は原価計算に入らない）, history_truncated=復元数量が実残高と乖離しており約定履歴が件数上限で打ち切られている, unknown=復元数量が実残高と乖離しているが原因を特定できない。include_deposit_withdrawal=false でも入出金履歴は損益計算のために取得されるため、同フラグ由来でこの値が立つことはない',
 	),
+	cost_basis_reliable: z
+		.boolean()
+		.optional()
+		.describe(
+			'取得原価の信頼性（数量不変条件の判定結果）。約定・出庫リプレイで復元した保有数量が実残高（onhand_amount）と許容誤差 max(10^-amount_precision × 5, 実残高 × 0.1%) 内で一致すれば true（絶対項は端数処理・ダスト、相対項は浮動小数点誤差の許容）。false のとき cost_basis_unavailable_reason に理由コードが載り、原価由来 4 フィールドは undefined、total_cost_basis / total_unrealized_pnl の集計からも除外される。原価計算の対象外（JPY / include_pnl=false）では省略',
+		),
 });
 
 const HoldingPerformanceSchema = z.object({
@@ -389,7 +419,7 @@ export const AnalyzeMyPortfolioDataSchema = z.object({
 	total_unrealized_pnl: z.number().optional().describe('合計評価損益'),
 	total_unrealized_pnl_pct: z.number().optional().describe('合計評価損益率（%）'),
 	total_cost_basis_unavailable_reason: PortfolioFlowUnavailableReasonEnum.optional().describe(
-		'合計取得原価を確定できなかった理由。設定されている場合 total_cost_basis / total_unrealized_pnl / total_unrealized_pnl_pct はいずれも undefined。holdings[].cost_basis_unavailable_reason と同じ理由コード',
+		'合計取得原価を確定できなかった理由（入出金履歴の取得起因 dw_fetch_failed / dw_history_incomplete のみ）。設定されている場合 total_cost_basis / total_unrealized_pnl / total_unrealized_pnl_pct はいずれも undefined。銘柄単位の数量乖離（holdings[].cost_basis_reliable=false）ではこのフィールドは立たず、当該銘柄を合計の集計から除外して meta.warnings / summary の警告行で申告する',
 	),
 	total_realized_pnl: z.number().optional().describe('合計実現損益（全履歴ベース）'),
 	daily_performance: PeriodPerformanceSchema.describe('前日比パフォーマンス（当日0:00 JST〜現在の口座評価額増減）'),

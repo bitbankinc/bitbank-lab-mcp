@@ -13,7 +13,11 @@ import { formatPair, formatPercent, formatPrice, formatPriceJPY } from '../../li
 import { ok } from '../../lib/result.js';
 import { prependWarnings } from '../../lib/warning-propagation.js';
 import { getDefaultClient } from '../private/client.js';
-import { AnalyzeMyPortfolioOutputSchema, type PortfolioFlowUnavailableReason } from '../private/schemas.js';
+import {
+	AnalyzeMyPortfolioOutputSchema,
+	type PortfolioFlowUnavailableReason,
+	type PortfolioQtyMismatchReason,
+} from '../private/schemas.js';
 import { failPrivateToolError } from '../private/tool-error.js';
 import {
 	buildAccountPnl,
@@ -30,6 +34,8 @@ import {
 	getJstPeriodBoundaries,
 	type PeriodSpec,
 	type PortfolioPerformanceContext,
+	qtyInvariantHolds,
+	qtyMismatchReasonFor,
 	resolveDepositWithdrawalStatus,
 } from './portfolio/calc.js';
 import { PORTFOLIO_CALENDAR_TZ } from './portfolio/calendar.js';
@@ -113,6 +119,13 @@ const FLOW_UNAVAILABLE_NOTE: Record<PortfolioFlowUnavailableReason, string> = {
 	dw_fetch_failed:
 		'入出金履歴の取得に失敗したため取得原価を確定できません（一部チャネルのみの失敗を含む）。時間をおいて再実行してください',
 	dw_history_incomplete: '入出金履歴が多く全件取得できなかったため取得原価を確定できません（再実行しても解消しません）',
+};
+
+/** 数量乖離の理由コードごとの原因表示（銘柄名に添える短句）。 */
+const QTY_MISMATCH_CAUSE: Record<PortfolioQtyMismatchReason, string> = {
+	has_crypto_deposits: '暗号資産の入庫あり',
+	history_truncated: '約定履歴の打ち切り',
+	unknown: '原因不明',
 };
 
 /**
@@ -263,6 +276,9 @@ export default async function analyzeMyPortfolioHandler(args: {
 		let _totalCostBasis = 0;
 		let totalRealizedPnl = 0;
 
+		// 数量不変条件で乖離を検出した銘柄（summary の警告行と合計からの除外に使う）
+		const qtyMismatchAssets: Array<{ asset: string; reason: PortfolioQtyMismatchReason }> = [];
+
 		const holdings = nonZeroAssets.map((a) => {
 			const amount = a.onhand_amount;
 			const isJpy = a.asset === 'jpy';
@@ -290,6 +306,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 					realized_pnl: undefined,
 					trade_count: undefined,
 					cost_basis_unavailable_reason: undefined,
+					cost_basis_reliable: undefined,
 				};
 			}
 
@@ -320,6 +337,29 @@ export default async function analyzeMyPortfolioHandler(args: {
 					realized_pnl: pnl?.realized_pnl,
 					trade_count: pnl?.trade_count,
 					cost_basis_unavailable_reason: flowUnavailableReason,
+					cost_basis_reliable: false,
+				};
+			}
+
+			// 数量不変条件: 復元数量が実残高と許容誤差を超えて乖離していたら、原価から派生する
+			// 4 フィールドは確定値を出さず（上と同じ null 化経路）、理由コードだけ返す。
+			if (pnl != null && !qtyInvariantHolds(Number(amount), pnl.reconstructed_qty, a.amount_precision)) {
+				const reason = qtyMismatchReasonFor(a.asset, dwData, tradesTruncated);
+				qtyMismatchAssets.push({ asset: a.asset, reason });
+				return {
+					asset: a.asset,
+					pair,
+					amount,
+					avg_buy_price: undefined,
+					current_price: currentPrice != null ? Math.round(currentPrice) : undefined,
+					jpy_value: jpyValue != null ? Math.round(jpyValue) : undefined,
+					cost_basis: undefined,
+					unrealized_pnl: undefined,
+					unrealized_pnl_pct: undefined,
+					realized_pnl: pnl.realized_pnl,
+					trade_count: pnl.trade_count,
+					cost_basis_unavailable_reason: reason,
+					cost_basis_reliable: false,
 				};
 			}
 
@@ -343,6 +383,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 				realized_pnl: pnl?.realized_pnl,
 				trade_count: pnl?.trade_count,
 				cost_basis_unavailable_reason: undefined,
+				cost_basis_reliable: pnl != null ? true : undefined,
 			};
 		});
 
@@ -876,6 +917,11 @@ export default async function analyzeMyPortfolioHandler(args: {
 			}
 			lines.push('※ 評価損益は全履歴の約定・暗号資産出庫から移動平均法で算出した取得原価ベース');
 		}
+		if (qtyMismatchAssets.length > 0) {
+			lines.push(
+				`※ ${qtyMismatchAssets.map((m) => m.asset.toUpperCase()).join(', ')} は復元数量が実残高と乖離しているため合計評価損益に含めていません`,
+			);
+		}
 		lines.push('');
 
 		// 保有銘柄のパフォーマンス（月次・年次の価格騰落率）
@@ -931,6 +977,12 @@ export default async function analyzeMyPortfolioHandler(args: {
 		if (flowUnavailableReason != null) {
 			calcWarnings.push(
 				`評価損益・取得原価は算出していません（${FLOW_UNAVAILABLE_NOTE[flowUnavailableReason]}）。期間パフォーマンスの純入出金も未計測です`,
+			);
+		}
+		// 数量不変条件の乖離（金額・件数は出さず銘柄名のみ: `.claude/rules/sensitive-data.md` の HIGH 分類）。
+		if (qtyMismatchAssets.length > 0) {
+			calcWarnings.push(
+				`${qtyMismatchAssets.map((m) => `${m.asset.toUpperCase()}（${QTY_MISMATCH_CAUSE[m.reason]}）`).join(', ')} は約定・出庫から復元した保有数量が実残高と一致しないため、取得原価・評価損益を算出せず合計評価損益からも除外しています`,
 			);
 		}
 		if (netFlowUnpricedAssets.length > 0) {

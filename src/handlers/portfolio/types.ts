@@ -129,6 +129,8 @@ export interface PnlResult {
 	cost_basis: number | undefined;
 	realized_pnl: number;
 	trade_count: number;
+	/** 約定・出庫リプレイで復元した保有数量。実残高（onhand_amount）との突き合わせに使う */
+	reconstructed_qty: number;
 }
 
 export interface PeriodRealizedPnl {
