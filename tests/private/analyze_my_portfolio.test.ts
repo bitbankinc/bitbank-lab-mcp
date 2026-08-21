@@ -1134,6 +1134,11 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 	 */
 	const COST_FIELDS = ['avg_buy_price', 'cost_basis', 'unrealized_pnl', 'unrealized_pnl_pct'] as const;
 
+	/**
+	 * 全暗号資産銘柄で原価由来の 4 フィールドが出ておらず、理由コードが併記されていること、
+	 * および合計側も同様であることをまとめて検証する。
+	 * 原価に依存しない値（評価額）は落としていないことも併せて確認する。
+	 */
 	function expectCostFieldsSuppressed(result: { data: Record<string, unknown> }, reason: string) {
 		const holdings = result.data.holdings as Array<Record<string, unknown>>;
 		const crypto = holdings.filter((h) => h.asset !== 'jpy');
@@ -1180,6 +1185,55 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 		expectCostFieldsSuppressed(result, 'dw_fetch_failed');
 		expect(result.meta.flowDataUnavailableReason).toBe('dw_fetch_failed');
 		expect(result.meta.depositWithdrawalStatus).toBe('fallback');
+	});
+
+	it('暗号資産出庫チャネルだけ失敗: available のままでも取得原価は抑止される', async () => {
+		// fetchDepositWithdrawal は 暗号資産入庫 / JPY入金 / 暗号資産出庫 / JPY出金 の
+		// 4 チャネルを個別に取得する。暗号資産出庫だけ落ちても他にレコードがあれば
+		// allFailed=false → status=available になるが、cost_basis を過大化させる当の出庫が
+		// 欠けた withdrawals がそのまま calcPnl に渡るため、原価は信頼できない。
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			const marginResponse = maybeMarginAccountResponse(urlStr);
+			if (marginResponse) return marginResponse;
+			if (urlStr.includes('tickers_jpy')) return new Response(JSON.stringify(tickersJpy), { status: 200 });
+			if (urlStr.includes('candlestick')) return new Response(JSON.stringify(candlesBtcJpy1day120), { status: 200 });
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				const payload = urlStr.includes('type=margin') ? { trades: [] } : rawTradeHistoryResponse;
+				return new Response(JSON.stringify(mockBitbankSuccess(payload)), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(rawDepositHistoryResponse)), { status: 200 });
+			}
+			if (urlStr.includes('withdrawal_history')) {
+				// 暗号資産チャネル（asset 指定なし）だけ失敗させ、JPY チャネルは成功させる
+				if (!urlStr.includes('asset=jpy')) {
+					return new Response(JSON.stringify(mockBitbankError(10007)), { status: 200 });
+				}
+				return new Response(JSON.stringify(mockBitbankSuccess(rawWithdrawalHistoryResponse)), { status: 200 });
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		// status は「どの分析基準を出力したか」なので available のまま
+		expect(result.meta.depositWithdrawalStatus).toBe('available');
+		// 「取得原価を信頼してよいか」は別軸で、こちらは閉じる
+		expect(result.meta.flowDataUnavailableReason).toBe('dw_fetch_failed');
+		expectCostFieldsSuppressed(result, 'dw_fetch_failed');
+		// 入出金サマリーは実データのまま残す（原価の信頼性とは別問題）
+		expect(result.data.deposit_withdrawal_summary).toBeDefined();
+		expect(result.data.deposit_withdrawal_summary.analysis_basis).toBe('deposit_withdrawal');
 	});
 
 	it('回帰: include_deposit_withdrawal=true かつ取得成功なら従来どおり数値が出る', async () => {
@@ -1699,7 +1753,7 @@ describe('analyze_my_portfolio — 純入出金の価格解決 warning', () => {
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
 
-		// 価格解決の warning は資産名を含む。取得原価が確定できない旨の warning とは別系統。
+		/** 価格解決の warning は資産名を含む。取得原価が確定できない旨の warning とは別系統。 */
 		const hasUnpricedWarning = (warnings: string[] | undefined) =>
 			(warnings ?? []).some((w) => w.includes('DOGE') || w.includes('MONA'));
 

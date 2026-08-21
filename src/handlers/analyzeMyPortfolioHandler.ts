@@ -106,13 +106,16 @@ function buildMarginPositionsBlock(info: MarginAccountInfo): string[] {
 const FLOW_UNAVAILABLE_CAUSE: Record<PortfolioFlowUnavailableReason, string> = {
 	withdrawal_history_not_fetched: '入出金履歴を取得していない',
 	dw_fetch_failed: '入出金履歴の取得に失敗した',
+	dw_history_incomplete: '入出金履歴を全件取得できなかった',
 };
 
 /** 理由コードごとの「なぜ取得原価を確定できないか」の説明文（summary / warning 共通）。 */
 const FLOW_UNAVAILABLE_NOTE: Record<PortfolioFlowUnavailableReason, string> = {
 	withdrawal_history_not_fetched:
 		'入出金履歴を取得していないため取得原価を確定できません。include_deposit_withdrawal: true で再実行してください',
-	dw_fetch_failed: '入出金履歴の取得に失敗したため取得原価を確定できません。時間をおいて再実行してください',
+	dw_fetch_failed:
+		'入出金履歴の取得に失敗したため取得原価を確定できません（一部チャネルのみの失敗を含む）。時間をおいて再実行してください',
+	dw_history_incomplete: '入出金履歴が多く全件取得できなかったため取得原価を確定できません（再実行しても解消しません）',
 };
 
 /**
@@ -224,7 +227,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// ここで理由コードを立てると「入出金を取れば原価が出る」という誤った案内になる
 		// （実際には include_pnl も必要）ため、損益を出す構成のときだけ立てる。
 		const flowUnavailableReason: PortfolioFlowUnavailableReason | undefined = include_pnl
-			? flowUnavailableReasonFor(depositWithdrawalStatus)
+			? flowUnavailableReasonFor(depositWithdrawalStatus, dwData)
 			: undefined;
 
 		// 期間パフォーマンス用: 全関連ペアのキャンドルデータを早期フェッチ開始

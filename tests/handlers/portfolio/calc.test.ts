@@ -1007,45 +1007,68 @@ describe('calcPeriodNetFlow', () => {
 // ── 入出金データの利用可否 ──
 
 describe('resolveDepositWithdrawalStatus / flowUnavailableReasonFor', () => {
+	/** 取得成功・警告なし・履歴 0 件を既定とする DepositWithdrawalData を組み立てる。 */
 	function makeDw(overrides: Partial<DepositWithdrawalData> = {}): DepositWithdrawalData {
 		return { deposits: [], withdrawals: [], warnings: [], allFailed: false, isComplete: true, ...overrides };
 	}
 
+	const someDeposit = { uuid: 'd', asset: 'jpy', amount: '1000', status: 'DONE', found_at: 1, confirmed_at: 1 };
+
 	it('include_deposit_withdrawal=false: not_requested → withdrawal_history_not_fetched', () => {
 		const status = resolveDepositWithdrawalStatus(false, null);
 		expect(status).toBe('not_requested');
-		expect(flowUnavailableReasonFor(status)).toBe('withdrawal_history_not_fetched');
+		expect(flowUnavailableReasonFor(status, null)).toBe('withdrawal_history_not_fetched');
 	});
 
 	it('取得成功かつ履歴あり: available → 理由コードなし（取得原価を出してよい）', () => {
-		const dw = makeDw({
-			deposits: [{ uuid: 'd', asset: 'jpy', amount: '1000', status: 'DONE', found_at: 1, confirmed_at: 1 }],
-		});
+		const dw = makeDw({ deposits: [someDeposit] });
 		const status = resolveDepositWithdrawalStatus(true, dw);
 		expect(status).toBe('available');
-		expect(flowUnavailableReasonFor(status)).toBeUndefined();
+		expect(flowUnavailableReasonFor(status, dw)).toBeUndefined();
 	});
 
 	it('取得成功・警告なし・履歴 0 件: no_history → 理由コードなし（本当に出庫ゼロ）', () => {
-		const status = resolveDepositWithdrawalStatus(true, makeDw());
+		const dw = makeDw();
+		const status = resolveDepositWithdrawalStatus(true, dw);
 		expect(status).toBe('no_history');
-		expect(flowUnavailableReasonFor(status)).toBeUndefined();
+		expect(flowUnavailableReasonFor(status, dw)).toBeUndefined();
 	});
 
 	it('全リクエスト失敗: fallback → dw_fetch_failed', () => {
-		const status = resolveDepositWithdrawalStatus(true, makeDw({ allFailed: true }));
+		const dw = makeDw({ allFailed: true });
+		const status = resolveDepositWithdrawalStatus(true, dw);
 		expect(status).toBe('fallback');
-		expect(flowUnavailableReasonFor(status)).toBe('dw_fetch_failed');
+		expect(flowUnavailableReasonFor(status, dw)).toBe('dw_fetch_failed');
 	});
 
 	it('partial failure で履歴 0 件: fallback（warning ありは「本当に 0 件」と区別できない）', () => {
-		const status = resolveDepositWithdrawalStatus(true, makeDw({ warnings: ['一部失敗'] }));
+		const dw = makeDw({ warnings: ['一部失敗'] });
+		const status = resolveDepositWithdrawalStatus(true, dw);
 		expect(status).toBe('fallback');
-		expect(flowUnavailableReasonFor(status)).toBe('dw_fetch_failed');
+		expect(flowUnavailableReasonFor(status, dw)).toBe('dw_fetch_failed');
+	});
+
+	it('partial failure だが履歴が残っている: status は available のまま理由コードは dw_fetch_failed', () => {
+		// fetchDepositWithdrawal は 4 チャネルを個別に取得するため、暗号資産出庫チャネルだけ
+		// 落ちても他にレコードがあれば allFailed=false → available になる。
+		// このとき cost_basis を過大化させる当の出庫が欠けているので、原価は信頼できない。
+		const dw = makeDw({ deposits: [someDeposit], warnings: ['暗号資産出庫履歴の取得に失敗: 10007'] });
+		const status = resolveDepositWithdrawalStatus(true, dw);
+		expect(status).toBe('available');
+		expect(flowUnavailableReasonFor(status, dw)).toBe('dw_fetch_failed');
+	});
+
+	it('件数上限で打ち切られた履歴: available のまま dw_history_incomplete', () => {
+		// 取得自体は成功しているので「失敗」とは別コード（再実行しても解消しない）
+		const dw = makeDw({ deposits: [someDeposit], isComplete: false });
+		const status = resolveDepositWithdrawalStatus(true, dw);
+		expect(status).toBe('available');
+		expect(flowUnavailableReasonFor(status, dw)).toBe('dw_history_incomplete');
 	});
 
 	it('include=true でも dw が null: fallback（想定外の欠落を available に倒さない）', () => {
 		expect(resolveDepositWithdrawalStatus(true, null)).toBe('fallback');
+		expect(flowUnavailableReasonFor('fallback', null)).toBe('dw_fetch_failed');
 	});
 });
 

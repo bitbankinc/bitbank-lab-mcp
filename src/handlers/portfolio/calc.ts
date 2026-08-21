@@ -699,20 +699,38 @@ export function resolveDepositWithdrawalStatus(
 /**
  * 入出金履歴を損益計算に使えない場合の理由コードを返す（使える場合は `undefined`）。
  *
- * `available` / `no_history` は使える。前者は履歴そのものが手元にあり、後者は
- * 「履歴が 0 件」が API 由来の事実なので、出庫ゼロ前提の原価計算が正しい。
- * 残る `not_requested` / `fallback` では出庫履歴の欠落が cost_basis の過大化に直結するため、
- * 呼び出し側は該当する損益フィールドを出力せずこの理由コードを併記する。
+ * **`status` だけでは判定しきれない。** `status` は「どの分析基準を出力するか」を表すもので、
+ * 「取得原価を信頼してよいか」とは別軸だからである。`fetchDepositWithdrawal` は
+ * 暗号資産入庫 / JPY 入金 / 暗号資産出庫 / JPY 出金の 4 チャネルを個別に取得し、
+ * 一部だけ失敗しても残りにレコードがあれば `allFailed: false` で `available` になる。
+ * このとき暗号資産出庫チャネルが落ちていると、`cost_basis` を過大化させる当の出庫だけが
+ * 欠けた `withdrawals` がそのまま `calcPnl` に渡ってしまう。件数上限による打ち切り
+ * （`isComplete: false`）も同じく出庫の取りこぼしになる。
+ *
+ * そこで `available` / `no_history` でも履歴の完全性を見て理由コードを立てる。
+ * `status` 側は据え置くので、`deposit_withdrawal_summary`（`is_complete` 付きの実データ）は
+ * 従来どおり出力される——原価が信頼できないことと、入出金サマリーが使えないことは別問題。
  */
-export function flowUnavailableReasonFor(status: DepositWithdrawalStatus): PortfolioFlowUnavailableReason | undefined {
+export function flowUnavailableReasonFor(
+	status: DepositWithdrawalStatus,
+	dw: DepositWithdrawalData | null,
+): PortfolioFlowUnavailableReason | undefined {
 	switch (status) {
 		case 'not_requested':
 			return 'withdrawal_history_not_fetched';
 		case 'fallback':
 			return 'dw_fetch_failed';
 		default:
-			return undefined;
+			break;
 	}
+	if (!dw) return undefined;
+	// 一部チャネルの失敗。出庫チャネルが落ちたかは warnings からは判別できるが、
+	// どのチャネルであれ「履歴が欠けている」以上は原価を確定できないので一律で閉じる。
+	if (dw.warnings.length > 0) return 'dw_fetch_failed';
+	// 件数上限による打ち切り。取得自体は成功しているので失敗とは別コードにする
+	// （再実行しても解消しないため、案内文言も変わる）。
+	if (!dw.isComplete) return 'dw_history_incomplete';
+	return undefined;
 }
 
 // ── 期間ネットフロー ──
