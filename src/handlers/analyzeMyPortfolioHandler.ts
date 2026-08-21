@@ -786,8 +786,14 @@ export default async function analyzeMyPortfolioHandler(args: {
 			lines.push(`分析基準: trade_only`);
 			// 「入出金分析セクションが無い」と「損益が入出金を見ていない」は別。後者と読まれると
 			// LLM が取得原価を疑って再取得を促してしまうため、供給済みならその旨を明示する。
+			//
+			// ただし「反映した値です」と断言してよいのは原価を出しているときだけ。部分失敗・
+			// 打ち切り（dwFetchedForPnl=true かつ flowUnavailableReason あり）では原価を抑止して
+			// おり、同じ content 内の「評価損益: 算出不能」と真っ向から矛盾する。text しか
+			// 読まない LLM にはこの矛盾を解けないので、その場合は中立の文言に落とす
+			// （取得が欠けたことは算出不能行と content 先頭の warning が別途伝える）。
 			lines.push(
-				dwFetchedForPnl
+				dwFetchedForPnl && flowUnavailableReason == null
 					? '※ 入出金分析セクションは未リクエスト（include_deposit_withdrawal=false）。ただし損益計算には入出金履歴を取得して使用しているため、取得原価・評価損益・純入出金は入出金を反映した値です'
 					: '※ 入出金分析は未リクエスト。約定ベースの分析のみです',
 			);

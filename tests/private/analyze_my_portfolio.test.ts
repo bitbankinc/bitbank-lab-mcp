@@ -1592,6 +1592,53 @@ describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', ()
 		expect(result.summary).not.toContain('※ 入出金分析は未リクエスト。約定ベースの分析のみです');
 	});
 
+	it('summary: 部分失敗で原価を抑止したときは「反映済み」と言わない（同一テキスト内の自己矛盾を防ぐ）', async () => {
+		// 暗号資産出庫チャネルだけ落ちると allFailed=false のまま warnings が立つので、
+		// dwFetchedForPnl は true でも取得原価は抑止される（flowUnavailableReason=dw_fetch_failed）。
+		// ここで「取得原価・評価損益は入出金を反映した値です」と言うと、同じ content 内の
+		// 「評価損益: 算出不能」と真っ向から矛盾する。text しか読まない LLM には解けない。
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			const marginResponse = maybeMarginAccountResponse(urlStr);
+			if (marginResponse) return marginResponse;
+			if (urlStr.includes('tickers_jpy')) return new Response(JSON.stringify(tickersJpy), { status: 200 });
+			if (urlStr.includes('candlestick')) return new Response(JSON.stringify(candlesBtcJpy1day120), { status: 200 });
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				const payload = urlStr.includes('type=margin') ? { trades: [] } : rawTradeHistoryResponse;
+				return new Response(JSON.stringify(mockBitbankSuccess(payload)), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(rawDepositHistoryResponse)), { status: 200 });
+			}
+			if (urlStr.includes('withdrawal_history')) {
+				// 暗号資産チャネル（asset 指定なし）だけ失敗させ、JPY チャネルは成功させる
+				if (!urlStr.includes('asset=jpy')) {
+					return new Response(JSON.stringify(mockBitbankError(10007)), { status: 200 });
+				}
+				return new Response(JSON.stringify(mockBitbankSuccess(rawWithdrawalHistoryResponse)), { status: 200 });
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		// 取得自体は成立しているが、欠けたチャネルがあるので原価は抑止されている
+		expect(result.meta.dwFetchedForPnl).toBe(true);
+		expect(result.meta.flowDataUnavailableReason).toBe('dw_fetch_failed');
+		expect(result.summary).toContain('評価損益: 算出不能');
+		// その状態で「反映した値です」と断言しない
+		expect(result.summary).not.toContain('取得原価・評価損益・純入出金は入出金を反映した値です');
+	});
+
 	it('include_pnl=false: 入出金を読まないので未リクエストの文言は従来のまま', async () => {
 		setupFetchMock();
 
