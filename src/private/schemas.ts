@@ -259,6 +259,17 @@ export type PortfolioFlowValuationBasis = z.infer<typeof PortfolioFlowValuationB
  *
  * 換算対象（DONE・非 JPY・数量が正）が 1 件も無い場合、および全件で価格を解決できなかった
  * 場合はフィールドごと省略する（`undefined`）。件数は換算**できた**件数のみを数える。
+ *
+ * ## 不変条件（`basis` は 2 つの件数から一意に決まる）
+ *
+ * `fallback === 0` → `deposit_date_price` / `dated === 0` → `current_price_fallback` /
+ * 両方が正 → `mixed`。両方 0 のときはフィールドごと落とすので `mixed` の 0/0 は存在しない。
+ *
+ * この不変条件は**構築時に保証する**（`portfolio/calc.ts` の `buildFlowValuationBreakdown` が
+ * 唯一の生成経路）。ここで `.refine()` して弾く方針は取らない——出力スキーマの parse 失敗は
+ * `AnalyzeMyPortfolioOutputSchema` 経由でレスポンス全体を fail に落とすため、ラベルの不整合を
+ * 理由にポートフォリオ分析ごと失わせるのは割に合わない。ガードは
+ * `tests/handlers/portfolio/calc.test.ts` の不変条件テスト。
  */
 const FlowValuationSchema = z
 	.object({

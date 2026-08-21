@@ -496,6 +496,25 @@ function buildFlowValuationBreakdown(dated: number, fallback: number): FlowValua
 }
 
 /**
+ * 価格解決の対象範囲。入庫と出庫で下限時刻を**別々に**指定する。
+ *
+ * 消費者が非対称だから分けている:
+ * - 入庫は `calcDepositWithdrawalSummary`（純投入額・口座全体リターン）が**全履歴**を換算する
+ * - 出庫を金額換算するのは期間集計だけ（`calcPeriodDWSummary` / `calcPeriodNetFlow`）。
+ *   `calcDepositWithdrawalSummary` は暗号資産出庫を `crypto_withdrawal_count` として
+ *   **件数しか出さない**ので、年初より前の出庫を換算しても出力に反映される先が無い
+ *
+ * 片方の下限で両方を絞ると、出力に出ない出庫のために candle を追加取得し、
+ * `FlowValuationBreakdown` の件数と「現在価格で仮評価」警告まで動いてしまう。
+ */
+export interface FlowValuationScope {
+	/** 入庫を集める下限時刻（`confirmed_at >= depositsSinceMs`）。省略で全履歴 */
+	depositsSinceMs?: number;
+	/** 出庫を集める下限時刻（`requested_at >= withdrawalsSinceMs`）。省略で全履歴 */
+	withdrawalsSinceMs?: number;
+}
+
+/**
  * 価格解決が必要な入出庫（DONE・非 JPY・数量が正）を列挙する。
  *
  * `fetchFlowDatePrices` の追加取得対象の決定と、レスポンス全体の換算方式の集計
@@ -503,13 +522,16 @@ function buildFlowValuationBreakdown(dated: number, fallback: number): FlowValua
  * JPY の入出金は換算不要、数量ゼロ・数値不正の入出庫は金額に寄与しないので除外する
  * （`calcPeriodNetFlow` の `unpriced_assets` 判定と同じ基準）。
  *
- * `sinceMs` を渡すと当該時刻以降のものだけに絞る。入出金**分析セクション**は全履歴を
- * 集計するため絞らず、期間ネットフローだけが要る構成では年初以降に絞って追加取得を減らす。
+ * 絞り込みの下限は `scope` で入庫・出庫それぞれに指定する（非対称な理由は
+ * `FlowValuationScope` の doc を参照）。
  */
-export function collectFlowValuationTargets(dw: DepositWithdrawalData | null, sinceMs?: number): FlowValuationTarget[] {
+export function collectFlowValuationTargets(
+	dw: DepositWithdrawalData | null,
+	scope: FlowValuationScope = {},
+): FlowValuationTarget[] {
 	if (!dw) return [];
 	const targets: FlowValuationTarget[] = [];
-	const push = (asset: string, amount: string, status: string, atMs: number) => {
+	const push = (asset: string, amount: string, status: string, atMs: number, sinceMs?: number) => {
 		if (status !== 'DONE') return;
 		if (asset === 'jpy') return;
 		const qty = Number(amount);
@@ -517,8 +539,8 @@ export function collectFlowValuationTargets(dw: DepositWithdrawalData | null, si
 		if (sinceMs != null && !(atMs >= sinceMs)) return;
 		targets.push({ asset, atMs });
 	};
-	for (const d of dw.deposits) push(d.asset, d.amount, d.status, d.confirmed_at);
-	for (const w of dw.withdrawals) push(w.asset, w.amount, w.status, w.requested_at);
+	for (const d of dw.deposits) push(d.asset, d.amount, d.status, d.confirmed_at, scope.depositsSinceMs);
+	for (const w of dw.withdrawals) push(w.asset, w.amount, w.status, w.requested_at, scope.withdrawalsSinceMs);
 	return targets;
 }
 

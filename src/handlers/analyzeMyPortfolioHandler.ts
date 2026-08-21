@@ -475,9 +475,12 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// 直近 400 日窓（fetchCandlePriceData）で解けない分だけ年単位 chunk を追加取得する。
 		// 現在価格で仮評価すると誤差が相場と連動して動く系統的バイアスになるため（#53 の機序 6）。
 		//
-		// 追加取得の母集合は「換算結果を実際に出力するセクションがある入出庫」だけに絞る:
-		//   - 入出金分析セクション（dwSummary / *_dw_summary / 口座全体リターン）→ 全履歴
-		//   - 期間ネットフロー → 最長でも年初来（yearly が最広の期間）
+		// 追加取得の母集合は「換算結果を実際に出力するセクションがある入出庫」だけに絞る。
+		// 入庫と出庫で消費者が非対称なので、下限時刻も別々に決める:
+		//   - 入庫: 入出金分析セクションの純投入額・口座全体リターンが**全履歴**を換算する
+		//   - 出庫: 金額換算するのは期間集計（*_dw_summary / 期間ネットフロー）だけで、
+		//     calcDepositWithdrawalSummary は暗号資産出庫を件数しか出さない。
+		//     つまり年初より前の出庫は換算しても反映先が無い（→ 年初来で足りる）
 		// どちらも消費しない構成では価格解決そのものを行わない。走らせてしまうと、
 		// (1) 出力に現れない換算のために candle 取得のレイテンシを払い、
 		// (2) meta / summary が「どの出力にも載っていない評価額」を申告して読み手を迷わせる。
@@ -493,10 +496,14 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// 純入出金側は flowUnavailableReason があると buildPeriodPerformance が
 		// unmeasuredNetFlow() に短絡するため、その時点で消費者ではなくなる。
 		const netFlowUsesFlow = include_pnl && flowUnavailableReason == null;
-		const flowValuationTargets = dwSectionUsesFlow
-			? collectFlowValuationTargets(dwData)
-			: netFlowUsesFlow
-				? collectFlowValuationTargets(dwData, boundaries.yearStartMs)
+		const flowValuationTargets =
+			dwSectionUsesFlow || netFlowUsesFlow
+				? collectFlowValuationTargets(dwData, {
+						// 入庫だけが全履歴を要求する。セクションを出さない構成では年初来で足りる。
+						depositsSinceMs: dwSectionUsesFlow ? undefined : boundaries.yearStartMs,
+						// 出庫は全履歴で換算する消費者がいないため、常に年初来（yearly が最広の期間）。
+						withdrawalsSinceMs: boundaries.yearStartMs,
+					})
 				: [];
 		const flowPricing: FlowPricing = {
 			dailyPrices: await fetchFlowDatePrices(candlePriceData.dailyPrices, flowValuationTargets),

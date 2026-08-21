@@ -1268,9 +1268,30 @@ describe('入出庫日価格での JPY 換算', () => {
 			]);
 		});
 
-		it('sinceMs で期間外を落とす', () => {
-			expect(collectFlowValuationTargets(dw, FLOW_MS + 1)).toEqual([]);
-			expect(collectFlowValuationTargets(dw, FLOW_MS)).toHaveLength(2);
+		it('下限時刻で期間外を落とす', () => {
+			const since = (ms: number) => ({ depositsSinceMs: ms, withdrawalsSinceMs: ms });
+			expect(collectFlowValuationTargets(dw, since(FLOW_MS + 1))).toEqual([]);
+			expect(collectFlowValuationTargets(dw, since(FLOW_MS))).toHaveLength(2);
+		});
+
+		/**
+		 * 入庫と出庫で消費者が違う: 入庫は全履歴（純投入額・口座全体リターン）、
+		 * 出庫を金額換算するのは期間集計だけ（`calcDepositWithdrawalSummary` は件数しか出さない）。
+		 * 片方の下限で両方を絞ると、出力に出ない出庫のために candle を取りに行ってしまう。
+		 */
+		it('入庫と出庫の下限を別々に適用する', () => {
+			// 入庫は全履歴、出庫だけ FLOW_MS より後に絞る → 出庫が落ちて入庫だけ残る
+			expect(collectFlowValuationTargets(dw, { withdrawalsSinceMs: FLOW_MS + 1 })).toEqual([
+				{ asset: 'btc', atMs: FLOW_MS },
+			]);
+			// 逆に入庫だけ絞る → 出庫だけ残る
+			expect(collectFlowValuationTargets(dw, { depositsSinceMs: FLOW_MS + 1 })).toEqual([
+				{ asset: 'eth', atMs: FLOW_MS },
+			]);
+		});
+
+		it('scope 省略なら全履歴（入庫・出庫とも絞らない）', () => {
+			expect(collectFlowValuationTargets(dw)).toHaveLength(2);
 		});
 
 		it('dw が null なら空配列', () => {
@@ -1304,6 +1325,52 @@ describe('入出庫日価格での JPY 換算', () => {
 
 		it('全件で価格を解決できなければ undefined（換算していないので内訳も無い）', () => {
 			expect(summarizeFlowValuation(targets, currentPriceOnly())).toBeUndefined();
+		});
+
+		/**
+		 * `basis` と 2 つの件数の整合は**構築時に保証する**（`buildFlowValuationBreakdown` が唯一の
+		 * 生成経路）。スキーマ側で refine して弾く方針は取らない——`AnalyzeMyPortfolioOutputSchema`
+		 * の parse 失敗はレスポンス全体を fail に落とすため、ラベルの不整合を理由に
+		 * ポートフォリオ分析ごと失わせるのは割に合わない。代わりに不変条件をここで固定する。
+		 */
+		it('不変条件: basis は 2 つの件数から一意に決まり、件数は必ず非負整数', () => {
+			const dated = { asset: 'btc', atMs: FLOW_MS };
+			const fallback = { asset: 'eth', atMs: FLOW_MS };
+			const pricing = withDailyPrices(
+				[{ asset: 'btc', atMs: FLOW_MS, price: FLOW_DAY_PRICE }],
+				new Map([['eth', 400_000]]),
+			);
+
+			// (dated 件数, fallback 件数) の全組み合わせを網羅する
+			const cases: Array<{ input: typeof targets; dated: number; fallback: number }> = [
+				{ input: [], dated: 0, fallback: 0 },
+				{ input: [dated], dated: 1, fallback: 0 },
+				{ input: [fallback], dated: 0, fallback: 1 },
+				{ input: [dated, fallback], dated: 1, fallback: 1 },
+				{ input: [dated, dated, fallback], dated: 2, fallback: 1 },
+			];
+
+			for (const c of cases) {
+				const result = summarizeFlowValuation(c.input, pricing);
+				if (c.dated === 0 && c.fallback === 0) {
+					// 換算 0 件は内訳ごと落とす（'mixed' の 0/0 のような無意味な組み合わせを作らない）
+					expect(result).toBeUndefined();
+					continue;
+				}
+				expect(result).toBeDefined();
+				expect(result?.deposit_date_price_count).toBe(c.dated);
+				expect(result?.current_price_fallback_count).toBe(c.fallback);
+				expect(Number.isInteger(result?.deposit_date_price_count)).toBe(true);
+				expect(Number.isInteger(result?.current_price_fallback_count)).toBe(true);
+				// basis は件数から一意に決まる
+				const expected = c.fallback === 0 ? 'deposit_date_price' : c.dated === 0 ? 'current_price_fallback' : 'mixed';
+				expect(result?.basis).toBe(expected);
+				// 'mixed' は必ず両方が正
+				if (result?.basis === 'mixed') {
+					expect(c.dated).toBeGreaterThan(0);
+					expect(c.fallback).toBeGreaterThan(0);
+				}
+			}
 		});
 	});
 });
