@@ -184,6 +184,7 @@ describe('resolveTz', () => {
 		expect(resolveTz('Tokyo')).toBe('Asia/Tokyo');
 		expect(resolveTz('Not/AZone')).toBe('Asia/Tokyo');
 		expect(resolveTz('Invalid/Zone')).toBe('Asia/Tokyo');
+		expect(resolveTz('Invalid/Timezone')).toBe('Asia/Tokyo');
 	});
 
 	it('fallback は上書きできる', () => {

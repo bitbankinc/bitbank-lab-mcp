@@ -110,6 +110,7 @@ describe('buildScanRangeLine', () => {
 		'Tokyo',
 		'Not/AZone',
 		'JAPAN/Tokyo',
+		'Invalid/Timezone',
 	])("tz='%s'（解決できない IANA 名）でも行が消えず Asia/Tokyo で表示する", (tz) => {
 		expect(buildScanRangeLine(scan, '1hour', tz)).toBe(buildScanRangeLine(scan, '1hour', 'Asia/Tokyo'));
 		expect(buildScanRangeLine(scan, '1day', tz)).toBe(buildScanRangeLine(scan, '1day', 'Asia/Tokyo'));
@@ -194,6 +195,7 @@ describe('buildPatternSpanLine', () => {
 		'Tokyo',
 		'Not/AZone',
 		'JAPAN/Tokyo',
+		'Invalid/Timezone',
 	])("tz='%s'（解決できない IANA 名）でも日付が空にならず Asia/Tokyo で表示する", (tz) => {
 		const line = buildPatternSpanLine([pat(START_UTC_LATE, END_UTC_LATE)], tz);
 		expect(line).toBe(buildPatternSpanLine([pat(START_UTC_LATE, END_UTC_LATE)], 'Asia/Tokyo'));
