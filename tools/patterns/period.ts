@@ -14,7 +14,7 @@
  * `src/handlers/detectPatternsViewsHandler.ts`（view 用）に重複していたため、ここへ寄せている。
  */
 
-import { formatDateInTz, toIsoWithTz } from '../../lib/datetime.js';
+import { formatDateInTz, resolveTz, toIsoWithTz } from '../../lib/datetime.js';
 
 /** 検出器に渡した足のレンジ。`meta.scan` と同じ形で、start / end は UTC ISO 文字列。 */
 export interface ScanRange {
@@ -42,17 +42,15 @@ export function isIntradayType(type: string): boolean {
 
 const toTs = (s?: string | null): number => (s ? Date.parse(s) : Number.NaN);
 
-/** 空文字 / 未指定の tz は Asia/Tokyo にフォールバック（formatDateInTz と同じ規約）。 */
-const effectiveTz = (tz: string): string => (typeof tz === 'string' && tz.length > 0 ? tz : 'Asia/Tokyo');
-
 /**
  * スキャン範囲の境界 1 点の表示。
  * intraday は分まで（`YYYY-MM-DD HH:mm`）、日足以上は暦日のみ（`YYYY-MM-DD`）。
+ * @param tz `resolveTz` 済みであること（未解決の tz を渡すと行が消える）。
  */
 function formatScanBoundary(ms: number, tz: string, intraday: boolean): string | null {
 	if (!Number.isFinite(ms)) return null;
 	if (!intraday) return formatDateInTz(ms, tz);
-	const iso = toIsoWithTz(ms, effectiveTz(tz)); // 'YYYY-MM-DDTHH:mm:ss'
+	const iso = toIsoWithTz(ms, tz); // 'YYYY-MM-DDTHH:mm:ss'
 	return iso ? `${iso.slice(0, 10)} ${iso.slice(11, 16)}` : null;
 }
 
@@ -72,7 +70,7 @@ export function buildScanRange(candles: ReadonlyArray<{ isoTime?: string | null 
 /**
  * 「スキャン範囲」1 行。検出器に渡した足の先頭・末尾・本数を出す。
  * @param type 時間足（intraday なら時刻まで表示する）
- * @param tz 表示 TZ（既定 'Asia/Tokyo'。空文字 / 不正値も Asia/Tokyo にフォールバック）
+ * @param tz 表示 TZ（既定 'Asia/Tokyo'）。空文字・解決できない IANA 名は Asia/Tokyo にフォールバック
  */
 export function buildScanRangeLine(
 	scan: ScanRange | undefined | null,
@@ -80,9 +78,11 @@ export function buildScanRangeLine(
 	tz: string = 'Asia/Tokyo',
 ): string {
 	if (!scan) return '';
+	// 解決できない tz でも「行ごと消える」を起こさない（消えると LLM がスキャン窓を確認できない）。
+	const displayTz = resolveTz(tz);
 	const intraday = isIntradayType(type);
-	const start = formatScanBoundary(toTs(scan.start), tz, intraday);
-	const end = formatScanBoundary(toTs(scan.end), tz, intraday);
+	const start = formatScanBoundary(toTs(scan.start), displayTz, intraday);
+	const end = formatScanBoundary(toTs(scan.end), displayTz, intraday);
 	if (!start || !end) return '';
 	return `スキャン範囲: ${start} ~ ${end}（${scan.bars}本）`;
 }
@@ -90,7 +90,7 @@ export function buildScanRangeLine(
 /**
  * 「検出パターン分布期間」1 行。全パターンの range.start 最小 ~ range.end 最大。
  * **スキャン窓でも入力データ範囲でもない**（旧ラベル「検出対象期間」）。
- * @param tz 表示 TZ（既定 'Asia/Tokyo'）。空文字 / 不正値は formatDateInTz が Asia/Tokyo にフォールバック。
+ * @param tz 表示 TZ（既定 'Asia/Tokyo'）。空文字・解決できない IANA 名は Asia/Tokyo にフォールバック。
  */
 export function buildPatternSpanLine(pats: ReadonlyArray<RangedPattern>, tz: string = 'Asia/Tokyo'): string {
 	if (!Array.isArray(pats)) return '';
@@ -100,8 +100,10 @@ export function buildPatternSpanLine(pats: ReadonlyArray<RangedPattern>, tz: str
 	const minStart = Math.min(...starts);
 	const maxEnd = Math.max(...ends);
 	// 分布期間は暦日のみ（従来表示を維持）。構造化データは UTC ISO のまま。
-	const start = formatDateInTz(minStart, tz) ?? '';
-	const end = formatDateInTz(maxEnd, tz) ?? '';
+	// 解決できない tz は Asia/Tokyo に畳む——畳まないと日付だけ空文字の行が出る。
+	const displayTz = resolveTz(tz);
+	const start = formatDateInTz(minStart, displayTz) ?? '';
+	const end = formatDateInTz(maxEnd, displayTz) ?? '';
 	const days = Math.max(1, Math.round((maxEnd - minStart) / 86400000));
 	return `検出パターン分布期間: ${start} ~ ${end}（${days}日間）`;
 }

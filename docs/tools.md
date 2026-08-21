@@ -332,7 +332,9 @@ API の応答をそのまま、または軽量整形して返す。指標計算�
 | `data.patterns[*].precedingTrend.start/end` | 受けない | 同上。 |
 | 構造化データの `isoTime`（pivots / debug 等） | 受けない | UTC ISO 文字列のまま。 |
 
-`tz` 空文字・不正値は `Asia/Tokyo` にフォールバック。
+`tz` 空文字・解決できない IANA 名（`Tokyo` / `Not/AZone` 等）は `Asia/Tokyo` にフォールバックする
+（`lib/datetime.ts` の `resolveTz`）。`formatDateInTz` / `toIsoWithTz` 自体は不正 tz に対して `null` を
+返す契約なので、**表示側が `resolveTz` を通す**。通さないと表示行が丸ごと消えたり日付が空文字になる。
 
 ### 期間 2 行の意味（混同注意）
 

@@ -103,6 +103,18 @@ describe('buildScanRangeLine', () => {
 		expect(buildScanRangeLine(scan, '1hour', '')).toBe(buildScanRangeLine(scan, '1hour', 'Asia/Tokyo'));
 	});
 
+	// 回帰: 解決できない IANA 名で toIsoWithTz / formatDateInTz が null を返し、
+	// スキャン範囲行が**丸ごと消えて**いた。行が消えると LLM はスキャン窓を確認できず、
+	// この PR が潰そうとしている誤読がそのまま再発する。
+	it.each([
+		'Tokyo',
+		'Not/AZone',
+		'JAPAN/Tokyo',
+	])("tz='%s'（解決できない IANA 名）でも行が消えず Asia/Tokyo で表示する", (tz) => {
+		expect(buildScanRangeLine(scan, '1hour', tz)).toBe(buildScanRangeLine(scan, '1hour', 'Asia/Tokyo'));
+		expect(buildScanRangeLine(scan, '1day', tz)).toBe(buildScanRangeLine(scan, '1day', 'Asia/Tokyo'));
+	});
+
 	it('scan が undefined / null のとき空文字', () => {
 		expect(buildScanRangeLine(undefined, '1hour')).toBe('');
 		expect(buildScanRangeLine(null, '1hour')).toBe('');
@@ -174,6 +186,18 @@ describe('buildPatternSpanLine', () => {
 		const line = buildPatternSpanLine([pat(START_UTC_LATE, END_UTC_LATE)], '');
 		expect(line).toContain('2026-10-02');
 		expect(line).toContain('2026-10-11');
+	});
+
+	// 回帰: 解決できない IANA 名で formatDateInTz が null を返し、
+	// `検出パターン分布期間:  ~ （N日間）` のように日付だけ空文字の行が出ていた。
+	it.each([
+		'Tokyo',
+		'Not/AZone',
+		'JAPAN/Tokyo',
+	])("tz='%s'（解決できない IANA 名）でも日付が空にならず Asia/Tokyo で表示する", (tz) => {
+		const line = buildPatternSpanLine([pat(START_UTC_LATE, END_UTC_LATE)], tz);
+		expect(line).toBe(buildPatternSpanLine([pat(START_UTC_LATE, END_UTC_LATE)], 'Asia/Tokyo'));
+		expect(line).not.toMatch(/期間:\s+~/u);
 	});
 });
 
