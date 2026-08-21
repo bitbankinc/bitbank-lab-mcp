@@ -1205,11 +1205,18 @@ describe('入出庫日価格での JPY 換算', () => {
 			expect(withLostWithdrawal.net_flow_jpy).toBe(0);
 			expect(withLostWithdrawal.unpriced_assets).toEqual(['doge']);
 
-			// 同じ数量・同じ資産を価格解決できる場合の符号で「本来の向き」を確認する。
-			// 入庫は正、出庫は負 → 取りこぼしのずれが逆向きになることの根拠。
+			// 同じ入出庫を価格解決できたときの値（＝真値）と直接突き合わせる。
+			// 「落ちると 0 になる」だけでは欠落しか示せず、過小/過大の向きは主張できない。
 			const resolvable = withDailyPrices([{ asset: 'doge', atMs: FLOW_MS, price: 20 }]);
-			expect(calcPeriodNetFlow(depositOnly, 0, resolvable).net_flow_jpy).toBe(20_000);
-			expect(calcPeriodNetFlow(withdrawalOnly, 0, resolvable).net_flow_jpy).toBe(-20_000);
+			const pricedDeposit = calcPeriodNetFlow(depositOnly, 0, resolvable);
+			const pricedWithdrawal = calcPeriodNetFlow(withdrawalOnly, 0, resolvable);
+			// 入庫は正、出庫は負に寄与する（向きが逆になることの根拠）
+			expect(pricedDeposit.net_flow_jpy).toBe(20_000);
+			expect(pricedWithdrawal.net_flow_jpy).toBe(-20_000);
+			// 入庫の取りこぼし → 真値より小さい（過小）
+			expect(Number(withLostDeposit.net_flow_jpy)).toBeLessThan(Number(pricedDeposit.net_flow_jpy));
+			// 出庫の取りこぼし → 真値より大きい（過大）
+			expect(Number(withLostWithdrawal.net_flow_jpy)).toBeGreaterThan(Number(pricedWithdrawal.net_flow_jpy));
 		});
 
 		it('日次価格も現在価格も無い資産は valuation に数えず unpriced_assets に載る', () => {
