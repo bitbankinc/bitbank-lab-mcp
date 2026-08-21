@@ -1175,6 +1175,43 @@ describe('入出庫日価格での JPY 換算', () => {
 			expect(result.net_flow_jpy).toBe(Math.round(0.5 * FLOW_DAY_PRICE + 0.5 * 20_000_000));
 		});
 
+		/**
+		 * 取りこぼしのずれの向きは入庫・出庫で逆になる。
+		 * `netFlow` は入庫で加算・出庫で減算されるため、落ちた入庫は net_flow を過小に、
+		 * 落ちた出庫は過大にする。`adjusted_change_jpy = change_jpy - net_flow_jpy` なので
+		 * 調整後増減は常に net_flow と逆向きにずれる。スキーマ・型・warning の説明文が
+		 * この向きを取り違えないよう、実際の符号をテストで固定する。
+		 */
+		it('取りこぼしの向き: 入庫が落ちると net_flow は過小、出庫が落ちると過大', () => {
+			const priced = withDailyPrices([{ asset: 'btc', atMs: FLOW_MS, price: FLOW_DAY_PRICE }]);
+			// doge は日次価格も現在価格も無いので必ず落ちる
+			const depositOnly = makeDwData({
+				deposits: [makeDeposit({ uuid: 'd-doge', asset: 'doge', amount: '1000', confirmed_at: FLOW_MS })],
+			});
+			const withdrawalOnly = makeDwData({
+				withdrawals: [makeWithdrawal({ uuid: 'w-doge', asset: 'doge', amount: '1000', requested_at: FLOW_MS })],
+			});
+
+			// 基準: 落ちる入出庫が 1 件も無いときの net_flow は 0
+			expect(calcPeriodNetFlow(makeDwData(), 0, priced).net_flow_jpy).toBe(0);
+
+			// 落ちた入庫は「加算されるはずの正値」が消える → 真値より過小（真値 > 0、報告は 0）
+			const withLostDeposit = calcPeriodNetFlow(depositOnly, 0, priced);
+			expect(withLostDeposit.net_flow_jpy).toBe(0);
+			expect(withLostDeposit.unpriced_assets).toEqual(['doge']);
+
+			// 落ちた出庫は「減算されるはずの正値」が消える → 真値より過大（真値 < 0、報告は 0）
+			const withLostWithdrawal = calcPeriodNetFlow(withdrawalOnly, 0, priced);
+			expect(withLostWithdrawal.net_flow_jpy).toBe(0);
+			expect(withLostWithdrawal.unpriced_assets).toEqual(['doge']);
+
+			// 同じ数量・同じ資産を価格解決できる場合の符号で「本来の向き」を確認する。
+			// 入庫は正、出庫は負 → 取りこぼしのずれが逆向きになることの根拠。
+			const resolvable = withDailyPrices([{ asset: 'doge', atMs: FLOW_MS, price: 20 }]);
+			expect(calcPeriodNetFlow(depositOnly, 0, resolvable).net_flow_jpy).toBe(20_000);
+			expect(calcPeriodNetFlow(withdrawalOnly, 0, resolvable).net_flow_jpy).toBe(-20_000);
+		});
+
 		it('日次価格も現在価格も無い資産は valuation に数えず unpriced_assets に載る', () => {
 			const unpricedDw = makeDwData({
 				deposits: [makeDeposit({ uuid: 'd-doge', asset: 'doge', amount: '1000', confirmed_at: FLOW_MS })],

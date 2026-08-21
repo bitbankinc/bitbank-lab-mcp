@@ -1022,7 +1022,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 
 		// 計算層の warning（`.claude/rules/tools.md` の meta.warnings 系統）。
 		// 期間ネットフローで価格を解決できなかった暗号資産は net_flow_jpy に計上されず
-		// （＝ 0 円計上と等価）、adjusted_change_jpy も同じ向きにずれるため明示する。
+		// （＝ 0 円計上と等価）、adjusted_change_jpy = change_jpy - net_flow_jpy も逆向きにずれるため明示する。
 		// 3 期間で同じ資産が落ちるので集合で重複排除する。金額・件数は出さず資産名のみ
 		// （`.claude/rules/sensitive-data.md` の HIGH 分類）。
 		const netFlowUnpricedAssets = [
@@ -1048,7 +1048,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 		}
 		if (netFlowUnpricedAssets.length > 0) {
 			calcWarnings.push(
-				`${netFlowUnpricedAssets.map((a) => a.toUpperCase()).join(', ')} は入出庫日価格・現在価格のいずれも取得できず、期間中の入出庫を純入出金に計上できませんでした（純入出金・入出金調整後増減が過小）`,
+				`${netFlowUnpricedAssets.map((a) => a.toUpperCase()).join(', ')} は入出庫日価格・現在価格のいずれも取得できず、期間中の入出庫を純入出金に計上できませんでした（未計上が入庫なら純入出金は過小・入出金調整後増減は過大、出庫なら逆向きにずれます）`,
 			);
 		}
 		// 入出庫日の日次価格を解決できず現在価格に落ちた分は、評価額が相場と連動して動く

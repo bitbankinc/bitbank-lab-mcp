@@ -962,7 +962,8 @@ function unmeasuredNetFlow(): PeriodNetFlowResult {
  * - withdrawal_fee_jpy: 出金時に失った手数料の合計。
  *   adjusted_change から net_flow を引いた結果にこのコストが残る。
  * - unpriced_assets: 価格を解決できず集計から落ちた暗号資産のシンボル（該当なしなら undefined）。
- *   落ちた入出庫は 0 円計上と等価で net_flow_jpy が過小になるため、黙って落とさず申告する。
+ *   落ちた入出庫は 0 円計上と等価。入庫を落とせば net_flow_jpy は過小、出庫を落とせば過大に
+ *   なる（向きが方向で逆になる）ため、黙って落とさず申告する。
  * - valuation: 換算方式の内訳（該当なしなら undefined）。
  *
  * 暗号資産の入出庫は**入出庫日（入庫: confirmed_at / 出庫: requested_at）の 1day open** で
