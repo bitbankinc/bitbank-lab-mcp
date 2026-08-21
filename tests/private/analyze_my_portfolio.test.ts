@@ -20,6 +20,31 @@ import {
 	rawWithdrawalHistoryResponse,
 } from '../fixtures/private-api.js';
 
+/** rawAssetsResponse から指定 asset のエントリを取り出す（整合 fixture の組み立て用） */
+function assetFixture(asset: string) {
+	const found = rawAssetsResponse.assets.find((a) => a.asset === asset);
+	if (!found) throw new Error(`fixture asset not found: ${asset}`);
+	return found;
+}
+
+/**
+ * 既定の約定・出庫履歴から calcPnl が復元する数量と onhand を整合させた assets レスポンス。
+ * btc: 買 0.01（fee 0.00001 BTC）→ 売 0.005 → 0.00499、eth: 買 1.0（fee 0.001 ETH）→ 0.999
+ * （既定 fixture の eth 出庫は約定より前で保有 0 のため数量に影響しない）。
+ *
+ * rawAssetsResponse は onhand が履歴と乖離しており、数量不変条件（cost_basis_reliable）で
+ * 原価が抑止される。乖離検出そのものを検証するテスト以外では本フィクスチャを既定にする。
+ * xrp は約定履歴が無く、正の残高が常に復元数量 0 と乖離するため含めない。
+ */
+const consistentAssetsResponse = {
+	assets: [
+		{ ...assetFixture('btc'), free_amount: '0.00499', onhand_amount: '0.00499', locked_amount: '0' },
+		{ ...assetFixture('eth'), free_amount: '0.999', onhand_amount: '0.999' },
+		assetFixture('jpy'),
+		assetFixture('doge'),
+	],
+};
+
 /** 信用建玉なしの margin/positions レスポンス（デフォルト fixture が長短 2 件持ちのため、テスト用に空版を別に用意） */
 const rawMarginPositionsEmptyResponse = {
 	notice: null,
@@ -62,6 +87,7 @@ afterEach(() => {
 function setupFetchMock(opts?: {
 	assets?: unknown;
 	assetsFail?: boolean;
+	trades?: unknown;
 	tradesFail?: boolean;
 	marginTradesFail?: boolean;
 	dwFail?: boolean;
@@ -86,12 +112,14 @@ function setupFetchMock(opts?: {
 			return new Response(JSON.stringify(candlesBtcJpy1day120), { status: 200 });
 		}
 
-		// Private API: assets
+		// Private API: assets（既定は履歴と数量整合した consistentAssetsResponse）
 		if (urlStr.includes('/v1/user/assets')) {
 			if (opts?.assetsFail) {
 				return new Response(JSON.stringify(mockBitbankError(20001)), { status: 400 });
 			}
-			return new Response(JSON.stringify(mockBitbankSuccess(opts?.assets ?? rawAssetsResponse)), { status: 200 });
+			return new Response(JSON.stringify(mockBitbankSuccess(opts?.assets ?? consistentAssetsResponse)), {
+				status: 200,
+			});
 		}
 
 		// Private API: margin status — assets パスに包含されないよう、trade_history より前に判定
@@ -127,7 +155,9 @@ function setupFetchMock(opts?: {
 			if (opts?.tradesFail) {
 				return new Response(JSON.stringify(mockBitbankError(10007)), { status: 200 });
 			}
-			return new Response(JSON.stringify(mockBitbankSuccess(rawTradeHistoryResponse)), { status: 200 });
+			return new Response(JSON.stringify(mockBitbankSuccess(opts?.trades ?? rawTradeHistoryResponse)), {
+				status: 200,
+			});
 		}
 
 		// Private API: deposit history
@@ -818,6 +848,13 @@ describe('analyze_my_portfolio', () => {
 					},
 				],
 			};
+			// onhand を復元数量（買 1 - 売 0.5 = 0.5 BTC）と整合させ、数量不変条件に掛けない
+			const consistentAssets = {
+				assets: [
+					{ ...assetFixture('btc'), free_amount: '0.5', onhand_amount: '0.5', locked_amount: '0' },
+					assetFixture('jpy'),
+				],
+			};
 
 			globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
 				const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
@@ -830,7 +867,7 @@ describe('analyze_my_portfolio', () => {
 					return new Response(JSON.stringify(candlesBtcJpy1day120), { status: 200 });
 				}
 				if (urlStr.includes('/v1/user/assets')) {
-					return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
+					return new Response(JSON.stringify(mockBitbankSuccess(consistentAssets)), { status: 200 });
 				}
 				if (urlStr.includes('trade_history')) {
 					const isMargin = urlStr.includes('type=margin');
@@ -1146,6 +1183,7 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 		for (const h of crypto) {
 			for (const f of COST_FIELDS) expect(h[f]).toBeUndefined();
 			expect(h.cost_basis_unavailable_reason).toBe(reason);
+			expect(h.cost_basis_reliable).toBe(false);
 			// 原価に依存しない値は落とさない（評価額・現在価格・実現損益は引き続き使える）
 			expect(h.jpy_value).toBeDefined();
 		}
@@ -1422,6 +1460,15 @@ describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', ()
 	const BTC_COST_BASIS_WITH_WITHDRAWAL = 35_886;
 	const BTC_COST_BASIS_WITHOUT_WITHDRAWAL = 74_925;
 
+	/** 出庫按分後の残数量（0.00499 - 0.0026 = 0.00239 BTC）と onhand を整合させた assets */
+	const assetsAfterWithdrawal = {
+		assets: [
+			{ ...assetFixture('btc'), free_amount: '0.00239', onhand_amount: '0.00239', locked_amount: '0' },
+			{ ...assetFixture('eth'), free_amount: '0.999', onhand_amount: '0.999' },
+			assetFixture('jpy'),
+		],
+	};
+
 	/** モックに記録された fetch 呼び出しの URL 一覧 */
 	function fetchedUrls(): string[] {
 		const mock = globalThis.fetch as unknown as { mock: { calls: Array<[string | URL | Request]> } };
@@ -1433,7 +1480,7 @@ describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', ()
 	});
 
 	it('include_deposit_withdrawal=false + include_pnl=true: 出庫が calcPnl に渡り cost_basis が按分済みになる', async () => {
-		setupFetchMock({ withdrawals: btcWithdrawalAfterTrades });
+		setupFetchMock({ assets: assetsAfterWithdrawal, withdrawals: btcWithdrawalAfterTrades });
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
 		const result = await handler({
@@ -1460,13 +1507,13 @@ describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', ()
 	it('include_deposit_withdrawal を切り替えても損益側の出力は変わらない', async () => {
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
 
-		setupFetchMock({ withdrawals: btcWithdrawalAfterTrades });
+		setupFetchMock({ assets: assetsAfterWithdrawal, withdrawals: btcWithdrawalAfterTrades });
 		const withSection = await handler({
 			include_technical: false,
 			include_pnl: true,
 			include_deposit_withdrawal: true,
 		});
-		setupFetchMock({ withdrawals: btcWithdrawalAfterTrades });
+		setupFetchMock({ assets: assetsAfterWithdrawal, withdrawals: btcWithdrawalAfterTrades });
 		const withoutSection = await handler({
 			include_technical: false,
 			include_pnl: true,
@@ -1577,7 +1624,7 @@ describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', ()
 	it('summary: セクション未リクエストでも損益に入出金を使っている旨が content に出る', async () => {
 		// content[0].text が LLM への唯一のチャネルなので、not_requested を
 		// 「損益も入出金を見ていない」と読まれないようテキスト側で打ち消す。
-		setupFetchMock({ withdrawals: btcWithdrawalAfterTrades });
+		setupFetchMock({ assets: assetsAfterWithdrawal, withdrawals: btcWithdrawalAfterTrades });
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
 		const result = await handler({
@@ -2295,8 +2342,11 @@ describe('analyze_my_portfolio — API asset の取得境界正規化', () => {
 		// 保有 0.6 BTC が価格に突き合わさる（大文字のままだと prices.get('BTC') が外れて欠落する）
 		expect(result.data.holdings.find((h) => h.asset === 'btc')?.jpy_value).toBe(0.6 * 15_500_000);
 		expect(result.data.total_jpy_value).toBe(0.6 * 15_500_000 + 500_000);
-		// JPY 入金が fiat として純入出金に載り、BTC 入出庫も価格解決できるので warning は出ない
-		expect(result.meta.warnings).toBeUndefined();
+		// BTC 入出庫は価格解決できるので unpriced 系 warning は出ない。一方 onhand 0.6 は
+		// 復元数量（出庫按分後 0）と乖離しているため、数量不変条件の warning だけが出る。
+		// 大文字レスポンスの入庫（'BTC', DONE）が正規化されて has_crypto_deposits に一致することも兼ねて固定する
+		expect(result.meta.warnings).toHaveLength(1);
+		expect(result.meta.warnings?.[0]).toContain('BTC（暗号資産の入庫あり）');
 		expect(result.data.daily_performance?.unpriced_flow_assets).toBeUndefined();
 		expect(result.data.daily_performance?.net_flow_jpy).toBe(Math.round(300_000 + 0.1 * 15_500_000 - 0.2 * 15_500_000));
 	});
@@ -2518,5 +2568,327 @@ describe('analyze_my_portfolio — API pair の取得境界正規化', () => {
 		assertOk(lowerResult);
 		expect(upperResult.data).toEqual(lowerResult.data);
 		expect(upperResult.summary).toBe(lowerResult.summary);
+	});
+});
+
+/**
+ * 数量不変条件（issue #56）: calcPnl が復元した保有数量と assets API の実残高（onhand_amount）を
+ * 突き合わせ、許容誤差 max(10^-amount_precision × 5, 実残高 × 0.1%) を超える乖離があれば
+ * 確定値を出さず cost_basis_reliable=false + 理由コードで申告する。
+ * フィードバックの ETH 型（約 1000 倍乖離）は何の検知にも掛からず確定値として出ていた。
+ */
+describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', () => {
+	/** eth 買い 0.002 のみの約定。onhand 2.0 と約 1000 倍乖離する（ETH 型フィードバックの再現） */
+	const tinyEthBuy = {
+		trades: [
+			{
+				trade_id: 9001,
+				pair: 'eth_jpy',
+				order_id: 9001,
+				side: 'buy',
+				type: 'limit',
+				amount: '0.002',
+				price: '400000',
+				maker_taker: 'maker',
+				fee_amount_base: '0',
+				fee_amount_quote: '0',
+				executed_at: 1710000000000,
+			},
+		],
+	};
+
+	function ethAssets(onhand: string) {
+		return {
+			assets: [{ ...assetFixture('eth'), free_amount: onhand, onhand_amount: onhand }, assetFixture('jpy')],
+		};
+	}
+
+	const emptyDw = { deposits: { deposits: [] }, withdrawals: { withdrawals: [] } };
+
+	it('受け入れ: ETH 型（約 1000 倍乖離）で確定値ではなく cost_basis_reliable=false + 理由コードが出る', async () => {
+		// 出庫は withdrawals に無い（入出金取得は成功・complete）ので入出金起因の抑止は掛からず、
+		// 数量不変条件だけが乖離を検出する。原因の手掛かりが無いので unknown。
+		setupFetchMock({ assets: ethAssets('2.0'), trades: tinyEthBuy, ...emptyDw });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		const eth = result.data.holdings.find((h: { asset: string }) => h.asset === 'eth');
+		expect(eth.cost_basis_reliable).toBe(false);
+		expect(eth.cost_basis_unavailable_reason).toBe('unknown');
+		// 原価から派生する 4 フィールドは #54 と同じ null 化経路で抑止される
+		expect(eth.cost_basis).toBeUndefined();
+		expect(eth.avg_buy_price).toBeUndefined();
+		expect(eth.unrealized_pnl).toBeUndefined();
+		expect(eth.unrealized_pnl_pct).toBeUndefined();
+		// 原価に依存しない値は残す
+		expect(eth.jpy_value).toBeGreaterThan(0);
+		expect(eth.realized_pnl).toBe(0);
+		expect(eth.trade_count).toBe(1);
+		// 唯一の暗号資産が除外されるので合計は立たない。入出金起因ではないため
+		// total 側・meta 側の理由コードは立たない（銘柄単位の申告 + warning で伝える）
+		expect(result.data.total_cost_basis).toBeUndefined();
+		expect(result.data.total_unrealized_pnl).toBeUndefined();
+		expect(result.data.total_cost_basis_unavailable_reason).toBeUndefined();
+		expect(result.meta.flowDataUnavailableReason).toBeUndefined();
+		// 警告は銘柄名のみで、数量・金額を含めない（完全一致で固定する）
+		expect(result.meta.warnings).toEqual([
+			'ETH（原因不明） は約定・出庫から復元した保有数量が実残高と一致しないため、取得原価・評価損益を算出せず合計評価損益からも除外しています',
+		]);
+		expect(result.summary).toContain('ETH は復元数量が実残高と乖離しているため合計評価損益に含めていません');
+	});
+
+	it('入庫あり銘柄の乖離: has_crypto_deposits（検出のみで入庫の原価算入はしない）', async () => {
+		setupFetchMock({
+			assets: ethAssets('2.0'),
+			trades: tinyEthBuy,
+			deposits: {
+				deposits: [
+					{
+						uuid: 'dep-eth',
+						asset: 'eth',
+						amount: '1.998',
+						status: 'DONE',
+						found_at: 1710000100000,
+						confirmed_at: 1710000100000,
+					},
+				],
+			},
+			withdrawals: { withdrawals: [] },
+		});
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		const eth = result.data.holdings.find((h: { asset: string }) => h.asset === 'eth');
+		expect(eth.cost_basis_reliable).toBe(false);
+		expect(eth.cost_basis_unavailable_reason).toBe('has_crypto_deposits');
+		// 入庫は検出・申告するだけで原価には算入しない（入庫日価格化は #57 のスコープ）
+		expect(eth.cost_basis).toBeUndefined();
+		expect(result.meta.warnings?.[0]).toContain('ETH（暗号資産の入庫あり）');
+		// DONE 入庫があるだけでは入出金起因の抑止は掛からない
+		expect(result.meta.flowDataUnavailableReason).toBeUndefined();
+		expect(result.meta.depositWithdrawalStatus).toBe('available');
+	});
+
+	it('乖離 + 約定履歴の打ち切り: history_truncated', async () => {
+		// 同一ページ（1000 件フルページ・同一 executed_at）を返し続けると、2 ページ目で
+		// cursor が進まず paginateTrades が truncated=true で終了する。
+		// 復元数量は 0.002 × 1000 = 2.0（dedupe 後）で onhand 5.0 と乖離する。
+		const fullPage = {
+			trades: Array.from({ length: 1000 }, (_, i) => ({
+				...tinyEthBuy.trades[0],
+				trade_id: 10000 + i,
+				order_id: 10000 + i,
+			})),
+		};
+		setupFetchMock({ assets: ethAssets('5.0'), trades: fullPage, ...emptyDw });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		expect(result.meta.tradesTruncated).toBe(true);
+		const eth = result.data.holdings.find((h: { asset: string }) => h.asset === 'eth');
+		expect(eth.cost_basis_reliable).toBe(false);
+		expect(eth.cost_basis_unavailable_reason).toBe('history_truncated');
+		expect(result.meta.warnings?.[0]).toContain('ETH（約定履歴の打ち切り）');
+	});
+
+	it('回帰: 整合した銘柄は cost_basis_reliable=true で数値がそのまま出る', async () => {
+		// 既定 fixture（consistentAssetsResponse + 既定履歴）は数量整合している
+		setupFetchMock();
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		const btc = result.data.holdings.find((h: { asset: string }) => h.asset === 'btc');
+		expect(btc.cost_basis_reliable).toBe(true);
+		expect(btc.cost_basis_unavailable_reason).toBeUndefined();
+		expect(btc.cost_basis).toBe(74_925);
+		expect(btc.avg_buy_price).toBe(15_015_015);
+		const eth = result.data.holdings.find((h: { asset: string }) => h.asset === 'eth');
+		expect(eth.cost_basis_reliable).toBe(true);
+		expect(eth.cost_basis).toBe(380_000);
+		// JPY は原価計算の対象外なので省略
+		const jpy = result.data.holdings.find((h: { asset: string }) => h.asset === 'jpy');
+		expect(jpy.cost_basis_reliable).toBeUndefined();
+		// 数量整合の warning・除外注記は出ない
+		expect(result.meta.warnings).toBeUndefined();
+		expect(result.summary).not.toContain('合計評価損益に含めていません');
+	});
+
+	it('include_pnl=false: 原価計算の対象外なので cost_basis_reliable は省略', async () => {
+		setupFetchMock({ assets: ethAssets('2.0'), trades: tinyEthBuy });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: false,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		const eth = result.data.holdings.find((h: { asset: string }) => h.asset === 'eth');
+		expect(eth.cost_basis_reliable).toBeUndefined();
+		expect(eth.cost_basis_unavailable_reason).toBeUndefined();
+	});
+
+	it('境界: 許容誤差内の微小乖離は成立し数値が出る', async () => {
+		// eth 買 0.002 → 復元 0.002。onhand 0.0020005 の乖離 5e-7 は
+		// 許容誤差 max(5e-8, 0.0020005 × 0.1% ≈ 2.0005e-6) に収まる。
+		// 許容誤差「ちょうど」の等号は qtyInvariantHolds の単体テストで固定している
+		setupFetchMock({ assets: ethAssets('0.0020005'), trades: tinyEthBuy, ...emptyDw });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		const eth = result.data.holdings.find((h: { asset: string }) => h.asset === 'eth');
+		expect(eth.cost_basis_reliable).toBe(true);
+		expect(eth.cost_basis).toBe(800); // 0.002 * 400_000
+	});
+
+	it('境界: 許容誤差をわずかに超えると乖離扱いになる', async () => {
+		// onhand 0.0021 → 乖離 1e-4 > max(5e-8, 0.0021 × 0.1% = 2.1e-6)
+		setupFetchMock({ assets: ethAssets('0.0021'), trades: tinyEthBuy, ...emptyDw });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		const eth = result.data.holdings.find((h: { asset: string }) => h.asset === 'eth');
+		expect(eth.cost_basis_reliable).toBe(false);
+		expect(eth.cost_basis).toBeUndefined();
+	});
+
+	it('ダスト保有: 売り切り後の微小残高（最小単位数カウント以内）は乖離にしない', async () => {
+		// 買 0.002 → 売 0.002 で復元数量 0。onhand 4e-8 は許容誤差 5e-8（precision 8）以内
+		const buyThenSellAll = {
+			trades: [
+				tinyEthBuy.trades[0],
+				{
+					...tinyEthBuy.trades[0],
+					trade_id: 9002,
+					order_id: 9002,
+					side: 'sell',
+					executed_at: 1710000200000,
+				},
+			],
+		};
+		setupFetchMock({ assets: ethAssets('0.00000004'), trades: buyThenSellAll, ...emptyDw });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		const eth = result.data.holdings.find((h: { asset: string }) => h.asset === 'eth');
+		expect(eth.cost_basis_reliable).toBe(true);
+		expect(eth.cost_basis_unavailable_reason).toBeUndefined();
+		// 売り切りなので原価は無いが、それは乖離ではない
+		expect(eth.cost_basis).toBeUndefined();
+		expect(result.meta.warnings).toBeUndefined();
+	});
+
+	it('入出金取得失敗時は #54 の理由コードが優先され、数量乖離の warning は重ねない', async () => {
+		// 出庫履歴が欠けた状態の復元数量は当てにならないので、数量不変条件は判定しない
+		setupFetchMock({ assets: ethAssets('2.0'), trades: tinyEthBuy, dwFail: true });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		const eth = result.data.holdings.find((h: { asset: string }) => h.asset === 'eth');
+		expect(eth.cost_basis_unavailable_reason).toBe('dw_fetch_failed');
+		expect(eth.cost_basis_reliable).toBe(false);
+		expect(result.meta.warnings?.some((w) => w.includes('復元した保有数量'))).toBe(false);
+	});
+
+	it('乖離銘柄は合計から除外され、整合銘柄の合計だけが出る（銘柄名は summary に出る）', async () => {
+		// btc は既定履歴と整合、eth は onhand 5.0 で乖離（既定 eth 買 1.0 → 復元 0.999）
+		setupFetchMock({
+			assets: {
+				assets: [
+					{ ...assetFixture('btc'), free_amount: '0.00499', onhand_amount: '0.00499', locked_amount: '0' },
+					{ ...assetFixture('eth'), free_amount: '5.0', onhand_amount: '5.0' },
+					assetFixture('jpy'),
+				],
+			},
+		});
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		const btc = result.data.holdings.find((h: { asset: string }) => h.asset === 'btc');
+		const eth = result.data.holdings.find((h: { asset: string }) => h.asset === 'eth');
+		expect(btc.cost_basis_reliable).toBe(true);
+		expect(eth.cost_basis_reliable).toBe(false);
+		// 合計は btc のみから算出される（eth の評価額・原価は入らない）
+		expect(result.data.total_cost_basis).toBe(btc.cost_basis);
+		expect(result.data.total_unrealized_pnl).toBe(btc.jpy_value - btc.cost_basis);
+		expect(result.summary).toContain('合計評価損益（全履歴の約定ベース）');
+		expect(result.summary).toContain('ETH は復元数量が実残高と乖離しているため合計評価損益に含めていません');
+	});
+
+	it('toolDef: 数量乖離の warning 行が content の JSON より前に出る', async () => {
+		setupFetchMock({ assets: ethAssets('2.0'), trades: tinyEthBuy, ...emptyDw });
+
+		const { toolDef } = await import('../../tools/private/analyze_my_portfolio.js');
+		const result = await toolDef.handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		const text = (result as { content: Array<{ type: string; text: string }> }).content[0].text;
+		const warningIndex = text.indexOf('ETH（原因不明）');
+		const jsonIndex = text.indexOf('\n{');
+		expect(warningIndex).toBeGreaterThanOrEqual(0);
+		expect(jsonIndex).toBeGreaterThan(0);
+		expect(warningIndex).toBeLessThan(jsonIndex);
+		expect(text.split('\n')[0]).toContain('⚠️');
+
+		const structured = (result as { structuredContent: { meta: { warnings?: string[] } } }).structuredContent;
+		expect(structured.meta.warnings?.some((w) => w.includes('ETH（原因不明）'))).toBe(true);
 	});
 });

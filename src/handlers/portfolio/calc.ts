@@ -7,7 +7,11 @@
  */
 
 import { dayjs } from '../../../lib/datetime.js';
-import type { DepositWithdrawalStatus, PortfolioFlowUnavailableReason } from '../../private/schemas.js';
+import type {
+	DepositWithdrawalStatus,
+	PortfolioFlowUnavailableReason,
+	PortfolioQtyMismatchReason,
+} from '../../private/schemas.js';
 import { PORTFOLIO_CALENDAR_TZ, portfolioDayStartMs } from './calendar.js';
 import type {
 	AccountPnl,
@@ -53,7 +57,7 @@ export function calcPnl(trades: RawTrade[], asset: string, withdrawals?: RawWith
 	const relevantWithdrawals = (withdrawals ?? []).filter((w) => w.asset === asset && w.status === 'DONE');
 
 	if (relevantTrades.length === 0 && relevantWithdrawals.length === 0) {
-		return { avg_buy_price: undefined, cost_basis: undefined, realized_pnl: 0, trade_count: 0 };
+		return { avg_buy_price: undefined, cost_basis: undefined, realized_pnl: 0, trade_count: 0, reconstructed_qty: 0 };
 	}
 
 	// 約定と出庫を時系列順に統合して処理
@@ -136,7 +140,54 @@ export function calcPnl(trades: RawTrade[], asset: string, withdrawals?: RawWith
 		cost_basis: costBasis,
 		realized_pnl: Math.round(realizedPnl),
 		trade_count: relevantTrades.length,
+		reconstructed_qty: holdingQty,
 	};
+}
+
+// ── 数量不変条件（復元数量 vs 実残高） ──
+
+/** 許容誤差の絶対項: 最小数量単位（10^-amount_precision）の何倍まで丸め・ダスト由来とみなすか */
+export const QTY_INVARIANT_TOLERANCE_QUANTA = 5;
+/** 許容誤差の相対項: 実残高に対する割合（0.1%） */
+export const QTY_INVARIANT_TOLERANCE_RATIO = 0.001;
+
+/**
+ * 復元数量と実残高の突き合わせに使う許容誤差。
+ *
+ * `max(10^-amount_precision × 5, |実残高| × 0.1%)` を採用する:
+ * - 絶対項: 取引所側の端数処理・手数料丸めは最下位桁（amount_precision）に数カウント分
+ *   たまり得るため、ダスト保有でも厳密一致は期待できない
+ * - 相対項: 移動平均リプレイの浮動小数点誤差は保有量に比例して積み上がる
+ * どちらの項でも説明できない乖離は、履歴に無いイベント（入庫・打ち切り等）由来の実差とみなす。
+ */
+export function qtyInvariantTolerance(onhandAmount: number, amountPrecision: number): number {
+	return Math.max(
+		QTY_INVARIANT_TOLERANCE_QUANTA * 10 ** -amountPrecision,
+		Math.abs(onhandAmount) * QTY_INVARIANT_TOLERANCE_RATIO,
+	);
+}
+
+/** 数量不変条件: `calcPnl` が復元した保有数量が assets API の実残高と許容誤差内で一致するか。 */
+export function qtyInvariantHolds(onhandAmount: number, reconstructedQty: number, amountPrecision: number): boolean {
+	return Math.abs(onhandAmount - reconstructedQty) <= qtyInvariantTolerance(onhandAmount, amountPrecision);
+}
+
+/**
+ * 数量乖離の理由コードを推定する。
+ *
+ * - 該当銘柄に DONE の暗号資産入庫がある → `has_crypto_deposits`。入庫は `calcPnl` の
+ *   イベントに含まれず数量にも原価にも入らないため、銘柄固有の証拠として最優先する
+ * - 約定履歴が打ち切られている / 入出金履歴が不完全 → `history_truncated`
+ * - どちらでもない → `unknown`（例: 履歴に現れない出庫）
+ */
+export function qtyMismatchReasonFor(
+	asset: string,
+	dw: DepositWithdrawalData | null,
+	tradesTruncated: boolean,
+): PortfolioQtyMismatchReason {
+	if (dw?.deposits.some((d) => d.asset === asset && d.status === 'DONE')) return 'has_crypto_deposits';
+	if (tradesTruncated || (dw != null && !dw.isComplete)) return 'history_truncated';
+	return 'unknown';
 }
 
 // ── 期間別実現損益（年初来 / 月初来） ──

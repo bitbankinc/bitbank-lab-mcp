@@ -28,6 +28,9 @@ import {
 	getJstPeriodBoundaries,
 	PERFORMANCE_NOTE,
 	type PortfolioPerformanceContext,
+	qtyInvariantHolds,
+	qtyInvariantTolerance,
+	qtyMismatchReasonFor,
 	reconstructHoldingsAtDate,
 	resolveDepositWithdrawalStatus,
 } from '../../../src/handlers/portfolio/calc.js';
@@ -279,6 +282,107 @@ describe('calcPnl', () => {
 		expect(result.realized_pnl).toBe(1_000_000);
 		expect(result.cost_basis).toBeCloseTo(1_990_000, 6); // 0.199 * 10_000_000
 		expect(result.avg_buy_price).toBeCloseTo(10_000_000, 4);
+		// 買 1 → 出庫 0.301 → 売 0.5 の残数量
+		expect(result.reconstructed_qty).toBeCloseTo(0.199, 9);
+	});
+
+	it('約定・出庫なし（空配列）で reconstructed_qty は 0', () => {
+		const result = calcPnl([], 'btc');
+		expect(result.reconstructed_qty).toBe(0);
+	});
+
+	it('分割売却の浮動小数点残差はダストリセットで reconstructed_qty=0 になる', () => {
+		// 0.3 を 0.1 × 3 で売り切ると二進小数の残差（≈5e-17）が残るが、
+		// 1e-12 未満のリセットロジック（calc.ts）で正確に 0 へ畳まれる。
+		const trades: RawTrade[] = [
+			makeTrade({ trade_id: 1, executed_at: 1, side: 'buy', amount: '0.3', price: '10000000' }),
+			makeTrade({ trade_id: 2, executed_at: 2, side: 'sell', amount: '0.1', price: '10000000' }),
+			makeTrade({ trade_id: 3, executed_at: 3, side: 'sell', amount: '0.1', price: '10000000' }),
+			makeTrade({ trade_id: 4, executed_at: 4, side: 'sell', amount: '0.1', price: '10000000' }),
+		];
+		const result = calcPnl(trades, 'btc');
+		expect(result.reconstructed_qty).toBe(0);
+		expect(result.cost_basis).toBeUndefined();
+	});
+});
+
+// ── 数量不変条件（復元数量 vs 実残高） ──
+
+describe('qtyInvariantTolerance / qtyInvariantHolds', () => {
+	it('絶対項: 実残高が小さいときは最小数量単位 × 5 が下限になる', () => {
+		// onhand 0.00001（相対項 1e-8）< 絶対項 5e-8（precision 8）
+		expect(qtyInvariantTolerance(0.00001, 8)).toBe(5e-8);
+	});
+
+	it('相対項: 実残高 × 0.1% が絶対項を上回るときはそちらを使う', () => {
+		expect(qtyInvariantTolerance(10, 8)).toBeCloseTo(0.01, 12);
+	});
+
+	it('境界: 乖離がちょうど許容誤差なら成立、わずかに超えると破れる', () => {
+		// precision 0 → 絶対項 5 が支配的（相対項 1000 × 0.1% = 1）。整数で境界を厳密に見る
+		expect(qtyInvariantHolds(1000, 995, 0)).toBe(true); // 乖離 5 = 許容誤差
+		expect(qtyInvariantHolds(1000, 994.9, 0)).toBe(false); // 乖離 5.1 > 許容誤差
+	});
+
+	it('amount_precision の違いで同じ乖離の判定が変わる', () => {
+		// 乖離 4e-6: precision 6 の許容誤差 5e-6 には収まり、precision 8 の 5e-8 には収まらない
+		expect(qtyInvariantHolds(0.000004, 0, 6)).toBe(true);
+		expect(qtyInvariantHolds(0.000004, 0, 8)).toBe(false);
+	});
+
+	it('ダスト保有: 復元数量 0 でも最小単位数カウント以内なら成立', () => {
+		expect(qtyInvariantHolds(0.00000004, 0, 8)).toBe(true); // 4e-8 ≤ 5e-8
+	});
+
+	it('一致（乖離 0）は常に成立', () => {
+		expect(qtyInvariantHolds(0.6, 0.6, 8)).toBe(true);
+	});
+});
+
+describe('qtyMismatchReasonFor', () => {
+	function makeDw(overrides: Partial<DepositWithdrawalData> = {}): DepositWithdrawalData {
+		return { deposits: [], withdrawals: [], warnings: [], allFailed: false, isComplete: true, ...overrides };
+	}
+
+	it('該当銘柄に DONE 入庫あり → has_crypto_deposits', () => {
+		const dw = makeDw({ deposits: [makeDeposit({ uuid: 'd1', asset: 'eth', amount: '1' })] });
+		expect(qtyMismatchReasonFor('eth', dw, false)).toBe('has_crypto_deposits');
+	});
+
+	it('入庫が他銘柄のみ・DONE 以外のみは has_crypto_deposits にならない', () => {
+		const other = makeDw({ deposits: [makeDeposit({ uuid: 'd1', asset: 'btc', amount: '1' })] });
+		expect(qtyMismatchReasonFor('eth', other, false)).toBe('unknown');
+		const pending = makeDw({ deposits: [makeDeposit({ uuid: 'd2', asset: 'eth', amount: '1', status: 'CONFIRMED' })] });
+		expect(qtyMismatchReasonFor('eth', pending, false)).toBe('unknown');
+	});
+
+	it('重複入庫（同銘柄 2 件）でも単一の has_crypto_deposits', () => {
+		const dw = makeDw({
+			deposits: [
+				makeDeposit({ uuid: 'd1', asset: 'eth', amount: '1' }),
+				makeDeposit({ uuid: 'd2', asset: 'eth', amount: '2' }),
+			],
+		});
+		expect(qtyMismatchReasonFor('eth', dw, false)).toBe('has_crypto_deposits');
+	});
+
+	it('約定履歴の打ち切り → history_truncated（dw null でも同様）', () => {
+		expect(qtyMismatchReasonFor('eth', makeDw(), true)).toBe('history_truncated');
+		expect(qtyMismatchReasonFor('eth', null, true)).toBe('history_truncated');
+	});
+
+	it('入出金履歴の打ち切り（isComplete=false）→ history_truncated', () => {
+		expect(qtyMismatchReasonFor('eth', makeDw({ isComplete: false }), false)).toBe('history_truncated');
+	});
+
+	it('入庫ありは打ち切りより優先される（銘柄固有の証拠を採る）', () => {
+		const dw = makeDw({ deposits: [makeDeposit({ uuid: 'd1', asset: 'eth', amount: '1' })], isComplete: false });
+		expect(qtyMismatchReasonFor('eth', dw, true)).toBe('has_crypto_deposits');
+	});
+
+	it('手掛かりなし（dw null / 空履歴）→ unknown', () => {
+		expect(qtyMismatchReasonFor('eth', null, false)).toBe('unknown');
+		expect(qtyMismatchReasonFor('eth', makeDw(), false)).toBe('unknown');
 	});
 });
 
