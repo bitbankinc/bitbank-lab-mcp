@@ -425,7 +425,7 @@ export const MAX_FLOW_PRICE_YEAR_CHUNKS = 12;
 /**
  * 入出庫日（入庫: `confirmed_at` / 出庫: `requested_at`）の 1day open を解決するため、
  * `fetchCandlePriceData` の 400 日窓に無い **(資産, 年) の組だけ**を年単位 chunk で追加取得し、
- * 既存の日次価格にマージした**新しい Map** を返す。
+ * 既存の日次価格にマージした Map を返す（追加取得が不要なら引数をそのまま返す。下記「戻り値の所有権」）。
  *
  * ## 400 日超のフォールバック規則（#57 (a)-2）
  *
@@ -434,6 +434,12 @@ export const MAX_FLOW_PRICE_YEAR_CHUNKS = 12;
  * 3. それでも取れない（取得失敗 / 上限超過 / 上場前）場合は本関数では何もせず、
  *    `resolveFlowPrice` が現在価格にフォールバックする。混ぜたことは
  *    `FlowValuationBreakdown` と summary / meta の警告で申告される
+ *
+ * ## 戻り値の所有権
+ *
+ * 追加取得が 1 件も要らなかった場合は**引数の `baseDailyPrices` インスタンスをそのまま返す**
+ * （無駄なコピーを避けるため）。呼び出し側は戻り値を常に自分専用のコピーとみなして
+ * 書き換えてはいけない——読み取り専用に扱うこと。
  *
  * ## 引数の Map を破壊しない理由
  *

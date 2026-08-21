@@ -221,8 +221,12 @@ export interface DepositWithdrawalSummary {
 	/**
 	 * `crypto_deposit_estimated_jpy` の換算方式の内訳。
 	 *
-	 * 既存の出力フィールド順を崩さないため末尾に置き、該当なし（暗号資産入庫が無い /
-	 * 全件で価格を解決できなかった）のときは `undefined`（JSON.stringify でキーごと落ちる）。
+	 * 該当なし（暗号資産入庫が無い / 全件で価格を解決できなかった）のときは `undefined` で、
+	 * JSON.stringify でキーごと落ちる。
+	 *
+	 * **wire 上のキー順を決めるのは本 interface でも代入順でもなく `DepositWithdrawalSummarySchema`
+	 * の宣言順**（`z.object` の parse がスキーマ順でオブジェクトを組み直すため）。
+	 * 既存キーの後ろに出すための配置はスキーマ側で担保する。
 	 */
 	crypto_deposit_valuation?: FlowValuationBreakdown;
 }
@@ -288,8 +292,9 @@ export interface PeriodPerformance {
 	/**
 	 * net_flow_jpy に計上した暗号資産入出庫の換算方式の内訳（`PeriodNetFlowResult.valuation` の転記）。
 	 *
-	 * `unpriced_flow_assets` と同じ理由で末尾に置き、期間中に換算した暗号資産入出庫が
-	 * 無いときは `undefined`（JPY のみの入出金は換算不要なので数えない）。
+	 * 期間中に換算した暗号資産入出庫が無いときは `undefined`（JPY のみの入出金は換算不要なので
+	 * 数えない）。wire 上のキー順は `PeriodPerformanceSchema` の宣言順が決める
+	 * （`crypto_deposit_valuation` と同じ理由。そちらの doc を参照）。
 	 */
 	flow_valuation?: FlowValuationBreakdown;
 }

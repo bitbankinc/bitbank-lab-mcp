@@ -343,9 +343,6 @@ const DepositWithdrawalSummarySchema = z
 				'暗号資産入庫の推定 JPY 評価額。入庫日（confirmed_at）の 1day open で換算する（＝相場が動いても値は動かない）。日次価格を解決できなかった分のみ現在価格で仮評価し、その内訳は crypto_deposit_valuation に出る。「入庫時点の相場で取得した」という仮定であり、真の取得原価ではない',
 			),
 		crypto_withdrawal_count: z.number().describe('暗号資産出庫件数'),
-		crypto_deposit_valuation: FlowValuationSchema.optional().describe(
-			'crypto_deposit_estimated_jpy の換算方式の内訳。暗号資産入庫が無い / 全件で価格を解決できなかった場合は undefined',
-		),
 		account_return_pct: z.number().optional().describe('口座全体リターン率（%）: (現在評価額 - 純投入額) / 純投入額'),
 		account_return_jpy: z.number().optional().describe('口座全体リターン額（JPY）'),
 		is_complete: z
@@ -354,6 +351,11 @@ const DepositWithdrawalSummarySchema = z
 		analysis_basis: z
 			.enum(['deposit_withdrawal', 'trade_only'])
 			.describe('分析基準（deposit_withdrawal: 入出金込み, trade_only: 約定ベース）'),
+		// 新設フィールドは既存キーの後ろに置く。`z.object` の parse は**スキーマの宣言順**で
+		// オブジェクトを組み直すため（ハンドラ側の代入順ではなく）、ここが wire 上のキー順の単一ソース。
+		crypto_deposit_valuation: FlowValuationSchema.optional().describe(
+			'crypto_deposit_estimated_jpy の換算方式の内訳。暗号資産入庫が無い / 全件で価格を解決できなかった場合は undefined',
+		),
 	})
 	.optional()
 	.describe(

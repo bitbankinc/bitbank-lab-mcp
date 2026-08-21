@@ -2439,6 +2439,49 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 	});
 
 	/**
+	 * 新設フィールドは既存キーの後ろに出す（既存消費者の JSON を頭から崩さない）。
+	 *
+	 * **キー順を決めるのはハンドラの代入順ではなく Zod スキーマの宣言順**——`z.object` の
+	 * parse はスキーマ順でオブジェクトを組み直すため、代入順だけ末尾にしても wire では
+	 * 中間に入る。人手のレビューでは見えない差なので、実際の出力順で機械的に固定する。
+	 */
+	it('新設の *_valuation は既存キーの後ろに出る（既存キーの相対順も不変）', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		const result = await runWithBtcPrice(15_500_000, {
+			deposits: btcDeposit(recentFlowMs),
+			withdrawals: { withdrawals: [] },
+			candles: candles1day([{ tsMs: Date.UTC(2026, 4, 16), open: FLOW_DAY_OPEN }]),
+		});
+
+		assertOk(result);
+
+		const dwKeys = Object.keys(result.data.deposit_withdrawal_summary ?? {});
+		expect(dwKeys).toEqual([
+			'total_jpy_deposited',
+			'total_jpy_withdrawn',
+			'net_jpy_invested',
+			'crypto_deposit_count',
+			'crypto_deposit_estimated_jpy',
+			'crypto_withdrawal_count',
+			'account_return_pct',
+			'account_return_jpy',
+			'is_complete',
+			'analysis_basis',
+			'crypto_deposit_valuation',
+		]);
+
+		// performance 側も同様に、新設 2 フィールドが既存キーの後ろに並ぶ
+		const perfKeys = Object.keys(result.data.daily_performance ?? {});
+		expect(perfKeys.at(-1)).toBe('flow_valuation');
+		expect(perfKeys.indexOf('note')).toBeLessThan(perfKeys.indexOf('flow_valuation'));
+
+		// 期間 DW サマリーも同様
+		const periodKeys = Object.keys(result.data.yearly_dw_summary ?? {});
+		expect(periodKeys.indexOf('period_end')).toBeLessThan(periodKeys.indexOf('crypto_deposit_valuation'));
+	});
+
+	/**
 	 * `PERFORMANCE_NOTE` と summary の注記行は LLM が評価方式を読む唯一のチャネル
 	 * （`structuredContent` は見えない）。文言が現在価格ベースのまま取り残されないよう固定する。
 	 */
