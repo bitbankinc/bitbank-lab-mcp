@@ -15,6 +15,7 @@ import { validateToken } from '../../src/private/confirmation.js';
 import {
 	DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE,
 	DIRECT_EXECUTE_FORBIDDEN_MESSAGE,
+	isAppUiExecuteAllowed,
 } from '../../src/private/elicitation.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
 import { CancelOrdersInputSchema, CancelOrdersOutputSchema } from '../../src/private/schemas.js';
@@ -113,13 +114,32 @@ export const toolDef: ToolDefinition = {
 	name: 'cancel_orders',
 	description:
 		'[Cancel Orders / Bulk Cancel] 複数の注文を一括キャンセル（最大30件）。キャンセル後の注文情報を返す。Private API。' +
-		' ⚠️ このツールは MCP tools/call（LLM / UI）からは実行できない。' +
-		' 一括キャンセルは必ず preview_cancel_orders 経由の elicitation/MRTR 確認（ユーザーの明示 accept）でのみ行われる。' +
-		' confirmation_token はクライアントに返らないため、直接呼び出してもトークン検証または本ハンドラの拒否で失敗する。',
+		' ⚠️ このツールを MCP tools/call から直接呼び出してはならない。サーバー側で拒否される。' +
+		' 一括キャンセルは必ず preview_cancel_orders から始まるユーザー確認フローを経由してのみ行われる。',
 	inputSchema: CancelOrdersInputSchema,
-	handler: async () => {
-		// MCP tools/call（LLM / UI）経由は常に拒否。
+	handler: async (args, extra) => {
+		// 既定では MCP tools/call（LLM / UI）経由を常に拒否する。
 		// preview_cancel_orders の elicitation accept は cancelOrders() を直接呼ぶためここを通らない。
-		return CancelOrdersOutputSchema.parse(fail(DIRECT_EXECUTE_FORBIDDEN_MESSAGE, DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE));
+		//
+		// MCP Apps 実行経路（ADR-0007）が有効な場合のみ、確認トークンを伴う呼び出しを通す。
+		// サーバーは iframe 起源と LLM 起源を区別できないため、**トークン所持が認可の実体**。
+		// トークンは `_meta` にしか載せておらず LLM からは読めない。
+		if (!isAppUiExecuteAllowed(extra)) {
+			return CancelOrdersOutputSchema.parse(
+				fail(DIRECT_EXECUTE_FORBIDDEN_MESSAGE, DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE),
+			);
+		}
+		const typedArgs = args as Parameters<typeof cancelOrders>[0];
+		// トークン欠落は「preview を経ていない直接呼び出し」なので従来どおり拒否する。
+		// 値の正当性（HMAC / 期限 / ワンタイム / パラメータ一致）は cancelOrders 内の
+		// validateToken が検証し、既存の errorType でそのまま失敗させる。
+		if (!typedArgs?.confirmation_token || typeof typedArgs.token_expires_at !== 'number') {
+			return CancelOrdersOutputSchema.parse(
+				fail(DIRECT_EXECUTE_FORBIDDEN_MESSAGE, DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE),
+			);
+		}
+		return cancelOrders(typedArgs, 'ui-button', {
+			sessionId: (extra as { sessionId?: string } | undefined)?.sessionId,
+		});
 	},
 };

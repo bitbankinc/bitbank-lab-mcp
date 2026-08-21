@@ -15,6 +15,21 @@ import { fileURLToPath } from 'node:url';
 /** MCP Apps リソースの標準 MIME タイプ */
 export const APP_RESOURCE_MIME_TYPE = 'text/html;profile=mcp-app';
 
+/**
+ * MCP Apps（SEP-1865）の client capability 拡張 ID。
+ *
+ * クライアントは `initialize` の `capabilities.extensions` にこのキーで
+ * `{ mimeTypes: [...] }` を宣言する。サーバー側の対応判定に使う
+ * （`src/private/elicitation.ts` の `clientSupportsAppUi`）。
+ *
+ * ext-apps パッケージも同じ値を `EXTENSION_ID` として公開しているが、
+ * **そこから import はしない**。`@modelcontextprotocol/ext-apps/server` は
+ * モジュール読み込み時に SDK v1（`@modelcontextprotocol/sdk`）の Protocol / 全 Zod
+ * スキーマを引き込むため、SDK v2 で動く stdio サーバープロセスに不要な依存が乗る。
+ * 値は仕様で固定された文字列なので、定数 2 つをここで持つ方が軽い。
+ */
+export const MCP_APPS_UI_EXTENSION_ID = 'io.modelcontextprotocol/ui';
+
 export interface AppResourceDefinition {
 	/** リソース URI（ui:// スキーム） */
 	uri: string;

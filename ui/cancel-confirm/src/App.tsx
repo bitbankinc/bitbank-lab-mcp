@@ -1,10 +1,16 @@
 /**
  * 注文キャンセル確認 UI（MCP Apps / SEP-1865）
  *
- * preview_cancel_order / preview_cancel_orders の結果を受け取り、
- * キャンセル対象の注文情報をプレビュー表示するのみ。
- * 実際のキャンセルは elicitation / MRTR クライアント側の確認フローでのみ実行される。
- * この iframe から cancel_order / cancel_orders を呼び出す経路はない。
+ * preview_cancel_order / preview_cancel_orders の結果を受け取り、対象注文を表示する。
+ *
+ * サーバーが MCP Apps 実行経路を有効化している場合（`BITBANK_MCP_APPS_EXECUTE=1` +
+ * ホストが MCP Apps UI を宣言）、ツール結果の `_meta` に確認トークンが載る。その場合のみ
+ * 確定ボタンを描画し、`app.callServerTool('cancel_order' | 'cancel_orders', ...)` を呼ぶ。
+ * トークンが無ければ従来どおりプレビュー表示のみ（ボタンは出さない）。
+ *
+ * トークンは `_meta` からしか読まない。`content` / `structuredContent` には載っておらず、
+ * それが「LLM には見えないがこの iframe には見える」という認可の根拠になっている。
+ * 設計の背景は docs/adr/0007-hitl-confirmation-token-delivery.md を参照。
  */
 
 import {
@@ -15,7 +21,10 @@ import {
 	getDocumentTheme,
 } from '@modelcontextprotocol/ext-apps';
 import { useEffect, useRef, useState } from 'react';
+import { type ConfirmationMetaPayload, readConfirmationMeta } from '../../../src/mcp-apps-meta.js';
 
+/** cancel_order(s) 呼び出しの timeout（ms）。サーバー側のツール timeout 60s より少し短く設定 */
+const CANCEL_TIMEOUT_MS = 45_000;
 /** ui/initialize（ホスト接続）応答待ちの診断タイムアウト（ms） */
 const CONNECT_TIMEOUT_MS = 7_000;
 /** 接続成立後、ツール結果通知が届かない場合に pull 復元へ切り替えるまでの時間（ms）。
@@ -59,7 +68,8 @@ interface OrderDetail {
 }
 
 interface PreviewResultData {
-	// confirmation_token / expires_at はサーバーが返さない。UI はプレビュー表示のみ。
+	// confirmation_token / expires_at は structuredContent には載らない（サーバーが strip する）。
+	// トークンはツール結果 `_meta` から別途読み取る。
 	preview: SinglePreview | BulkPreview;
 	order?: OrderDetail;
 }
@@ -71,7 +81,10 @@ interface PreviewResult {
 	meta?: { action?: Action };
 }
 
-type Status = 'idle' | 'error';
+type Status = 'idle' | 'submitting' | 'success' | 'error' | 'cancelled' | 'expired';
+
+/** 送信後の終端状態。ボタンを引っ込めて二重キャンセルを防ぐ。 */
+const TERMINAL_STATUSES: ReadonlySet<Status> = new Set<Status>(['success', 'cancelled', 'expired']);
 
 function formatPair(pair: string): string {
 	return pair.toUpperCase().replace('_', '/');
@@ -120,6 +133,8 @@ export function App() {
 	const [action, setAction] = useState<Action | null>(null);
 	const [preview, setPreview] = useState<SinglePreview | BulkPreview | null>(null);
 	const [order, setOrder] = useState<OrderDetail | null>(null);
+	// MCP Apps 実行経路が有効なときだけ `_meta` から入る。null ならボタンを描画しない。
+	const [confirmation, setConfirmation] = useState<ConfirmationMetaPayload | null>(null);
 	const [status, setStatus] = useState<Status>('idle');
 	const [message, setMessage] = useState<string>('');
 	const appRef = useRef<McpApp | null>(null);
@@ -141,9 +156,9 @@ export function App() {
 		// preview_cancel_order(s) の結果のみ取り込む。
 		// meta.action と preview の存在でフィルタする。
 		//
-		// サーバーは confirmation_token を返さない。SEP-1865 iframe からの execute
-		// 経路はなく、プレビュー表示のみ行う。
-		const applyPreviewStructured = (structured: PreviewResult | undefined) => {
+		// confirmation_token は `_meta` にしか載らない（structuredContent からは strip 済み）。
+		// 載っていなければボタンは描画されず、従来どおりプレビュー表示のみになる。
+		const applyPreviewResult = (structured: PreviewResult | undefined, meta: unknown) => {
 			const metaAction = structured?.meta?.action;
 			if (
 				structured?.ok &&
@@ -155,6 +170,7 @@ export function App() {
 				setAction(metaAction);
 				setPreview(structured.data.preview);
 				setOrder(structured.data.order ?? null);
+				setConfirmation(readConfirmationMeta(meta) ?? null);
 				setStatus('idle');
 				setMessage('');
 				return;
@@ -166,7 +182,7 @@ export function App() {
 		};
 
 		mcpApp.ontoolresult = (params) => {
-			applyPreviewStructured(params?.structuredContent as PreviewResult | undefined);
+			applyPreviewResult(params?.structuredContent as PreviewResult | undefined, params?._meta);
 		};
 
 		mcpApp.onhostcontextchanged = (ctx) => {
@@ -204,7 +220,9 @@ export function App() {
 						)
 						.then((result) => {
 							if (hasPreviewRef.current) return;
-							applyPreviewStructured(result.structuredContent as PreviewResult | undefined);
+							// get_ui_snapshot も同じ `_meta` 契約でトークンを返す（push 配信が
+							// 効かないホスト向け。有効化ゲートはサーバー側で再判定される）。
+							applyPreviewResult(result.structuredContent as PreviewResult | undefined, result._meta);
 						})
 						.catch(() => {
 							// スナップショット取得失敗時は案内表示のまま（内容はチャット本文で確認可能）
@@ -258,6 +276,59 @@ export function App() {
 	}
 
 	const isBulk = isBulkPreview(preview);
+	const isTerminal = TERMINAL_STATUSES.has(status);
+
+	const handleConfirm = async () => {
+		if (!confirmation) return;
+		// クライアント側の期限チェックは UX のため（無駄な往復を省く）。
+		// 認可上の期限判定はサーバーの validateToken が行う。
+		if (Date.now() > confirmation.expires_at) {
+			setStatus('expired');
+			setMessage('確認の有効期限が切れました。もう一度プレビューを実行してください。');
+			return;
+		}
+		const app = appRef.current;
+		if (!app) {
+			setStatus('error');
+			setMessage('ホストに接続していません。');
+			return;
+		}
+		setStatus('submitting');
+		setMessage('');
+		try {
+			// preview と同じパラメータで呼ぶ。1 つでも違うとサーバー側の HMAC 検証が
+			// token_invalid で落ちる（ユーザーが見ていない対象を取り消させないための束縛）。
+			const args: Record<string, unknown> = isBulk
+				? { pair: preview.pair, order_ids: (preview as BulkPreview).order_ids }
+				: { pair: preview.pair, order_id: (preview as SinglePreview).order_id };
+			args.confirmation_token = confirmation.confirmation_token;
+			args.token_expires_at = confirmation.expires_at;
+
+			const result = await app.callServerTool({ name: action, arguments: args }, { timeout: CANCEL_TIMEOUT_MS });
+			if (result.isError) {
+				const text = result.content?.find((c) => c.type === 'text')?.text ?? 'キャンセルに失敗しました';
+				setStatus('error');
+				setMessage(text);
+				return;
+			}
+			const structured = result.structuredContent as { ok?: boolean; summary?: string } | undefined;
+			if (structured?.ok === false) {
+				setStatus('error');
+				setMessage(structured.summary ?? 'キャンセルに失敗しました');
+				return;
+			}
+			setStatus('success');
+			setMessage(structured?.summary ?? 'キャンセルを受け付けました');
+		} catch (err) {
+			setStatus('error');
+			setMessage(err instanceof Error ? err.message : 'キャンセル中に予期しないエラーが発生しました');
+		}
+	};
+
+	const handleDismiss = () => {
+		setStatus('cancelled');
+		setMessage('この操作は取り消されました（注文はそのまま残っています）。');
+	};
 
 	return (
 		<div className="app">
@@ -341,10 +412,60 @@ export function App() {
 					</>
 				)}
 
-				<div className="warn">
-					⚠️ この操作は取り消せません。この iframe はプレビュー表示のみです。実際のキャンセルは
-					elicitation / MRTR 対応クライアントでの確認フローでのみ実行されます。
-				</div>
+				<div className="warn">⚠️ キャンセルした注文は元に戻せません。</div>
+
+				{status === 'success' && (
+					<div className="status status-success" role="status" aria-live="polite" aria-atomic="true">
+						✅ {message}
+					</div>
+				)}
+				{status === 'error' && (
+					<div className="status status-error" role="alert" aria-live="assertive" aria-atomic="true">
+						❌ {message}
+					</div>
+				)}
+				{status === 'cancelled' && (
+					<div className="status status-cancelled" role="status" aria-live="polite" aria-atomic="true">
+						{message}
+					</div>
+				)}
+				{status === 'expired' && (
+					<div className="status status-error" role="alert" aria-live="assertive" aria-atomic="true">
+						⏰ {message}
+					</div>
+				)}
+
+				{!isTerminal && confirmation != null && (
+					<div className="actions">
+						<button
+							type="button"
+							className="btn btn-secondary"
+							onClick={handleDismiss}
+							disabled={status === 'submitting'}
+						>
+							やめる
+						</button>
+						<button
+							type="button"
+							className="btn btn-primary"
+							onClick={handleConfirm}
+							disabled={status === 'submitting'}
+						>
+							{status === 'submitting'
+								? '送信中…'
+								: isBulk
+									? '一括キャンセルを確定する'
+									: 'キャンセルを確定する'}
+						</button>
+					</div>
+				)}
+
+				{!isTerminal && confirmation == null && (
+					<div className="warn">
+						この iframe はプレビュー表示のみです。実際にキャンセルするには、確認ダイアログに対応したクライアントで同じ操作を行うか、bitbank
+						アプリ/ウェブで該当注文をキャンセルしてください。
+					</div>
+				)}
 			</div>
 		</div>
 	);

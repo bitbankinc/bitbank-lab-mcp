@@ -5,6 +5,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import type { z } from 'zod';
 import { toPublicError } from '../lib/error.js';
 import { logError, logToolRun } from '../lib/logger.js';
+import { CONFIRMATION_META_KEY } from './mcp-apps-meta.js';
 import { requestStateCodec } from './private/request-state.js';
 import { type PromptDef, prompts as promptDefs } from './prompts.js';
 import { appResourceRegistry } from './resources/app-resources.js';
@@ -33,7 +34,12 @@ const server = new McpServer(
 );
 
 type TextContent = { type: 'text'; text: string; _meta?: Record<string, unknown> };
-type ToolReturn = { content: TextContent[]; structuredContent?: Record<string, unknown> };
+type ToolReturn = {
+	content: TextContent[];
+	structuredContent?: Record<string, unknown>;
+	/** ツール結果レベルの `_meta`（`CallToolResult._meta`）。詳細は McpResponse['_meta'] を参照。 */
+	_meta?: Record<string, unknown>;
+};
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -87,9 +93,19 @@ const respond = (result: unknown): ToolReturn => {
 			? result.structuredContent
 			: result
 		: undefined;
+	// ハンドラが McpResponse shape で結果レベル `_meta` を返している場合はそのまま透過する。
+	// `CallToolResult` は `ResultSchema = z.looseObject({ _meta: … })` を extend しており、
+	// 結果レベル `_meta` は仕様上の正規フィールドなので SDK は素通しする。
+	// MCP Apps ホストはこれを iframe へ転送し、モデルコンテキストには入れない。
+	//
+	// Result shape（`{ ok, summary, data, meta }`）を直接返しているツールの `meta` は
+	// **これとは別物**なので拾わない（`structuredContent` 側に入る）。`_meta` を明示的に
+	// 組み立てたハンドラだけが対象。
+	const resultMeta = isPlainObject(result) && isPlainObject(result._meta) ? result._meta : undefined;
 	return {
 		content: [{ type: 'text', text }],
 		...(structured ? { structuredContent: structured } : {}),
+		...(resultMeta ? { _meta: resultMeta } : {}),
 	};
 };
 
@@ -106,9 +122,16 @@ function storeSnapshotIfUiTool(
 ): void {
 	const resourceUri = (meta as { ui?: { resourceUri?: unknown } } | undefined)?.ui?.resourceUri;
 	if (typeof resourceUri === 'string' && response.structuredContent) {
-		storeUiSnapshot(resourceUri, response.structuredContent, {
-			sessionId: (ctx as { sessionId?: string } | undefined)?.sessionId,
-		});
+		// 結果レベル `_meta` も一緒に保持する。確認トークンを含む場合はその `expires_at` を
+		// `_meta` 専用の期限として渡し、スナップショット TTL（5 分）より先に落ちるようにする。
+		const confirmation = (response._meta?.[CONFIRMATION_META_KEY] as { expires_at?: unknown } | undefined)?.expires_at;
+		storeUiSnapshot(
+			resourceUri,
+			response.structuredContent,
+			{ sessionId: (ctx as { sessionId?: string } | undefined)?.sessionId },
+			response._meta,
+			typeof confirmation === 'number' ? confirmation : undefined,
+		);
 	}
 }
 

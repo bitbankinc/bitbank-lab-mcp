@@ -3,9 +3,14 @@
  *
  * 注文パラメータのバリデーションを行い、プレビューを表示する。実際の発注は行わない。
  *
- * 内部的に confirmation_token も生成するが、これはサーバープロセス内に閉じる:
+ * 内部的に confirmation_token も生成する。配送先は接続ホストによって 3 通りに分かれる:
  *   - elicitation 対応ホスト: ハンドラ内の accept 経路で create_order へ非公開のまま引き渡す
- *   - elicitation 非対応ホスト: 取引実行は行わずプレビューのみ返し、token はクライアントに渡さない
+ *     （token はサーバープロセス内に閉じる。第一選択）
+ *   - MCP Apps 実行経路が有効なホスト: ツール結果の `_meta` にのみ載せて iframe へ配送する
+ *     （`BITBANK_MCP_APPS_EXECUTE=1` + MCP Apps UI 宣言の 2 段ゲート。ADR-0007）
+ *   - どちらでもないホスト: 取引実行は行わずプレビューのみ返し、token はクライアントに渡さない
+ *
+ * いずれの場合も **content / structuredContent には token を載せない**（LLM から読めない）。
  *
  * 詳細は docs/private-api.md「`confirmation_token` の受け渡し」節を参照。
  */
@@ -224,7 +229,7 @@ export default async function previewOrder(args: {
 		}
 	}
 	lines.push('');
-	lines.push('⚠️ この注文はユーザーの最終確認（elicitation/MRTR）を経るまで発注されません。');
+	lines.push('⚠️ この注文はユーザーの最終確認を経るまで発注されません。');
 
 	const summary = lines.join('\n');
 
@@ -262,15 +267,17 @@ export const toolDef: ToolDefinition = {
 		'端数のまま渡すと最小数量未満・桁数超過で validation_error となり、無駄な失敗プレビューが発生する。',
 		'対応注文タイプは limit / market / stop / stop_limit の 4 種類のみ（take_profit / stop_loss / losscut は未対応）。',
 		'position_side を指定すると信用注文として扱う（ロング新規=buy+long, ロング決済=sell+long, ショート新規=sell+short, ショート決済=buy+short）。',
-		'⚠️ confirmation_token はクライアント側には返さない（content / structuredContent / _meta のいずれにも含めない）。',
-		'実際の発注は elicitation/MRTR 対応ホスト上でのユーザー確認ダイアログ経由でのみ完結する。',
-		'非対応ホストではプレビューのみ返し、取引実行は受け付けない。ユーザーには elicitation/MRTR 対応クライアントでの操作を第一に案内し、bitbank アプリ/ウェブでの手動発注は任意の代替手段として扱う。',
+		'⚠️ confirmation_token は content / structuredContent には決して含めない。LLM がトークンを読み取って create_order を直接呼ぶことはできない。',
+		'実際の発注はユーザーの明示確認（対応ホストの確認ダイアログ、または確認カードのボタン操作）を経てのみ完結する。',
+		'いずれにも対応しないホストではプレビューのみ返し、取引実行は受け付けない。その場合は対応クライアントでの操作を第一に案内し、bitbank アプリ/ウェブでの手動発注は任意の代替手段として扱う。',
+		'このツールの応答を受け取った後、LLM が発注完了を宣言してはならない。実行結果はユーザー確認後の応答で別途返る。',
 	].join(' '),
 	inputSchema: PreviewOrderInputSchema,
 	// MCP Apps (SEP-1865): 対応ホストでは iframe 内に注文プレビュー UI を表示する。
 	// 非対応ホストでは無視される（Progressive Enhancement）。
-	// 注: iframe 起源の tools/call をサーバー側で識別できないため、UI からの
-	// create_order 実行経路は無効。execute は elicitation/MRTR のみ。
+	// 注: iframe 起源の tools/call はサーバー側で識別できない。UI からの create_order は
+	// 「LLM が読めない `_meta` にしか出していないトークンを提示できるか」で認可する
+	// （`BITBANK_MCP_APPS_EXECUTE=1` + MCP Apps UI 宣言時のみ。ADR-0007）。
 	_meta: {
 		ui: {
 			resourceUri: 'ui://order/confirm.html',
@@ -290,13 +297,22 @@ export const toolDef: ToolDefinition = {
 		const result = await previewOrder(typedArgs);
 		if (!result.ok) return result;
 
-		// elicitation 非対応ホスト向けのフォールバックレスポンス。
+		// elicitation 非対応 かつ MCP Apps 実行経路も無効なホスト向けのフォールバック。
 		// 取引実行はこのホストでは行えない旨を明示し、トークンの存在は仄めかさない。
 		const fallbackText = [
 			result.summary,
 			'',
 			'※ このホストでは取引実行に対応していません。',
 			'  実際に発注するには、elicitation/MRTR 対応クライアントで同じ操作を行うか、bitbank アプリ/ウェブで同じ内容を手動発注してください。',
+		].join('\n');
+
+		// elicitation 非対応だが MCP Apps 実行経路が有効なホスト向け。確認カードの
+		// ボタンで発注できるため、案内が上と正反対になる。トークンは含めない。
+		const appUiFallbackText = [
+			result.summary,
+			'',
+			'※ 上部の確認カードで内容を確認し、「注文を確定する」ボタンを押すと発注されます。',
+			'  ボタンを押さない限り発注されません。確認は 60 秒で期限切れになるため、その場合は preview_order をやり直してください。',
 		].join('\n');
 
 		// elicitation 対応ホストでは preview → ユーザー確認 → create_order までを
@@ -329,6 +345,13 @@ export const toolDef: ToolDefinition = {
 				content: [{ type: 'text', text: fallbackText }],
 				structuredContent: toStructured(result),
 			},
+			// MCP Apps ホスト向けのトークン配送。実際に載るのは有効化ゲート 2 段を
+			// 満たし、かつ elicitation 非対応と判定された場合のみ（helper 側で制御）。
+			metaConfirmation: {
+				confirmation_token: result.data.confirmation_token!,
+				expires_at: result.data.expires_at!,
+			},
+			appUiFallbackText,
 		});
 	},
 };
