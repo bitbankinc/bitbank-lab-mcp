@@ -5,7 +5,11 @@
 import type { z } from 'zod';
 import { getErrorMessage } from '../../../lib/error.js';
 import type { BitbankPrivateClient } from '../../private/client.js';
-import type { GetMarginPositionsDataSchema, GetMarginStatusDataSchema } from '../../private/schemas.js';
+import type {
+	GetMarginPositionsDataSchema,
+	GetMarginStatusDataSchema,
+	PortfolioFlowUnavailableReason,
+} from '../../private/schemas.js';
 
 // ── Private API レスポンス型 ──
 
@@ -192,13 +196,32 @@ export interface PeriodPerformance {
 	current_value_jpy: number;
 	change_jpy: number;
 	change_pct: number | undefined;
-	net_flow_jpy: number;
-	withdrawal_fee_jpy: number;
-	adjusted_change_jpy: number;
-	adjusted_change_pct: number | undefined;
+	/** 期間中の純入出金（元本移動のみ）。`null` = 未計測（`flow_measured: false`） */
+	net_flow_jpy: number | null;
+	/** 期間中の出金手数料合計。`null` = 未計測（`flow_measured: false`） */
+	withdrawal_fee_jpy: number | null;
+	/** 調整後増減額 = change_jpy - net_flow_jpy。`null` = 純入出金が未計測で算出不能 */
+	adjusted_change_jpy: number | null;
+	/** 調整後増減率。`undefined` = start_value_jpy が 0、`null` = 純入出金が未計測 */
+	adjusted_change_pct: number | undefined | null;
 	period_start: string;
 	period_end: string;
 	note: string;
+	/**
+	 * 期間中の純入出金を実測できたか。
+	 *
+	 * false のとき net_flow_jpy / withdrawal_fee_jpy / adjusted_change_jpy はすべて `null`。
+	 * 「未計測」と「本当にゼロ」を区別できない 0 を返さないための明示フラグで、
+	 * 理由は `flow_unavailable_reason` に載る。
+	 */
+	flow_measured: boolean;
+	/**
+	 * 純入出金を実測できなかった理由（`flow_measured: false` のときのみ存在）。
+	 *
+	 * 既存の出力フィールド順を崩さないため `note` の後ろに置き、該当なしのときは `undefined`
+	 * （JSON.stringify でキーごと落ちる）。
+	 */
+	flow_unavailable_reason?: PortfolioFlowUnavailableReason;
 	/**
 	 * net_flow_jpy の算出時に現在価格を解決できなかった暗号資産のシンボル一覧
 	 * （`PeriodNetFlowResult.unpriced_assets` の転記。小文字・昇順・重複なし）。
@@ -221,10 +244,17 @@ export interface EquityPoint {
 }
 
 export interface PeriodNetFlowResult {
-	/** 純入出金額（元本移動のみ。出金手数料は含まない） */
-	net_flow_jpy: number;
-	/** 期間中の出金手数料合計（JPY）。コストとして performance に残る */
-	withdrawal_fee_jpy: number;
+	/** 純入出金額（元本移動のみ。出金手数料は含まない）。`null` = 未計測（`measured: false`） */
+	net_flow_jpy: number | null;
+	/** 期間中の出金手数料合計（JPY）。コストとして performance に残る。`null` = 未計測 */
+	withdrawal_fee_jpy: number | null;
+	/**
+	 * 入出金履歴から実際に集計できたか。
+	 *
+	 * false のとき net_flow_jpy / withdrawal_fee_jpy は `null`。入出金履歴が無い状態で 0 を
+	 * 返すと呼び出し側が「フローゼロ」として扱ってしまうため、値そのものを立てない。
+	 */
+	measured: boolean;
 	/**
 	 * 現在価格を解決できず net_flow_jpy に計上できなかった暗号資産のシンボル一覧（小文字・昇順・重複なし）。
 	 *

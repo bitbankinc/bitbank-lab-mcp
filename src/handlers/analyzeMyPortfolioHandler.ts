@@ -13,7 +13,7 @@ import { formatPair, formatPercent, formatPrice, formatPriceJPY } from '../../li
 import { ok } from '../../lib/result.js';
 import { prependWarnings } from '../../lib/warning-propagation.js';
 import { getDefaultClient } from '../private/client.js';
-import { AnalyzeMyPortfolioOutputSchema } from '../private/schemas.js';
+import { AnalyzeMyPortfolioOutputSchema, type PortfolioFlowUnavailableReason } from '../private/schemas.js';
 import { failPrivateToolError } from '../private/tool-error.js';
 import {
 	buildAccountPnl,
@@ -26,9 +26,11 @@ import {
 	calcPeriodMarginPnl,
 	calcPeriodRealizedPnl,
 	calcPnl,
+	flowUnavailableReasonFor,
 	getJstPeriodBoundaries,
 	type PeriodSpec,
 	type PortfolioPerformanceContext,
+	resolveDepositWithdrawalStatus,
 } from './portfolio/calc.js';
 import { PORTFOLIO_CALENDAR_TZ } from './portfolio/calendar.js';
 import {
@@ -100,6 +102,57 @@ function buildMarginPositionsBlock(info: MarginAccountInfo): string[] {
 	return lines;
 }
 
+/** 理由コードごとの「入出金履歴が使えない原因」を表す句（各文言の共通パーツ）。 */
+const FLOW_UNAVAILABLE_CAUSE: Record<PortfolioFlowUnavailableReason, string> = {
+	withdrawal_history_not_fetched: '入出金履歴を取得していない',
+	dw_fetch_failed: '入出金履歴の取得に失敗した',
+};
+
+/** 理由コードごとの「なぜ取得原価を確定できないか」の説明文（summary / warning 共通）。 */
+const FLOW_UNAVAILABLE_NOTE: Record<PortfolioFlowUnavailableReason, string> = {
+	withdrawal_history_not_fetched:
+		'入出金履歴を取得していないため取得原価を確定できません。include_deposit_withdrawal: true で再実行してください',
+	dw_fetch_failed: '入出金履歴の取得に失敗したため取得原価を確定できません。時間をおいて再実行してください',
+};
+
+/**
+ * 期間パフォーマンス 1 期間ぶんの summary 行を組み立てる。
+ *
+ * 純入出金が未計測（`flow_measured: false`）のときは調整後増減の行を出す代わりに
+ * 「未計測」であることを明示する。ここで黙って行を省くと、テキストしか読まない LLM には
+ * 「入出金調整が不要な口座」に見えてしまう。
+ */
+function buildPerformanceLines(label: string, p: PeriodPerformance): string[] {
+	const lines: string[] = [];
+	const sign = p.change_jpy >= 0 ? '+' : '';
+	lines.push(`${label}: ${formatPriceJPY(p.start_value_jpy)} → ${formatPriceJPY(p.current_value_jpy)}`);
+	lines.push(
+		`  増減: ${sign}${formatPriceJPY(p.change_jpy)}${p.change_pct != null ? ` (${formatPercent(p.change_pct, { sign: true })})` : ''}`,
+	);
+
+	// flow_measured=false のとき 3 フィールドはすべて null。型の絞り込みも兼ねて null で分岐する。
+	if (p.net_flow_jpy == null || p.withdrawal_fee_jpy == null || p.adjusted_change_jpy == null) {
+		const cause = p.flow_unavailable_reason ? FLOW_UNAVAILABLE_CAUSE[p.flow_unavailable_reason] : '入出金履歴が無い';
+		lines.push(
+			`  純入出金: 未計測（${cause}ため入出金調整後の増減を算出できません）。上の増減には入出金の出し入れが含まれたままです`,
+		);
+		return lines;
+	}
+
+	if (p.net_flow_jpy !== 0 || p.withdrawal_fee_jpy > 0) {
+		const adjSign = p.adjusted_change_jpy >= 0 ? '+' : '';
+		lines.push(
+			`  入出金調整後: ${adjSign}${formatPriceJPY(p.adjusted_change_jpy)}${p.adjusted_change_pct != null ? ` (${formatPercent(p.adjusted_change_pct, { sign: true })})` : ''}`,
+		);
+		const flowSign = p.net_flow_jpy >= 0 ? '+' : '';
+		lines.push(`  純入出金（元本）: ${flowSign}${formatPriceJPY(p.net_flow_jpy)}`);
+		if (p.withdrawal_fee_jpy > 0) {
+			lines.push(`  出金手数料: -${formatPriceJPY(p.withdrawal_fee_jpy)}`);
+		}
+	}
+	return lines;
+}
+
 export default async function analyzeMyPortfolioHandler(args: {
 	include_technical?: boolean;
 	include_pnl?: boolean;
@@ -162,6 +215,18 @@ export default async function analyzeMyPortfolioHandler(args: {
 		const marginStatusFetchFailed = marginAccountInfo.statusFetchFailed;
 		const marginPositionsFetchFailed = marginAccountInfo.positionsFetchFailed;
 
+		// 入出金分析状態と、入出金履歴を損益計算に使えるかの判定。
+		// 取得原価（移動平均法）は暗号資産出庫を原価の按分減少として扱うため、出庫履歴が
+		// 無いと出庫済み数量の原価が残留して cost_basis が過大化し、評価損益が壊れる。
+		// そこで holdings のマッピングより前に理由コードを確定し、信頼できない値は出さない。
+		const depositWithdrawalStatus = resolveDepositWithdrawalStatus(include_deposit_withdrawal, dwData);
+		// include_pnl=false なら損益・期間パフォーマンス自体を出さないので抑止対象が無い。
+		// ここで理由コードを立てると「入出金を取れば原価が出る」という誤った案内になる
+		// （実際には include_pnl も必要）ため、損益を出す構成のときだけ立てる。
+		const flowUnavailableReason: PortfolioFlowUnavailableReason | undefined = include_pnl
+			? flowUnavailableReasonFor(depositWithdrawalStatus)
+			: undefined;
+
 		// 期間パフォーマンス用: 全関連ペアのキャンドルデータを早期フェッチ開始
 		const allRelevantPairs = new Set<string>();
 		for (const a of nonZeroAssets) {
@@ -214,6 +279,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 					unrealized_pnl_pct: undefined,
 					realized_pnl: undefined,
 					trade_count: undefined,
+					cost_basis_unavailable_reason: undefined,
 				};
 			}
 
@@ -225,6 +291,26 @@ export default async function analyzeMyPortfolioHandler(args: {
 			}
 			if (pnl) {
 				totalRealizedPnl += pnl.realized_pnl;
+			}
+
+			// 入出金履歴が無いときの取得原価は過大な値になる。avg_buy_price 単体は出庫に対して
+			// 不変だが、amount × avg_buy_price で原価を再構成されると同じ誤りに戻るため、
+			// 原価から派生する 4 フィールドをまとめて出さず理由コードだけを返す。
+			if (flowUnavailableReason != null) {
+				return {
+					asset: a.asset,
+					pair,
+					amount,
+					avg_buy_price: undefined,
+					current_price: currentPrice != null ? Math.round(currentPrice) : undefined,
+					jpy_value: jpyValue != null ? Math.round(jpyValue) : undefined,
+					cost_basis: undefined,
+					unrealized_pnl: undefined,
+					unrealized_pnl_pct: undefined,
+					realized_pnl: pnl?.realized_pnl,
+					trade_count: pnl?.trade_count,
+					cost_basis_unavailable_reason: flowUnavailableReason,
+				};
 			}
 
 			const unrealizedPnl =
@@ -246,6 +332,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 				unrealized_pnl_pct: unrealizedPnlPct,
 				realized_pnl: pnl?.realized_pnl,
 				trade_count: pnl?.trade_count,
+				cost_basis_unavailable_reason: undefined,
 			};
 		});
 
@@ -345,6 +432,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 				currentPrices: prices,
 				currentValue: currentJpyValueRounded,
 				nowIso: boundaries.nowIso,
+				flowUnavailableReason,
 			};
 			const performanceSpecs: PeriodSpec[] = [
 				{ key: 'yearly', startMs: boundaries.yearStartMs, startIso: boundaries.yearStartIso },
@@ -453,7 +541,9 @@ export default async function analyzeMyPortfolioHandler(args: {
 				validJpyValue += h.jpy_value;
 			}
 		}
-		const hasValidCostData = validCostBasis > 0;
+		// 入出金履歴が使えない場合は銘柄別で原価を出していないので合計も立たない
+		// （validCostBasis は 0 のまま）が、意図を明示するため理由コードでも明示的に閉じる。
+		const hasValidCostData = flowUnavailableReason == null && validCostBasis > 0;
 		const totalUnrealizedPnl = hasValidCostData ? Math.round(validJpyValue - validCostBasis) : undefined;
 		const totalUnrealizedPnlPct =
 			totalUnrealizedPnl != null && validCostBasis > 0
@@ -545,28 +635,6 @@ export default async function analyzeMyPortfolioHandler(args: {
 			technical = await fetchTechnical(jpyPairs);
 		}
 
-		// 5.5. depositWithdrawalStatus の判定（summary 生成より先に確定する）:
-		// - not_requested: include_deposit_withdrawal=false
-		// - available: 入出金データ取得成功＋分析実行
-		// - no_history: API取得成功・警告なし・本当に履歴0件
-		// - fallback: API取得失敗・partial failure 等で約定ベースにフォールバック
-		let depositWithdrawalStatus: 'available' | 'fallback' | 'no_history' | 'not_requested';
-		if (!include_deposit_withdrawal) {
-			depositWithdrawalStatus = 'not_requested';
-		} else if (dwSummary != null) {
-			depositWithdrawalStatus = 'available';
-		} else if (
-			dwData &&
-			!dwData.allFailed &&
-			dwData.warnings.length === 0 &&
-			dwData.deposits.length === 0 &&
-			dwData.withdrawals.length === 0
-		) {
-			depositWithdrawalStatus = 'no_history';
-		} else {
-			depositWithdrawalStatus = 'fallback';
-		}
-
 		// 6. サマリー文字列の生成
 		const lines: string[] = [];
 
@@ -603,70 +671,20 @@ export default async function analyzeMyPortfolioHandler(args: {
 		}
 
 		// 主指標: 前日比・年初比・月初比の口座評価額増減
-		if (dailyPerformance) {
-			const dSign = dailyPerformance.change_jpy >= 0 ? '+' : '';
-			lines.push(
-				`前日比: ${formatPriceJPY(dailyPerformance.start_value_jpy)} → ${formatPriceJPY(dailyPerformance.current_value_jpy)}`,
-			);
-			lines.push(
-				`  増減: ${dSign}${formatPriceJPY(dailyPerformance.change_jpy)}${dailyPerformance.change_pct != null ? ` (${formatPercent(dailyPerformance.change_pct, { sign: true })})` : ''}`,
-			);
-			if (dailyPerformance.net_flow_jpy !== 0 || dailyPerformance.withdrawal_fee_jpy > 0) {
-				const adjSign = dailyPerformance.adjusted_change_jpy >= 0 ? '+' : '';
-				lines.push(
-					`  入出金調整後: ${adjSign}${formatPriceJPY(dailyPerformance.adjusted_change_jpy)}${dailyPerformance.adjusted_change_pct != null ? ` (${formatPercent(dailyPerformance.adjusted_change_pct, { sign: true })})` : ''}`,
-				);
-				const flowSign = dailyPerformance.net_flow_jpy >= 0 ? '+' : '';
-				lines.push(`  純入出金（元本）: ${flowSign}${formatPriceJPY(dailyPerformance.net_flow_jpy)}`);
-				if (dailyPerformance.withdrawal_fee_jpy > 0) {
-					lines.push(`  出金手数料: -${formatPriceJPY(dailyPerformance.withdrawal_fee_jpy)}`);
-				}
-			}
-		}
-		if (yearlyPerformance) {
-			const ySign = yearlyPerformance.change_jpy >= 0 ? '+' : '';
-			lines.push(
-				`年初比: ${formatPriceJPY(yearlyPerformance.start_value_jpy)} → ${formatPriceJPY(yearlyPerformance.current_value_jpy)}`,
-			);
-			lines.push(
-				`  増減: ${ySign}${formatPriceJPY(yearlyPerformance.change_jpy)}${yearlyPerformance.change_pct != null ? ` (${formatPercent(yearlyPerformance.change_pct, { sign: true })})` : ''}`,
-			);
-			if (yearlyPerformance.net_flow_jpy !== 0 || yearlyPerformance.withdrawal_fee_jpy > 0) {
-				const adjSign = yearlyPerformance.adjusted_change_jpy >= 0 ? '+' : '';
-				lines.push(
-					`  入出金調整後: ${adjSign}${formatPriceJPY(yearlyPerformance.adjusted_change_jpy)}${yearlyPerformance.adjusted_change_pct != null ? ` (${formatPercent(yearlyPerformance.adjusted_change_pct, { sign: true })})` : ''}`,
-				);
-				const flowSign = yearlyPerformance.net_flow_jpy >= 0 ? '+' : '';
-				lines.push(`  純入出金（元本）: ${flowSign}${formatPriceJPY(yearlyPerformance.net_flow_jpy)}`);
-				if (yearlyPerformance.withdrawal_fee_jpy > 0) {
-					lines.push(`  出金手数料: -${formatPriceJPY(yearlyPerformance.withdrawal_fee_jpy)}`);
-				}
-			}
-		}
-		if (monthlyPerformance) {
-			const mSign = monthlyPerformance.change_jpy >= 0 ? '+' : '';
-			lines.push(
-				`月初比: ${formatPriceJPY(monthlyPerformance.start_value_jpy)} → ${formatPriceJPY(monthlyPerformance.current_value_jpy)}`,
-			);
-			lines.push(
-				`  増減: ${mSign}${formatPriceJPY(monthlyPerformance.change_jpy)}${monthlyPerformance.change_pct != null ? ` (${formatPercent(monthlyPerformance.change_pct, { sign: true })})` : ''}`,
-			);
-			if (monthlyPerformance.net_flow_jpy !== 0 || monthlyPerformance.withdrawal_fee_jpy > 0) {
-				const adjSign = monthlyPerformance.adjusted_change_jpy >= 0 ? '+' : '';
-				lines.push(
-					`  入出金調整後: ${adjSign}${formatPriceJPY(monthlyPerformance.adjusted_change_jpy)}${monthlyPerformance.adjusted_change_pct != null ? ` (${formatPercent(monthlyPerformance.adjusted_change_pct, { sign: true })})` : ''}`,
-				);
-				const flowSign = monthlyPerformance.net_flow_jpy >= 0 ? '+' : '';
-				lines.push(`  純入出金（元本）: ${flowSign}${formatPriceJPY(monthlyPerformance.net_flow_jpy)}`);
-				if (monthlyPerformance.withdrawal_fee_jpy > 0) {
-					lines.push(`  出金手数料: -${formatPriceJPY(monthlyPerformance.withdrawal_fee_jpy)}`);
-				}
-			}
-		}
+		if (dailyPerformance) lines.push(...buildPerformanceLines('前日比', dailyPerformance));
+		if (yearlyPerformance) lines.push(...buildPerformanceLines('年初比', yearlyPerformance));
+		if (monthlyPerformance) lines.push(...buildPerformanceLines('月初比', monthlyPerformance));
 		if (yearlyPerformance || monthlyPerformance) {
 			lines.push(`期間基準: JST`);
 			lines.push('※ 期初評価額は約定・入出金を逆算して復元、期初始値で評価。暗号資産入出庫は現在価格で仮評価');
 			lines.push('※ 出金元本は外部フローとして除外、出金手数料はコストとして performance に含む');
+			// 入出金を巻き戻せていない場合、期初評価額と資産推移シリーズは「ずっと同額保有」寄りに歪む。
+			// 上の 2 行が復元前提を語っているので、前提が満たせていないことをその直後に置く。
+			if (flowUnavailableReason != null) {
+				lines.push(
+					`※ ただし今回は${FLOW_UNAVAILABLE_CAUSE[flowUnavailableReason]}ため入出金を巻き戻せていません。期初評価額・資産推移シリーズは入出金があった期間で実態と乖離します`,
+				);
+			}
 		}
 		if (monthlyEquitySeries && monthlyEquitySeries.length > 0) {
 			// 品質警告: series が現在価格フォールバック・JPY のみ等の場合は LLM がデータの不完全性を把握できるよう明示
@@ -819,13 +837,19 @@ export default async function analyzeMyPortfolioHandler(args: {
 			}
 		}
 
-		if (totalUnrealizedPnl != null) {
-			const sign = totalUnrealizedPnl >= 0 ? '+' : '';
-			lines.push(
-				`合計評価損益（全履歴の約定ベース）: ${sign}${formatPriceJPY(totalUnrealizedPnl)} (${formatPercent(totalUnrealizedPnlPct, { sign: true })})`,
-			);
+		if (flowUnavailableReason != null) {
+			// 「合計評価損益」の確定値を出さない。壊れた原価から出した率（例: -60.9%）が
+			// 見出しに載ると、テキストしか読まない LLM がそれを口座の成績として読んでしまう。
+			lines.push(`評価損益: 算出不能（${FLOW_UNAVAILABLE_NOTE[flowUnavailableReason]}）`);
+		} else {
+			if (totalUnrealizedPnl != null) {
+				const sign = totalUnrealizedPnl >= 0 ? '+' : '';
+				lines.push(
+					`合計評価損益（全履歴の約定ベース）: ${sign}${formatPriceJPY(totalUnrealizedPnl)} (${formatPercent(totalUnrealizedPnlPct, { sign: true })})`,
+				);
+			}
+			lines.push('※ 評価損益は全履歴の約定・暗号資産出庫から移動平均法で算出した取得原価ベース');
 		}
-		lines.push('※ 評価損益は全履歴の約定・暗号資産出庫から移動平均法で算出した取得原価ベース');
 		lines.push('');
 
 		// 保有銘柄のパフォーマンス（月次・年次の価格騰落率）
@@ -876,6 +900,13 @@ export default async function analyzeMyPortfolioHandler(args: {
 			]),
 		].sort();
 		const calcWarnings: string[] = [];
+		// 取得原価が確定できない件は content 先頭に出す。summary 本文の「算出不能」行だけだと
+		// JSON より後ろに埋もれる位置に来ることがあり、LLM が数値の欠落理由に辿り着けない。
+		if (flowUnavailableReason != null) {
+			calcWarnings.push(
+				`評価損益・取得原価は算出していません（${FLOW_UNAVAILABLE_NOTE[flowUnavailableReason]}）。期間パフォーマンスの純入出金も未計測です`,
+			);
+		}
 		if (netFlowUnpricedAssets.length > 0) {
 			calcWarnings.push(
 				`${netFlowUnpricedAssets.map((a) => a.toUpperCase()).join(', ')} の現在価格が取得できず、期間中の入出庫を純入出金に計上できませんでした（純入出金・入出金調整後増減が過小）`,
@@ -916,6 +947,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 			total_cost_basis: hasValidCostData ? Math.round(validCostBasis) : undefined,
 			total_unrealized_pnl: totalUnrealizedPnl,
 			total_unrealized_pnl_pct: totalUnrealizedPnlPct,
+			total_cost_basis_unavailable_reason: flowUnavailableReason,
 			total_realized_pnl: totalRealizedPnl !== 0 ? totalRealizedPnl : undefined,
 			daily_performance: dailyPerformance,
 			yearly_performance: yearlyPerformance,
@@ -963,6 +995,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 			marginPositionsFetchFailed,
 			equitySeriesQuality,
 			equitySeriesFallbackAssets: equitySeriesFallbackAssets.length > 0 ? equitySeriesFallbackAssets : undefined,
+			flowDataUnavailableReason: flowUnavailableReason,
 			warnings: calcWarnings.length > 0 ? calcWarnings : undefined,
 		};
 
