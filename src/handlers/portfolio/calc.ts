@@ -19,6 +19,9 @@ import type {
 	DepositWithdrawalData,
 	DepositWithdrawalSummary,
 	EquityPoint,
+	FlowPricing,
+	FlowValuationBreakdown,
+	FlowValuationTarget,
 	PeriodAccountPnl,
 	PeriodDWSummary,
 	PeriodNetFlowResult,
@@ -425,6 +428,119 @@ export function buildPeriodAccountPnl(
 	};
 }
 
+// ── 入出庫の JPY 換算（入出庫日価格の解決） ──
+
+/**
+ * 入出庫 1 件を JPY 換算するための単価を解決する。
+ *
+ * 解決順序は **入出庫日（入庫: `confirmed_at` / 出庫: `requested_at`）当日の 1day open →
+ * 現在価格** の 2 段。前者で解けたぶんは相場が動いても評価額が動かない
+ * （現在価格だけで換算すると誤差が相場と連動する系統的バイアスになる。#53 の機序 6）。
+ *
+ * 日付キーは `portfolioDayStartMs`（JST 暦日 0:00）で、`fetchCandlePriceData` /
+ * `fetchFlowDatePrices` が積む `dailyPrices` のキーと同じ暦を共有する（`./calendar.ts`）。
+ * `atMs` が非有限なら日次価格は引かず現在価格に落とす（`portfolioDayStartMs` は
+ * 非有限で throw するため、呼ぶ前に弾く必要がある）。
+ *
+ * どちらも解決できない場合は `undefined`。呼び出し側は当該入出庫を集計から落とし、
+ * 資産名を `unpriced_assets` に載せて申告すること（黙って 0 円計上しない）。
+ */
+export function resolveFlowPrice(
+	pricing: FlowPricing,
+	asset: string,
+	atMs: number,
+): { price: number; basis: 'deposit_date_price' | 'current_price_fallback' } | undefined {
+	if (Number.isFinite(atMs)) {
+		const dated = pricing.dailyPrices.get(asset)?.get(portfolioDayStartMs(atMs));
+		if (dated != null && Number.isFinite(dated) && dated > 0) {
+			return { price: dated, basis: 'deposit_date_price' };
+		}
+	}
+	const current = pricing.currentPrices.get(asset);
+	if (current != null && Number.isFinite(current) && current > 0) {
+		return { price: current, basis: 'current_price_fallback' };
+	}
+	return undefined;
+}
+
+/**
+ * 換算方式ごとの件数を貯める内部アキュムレータ。
+ * 換算**できた**件数だけを数える（価格を全く解決できなかったぶんは `unpriced_assets` 側の担当）。
+ */
+class FlowValuationCounter {
+	private dated = 0;
+	private fallback = 0;
+
+	count(basis: 'deposit_date_price' | 'current_price_fallback'): void {
+		if (basis === 'deposit_date_price') this.dated++;
+		else this.fallback++;
+	}
+
+	/** 1 件も換算していなければ `undefined`（出力側でキーごと落とすため） */
+	toBreakdown(): FlowValuationBreakdown | undefined {
+		return buildFlowValuationBreakdown(this.dated, this.fallback);
+	}
+}
+
+/**
+ * 換算件数から内訳を組み立てる。両方 0（＝換算対象が無い / 全件で価格を解決できなかった）なら
+ * `undefined` を返し、呼び出し側でフィールドごと落とせるようにする。
+ */
+function buildFlowValuationBreakdown(dated: number, fallback: number): FlowValuationBreakdown | undefined {
+	if (dated === 0 && fallback === 0) return undefined;
+	return {
+		deposit_date_price_count: dated,
+		current_price_fallback_count: fallback,
+		basis: fallback === 0 ? 'deposit_date_price' : dated === 0 ? 'current_price_fallback' : 'mixed',
+	};
+}
+
+/**
+ * 価格解決が必要な入出庫（DONE・非 JPY・数量が正）を列挙する。
+ *
+ * `fetchFlowDatePrices` の追加取得対象の決定と、レスポンス全体の換算方式の集計
+ * （`summarizeFlowValuation`）の両方で同じ母集合を使うためのヘルパー。
+ * JPY の入出金は換算不要、数量ゼロ・数値不正の入出庫は金額に寄与しないので除外する
+ * （`calcPeriodNetFlow` の `unpriced_assets` 判定と同じ基準）。
+ *
+ * `sinceMs` を渡すと当該時刻以降のものだけに絞る。入出金**分析セクション**は全履歴を
+ * 集計するため絞らず、期間ネットフローだけが要る構成では年初以降に絞って追加取得を減らす。
+ */
+export function collectFlowValuationTargets(dw: DepositWithdrawalData | null, sinceMs?: number): FlowValuationTarget[] {
+	if (!dw) return [];
+	const targets: FlowValuationTarget[] = [];
+	const push = (asset: string, amount: string, status: string, atMs: number) => {
+		if (status !== 'DONE') return;
+		if (asset === 'jpy') return;
+		const qty = Number(amount);
+		if (!Number.isFinite(qty) || qty <= 0) return;
+		if (sinceMs != null && !(atMs >= sinceMs)) return;
+		targets.push({ asset, atMs });
+	};
+	for (const d of dw.deposits) push(d.asset, d.amount, d.status, d.confirmed_at);
+	for (const w of dw.withdrawals) push(w.asset, w.amount, w.status, w.requested_at);
+	return targets;
+}
+
+/**
+ * 入出庫群を実際に換算したときの方式の内訳を返す（レスポンス全体の申告用）。
+ *
+ * 各セクションが返す内訳は互いに重なる部分集合（全履歴の入出金サマリー ⊃ 年初来 ⊃ 月初来）なので、
+ * 単純に足すと二重計上になる。meta / summary の「n 件は現在価格で仮評価」は本関数で
+ * **母集合を 1 度だけ**数えた値を使う。
+ */
+export function summarizeFlowValuation(
+	targets: FlowValuationTarget[],
+	pricing: FlowPricing,
+): FlowValuationBreakdown | undefined {
+	const counter = new FlowValuationCounter();
+	for (const t of targets) {
+		const resolved = resolveFlowPrice(pricing, t.asset, t.atMs);
+		if (resolved) counter.count(resolved.basis);
+	}
+	return counter.toBreakdown();
+}
+
 // ── 入出金サマリー ──
 
 /**
@@ -432,15 +548,21 @@ export function buildPeriodAccountPnl(
  *
  * - JPY 入金: 投資元本（入金）
  * - JPY 出金: 投資元本の回収（出金）
- * - 暗号資産入庫: 現在の市場価格で仮評価し、投入額に加算（入庫時点の価格は取得不可）
+ * - 暗号資産入庫: **入庫日（`confirmed_at`）の 1day open** で JPY 換算し、投入額に加算。
+ *   日次価格を解決できなかった分のみ現在価格にフォールバックし、内訳を
+ *   `crypto_deposit_valuation` で申告する（黙って混ぜない）
  * - 暗号資産出庫: 損益計算からは除外（他所への送金であり売却ではない）
  * - 純投入額 = JPY入金合計 - JPY出金合計 + 暗号資産入庫の推定JPY評価額
  * - 口座全体リターン = (現在評価額 - 純投入額) / 純投入額
+ *
+ * 入庫を入庫日価格で固定するのは、現在価格で仮評価すると誤差が相場と連動して動き、
+ * 取引ゼロでも相場上昇だけで報告リターンが悪化するため（#53 の機序 6）。
+ * ただしこれは「入庫時点の相場で取得した」という**仮定**であって真の取得原価ではない。
  */
 export function calcDepositWithdrawalSummary(
 	dw: DepositWithdrawalData,
 	totalJpyValue: number,
-	prices: Map<string, number>,
+	pricing: FlowPricing,
 ): DepositWithdrawalSummary {
 	// DONE ステータスの入金のみ集計（FOUND / CONFIRMED は未完了）
 	const completedDeposits = dw.deposits.filter((d) => d.status === 'DONE');
@@ -456,17 +578,18 @@ export function calcDepositWithdrawalSummary(
 	const cryptoDeposits = completedDeposits.filter((d) => d.asset !== 'jpy');
 	const cryptoWithdrawals = completedWithdrawals.filter((w) => w.asset !== 'jpy');
 
-	// 暗号資産入庫の推定 JPY 評価（現在の市場価格で仮評価）
-	// 注意: 入庫「時点」の価格は取得不可のため、現在価格での仮評価
+	// 暗号資産入庫の推定 JPY 評価（入庫日の始値 → 解けなければ現在価格）
 	let cryptoDepositEstimatedJpy = 0;
 	let hasEstimate = false;
+	const depositValuation = new FlowValuationCounter();
 	for (const d of cryptoDeposits) {
-		const price = prices.get(d.asset);
 		const amount = Number(d.amount);
-		if (price && Number.isFinite(amount) && amount > 0) {
-			cryptoDepositEstimatedJpy += amount * price;
-			hasEstimate = true;
-		}
+		if (!Number.isFinite(amount) || amount <= 0) continue;
+		const resolved = resolveFlowPrice(pricing, d.asset, d.confirmed_at);
+		if (!resolved) continue;
+		cryptoDepositEstimatedJpy += amount * resolved.price;
+		depositValuation.count(resolved.basis);
+		hasEstimate = true;
 	}
 
 	const netJpyInvested = totalJpyDeposited - totalJpyWithdrawn + (hasEstimate ? cryptoDepositEstimatedJpy : 0);
@@ -479,7 +602,7 @@ export function calcDepositWithdrawalSummary(
 		accountReturnPct = Math.round(((totalJpyValue - netJpyInvested) / netJpyInvested) * 10000) / 100;
 	}
 
-	return {
+	const summary: DepositWithdrawalSummary = {
 		total_jpy_deposited: Math.round(totalJpyDeposited),
 		total_jpy_withdrawn: Math.round(totalJpyWithdrawn),
 		net_jpy_invested: Math.round(netJpyInvested),
@@ -491,17 +614,25 @@ export function calcDepositWithdrawalSummary(
 		is_complete: dw.isComplete,
 		analysis_basis: 'deposit_withdrawal',
 	};
+	// 該当なしのときはキーごと省き、暗号資産入庫が無い口座の出力を従来と JSON 一致させる。
+	const valuation = depositValuation.toBreakdown();
+	if (valuation) summary.crypto_deposit_valuation = valuation;
+	return summary;
 }
 
 /**
  * 期間内の入出金を集計する。年次・月次サマリー用。
+ *
+ * 暗号資産の入出庫は `calcDepositWithdrawalSummary` と同じく入出庫日
+ * （入庫: `confirmed_at` / 出庫: `requested_at`）の 1day open で JPY 換算し、
+ * 解決できなかった分だけ現在価格にフォールバックして内訳を `*_valuation` で申告する。
  */
 export function calcPeriodDWSummary(
 	dw: DepositWithdrawalData,
 	sinceMs: number,
 	periodStartIso: string,
 	periodEndIso: string,
-	prices: Map<string, number>,
+	pricing: FlowPricing,
 ): PeriodDWSummary {
 	const completedDeposits = dw.deposits.filter((d) => d.status === 'DONE' && d.confirmed_at >= sinceMs);
 	const completedWithdrawals = dw.withdrawals.filter((w) => w.status === 'DONE' && w.requested_at >= sinceMs);
@@ -516,29 +647,33 @@ export function calcPeriodDWSummary(
 	const cryptoDep = completedDeposits.filter((d) => d.asset !== 'jpy');
 	let cryptoDepJpy = 0;
 	let hasDepEstimate = false;
+	const depValuation = new FlowValuationCounter();
 	for (const d of cryptoDep) {
-		const price = prices.get(d.asset);
 		const amount = Number(d.amount);
-		if (price && Number.isFinite(amount) && amount > 0) {
-			cryptoDepJpy += amount * price;
-			hasDepEstimate = true;
-		}
+		if (!Number.isFinite(amount) || amount <= 0) continue;
+		const resolved = resolveFlowPrice(pricing, d.asset, d.confirmed_at);
+		if (!resolved) continue;
+		cryptoDepJpy += amount * resolved.price;
+		depValuation.count(resolved.basis);
+		hasDepEstimate = true;
 	}
 
 	// Crypto withdrawals
 	const cryptoWd = completedWithdrawals.filter((w) => w.asset !== 'jpy');
 	let cryptoWdJpy = 0;
 	let hasWdEstimate = false;
+	const wdValuation = new FlowValuationCounter();
 	for (const w of cryptoWd) {
-		const price = prices.get(w.asset);
 		const amount = Number(w.amount);
-		if (price && Number.isFinite(amount) && amount > 0) {
-			cryptoWdJpy += amount * price;
-			hasWdEstimate = true;
-		}
+		if (!Number.isFinite(amount) || amount <= 0) continue;
+		const resolved = resolveFlowPrice(pricing, w.asset, w.requested_at);
+		if (!resolved) continue;
+		cryptoWdJpy += amount * resolved.price;
+		wdValuation.count(resolved.basis);
+		hasWdEstimate = true;
 	}
 
-	return {
+	const summary: PeriodDWSummary = {
 		jpy_deposited: Math.round(jpyDeposited),
 		jpy_withdrawn: Math.round(jpyWithdrawn),
 		net_jpy: Math.round(jpyDeposited - jpyWithdrawn),
@@ -549,6 +684,12 @@ export function calcPeriodDWSummary(
 		period_start: periodStartIso,
 		period_end: periodEndIso,
 	};
+	// 既存キーの後ろに置き、該当なしのときはキーごと省いて従来出力と JSON 一致させる。
+	const depBreakdown = depValuation.toBreakdown();
+	if (depBreakdown) summary.crypto_deposit_valuation = depBreakdown;
+	const wdBreakdown = wdValuation.toBreakdown();
+	if (wdBreakdown) summary.crypto_withdrawal_valuation = wdBreakdown;
+	return summary;
 }
 
 // ── JST 期間境界 ──
@@ -800,8 +941,12 @@ function unmeasuredNetFlow(): PeriodNetFlowResult {
  *   adjusted_change から net_flow を引いた結果にこのコストが残る。
  * - unpriced_assets: 価格を解決できず集計から落ちた暗号資産のシンボル（該当なしなら undefined）。
  *   落ちた入出庫は 0 円計上と等価で net_flow_jpy が過小になるため、黙って落とさず申告する。
+ * - valuation: 換算方式の内訳（該当なしなら undefined）。
  *
- * 暗号資産の入出庫は現在価格で仮評価。
+ * 暗号資産の入出庫は**入出庫日（入庫: confirmed_at / 出庫: requested_at）の 1day open** で
+ * JPY 換算する。現在価格で仮評価すると誤差が相場と連動して動き、取引ゼロでも相場上昇だけで
+ * 純入出金・調整後増減が動いてしまうため（#53 の機序 6）。日次価格を解決できなかった分だけ
+ * 現在価格にフォールバックし、`valuation` で混在を申告する。
  *
  * `dw` が null（入出金履歴を取得していない）の場合は **0 を返さない**。
  * 0 を返すと呼び出し側で「未計測」と「本当にフローがゼロ」が区別できず、
@@ -811,7 +956,7 @@ function unmeasuredNetFlow(): PeriodNetFlowResult {
 export function calcPeriodNetFlow(
 	dw: DepositWithdrawalData | null,
 	sinceMs: number,
-	prices: Map<string, number>,
+	pricing: FlowPricing,
 ): PeriodNetFlowResult {
 	if (!dw) return unmeasuredNetFlow();
 
@@ -823,6 +968,7 @@ export function calcPeriodNetFlow(
 	// 価格を解決できなかった資産（JPY 建て換算ができず集計に載せられなかったもの）。
 	// 数量ゼロ・数値不正で寄与しない入出庫は元から金額に影響しないため対象外とする。
 	const unpricedAssets = new Set<string>();
+	const valuation = new FlowValuationCounter();
 
 	// Deposits (inflow)
 	for (const d of completedDeposits) {
@@ -830,11 +976,12 @@ export function calcPeriodNetFlow(
 			netFlow += Number(d.amount);
 			continue;
 		}
-		const price = prices.get(d.asset);
 		const amount = Number(d.amount);
 		if (!Number.isFinite(amount) || amount <= 0) continue;
-		if (price) {
-			netFlow += amount * price;
+		const resolved = resolveFlowPrice(pricing, d.asset, d.confirmed_at);
+		if (resolved) {
+			netFlow += amount * resolved.price;
+			valuation.count(resolved.basis);
 		} else {
 			unpricedAssets.add(d.asset);
 		}
@@ -848,14 +995,17 @@ export function calcPeriodNetFlow(
 			withdrawalFee += fee;
 			continue;
 		}
-		const price = prices.get(w.asset);
 		const amount = Number(w.amount);
 		if (!Number.isFinite(amount) || amount <= 0) continue;
-		if (price) {
-			netFlow -= amount * price;
+		// 出庫の単価も出庫日（requested_at）で固定する。元本と手数料は同じ単価で換算しないと
+		// 「元本は出庫日・手数料は現在」という混成になり、withdrawal_fee_jpy だけが相場で動く。
+		const resolved = resolveFlowPrice(pricing, w.asset, w.requested_at);
+		if (resolved) {
+			netFlow -= amount * resolved.price;
 			if (fee > 0) {
-				withdrawalFee += fee * price;
+				withdrawalFee += fee * resolved.price;
 			}
+			valuation.count(resolved.basis);
 		} else {
 			// 元本だけでなく出金手数料も JPY 換算できていない（withdrawal_fee_jpy も過小になる）
 			unpricedAssets.add(w.asset);
@@ -869,13 +1019,15 @@ export function calcPeriodNetFlow(
 	};
 	// 該当なしのときはキーごと省き、価格を全解決できたときの出力を安定させる。
 	if (unpricedAssets.size > 0) result.unpriced_assets = [...unpricedAssets].sort();
+	const breakdown = valuation.toBreakdown();
+	if (breakdown) result.valuation = breakdown;
 	return result;
 }
 
 // ── 期間別パフォーマンス（評価額比較） ──
 
 export const PERFORMANCE_NOTE =
-	'期初評価額は現在の保有状態から約定・入出金を逆算して復元し、期初時点の始値（1day candle open）で評価。暗号資産の入出庫は現在価格で仮評価。純入出金は元本移動のみ（出金手数料を含まない）。調整後増減 = 単純増減 - 純入出金（市場変動 + 出金手数料コスト）。';
+	'期初評価額は現在の保有状態から約定・入出金を逆算して復元し、期初時点の始値（1day candle open）で評価。暗号資産の入出庫は入出庫日（入庫: confirmed_at / 出庫: requested_at）の始値で JPY 換算し、その日の価格を取得できなかった分のみ現在価格で仮評価する（内訳は flow_valuation）。純入出金は元本移動のみ（出金手数料を含まない）。調整後増減 = 単純増減 - 純入出金（市場変動 + 出金手数料コスト）。';
 
 export type PeriodPerformanceKey = 'daily' | 'monthly' | 'yearly';
 
@@ -890,7 +1042,14 @@ export interface PortfolioPerformanceContext {
 	trades: RawTrade[];
 	dwData: DepositWithdrawalData | null;
 	candlePriceData: CandlePriceData;
-	currentPrices: Map<string, number>;
+	/**
+	 * 暗号資産入出庫の JPY 換算に使う価格ソース。
+	 *
+	 * `candlePriceData.dailyPrices` とは別に持つ。前者は期初評価・資産推移が使う
+	 * 「直近 400 日窓」で、入出庫日価格には 400 日超の年単位 chunk を合流させた
+	 * 別の Map（`fetchFlowDatePrices` の戻り値）を渡すため。
+	 */
+	flowPricing: FlowPricing;
 	currentValue: number;
 	nowIso: string;
 	/**
@@ -943,8 +1102,8 @@ function pickBoundaryPrice(
  *
  * 出力フィールド順・桁丸めは旧インライン実装と完全一致させている
  * （JSON.stringify 結果が変わらないよう注意）。
- * `unpriced_flow_assets` は後から足したフィールドなので既存キーの後ろに置き、
- * 価格をすべて解決できたときはキーごと省いて旧出力と JSON 一致させる。
+ * `unpriced_flow_assets` / `flow_valuation` は後から足したフィールドなので既存キーの後ろに置き、
+ * 該当なしのときはキーごと省いて旧出力と JSON 一致させる。
  */
 export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerformanceContext): PeriodPerformance {
 	const startHoldings = reconstructHoldingsAtDate(ctx.currentHoldings, ctx.trades, spec.startMs, ctx.dwData);
@@ -956,7 +1115,7 @@ export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerforman
 	const startValue = Math.round(calcPortfolioValue(startHoldings, priceMap));
 	const flow = ctx.flowUnavailableReason
 		? unmeasuredNetFlow()
-		: calcPeriodNetFlow(ctx.dwData, spec.startMs, ctx.currentPrices);
+		: calcPeriodNetFlow(ctx.dwData, spec.startMs, ctx.flowPricing);
 	const change = ctx.currentValue - startValue;
 	// 未計測のフローを 0 とみなして引かない。引いてしまうと adjusted_change が
 	// 「入出金ゼロの口座の成績」という誤った確定値になる（それが -60.9% 型の表示の一因）。
@@ -981,5 +1140,6 @@ export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerforman
 	};
 	if (unavailableReason) performance.flow_unavailable_reason = unavailableReason;
 	if (flow.unpriced_assets) performance.unpriced_flow_assets = flow.unpriced_assets;
+	if (flow.valuation) performance.flow_valuation = flow.valuation;
 	return performance;
 }

@@ -1051,3 +1051,146 @@ describe('fetchCandlePriceData', () => {
 		expect(result.boundaryPrices.get('btc')?.dayStart).toBe(3_000_000);
 	});
 });
+
+/**
+ * `fetchFlowDatePrices` — 入出庫日価格を解決するための年単位 chunk の追加取得（#57 (a)-2）。
+ *
+ * 直近 400 日窓（`fetchCandlePriceData`）で解ける入出庫は追加取得しない、
+ * 解けない分だけ (資産, 年) 単位で取りに行く、それでも取れなければ何もしない（現在価格
+ * フォールバックは呼び出し側 `resolveFlowPrice` の担当）——の 3 経路を固定する。
+ */
+describe('fetchFlowDatePrices', () => {
+	const mockedGetCandles = vi.mocked(getCandles);
+
+	/** JST の壁時計時刻を epoch ms に変換する（JST は DST を持たないので UTC+9 固定）。 */
+	const jstMs = (y: number, m: number, d: number, h = 0) => Date.UTC(y, m - 1, d, h - 9);
+
+	/** 指定 JST 暦日の 1day 足 1 本だけを返す get_candles レスポンス */
+	function candleAt(dayMs: number, open: number) {
+		return {
+			ok: true as const,
+			summary: 'ok',
+			data: { normalized: [{ open, high: open, low: open, close: open, volume: 1, timestamp: dayMs }] },
+			meta: { pair: 'btc_jpy', type: '1day', count: 1 },
+		};
+	}
+
+	beforeEach(() => {
+		mockedGetCandles.mockReset();
+	});
+
+	it('直近窓で解決できる入出庫は追加取得しない', async () => {
+		const dayMs = jstMs(2026, 8, 1);
+		const base = new Map([['btc', new Map([[dayMs, 1_000_000]])]]);
+
+		const { fetchFlowDatePrices } = await import('../../../src/handlers/portfolio/fetch.js');
+		const result = await fetchFlowDatePrices(base, [{ asset: 'btc', atMs: jstMs(2026, 8, 1, 12) }]);
+
+		expect(mockedGetCandles).not.toHaveBeenCalled();
+		// 追加取得が無ければ入力の Map をそのまま返す（無駄なコピーを作らない）
+		expect(result).toBe(base);
+	});
+
+	it('直近窓の外にある入出庫は (資産, 年) 単位で年 chunk を追加取得する', async () => {
+		const oldDayMs = jstMs(2023, 4, 20);
+		mockedGetCandles.mockResolvedValue(candleAt(oldDayMs, 4_000_000));
+
+		const { fetchFlowDatePrices } = await import('../../../src/handlers/portfolio/fetch.js');
+		const result = await fetchFlowDatePrices(new Map(), [
+			{ asset: 'btc', atMs: jstMs(2023, 4, 20, 12) },
+			// 同じ (資産, 年) は何件あっても chunk は 1 つ
+			{ asset: 'btc', atMs: jstMs(2023, 9, 1, 12) },
+		]);
+
+		expect(mockedGetCandles).toHaveBeenCalledTimes(1);
+		expect(mockedGetCandles).toHaveBeenCalledWith('btc_jpy', '1day', '2023', 400, 'Asia/Tokyo');
+		expect(result.get('btc')?.get(oldDayMs)).toBe(4_000_000);
+	});
+
+	it('資産・年が異なれば別 chunk として取得する', async () => {
+		mockedGetCandles.mockResolvedValue(candleAt(jstMs(2023, 4, 20), 4_000_000));
+
+		const { fetchFlowDatePrices } = await import('../../../src/handlers/portfolio/fetch.js');
+		await fetchFlowDatePrices(new Map(), [
+			{ asset: 'btc', atMs: jstMs(2023, 4, 20, 12) },
+			{ asset: 'eth', atMs: jstMs(2023, 4, 20, 12) },
+			{ asset: 'btc', atMs: jstMs(2024, 4, 20, 12) },
+		]);
+
+		const requested = mockedGetCandles.mock.calls.map((c) => `${c[0]}:${c[2]}`).sort();
+		expect(requested).toEqual(['btc_jpy:2023', 'btc_jpy:2024', 'eth_jpy:2023']);
+	});
+
+	it('JPY・非有限タイムスタンプは追加取得の対象外', async () => {
+		const { fetchFlowDatePrices } = await import('../../../src/handlers/portfolio/fetch.js');
+		const result = await fetchFlowDatePrices(new Map(), [
+			{ asset: 'jpy', atMs: jstMs(2023, 4, 20, 12) },
+			{ asset: 'btc', atMs: Number.NaN },
+		]);
+
+		expect(mockedGetCandles).not.toHaveBeenCalled();
+		expect(result.size).toBe(0);
+	});
+
+	it('取得に失敗した (資産, 年) は日次価格に載らない（呼び出し側が現在価格に落とす）', async () => {
+		mockedGetCandles.mockResolvedValue({ ok: false, error: 'upstream', message: 'fail' });
+
+		const { fetchFlowDatePrices } = await import('../../../src/handlers/portfolio/fetch.js');
+		const result = await fetchFlowDatePrices(new Map(), [{ asset: 'btc', atMs: jstMs(2023, 4, 20, 12) }]);
+
+		expect(mockedGetCandles).toHaveBeenCalledTimes(1);
+		expect(result.get('btc')?.size ?? 0).toBe(0);
+	});
+
+	it('get_candles が throw しても他の chunk の結果は残る', async () => {
+		const okDayMs = jstMs(2024, 4, 20);
+		mockedGetCandles.mockImplementation(async (pair: string) => {
+			if (pair === 'eth_jpy') throw new Error('boom');
+			return candleAt(okDayMs, 5_000_000);
+		});
+
+		const { fetchFlowDatePrices } = await import('../../../src/handlers/portfolio/fetch.js');
+		const result = await fetchFlowDatePrices(new Map(), [
+			{ asset: 'eth', atMs: jstMs(2024, 4, 20, 12) },
+			{ asset: 'btc', atMs: jstMs(2024, 4, 20, 12) },
+		]);
+
+		expect(result.get('btc')?.get(okDayMs)).toBe(5_000_000);
+		expect(result.get('eth')).toBeUndefined();
+	});
+
+	it('入力の Map を破壊しない（資産推移シリーズの品質判定を巻き込まない）', async () => {
+		const recentDayMs = jstMs(2026, 8, 1);
+		const base = new Map([['btc', new Map([[recentDayMs, 1_000_000]])]]);
+		mockedGetCandles.mockResolvedValue(candleAt(jstMs(2023, 4, 20), 4_000_000));
+
+		const { fetchFlowDatePrices } = await import('../../../src/handlers/portfolio/fetch.js');
+		const result = await fetchFlowDatePrices(base, [{ asset: 'btc', atMs: jstMs(2023, 4, 20, 12) }]);
+
+		// 追加取得分は戻り値にのみ入り、入力の直近 400 日窓はそのまま
+		expect(result.get('btc')?.get(jstMs(2023, 4, 20))).toBe(4_000_000);
+		expect(base.get('btc')?.size).toBe(1);
+		expect(base.get('btc')?.has(jstMs(2023, 4, 20))).toBe(false);
+		// 直近窓の値は上書きされない
+		expect(result.get('btc')?.get(recentDayMs)).toBe(1_000_000);
+	});
+
+	it('chunk 数の上限を超えた分は取得しない（新しい年から優先する）', async () => {
+		mockedGetCandles.mockResolvedValue(candleAt(jstMs(2020, 1, 2), 1_000_000));
+
+		const { fetchFlowDatePrices, MAX_FLOW_PRICE_YEAR_CHUNKS } = await import(
+			'../../../src/handlers/portfolio/fetch.js'
+		);
+		// 上限 +2 年ぶんの入出庫を古い年から並べる
+		const years = Array.from({ length: MAX_FLOW_PRICE_YEAR_CHUNKS + 2 }, (_, i) => 2005 + i);
+		await fetchFlowDatePrices(
+			new Map(),
+			years.map((y) => ({ asset: 'btc', atMs: jstMs(y, 6, 1, 12) })),
+		);
+
+		expect(mockedGetCandles).toHaveBeenCalledTimes(MAX_FLOW_PRICE_YEAR_CHUNKS);
+		const requestedYears = mockedGetCandles.mock.calls.map((c) => Number(c[2])).sort((a, b) => a - b);
+		// 切り捨てられるのは最も古い 2 年（2005, 2006）
+		expect(requestedYears).toEqual(years.slice(2));
+	});
+});

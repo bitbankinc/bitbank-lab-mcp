@@ -16,6 +16,7 @@ import { getDefaultClient } from '../private/client.js';
 import {
 	AnalyzeMyPortfolioOutputSchema,
 	type PortfolioFlowUnavailableReason,
+	type PortfolioFlowValuationBasis,
 	type PortfolioQtyMismatchReason,
 } from '../private/schemas.js';
 import { failPrivateToolError } from '../private/tool-error.js';
@@ -30,6 +31,7 @@ import {
 	calcPeriodMarginPnl,
 	calcPeriodRealizedPnl,
 	calcPnl,
+	collectFlowValuationTargets,
 	flowUnavailableReasonFor,
 	getJstPeriodBoundaries,
 	type PeriodSpec,
@@ -37,11 +39,13 @@ import {
 	qtyInvariantHolds,
 	qtyMismatchReasonFor,
 	resolveDepositWithdrawalStatus,
+	summarizeFlowValuation,
 } from './portfolio/calc.js';
 import { PORTFOLIO_CALENDAR_TZ } from './portfolio/calendar.js';
 import {
 	fetchCandlePriceData,
 	fetchDepositWithdrawal,
+	fetchFlowDatePrices,
 	fetchMarginAccountInfo,
 	fetchTechnical,
 	fetchTickerPrices,
@@ -53,6 +57,7 @@ import type {
 	CandlePriceData,
 	DepositWithdrawalSummary,
 	EquityPoint,
+	FlowPricing,
 	MarginAccountInfo,
 	PeriodAccountPnl,
 	PeriodDWSummary,
@@ -107,6 +112,13 @@ function buildMarginPositionsBlock(info: MarginAccountInfo): string[] {
 	lines.push(`  集計: ${aggregateParts.join(' / ')}`);
 	return lines;
 }
+
+/** 暗号資産入出庫の JPY 換算方式の表示ラベル（summary 用）。 */
+const FLOW_VALUATION_LABEL: Record<PortfolioFlowValuationBasis, string> = {
+	deposit_date_price: '入出庫日の始値ベース',
+	current_price_fallback: '現在価格での仮評価',
+	mixed: '入出庫日の始値ベース + 一部は現在価格での仮評価',
+};
 
 /** 理由コードごとの「入出金履歴が使えない原因」を表す句（各文言の共通パーツ）。 */
 const FLOW_UNAVAILABLE_CAUSE: Record<PortfolioFlowUnavailableReason, string> = {
@@ -458,6 +470,29 @@ export default async function analyzeMyPortfolioHandler(args: {
 			);
 		}
 
+		// 6.5.5. 暗号資産入出庫の JPY 換算に使う価格を確定する。
+		// 入出庫日（入庫: confirmed_at / 出庫: requested_at）の 1day open を第一候補にし、
+		// 直近 400 日窓（fetchCandlePriceData）で解けない分だけ年単位 chunk を追加取得する。
+		// 現在価格で仮評価すると誤差が相場と連動して動く系統的バイアスになるため（#53 の機序 6）。
+		//
+		// 追加取得の母集合は「実際に換算が要る入出庫」だけに絞る:
+		//   - 入出金分析セクションを出す構成 → 全履歴（口座全体リターンが全履歴を集計するため）
+		//   - 出さない構成 → 年初以降のみ（期間ネットフローの最長期間が年初来）
+		// candlePricePromise の await をここに引き上げるが、in-flight の promise を待つ位置は
+		// 元の 6.6 と同じで、間に別の I/O は挟まっていない。
+		const candlePriceData = await candlePricePromise;
+		const flowValuationTargets = collectFlowValuationTargets(
+			dwData,
+			include_deposit_withdrawal ? undefined : boundaries.yearStartMs,
+		);
+		const flowPricing: FlowPricing = {
+			dailyPrices: await fetchFlowDatePrices(candlePriceData.dailyPrices, flowValuationTargets),
+			currentPrices: prices,
+		};
+		// 換算方式の申告は母集合を 1 度だけ数える。各セクションの内訳（全履歴 ⊃ 年初来 ⊃ 月初来）を
+		// 足すと二重計上になるため、meta / summary の件数はここで確定した値を使う。
+		const flowValuation = summarizeFlowValuation(flowValuationTargets, flowPricing);
+
 		// 6.6. 期間別パフォーマンス（評価額比較）— 主指標
 		let yearlyPerformance: PeriodPerformance | undefined;
 		let monthlyPerformance: PeriodPerformance | undefined;
@@ -472,7 +507,6 @@ export default async function analyzeMyPortfolioHandler(args: {
 		let equitySeriesQuality: 'complete' | 'partial_fallback' | 'fallback_only' | 'jpy_only' | undefined;
 		let equitySeriesFallbackAssets: string[] = [];
 		if (include_pnl) {
-			const candlePriceData = await candlePricePromise;
 			const currentJpyValueRounded = Math.round(totalJpyValue);
 
 			const performanceCtx: PortfolioPerformanceContext = {
@@ -480,7 +514,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 				trades: allTrades,
 				dwData,
 				candlePriceData,
-				currentPrices: prices,
+				flowPricing,
 				currentValue: currentJpyValueRounded,
 				nowIso: boundaries.nowIso,
 				flowUnavailableReason,
@@ -620,7 +654,6 @@ export default async function analyzeMyPortfolioHandler(args: {
 			  }>
 			| undefined;
 		if (include_pnl) {
-			const candlePriceData = await candlePricePromise;
 			const periodPrices = candlePriceData.boundaryPrices;
 			holdingsPerformance = cryptoHoldings.map((h) => {
 				const currentPrice = prices.get(h.asset);
@@ -663,21 +696,21 @@ export default async function analyzeMyPortfolioHandler(args: {
 					dwWarnings.push(...dwData.warnings.map((w) => `注意: ${w}（部分的なデータで概算）`));
 				}
 				if (dwData.deposits.length > 0 || dwData.withdrawals.length > 0) {
-					dwSummary = calcDepositWithdrawalSummary(dwData, totalJpyValue, prices);
+					dwSummary = calcDepositWithdrawalSummary(dwData, totalJpyValue, flowPricing);
 					// 年次・月次の入出金サマリー
 					yearlyDWSummary = calcPeriodDWSummary(
 						dwData,
 						boundaries.yearStartMs,
 						boundaries.yearStartIso,
 						boundaries.nowIso,
-						prices,
+						flowPricing,
 					);
 					monthlyDWSummary = calcPeriodDWSummary(
 						dwData,
 						boundaries.monthStartMs,
 						boundaries.monthStartIso,
 						boundaries.nowIso,
-						prices,
+						flowPricing,
 					);
 				}
 			}
@@ -731,7 +764,9 @@ export default async function analyzeMyPortfolioHandler(args: {
 		if (monthlyPerformance) lines.push(...buildPerformanceLines('月初比', monthlyPerformance));
 		if (yearlyPerformance || monthlyPerformance) {
 			lines.push(`期間基準: JST`);
-			lines.push('※ 期初評価額は約定・入出金を逆算して復元、期初始値で評価。暗号資産入出庫は現在価格で仮評価');
+			lines.push(
+				'※ 期初評価額は約定・入出金を逆算して復元、期初始値で評価。暗号資産入出庫は入出庫日（入庫: confirmed_at / 出庫: requested_at）の始値で JPY 換算',
+			);
 			lines.push('※ 出金元本は外部フローとして除外、出金手数料はコストとして performance に含む');
 			// 入出金を巻き戻せていない場合、期初評価額と資産推移シリーズは「ずっと同額保有」寄りに歪む。
 			// 上の 2 行が復元前提を語っているので、前提が満たせていないことをその直後に置く。
@@ -856,17 +891,23 @@ export default async function analyzeMyPortfolioHandler(args: {
 			lines.push(`  JPY純入金: ${formatPriceJPY(Math.round(netJpyDeposit))}`);
 			if (dwSummary.crypto_deposit_estimated_jpy) {
 				lines.push(
-					`  暗号資産入庫の仮評価: ${formatPriceJPY(dwSummary.crypto_deposit_estimated_jpy)}（${dwSummary.crypto_deposit_count}件、現在価格ベース）`,
+					`  暗号資産入庫の評価: ${formatPriceJPY(dwSummary.crypto_deposit_estimated_jpy)}（${dwSummary.crypto_deposit_count}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_deposit_valuation?.basis ?? 'current_price_fallback']}）`,
 				);
 			}
 			lines.push(
-				`  純投入額: ${formatPriceJPY(dwSummary.net_jpy_invested)}${dwSummary.crypto_deposit_estimated_jpy ? '（JPY純入金 + 暗号資産入庫の仮評価）' : ''}`,
+				`  純投入額: ${formatPriceJPY(dwSummary.net_jpy_invested)}${dwSummary.crypto_deposit_estimated_jpy ? '（JPY純入金 + 暗号資産入庫の評価額）' : ''}`,
 			);
 			if (!dwSummary.is_complete) {
 				lines.push('  ※ 入出金履歴が多く全件取得できなかったため、概算値です');
 			}
 			if (dwSummary.crypto_deposit_count > 0 && !dwSummary.crypto_deposit_estimated_jpy) {
-				lines.push(`  ※ 暗号資産入庫 ${dwSummary.crypto_deposit_count}件の価格が取得できず仮評価に含まれていません`);
+				lines.push(`  ※ 暗号資産入庫 ${dwSummary.crypto_deposit_count}件の価格が取得できず評価額に含まれていません`);
+			}
+			const depositFallbackCount = dwSummary.crypto_deposit_valuation?.current_price_fallback_count ?? 0;
+			if (depositFallbackCount > 0) {
+				lines.push(
+					`  ※ うち ${depositFallbackCount}件は入庫日の価格を取得できず現在価格で仮評価（この分だけ相場変動で評価額が動きます）`,
+				);
 			}
 			if (dwSummary.crypto_withdrawal_count > 0) {
 				lines.push(`  ※ 暗号資産出庫 ${dwSummary.crypto_withdrawal_count}件は送金として損益計算から除外しています`);
@@ -987,7 +1028,15 @@ export default async function analyzeMyPortfolioHandler(args: {
 		}
 		if (netFlowUnpricedAssets.length > 0) {
 			calcWarnings.push(
-				`${netFlowUnpricedAssets.map((a) => a.toUpperCase()).join(', ')} の現在価格が取得できず、期間中の入出庫を純入出金に計上できませんでした（純入出金・入出金調整後増減が過小）`,
+				`${netFlowUnpricedAssets.map((a) => a.toUpperCase()).join(', ')} は入出庫日価格・現在価格のいずれも取得できず、期間中の入出庫を純入出金に計上できませんでした（純入出金・入出金調整後増減が過小）`,
+			);
+		}
+		// 入出庫日の日次価格を解決できず現在価格に落ちた分は、評価額が相場と連動して動く
+		// （本来これを止めるのが入出庫日評価の目的）。黙って混ぜず件数で申告する。
+		const flowValuationFallbackCount = flowValuation?.current_price_fallback_count ?? 0;
+		if (flowValuationFallbackCount > 0) {
+			calcWarnings.push(
+				`暗号資産入出庫 ${flowValuationFallbackCount}件は入出庫日（入庫: confirmed_at / 出庫: requested_at）の価格を取得できず現在価格で仮評価しています。この分の評価額は相場変動で動きます`,
 			);
 		}
 
@@ -1075,6 +1124,8 @@ export default async function analyzeMyPortfolioHandler(args: {
 			equitySeriesQuality,
 			equitySeriesFallbackAssets: equitySeriesFallbackAssets.length > 0 ? equitySeriesFallbackAssets : undefined,
 			flowDataUnavailableReason: flowUnavailableReason,
+			flowValuationBasis: flowValuation?.basis,
+			flowValuationFallbackCount: flowValuationFallbackCount > 0 ? flowValuationFallbackCount : undefined,
 			warnings: calcWarnings.length > 0 ? calcWarnings : undefined,
 		};
 
