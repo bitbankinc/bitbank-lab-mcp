@@ -273,10 +273,13 @@ export type PortfolioFlowValuationBasis = z.infer<typeof PortfolioFlowValuationB
  */
 const FlowValuationSchema = z
 	.object({
-		deposit_date_price_count: z.number().int().describe('入出庫日の 1day open で換算できた件数'),
+		// 件数はゼロ始まりの加算でしか動かないので負値は取り得ない。公開スキーマ（MCP の
+		// output JSON Schema）は実際に出す値の範囲をそのまま表すべきなので minimum: 0 まで書く。
+		deposit_date_price_count: z.number().int().nonnegative().describe('入出庫日の 1day open で換算できた件数'),
 		current_price_fallback_count: z
 			.number()
 			.int()
+			.nonnegative()
 			.describe('入出庫日の価格を解決できず現在価格で仮評価した件数。0 より大きいと評価額が相場と連動して動く'),
 		basis: PortfolioFlowValuationBasisEnum.describe(
 			'支配的な換算方式。両方の件数が正のときのみ mixed になる（個々の入出庫は 2 値のいずれか）',
@@ -592,6 +595,7 @@ export const AnalyzeMyPortfolioMetaSchema = z.object({
 	flowValuationFallbackCount: z
 		.number()
 		.int()
+		.nonnegative()
 		.optional()
 		.describe(
 			'入出庫日の日次価格を解決できず現在価格で仮評価した入出庫の件数。1 件以上あると deposit_withdrawal_summary / *_dw_summary / *_performance.net_flow_jpy の該当分が相場と連動して動く。該当なしのときは undefined。',
