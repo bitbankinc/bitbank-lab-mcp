@@ -54,7 +54,16 @@ export interface SnapshotScope {
 
 const snapshots = new Map<string, SnapshotEntry>();
 
-/** sessionId + resourceUri を Map キーにする。秘密情報は含めない。 */
+/**
+ * sessionId + resourceUri を Map キーにする。秘密情報は含めない。
+ *
+ * ⚠️ **未設定の `sessionId` と空文字を同一キーに畳んでいる。** stdio は 1 接続で
+ * `sessionId` が常に undefined なので今日は問題にならないが、HTTP トランスポートを
+ * 足すと別クライアントが同じキーのスナップショット（＝確認トークン入りの `_meta`）を
+ * 読み出せる。ADR-0007 判断事項 B のとおり、トランスポート追加と同じ PR で
+ * 「未設定は fail-closed」へ変更すること。tripwire は
+ * `tests/http-transport-tripwire.test.ts`。
+ */
 export function uiSnapshotKey(sessionId: string | undefined, resourceUri: string): string {
 	return `${sessionId ?? ''}\0${resourceUri}`;
 }
