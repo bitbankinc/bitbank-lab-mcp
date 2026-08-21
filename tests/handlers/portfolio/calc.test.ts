@@ -146,6 +146,34 @@ describe('calcPnl', () => {
 		expect(result.trade_count).toBe(2);
 	});
 
+	it('売り側 fee_amount_base > 0 でも数量・原価が対称に減る（reconstructed_qty の誤検知防止）', () => {
+		// 売りの feeBase は API 仕様上ゼロだが、防御方針（冒頭コメント）どおり非ゼロでも
+		// 口座から減る base 量 = qty + feeBase として扱う。reconstructHoldingsAtDate の
+		// 巻き戻し（qty + feeBase を加算）と対称でないと、reconstructed_qty が実残高より
+		// feeBase ぶん過大になり数量不変条件が誤検知する。
+		// 買い 1 BTC @ 10_000_000 → 売り 0.5 BTC @ 12_000_000、fee_base=0.002、fee_quote=3000
+		//   disposed  = 0.502、sellCost = 0.502 * 10_000_000 = 5_020_000
+		//   sellRev   = 0.5 * 12_000_000 - 3_000 = 5_997_000
+		//   realized  = 977_000、残 qty = 0.498、残 cost = 4_980_000（avg は 10_000_000 のまま）
+		const trades: RawTrade[] = [
+			makeTrade({ trade_id: 1, executed_at: 1, side: 'buy', amount: '1', price: '10000000' }),
+			makeTrade({
+				trade_id: 2,
+				executed_at: 2,
+				side: 'sell',
+				amount: '0.5',
+				price: '12000000',
+				fee_amount_base: '0.002',
+				fee_amount_quote: '3000',
+			}),
+		];
+		const result = calcPnl(trades, 'btc');
+		expect(result.realized_pnl).toBe(977_000);
+		expect(result.reconstructed_qty).toBeCloseTo(0.498, 9);
+		expect(result.cost_basis).toBeCloseTo(4_980_000, 6);
+		expect(result.avg_buy_price).toBeCloseTo(10_000_000, 4);
+	});
+
 	it('fee_amount_base = 0 の買いで旧挙動と等価な結果を返す', () => {
 		// 旧実装互換: fee_base=0 のとき holdingQty = qty、avg_buy_price = price
 		const trades: RawTrade[] = [
@@ -442,6 +470,26 @@ describe('calcPeriodRealizedPnl', () => {
 			withdrawals,
 		);
 		expect(result.realized_pnl).toBe(1_000_000);
+		expect(result.sell_count).toBe(1);
+	});
+
+	it('期間内 sell の fee_amount_base が calcPnl と同じ対称形で残数量・原価に反映される', () => {
+		// calcPnl 側の対称化と同一ケース（買い @ 期間前、売り fee_base=0.002 @ 期間内）。
+		// 実現損益は 977_000 で calcPnl と一致する（残数量・平均原価の整合を保つ）。
+		const trades: RawTrade[] = [
+			makeTrade({ trade_id: 1, executed_at: 100, side: 'buy', amount: '1', price: '10000000' }),
+			makeTrade({
+				trade_id: 2,
+				executed_at: 1500,
+				side: 'sell',
+				amount: '0.5',
+				price: '12000000',
+				fee_amount_base: '0.002',
+				fee_amount_quote: '3000',
+			}),
+		];
+		const result = calcPeriodRealizedPnl(trades, 1000, 's', 'e');
+		expect(result.realized_pnl).toBe(977_000);
 		expect(result.sell_count).toBe(1);
 	});
 

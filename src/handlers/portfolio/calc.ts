@@ -99,8 +99,11 @@ export function calcPnl(trades: RawTrade[], asset: string, withdrawals?: RawWith
 				// sell: 移動平均法で原価を按分
 				if (holdingQty > 0) {
 					const avgCost = holdingCost / holdingQty;
+					// 売りで口座から減る base 量は qty + feeBase（reconstructHoldingsAtDate の巻き戻しと対称形。
+					// 冒頭の方針コメントのとおり売りの feeBase は API 仕様上ゼロだが、非ゼロでも
+					// 数量・原価が正しくなるよう base 建て手数料も平均原価で按分し実現損益に費用計上する）。
 					// 保有量を超える売りの場合、原価は保有分のみ按分（超過分は原価ゼロ扱い）
-					const coveredQty = Math.min(qty, holdingQty);
+					const coveredQty = Math.min(qty + feeBase, holdingQty);
 					const sellCost = coveredQty * avgCost;
 					const sellRevenue = qty * price - feeQuote; // 売却収入から手数料を差し引く
 					realizedPnl += sellRevenue - sellCost;
@@ -255,8 +258,9 @@ export function calcPeriodRealizedPnl(
 				let sellRealized = 0;
 				if (h.qty > 0) {
 					const avgCost = h.cost / h.qty;
+					// 売りで減る base 量は qty + feeBase（calcPnl と同じ対称形。残数量・平均原価を一致させる）
 					// 保有量を超える売りの場合、原価は保有分のみ按分
-					const coveredQty = Math.min(qty, h.qty);
+					const coveredQty = Math.min(qty + feeBase, h.qty);
 					const sellCost = coveredQty * avgCost;
 					const sellRevenue = qty * price - feeQuote;
 					sellRealized = sellRevenue - sellCost;
