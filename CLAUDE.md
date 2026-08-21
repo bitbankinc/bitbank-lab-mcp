@@ -25,7 +25,9 @@ npm run typecheck           # tsc --noEmit
 - 対応ペアは JPY 建てのみ（表示層が円前提）。非 JPY 建て対応は別途、表示層の quote 通貨移行が前提（`lib/validate.ts` の `ALLOWED_PAIRS`、ガードは `tests/lib/validate.test.ts`）。
 - **stdio 以外のトランスポート（HTTP 等）を `src/server.ts` に足す変更は、同じ PR で
   `confirmation_token` の session / principal 束縛を実装しない限り入れない**（ADR-0007 判断事項 B）。
-  トークンの HMAC は `action + params + expiresAt` のみで session 束縛が無く、UI スナップショットの
+  トークンの HMAC ペイロードは `action + params + expiresAt` のみで **session 束縛が無い**
+  （署名鍵の per-process nonce はプロセス境界を閉じるだけで、HTTP では 1 プロセスに複数
+  セッションが同居するため session 境界には効かない）。UI スナップショットの
   キーと MRTR の bind は未設定 sessionId を空文字に畳んでいる。stdio は 1 接続なので今日は無害だが、
   HTTP を足した瞬間に別クライアントからの execute を弾けなくなる。ガードは
   `tests/http-transport-tripwire.test.ts`（必要な実装内容が失敗メッセージに出る）。

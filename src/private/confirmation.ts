@@ -3,15 +3,20 @@
  *
  * preview_order / preview_cancel_order / preview_cancel_orders が発行した
  * 確認トークンを、create_order / cancel_order / cancel_orders が検証する。
- * トークンは HMAC-SHA256(BITBANK_API_SECRET, payload) で生成し、
+ * トークンは HMAC-SHA256(BITBANK_API_SECRET + per-process nonce, payload) で生成し、
  * パラメータ一致 + 有効期限を検証する。
+ *
+ * 署名鍵に per-process nonce を混ぜているのは、**ワンショット性の保証範囲を
+ * トークンの有効範囲と一致させる**ため。使用済み記録（`usedTokens`）はプロセス内メモリに
+ * しか無いので、トークンだけがプロセスを跨いで有効だと「再起動 / 別プロセスなら同じトークンが
+ * もう一度通る」という非対称が生じる。詳細は `getProcessNonce` のコメントと ADR-0007。
  *
  * 使用済みトークンの保持は `lib/bounded-expiring-set.ts` の `BoundedExpiringSet` に載せている。
  * TTL 経過分は purge される一方、件数上限に達した場合は生存トークンを追い出さず
  * `validateToken` を失敗させる（fail-closed）。
  */
 
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { AddRejectReason } from '../../lib/bounded-expiring-set.js';
 import { BoundedExpiringSet } from '../../lib/bounded-expiring-set.js';
 
@@ -116,6 +121,62 @@ function getSecret(): string {
 }
 
 /**
+ * per-process のランダム値を置く場所。
+ *
+ * **モジュールスコープではなく `globalThis` に置く。** 守りたい単位は「OS プロセス」であって
+ * 「モジュールインスタンス」ではない。モジュールスコープに置くと、テストの `vi.resetModules()`
+ * や将来の動的 import 構成でモジュールが再評価されるたびに値が変わり、同一プロセス内で
+ * 発行したトークンが検証できなくなる。`Symbol.for` のグローバルレジストリなら
+ * 再評価しても同じ値を引き当てる。
+ */
+const PROCESS_NONCE_KEY = Symbol.for('bitbank-lab-mcp.confirmation.processNonce');
+
+/**
+ * プロセスごとのランダム値。**署名鍵に混ぜてトークンをプロセスへ束縛する。**
+ *
+ * これが無いと、HMAC が永続の `BITBANK_API_SECRET` だけで決まる一方、使用済み記録
+ * （`usedTokens`）はプロセス内メモリにしか無いため、ワンショット性がプロセス内に閉じているのに
+ * トークンは閉じていない、という非対称が生じる。具体的には:
+ *
+ *   - TTL 内にサーバープロセスが再起動すると、使用済みトークンがもう一度通る
+ *   - 同じ secret を持つ別プロセスでも通る（ホストが surface ごとにサーバーを spawn する構成）
+ *
+ * `requestState` は per-process ランダム鍵で既にこの穴を塞いでおり
+ * （`src/private/request-state.ts` 冒頭）、確認トークンだけが非対称だった。それを揃える。
+ *
+ * 代償: プロセス再起動で**未使用の preview も無効化される**。これは経路 1（elicitation）の
+ * pending 確認が再起動で失効するのと同じ挙動で、fail-closed 側に倒れる。
+ */
+function getProcessNonce(): string {
+	const store = globalThis as unknown as Record<symbol, unknown>;
+	const existing = store[PROCESS_NONCE_KEY];
+	if (typeof existing === 'string') return existing;
+	const nonce = randomBytes(32).toString('hex');
+	store[PROCESS_NONCE_KEY] = nonce;
+	return nonce;
+}
+
+/**
+ * トークンの署名鍵。API secret と per-process nonce を結合する。
+ *
+ * 区切りに `\0` を使い、両者の境界を曖昧にしない（secret 末尾と nonce 先頭の
+ * 連結違いが同じ鍵にならないようにする）。
+ */
+function getSigningKey(): string {
+	return `${getSecret()}\0${getProcessNonce()}`;
+}
+
+/**
+ * per-process nonce を再生成する（テスト用）。
+ *
+ * プロセス再起動を模擬する。呼ぶと、それ以前に発行した全トークンが `token_invalid` になる。
+ */
+export function _rotateProcessNonce(): void {
+	const store = globalThis as unknown as Record<symbol, unknown>;
+	store[PROCESS_NONCE_KEY] = randomBytes(32).toString('hex');
+}
+
+/**
  * トークンペイロードを正規化する。
  * オブジェクトのキーをソートし、undefined を除外して JSON 文字列化する。
  */
@@ -195,7 +256,7 @@ export function generateToken(
 	const ttl = getTtlMs();
 	const expiresAt = nowMs + ttl;
 	const payload = canonicalize({ action, ...params, expiresAt });
-	const token = hmac(getSecret(), payload);
+	const token = hmac(getSigningKey(), payload);
 	return { token, expiresAt };
 }
 
@@ -236,7 +297,7 @@ export function validateToken(
 
 	// HMAC 再計算で検証
 	const payload = canonicalize({ action, ...params, expiresAt });
-	const expected = hmac(getSecret(), payload);
+	const expected = hmac(getSigningKey(), payload);
 
 	if (token.length !== expected.length || !timingSafeEqual(Buffer.from(token), Buffer.from(expected))) {
 		return { message: TOKEN_INVALID_MESSAGE, code: 'token_invalid' };
