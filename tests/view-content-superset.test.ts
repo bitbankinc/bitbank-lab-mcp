@@ -68,9 +68,21 @@ function headerFields(text: string): string[] {
 	return fields;
 }
 
-/** view の content から定型要素（注記行 + ヘッダ主要フィールド）を抽出した集合。 */
+/**
+ * 期間行（`スキャン範囲:` / `検出パターン分布期間:`）。detect_patterns がヘッダ直下に出す定型 2 行で、
+ * 2 行はそれぞれ「検出器に渡した足のレンジ」と「検出されたパターンの分布」という**別の量**を指す。
+ * 旧ラベル「検出対象期間」が前者と誤読されていたので、両方が全 view に出続けることをここで固定する。
+ */
+function periodLines(text: string): string[] {
+	return text
+		.split('\n')
+		.map((line) => line.trim())
+		.filter((line) => /^(?:スキャン範囲|検出パターン分布期間):/u.test(line));
+}
+
+/** view の content から定型要素（注記行 + 期間行 + ヘッダ主要フィールド）を抽出した集合。 */
 function fixedElements(text: string): Set<string> {
-	return new Set([...annotationLines(text), ...headerFields(text)]);
+	return new Set([...annotationLines(text), ...periodLines(text), ...headerFields(text)]);
 }
 
 /**
@@ -231,6 +243,9 @@ function patternsFixture(): Awaited<ReturnType<typeof detectPatterns>> {
 			pair: 'btc_jpy',
 			type: '1day',
 			count: PATTERN_COUNT,
+			// `スキャン範囲` 行の元データ。bars は runPatterns の limit=180 とわざと食い違わせている
+			// ——ヘッダの `{limit}本から` は要求本数であってスキャン本数ではない、という現状を隠さないため。
+			scan: { start: '2025-07-21T00:00:00.000Z', end: '2026-01-26T00:00:00.000Z', bars: 190 },
 			visualization_hints: { preferred_style: 'line', highlight_patterns: [] },
 			warning: '取得層: 180本中20本が欠損しています',
 			warnings: ['計算層: スイング検出に必要なバー数が不足しています'],
@@ -408,9 +423,23 @@ describe('階梯上の view の content は下位 view の上位集合（§3-2 �
 		const summaryElements = fixedElements(summary);
 		expect([...summaryElements].filter((e) => e.startsWith('⚠️'))).toHaveLength(2);
 		expect(summaryElements).toContain('pair=BTC_JPY');
+		expect(periodLines(summary)).toHaveLength(2);
 
 		expectSupersetOf(fixedElements(detailed), fixedElements(summary), 'detailed ⊇ summary');
 		expectSupersetOf(fixedElements(full), fixedElements(detailed), 'full ⊇ detailed');
+	});
+
+	it('detect_patterns: スキャン範囲 / 検出パターン分布期間の 2 行が summary / detailed / full すべてに出る', async () => {
+		const byView = await collectContentByView(['summary', 'detailed', 'full'] as const, (view) => runPatterns(view));
+
+		for (const view of ['summary', 'detailed', 'full'] as const) {
+			const text = byView.get(view) as string;
+			// スキャン範囲は meta.scan（検出器に渡した足）由来。1day なので暦日表示。
+			expect(text, `view=${view}`).toContain('スキャン範囲: 2025-07-21 ~ 2026-01-26（190本）');
+			// 分布期間は data.patterns の range 分布由来。旧ラベルは残っていない。
+			expect(text, `view=${view}`).toContain('検出パターン分布期間: 2026-01-01 ~ 2026-01-26');
+			expect(text, `view=${view}`).not.toContain('検出対象期間');
+		}
 	});
 
 	it('detect_patterns: パターン行のキー集合が summary ⊆ detailed ⊆ full', async () => {

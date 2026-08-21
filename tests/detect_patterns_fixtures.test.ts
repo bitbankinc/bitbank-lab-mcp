@@ -1348,7 +1348,7 @@ describe('detect_patterns fixtures', () => {
 			expect(res.summary).toContain('2026-10-22');
 		});
 
-		it('検出対象期間（detectionPeriodText）も tz で整形される', async () => {
+		it('検出パターン分布期間も tz で整形される', async () => {
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildDoubleTopAt2330Z())));
 
 			const res = await detectPatterns('btc_jpy', '1day', 26, {
@@ -1361,7 +1361,7 @@ describe('detect_patterns fixtures', () => {
 			});
 
 			assertOk(res);
-			expect(res.summary).toContain('検出対象期間: 2026-10-07 ~ 2026-10-22');
+			expect(res.summary).toContain('検出パターン分布期間: 2026-10-07 ~ 2026-10-22');
 
 			// UTC のとき
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildDoubleTopAt2330Z())));
@@ -1375,7 +1375,7 @@ describe('detect_patterns fixtures', () => {
 			});
 
 			assertOk(resUtc);
-			expect(resUtc.summary).toContain('検出対象期間: 2026-10-06 ~ 2026-10-21');
+			expect(resUtc.summary).toContain('検出パターン分布期間: 2026-10-06 ~ 2026-10-21');
 		});
 	});
 });

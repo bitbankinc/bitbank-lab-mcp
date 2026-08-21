@@ -75,10 +75,15 @@ export const DetectPatternsInputSchema = BasePairInputSchema.extend({
 		.default('detailed')
 		.describe(
 			`${VIEW_CONTRACT_NOTE}\n` +
-				'- summary: ヘッダ ＋ 分類内訳 ＋ 直近30日/90日件数 ＋ 期間 ＋ 検討パターン。個々のパターンの詳細は content に出ない。\n' +
+				'summary / detailed / full では、ヘッダ直下に 2 行が出る（**別の量なので混同しないこと**）:\n' +
+				'  - `スキャン範囲: <先頭足> ~ <末尾足>（N本）` — 検出器に実際に渡した足のレンジ。' +
+				'1day 未満の時間足では時刻まで表示する。構造化データは meta.scan。\n' +
+				'  - `検出パターン分布期間: <最古 range.start> ~ <最新 range.end>（N日間）` — ' +
+				'**検出されたパターンの分布**であってスキャン窓ではない（旧ラベル「検出対象期間」）。\n' +
+				'- summary: ヘッダ ＋ 分類内訳 ＋ 直近30日/90日件数 ＋ 上記 2 行 ＋ 検討パターン。個々のパターンの詳細は content に出ない。\n' +
 				'- detailed（既定）: 上位 5 件の詳細。6 件目以降は content に出ない。structuredContent に usage_example を**足す**。\n' +
 				'- full: 全件の詳細（double_top / double_bottom では山谷 3 点の pivot 行も出る）。本ツールの最重量。\n' +
-				'- debug（**階梯外**）: swings / candidates のみ。**検出パターンは content に出ない**——出力を置換する view なので full の上位集合ではない。structuredContent に data.candidates を**足す**。',
+				'- debug（**階梯外**）: swings / candidates のみ。**検出パターンも上記 2 行も content に出ない**——出力を置換する view なので full の上位集合ではない。structuredContent に data.candidates を**足す**。',
 		),
 	// New: relevance filter for "current-involved" long-term patterns
 	requireCurrentInPattern: z.boolean().optional().default(false),
@@ -94,7 +99,7 @@ export const DetectPatternsInputSchema = BasePairInputSchema.extend({
 		.default('Asia/Tokyo')
 		.describe(
 			'表示日時のタイムゾーン（既定: Asia/Tokyo）。get_candles の tz と揃える。' +
-				'pattern の表示日付（期間 / 形成期間 / 文脈期間 / ブレイク確認 / 先行トレンド / pivot / 検出対象期間 等）に適用される。' +
+				'pattern の表示日時（期間 / 形成期間 / 文脈期間 / ブレイク確認 / 先行トレンド / pivot / スキャン範囲 / 検出パターン分布期間 等）に適用される。' +
 				'構造化データ（data.patterns[*].range.start/end 等）は後方互換のため UTC ISO 文字列のまま不変。' +
 				'空文字も Asia/Tokyo にフォールバック。',
 		),
@@ -297,6 +302,19 @@ export const DetectPatternsOutputSchema = z.union([
 			pair: z.string(),
 			type: CandleTypeEnum,
 			count: z.number().int(),
+			scan: z
+				.object({
+					start: z.string().describe('スキャンした先頭足の UTC ISO 文字列。'),
+					end: z.string().describe('スキャンした末尾足の UTC ISO 文字列。'),
+					bars: z.number().int().describe('検出器に渡した足の本数。'),
+				})
+				.optional()
+				.describe(
+					'検出器に実際に渡した足のレンジ。入力 limit（要求本数）でも ' +
+						'data.patterns の range 分布でもなく、**スキャン窓そのもの**。' +
+						'機械クライアントが「どこまで見たか」を検証できるようにするためのフィールドで、' +
+						'content には「スキャン範囲」行として出る。isoTime が欠けている足しか無い場合は省略される。',
+				),
 			visualization_hints: z
 				.object({
 					preferred_style: z.enum(['candles', 'line']).optional(),

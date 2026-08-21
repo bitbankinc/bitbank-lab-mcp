@@ -14,6 +14,7 @@ import { detectTriangles } from './patterns/detect_triangles.js';
 import { detectTriples } from './patterns/detect_triples.js';
 import { detectWedges } from './patterns/detect_wedges.js';
 import { globalDedup } from './patterns/helpers.js';
+import { buildPeriodBlock, buildScanRange } from './patterns/period.js';
 import { rankPatterns } from './patterns/ranking.js';
 import { linearRegressionWithR2, near as nearFn, pct as pctFn } from './patterns/regression.js';
 import { type Candle, detectSwingPoints, filterPeaks, filterValleys } from './patterns/swing.js';
@@ -130,8 +131,13 @@ export default async function detectPatterns(
 			low: number;
 			isoTime?: string;
 		}>;
+		// 検出器に実際に渡す配列のレンジ。ヘッダの `{limit}本から` とは別物で、
+		// スキャン窓を機械的に検証できるよう meta.scan として出す。
+		const scan = buildScanRange(candles);
 		if (!Array.isArray(candles) || candles.length < 20) {
-			return DetectPatternsOutputSchema.parse(ok('insufficient data', { patterns: [] }, { pair, type, count: 0 }));
+			return DetectPatternsOutputSchema.parse(
+				ok('insufficient data', { patterns: [] }, { pair, type, count: 0, ...(scan ? { scan } : {}) }),
+			);
 		}
 
 		// 1) Swing points（patterns/swing.ts から）
@@ -450,27 +456,10 @@ export default async function detectPatterns(
 						.map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
 						.join('\n')
 				: '';
-		// 検出対象期間を算出
-		let detectionPeriodText = '';
-		{
-			const allStarts = summaryPatterns
-				.map((p) => p.range?.start)
-				.filter((s): s is string => !!s)
-				.map((s) => Date.parse(s))
-				.filter(Number.isFinite);
-			const allEnds = summaryPatterns
-				.map((p) => p.range?.end)
-				.filter((s): s is string => !!s)
-				.map((s) => Date.parse(s))
-				.filter(Number.isFinite);
-			if (allStarts.length && allEnds.length) {
-				// 検出対象期間も tz で表示（構造化データは UTC ISO のまま）
-				const s = formatDateInTz(Math.min(...allStarts), tz) ?? '';
-				const e = formatDateInTz(Math.max(...allEnds), tz) ?? '';
-				const days = Math.max(1, Math.round((Math.max(...allEnds) - Math.min(...allStarts)) / 86400000));
-				detectionPeriodText = `\n検出対象期間: ${s} ~ ${e}（${days}日間）`;
-			}
-		}
+		// スキャン範囲（検出器に渡した足）＋ 検出パターン分布期間（パターンの range 分布）。
+		// 2 行は別の量なので分けて出す（詳細は patterns/period.ts）。tz 表示、構造化データは UTC ISO のまま。
+		const periodBlock = buildPeriodBlock(scan, type, summaryPatterns, tz);
+		const periodText = periodBlock ? `\n${periodBlock}` : '';
 		// タイプ別件数を集約（例: rising_wedge×3, falling_wedge×2）
 		const typeCounts: Record<string, number> = {};
 		for (const p of summaryPatterns) {
@@ -481,7 +470,7 @@ export default async function detectPatterns(
 			.join(', ');
 
 		const baseSummary =
-			`${pair.toUpperCase()} ${tfLabel}（${type}） ${limit}本から${patterns.length}件を検出（${typeCountStr}）${detectionPeriodText}\n\n【検出パターン（全件）】\n${patternSummaries || 'なし'}${statsText}\n\nチャート連携: data.overlays を render_chart_svg.overlays に渡すと注釈/範囲を描画できます。\n\nパターン整合度について（形状一致度・対称性・期間から算出）:\n  0.8以上 = 理想的な形状（教科書的パターン）\n  0.7-0.8 = 標準的な形状（他指標と併用推奨）\n  0.6-0.7 = やや不明瞭（慎重に判断）\n  0.6未満 = 形状不十分` +
+			`${pair.toUpperCase()} ${tfLabel}（${type}） ${limit}本から${patterns.length}件を検出（${typeCountStr}）${periodText}\n\n【検出パターン（全件）】\n${patternSummaries || 'なし'}${statsText}\n\nチャート連携: data.overlays を render_chart_svg.overlays に渡すと注釈/範囲を描画できます。\n\nパターン整合度について（形状一致度・対称性・期間から算出）:\n  0.8以上 = 理想的な形状（教科書的パターン）\n  0.7-0.8 = 標準的な形状（他指標と併用推奨）\n  0.6-0.7 = やや不明瞭（慎重に判断）\n  0.6未満 = 形状不十分` +
 			`\n\n---\n📌 含まれるもの: チャートパターン検出（種類・整合度・期間）、ブレイク情報、統計` +
 			`\n📌 含まれないもの: 出来高によるパターン確認、テクニカル指標値、板情報` +
 			`\n📌 補完ツール: analyze_indicators（指標でパターンを裏付け）, get_flow_metrics（出来高確認）, get_orderbook（板情報）`;
@@ -496,6 +485,7 @@ export default async function detectPatterns(
 				pair,
 				type,
 				count: patterns.length,
+				...(scan ? { scan } : {}),
 				effective_params: { swingDepth, minBarsBetweenSwings: minDist, tolerancePct, autoScaled },
 				visualization_hints: {
 					preferred_style: 'line',

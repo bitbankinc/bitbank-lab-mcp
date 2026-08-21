@@ -4,7 +4,6 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-	buildPeriodLine,
 	buildTypeSummary,
 	formatDebugView,
 	formatDetailedView,
@@ -46,30 +45,8 @@ const emptyRes = {
 	meta: {},
 };
 
-// ── buildPeriodLine ──
-
-describe('buildPeriodLine', () => {
-	it('有効なパターンで期間行を生成する', () => {
-		const pats = [makePattern()];
-		const result = buildPeriodLine(pats);
-		expect(result).toMatch(/検出対象期間/);
-		expect(result).toMatch(/2026-01-01/);
-	});
-
-	it('空配列のとき空文字を返す', () => {
-		expect(buildPeriodLine([])).toBe('');
-	});
-
-	it('range が undefined のとき空文字を返す', () => {
-		const pats = [{ type: 'double_top', confidence: 0.7 } as PatternEntry];
-		expect(buildPeriodLine(pats)).toBe('');
-	});
-
-	it('range.start/end が無効日時のとき空文字を返す', () => {
-		const pats = [makePattern({ range: { start: 'invalid', end: 'also-invalid' } })];
-		expect(buildPeriodLine(pats)).toBe('');
-	});
-});
+// buildPeriodLine（現 buildPatternSpanLine）は tools/patterns/period.ts へ移設した。
+// テストは tests/patterns/period.test.ts を参照。
 
 // ── buildTypeSummary ──
 
@@ -967,33 +944,7 @@ describe('表示日付の tz 整形（範囲・期間）', () => {
 	const startUtcLate = '2026-10-01T23:30:00.000Z'; // UTC=10/01, JST=10/02
 	const endUtcLate = '2026-10-10T23:30:00.000Z'; // UTC=10/10, JST=10/11
 
-	it('buildPeriodLine: tz 既定（Asia/Tokyo）で JST 暦日を表示する', () => {
-		const pats = [makePattern({ range: { start: startUtcLate, end: endUtcLate } })];
-		const result = buildPeriodLine(pats);
-		expect(result).toContain('2026-10-02');
-		expect(result).toContain('2026-10-11');
-	});
-
-	it("buildPeriodLine: tz='Asia/Tokyo' 明示で JST 暦日を表示する", () => {
-		const pats = [makePattern({ range: { start: startUtcLate, end: endUtcLate } })];
-		const result = buildPeriodLine(pats, 'Asia/Tokyo');
-		expect(result).toContain('2026-10-02');
-		expect(result).toContain('2026-10-11');
-	});
-
-	it("buildPeriodLine: tz='UTC' のとき UTC 暦日を表示する", () => {
-		const pats = [makePattern({ range: { start: startUtcLate, end: endUtcLate } })];
-		const result = buildPeriodLine(pats, 'UTC');
-		expect(result).toContain('2026-10-01');
-		expect(result).toContain('2026-10-10');
-	});
-
-	it("buildPeriodLine: tz='' は Asia/Tokyo にフォールバックする", () => {
-		const pats = [makePattern({ range: { start: startUtcLate, end: endUtcLate } })];
-		const result = buildPeriodLine(pats, '');
-		expect(result).toContain('2026-10-02');
-		expect(result).toContain('2026-10-11');
-	});
+	// buildPatternSpanLine の tz 整形は tests/patterns/period.test.ts で検証する。
 
 	it('formatPatternLine: tz 既定で legacy 期間行が JST 暦日になる', () => {
 		const p = makePattern({ range: { start: startUtcLate, end: endUtcLate } });

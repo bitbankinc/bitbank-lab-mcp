@@ -36,6 +36,27 @@ export function toIsoMs(ms: number | null): string | null {
 }
 
 /**
+ * tz 文字列を「実際に整形に使える IANA タイムゾーン」へ正規化する。
+ *
+ * 空文字・未指定に加えて、**IANA 名として解決できない値**（'Tokyo' / 'Not/AZone' 等）も
+ * `Asia/Tokyo` に畳む。`formatDateInTz` / `toIsoWithTz` は解決できない tz に対して
+ * `null` を返すだけなので、呼び出し側がそのまま使うと「表示行が丸ごと消える」
+ * 「日付が空文字になる」という形で情報が黙って落ちる。表示前にここを通すこと。
+ *
+ * 判定は固定 epoch（0）で行うので現在時刻に依存しない。
+ *
+ * @returns 解決できた tz、できなければ 'Asia/Tokyo'
+ */
+export function resolveTz(tz: string | undefined | null, fallback: string = 'Asia/Tokyo'): string {
+	if (typeof tz !== 'string' || tz.length === 0) return fallback;
+	try {
+		return dayjs(0).tz(tz).isValid() ? tz : fallback;
+	} catch {
+		return fallback;
+	}
+}
+
+/**
  * タイムスタンプをタイムゾーン付きISO風形式に変換
  * @param ts ミリ秒タイムスタンプ
  * @param tz タイムゾーン（例: 'Asia/Tokyo', 'UTC'）
