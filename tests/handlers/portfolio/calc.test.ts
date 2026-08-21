@@ -24,10 +24,12 @@ import {
 	calcPeriodNetFlow,
 	calcPeriodRealizedPnl,
 	calcPnl,
+	flowUnavailableReasonFor,
 	getJstPeriodBoundaries,
 	PERFORMANCE_NOTE,
 	type PortfolioPerformanceContext,
 	reconstructHoldingsAtDate,
+	resolveDepositWithdrawalStatus,
 } from '../../../src/handlers/portfolio/calc.js';
 import { portfolioDayStartMs } from '../../../src/handlers/portfolio/calendar.js';
 import type {
@@ -923,7 +925,7 @@ describe('calcPeriodNetFlow', () => {
 		expect(result.unpriced_assets).toEqual(['doge']);
 	});
 
-	it('価格が全て引ける場合: unpriced_assets は付かず従来どおり 2 フィールドのみ', () => {
+	it('価格が全て引ける場合: unpriced_assets は付かず measured=true の 3 フィールドのみ', () => {
 		const dw = makeDwData({
 			deposits: [makeDeposit({ uuid: 'd-btc', asset: 'btc', amount: '0.5', confirmed_at: 2000 })],
 			withdrawals: [makeWithdrawal({ uuid: 'w-eth', asset: 'eth', amount: '1', fee: '0.005', requested_at: 2000 })],
@@ -934,14 +936,20 @@ describe('calcPeriodNetFlow', () => {
 		]);
 		const result = calcPeriodNetFlow(dw, 1000, prices);
 		// 入庫 5_000_000 - 出庫 400_000 = 4_600_000、手数料 0.005 * 400_000 = 2_000
-		expect(result).toEqual({ net_flow_jpy: 4_600_000, withdrawal_fee_jpy: 2_000 });
-		expect(Object.keys(result)).toEqual(['net_flow_jpy', 'withdrawal_fee_jpy']);
+		expect(result).toEqual({ net_flow_jpy: 4_600_000, withdrawal_fee_jpy: 2_000, measured: true });
+		expect(Object.keys(result)).toEqual(['net_flow_jpy', 'withdrawal_fee_jpy', 'measured']);
 	});
 
-	it('dw が null: warning なしで従来どおり { net_flow_jpy: 0, withdrawal_fee_jpy: 0 }', () => {
+	it('dw が null: 0 ではなく未計測（null + measured=false）を返す', () => {
+		// 0 を返すと呼び出し側で「本当にフローがゼロ」と区別できず、
+		// adjusted_change = change - 0 がフローゼロ前提の確定値になってしまう。
 		const result = calcPeriodNetFlow(null, 1000, new Map());
-		expect(result).toEqual({ net_flow_jpy: 0, withdrawal_fee_jpy: 0 });
-		expect(Object.keys(result)).toEqual(['net_flow_jpy', 'withdrawal_fee_jpy']);
+		expect(result).toEqual({ net_flow_jpy: null, withdrawal_fee_jpy: null, measured: false });
+	});
+
+	it('履歴 0 件の dw: 未計測ではなく実測の 0（本当にフローがゼロ）', () => {
+		const result = calcPeriodNetFlow(makeDwData(), 1000, new Map());
+		expect(result).toEqual({ net_flow_jpy: 0, withdrawal_fee_jpy: 0, measured: true });
 	});
 
 	it('JPY の入出金は価格解決の対象外: prices が空でも warning を出さない', () => {
@@ -980,7 +988,7 @@ describe('calcPeriodNetFlow', () => {
 			],
 		});
 		const result = calcPeriodNetFlow(dw, 1000, new Map());
-		expect(result).toEqual({ net_flow_jpy: 0, withdrawal_fee_jpy: 0 });
+		expect(result).toEqual({ net_flow_jpy: 0, withdrawal_fee_jpy: 0, measured: true });
 	});
 
 	it('数量ゼロ・数値不正の入出庫は金額に寄与しないため warning に載らない', () => {
@@ -993,6 +1001,74 @@ describe('calcPeriodNetFlow', () => {
 		});
 		const result = calcPeriodNetFlow(dw, 1000, new Map());
 		expect(result.unpriced_assets).toBeUndefined();
+	});
+});
+
+// ── 入出金データの利用可否 ──
+
+describe('resolveDepositWithdrawalStatus / flowUnavailableReasonFor', () => {
+	/** 取得成功・警告なし・履歴 0 件を既定とする DepositWithdrawalData を組み立てる。 */
+	function makeDw(overrides: Partial<DepositWithdrawalData> = {}): DepositWithdrawalData {
+		return { deposits: [], withdrawals: [], warnings: [], allFailed: false, isComplete: true, ...overrides };
+	}
+
+	const someDeposit = { uuid: 'd', asset: 'jpy', amount: '1000', status: 'DONE', found_at: 1, confirmed_at: 1 };
+
+	it('include_deposit_withdrawal=false: not_requested → withdrawal_history_not_fetched', () => {
+		const status = resolveDepositWithdrawalStatus(false, null);
+		expect(status).toBe('not_requested');
+		expect(flowUnavailableReasonFor(status, null)).toBe('withdrawal_history_not_fetched');
+	});
+
+	it('取得成功かつ履歴あり: available → 理由コードなし（取得原価を出してよい）', () => {
+		const dw = makeDw({ deposits: [someDeposit] });
+		const status = resolveDepositWithdrawalStatus(true, dw);
+		expect(status).toBe('available');
+		expect(flowUnavailableReasonFor(status, dw)).toBeUndefined();
+	});
+
+	it('取得成功・警告なし・履歴 0 件: no_history → 理由コードなし（本当に出庫ゼロ）', () => {
+		const dw = makeDw();
+		const status = resolveDepositWithdrawalStatus(true, dw);
+		expect(status).toBe('no_history');
+		expect(flowUnavailableReasonFor(status, dw)).toBeUndefined();
+	});
+
+	it('全リクエスト失敗: fallback → dw_fetch_failed', () => {
+		const dw = makeDw({ allFailed: true });
+		const status = resolveDepositWithdrawalStatus(true, dw);
+		expect(status).toBe('fallback');
+		expect(flowUnavailableReasonFor(status, dw)).toBe('dw_fetch_failed');
+	});
+
+	it('partial failure で履歴 0 件: fallback（warning ありは「本当に 0 件」と区別できない）', () => {
+		const dw = makeDw({ warnings: ['一部失敗'] });
+		const status = resolveDepositWithdrawalStatus(true, dw);
+		expect(status).toBe('fallback');
+		expect(flowUnavailableReasonFor(status, dw)).toBe('dw_fetch_failed');
+	});
+
+	it('partial failure だが履歴が残っている: status は available のまま理由コードは dw_fetch_failed', () => {
+		// fetchDepositWithdrawal は 4 チャネルを個別に取得するため、暗号資産出庫チャネルだけ
+		// 落ちても他にレコードがあれば allFailed=false → available になる。
+		// このとき cost_basis を過大化させる当の出庫が欠けているので、原価は信頼できない。
+		const dw = makeDw({ deposits: [someDeposit], warnings: ['暗号資産出庫履歴の取得に失敗: 10007'] });
+		const status = resolveDepositWithdrawalStatus(true, dw);
+		expect(status).toBe('available');
+		expect(flowUnavailableReasonFor(status, dw)).toBe('dw_fetch_failed');
+	});
+
+	it('件数上限で打ち切られた履歴: available のまま dw_history_incomplete', () => {
+		// 取得自体は成功しているので「失敗」とは別コード（再実行しても解消しない）
+		const dw = makeDw({ deposits: [someDeposit], isComplete: false });
+		const status = resolveDepositWithdrawalStatus(true, dw);
+		expect(status).toBe('available');
+		expect(flowUnavailableReasonFor(status, dw)).toBe('dw_history_incomplete');
+	});
+
+	it('include=true でも dw が null: fallback（想定外の欠落を available に倒さない）', () => {
+		expect(resolveDepositWithdrawalStatus(true, null)).toBe('fallback');
+		expect(flowUnavailableReasonFor('fallback', null)).toBe('dw_fetch_failed');
 	});
 });
 
@@ -1028,6 +1104,8 @@ describe('buildPeriodPerformance', () => {
 		// 期間内に売買・入出金なし → 期初保有はそのまま現在保有と一致する
 		const ctx = makeCtx({
 			currentHoldings: [{ asset: 'btc', amount: '1' }],
+			// 「入出金なし」= 履歴 0 件を取得できた状態。null（未取得）とは区別する
+			dwData: makeEmptyDw(),
 			candlePriceData: {
 				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
 				dailyPrices: new Map(),
@@ -1047,6 +1125,8 @@ describe('buildPeriodPerformance', () => {
 		expect(result.period_start).toBe('2026-01-01T00:00:00+09:00');
 		expect(result.period_end).toBe('2026-05-16T12:00:00+09:00');
 		expect(result.note).toBe(PERFORMANCE_NOTE);
+		expect(result.flow_measured).toBe(true);
+		expect(result.flow_unavailable_reason).toBeUndefined();
 	});
 
 	it('入出金あり: net_flow を差し引いた adjusted_change が算出される', () => {
@@ -1226,6 +1306,7 @@ describe('buildPeriodPerformance', () => {
 		// ハンドラ出力 JSON が変更前後で完全一致するため、key の挿入順を固定する。
 		const ctx = makeCtx({
 			currentHoldings: [{ asset: 'btc', amount: '1' }],
+			dwData: makeEmptyDw(),
 			candlePriceData: {
 				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
 				dailyPrices: new Map(),
@@ -1246,6 +1327,7 @@ describe('buildPeriodPerformance', () => {
 			'period_start',
 			'period_end',
 			'note',
+			'flow_measured',
 		]);
 	});
 
@@ -1285,8 +1367,66 @@ describe('buildPeriodPerformance', () => {
 			'period_start',
 			'period_end',
 			'note',
+			'flow_measured',
 			'unpriced_flow_assets',
 		]);
+	});
+
+	it('flowUnavailableReason あり: フロー 3 値が null + flow_measured=false + 理由コード', () => {
+		// dwData に中身があっても、理由コードが立っていれば未計測として扱う。
+		// allFailed / partial failure では dwData が空なので、そのまま集計すると
+		// 「フローゼロ」という確定値になり adjusted_change が嘘になる。
+		const ctx = makeCtx({
+			currentHoldings: [{ asset: 'btc', amount: '1' }],
+			dwData: makeEmptyDw(),
+			flowUnavailableReason: 'dw_fetch_failed',
+			candlePriceData: {
+				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
+				dailyPrices: new Map(),
+			},
+			currentPrices: new Map([['btc', 12_000_000]]),
+			currentValue: 12_000_000,
+		});
+		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
+		expect(result.net_flow_jpy).toBeNull();
+		expect(result.withdrawal_fee_jpy).toBeNull();
+		expect(result.adjusted_change_jpy).toBeNull();
+		expect(result.adjusted_change_pct).toBeNull();
+		expect(result.flow_measured).toBe(false);
+		expect(result.flow_unavailable_reason).toBe('dw_fetch_failed');
+		// 単純増減（入出金の影響が混ざったままの値）は従来どおり出る
+		expect(result.change_jpy).toBe(2_000_000);
+		expect(result.change_pct).toBe(20);
+	});
+
+	it('dwData が null で理由コード未指定: withdrawal_history_not_fetched に落ちる', () => {
+		// flow_measured=false なら必ず理由が付く、という契約を守る
+		const ctx = makeCtx({
+			currentHoldings: [{ asset: 'btc', amount: '1' }],
+			candlePriceData: {
+				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
+				dailyPrices: new Map(),
+			},
+			currentPrices: new Map([['btc', 12_000_000]]),
+			currentValue: 12_000_000,
+		});
+		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
+		expect(result.flow_measured).toBe(false);
+		expect(result.flow_unavailable_reason).toBe('withdrawal_history_not_fetched');
+		expect(result.net_flow_jpy).toBeNull();
+	});
+
+	it('未計測かつ start_value_jpy=0: adjusted_change_pct は undefined ではなく null', () => {
+		// 0 除算回避の undefined（キーごと落ちる）と、未計測の null を取り違えないこと
+		const ctx = makeCtx({
+			currentHoldings: [],
+			flowUnavailableReason: 'withdrawal_history_not_fetched',
+			currentValue: 1_000_000,
+		});
+		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
+		expect(result.start_value_jpy).toBe(0);
+		expect(result.change_pct).toBeUndefined();
+		expect(result.adjusted_change_pct).toBeNull();
 	});
 
 	it('価格を全て引ける場合: unpriced_flow_assets はキーごと出ない（JSON が従来と一致）', () => {

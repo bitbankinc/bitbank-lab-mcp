@@ -7,6 +7,7 @@
  */
 
 import { dayjs } from '../../../lib/datetime.js';
+import type { DepositWithdrawalStatus, PortfolioFlowUnavailableReason } from '../../private/schemas.js';
 import { PORTFOLIO_CALENDAR_TZ, portfolioDayStartMs } from './calendar.js';
 import type {
 	AccountPnl,
@@ -669,7 +670,75 @@ export function buildEquitySeries(
 	return series;
 }
 
+// ── 入出金データの利用可否 ──
+
+/**
+ * `analyze_my_portfolio` の入出金分析状態を判定する。
+ *
+ * - `not_requested`: `include_deposit_withdrawal=false`
+ * - `available`: 取得成功かつ履歴あり（入出金ベースの分析を実行できる）
+ * - `no_history`: 取得成功・警告なしで本当に履歴 0 件
+ * - `fallback`: 取得失敗 / partial failure で約定ベースにフォールバック
+ *
+ * ハンドラは取得原価の信頼性ゲートにもこの判定を使うため、`deposit_withdrawal_summary`
+ * の構築より前に確定できるよう純粋関数として切り出してある。
+ */
+export function resolveDepositWithdrawalStatus(
+	includeDepositWithdrawal: boolean,
+	dw: DepositWithdrawalData | null,
+): DepositWithdrawalStatus {
+	if (!includeDepositWithdrawal) return 'not_requested';
+	if (!dw) return 'fallback';
+	if (!dw.allFailed && (dw.deposits.length > 0 || dw.withdrawals.length > 0)) return 'available';
+	if (!dw.allFailed && dw.warnings.length === 0 && dw.deposits.length === 0 && dw.withdrawals.length === 0) {
+		return 'no_history';
+	}
+	return 'fallback';
+}
+
+/**
+ * 入出金履歴を損益計算に使えない場合の理由コードを返す（使える場合は `undefined`）。
+ *
+ * **`status` だけでは判定しきれない。** `status` は「どの分析基準を出力するか」を表すもので、
+ * 「取得原価を信頼してよいか」とは別軸だからである。`fetchDepositWithdrawal` は
+ * 暗号資産入庫 / JPY 入金 / 暗号資産出庫 / JPY 出金の 4 チャネルを個別に取得し、
+ * 一部だけ失敗しても残りにレコードがあれば `allFailed: false` で `available` になる。
+ * このとき暗号資産出庫チャネルが落ちていると、`cost_basis` を過大化させる当の出庫だけが
+ * 欠けた `withdrawals` がそのまま `calcPnl` に渡ってしまう。件数上限による打ち切り
+ * （`isComplete: false`）も同じく出庫の取りこぼしになる。
+ *
+ * そこで `available` / `no_history` でも履歴の完全性を見て理由コードを立てる。
+ * `status` 側は据え置くので、`deposit_withdrawal_summary`（`is_complete` 付きの実データ）は
+ * 従来どおり出力される——原価が信頼できないことと、入出金サマリーが使えないことは別問題。
+ */
+export function flowUnavailableReasonFor(
+	status: DepositWithdrawalStatus,
+	dw: DepositWithdrawalData | null,
+): PortfolioFlowUnavailableReason | undefined {
+	switch (status) {
+		case 'not_requested':
+			return 'withdrawal_history_not_fetched';
+		case 'fallback':
+			return 'dw_fetch_failed';
+		default:
+			break;
+	}
+	if (!dw) return undefined;
+	// 一部チャネルの失敗。出庫チャネルが落ちたかは warnings からは判別できるが、
+	// どのチャネルであれ「履歴が欠けている」以上は原価を確定できないので一律で閉じる。
+	if (dw.warnings.length > 0) return 'dw_fetch_failed';
+	// 件数上限による打ち切り。取得自体は成功しているので失敗とは別コードにする
+	// （再実行しても解消しないため、案内文言も変わる）。
+	if (!dw.isComplete) return 'dw_history_incomplete';
+	return undefined;
+}
+
 // ── 期間ネットフロー ──
+
+/** 純入出金が未計測であることを表す `PeriodNetFlowResult`（呼び出しごとに新しい object を返す） */
+function unmeasuredNetFlow(): PeriodNetFlowResult {
+	return { net_flow_jpy: null, withdrawal_fee_jpy: null, measured: false };
+}
 
 /**
  * 期間中の純入出金額と出金手数料を分離して算出する。
@@ -682,13 +751,18 @@ export function buildEquitySeries(
  *   落ちた入出庫は 0 円計上と等価で net_flow_jpy が過小になるため、黙って落とさず申告する。
  *
  * 暗号資産の入出庫は現在価格で仮評価。
+ *
+ * `dw` が null（入出金履歴を取得していない）の場合は **0 を返さない**。
+ * 0 を返すと呼び出し側で「未計測」と「本当にフローがゼロ」が区別できず、
+ * `adjusted_change = change - 0` がフローゼロ前提の確定値として出てしまうため、
+ * `measured: false` + 値 null で未計測であることを明示する。
  */
 export function calcPeriodNetFlow(
 	dw: DepositWithdrawalData | null,
 	sinceMs: number,
 	prices: Map<string, number>,
 ): PeriodNetFlowResult {
-	if (!dw) return { net_flow_jpy: 0, withdrawal_fee_jpy: 0 };
+	if (!dw) return unmeasuredNetFlow();
 
 	const completedDeposits = dw.deposits.filter((d) => d.status === 'DONE' && d.confirmed_at >= sinceMs);
 	const completedWithdrawals = dw.withdrawals.filter((w) => w.status === 'DONE' && w.requested_at >= sinceMs);
@@ -740,8 +814,9 @@ export function calcPeriodNetFlow(
 	const result: PeriodNetFlowResult = {
 		net_flow_jpy: Math.round(netFlow),
 		withdrawal_fee_jpy: Math.round(withdrawalFee),
+		measured: true,
 	};
-	// 該当なしのときはキーごと省き、従来の出力（2 フィールド）と完全一致させる。
+	// 該当なしのときはキーごと省き、価格を全解決できたときの出力を安定させる。
 	if (unpricedAssets.size > 0) result.unpriced_assets = [...unpricedAssets].sort();
 	return result;
 }
@@ -767,6 +842,23 @@ export interface PortfolioPerformanceContext {
 	currentPrices: Map<string, number>;
 	currentValue: number;
 	nowIso: string;
+	/**
+	 * 入出金履歴を計算に使えない理由（`flowUnavailableReasonFor` の戻り値）。
+	 *
+	 * 設定されている場合は `dwData` の中身に関わらず純入出金を未計測として扱う。
+	 * `dwData` が非 null でも allFailed / partial failure では中身が空なので、
+	 * そのまま集計すると「フローゼロ」という確定値になってしまうため。
+	 */
+	flowUnavailableReason?: PortfolioFlowUnavailableReason;
+}
+
+/**
+ * 調整後増減率を求める。純入出金が未計測（`adjusted` が null）なら `null`、
+ * 期初評価額が 0 なら 0 除算回避で `undefined`（従来どおりキーごと落とす）。
+ */
+function adjustedChangePct(adjusted: number | null, startValue: number): number | undefined | null {
+	if (adjusted == null) return null;
+	return startValue > 0 ? Math.round((adjusted / startValue) * 10000) / 100 : undefined;
 }
 
 function pickBoundaryPrice(
@@ -793,6 +885,11 @@ function pickBoundaryPrice(
  *   - `calcPeriodNetFlow` で期間内の純入出金を算出
  *   - `change` / `adjusted_change` / `pct` を `Math.round` で丸めて返す
  *
+ * 入出金履歴を計算に使えない場合（`ctx.flowUnavailableReason` あり、または `ctx.dwData` が null）は
+ * 純入出金を未計測として扱い、`net_flow_jpy` / `withdrawal_fee_jpy` / `adjusted_change_jpy` を
+ * `null`・`flow_measured: false` で返す。`start_value_jpy` は入出金を巻き戻せていない値になるので、
+ * 呼び出し側は `flow_unavailable_reason` を根拠に品質注記を出すこと。
+ *
  * 出力フィールド順・桁丸めは旧インライン実装と完全一致させている
  * （JSON.stringify 結果が変わらないよう注意）。
  * `unpriced_flow_assets` は後から足したフィールドなので既存キーの後ろに置き、
@@ -806,9 +903,16 @@ export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerforman
 		if (v != null) priceMap.set(asset, v);
 	}
 	const startValue = Math.round(calcPortfolioValue(startHoldings, priceMap));
-	const flow = calcPeriodNetFlow(ctx.dwData, spec.startMs, ctx.currentPrices);
+	const flow = ctx.flowUnavailableReason
+		? unmeasuredNetFlow()
+		: calcPeriodNetFlow(ctx.dwData, spec.startMs, ctx.currentPrices);
 	const change = ctx.currentValue - startValue;
-	const adjusted = change - flow.net_flow_jpy;
+	// 未計測のフローを 0 とみなして引かない。引いてしまうと adjusted_change が
+	// 「入出金ゼロの口座の成績」という誤った確定値になる（それが -60.9% 型の表示の一因）。
+	const adjusted = flow.net_flow_jpy != null ? change - flow.net_flow_jpy : null;
+	// 未計測の理由。ctx 側の指定を優先し、指定が無い場合（dwData が null）は
+	// 「入出金履歴を取得していない」に落とす。flow_measured=false なら必ず理由が付く。
+	const unavailableReason = flow.measured ? undefined : (ctx.flowUnavailableReason ?? 'withdrawal_history_not_fetched');
 	const performance: PeriodPerformance = {
 		start_value_jpy: startValue,
 		current_value_jpy: ctx.currentValue,
@@ -817,11 +921,13 @@ export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerforman
 		net_flow_jpy: flow.net_flow_jpy,
 		withdrawal_fee_jpy: flow.withdrawal_fee_jpy,
 		adjusted_change_jpy: adjusted,
-		adjusted_change_pct: startValue > 0 ? Math.round((adjusted / startValue) * 10000) / 100 : undefined,
+		adjusted_change_pct: adjustedChangePct(adjusted, startValue),
 		period_start: spec.startIso,
 		period_end: ctx.nowIso,
 		note: PERFORMANCE_NOTE,
+		flow_measured: flow.measured,
 	};
+	if (unavailableReason) performance.flow_unavailable_reason = unavailableReason;
 	if (flow.unpriced_assets) performance.unpriced_flow_assets = flow.unpriced_assets;
 	return performance;
 }
