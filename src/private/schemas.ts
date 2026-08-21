@@ -168,12 +168,17 @@ export const GetMyOrdersOutputSchema = z.union([
 
 export const AnalyzeMyPortfolioInputSchema = z.object({
 	include_technical: z.boolean().default(true).describe('保有銘柄のテクニカル分析を含めるか'),
-	include_pnl: z.boolean().default(true).describe('損益分析を含めるか（約定履歴から平均取得単価・損益を算出）'),
+	include_pnl: z
+		.boolean()
+		.default(true)
+		.describe(
+			'損益分析を含めるか（約定履歴から平均取得単価・損益を算出）。true のとき入出金履歴も**常に**取得する（暗号資産の出庫は取得原価の按分減少、入出金は期初評価額・資産推移の巻き戻しに必要なため）。include_deposit_withdrawal の値には依存しない',
+		),
 	include_deposit_withdrawal: z
 		.boolean()
 		.default(true)
 		.describe(
-			'入出金データを含めるか（true の場合、総入金額 vs 現在評価額で口座全体のリターンを算出。ページネーション対応で最大1000件/チャネル取得）。false にすると暗号資産の出庫履歴も読まないため取得原価を確定できず、取得原価・評価損益・期間の純入出金は出力されない（理由コードのみ返る）',
+			'入出金**分析セクション**（deposit_withdrawal_summary / yearly_dw_summary / monthly_dw_summary / 口座全体リターン）を出力するか。ページネーション対応で最大1000件/チャネル取得。false にしても include_pnl=true なら入出金履歴は損益計算のために取得され、取得原価・評価損益・期間の純入出金は従来どおり出力される（本フラグは表示の制御のみで、計算の正確性には影響しない）',
 		),
 });
 
@@ -186,11 +191,14 @@ export const AnalyzeMyPortfolioInputSchema = z.object({
  *
  * 値は今後の対応（保有数量の突き合わせ等）で追加される前提の拡張可能な enum として扱う。
  * 追加する側は「なぜ値を出せないか」を一意に説明できる粒度で足すこと。
+ *
+ * 損益を出す構成（`include_pnl=true`）では入出金履歴を常に取得するため、残る原因は
+ * 「取得に失敗した」か「取得しきれなかった」の 2 系統しかない。
+ * `include_deposit_withdrawal=false` を表していた `withdrawal_history_not_fetched` は
+ * 発生しなくなったため削除した（当時は同フラグが取得可否まで握っていた）。
  */
 export const PortfolioFlowUnavailableReasonEnum = z.enum([
-	/** include_deposit_withdrawal=false で入出金履歴を取得していない */
-	'withdrawal_history_not_fetched',
-	/** 入出金 API の取得に失敗した（allFailed、または一部チャネルのみの失敗） */
+	/** 入出金 API の取得に失敗した（allFailed、一部チャネルのみの失敗、リクエスト自体の例外を含む） */
 	'dw_fetch_failed',
 	/** 取得は成功したが件数上限で全履歴を取得できていない（欠けた出庫の原価が残留する） */
 	'dw_history_incomplete',
@@ -218,7 +226,7 @@ const HoldingPnlSchema = z.object({
 	realized_pnl: z.number().optional().describe('実現損益（JPY）'),
 	trade_count: z.number().optional().describe('約定件数'),
 	cost_basis_unavailable_reason: PortfolioFlowUnavailableReasonEnum.optional().describe(
-		'取得原価を確定できなかった理由。設定されている場合 avg_buy_price / cost_basis / unrealized_pnl / unrealized_pnl_pct はいずれも undefined（信頼できない値を確定値として出さないための抑止）。withdrawal_history_not_fetched=include_deposit_withdrawal=false のため出庫履歴が無い, dw_fetch_failed=入出金 API の取得に失敗（一部チャネルのみの失敗を含む）, dw_history_incomplete=件数上限で全履歴を取得できていない',
+		'取得原価を確定できなかった理由。設定されている場合 avg_buy_price / cost_basis / unrealized_pnl / unrealized_pnl_pct はいずれも undefined（信頼できない値を確定値として出さないための抑止）。dw_fetch_failed=入出金 API の取得に失敗（一部チャネルのみの失敗を含む）, dw_history_incomplete=件数上限で全履歴を取得できていない。include_deposit_withdrawal=false でも入出金履歴は損益計算のために取得されるため、同フラグ由来でこの値が立つことはない',
 	),
 });
 
@@ -431,8 +439,13 @@ export const AnalyzeMyPortfolioMetaSchema = z.object({
 	hasPnl: z.boolean(),
 	hasTechnical: z.boolean(),
 	depositWithdrawalStatus: DepositWithdrawalStatusEnum.describe(
-		'入出金分析の状態: available=入出金データ取得成功で分析実行（deposit_withdrawal_summaryあり）, fallback=API取得失敗またはpartial failureにより約定ベースにフォールバック（deposit_withdrawal_summaryはtrade_only placeholder）, no_history=API取得成功・警告なし・履歴0件（deposit_withdrawal_summaryはundefined）, not_requested=未リクエスト（deposit_withdrawal_summaryはundefined）',
+		'入出金**分析セクション**（deposit_withdrawal_summary / yearly_dw_summary / monthly_dw_summary / 口座全体リターン）の状態: available=入出金データ取得成功で分析実行（deposit_withdrawal_summaryあり）, fallback=API取得失敗またはpartial failureにより約定ベースにフォールバック（deposit_withdrawal_summaryはtrade_only placeholder）, no_history=API取得成功・警告なし・履歴0件（deposit_withdrawal_summaryはundefined）, not_requested=include_deposit_withdrawal=false でセクション自体を未リクエスト（deposit_withdrawal_summaryはundefined）。損益計算が入出金履歴を使えたかは本フィールドでは分からない（include_pnl=true なら not_requested でも取得・使用される）。そちらは dwFetchedForPnl / flowDataUnavailableReason を見ること。',
 	),
+	dwFetchedForPnl: z
+		.boolean()
+		.describe(
+			'損益計算のために入出金履歴を取得し、calcPnl / 期初評価額の巻き戻しに供給したか。include_pnl=true なら include_deposit_withdrawal の値に関わらず取得を試み、成功すれば true（include_pnl=false のとき、および取得が全失敗したときのみ false）。一部チャネルの失敗・件数上限による打ち切りでも true になるため、取得原価を信頼してよいかは flowDataUnavailableReason で判定すること。',
+		),
 	periodBasis: z.enum(['jst']).default('jst').describe('年次・月次の期間基準タイムゾーン（jst = Asia/Tokyo）'),
 	tradesTruncated: z
 		.boolean()
@@ -472,7 +485,7 @@ export const AnalyzeMyPortfolioMetaSchema = z.object({
 			'equity series 構築時に現在価格にフォールバックした資産シンボル一覧（小文字）。equitySeriesQuality が partial_fallback / fallback_only のときのみ存在。',
 		),
 	flowDataUnavailableReason: PortfolioFlowUnavailableReasonEnum.optional().describe(
-		'入出金履歴を損益計算に使えなかった理由。depositWithdrawalStatus とは別軸で、status=available でも一部チャネルの取得失敗・件数上限により出庫履歴が欠けていれば設定される（status は「どの分析基準を出力したか」、本フィールドは「取得原価を信頼できるか」を表す）。設定されている場合の影響: (1) holdings[].cost_basis / avg_buy_price / unrealized_pnl / unrealized_pnl_pct と total_cost_basis / total_unrealized_pnl / total_unrealized_pnl_pct が undefined、(2) *_performance の net_flow_jpy / withdrawal_fee_jpy / adjusted_change_jpy が null（flow_measured=false）、(3) *_equity_series と *_performance.start_value_jpy が入出金を巻き戻していないため、入出金があった期間は実態と乖離する。入出金履歴を計算に使えている場合と、include_pnl=false で損益出力自体が無い場合は undefined。',
+		'入出金履歴を損益計算に使えなかった理由。depositWithdrawalStatus とは別軸で、status=available でも一部チャネルの取得失敗・件数上限により出庫履歴が欠けていれば設定される（status は「どの分析セクションを出力したか」、本フィールドは「取得原価を信頼できるか」を表す）。include_deposit_withdrawal=false でも入出金履歴は損益計算のために取得されるため、同フラグ由来では設定されない。設定されている場合の影響: (1) holdings[].cost_basis / avg_buy_price / unrealized_pnl / unrealized_pnl_pct と total_cost_basis / total_unrealized_pnl / total_unrealized_pnl_pct が undefined、(2) *_performance の net_flow_jpy / withdrawal_fee_jpy / adjusted_change_jpy が null（flow_measured=false）、(3) *_equity_series と *_performance.start_value_jpy が入出金を巻き戻していないため、入出金があった期間は実態と乖離する。入出金履歴を計算に使えている場合と、include_pnl=false で損益出力自体が無い場合は undefined。',
 	),
 	warnings: z
 		.array(z.string())

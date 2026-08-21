@@ -1155,8 +1155,10 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 		expect(result.data.total_cost_basis_unavailable_reason).toBe(reason);
 	}
 
-	it('include_deposit_withdrawal=false: 取得原価系が undefined + withdrawal_history_not_fetched', async () => {
-		setupFetchMock();
+	it('include_deposit_withdrawal=false でも取得失敗なら抑止される（判定は取得結果だけを見る）', async () => {
+		// 表示セクションを閉じていても損益計算のために入出金は読むので、そこが落ちれば
+		// 原価は信頼できない。抑止の判定軸が表示フラグではなく取得結果であることを固定する。
+		setupFetchMock({ dwFail: true });
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
 		const result = await handler({
@@ -1166,9 +1168,11 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 		});
 
 		assertOk(result);
-		expectCostFieldsSuppressed(result, 'withdrawal_history_not_fetched');
-		expect(result.meta.flowDataUnavailableReason).toBe('withdrawal_history_not_fetched');
+		expectCostFieldsSuppressed(result, 'dw_fetch_failed');
+		expect(result.meta.flowDataUnavailableReason).toBe('dw_fetch_failed');
+		// セクション側の状態は表示フラグどおり not_requested のまま（別軸）
 		expect(result.meta.depositWithdrawalStatus).toBe('not_requested');
+		expect(result.meta.dwFetchedForPnl).toBe(false);
 	});
 
 	it('入出金 API 全失敗 (allFailed): 取得原価系が undefined + dw_fetch_failed', async () => {
@@ -1281,13 +1285,13 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 	});
 
 	it('期間パフォーマンス: net_flow / adjusted_change が null + flow_measured=false', async () => {
-		setupFetchMock();
+		setupFetchMock({ dwFail: true });
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
 		const result = await handler({
 			include_technical: false,
 			include_pnl: true,
-			include_deposit_withdrawal: false,
+			include_deposit_withdrawal: true,
 		});
 
 		assertOk(result);
@@ -1299,33 +1303,13 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 			expect(p.adjusted_change_jpy, key).toBeNull();
 			expect(p.adjusted_change_pct, key).toBeNull();
 			expect(p.flow_measured, key).toBe(false);
-			expect(p.flow_unavailable_reason, key).toBe('withdrawal_history_not_fetched');
+			expect(p.flow_unavailable_reason, key).toBe('dw_fetch_failed');
 			// 単純増減は入出金の影響が混ざったままだが値としては残す
 			expect(typeof p.change_jpy, key).toBe('number');
 		}
 	});
 
 	it('summary: 「算出不能」行と「純入出金: 未計測」行が出る（確定値は出ない）', async () => {
-		setupFetchMock();
-
-		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
-		const result = await handler({
-			include_technical: false,
-			include_pnl: true,
-			include_deposit_withdrawal: false,
-		});
-
-		assertOk(result);
-		expect(result.summary).toContain('評価損益: 算出不能');
-		expect(result.summary).toContain('include_deposit_withdrawal: true で再実行してください');
-		expect(result.summary).not.toContain('合計評価損益（全履歴の約定ベース）');
-		// 3 期間すべてに未計測行が出る（行ごと省くと「調整不要な口座」に見える）
-		expect(result.summary.match(/純入出金: 未計測/g)).toHaveLength(3);
-		// 資産推移・期初評価額の品質注記
-		expect(result.summary).toContain('入出金を巻き戻せていません');
-	});
-
-	it('summary: 取得失敗時は再取得を促す文言が「失敗」側になる', async () => {
 		setupFetchMock({ dwFail: true });
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -1336,18 +1320,40 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 		});
 
 		assertOk(result);
+		expect(result.summary).toContain('評価損益: 算出不能');
 		expect(result.summary).toContain('入出金履歴の取得に失敗したため取得原価を確定できません');
+		expect(result.summary).not.toContain('合計評価損益（全履歴の約定ベース）');
+		// 3 期間すべてに未計測行が出る（行ごと省くと「調整不要な口座」に見える）
+		expect(result.summary.match(/純入出金: 未計測/g)).toHaveLength(3);
+		// 資産推移・期初評価額の品質注記
+		expect(result.summary).toContain('入出金を巻き戻せていません');
+	});
+
+	it('summary: 再取得の案内が include_deposit_withdrawal を切り替えろとは言わない', async () => {
+		// 同フラグは表示セクションの制御しかしないので、切り替えても原価は復活しない。
+		// 誤った案内を出す経路が残っていないことを固定する。
+		setupFetchMock({ dwFail: true });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		expect(result.summary).toContain('時間をおいて再実行してください');
 		expect(result.summary).not.toContain('include_deposit_withdrawal: true で再実行してください');
 	});
 
 	it('warning が meta.warnings と content の JSON より前に出る', async () => {
-		setupFetchMock();
+		setupFetchMock({ dwFail: true });
 
 		const { toolDef } = await import('../../tools/private/analyze_my_portfolio.js');
 		const result = await toolDef.handler({
 			include_technical: false,
 			include_pnl: true,
-			include_deposit_withdrawal: false,
+			include_deposit_withdrawal: true,
 		});
 
 		const text = (result as { content: Array<{ type: string; text: string }> }).content[0].text;
@@ -1384,6 +1390,268 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 		expect(btc.realized_pnl).toBeUndefined();
 		expect(btc.cost_basis_unavailable_reason).toBeUndefined();
 		expect(result.summary).not.toContain('算出不能');
+	});
+});
+
+/**
+ * 入出金履歴の取得を `include_pnl` に紐づけ、`include_deposit_withdrawal` を
+ * 「入出金分析セクションを出すか」だけの表示フラグに限定する（フラグの直交化）。
+ *
+ * 取得原価（移動平均法）は暗号資産出庫を原価の按分減少として処理し、期初評価額と
+ * 資産推移シリーズは入出金の巻き戻しを前提にしている。つまり損益を出す時点で入出金履歴は
+ * 必須の入力であり、表示フラグでこれを落とすと計算そのものが壊れていた。
+ */
+describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', () => {
+	/**
+	 * 現物約定 fixture より後に発生した btc 出庫。
+	 * 出庫が約定より前だと holdingQty が 0 で原価に影響せず、テストが素通りしてしまう。
+	 */
+	const btcWithdrawalAfterTrades = {
+		withdrawals: [
+			{ uuid: 'wd-btc', asset: 'btc', amount: '0.002', fee: '0.0006', status: 'DONE', requested_at: 1710000300000 },
+		],
+	};
+
+	/**
+	 * 出庫を按分した btc 取得原価。
+	 * 約定のみ: 買 0.01 @15,000,000（手数料 0.00001 BTC）→ 売 0.005 @15,500,000（手数料 77.5 JPY）で
+	 * 残 0.00499 BTC / 原価 74,925 円。ここから出庫 0.002 + 出庫手数料 0.0006 = 0.0026 BTC を
+	 * 平均単価で按分減少させると 0.00239 BTC / 原価 35,886 円になる。
+	 * 出庫が calcPnl に渡らないと 74,925 円のまま残り、約 2.1 倍の過大原価になる。
+	 */
+	const BTC_COST_BASIS_WITH_WITHDRAWAL = 35_886;
+	const BTC_COST_BASIS_WITHOUT_WITHDRAWAL = 74_925;
+
+	/** モックに記録された fetch 呼び出しの URL 一覧 */
+	function fetchedUrls(): string[] {
+		const mock = globalThis.fetch as unknown as { mock: { calls: Array<[string | URL | Request]> } };
+		return mock.mock.calls.map(([u]) => (typeof u === 'string' ? u : u instanceof URL ? u.href : u.url));
+	}
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('include_deposit_withdrawal=false + include_pnl=true: 出庫が calcPnl に渡り cost_basis が按分済みになる', async () => {
+		setupFetchMock({ withdrawals: btcWithdrawalAfterTrades });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		const btc = result.data.holdings.find((h: { asset: string }) => h.asset === 'btc');
+		// P1 で null になっていた値が復活し、かつ出庫を按分した正しい値であること
+		expect(btc.cost_basis).toBe(BTC_COST_BASIS_WITH_WITHDRAWAL);
+		expect(btc.cost_basis).not.toBe(BTC_COST_BASIS_WITHOUT_WITHDRAWAL);
+		expect(btc.avg_buy_price).toBeGreaterThan(0);
+		expect(btc.unrealized_pnl).toBeDefined();
+		expect(btc.cost_basis_unavailable_reason).toBeUndefined();
+		expect(result.data.total_cost_basis_unavailable_reason).toBeUndefined();
+		expect(result.meta.flowDataUnavailableReason).toBeUndefined();
+		expect(result.meta.dwFetchedForPnl).toBe(true);
+		expect(result.summary).toContain('合計評価損益（全履歴の約定ベース）');
+		expect(result.summary).not.toContain('算出不能');
+	});
+
+	it('include_deposit_withdrawal を切り替えても損益側の出力は変わらない', async () => {
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+
+		setupFetchMock({ withdrawals: btcWithdrawalAfterTrades });
+		const withSection = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+		setupFetchMock({ withdrawals: btcWithdrawalAfterTrades });
+		const withoutSection = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(withSection);
+		assertOk(withoutSection);
+		expect(withoutSection.data.holdings).toEqual(withSection.data.holdings);
+		expect(withoutSection.data.total_cost_basis).toEqual(withSection.data.total_cost_basis);
+		expect(withoutSection.data.total_unrealized_pnl).toEqual(withSection.data.total_unrealized_pnl);
+		expect(withoutSection.meta.dwFetchedForPnl).toBe(true);
+		// 変わるのは表示セクション側だけ
+		expect(withSection.data.deposit_withdrawal_summary).toBeDefined();
+		expect(withoutSection.data.deposit_withdrawal_summary).toBeUndefined();
+		expect(withoutSection.data.yearly_dw_summary).toBeUndefined();
+		expect(withoutSection.data.monthly_dw_summary).toBeUndefined();
+		expect(withSection.meta.depositWithdrawalStatus).toBe('available');
+		expect(withoutSection.meta.depositWithdrawalStatus).toBe('not_requested');
+	});
+
+	it('include_deposit_withdrawal=false: net_flow_jpy / adjusted_change_jpy が実測値になる', async () => {
+		// 2026-05-16 12:00 JST / 期間内 10:00 JST（daily / monthly / yearly すべてに入る）
+		const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
+		const inPeriodMs = Date.UTC(2026, 4, 16, 1, 0, 0, 0);
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		setupFetchMock({
+			deposits: {
+				deposits: [
+					{
+						uuid: 'dep-jpy',
+						asset: 'jpy',
+						amount: '500000',
+						status: 'DONE',
+						found_at: inPeriodMs,
+						confirmed_at: inPeriodMs,
+					},
+				],
+			},
+			withdrawals: {
+				withdrawals: [
+					{ uuid: 'wd-jpy', asset: 'jpy', amount: '200000', fee: '550', status: 'DONE', requested_at: inPeriodMs },
+				],
+			},
+		});
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		const daily = result.data.daily_performance;
+		expect(daily.flow_measured).toBe(true);
+		expect(daily.flow_unavailable_reason).toBeUndefined();
+		// 純入出金は元本移動のみ（出金手数料は別建て）
+		expect(daily.net_flow_jpy).toBe(300_000);
+		expect(daily.withdrawal_fee_jpy).toBe(550);
+		expect(daily.adjusted_change_jpy).toBe(daily.change_jpy - 300_000);
+		expect(result.summary).toContain('純入出金（元本）');
+		expect(result.summary).not.toContain('純入出金: 未計測');
+	});
+
+	it('include_pnl=false: 入出金 API を余計に呼ばない（呼び出し増の回帰防止）', async () => {
+		setupFetchMock();
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: false,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		const urls = fetchedUrls();
+		expect(urls.some((u) => u.includes('deposit_history'))).toBe(false);
+		expect(urls.some((u) => u.includes('withdrawal_history'))).toBe(false);
+		expect(result.meta.dwFetchedForPnl).toBe(false);
+		expect(result.meta.depositWithdrawalStatus).toBe('not_requested');
+	});
+
+	it('include_pnl=false + include_deposit_withdrawal=true: 入出金分析だけ欲しい従来動作を維持する', async () => {
+		setupFetchMock();
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: false,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		const urls = fetchedUrls();
+		expect(urls.some((u) => u.includes('deposit_history'))).toBe(true);
+		expect(urls.some((u) => u.includes('withdrawal_history'))).toBe(true);
+		// 約定履歴は引き続き取得しない
+		expect(urls.some((u) => u.includes('trade_history') && !u.includes('type=margin'))).toBe(false);
+		expect(result.data.deposit_withdrawal_summary).toBeDefined();
+		expect(result.meta.depositWithdrawalStatus).toBe('available');
+		// 損益を出さないので入出金履歴は損益計算に供給されていない
+		expect(result.meta.dwFetchedForPnl).toBe(false);
+		expect(result.meta.flowDataUnavailableReason).toBeUndefined();
+	});
+
+	it('summary: セクション未リクエストでも損益に入出金を使っている旨が content に出る', async () => {
+		// content[0].text が LLM への唯一のチャネルなので、not_requested を
+		// 「損益も入出金を見ていない」と読まれないようテキスト側で打ち消す。
+		setupFetchMock({ withdrawals: btcWithdrawalAfterTrades });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		expect(result.summary).toContain('入出金分析状態: not_requested');
+		expect(result.summary).toContain('損益計算には入出金履歴を取得して使用している');
+		expect(result.summary).not.toContain('※ 入出金分析は未リクエスト。約定ベースの分析のみです');
+	});
+
+	it('summary: 部分失敗で原価を抑止したときは「反映済み」と言わない（同一テキスト内の自己矛盾を防ぐ）', async () => {
+		// 暗号資産出庫チャネルだけ落ちると allFailed=false のまま warnings が立つので、
+		// dwFetchedForPnl は true でも取得原価は抑止される（flowUnavailableReason=dw_fetch_failed）。
+		// ここで「取得原価・評価損益は入出金を反映した値です」と言うと、同じ content 内の
+		// 「評価損益: 算出不能」と真っ向から矛盾する。text しか読まない LLM には解けない。
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			const marginResponse = maybeMarginAccountResponse(urlStr);
+			if (marginResponse) return marginResponse;
+			if (urlStr.includes('tickers_jpy')) return new Response(JSON.stringify(tickersJpy), { status: 200 });
+			if (urlStr.includes('candlestick')) return new Response(JSON.stringify(candlesBtcJpy1day120), { status: 200 });
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				const payload = urlStr.includes('type=margin') ? { trades: [] } : rawTradeHistoryResponse;
+				return new Response(JSON.stringify(mockBitbankSuccess(payload)), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(rawDepositHistoryResponse)), { status: 200 });
+			}
+			if (urlStr.includes('withdrawal_history')) {
+				// 暗号資産チャネル（asset 指定なし）だけ失敗させ、JPY チャネルは成功させる
+				if (!urlStr.includes('asset=jpy')) {
+					return new Response(JSON.stringify(mockBitbankError(10007)), { status: 200 });
+				}
+				return new Response(JSON.stringify(mockBitbankSuccess(rawWithdrawalHistoryResponse)), { status: 200 });
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		// 取得自体は成立しているが、欠けたチャネルがあるので原価は抑止されている
+		expect(result.meta.dwFetchedForPnl).toBe(true);
+		expect(result.meta.flowDataUnavailableReason).toBe('dw_fetch_failed');
+		expect(result.summary).toContain('評価損益: 算出不能');
+		// その状態で「反映した値です」と断言しない
+		expect(result.summary).not.toContain('取得原価・評価損益・純入出金は入出金を反映した値です');
+	});
+
+	it('include_pnl=false: 入出金を読まないので未リクエストの文言は従来のまま', async () => {
+		setupFetchMock();
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: false,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		expect(result.summary).toContain('※ 入出金分析は未リクエスト。約定ベースの分析のみです');
+		expect(result.summary).not.toContain('損益計算には入出金履歴を取得して使用している');
 	});
 });
 
@@ -1769,18 +2037,18 @@ describe('analyze_my_portfolio — 純入出金の価格解決 warning', () => {
 		expect(noPnl.data.yearly_performance).toBeUndefined();
 		expect(noPnl.data.monthly_performance).toBeUndefined();
 
-		// include_deposit_withdrawal=false: 入出金を読まないので落ちる入出庫が無い。
-		// 純入出金は 0 ではなく未計測（null）で返る。
+		// include_deposit_withdrawal=false: 表示セクションは閉じるが、損益計算のために
+		// 入出金は読む。純入出金は実測され、価格を引けない入出庫はその実測値から落ちるので
+		// warning も従来どおり出る（黙って過小になる経路を作らない）。
 		const noDw = await handler({
 			include_technical: false,
 			include_pnl: true,
 			include_deposit_withdrawal: false,
 		});
 		assertOk(noDw);
-		expect(hasUnpricedWarning(noDw.meta.warnings)).toBe(false);
-		expect(noDw.data.daily_performance?.net_flow_jpy).toBeNull();
-		expect(noDw.data.daily_performance?.flow_measured).toBe(false);
-		expect(noDw.data.daily_performance?.unpriced_flow_assets).toBeUndefined();
+		expect(hasUnpricedWarning(noDw.meta.warnings)).toBe(true);
+		expect(noDw.data.daily_performance?.flow_measured).toBe(true);
+		expect(noDw.data.daily_performance?.unpriced_flow_assets).toEqual(['doge', 'mona']);
 	});
 
 	it('toolDef: content[0].text の warning 行が JSON より前に出る', async () => {

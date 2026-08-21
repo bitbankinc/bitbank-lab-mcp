@@ -673,15 +673,17 @@ export function buildEquitySeries(
 // ── 入出金データの利用可否 ──
 
 /**
- * `analyze_my_portfolio` の入出金分析状態を判定する。
+ * `analyze_my_portfolio` の**入出金分析セクション**の状態を判定する。
  *
- * - `not_requested`: `include_deposit_withdrawal=false`
+ * - `not_requested`: `include_deposit_withdrawal=false`（セクションを出力しない）
  * - `available`: 取得成功かつ履歴あり（入出金ベースの分析を実行できる）
  * - `no_history`: 取得成功・警告なしで本当に履歴 0 件
  * - `fallback`: 取得失敗 / partial failure で約定ベースにフォールバック
  *
- * ハンドラは取得原価の信頼性ゲートにもこの判定を使うため、`deposit_withdrawal_summary`
- * の構築より前に確定できるよう純粋関数として切り出してある。
+ * **これは表示セクションの状態であって、損益計算が入出金履歴を使えたかではない。**
+ * `include_pnl=true` なら `include_deposit_withdrawal` の値に関わらず入出金履歴を取得して
+ * 損益計算に供給するため、`not_requested`（＝セクション未リクエスト）でも取得原価は
+ * 正しく出る。損益側で使えたかは `flowUnavailableReasonFor` が別軸で判定する。
  */
 export function resolveDepositWithdrawalStatus(
 	includeDepositWithdrawal: boolean,
@@ -699,34 +701,28 @@ export function resolveDepositWithdrawalStatus(
 /**
  * 入出金履歴を損益計算に使えない場合の理由コードを返す（使える場合は `undefined`）。
  *
- * **`status` だけでは判定しきれない。** `status` は「どの分析基準を出力するか」を表すもので、
- * 「取得原価を信頼してよいか」とは別軸だからである。`fetchDepositWithdrawal` は
- * 暗号資産入庫 / JPY 入金 / 暗号資産出庫 / JPY 出金の 4 チャネルを個別に取得し、
- * 一部だけ失敗しても残りにレコードがあれば `allFailed: false` で `available` になる。
+ * **判定軸は取得結果だけで、`include_deposit_withdrawal`（表示セクションの制御）とも
+ * `DepositWithdrawalStatus` とも独立している。** 損益を出す構成（`include_pnl=true`）では
+ * 入出金履歴を常に取得するので、ここで見るべきは「取得できた履歴が完全か」だけになる。
+ * `status` は「どの分析基準のセクションを出力したか」を表す別軸の値で、判定には使わない。
+ *
+ * `fetchDepositWithdrawal` は 暗号資産入庫 / JPY 入金 / 暗号資産出庫 / JPY 出金 の 4 チャネルを
+ * 個別に取得し、一部だけ失敗しても残りにレコードがあれば `allFailed: false` で返す。
  * このとき暗号資産出庫チャネルが落ちていると、`cost_basis` を過大化させる当の出庫だけが
  * 欠けた `withdrawals` がそのまま `calcPnl` に渡ってしまう。件数上限による打ち切り
- * （`isComplete: false`）も同じく出庫の取りこぼしになる。
+ * （`isComplete: false`）も同じく出庫の取りこぼしになる。だから `allFailed` だけでなく
+ * `warnings` / `isComplete` も見る。
  *
- * そこで `available` / `no_history` でも履歴の完全性を見て理由コードを立てる。
- * `status` 側は据え置くので、`deposit_withdrawal_summary`（`is_complete` 付きの実データ）は
- * 従来どおり出力される——原価が信頼できないことと、入出金サマリーが使えないことは別問題。
+ * 理由コードを立てても `status` 側は据え置くので、`deposit_withdrawal_summary`
+ * （`is_complete` 付きの実データ）は従来どおり出力される——原価が信頼できないことと、
+ * 入出金サマリーが使えないことは別問題。
  */
-export function flowUnavailableReasonFor(
-	status: DepositWithdrawalStatus,
-	dw: DepositWithdrawalData | null,
-): PortfolioFlowUnavailableReason | undefined {
-	switch (status) {
-		case 'not_requested':
-			return 'withdrawal_history_not_fetched';
-		case 'fallback':
-			return 'dw_fetch_failed';
-		default:
-			break;
-	}
-	if (!dw) return undefined;
-	// 一部チャネルの失敗。出庫チャネルが落ちたかは warnings からは判別できるが、
-	// どのチャネルであれ「履歴が欠けている」以上は原価を確定できないので一律で閉じる。
-	if (dw.warnings.length > 0) return 'dw_fetch_failed';
+export function flowUnavailableReasonFor(dw: DepositWithdrawalData | null): PortfolioFlowUnavailableReason | undefined {
+	// 取得そのものが例外で落ちた（fetchDepositWithdrawal が null）。
+	if (!dw) return 'dw_fetch_failed';
+	// 全チャネル失敗、または一部チャネルの失敗。出庫チャネルが落ちたかは warnings からは
+	// 判別できるが、どのチャネルであれ「履歴が欠けている」以上は原価を確定できないので一律で閉じる。
+	if (dw.allFailed || dw.warnings.length > 0) return 'dw_fetch_failed';
 	// 件数上限による打ち切り。取得自体は成功しているので失敗とは別コードにする
 	// （再実行しても解消しないため、案内文言も変わる）。
 	if (!dw.isComplete) return 'dw_history_incomplete';
@@ -911,8 +907,9 @@ export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerforman
 	// 「入出金ゼロの口座の成績」という誤った確定値になる（それが -60.9% 型の表示の一因）。
 	const adjusted = flow.net_flow_jpy != null ? change - flow.net_flow_jpy : null;
 	// 未計測の理由。ctx 側の指定を優先し、指定が無い場合（dwData が null）は
-	// 「入出金履歴を取得していない」に落とす。flow_measured=false なら必ず理由が付く。
-	const unavailableReason = flow.measured ? undefined : (ctx.flowUnavailableReason ?? 'withdrawal_history_not_fetched');
+	// 「取得に失敗した」に落とす。損益を出す構成では入出金履歴を常に取得するので、
+	// dwData が null なのは取得が落ちたときだけ。flow_measured=false なら必ず理由が付く。
+	const unavailableReason = flow.measured ? undefined : (ctx.flowUnavailableReason ?? 'dw_fetch_failed');
 	const performance: PeriodPerformance = {
 		start_value_jpy: startValue,
 		current_value_jpy: ctx.currentValue,
