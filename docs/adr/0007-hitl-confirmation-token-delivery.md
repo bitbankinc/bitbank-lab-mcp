@@ -214,6 +214,10 @@ pull hydration を使ったカードもボタン実行に成功しており（�
    `extensions["io.modelcontextprotocol/ui"]` の存在**だけでは足りない**。
    `mimeTypes` が `text/html;profile=mcp-app` を含むことまで要求する。
 
+   > **このゲートは露出面のスコープ制御であって認可制御ではない。** `clientCapabilities` は
+   > クライアントの自己申告で、サーバーは真偽を判定できない。詳細と重大度の評価は
+   > 「capability 宣言は認可制御ではない」節を参照。
+
    ```json
    { "capabilities": { "extensions": { "io.modelcontextprotocol/ui": {
        "mimeTypes": ["text/html;profile=mcp-app"] } } } }
@@ -412,6 +416,12 @@ MRTR の `requestState` は `bind` で session/principal + method に束縛さ�
 `confirmation_token` の bind（`bindRequestStateContext` 相当）を実装すること。
 stdio のままなら `sessionId` が常に undefined なので、束縛を足しても効果は無い。
 
+**HTTP 化時にはもう 1 点、「capability 宣言は認可制御ではない」節の評価も必須である。**
+HTTP では API キーがサーバー側に置かれ、リモートクライアントは保持しない。そのため
+capability を偽ったクライアントによる execute が、本来持たない権限の獲得になる。
+stdio でキーをクライアント側 env に置く構成では追加の昇格にならないが、この前提は
+HTTP 化で失われる。
+
 ## Consequences
 
 ### Pros
@@ -444,7 +454,8 @@ stdio のままなら `sessionId` が常に undefined なので、束縛を足�
 
 | リスク | 既定（オプトイン off） | オプトイン on + MCP Apps UI 宣言ホスト（MIME 型込み） |
 |---|---|---|
-| preview 応答からの HITL バイパス | × token / 同等 credential を返さない | △ **`_meta` がモデル可視になったホストでは成立する**（実測では非可視。これが本設計の唯一の依存点） |
+| preview 応答からの HITL バイパス | × token / 同等 credential を返さない | △ **`_meta` がモデル可視になったホストでは成立する**（実測では非可視。**依存点その 1**） |
+| UI 非対応クライアントが capability を偽り、人間の操作を経ずに execute | 該当なし | △ **検証不能**（**依存点その 2**）。`clientCapabilities` は自己申告で、サーバーは真偽を判定できない。重大度は API キーの配置に依存する。下記「capability 宣言は認可制御ではない」 |
 | `structuredContent` からの token 取得 | × 常に strip | × 常に strip（変更なし） |
 | MCP tools/call での直接 execute（token 無し） | × handler が常に拒否 | × handler が `direct_execute_forbidden` で拒否 |
 | 期限切れ / 使用済み / 別注文の token での execute | × validateToken が拒否 | × validateToken が拒否（変更なし） |
@@ -456,6 +467,49 @@ stdio のままなら `sessionId` が常に undefined なので、束縛を足�
 | 別セッションへの token 持ち出し | 該当なし | △ stdio では別セッションが存在しない。HTTP 化する場合は「レビュー判断事項 B」が必須前提 |
 | 使用済み token の replay（時計の非単調性） | 該当なし | △ 前方ジャンプで生存記録が消える / TTL 直後の後方ステップで期限判定が再び通る。下記「ワンタイム性の保証範囲」 |
 | 使用済み token の replay（プロセス再起動 / 複数プロセス） | 該当なし | × 署名鍵に per-process nonce を混ぜ、再起動後・別プロセスでは `token_invalid`（2026-08-17 修正） |
+
+## capability 宣言は認可制御ではない（2026-08-21 追記）
+
+**有効化ゲート 2（MCP Apps UI 宣言 + MIME 型）は、露出面のスコープ制御であって認可制御ではない。**
+
+`clientCapabilities` は `initialize`（または per-request envelope）で**クライアントが自己申告する
+値であり、サーバーはその真偽を判定できない**。UI 拡張と MIME 型を宣言しさえすれば、確認カードを
+一切描画しないクライアントでもトークンを受け取れる。したがって次が成立する。
+
+> **サーバーは「人間がボタンを押したこと」を検証していない。検証しているのは
+> 「トークンを所持していること」だけである。**
+
+これは実装の不足ではなく、この経路の構造的な限界である。SEP-1865 は iframe 起源の `tools/call` に
+origin marker を持たず、サーバー側から UI 起源と LLM 起源を識別できない（Context 参照）。
+人間の操作をプロトコル上で保証する手段が elicitation / MRTR しかないからこそ、
+非対応ホスト向けの代替としてこの経路を選んでいる。
+
+**ゲート 2 を厳格化しても閉じない。** MIME 型の要求を足したのは「確認カードを描画できない
+ホストにトークンを載せても露出面が増えるだけ」だからであって、偽装を防ぐためではない。
+
+### 重大度は API キーの配置に依存する
+
+| キーの置き場所 | 偽装できる主体は | バイパスの意味 |
+|---|---|---|
+| クライアント側（`claude_desktop_config.json` の `env` 等） | **既に `BITBANK_API_KEY` / `BITBANK_API_SECRET` を保持している** | bitbank REST API を直接署名して叩けるため、**本経路のバイパスで追加に得るものは無い** |
+| サーバー側（パッケージルートの `.env`） | **キーを保持しない** | **権限昇格になる**。`docs/gitbook/private-api/setup.md` が案内する構成が該当 |
+
+後者の構成では、悪意あるクライアントが capability を偽ることで、本来持たない発注・取消の
+実行能力を得る。**被害範囲は他の束縛（プレビュー済み 1 件 / 60 秒 / ワンタイム / HMAC 束縛）で
+限定されるが、境界そのものは越えられる。**
+
+### プロンプトインジェクション経由では成立しない
+
+- LLM はツール結果の `_meta` を読めない（計測 1 / 計測 4）
+- LLM は `initialize` のハンドシェイクに関与できない
+
+したがって「会話に混入した指示によってこの経路が発動する」ことは無い。成立するのは
+**クライアント実装そのものが偽装する場合**に限られる。
+
+### HTTP トランスポート化時には重大度が上がる
+
+HTTP ではキーがサーバー側に置かれ、リモートクライアントは保持しない。上表の下段が常に
+当てはまるため、**この項目は「レビュー判断事項 B」と同じく HTTP 化の必須検討事項**である。
 
 ## ワンタイム性の保証範囲（2026-08-14 追記）
 
@@ -499,7 +553,7 @@ stdio のままなら `sessionId` が常に undefined なので、束縛を足�
 
 **修正しない理由**: 攻撃者がサーバー機の時計を誘発できないため。**トークンを誰が保持して
 いるかとは独立の理由である**——通常経路では token は iframe / ユーザー本人しか保持しないが、
-`_meta` がモデル可視になったホストや漏洩時には攻撃者も保持しうる（上表の「唯一の依存点」）。
+`_meta` がモデル可視になったホストや漏洩時には攻撃者も保持しうる（上表の「依存点その 1」）。
 その場合でも、時計異常を起こせない限りこの経路は成立しない。
 
 検討した緩和策（記録の削除判定だけを単調時計で行う）は前方ジャンプしか
