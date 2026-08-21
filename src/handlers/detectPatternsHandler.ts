@@ -4,10 +4,10 @@ import { failFromValidation } from '../../lib/result.js';
 import { ensurePair } from '../../lib/validate.js';
 import { prependWarnings } from '../../lib/warning-propagation.js';
 import detectPatterns from '../../tools/detect_patterns.js';
+import { buildPeriodBlock } from '../../tools/patterns/period.js';
 import { DetectPatternsInputSchema, DetectPatternsOutputSchema } from '../schemas.js';
 import type { McpResponse, ToolDefinition } from '../tool-definition.js';
 import {
-	buildPeriodLine,
 	buildTypeSummary,
 	formatDebugView,
 	formatDetailedView,
@@ -85,24 +85,26 @@ export const toolDef: ToolDefinition = {
 			return prependWarningToResponse(formatDebugView(hdr, meta, pats, res, effectiveTz), upstream);
 		}
 
-		const periodLine = buildPeriodLine(pats, effectiveTz);
+		// スキャン範囲（meta.scan = 検出器に渡した足）＋ 検出パターン分布期間の 2 行。
+		// ヘッダの `{limit}本から` は要求本数であってスキャン本数ではないので、両者が食い違うことがある。
+		const periodBlock = buildPeriodBlock(meta.scan, String(type), pats, effectiveTz);
 		const typeSummary = buildTypeSummary(pats, effectiveTz);
 
 		if ((view || 'detailed') === 'summary') {
 			return prependWarningToResponse(
-				formatSummaryView(hdr, pats, periodLine, typeSummary, patterns, includeForming, res, effectiveTz),
+				formatSummaryView(hdr, pats, periodBlock, typeSummary, patterns, includeForming, res, effectiveTz),
 				upstream,
 			);
 		}
 		if ((view || 'detailed') === 'full') {
 			return prependWarningToResponse(
-				formatFullView(hdr, pats, periodLine, typeSummary, meta, res, effectiveTz),
+				formatFullView(hdr, pats, periodBlock, typeSummary, meta, res, effectiveTz),
 				upstream,
 			);
 		}
 		// detailed (default)
 		return prependWarningToResponse(
-			formatDetailedView(hdr, pats, periodLine, typeSummary, meta, tolerancePct, patterns, res, effectiveTz),
+			formatDetailedView(hdr, pats, periodBlock, typeSummary, meta, tolerancePct, patterns, res, effectiveTz),
 			upstream,
 		);
 	},

@@ -90,26 +90,6 @@ const fmtPointList = (arr: unknown): string =>
 // ── shared ──
 
 /**
- * 検出対象期間の1行テキスト
- * @param tz 表示 TZ（既定 'Asia/Tokyo'）。空文字 / 不正値は formatDateInTz が Asia/Tokyo にフォールバック。
- */
-export function buildPeriodLine(pats: PatternEntry[], tz: string = 'Asia/Tokyo'): string {
-	try {
-		const ends = pats.map((p) => toTs(p?.range?.end)).filter(Number.isFinite);
-		const starts = pats.map((p) => toTs(p?.range?.start)).filter(Number.isFinite);
-		if (starts.length && ends.length) {
-			const startDate = formatDateInTz(Math.min(...starts), tz) ?? '';
-			const endDate = formatDateInTz(Math.max(...ends), tz) ?? '';
-			const days = Math.max(1, Math.round((Math.max(...ends) - Math.min(...starts)) / 86400000));
-			return `検出対象期間: ${startDate} ~ ${endDate}（${days}日間）`;
-		}
-	} catch {
-		/* noop */
-	}
-	return '';
-}
-
-/**
  * 種別別件数集計
  * @param _tz 現状の集計ロジックでは TZ を使わないが、view formatter 群と signature を揃える。
  */
@@ -689,7 +669,7 @@ export function formatPatternLine(
 export function formatSummaryView(
 	hdr: string,
 	pats: PatternEntry[],
-	periodLine: string,
+	periodBlock: string,
 	typeSummary: string,
 	patterns: string[] | undefined,
 	includeForming: boolean | undefined,
@@ -702,7 +682,7 @@ export function formatSummaryView(
 	const in30 = within(30 * 86400000);
 	const in90 = within(90 * 86400000);
 	const formingHint = includeForming ? '' : '\n※形成中は includeForming=true を指定してください。';
-	const text = `${hdr}（${typeSummary || '分類なし'}、直近30日: ${in30}件、直近90日: ${in90}件）\n${periodLine ? `${periodLine}\n` : ''}検討パターン: ${patterns?.length ? patterns.join(', ') : '既定セット'}${formingHint}\n詳細は structuredContent.data.patterns を参照。`;
+	const text = `${hdr}（${typeSummary || '分類なし'}、直近30日: ${in30}件、直近90日: ${in90}件）\n${periodBlock ? `${periodBlock}\n` : ''}検討パターン: ${patterns?.length ? patterns.join(', ') : '既定セット'}${formingHint}\n詳細は structuredContent.data.patterns を参照。`;
 	return { content: [{ type: 'text', text }], structuredContent: toStructured(res) };
 }
 
@@ -711,7 +691,7 @@ export function formatSummaryView(
 export function formatFullView(
 	hdr: string,
 	pats: PatternEntry[],
-	periodLine: string,
+	periodBlock: string,
 	typeSummary: string,
 	meta: PatternMeta,
 	res: PatternResult,
@@ -723,7 +703,7 @@ export function formatFullView(
 		: '';
 	const trustNote =
 		'\n\nパターン整合度について（形状一致度・対称性・期間から算出）:\n  0.8以上 = 理想的な形状（教科書的パターン）\n  0.7-0.8 = 標準的な形状（他指標と併用推奨）\n  0.6-0.7 = やや不明瞭（慎重に判断）\n  0.6未満 = 形状不十分\n  ※ status=forming は最終構成点が未確定のため、整合度に関わらず「参考材料」として扱う';
-	const text = `${hdr}（${typeSummary || '分類なし'}）\n${periodLine ? `${periodLine}\n` : ''}\n【検出パターン（全件）】\n${body}${overlayNote}${trustNote}`;
+	const text = `${hdr}（${typeSummary || '分類なし'}）\n${periodBlock ? `${periodBlock}\n` : ''}\n【検出パターン（全件）】\n${body}${overlayNote}${trustNote}`;
 	return { content: [{ type: 'text', text }], structuredContent: toStructured(res) };
 }
 
@@ -732,7 +712,7 @@ export function formatFullView(
 export function formatDetailedView(
 	hdr: string,
 	pats: PatternEntry[],
-	periodLine: string,
+	periodBlock: string,
 	typeSummary: string,
 	meta: PatternMeta,
 	tolerancePct: number | undefined,
@@ -760,7 +740,7 @@ export function formatDetailedView(
 	const trustNote =
 		'\n\nパターン整合度について（形状一致度・対称性・期間から算出）:\n  0.8以上 = 理想的な形状（教科書的パターン）\n  0.7-0.8 = 標準的な形状（他指標と併用推奨）\n  0.6-0.7 = やや不明瞭（慎重に判断）\n  0.6未満 = 形状不十分\n  ※ status=forming は最終構成点が未確定のため、整合度に関わらず「参考材料」として扱う';
 	const usage = `\n\nusage_example:\n  step1: detect_patterns を実行\n  step2: structuredContent.data.overlays を取得\n  step3: render_chart_svg の overlays に渡す`;
-	const text = `${hdr}（${typeSummary || '分類なし'}）\n${periodLine ? `${periodLine}\n` : ''}\n${top.length ? `【検出パターン】\n${body}` : ''}${none}${overlayNote}${trustNote}${usage}`;
+	const text = `${hdr}（${typeSummary || '分類なし'}）\n${periodBlock ? `${periodBlock}\n` : ''}\n${top.length ? `【検出パターン】\n${body}` : ''}${none}${overlayNote}${trustNote}${usage}`;
 	return {
 		content: [{ type: 'text', text }],
 		structuredContent: {
