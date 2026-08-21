@@ -12,6 +12,7 @@
 
 import { estimateOrderFee } from '../../lib/fees.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
+import { isJpyQuotedPair } from '../../lib/pair-code.js';
 import { fetchPairsSpec, type PairSpec, validateOrderConstraints } from '../../lib/pairs.js';
 import { fail, ok, toStructured } from '../../lib/result.js';
 import { validateTriggerPrice } from '../../lib/trigger-price.js';
@@ -139,7 +140,7 @@ export default async function previewOrder(args: {
 	const { token, expiresAt } = generateToken('create_order', tokenParams);
 
 	// プレビュー表示
-	const isJpy = pair.includes('jpy');
+	const isJpy = isJpyQuotedPair(pair);
 	const sideLabel = side === 'buy' ? '買' : '売';
 	const fmtPrice = price ? (isJpy ? formatPrice(Number(price)) : price) : '成行';
 	const isMargin = !!position_side;
@@ -223,7 +224,7 @@ export default async function previewOrder(args: {
 		}
 	}
 	lines.push('');
-	lines.push('⚠️ この注文はユーザーの最終確認（ホスト UI または elicitation）を経るまで発注されません。');
+	lines.push('⚠️ この注文はユーザーの最終確認（elicitation/MRTR）を経るまで発注されません。');
 
 	const summary = lines.join('\n');
 
@@ -262,14 +263,14 @@ export const toolDef: ToolDefinition = {
 		'対応注文タイプは limit / market / stop / stop_limit の 4 種類のみ（take_profit / stop_loss / losscut は未対応）。',
 		'position_side を指定すると信用注文として扱う（ロング新規=buy+long, ロング決済=sell+long, ショート新規=sell+short, ショート決済=buy+short）。',
 		'⚠️ confirmation_token はクライアント側には返さない（content / structuredContent / _meta のいずれにも含めない）。',
-		'実際の発注はユーザーの明示操作を経てチャット内で完結できる（elicitation/MRTR 対応ホストは確認ダイアログ、SEP-1865 + BITBANK_TRUST_HOST_APPROVAL=1 はチャット内確認カードの「注文を確定する」ボタン）。',
-		'いずれも不可のホストではプレビューのみ返し、取引実行は受け付けない。ユーザーにはチャット内の確認手段を第一に案内し、bitbank アプリ/ウェブでの手動発注は任意の代替手段として扱う。',
+		'実際の発注は elicitation/MRTR 対応ホスト上でのユーザー確認ダイアログ経由でのみ完結する。',
+		'非対応ホストではプレビューのみ返し、取引実行は受け付けない。ユーザーには elicitation/MRTR 対応クライアントでの操作を第一に案内し、bitbank アプリ/ウェブでの手動発注は任意の代替手段として扱う。',
 	].join(' '),
 	inputSchema: PreviewOrderInputSchema,
-	// MCP Apps (SEP-1865): 対応ホストでは iframe 内に注文確認 UI を表示する。
+	// MCP Apps (SEP-1865): 対応ホストでは iframe 内に注文プレビュー UI を表示する。
 	// 非対応ホストでは無視される（Progressive Enhancement）。
-	// 注: 本 PR 時点では UI 側からの create_order 経路は未実装（pending action store と
-	// UI origin 検証の安全設計を別 PR で整備するまで token を UI に渡さない）。
+	// 注: iframe 起源の tools/call をサーバー側で識別できないため、UI からの
+	// create_order 実行経路は無効。execute は elicitation/MRTR のみ。
 	_meta: {
 		ui: {
 			resourceUri: 'ui://order/confirm.html',
@@ -295,18 +296,7 @@ export const toolDef: ToolDefinition = {
 			result.summary,
 			'',
 			'※ このホストでは取引実行に対応していません。',
-			'  実際に発注するには、取引実行対応クライアント（Claude Desktop など）で同じ操作を行うか、bitbank アプリ/ウェブで同じ内容を手動発注してください。',
-		].join('\n');
-
-		// BITBANK_TRUST_HOST_APPROVAL=1 のときに使う妥協経路用のレスポンス。
-		// structuredContent に confirmation_token / expires_at を含めたまま返し、
-		// SEP-1865 iframe ボタン → create_order の経路を成立させる。
-		// 詳細は docs/adr/0007-hitl-confirmation-token-delivery.md。
-		const trustHostFallbackText = [
-			result.summary,
-			'',
-			'このチャットに表示される確認カードの「注文を確定する」ボタンを押すと、発注がチャット内で完結します。ボタンを押さない限り発注は行われません。',
-			'ユーザーへの案内: まず上記の確認カードのボタン操作を案内すること（発注はこのチャット内で完了できる）。bitbank アプリ/ウェブで同じ内容を手動発注することも可能だが、任意の代替手段として扱う。LLM 自身が create_order を呼んで発注を代行してはならない（実行は必ずユーザーのボタン操作に委ねる）。',
+			'  実際に発注するには、elicitation/MRTR 対応クライアントで同じ操作を行うか、bitbank アプリ/ウェブで同じ内容を手動発注してください。',
 		].join('\n');
 
 		// elicitation 対応ホストでは preview → ユーザー確認 → create_order までを
@@ -331,15 +321,12 @@ export const toolDef: ToolDefinition = {
 						token_expires_at: result.data.expires_at!,
 					},
 					'elicitation',
+					{ sessionId: (extra as { sessionId?: string } | undefined)?.sessionId },
 				),
 			onDeclinedText: 'ユーザーが発注をキャンセルしました（elicitation）',
 			declinedStructured: toStructured(result),
 			fallback: {
 				content: [{ type: 'text', text: fallbackText }],
-				structuredContent: toStructured(result),
-			},
-			trustHostFallback: {
-				content: [{ type: 'text', text: trustHostFallbackText }],
 				structuredContent: toStructured(result),
 			},
 		});

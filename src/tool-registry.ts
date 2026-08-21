@@ -47,6 +47,7 @@ import { toolDef as renderChartSvg } from './handlers/renderChartSvgHandler.js';
 import { toolDef as runBacktest } from './handlers/runBacktestHandler.js';
 import { isPrivateApiEnabled } from './private/config.js';
 import { startCleanupTimer } from './private/confirmation.js';
+import { startNonceCleanupTimer } from './private/request-state.js';
 import type { ToolDefinition } from './tool-definition.js';
 
 /**
@@ -154,7 +155,10 @@ if (isPrivateApiEnabled()) {
 		getMarginPositions,
 		getMarginTradeHistory,
 	);
+	// 使用済み確認トークン / 使用済み nonce の定期 purge。どちらも Private ツール
+	// （preview → 確認 → execute）でしか記録されないので、有効化と同じ場所で起動する。
 	startCleanupTimer();
+	startNonceCleanupTimer();
 	log('info', {
 		type: 'private_api',
 		message: 'Private API tools enabled',

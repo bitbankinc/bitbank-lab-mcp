@@ -12,20 +12,27 @@ description: 発注・キャンセルを守る2ステップ確認（HITL）と�
 
 ## 2ステップ確認（HITL: Human-in-the-Loop）
 
-発注・キャンセルは **preview → execute の2ステップ確認** が必須です。AI が単独で注文を確定することはできません。
+発注・キャンセルは **preview → ユーザー明示確認（elicitation / MRTR）→ execute** が必須です。AI が単独で注文を確定することはできません。
 
 ```text
-1. preview_order   → 注文内容を表示 + 確認トークンを発行
-2. create_order    → 確認トークンを検証 → 実行
+発注:
+1. preview_order   → 注文内容を表示（確認トークンはサーバー内のみ）
+2. ユーザー accept → 同一ハンドラ内で create_order を実行
+
+キャンセル:
+1. preview_cancel_order / preview_cancel_orders → キャンセル内容を表示
+2. ユーザー accept                             → 同一ハンドラ内で cancel_order / cancel_orders を実行
 ```
 
-* 確認トークンは **HMAC-SHA256** で生成されます（`BITBANK_API_SECRET` を鍵に使用）。
+* 確認トークンは **HMAC-SHA256** で生成されます（`BITBANK_API_SECRET` を鍵に使用）が、**クライアントには返りません**。
 * 有効期限は **デフォルト60秒**（`ORDER_CONFIRM_TTL_MS` 環境変数で変更可能）。
 * preview 時と実行時でパラメータが一致しない場合は**改ざんとして拒否**されます。
+* `requestState` は呼び出し元セッション（または認証 principal）と MCP method に束縛され、別セッションでの再利用を拒否します（stdio では従来どおり）。
 * キャンセルにも同じ確認フローが適用されます（`preview_cancel_order` / `preview_cancel_orders`）。
+* `create_order` / `cancel_order` / `cancel_orders` を MCP `tools/call` から直接呼んでもサーバー側で拒否されます。
 
 {% hint style="info" %}
-確認トークンは「ユーザーの最終確認を経たことの証拠」です。対応ホスト（Claude Desktop / Claude Code の一部バージョン等）では、確認 UI を経てサーバー内で完結し、トークンが AI 側に渡らない設計になっています。ホスト環境による挙動の違いと設計の詳細は GitHub の [docs/private-api.md](https://github.com/bitbankinc/bitbank-lab-mcp/blob/main/docs/private-api.md) を参照してください。
+確認トークンは「ユーザーの最終確認を経たことの証拠」です。対応ホストでは elicitation / MRTR 確認 UI を経てサーバー内で完結し、トークンが AI 側に渡らない設計になっています。旧 `BITBANK_TRUST_HOST_APPROVAL`（iframe に token を載せる妥協モード）はセキュリティ上撤去済みです。ホスト環境による挙動の違いと設計の詳細は GitHub の [docs/private-api.md](https://github.com/bitbankinc/bitbank-lab-mcp/blob/main/docs/private-api.md) を参照してください。
 {% endhint %}
 
 ## 発注前の事前バリデーション

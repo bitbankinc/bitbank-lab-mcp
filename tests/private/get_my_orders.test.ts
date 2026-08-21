@@ -518,3 +518,42 @@ describe('get_my_orders — 非 PrivateApiError の generic catch', () => {
 		expect(result.summary).toContain('予期しないエラー');
 	});
 });
+
+/**
+ * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
+ * 揃えないと JPY 建て判定（`o.pair.includes('jpy')`）が外れ、指値・トリガー価格が
+ * 円フォーマットされない。現行の小文字レスポンスに対しては何も変わらない（防御的正規化）。
+ */
+describe('get_my_orders — API pair の取得境界正規化', () => {
+	it('小文字レスポンスでは出力の pair 表記が変わらない', async () => {
+		setupFetchMock(mockBitbankSuccess(rawActiveOrdersResponse));
+
+		const { default: getMyOrders } = await import('../../tools/private/get_my_orders.js');
+		const result = await getMyOrders({});
+
+		assertOk(result);
+		expect(result.data.orders.map((o) => o.pair)).toEqual(['btc_jpy', 'eth_jpy', 'btc_jpy']);
+		expect(result.summary).toContain('BTC/JPY');
+		expect(result.summary).toContain('¥14,000,000');
+		expect(result.summary).toContain('トリガー:¥13,000,000');
+	});
+
+	it('大文字レスポンスでも structuredContent は小文字契約 / JPY 建て表示が崩れない', async () => {
+		setupFetchMock(
+			mockBitbankSuccess({
+				orders: rawActiveOrdersResponse.orders.map((o) => ({ ...o, pair: o.pair.toUpperCase() })),
+			}),
+		);
+
+		const { default: getMyOrders } = await import('../../tools/private/get_my_orders.js');
+		const result = await getMyOrders({});
+
+		assertOk(result);
+		expect(result.data.orders.map((o) => o.pair)).toEqual(['btc_jpy', 'eth_jpy', 'btc_jpy']);
+		// 正規化前は指値・トリガー価格が生文字列のまま出ていた
+		expect(result.summary).toContain('¥14,000,000');
+		expect(result.summary).toContain('トリガー:¥13,000,000');
+		expect(result.summary).not.toContain(' 14000000');
+		expect(result.summary).toContain('BTC/JPY');
+	});
+});

@@ -16,6 +16,7 @@
 
 import { nowIso, parseIso8601, toIsoMs } from '../../lib/datetime.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
+import { normalizePairCodes } from '../../lib/pair-code.js';
 import { fail, ok } from '../../lib/result.js';
 import { type BitbankPrivateClient, getDefaultClient } from '../../src/private/client.js';
 import { GetMarginTradeHistoryInputSchema, GetMarginTradeHistoryOutputSchema } from '../../src/private/schemas.js';
@@ -82,7 +83,9 @@ async function paginateMarginTrades(
 			...(cursor ? { [cursorKey]: cursor } : {}),
 		};
 		const rawData = await client.get<{ trades: RawMarginTrade[] }>('/v1/user/spot/trade_history', params);
-		const batch = rawData.trades || [];
+		// 取得境界での pair 正規化（`lib/pair-code.ts`）。JPY 建て判定 → 価格フォーマットが
+		// 小文字前提のため、ここで揃える。
+		const batch = normalizePairCodes(rawData.trades || []);
 		// type=margin が無視された場合に備え、position_side != null で margin 約定のみに絞る。
 		const marginOnly = batch.filter((t) => t.position_side != null);
 		const newRecords = marginOnly.filter((t) => !seenIds.has(t.trade_id));
@@ -159,12 +162,14 @@ export default async function getMarginTradeHistory(args: {
 			if (count !== 20) params.count = String(count);
 			if (order !== 'desc') params.order = order;
 			const rawData = await client.get<{ trades: RawMarginTrade[] }>('/v1/user/spot/trade_history', params);
+			// 取得境界での pair 正規化（paginateMarginTrades と同じ理由）。
+			const rawBatch = normalizePairCodes(rawData.trades);
 			// 公式 docs に type=margin パラメータの記載がなく、API が無視する可能性に備える。
 			// position_side は docs 上「信用取引の時のみ」付与されるため、これで margin 約定のみに絞る。
-			rawTrades = rawData.trades.filter((t) => t.position_side != null);
+			rawTrades = rawBatch.filter((t) => t.position_side != null);
 			// API 窓内の margin 約定を全部もらったかどうかは生 batch.length で判定する
 			// （フィルタ後の長さで判定すると、現物比率が高いとき誤って打ち切る）。
-			isComplete = rawData.trades.length < count;
+			isComplete = rawBatch.length < count;
 		} else {
 			// 自動ページネーション（order に応じて asc + since / desc + end カーソルで取得）
 			const result = await paginateMarginTrades(client, baseParams, count, order);

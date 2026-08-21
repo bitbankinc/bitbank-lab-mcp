@@ -11,7 +11,12 @@
 import { isInputRequiredResult } from '@modelcontextprotocol/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ok } from '../../lib/result.js';
-import { clientSupportsElicitation, withElicitedConfirmation } from '../../src/private/elicitation.js';
+import {
+	CONFIRM_CAPACITY_EXCEEDED_MESSAGE,
+	CONFIRM_STATE_INVALID_MESSAGE,
+	clientSupportsElicitation,
+	withElicitedConfirmation,
+} from '../../src/private/elicitation.js';
 import { _resetUsedNonces, digestArgs } from '../../src/private/request-state.js';
 
 const ACTION = 'create_order';
@@ -52,6 +57,9 @@ function round2Ctx(
 
 const ACCEPT = { action: 'accept', content: { confirmed: true } };
 
+/** 恒久的な失敗（引数変更 / replay / 期限切れ）の案内文に必ず含まれる文言 */
+const INVALID_TEXT = '確認情報が無効なため実行しませんでした';
+
 /** 既定の fallback McpResponse */
 function makeFallback() {
 	return {
@@ -78,7 +86,25 @@ beforeEach(() => {
 afterEach(() => {
 	process.env = { ...originalEnv };
 	vi.restoreAllMocks();
+	vi.unstubAllEnvs();
+	vi.resetModules();
 });
+
+/**
+ * 使用済み nonce の件数上限を差し替えた elicitation を読み直す。
+ * 上限は request-state.ts の singleton 生成時に解決されるため、モジュールごと作り直す
+ * （elicitation が import する request-state も同じリセット後の新インスタンスになる）。
+ */
+async function importWithMaxEntries(maxEntries: string) {
+	vi.resetModules();
+	vi.stubEnv('REPLAY_GUARD_MAX_ENTRIES', maxEntries);
+	return await import('../../src/private/elicitation.js');
+}
+
+/** nonce 以外は同一の round 2 state を作る（同じ action / 同じ引数の別確認） */
+function stateWithNonce(nonce: string): Record<string, unknown> {
+	return { action: ACTION, argsDigest: digestArgs(ACTION, BIND_ARGS), nonce };
+}
 
 describe('clientSupportsElicitation', () => {
 	it('extra が undefined の場合は false', () => {
@@ -315,8 +341,6 @@ describe('withElicitedConfirmation', () => {
 	});
 
 	describe('round 2 — requestState の文脈バインド検証', () => {
-		const INVALID_TEXT = '確認情報が無効なため実行しませんでした';
-
 		it('requestState が無い再入では実行しない', async () => {
 			const onConfirmed = vi.fn();
 			const result = (await withElicitedConfirmation({
@@ -411,6 +435,11 @@ describe('withElicitedConfirmation', () => {
 			expect(onConfirmed).not.toHaveBeenCalled();
 		});
 
+		it('恒久的な失敗の文言は「一時的に受け付けられない」文言と区別される', () => {
+			expect(CONFIRM_STATE_INVALID_MESSAGE).toContain(INVALID_TEXT);
+			expect(CONFIRM_CAPACITY_EXCEEDED_MESSAGE).not.toContain(INVALID_TEXT);
+		});
+
 		it('無効 state のレスポンスでも declinedStructured から token が剥がされる', async () => {
 			const result = (await withElicitedConfirmation({
 				...baseOpts,
@@ -425,48 +454,141 @@ describe('withElicitedConfirmation', () => {
 		});
 	});
 
-	describe('trust-host-approval モード（BITBANK_TRUST_HOST_APPROVAL=1）', () => {
-		const trustHostFallback = {
-			content: [{ type: 'text', text: 'TRUST_HOST_TEXT' }],
-			structuredContent: { confirmation_token: 'iframe-token', expires_at: 123 } as Record<string, unknown>,
-		};
+	describe('round 2 — 使用済み nonce 記録の容量上限（fail-closed）', () => {
+		/** 容量テスト用: 指定 nonce で round 2（accept）を 1 回実行する */
+		async function confirmWith(
+			el: typeof import('../../src/private/elicitation.js'),
+			nonce: string,
+			onConfirmed: () => Promise<ReturnType<typeof ok>>,
+			response: Record<string, unknown> = ACCEPT,
+		) {
+			return (await el.withElicitedConfirmation({
+				...baseOpts,
+				extra: round2Ctx(response, stateWithNonce(nonce)),
+				onConfirmed,
+				fallback: makeFallback(),
+			})) as { content: { text: string }[] };
+		}
 
-		it('フラグ OFF なら trustHostFallback は無視され fallback が返る', async () => {
+		it('上限未満では確認フローが従来どおり成功する', async () => {
+			const el = await importWithMaxEntries('2');
+			const onConfirmed = vi.fn().mockResolvedValue(ok('実行完了', {}));
+
+			const first = await confirmWith(el, 'cap-1', onConfirmed);
+			const second = await confirmWith(el, 'cap-2', onConfirmed);
+
+			expect(first.content[0]?.text).toBe('実行完了');
+			expect(second.content[0]?.text).toBe('実行完了');
+			expect(onConfirmed).toHaveBeenCalledTimes(2);
+		});
+
+		it('上限到達時は execute せず、一時的な失敗として区別できる文言を返す', async () => {
+			const el = await importWithMaxEntries('2');
+			const onConfirmed = vi.fn().mockResolvedValue(ok('実行完了', {}));
+			await confirmWith(el, 'cap-1', onConfirmed);
+			await confirmWith(el, 'cap-2', onConfirmed);
+
+			const overflow = await confirmWith(el, 'cap-3', onConfirmed);
+
+			expect(onConfirmed).toHaveBeenCalledTimes(2);
+			expect(overflow.content[0]?.text).toBe(CONFIRM_CAPACITY_EXCEEDED_MESSAGE);
+			expect(overflow.content[0]?.text).not.toContain(INVALID_TEXT);
+		});
+
+		it('上限到達時も使用済み nonce は再び通らない（生存記録を追い出さない）', async () => {
+			const el = await importWithMaxEntries('2');
+			const onConfirmed = vi.fn().mockResolvedValue(ok('実行完了', {}));
+			await confirmWith(el, 'cap-1', onConfirmed);
+			await confirmWith(el, 'cap-2', onConfirmed);
+			await confirmWith(el, 'cap-overflow', onConfirmed);
+
+			// 追い出されていれば「未使用」に巻き戻り、replay が実行されてしまう
+			const replayed = await confirmWith(el, 'cap-1', onConfirmed);
+
+			expect(replayed.content[0]?.text).toBe(CONFIRM_STATE_INVALID_MESSAGE);
+			expect(onConfirmed).toHaveBeenCalledTimes(2);
+		});
+
+		it('容量超過の応答に nonce 本文を含めない', async () => {
+			const el = await importWithMaxEntries('1');
+			const onConfirmed = vi.fn().mockResolvedValue(ok('実行完了', {}));
+			await confirmWith(el, 'cap-filled', onConfirmed);
+
+			const overflow = await confirmWith(el, 'nonce-must-not-leak', onConfirmed);
+
+			expect(JSON.stringify(overflow)).not.toContain('nonce-must-not-leak');
+		});
+
+		it('容量超過では nonce が消費されず、空きが出れば同じ確認が通る', async () => {
+			const el = await importWithMaxEntries('1');
+			const onConfirmed = vi.fn().mockResolvedValue(ok('実行完了', {}));
+			await confirmWith(el, 'cap-filled', onConfirmed);
+
+			const rejected = await confirmWith(el, 'cap-retry', onConfirmed);
+			expect(rejected.content[0]?.text).toBe(CONFIRM_CAPACITY_EXCEEDED_MESSAGE);
+
+			// 実運用では期限切れ purge が空きを作る。ここでは同じ効果を明示的に起こす
+			const requestState = await import('../../src/private/request-state.js');
+			requestState._resetUsedNonces();
+
+			const retried = await confirmWith(el, 'cap-retry', onConfirmed);
+			expect(retried.content[0]?.text).toBe('実行完了');
+		});
+
+		it('容量超過は decline でも同じ文言になる（execute しない点は変わらない）', async () => {
+			const el = await importWithMaxEntries('1');
+			const onConfirmed = vi.fn();
+			await confirmWith(el, 'cap-filled', onConfirmed.mockResolvedValue(ok('実行完了', {})));
+
+			const declined = await confirmWith(el, 'cap-declined', onConfirmed, { action: 'decline' });
+
+			expect(declined.content[0]?.text).toBe(CONFIRM_CAPACITY_EXCEEDED_MESSAGE);
+			expect(onConfirmed).toHaveBeenCalledTimes(1); // 1 件目の accept のみ
+		});
+	});
+
+	describe('trust-host-approval モードは無効（BITBANK_TRUST_HOST_APPROVAL は無視）', () => {
+		it('フラグ OFF なら fallback が返り token は剥がされる', async () => {
 			delete process.env.BITBANK_TRUST_HOST_APPROVAL;
 			const result = (await withElicitedConfirmation({
 				...baseOpts,
 				extra: round1Ctx(false),
 				onConfirmed: vi.fn(),
-				fallback: makeFallback(),
-				trustHostFallback,
-			})) as { content: { text: string }[] };
+				fallback: {
+					content: [{ type: 'text', text: 'FALLBACK_TEXT' }],
+					structuredContent: { confirmation_token: 'should-strip', expires_at: 1 } as Record<string, unknown>,
+				},
+			})) as { content: { text: string }[]; structuredContent: Record<string, unknown> };
 
 			expect(result.content[0]?.text).toBe('FALLBACK_TEXT');
+			expect(result.structuredContent.confirmation_token).toBeUndefined();
 		});
 
-		it('フラグ ON + elicitation 非対応なら trustHostFallback を token 付きのまま返す', async () => {
+		it('フラグ ON でも elicitation 非対応時は token を strip した fallback のみ返す', async () => {
 			process.env.BITBANK_TRUST_HOST_APPROVAL = '1';
 			const result = (await withElicitedConfirmation({
 				...baseOpts,
 				extra: round1Ctx(false),
 				onConfirmed: vi.fn(),
-				fallback: makeFallback(),
-				trustHostFallback,
+				fallback: {
+					content: [{ type: 'text', text: 'FALLBACK_TEXT' }],
+					structuredContent: { confirmation_token: 'iframe-token', expires_at: 123 } as Record<string, unknown>,
+				},
 			})) as { content: { text: string }[]; structuredContent: Record<string, unknown> };
 
-			expect(result.content[0]?.text).toBe('TRUST_HOST_TEXT');
-			// 妥協モードでは token を strip しない（iframe ボタン経路を成立させる）
-			expect(result.structuredContent.confirmation_token).toBe('iframe-token');
+			// 旧 trust-host 経路は撤去。常に safeFallback（token strip）を返す
+			expect(result.content[0]?.text).toBe('FALLBACK_TEXT');
+			expect(result.structuredContent.confirmation_token).toBeUndefined();
+			expect(result.structuredContent.expires_at).toBeUndefined();
 		});
 
-		it('フラグ ON + elicitation 対応ホストでは通常の MRTR 経路が優先される（trustHostFallback は無視）', async () => {
+		it('フラグ ON + elicitation 対応ホストでは通常の MRTR 経路が優先される', async () => {
 			process.env.BITBANK_TRUST_HOST_APPROVAL = '1';
 			const result = await withElicitedConfirmation({
 				...baseOpts,
 				extra: round1Ctx(true),
 				onConfirmed: vi.fn(),
 				fallback: makeFallback(),
-				trustHostFallback,
 			});
 
 			expect(isInputRequiredResult(result)).toBe(true);

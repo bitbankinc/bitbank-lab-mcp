@@ -199,6 +199,15 @@ export interface PeriodPerformance {
 	period_start: string;
 	period_end: string;
 	note: string;
+	/**
+	 * net_flow_jpy の算出時に現在価格を解決できなかった暗号資産のシンボル一覧
+	 * （`PeriodNetFlowResult.unpriced_assets` の転記。小文字・昇順・重複なし）。
+	 *
+	 * この資産の入出庫は net_flow_jpy に計上されておらず、adjusted_change_jpy も同じ向きにずれる。
+	 * 既存の出力フィールド順を崩さないため末尾に置き、該当なしのときは `undefined`
+	 * （JSON.stringify でキーごと落ちるため従来出力と一致する）。
+	 */
+	unpriced_flow_assets?: string[];
 }
 
 export interface CandlePriceData {
@@ -216,6 +225,14 @@ export interface PeriodNetFlowResult {
 	net_flow_jpy: number;
 	/** 期間中の出金手数料合計（JPY）。コストとして performance に残る */
 	withdrawal_fee_jpy: number;
+	/**
+	 * 現在価格を解決できず net_flow_jpy に計上できなかった暗号資産のシンボル一覧（小文字・昇順・重複なし）。
+	 *
+	 * 落ちた入出庫は 0 円計上と等価なので net_flow_jpy が過小になる。読み手が欠落に気づけるよう
+	 * 資産名のみを申告する（金額は載せない: `.claude/rules/sensitive-data.md` の HIGH 分類）。
+	 * 該当なしのときは `undefined`（空配列を返さないことで従来の出力と JSON 上で完全一致する）。
+	 */
+	unpriced_assets?: string[];
 }
 
 // ── 信用口座状態・建玉 ──

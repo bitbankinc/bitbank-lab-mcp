@@ -7,6 +7,7 @@
 
 import { nowIso, parseIso8601, toIsoMs } from '../../lib/datetime.js';
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
+import { normalizePairCodes } from '../../lib/pair-code.js';
 import { fail, ok, toStructured } from '../../lib/result.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import { GetMyOrdersInputSchema, GetMyOrdersOutputSchema } from '../../src/private/schemas.js';
@@ -78,8 +79,9 @@ export default async function getMyOrders(args: { pair?: string; count?: number;
 		// FULLY_FILLED や CANCELED_* は終端状態なので除外する。
 		const ACTIVE_STATUSES = new Set(['INACTIVE', 'UNFILLED', 'PARTIALLY_FILLED', 'TRIGGERED']);
 
-		// 注文データの整形
-		const orders = rawData.orders
+		// 注文データの整形。取得境界で pair を小文字化してから整形する
+		// （下の JPY 判定 `o.pair.includes('jpy')` が価格フォーマットを決める。`lib/pair-code.ts` 参照）。
+		const orders = normalizePairCodes(rawData.orders)
 			.filter((o) => ACTIVE_STATUSES.has(o.status))
 			.map((o) => ({
 				order_id: o.order_id,

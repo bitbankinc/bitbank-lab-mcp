@@ -340,3 +340,67 @@ describe('get_orders_info — handler (toolDef)', () => {
 		expect(result.content[0].text).toContain('position_side');
 	});
 });
+
+/**
+ * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
+ * `data.orders[].pair` の小文字契約を保つのが目的で、表示・JPY 判定は引数の `pair`
+ * （ユーザー入力）を使うため出力の他の部分は不変。防御的正規化（現行 API は小文字）。
+ */
+describe('get_orders_info — API pair の取得境界正規化', () => {
+	it('小文字レスポンスでは出力が変わらない（回帰なし）', async () => {
+		setupFetchMock(mockBitbankSuccess({ orders: [orderData(4001), orderData(4002, 'sell')] }));
+
+		const { default: getOrdersInfo } = await import('../../tools/private/get_orders_info.js');
+		const result = await getOrdersInfo({ pair: 'btc_jpy', order_ids: [4001, 4002] });
+
+		assertOk(result);
+		expect(result.data.orders.map((o) => o.pair)).toEqual(['btc_jpy', 'btc_jpy']);
+		expect(result.summary).toContain('BTC/JPY');
+		expect(result.summary).toContain('¥14,000,000');
+	});
+
+	it('大文字レスポンスでも structuredContent の pair は小文字契約を保つ', async () => {
+		setupFetchMock(
+			mockBitbankSuccess({
+				orders: [orderData(4001, 'buy', { pair: 'BTC_JPY' }), orderData(4002, 'sell', { pair: 'BTC_JPY' })],
+			}),
+		);
+
+		const { default: getOrdersInfo } = await import('../../tools/private/get_orders_info.js');
+		const result = await getOrdersInfo({ pair: 'btc_jpy', order_ids: [4001, 4002] });
+
+		assertOk(result);
+		expect(result.data.orders.map((o) => o.pair)).toEqual(['btc_jpy', 'btc_jpy']);
+		// 表示・JPY 判定は引数の pair 由来なので従来どおり
+		expect(result.summary).toContain('BTC/JPY');
+		expect(result.summary).toContain('¥14,000,000');
+	});
+});
+
+/**
+ * ユーザー入力 pair の JPY 建て判定（`lib/pair-code.ts` の `isJpyQuotedPair`）。
+ * `get_orders_info` も表示・価格フォーマットを引数の `pair` から作るため取得境界を通らない。
+ */
+describe('get_orders_info — ユーザー入力 pair の JPY 判定', () => {
+	it('大文字入力でも価格が円フォーマットされる', async () => {
+		setupFetchMock(mockBitbankSuccess({ orders: [orderData(4001)] }));
+
+		const { default: getOrdersInfo } = await import('../../tools/private/get_orders_info.js');
+		const result = await getOrdersInfo({ pair: 'BTC_JPY', order_ids: [4001] });
+
+		assertOk(result);
+		expect(result.summary).toContain('¥14,000,000');
+		expect(result.summary).not.toContain(' 14000000');
+	});
+
+	it('非 JPY ペアは従来どおり生文字列のまま（判定を潰していない）', async () => {
+		setupFetchMock(mockBitbankSuccess({ orders: [orderData(4001, 'buy', { pair: 'eth_btc', price: '0.05' })] }));
+
+		const { default: getOrdersInfo } = await import('../../tools/private/get_orders_info.js');
+		const result = await getOrdersInfo({ pair: 'eth_btc', order_ids: [4001] });
+
+		assertOk(result);
+		expect(result.summary).toContain('0.05');
+		expect(result.summary).not.toContain('¥');
+	});
+});

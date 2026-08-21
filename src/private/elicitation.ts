@@ -25,17 +25,26 @@
  *     （多層防御。caller convention だけに依存しない最終ガード）。
  *   - `requestState` は署名のみで暗号化されない（クライアント / LLM から可視）ため、
  *     token を含めない。nonce + 引数 digest のみを載せ、再入時に検証する。
+ *     加えて SDK codec の `bind` で呼び出し元セッション／認証 principal と
+ *     元の MCP method に束縛する（越境再利用を fail-closed で拒否）。
  *     詳細は src/private/request-state.ts と ADR-0007 を参照。
  *   - 「`structuredContent` は LLM 非可視」をホストの仕様保証として扱わない。
  *     SEP-1624 / 各ホスト挙動の詳細は docs/private-api.md「content /
  *     structuredContent / `_meta` の役割と HITL の境界」節を参照。
+ *   - SEP-1865 iframe 起源の tools/call をサーバー側で識別できないため、
+ *     token を structuredContent に載せる UI 実行経路（旧 trust-host モード）は
+ *     採用しない。execute は elicitation / MRTR の accept のみ。
  */
 
-import { type InputRequiredResult, inputRequired, inputResponse } from '@modelcontextprotocol/server';
+import {
+	type InputRequiredResult,
+	inputRequired,
+	inputResponse,
+	type ServerContext,
+} from '@modelcontextprotocol/server';
 import { toStructured } from '../../lib/result.js';
 import type { Result } from '../schema/types.js';
 import type { McpResponse, ToolHandlerExtra } from '../tool-definition.js';
-import { isHostApprovalTrusted } from './config.js';
 import { type ConfirmRequestState, consumeNonce, digestArgs, mintConfirmState } from './request-state.js';
 
 /** inputResponses の confirm 応答を引くためのキー */
@@ -113,6 +122,35 @@ function stripConfirmationTokenFields(value: Record<string, unknown>): Record<st
 	return result;
 }
 
+/**
+ * `create_order` / `cancel_order` / `cancel_orders` の MCP tools/call ハンドラが返す拒否メッセージ。
+ * LLM / UI からの直接実行をサーバー側で拒否し、elicitation/MRTR 経路のみ許可する。
+ */
+export const DIRECT_EXECUTE_FORBIDDEN_MESSAGE =
+	'このツールは MCP tools/call（LLM / UI）からは実行できません。preview_* 経由の elicitation/MRTR 確認でのみ実行されます。';
+
+/** MCP tools/call 経由の直接実行を拒否するときの errorType */
+export const DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE = 'direct_execute_forbidden';
+
+/**
+ * round 2 の requestState 検証に失敗したときの案内文（恒久的な失敗）。
+ * 引数の差し替え・別 action への流用・nonce の replay・期限切れをまとめてこの文言にする
+ * （どれが原因かを返すと、攻撃者に requestState の当たり判定を与えてしまう）。
+ */
+export const CONFIRM_STATE_INVALID_MESSAGE =
+	'確認情報が無効なため実行しませんでした（引数の変更・再利用・期限切れの可能性）。preview からやり直してください。';
+
+/**
+ * 使用済み nonce の記録が件数上限に達していて確認を通せなかったときの案内文（一時的な失敗）。
+ *
+ * 上の恒久的な失敗と文言を分ける理由: 容量超過は引数の変更でも期限切れでもないため、同じ文言に
+ * 畳むと「preview からやり直す」→ また同じ失敗、をユーザーが繰り返すことになる。実際には
+ * nonce は消費されておらず（生存エントリは追い出さない）、期限切れ記録が purge されて空きが
+ * 出れば回復するので、待って再試行するよう案内する。
+ */
+export const CONFIRM_CAPACITY_EXCEEDED_MESSAGE =
+	'確認処理が一時的に受け付けられないため実行しませんでした（確認待ちの記録が上限に達しています）。しばらく時間をおいてから preview をやり直してください。';
+
 export interface WithElicitedConfirmationOptions {
 	/** ハンドラに渡される MCP リクエストコンテキスト */
 	extra: ToolHandlerExtra | undefined;
@@ -156,23 +194,6 @@ export interface WithElicitedConfirmationOptions {
 	 * `content[0].text` 側は caller の責任で token を含めないこと。
 	 */
 	fallback: McpResponse;
-	/**
-	 * `BITBANK_TRUST_HOST_APPROVAL=1`（`isHostApprovalTrusted()`）が true、かつ
-	 * クライアントが elicitation 非対応のときに `fallback` の代わりに返されるレスポンス。
-	 * SEP-1865 iframe ボタン経由の execute を許す妥協モード:
-	 *   - `confirmation_token` / `expires_at` を含む `structuredContent` を返す（strip しない）
-	 *   - 通常の `fallback` は LLM が触れない preview-only セマンティクス、
-	 *     こちらは LLM にも token が見える前提で iframe ボタンへの案内テキストを含める
-	 *
-	 * セキュリティ前提:
-	 *   - LLM は preview_* 経由でしか execute ツールを呼ばない（description で明示）
-	 *   - ホスト（Claude Desktop 等）のツール承認 UI が最終 gate
-	 *
-	 * 詳細は docs/adr/0007-hitl-confirmation-token-delivery.md を参照。
-	 * オプトインフラグが false のとき、または本フィールド未指定のときは無視され、
-	 * 従来通り `fallback` が返る。
-	 */
-	trustHostFallback?: McpResponse;
 }
 
 /**
@@ -204,32 +225,38 @@ export async function withElicitedConfirmation(
 	};
 	const safeDeclinedStructured = stripConfirmationTokenFields(opts.declinedStructured);
 
-	// elicitation 非対応 + BITBANK_TRUST_HOST_APPROVAL=1 + trustHostFallback 指定の三者揃いで
-	// 「ホスト承認 UI を最終 gate として信頼する」妥協モードに入る。
-	// この経路では token を strip せず caller が用意したレスポンスをそのまま返す。
-	// 詳細は docs/adr/0007-hitl-confirmation-token-delivery.md を参照。
-	const trustHostFallback = isHostApprovalTrusted() ? opts.trustHostFallback : undefined;
-
 	// ── round 2: confirm 応答つき再入 ──
 	const view = inputResponse(readInputResponses(opts.extra), CONFIRM_KEY);
 	if (view.kind === 'elicit') {
 		// requestState（verify フックで HMAC / 期限検証済み）の文脈バインドを検証する。
 		// 検証はユーザー応答の内容より先に行い、nonce は accept / decline を問わず消費する
 		// （拒否された確認の requestState を後から accept 付きで replay させない）。
+		//
+		// 短絡は意図的に維持する: action / argsDigest が一致しない再入では consumeNonce を
+		// 呼ばない（= nonce を消費しない）。「accept / decline を問わず消費する」は
+		// **この確認に対する応答**が対象であって、別文脈の requestState を投げ込まれたときまで
+		// 消費する意図ではない。ここで消費すると (1) 他の pending 確認の nonce を第三者の再入で
+		// 焼き潰せてしまい、(2) 引数を変えるだけの再入で使用済み記録の容量を埋められる。
+		// どちらも拒否は変わらないので、消費しない方が安全側。
 		const state = readConfirmState(opts.extra);
-		const bound =
-			state !== undefined &&
-			state.action === opts.action &&
-			state.argsDigest === digestArgs(opts.action, opts.bindArgs) &&
-			consumeNonce(state.nonce);
-		if (!bound) {
+		const consumption =
+			state !== undefined && state.action === opts.action && state.argsDigest === digestArgs(opts.action, opts.bindArgs)
+				? consumeNonce(state.nonce)
+				: undefined;
+		if (consumption?.consumed !== true) {
+			// fail-closed: 消費できなかった理由を問わず execute しない。文言だけは
+			// 一時的な失敗（容量超過）と恒久的な失敗（引数変更・replay・期限切れ）で分ける。
+			// どちらの経路でも nonce 本文はメッセージに含めない。
+			//
+			// 容量超過の残存リスク（許容する）: 上限に達している間は decline でも nonce を記録できず、
+			// その requestState は TTL 内なら再提示され得る（accept 付き replay を「拒否済みだから」では
+			// 弾けない）。空きが無い限り execute は一切通らないので実行そのものは起きず、記録できる
+			// ようになった時点で通常どおり one-time-use に戻る。記録のために生存 nonce を追い出す方が
+			// 危険（確定した replay を通す）なので、こちらを選ぶ。
+			const text =
+				consumption?.reason === 'capacity_exceeded' ? CONFIRM_CAPACITY_EXCEEDED_MESSAGE : CONFIRM_STATE_INVALID_MESSAGE;
 			return {
-				content: [
-					{
-						type: 'text',
-						text: '確認情報が無効なため実行しませんでした（引数の変更・再利用・期限切れの可能性）。preview からやり直してください。',
-					},
-				],
+				content: [{ type: 'text', text }],
 				structuredContent: safeDeclinedStructured,
 			};
 		}
@@ -253,16 +280,17 @@ export async function withElicitedConfirmation(
 
 	// ── round 1: 確認要求の発行 ──
 	if (!clientSupportsElicitation(opts.extra)) {
-		return trustHostFallback ?? safeFallback;
+		return safeFallback;
 	}
 
 	let requestState: string;
 	try {
-		requestState = await mintConfirmState(opts.action, opts.bindArgs);
+		// bind（method / sessionId / principal）のため、verify 時と同じ ServerContext を渡す。
+		// stdio では sessionId / principal が空でも mint↔verify で一致し既存挙動を維持する。
+		requestState = await mintConfirmState(opts.action, opts.bindArgs, (opts.extra ?? {}) as ServerContext);
 	} catch {
-		// mint が想定外に失敗した場合はフォールバックに進む。
-		// trust-host モード ON なら iframe ボタン経路を残す trustHostFallback を返す。
-		return trustHostFallback ?? safeFallback;
+		// mint が想定外に失敗した場合はフォールバックに進む（実行不可通知）。
+		return safeFallback;
 	}
 
 	return inputRequired({

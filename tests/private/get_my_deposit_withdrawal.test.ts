@@ -452,6 +452,48 @@ describe('get_my_deposit_withdrawal — singleFetch エラーパス', () => {
 		expect(result.data.withdrawals).toHaveLength(0);
 	});
 
+	/**
+	 * API が返す asset は取得境界で小文字へ正規化する（`lib/asset-code.ts`）。
+	 * 出力の表記契約は「structuredContent は小文字 / サマリー表示は大文字」で、
+	 * 正規化を入れても現行の小文字レスポンスに対しては何も変わらない。
+	 */
+	describe('API asset の取得境界正規化', () => {
+		it('小文字レスポンスでは出力の asset 表記が変わらない', async () => {
+			setupFetchMock({});
+
+			const { default: getMyDepositWithdrawal } = await import('../../tools/private/get_my_deposit_withdrawal.js');
+			const result = await getMyDepositWithdrawal({});
+
+			assertOk(result);
+			expect(result.data.deposits.map((d) => d.asset).sort()).toEqual(['btc', 'jpy']);
+			expect(result.data.withdrawals.map((w) => w.asset).sort()).toEqual(['eth', 'jpy']);
+			// サマリー表示は従来どおり大文字
+			expect(result.summary).toContain('BTC');
+			expect(result.summary).toContain('JPY 入金');
+		});
+
+		it('大文字レスポンスでも JPY / 暗号資産の振り分けと出力表記が小文字レスポンスと一致する', async () => {
+			const toUpper = <T extends { asset: string }>(records: T[]) =>
+				records.map((r) => ({ ...r, asset: r.asset.toUpperCase() }));
+			setupFetchMock({
+				depositResponse: { deposits: toUpper(rawDepositHistoryResponse.deposits) },
+				withdrawalResponse: { withdrawals: toUpper(rawWithdrawalHistoryResponse.withdrawals) },
+			});
+
+			const { default: getMyDepositWithdrawal } = await import('../../tools/private/get_my_deposit_withdrawal.js');
+			const result = await getMyDepositWithdrawal({});
+
+			assertOk(result);
+			expect(result.data.deposits.map((d) => d.asset).sort()).toEqual(['btc', 'jpy']);
+			expect(result.data.withdrawals.map((w) => w.asset).sort()).toEqual(['eth', 'jpy']);
+			// 大文字のままだと `d.asset === 'jpy'` が外れ、JPY 入出金が暗号資産側に振り分けられる
+			expect(result.summary).toContain('JPY 入金: 1件');
+			expect(result.summary).toContain('JPY 出金: 1件');
+			expect(result.summary).toContain('暗号資産入庫: 1件');
+			expect(result.summary).toContain('暗号資産出庫: 1件');
+		});
+	});
+
 	it('全通貨 + since/end + 部分失敗で collectResults 警告を含む', async () => {
 		setupFetchMock({ withdrawalFail: true });
 

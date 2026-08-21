@@ -336,24 +336,13 @@ describe('cancel_orders — 非 PrivateApiError の generic catch', () => {
 });
 
 describe('cancel_orders — handler (toolDef)', () => {
-	it('handler が失敗時に result をそのまま返す', async () => {
-		const { toolDef } = await import('../../tools/private/cancel_orders.js');
-		const result = await toolDef.handler({
-			pair: 'btc_jpy',
-			order_ids: [3001],
-			confirmation_token: 'invalid',
-			token_expires_at: Date.now() + 60000,
-		});
-
-		expect((result as { ok: boolean }).ok).toBe(false);
-	});
-
-	it('handler が成功時に content + structuredContent を返す', async () => {
-		setupFetchMock(
-			mockBitbankSuccess({
-				orders: [canceledOrder(3001)],
-			}),
-		);
+	it('MCP tools/call 経由は valid token でも常に拒否する', async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify(mockBitbankSuccess({ orders: [canceledOrder(3001)] })), { status: 200 }),
+			);
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
 		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_ids: [3001] });
 
 		const { toolDef } = await import('../../tools/private/cancel_orders.js');
@@ -364,7 +353,78 @@ describe('cancel_orders — handler (toolDef)', () => {
 			token_expires_at,
 		});
 
-		expect(result).toHaveProperty('content');
-		expect(result).toHaveProperty('structuredContent');
+		expect((result as { ok: boolean }).ok).toBe(false);
+		expect((result as { summary: string }).summary).toContain('MCP tools/call');
+		expect((result as { meta: { errorType: string } }).meta.errorType).toBe('direct_execute_forbidden');
+		expect(JSON.stringify(result)).not.toContain('confirmation_token');
+		expect(JSON.stringify(result)).not.toContain(confirmation_token);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it('invalid token でも同様に direct_execute_forbidden で拒否する', async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify(mockBitbankSuccess({ orders: [canceledOrder(3001)] })), { status: 200 }),
+			);
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+		const { toolDef } = await import('../../tools/private/cancel_orders.js');
+		const result = await toolDef.handler({
+			pair: 'btc_jpy',
+			order_ids: [3001],
+			confirmation_token: 'invalid',
+			token_expires_at: Date.now() + 60000,
+		});
+
+		expect((result as { ok: boolean }).ok).toBe(false);
+		expect((result as { meta: { errorType: string } }).meta.errorType).toBe('direct_execute_forbidden');
+		expect(JSON.stringify(result)).not.toContain('confirmation_token');
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
+ * `data.orders[].pair` の小文字契約を保つのが目的。表示・JPY 判定は引数の `pair`
+ * （ユーザー入力）由来なので出力の他の部分は不変。防御的正規化（現行 API は小文字）。
+ */
+describe('cancel_orders — API pair の取得境界正規化', () => {
+	it('小文字レスポンスでは出力が変わらない（回帰なし）', async () => {
+		setupFetchMock(mockBitbankSuccess({ orders: [canceledOrder(3001), canceledOrder(3002, 'sell')] }));
+		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_ids: [3001, 3002] });
+
+		const { default: cancelOrders } = await import('../../tools/private/cancel_orders.js');
+		const result = await cancelOrders({
+			pair: 'btc_jpy',
+			order_ids: [3001, 3002],
+			confirmation_token,
+			token_expires_at,
+		});
+
+		assertOk(result);
+		expect(result.data.orders.map((o) => o.pair)).toEqual(['btc_jpy', 'btc_jpy']);
+		expect(result.summary).toContain('BTC/JPY');
+	});
+
+	it('大文字レスポンスでも structuredContent の pair は小文字契約を保つ', async () => {
+		setupFetchMock(
+			mockBitbankSuccess({
+				orders: [canceledOrder(3001, 'buy', { pair: 'BTC_JPY' }), canceledOrder(3002, 'sell', { pair: 'BTC_JPY' })],
+			}),
+		);
+		const { confirmation_token, token_expires_at } = validToken({ pair: 'btc_jpy', order_ids: [3001, 3002] });
+
+		const { default: cancelOrders } = await import('../../tools/private/cancel_orders.js');
+		const result = await cancelOrders({
+			pair: 'btc_jpy',
+			order_ids: [3001, 3002],
+			confirmation_token,
+			token_expires_at,
+		});
+
+		assertOk(result);
+		expect(result.data.orders.map((o) => o.pair)).toEqual(['btc_jpy', 'btc_jpy']);
+		expect(result.summary).toContain('BTC/JPY');
 	});
 });

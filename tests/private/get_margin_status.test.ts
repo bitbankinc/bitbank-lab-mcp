@@ -206,3 +206,68 @@ describe('get_margin_status — handler (toolDef)', () => {
 		expect((result as { ok: boolean }).ok).toBe(true);
 	});
 });
+
+/**
+ * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
+ * `data.available_balances[].pair` は structuredContent に公開されるので小文字契約を保つ。
+ * 表示は `formatPair`（`toUpperCase()`）なので従来どおり大文字。防御的正規化（現行 API は小文字）。
+ */
+describe('get_margin_status — API pair の取得境界正規化', () => {
+	it('小文字レスポンスでは出力が変わらない（回帰なし）', async () => {
+		setupFetchMock(mockBitbankSuccess(rawMarginStatusResponse));
+
+		const { default: getMarginStatus } = await import('../../tools/private/get_margin_status.js');
+		const result = await getMarginStatus({});
+
+		assertOk(result);
+		expect(result.data.available_balances).toEqual(rawMarginStatusResponse.available_balances);
+	});
+
+	/**
+	 * 正規化契約は「前後の空白除去 + 小文字化」の 2 つ。空白側は `formatPair`（`toUpperCase()`）
+	 * では落ちないので、サマリーが正規化前の値を読み直していると空白が表示に残る。
+	 * 本ツールは raw を 2 回読んでいて片方だけ未正規化だった（PR #39 レビュー指摘）ので、
+	 * サマリーと data の両方を固定して回帰を防ぐ。
+	 */
+	it('前後に空白を含むレスポンスでもサマリー・data の両方から空白が落ちる', async () => {
+		setupFetchMock(
+			mockBitbankSuccess({
+				...rawMarginStatusResponse,
+				available_balances: rawMarginStatusResponse.available_balances.map((b) => ({
+					...b,
+					pair: `  ${b.pair.toUpperCase()} `,
+				})),
+			}),
+		);
+
+		const { default: getMarginStatus } = await import('../../tools/private/get_margin_status.js');
+		const result = await getMarginStatus({});
+
+		assertOk(result);
+		expect(result.data.available_balances.map((b) => b.pair)).toEqual(['btc_jpy', 'eth_jpy']);
+		// 表示は formatPair で大文字。空白が残ると '  BTC/JPY  — ' のようにズレる
+		expect(result.summary).toContain('  BTC/JPY — ロング:');
+		expect(result.summary).not.toContain('BTC/JPY  —');
+		expect(result.summary).not.toContain('   BTC/JPY');
+	});
+
+	it('大文字レスポンスでも structuredContent の pair は小文字契約を保つ', async () => {
+		setupFetchMock(
+			mockBitbankSuccess({
+				...rawMarginStatusResponse,
+				available_balances: rawMarginStatusResponse.available_balances.map((b) => ({
+					...b,
+					pair: b.pair.toUpperCase(),
+				})),
+			}),
+		);
+
+		const { default: getMarginStatus } = await import('../../tools/private/get_margin_status.js');
+		const result = await getMarginStatus({});
+
+		assertOk(result);
+		expect(result.data.available_balances.map((b) => b.pair)).toEqual(['btc_jpy', 'eth_jpy']);
+		// 数量フィールドは触らない
+		expect(result.data.available_balances[0]).toEqual({ pair: 'btc_jpy', long: '500000', short: '450000' });
+	});
+});

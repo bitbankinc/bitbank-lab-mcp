@@ -25,7 +25,7 @@ export const toolDef: ToolDefinition = {
 	inputSchema: GetUiSnapshotInputSchema,
 	handler: async (args, extra) => {
 		const { resource_uri } = args as { resource_uri: string };
-		// スナップショットは保存元接続の sessionId にバインドされている。
+		// スナップショットは sessionId + resourceUri をキーに保持されている。
 		// 呼び出し元のセッションを渡し、別セッションからの読み出しを拒否する
 		// （stdio では両者 undefined で一致し、挙動は変わらない）。
 		const sessionId = (extra as { sessionId?: string } | undefined)?.sessionId;

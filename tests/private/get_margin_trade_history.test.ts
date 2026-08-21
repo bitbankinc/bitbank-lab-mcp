@@ -858,3 +858,51 @@ describe('get_margin_trade_history — handler (toolDef)', () => {
 		expect((result as { ok: boolean }).ok).toBe(true);
 	});
 });
+
+/**
+ * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
+ * 揃えないと JPY 建て判定（`t.pair.includes('jpy')`）が外れ、価格が円フォーマットされない。
+ * 現行の小文字レスポンスに対しては何も変わらない（防御的正規化）。
+ */
+describe('get_margin_trade_history — API pair の取得境界正規化', () => {
+	it('小文字レスポンスでは出力の pair 表記が変わらない', async () => {
+		setupFetchMock(mockBitbankSuccess(rawMarginTradeHistoryResponse));
+
+		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
+		const result = await getMarginTradeHistory({});
+
+		assertOk(result);
+		expect(result.data.trades.map((t) => t.pair)).toEqual(['btc_jpy', 'btc_jpy', 'eth_jpy']);
+		expect(result.summary).toContain('BTC/JPY');
+		expect(result.summary).toContain('¥15,000,000');
+	});
+
+	it('大文字レスポンスでも structuredContent は小文字契約 / JPY 建て表示が崩れない', async () => {
+		setupFetchMock(
+			mockBitbankSuccess({
+				trades: rawMarginTradeHistoryResponse.trades.map((t) => ({ ...t, pair: t.pair.toUpperCase() })),
+			}),
+		);
+
+		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
+		const result = await getMarginTradeHistory({});
+
+		assertOk(result);
+		expect(result.data.trades.map((t) => t.pair)).toEqual(['btc_jpy', 'btc_jpy', 'eth_jpy']);
+		// 正規化前は includes('jpy') が外れ、価格が生文字列 '15000000' のまま出ていた
+		expect(result.summary).toContain('¥15,000,000');
+		expect(result.summary).not.toContain(' 15000000 ');
+		expect(result.summary).toContain('BTC/JPY');
+	});
+
+	it('ページネーション経路でも大文字 pair が小文字化される', async () => {
+		const upper = generateMarginTrades(1000).map((t) => ({ ...t, pair: t.pair.toUpperCase() }));
+		setupSequentialFetchMock([mockBitbankSuccess({ trades: upper }), mockBitbankSuccess({ trades: [] })]);
+
+		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
+		const result = await getMarginTradeHistory({ count: 1500 });
+
+		assertOk(result);
+		expect(new Set(result.data.trades.map((t) => t.pair))).toEqual(new Set(['btc_jpy']));
+	});
+});

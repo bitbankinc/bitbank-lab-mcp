@@ -7,9 +7,11 @@
  *   - portfolio/calc.ts   — 純粋計算ロジック
  */
 
+import { normalizeAssetCodes } from '../../lib/asset-code.js';
 import { dayjs, nowIso } from '../../lib/datetime.js';
 import { formatPair, formatPercent, formatPrice, formatPriceJPY } from '../../lib/formatter.js';
 import { ok } from '../../lib/result.js';
+import { prependWarnings } from '../../lib/warning-propagation.js';
 import { getDefaultClient } from '../private/client.js';
 import { AnalyzeMyPortfolioOutputSchema } from '../private/schemas.js';
 import { failPrivateToolError } from '../private/tool-error.js';
@@ -112,8 +114,13 @@ export default async function analyzeMyPortfolioHandler(args: {
 			fetchTickerPrices(),
 		]);
 
+		// 取得境界での asset 正規化。以降は holdings の Map キー・`${asset}_jpy` の組み立て・
+		// `prices.get(asset)` がすべて小文字前提で走る（`lib/asset-code.ts` 参照）。
+		// 大文字が混ざると BTC / btc で保有キーが割れて二重計上になるため、ここで揃える。
+		const assets = normalizeAssetCodes(rawAssets.assets);
+
 		// ゼロでない資産（JPY 含む）
-		const nonZeroAssets = rawAssets.assets.filter((a) => {
+		const nonZeroAssets = assets.filter((a) => {
 			const amount = Number(a.onhand_amount);
 			return Number.isFinite(amount) && amount > 0;
 		});
@@ -853,7 +860,27 @@ export default async function analyzeMyPortfolioHandler(args: {
 			}
 		}
 
-		const summary = lines.join('\n');
+		// 計算層の warning（`.claude/rules/tools.md` の meta.warnings 系統）。
+		// 期間ネットフローで価格を解決できなかった暗号資産は net_flow_jpy に計上されず
+		// （＝ 0 円計上と等価）、adjusted_change_jpy も同じ向きにずれるため明示する。
+		// 3 期間で同じ資産が落ちるので集合で重複排除する。金額・件数は出さず資産名のみ
+		// （`.claude/rules/sensitive-data.md` の HIGH 分類）。
+		const netFlowUnpricedAssets = [
+			...new Set([
+				...(dailyPerformance?.unpriced_flow_assets ?? []),
+				...(monthlyPerformance?.unpriced_flow_assets ?? []),
+				...(yearlyPerformance?.unpriced_flow_assets ?? []),
+			]),
+		].sort();
+		const calcWarnings: string[] = [];
+		if (netFlowUnpricedAssets.length > 0) {
+			calcWarnings.push(
+				`${netFlowUnpricedAssets.map((a) => a.toUpperCase()).join(', ')} の現在価格が取得できず、期間中の入出庫を純入出金に計上できませんでした（純入出金・入出金調整後増減が過小）`,
+			);
+		}
+
+		// 取得層の warning（上の ⚠️ 行）とは別行・別フィールドで先頭に出す。
+		const summary = prependWarnings(lines.join('\n'), { warnings: calcWarnings }, { separator: '\n' });
 
 		// deposit_withdrawal_summary の出し分け（status に基づく一貫した契約）:
 		// - available: dwSummary（実データ、analysis_basis='deposit_withdrawal'）
@@ -933,6 +960,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 			marginPositionsFetchFailed,
 			equitySeriesQuality,
 			equitySeriesFallbackAssets: equitySeriesFallbackAssets.length > 0 ? equitySeriesFallbackAssets : undefined,
+			warnings: calcWarnings.length > 0 ? calcWarnings : undefined,
 		};
 
 		return AnalyzeMyPortfolioOutputSchema.parse(ok(summary, data, meta));

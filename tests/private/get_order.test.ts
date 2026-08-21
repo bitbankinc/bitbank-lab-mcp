@@ -373,3 +373,65 @@ describe('get_order — handler (toolDef)', () => {
 		expect(result.content[0].text).toContain('position_side');
 	});
 });
+
+/**
+ * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
+ * `data.order.pair` の小文字契約を保つのが目的で、表示・JPY 判定は引数の `pair`
+ * （ユーザー入力）を使うため出力の他の部分は不変。防御的正規化（現行 API は小文字）。
+ */
+describe('get_order — API pair の取得境界正規化', () => {
+	it('小文字レスポンスでは出力が変わらない（回帰なし）', async () => {
+		setupFetchMock(mockBitbankSuccess(orderResponse()));
+
+		const { default: getOrder } = await import('../../tools/private/get_order.js');
+		const result = await getOrder({ pair: 'btc_jpy', order_id: 2001 });
+
+		assertOk(result);
+		expect(result.data.order.pair).toBe('btc_jpy');
+		expect(result.summary).toContain('BTC/JPY');
+		expect(result.summary).toContain('¥14,000,000');
+	});
+
+	it('大文字レスポンスでも structuredContent の pair は小文字契約を保つ', async () => {
+		setupFetchMock(mockBitbankSuccess(orderResponse({ pair: 'BTC_JPY' })));
+
+		const { default: getOrder } = await import('../../tools/private/get_order.js');
+		const result = await getOrder({ pair: 'btc_jpy', order_id: 2001 });
+
+		assertOk(result);
+		expect(result.data.order.pair).toBe('btc_jpy');
+		// 表示・JPY 判定は引数の pair 由来なので従来どおり
+		expect(result.summary).toContain('BTC/JPY');
+		expect(result.summary).toContain('¥14,000,000');
+	});
+});
+
+/**
+ * ユーザー入力 pair の JPY 建て判定（`lib/pair-code.ts` の `isJpyQuotedPair`）。
+ * `get_order` は表示・価格フォーマットを引数の `pair` から作るため、取得境界を通らない。
+ * `BTC_JPY` 入力で円建て判定が外れると `data.order.pair` は小文字なのに価格だけ生文字列になる
+ * ——`get_margin_positions` で入力側も直したのと同じ対称性の問題。
+ */
+describe('get_order — ユーザー入力 pair の JPY 判定', () => {
+	it('大文字入力でも価格が円フォーマットされる', async () => {
+		setupFetchMock(mockBitbankSuccess(orderResponse()));
+
+		const { default: getOrder } = await import('../../tools/private/get_order.js');
+		const result = await getOrder({ pair: 'BTC_JPY', order_id: 2001 });
+
+		assertOk(result);
+		expect(result.summary).toContain('¥14,000,000');
+		expect(result.summary).not.toContain(' 14000000');
+	});
+
+	it('非 JPY ペアは従来どおり生文字列のまま（判定を潰していない）', async () => {
+		setupFetchMock(mockBitbankSuccess(orderResponse({ pair: 'eth_btc', price: '0.05' })));
+
+		const { default: getOrder } = await import('../../tools/private/get_order.js');
+		const result = await getOrder({ pair: 'eth_btc', order_id: 2001 });
+
+		assertOk(result);
+		expect(result.summary).toContain('0.05');
+		expect(result.summary).not.toContain('¥');
+	});
+});

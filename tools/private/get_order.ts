@@ -9,6 +9,7 @@
 
 import { nowIso, toIsoMs } from '../../lib/datetime.js';
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
+import { isJpyQuotedPair, withNormalizedPair } from '../../lib/pair-code.js';
 import { ok, toStructured } from '../../lib/result.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
@@ -20,7 +21,7 @@ import type { ToolDefinition } from '../../src/tool-definition.js';
 function formatOrderSummary(o: OrderResponse, pair: string): string {
 	const sideLabel = o.side === 'buy' ? '買' : '売';
 	const posLabel = formatOrderPositionLabel(o.position_side);
-	const isJpy = pair.includes('jpy');
+	const isJpy = isJpyQuotedPair(pair);
 	const price = o.price ? (isJpy ? formatPrice(Number(o.price)) : o.price) : '成行';
 	const amount = o.start_amount ?? o.executed_amount;
 	const lines: string[] = [];
@@ -50,10 +51,14 @@ export default async function getOrder(args: { pair: string; order_id: number })
 	const client = getDefaultClient();
 
 	try {
-		const rawOrder = await client.get<OrderResponse>('/v1/user/spot/order', {
-			pair,
-			order_id: String(order_id),
-		});
+		// 取得境界での pair 正規化（`lib/pair-code.ts`）。`data.order.pair` は小文字契約で返す。
+		// 表示・JPY 判定は引数の `pair`（ユーザー入力）を使うので、ここは出力契約のためだけ。
+		const rawOrder = withNormalizedPair(
+			await client.get<OrderResponse>('/v1/user/spot/order', {
+				pair,
+				order_id: String(order_id),
+			}),
+		);
 
 		const timestamp = nowIso();
 		const summary = formatOrderSummary(rawOrder, pair);

@@ -14,9 +14,14 @@
 import { nowIso, toIsoMs } from '../../lib/datetime.js';
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
 import { logTradeAction } from '../../lib/logger.js';
-import { fail, ok, toStructured } from '../../lib/result.js';
+import { isJpyQuotedPair, withNormalizedPair } from '../../lib/pair-code.js';
+import { fail, ok } from '../../lib/result.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import { validateToken } from '../../src/private/confirmation.js';
+import {
+	DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE,
+	DIRECT_EXECUTE_FORBIDDEN_MESSAGE,
+} from '../../src/private/elicitation.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
 import { CancelOrderInputSchema, CancelOrderOutputSchema } from '../../src/private/schemas.js';
 import { failPrivateToolError } from '../../src/private/tool-error.js';
@@ -31,6 +36,7 @@ export default async function cancelOrder(
 		token_expires_at: number;
 	},
 	route: 'elicitation' | 'ui-button' | 'direct-text' = 'direct-text',
+	scope: { sessionId?: string } = {},
 ) {
 	const { pair, order_id, confirmation_token, token_expires_at } = args;
 
@@ -43,13 +49,17 @@ export default async function cancelOrder(
 	const client = getDefaultClient();
 
 	try {
-		const rawOrder = await client.post<OrderResponse>('/v1/user/spot/cancel_order', {
-			pair,
-			order_id,
-		});
+		// 取得境界での pair 正規化（`lib/pair-code.ts`）。`data.order.pair` は小文字契約で返す。
+		// 表示・JPY 判定は引数の `pair`（ユーザー入力）を使うので、ここは出力契約のためだけ。
+		const rawOrder = withNormalizedPair(
+			await client.post<OrderResponse>('/v1/user/spot/cancel_order', {
+				pair,
+				order_id,
+			}),
+		);
 
 		const timestamp = nowIso();
-		const isJpy = pair.includes('jpy');
+		const isJpy = isJpyQuotedPair(pair);
 		const sideLabel = rawOrder.side === 'buy' ? '買' : '売';
 		const posLabel = formatOrderPositionLabel(rawOrder.position_side);
 		const price = rawOrder.price ? (isJpy ? formatPrice(Number(rawOrder.price)) : rawOrder.price) : '成行';
@@ -80,8 +90,8 @@ export default async function cancelOrder(
 		});
 
 		// 実行済み preview のスナップショットを無効化する（再描画で復元された古い確認
-		// カードからの二重キャンセル → bitbank 70019 を防ぐ）。
-		clearUiSnapshot('ui://cancel/confirm.html');
+		// カードからの二重キャンセル → bitbank 70019 を防ぐ）。同一セッションのみ削除。
+		clearUiSnapshot('ui://cancel/confirm.html', scope);
 
 		return CancelOrderOutputSchema.parse(
 			ok(
@@ -108,19 +118,13 @@ export const toolDef: ToolDefinition = {
 	name: 'cancel_order',
 	description:
 		'[Cancel Order] 指定した注文IDの注文をキャンセルする。キャンセル後の注文情報を返す。Private API。' +
-		' ⚠️ LLM はこのツールを直接呼び出してはならない。常に preview_cancel_order 経由（elicitation 対応ホストではネイティブダイアログ、SEP-1865 対応ホストでは iframe の「キャンセルを確定する」ボタン）でのみ呼び出すこと。' +
-		' デフォルト設定では confirmation_token はクライアントに返らないため、LLM が直接呼び出してもトークン検証で拒否される（HITL の第二防衛線）。' +
-		' `BITBANK_TRUST_HOST_APPROVAL=1` の妥協モードでは token が見える場合があるが、その場合もユーザーの明示的な確認操作が前提。',
+		' ⚠️ このツールは MCP tools/call（LLM / UI）からは実行できない。' +
+		' キャンセルは必ず preview_cancel_order 経由の elicitation/MRTR 確認（ユーザーの明示 accept）でのみ行われる。' +
+		' confirmation_token はクライアントに返らないため、直接呼び出してもトークン検証または本ハンドラの拒否で失敗する。',
 	inputSchema: CancelOrderInputSchema,
-	handler: async (args) => {
-		const result = await cancelOrder(
-			args as { pair: string; order_id: number; confirmation_token: string; token_expires_at: number },
-		);
-		if (!result.ok) return result;
-		const text = `${result.summary}\n${JSON.stringify(result.data, null, 2)}`;
-		return {
-			content: [{ type: 'text', text }],
-			structuredContent: toStructured(result),
-		};
+	handler: async () => {
+		// MCP tools/call（LLM / UI）経由は常に拒否。
+		// preview_cancel_order の elicitation accept は cancelOrder() を直接呼ぶためここを通らない。
+		return CancelOrderOutputSchema.parse(fail(DIRECT_EXECUTE_FORBIDDEN_MESSAGE, DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE));
 	},
 };

@@ -618,6 +618,124 @@ drift 時に「ミラー要更新」issue を起票する。
 
 ---
 
+## asset コードの表記（取得境界で小文字へ正規化する）
+
+**API が返す `asset` は取得境界で小文字へ正規化して扱う。** 正規化は `lib/asset-code.ts` の
+`normalizeAssetCode` / `normalizeAssetCodes` に集約し、**消費側に `.toLowerCase()` を撒かない**。
+
+理由: リポジトリ全体が「API が返す asset は小文字」という前提の上に立っている。生の `asset` を
+小文字リテラル（`'jpy'`）と比較する、あるいは Map のキーに使う箇所が 20 箇所以上あり
+（`portfolio/calc.ts` の JPY 判定 / holdings キー / `prices.get(asset)`、`analyzeMyPortfolioHandler.ts`
+の `${asset}_jpy` 組み立て等）、大文字が 1 つ混ざるだけで
+`net_flow_jpy`・`net_jpy_invested`・期初保有の復元・損益計算が**同時に**壊れる。
+1 箇所ずつ直すと「守っているつもり」の箇所が増え、どこが担保されているか読めなくなる。
+
+**これは防御的正規化であり、現行 API は小文字を返す。** 根拠: 本ミラーの公式 JSON 例
+（`/v1/user/assets` の `"asset": "jpy"`）、および `tests/fixtures/private-api.ts` の全フィクスチャ。
+大文字が実際に来る確証はない。前提をコードに明文化し、破れたときに黙って数値が壊れないようにするのが目的。
+
+### 正規化を入れている取得境界
+
+| 境界 | 対象 |
+|---|---|
+| `src/handlers/portfolio/fetch.ts` `paginateDeposits` / `paginateWithdrawals` | `deposits[].asset` / `withdrawals[].asset` |
+| `src/handlers/analyzeMyPortfolioHandler.ts` | `/v1/user/assets` の `assets[].asset` |
+| `tools/private/get_my_assets.ts` | `/v1/user/assets` の `assets[].asset` |
+| `tools/private/get_my_deposit_withdrawal.ts` | 全フェッチ経路が合流する UUID 重複排除の直後 |
+
+### 表記の契約（変えないこと）
+
+- `structuredContent` / `data` の `asset` は**小文字**（`get_my_assets` / `get_my_deposit_withdrawal` /
+  `analyze_my_portfolio` の `holdings[].asset`、`unpriced_flow_assets` 等）。
+- 表示層（サマリー文字列・warning 行・保有銘柄一覧）は従来どおり `toUpperCase()` で**大文字**。
+- 規約テスト: `tests/lib/asset-code.test.ts`、`tests/handlers/portfolio/asset-normalization.test.ts`、
+  各 Private ツールテストの「API asset の取得境界正規化」describe。
+
+### 本ルールの対象外
+
+- **ユーザー入力の pair 正規化**（`lib/validate.ts` の `normalizePair` / `ensurePair`）。入力の受け口であり
+  別レイヤー。API レスポンスの受け口である本ルールと混ぜない。
+- **API が返す pair シンボル**（`trade_history` / `active_orders` / `margin/positions` の `btc_jpy` 等）。
+  asset コードではなく pair 文字列なので pair レイヤーの話 → 下記「pair シンボルの表記」を参照
+  （こちらも取得境界で小文字化する）。
+
+---
+
+## pair シンボルの表記（取得境界で小文字へ正規化する）
+
+**API が返す `pair` は取得境界で正規化して扱う。正規化 = 前後の空白除去 + 小文字化**の 2 つだけ
+（`normalizePair` / `normalizeAssetCode` と同じ契約）。正規化は `lib/pair-code.ts` の
+`normalizePairCode` / `withNormalizedPair` / `normalizePairCodes` に集約し、
+**消費側に `.toLowerCase()` を撒かない**（asset コードと同方針）。
+
+理由: pair 由来の破綻は asset 側より悪い。
+
+- `t.pair.replace('_jpy', '')` は `BTC_JPY` に対して**何も置換しない**（`_jpy` が存在しない）。結果
+  asset が `BTC_JPY` のまま holdings の Map キーになり、上記 asset ルールで正規化した `btc` と割れる
+  （`portfolio/calc.ts` の `calcPeriodRealizedPnl` / `reconstructHoldingsAtDate`、
+  `analyzeMyPortfolioHandler.ts` の `tradedAssets`）。
+- `calcPnl` は ``t.pair === `${asset}_jpy` `` で突き合わせるため、pair が大文字だと該当約定が 0 件になる。
+  **エラーにならず「取引履歴なし」に見え、平均取得単価・実現損益が静かに消える。**
+- `lib/tickers.ts` の価格マップキーも pair 由来なので、大文字なら `prices.get('btc')` が外れる
+  （＝ `unpriced_flow_assets` warning が全銘柄に対して誤検知する）。
+- 各 Private ツールの `pair.includes('jpy')` による JPY 建て判定が外れ、価格が円フォーマットされない。
+
+**これは防御的正規化であり、現行 API は小文字を返す**（本ミラーの公式 JSON 例・
+`tests/fixtures/private-api.ts` の全フィクスチャとも小文字）。asset コードと同じく、前提をコードに
+明文化し、破れたときに黙って数値が壊れないようにするのが目的。
+
+### 正規化を入れている取得境界
+
+| 境界 | 対象 |
+|---|---|
+| `src/handlers/portfolio/fetch.ts` `paginateTrades` / `paginateMarginTrades` | `trades[].pair` |
+| `lib/tickers.ts` `fetchTickerPricesMap` | `tickers_jpy` の `data[].pair`（価格マップのキー源） |
+| `tools/private/get_my_trade_history.ts` | 単発リクエスト経路の `trades[].pair`（ページネーション経路は `paginateTrades` 側） |
+| `tools/private/get_margin_trade_history.ts` | 単発・ページネーション両経路の `trades[].pair` |
+| `tools/private/get_my_orders.ts` | `active_orders` の `orders[].pair` |
+| `tools/private/get_margin_positions.ts` | `margin/positions` の `positions[].pair` |
+| `tools/private/get_margin_status.ts` | `margin/status` の `available_balances[].pair` |
+| `tools/private/get_order.ts` / `get_orders_info.ts` | `order.pair` / `orders[].pair` |
+| `tools/private/create_order.ts` / `cancel_order.ts` / `cancel_orders.ts` | 発注・キャンセル応答の `order.pair` / `orders[].pair`（出力契約のみ。リクエストの `pair` はユーザー入力のまま） |
+| `lib/pairs.ts`（先行実装） | `/spot/pairs` の `name`（`String(raw.name).toLowerCase()`） |
+| `tools/get_tickers_jpy.ts`（先行実装） | ALLOWED_PAIRS 突き合わせ時の `.toLowerCase()` |
+
+`src/handlers/portfolio/fetch.ts` の `fetchCandlePriceData` は API レスポンスの受け口ではなく
+**呼び出し元由来の pair を受けるだけ**なので正規化しない（`analyzeMyPortfolioHandler` は正規化済み
+asset から組んだ `${asset}_jpy` と `paginateTrades` が正規化した `t.pair` のみを渡す）。
+
+### 取得境界でやらないこと
+
+- **`ALLOWED_PAIRS` による検証**（`ensurePair`）。入力の受け口の仕事であり、口座に非対応 pair
+  （上場廃止ペア等）の履歴があっても取得層で落としてはならない。取得境界でやるのは
+  **前後の空白除去 + 小文字化の 2 つだけ**で、**drop も throw もしない**。
+- **形式検証**（`lib/validate.ts` の `normalizePair` は不正形式で `null` を返す設計）。取得境界に
+  そのまま流用しない。
+
+### 表記の契約（変えないこと）
+
+- `structuredContent` / `data` の `pair` は**小文字**（`trades[].pair` / `orders[].pair` /
+  `positions[].pair` / `holdings[].pair` / `available_balances[].pair` 等）。
+- 表示層（サマリー文字列）は従来どおり `formatPair`（`lib/formatter.ts`、`toUpperCase()`）で**大文字**。
+- 規約テスト: `tests/lib/pair-code.test.ts`、`tests/handlers/portfolio/pair-normalization.test.ts`、
+  各 Private ツールテストの「API pair の取得境界正規化」describe。
+
+### ユーザー入力 pair の扱い（本ルールとは別レイヤー）
+
+ユーザー入力 pair の正規化・検証は `lib/validate.ts` の `normalizePair` / `ensurePair` の担当で、
+API レスポンスの受け口である本ルールと混ぜない。ただし**入力 pair が API 応答由来の値と
+突き合わされる／JPY 判定に使われる**経路では、入力側も同じ小文字空間に乗せる必要がある。
+
+| 経路 | 扱い |
+|---|---|
+| `get_margin_positions` のクライアント側フィルタ（`p.pair === pair`） | 入力を `normalizePair` に通す。`ensurePair` は使わない（ALLOWED_PAIRS に無い上場廃止ペアの建玉を照会できなくなる）。形式不正は `?? args.pair` で素通しし API の判断に委ねる。**この経路は正規化後の値を API リクエストの `pair` パラメータにも使う**（bitbank は小文字を期待するため改善方向） |
+| `get_order` / `get_orders_info` / `create_order` / `cancel_order` / `cancel_orders` / `preview_order` / `preview_cancel_order` の JPY 建て判定 | `lib/pair-code.ts` の `isJpyQuotedPair`（内部で `normalizePairCode` を通す）を使う。**API リクエストに送る `pair` はユーザー入力のまま**で、正規化するのは判定と応答側のみ |
+
+`isJpyQuotedPair` は「消費側に `.toLowerCase()` を撒く」ことにはあたらない。撒くのが禁物なのは
+*API レスポンスの正規化*（取得境界の責務）であって、こちらは取得境界を通らないユーザー入力を
+判定側で吸収するもの。判定条件は既存の `includes('jpy')` を保つ（`lib/price.ts` の
+`isJpyPair` = `endsWith('_jpy')` とは用途が違うので統合しない）。
+
 ## 機密フィールドの取り扱い（出力から除外必須）
 
 実 API は出金履歴で以下を返すが、**ツール出力に含めてはならない**（`.claude/rules/sensitive-data.md`）。
@@ -641,6 +759,8 @@ drift 時に「ミラー要更新」issue を起票する。
 - ドリフト検知 CI: [`.github/workflows/bitbank-api-docs-drift.yml`](../../.github/workflows/bitbank-api-docs-drift.yml)
 - 姉妹 doc（暦日・TZ 実測）: [`bitbank-candle-tz.md`](./bitbank-candle-tz.md)
 - Raw 型: `src/handlers/portfolio/types.ts`
+- asset コードの取得境界正規化: `lib/asset-code.ts`
+- pair シンボルの取得境界正規化: `lib/pair-code.ts`
 - Zod スキーマ（単一ソース）: `src/private/schemas.ts`
 - フィクスチャ: `tests/fixtures/private-api.ts`
 - 手数料カテゴリ（A/B 見積り=`lib/fees.ts`, C=パススルー）: `.claude/rules/fees.md`

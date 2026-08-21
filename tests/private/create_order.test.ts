@@ -446,7 +446,34 @@ describe('create_order — 未対応の注文タイプ（take_profit / stop_loss
 });
 
 describe('create_order — handler (toolDef)', () => {
-	it('handler が失敗時に result をそのまま返す', async () => {
+	it('MCP tools/call 経由は valid token でも常に拒否する', async () => {
+		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
+		const { confirmation_token, token_expires_at } = validToken(params);
+		const fetchMock = setupFetchMockSequence([
+			{ body: orderSuccessResponse({ side: 'buy', type: 'limit', price: '14000000' }) },
+		]);
+
+		const { toolDef } = await import('../../tools/private/create_order.js');
+		const result = await toolDef.handler({
+			...params,
+			confirmation_token,
+			token_expires_at,
+		});
+
+		expect((result as { ok: boolean }).ok).toBe(false);
+		expect((result as { summary: string }).summary).toContain('MCP tools/call');
+		expect((result as { meta: { errorType: string } }).meta.errorType).toBe('direct_execute_forbidden');
+		expect(JSON.stringify(result)).not.toContain('confirmation_token');
+		expect(JSON.stringify(result)).not.toContain(confirmation_token);
+		// handler は createOrder() を呼ばないため注文 API は一切叩かれない
+		expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/user/spot/order'))).toBe(false);
+	});
+
+	it('invalid token でも同様に direct_execute_forbidden で拒否する', async () => {
+		const fetchMock = setupFetchMockSequence([
+			{ body: orderSuccessResponse({ side: 'buy', type: 'limit', price: '14000000' }) },
+		]);
+
 		const { toolDef } = await import('../../tools/private/create_order.js');
 		const result = await toolDef.handler({
 			pair: 'btc_jpy',
@@ -459,23 +486,9 @@ describe('create_order — handler (toolDef)', () => {
 		});
 
 		expect((result as { ok: boolean }).ok).toBe(false);
-	});
-
-	it('handler が成功時に content + structuredContent を返す', async () => {
-		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
-		const { confirmation_token, token_expires_at } = validToken(params);
-
-		setupFetchMockSequence([{ body: orderSuccessResponse({ side: 'buy', type: 'limit', price: '14000000' }) }]);
-
-		const { toolDef } = await import('../../tools/private/create_order.js');
-		const result = await toolDef.handler({
-			...params,
-			confirmation_token,
-			token_expires_at,
-		});
-
-		expect(result).toHaveProperty('content');
-		expect(result).toHaveProperty('structuredContent');
+		expect((result as { meta: { errorType: string } }).meta.errorType).toBe('direct_execute_forbidden');
+		expect(JSON.stringify(result)).not.toContain('confirmation_token');
+		expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/user/spot/order'))).toBe(false);
 	});
 });
 
@@ -551,6 +564,70 @@ describe('create_order — トークン再利用拒否（ワンショット）',
 		assertFail(second);
 		expect(second.meta.errorType).toBe('token_already_used');
 		expect(second.summary).toContain('既に使用されています');
+	});
+
+	it('同一 confirmation_token を並行実行しても注文は 1 回しか通らない', async () => {
+		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
+		const { confirmation_token, token_expires_at } = validToken(params);
+
+		// 注文レスポンスは 1 件のみ用意。2 回叩かれれば「レスポンス切れ」で検知できる
+		const fetchMock = setupFetchMockSequence([
+			{ body: orderSuccessResponse({ side: 'buy', type: 'limit', price: '14000000' }) },
+		]);
+
+		const { default: createOrder } = await import('../../tools/private/create_order.js');
+		const { _resetUsedTokens } = await import('../../src/private/confirmation.js');
+		_resetUsedTokens();
+
+		const args = {
+			...params,
+			side: params.side as 'buy' | 'sell',
+			type: params.type as 'limit',
+			confirmation_token,
+			token_expires_at,
+		};
+		const results = await Promise.all([createOrder(args), createOrder(args)]);
+
+		expect(results.filter((r) => r.ok)).toHaveLength(1);
+		const rejected = results.filter((r) => !r.ok);
+		expect(rejected).toHaveLength(1);
+		assertFail(rejected[0]);
+		expect(rejected[0].meta.errorType).toBe('token_already_used');
+
+		const orderCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/user/spot/order'));
+		expect(orderCalls).toHaveLength(1);
+	});
+
+	it('使用済み記録が上限に達している場合は token_store_full を返し発注しない', async () => {
+		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
+		const { confirmation_token, token_expires_at } = validToken(params);
+
+		const fetchMock = setupFetchMockSequence([
+			{ body: orderSuccessResponse({ side: 'buy', type: 'limit', price: '14000000' }) },
+		]);
+
+		const { default: createOrder } = await import('../../tools/private/create_order.js');
+		const { _resetUsedTokens, generateToken: gen, validateToken } = await import('../../src/private/confirmation.js');
+
+		// 上限 1 件のストアを別トークンで埋めて満杯にする
+		_resetUsedTokens({ maxEntries: 1 });
+		const fillerParams = { pair: 'btc_jpy', amount: '0.002', side: 'sell', type: 'limit' };
+		const filler = gen('create_order', fillerParams);
+		expect(validateToken(filler.token, 'create_order', fillerParams, filler.expiresAt)).toBeNull();
+
+		const result = await createOrder({
+			...params,
+			side: params.side as 'buy' | 'sell',
+			type: params.type as 'limit',
+			confirmation_token,
+			token_expires_at,
+		});
+
+		assertFail(result);
+		expect(result.meta.errorType).toBe('token_store_full');
+		// 二重発注を防ぐため、記録できない状態では注文 API を叩かない
+		const orderCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/user/spot/order'));
+		expect(orderCalls).toHaveLength(0);
 	});
 });
 
@@ -1129,5 +1206,48 @@ describe('create_order — 事前再検証（ペア仕様 / トリガー価格�
 		// trigger 検証は静かにスキップ（null 返却）し、発注は継続する
 		assertOk(result);
 		expect(result.summary).toContain('注文発注完了');
+	});
+});
+
+/**
+ * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
+ * `data.order.pair` の小文字契約を保つのが目的。リクエストボディの `pair` と表示・JPY 判定は
+ * ユーザー入力のままで不変。防御的正規化（現行 API は小文字）。
+ */
+describe('create_order — API pair の取得境界正規化', () => {
+	const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
+
+	async function placeOrder() {
+		const { confirmation_token, token_expires_at } = validToken(params);
+		const { default: createOrder } = await import('../../tools/private/create_order.js');
+		return createOrder({
+			...params,
+			side: params.side as 'buy' | 'sell',
+			type: params.type as 'limit',
+			confirmation_token,
+			token_expires_at,
+		});
+	}
+
+	it('小文字レスポンスでは出力が変わらない（回帰なし）', async () => {
+		setupFetchMockSequence([{ body: orderSuccessResponse({ side: 'buy', type: 'limit', price: '14000000' }) }]);
+
+		const result = await placeOrder();
+
+		assertOk(result);
+		expect(result.data.order.pair).toBe('btc_jpy');
+		expect(result.summary).toContain('BTC/JPY');
+	});
+
+	it('大文字レスポンスでも structuredContent の pair は小文字契約を保つ', async () => {
+		setupFetchMockSequence([
+			{ body: orderSuccessResponse({ pair: 'BTC_JPY', side: 'buy', type: 'limit', price: '14000000' }) },
+		]);
+
+		const result = await placeOrder();
+
+		assertOk(result);
+		expect(result.data.order.pair).toBe('btc_jpy');
+		expect(result.summary).toContain('BTC/JPY');
 	});
 });

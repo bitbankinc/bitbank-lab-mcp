@@ -8,7 +8,9 @@
 import { toNum } from '../../lib/conversions.js';
 import { nowIso, toIsoMs } from '../../lib/datetime.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
+import { normalizePairCodes } from '../../lib/pair-code.js';
 import { ok } from '../../lib/result.js';
+import { normalizePair } from '../../lib/validate.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import { GetMarginPositionsInputSchema, GetMarginPositionsOutputSchema } from '../../src/private/schemas.js';
 import { failPrivateToolError } from '../../src/private/tool-error.js';
@@ -41,7 +43,12 @@ interface RawMarginPositionsResponse {
 }
 
 export default async function getMarginPositions(args: { pair?: string }) {
-	const { pair } = args;
+	// 入力レイヤーの正規化（`lib/validate.ts`）。下のクライアント側フィルタは API 応答の pair と
+	// `===` で突き合わせるため、ユーザーが `BTC_JPY` と入力すると建玉が全件消える。
+	// 応答側は取得境界で小文字化するので、入力側も同じ空間に乗せる。
+	// `ensurePair` は使わない: ALLOWED_PAIRS に無い pair（上場廃止ペア等）の建玉を
+	// 照会できなくなるため。形式不正はそのまま API に投げて API 側の判断に委ねる。
+	const pair = args.pair != null ? (normalizePair(args.pair) ?? args.pair) : undefined;
 	const client = getDefaultClient();
 
 	try {
@@ -55,8 +62,12 @@ export default async function getMarginPositions(args: { pair?: string }) {
 
 		const timestamp = nowIso();
 
+		// 取得境界での pair 正規化（`lib/pair-code.ts`）。下のフィルタの `===` 比較と
+		// JPY 判定（`p.pair.includes('jpy')`）が小文字前提のため、ここで揃える。
+		const allPositions = normalizePairCodes(raw.positions);
+
 		// ペアでフィルタ（API がフィルタ非対応の場合のクライアント側フィルタ）
-		const positions = pair ? raw.positions.filter((p) => p.pair === pair) : raw.positions;
+		const positions = pair ? allPositions.filter((p) => p.pair === pair) : allPositions;
 
 		const hasNotice = raw.notice != null && raw.notice.what != null;
 		const hasPayables = (toNum(raw.payables.amount) ?? 0) > 0;

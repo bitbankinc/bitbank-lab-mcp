@@ -21,8 +21,9 @@ const { version: packageVersion } = createRequire(import.meta.url)('../package.j
 const server = new McpServer(
 	{ name: 'bitbank-mcp', version: packageVersion },
 	{
-		// MRTR (SEP-2322) の requestState 検証。HMAC / 有効期限の検証をハンドラ実行前に行い、
-		// 失敗時は SDK が wire レベルの -32602（Invalid or expired requestState）を返す。
+		// MRTR (SEP-2322) の requestState 検証。HMAC / 有効期限 / bind（method・session・
+		// principal）の検証をハンドラ実行前に行い、失敗時は SDK が wire レベルの
+		// -32602（Invalid or expired requestState）を返す。
 		// codec の詳細と payload の文脈バインド検証は src/private/request-state.ts /
 		// src/private/elicitation.ts を参照。
 		requestState: {
@@ -96,7 +97,7 @@ const respond = (result: unknown): ToolReturn => {
  * `_meta.ui.resourceUri` を持つツール（MCP Apps 連携ツール）の応答を
  * UI スナップショットとして保持する。一部ホストで `ui/notifications/tool-result` が
  * iframe に配信されない場合の pull 型 hydration（get_ui_snapshot）に使う。
- * スナップショットは呼び出し元接続の sessionId にバインドする（stdio では undefined）。
+ * スナップショットは sessionId + resourceUri をキーに保持する（stdio では sessionId undefined）。
  */
 function storeSnapshotIfUiTool(
 	meta: Record<string, unknown> | undefined,

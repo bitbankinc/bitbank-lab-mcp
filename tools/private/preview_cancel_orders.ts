@@ -32,7 +32,7 @@ export default function previewCancelOrders(args: { pair: string; order_ids: num
 		lines.push(`  注文ID: ${id}`);
 	}
 	lines.push('');
-	lines.push('⚠️ この一括キャンセルはユーザーの最終確認（ホスト UI または elicitation）を経るまで実行されません。');
+	lines.push('⚠️ この一括キャンセルはユーザーの最終確認（elicitation/MRTR）を経るまで実行されません。');
 
 	const summary = lines.join('\n');
 
@@ -50,14 +50,14 @@ export const toolDef: ToolDefinition = {
 	description: [
 		'[Preview Cancel Orders] 一括キャンセルのプレビュー。実際のキャンセルは行わない。Private API。',
 		'⚠️ confirmation_token はクライアント側には返さない（content / structuredContent / _meta のいずれにも含めない）。',
-		'実際のキャンセルはユーザーの明示操作を経てチャット内で完結できる（elicitation/MRTR 対応ホストは確認ダイアログ、SEP-1865 + BITBANK_TRUST_HOST_APPROVAL=1 はチャット内確認カードの「キャンセルを確定する」ボタン）。',
-		'いずれも不可のホストではプレビューのみ返し、キャンセル実行は受け付けない。ユーザーにはチャット内の確認手段を第一に案内し、bitbank アプリ/ウェブでのキャンセルは任意の代替手段として扱う。',
+		'実際のキャンセルは elicitation/MRTR 対応ホスト上でのユーザー確認ダイアログ経由でのみ完結する。',
+		'非対応ホストではプレビューのみ返し、キャンセル実行は受け付けない。ユーザーには elicitation/MRTR 対応クライアントでの操作を第一に案内し、bitbank アプリ/ウェブでのキャンセルは任意の代替手段として扱う。',
 	].join(' '),
 	inputSchema: PreviewCancelOrdersInputSchema,
-	// MCP Apps (SEP-1865): 対応ホストでは iframe 内にキャンセル確認 UI を表示する。
+	// MCP Apps (SEP-1865): 対応ホストでは iframe 内にキャンセルプレビュー UI を表示する。
 	// 非対応ホストでは無視される（Progressive Enhancement）。
-	// 注: 本 PR 時点では UI 側からの cancel_orders 経路は未実装（pending action store と
-	// UI origin 検証の安全設計を別 PR で整備するまで token を UI に渡さない）。
+	// 注: iframe 起源の tools/call をサーバー側で識別できないため、UI からの
+	// cancel_orders 実行経路は無効。execute は elicitation/MRTR のみ。
 	_meta: {
 		ui: {
 			resourceUri: 'ui://cancel/confirm.html',
@@ -74,16 +74,7 @@ export const toolDef: ToolDefinition = {
 			result.summary,
 			'',
 			'※ このホストでは取引実行に対応していません。',
-			'  実際に一括キャンセルするには、取引実行対応クライアント（Claude Desktop など）で同じ操作を行うか、bitbank アプリ/ウェブで該当注文をキャンセルしてください。',
-		].join('\n');
-
-		// BITBANK_TRUST_HOST_APPROVAL=1 のときに使う妥協経路用のレスポンス。
-		// 詳細は docs/adr/0007-hitl-confirmation-token-delivery.md。
-		const trustHostFallbackText = [
-			result.summary,
-			'',
-			'このチャットに表示される確認カードの「キャンセルを確定する」ボタンを押すと、一括キャンセルがチャット内で完結します。ボタンを押さない限りキャンセルは行われません。',
-			'ユーザーへの案内: まず上記の確認カードのボタン操作を案内すること（キャンセルはこのチャット内で完了できる）。bitbank アプリ/ウェブで該当注文をキャンセルすることも可能だが、任意の代替手段として扱う。LLM 自身が cancel_orders を呼んでキャンセルを代行してはならない（実行は必ずユーザーのボタン操作に委ねる）。',
+			'  実際に一括キャンセルするには、elicitation/MRTR 対応クライアントで同じ操作を行うか、bitbank アプリ/ウェブで該当注文をキャンセルしてください。',
 		].join('\n');
 
 		// elicitation 対応ホストでは preview → ユーザー確認 → cancel_orders までを
@@ -106,15 +97,12 @@ export const toolDef: ToolDefinition = {
 						token_expires_at: result.data.expires_at!,
 					},
 					'elicitation',
+					{ sessionId: (extra as { sessionId?: string } | undefined)?.sessionId },
 				),
 			onDeclinedText: 'ユーザーが一括キャンセル操作を取り消しました（elicitation）',
 			declinedStructured: toStructured(result),
 			fallback: {
 				content: [{ type: 'text', text: fallbackText }],
-				structuredContent: toStructured(result),
-			},
-			trustHostFallback: {
-				content: [{ type: 'text', text: trustHostFallbackText }],
 				structuredContent: toStructured(result),
 			},
 		});

@@ -5,17 +5,15 @@
  * `ui/notifications/tool-result` が iframe に配信されない事象が確認されている。
  * その場合でもウィジェットが自力で内容を復元（pull 型 hydration）できるよう、
  * `_meta.ui.resourceUri` を持つツールの直近の structuredContent を
- * resourceUri 単位で保持し、`get_ui_snapshot` ツール経由で再提供する。
+ * `sessionId + resourceUri` 単位で保持し、`get_ui_snapshot` ツール経由で再提供する。
  *
  * セキュリティ境界:
  *   - ここで保持・返却するのは「ホストへ送信済みのツール応答」そのものであり、
- *     新たな情報露出は発生しない（trust-host モードで token を含む場合も、
- *     ホストへ返した structuredContent と同一内容）。
- *   - stdio デプロイではプロセス = 単一接続のため接続間の境界は存在しないが、
- *     将来のセッションを持つトランスポート追加に備え、エントリは保存時の
- *     sessionId にバインドし、取得時に一致を要求する（別セッションのスナップ
- *     ショット読み出し = IDOR を構造的に防ぐ）。stdio では sessionId は
- *     保存・取得とも undefined で一致し、挙動は変わらない。
+ *     新たな情報露出は発生しない。preview 応答の structuredContent からは
+ *     confirmation_token が strip 済みのため、スナップショット経由でも token は露出しない。
+ *   - Map キーは `sessionId + resourceUri` 相当。別セッションが同一 URI を
+ *     上書き・取得・削除できない（stdio では sessionId が undefined 同士で一致し、
+ *     既存の単一接続挙動を維持する）。
  */
 
 /** スナップショットの保持期間（ms）。確認フローの実用時間に合わせる。 */
@@ -24,11 +22,9 @@ const SNAPSHOT_TTL_MS = 5 * 60_000;
 interface SnapshotEntry {
 	structuredContent: Record<string, unknown>;
 	storedAt: number;
-	/** 保存元接続のセッション ID。セッションレス（stdio）では undefined。 */
-	sessionId: string | undefined;
 }
 
-interface SnapshotScope {
+export interface SnapshotScope {
 	/** 呼び出し元接続のセッション ID（ToolHandlerExtra の sessionId） */
 	sessionId?: string;
 	/** 現在時刻（テスト用にオーバーライド可能） */
@@ -37,41 +33,46 @@ interface SnapshotScope {
 
 const snapshots = new Map<string, SnapshotEntry>();
 
-/** ツール応答送出時に呼び、resourceUri 単位で最新スナップショットを保持する。 */
+/** sessionId + resourceUri を Map キーにする。秘密情報は含めない。 */
+export function uiSnapshotKey(sessionId: string | undefined, resourceUri: string): string {
+	return `${sessionId ?? ''}\0${resourceUri}`;
+}
+
+/** ツール応答送出時に呼び、session 境界付きで最新スナップショットを保持する。 */
 export function storeUiSnapshot(
 	resourceUri: string,
 	structuredContent: Record<string, unknown>,
 	scope: SnapshotScope = {},
 ): void {
-	snapshots.set(resourceUri, {
+	snapshots.set(uiSnapshotKey(scope.sessionId, resourceUri), {
 		structuredContent,
 		storedAt: scope.nowMs ?? Date.now(),
-		sessionId: scope.sessionId,
 	});
 }
 
 /**
- * 有効期限内かつ同一セッションのスナップショットを返す。無ければ null。
- * 保存時と異なるセッションからの取得は拒否する（stdio では両者 undefined で一致）。
+ * 有効期限内かつ同一セッション・同一 URI のスナップショットを返す。無ければ null。
+ * キーに sessionId を含むため、別セッションのエントリとは独立。
  */
 export function getUiSnapshot(resourceUri: string, scope: SnapshotScope = {}): Record<string, unknown> | null {
-	const entry = snapshots.get(resourceUri);
+	const key = uiSnapshotKey(scope.sessionId, resourceUri);
+	const entry = snapshots.get(key);
 	if (!entry) return null;
 	if ((scope.nowMs ?? Date.now()) - entry.storedAt > SNAPSHOT_TTL_MS) {
-		snapshots.delete(resourceUri);
+		snapshots.delete(key);
 		return null;
 	}
-	if (entry.sessionId !== scope.sessionId) return null;
 	return entry.structuredContent;
 }
 
 /**
- * 指定リソースのスナップショットを破棄する。
+ * 指定セッション・リソースのスナップショットを破棄する。
  * 取引実行（create_order / cancel_order(s)）の成功時に呼び、実行済み内容の
  * 「操作可能な確認カード」が再描画時に復元されて二重実行を誘発するのを防ぐ。
+ * 別セッションの同一 URI エントリには触れない。
  */
-export function clearUiSnapshot(resourceUri: string): void {
-	snapshots.delete(resourceUri);
+export function clearUiSnapshot(resourceUri: string, scope: SnapshotScope = {}): void {
+	snapshots.delete(uiSnapshotKey(scope.sessionId, resourceUri));
 }
 
 /** スナップショットをすべて破棄する（テスト用）。 */
