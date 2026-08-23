@@ -217,7 +217,7 @@ export type PortfolioFlowUnavailableReason = z.infer<typeof PortfolioFlowUnavail
  */
 export const PortfolioCostBasisUnavailableReasonEnum = z.enum([
 	...PortfolioFlowUnavailableReasonEnum.options,
-	/** 復元数量が実残高と乖離しており、該当銘柄に DONE の暗号資産入庫がある（入庫は原価計算に入らない） */
+	/** 復元数量が実残高と乖離しており、該当銘柄に**入庫日の始値を解決できなかった** DONE の暗号資産入庫がある（入庫日の始値で解決できた入庫は原価・数量に算入されるためこの値は立たない） */
 	'has_crypto_deposits',
 	/** 復元数量が実残高と乖離しており、約定履歴または入出金履歴が件数上限で打ち切られている */
 	'history_truncated',
@@ -297,16 +297,21 @@ const HoldingPnlSchema = z.object({
 	asset: z.string().describe('通貨コード'),
 	pair: z.string().describe('通貨ペア（例: btc_jpy）'),
 	amount: z.string().describe('保有数量'),
-	avg_buy_price: z.number().optional().describe('平均取得単価（JPY）'),
+	avg_buy_price: z.number().optional().describe('平均取得単価（JPY）= cost_basis / 復元保有数量'),
 	current_price: z.number().optional().describe('現在価格（JPY）'),
 	jpy_value: z.number().optional().describe('現在の評価額（JPY）'),
-	cost_basis: z.number().optional().describe('取得原価合計（JPY）'),
+	cost_basis: z
+		.number()
+		.optional()
+		.describe(
+			'取得原価合計（JPY）。全履歴の約定に加え、暗号資産入庫を入庫日（confirmed_at）の 1day 始値 × 数量で算入し、暗号資産出庫を平均単価で按分減少させた移動平均法ベース。入庫ぶんは「入庫時点の相場で取得した」という仮定であり真の取得原価ではない',
+		),
 	unrealized_pnl: z.number().optional().describe('評価損益（JPY）'),
 	unrealized_pnl_pct: z.number().optional().describe('評価損益率（%）'),
 	realized_pnl: z.number().optional().describe('実現損益（JPY）'),
 	trade_count: z.number().optional().describe('約定件数'),
 	cost_basis_unavailable_reason: PortfolioCostBasisUnavailableReasonEnum.optional().describe(
-		'取得原価を確定できなかった理由。設定されている場合 avg_buy_price / cost_basis / unrealized_pnl / unrealized_pnl_pct はいずれも undefined（信頼できない値を確定値として出さないための抑止）。dw_fetch_failed=入出金 API の取得に失敗（一部チャネルのみの失敗を含む）, dw_history_incomplete=件数上限で入出金の全履歴を取得できていない, has_crypto_deposits=復元数量が実残高と乖離しており該当銘柄に DONE の暗号資産入庫がある（入庫は原価計算に入らない）, history_truncated=復元数量が実残高と乖離しており約定履歴が件数上限で打ち切られている, unknown=復元数量が実残高と乖離しているが原因を特定できない。include_deposit_withdrawal=false でも入出金履歴は損益計算のために取得されるため、同フラグ由来でこの値が立つことはない',
+		'取得原価を確定できなかった理由。設定されている場合 avg_buy_price / cost_basis / unrealized_pnl / unrealized_pnl_pct はいずれも undefined（信頼できない値を確定値として出さないための抑止）。dw_fetch_failed=入出金 API の取得に失敗（一部チャネルのみの失敗を含む）, dw_history_incomplete=件数上限で入出金の全履歴を取得できていない, has_crypto_deposits=復元数量が実残高と乖離しており該当銘柄に入庫日の始値を解決できなかった DONE の暗号資産入庫がある（入庫日の始値で解決できた入庫は原価・数量に算入されるため本値は立たない。現在価格へのフォールバックは原価には使わない——相場連動の誤差を取得原価に持ち込まないため）, history_truncated=復元数量が実残高と乖離しており約定履歴が件数上限で打ち切られている, unknown=復元数量が実残高と乖離しているが原因を特定できない。include_deposit_withdrawal=false でも入出金履歴は損益計算のために取得されるため、同フラグ由来でこの値が立つことはない',
 	),
 	cost_basis_reliable: z
 		.boolean()

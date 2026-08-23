@@ -372,50 +372,199 @@ describe('qtyInvariantTolerance / qtyInvariantHolds', () => {
 	});
 });
 
+/**
+ * #57 (b): 暗号資産入庫を「入庫日の始値で取得した」とみなして原価に算入する。
+ *
+ * (b) より前は入庫が calcPnl のイベントに存在せず、入庫ぶんの保有が**原価ゼロ**で
+ * 積まれていた（含み益が過大 / 売却時の実現損益が売却収入そのもの）。
+ * ここでは「算入されること」と「算入しない条件」の両方を固定する。
+ */
+describe('calcPnl — 入庫の原価算入', () => {
+	/** 2026-05-16 10:00 JST */
+	const DEPOSIT_MS = Date.UTC(2026, 4, 16, 1, 0, 0, 0);
+	const SELL_MS = DEPOSIT_MS + 86_400_000;
+	/** 入庫日の 1day open。現在価格とは意図的に離す */
+	const DEPOSIT_DAY_OPEN = 8_000_000;
+
+	const deposit = makeDeposit({ uuid: 'dep-btc', asset: 'btc', amount: '0.5', confirmed_at: DEPOSIT_MS });
+
+	/** 入庫日の始値を解決できる pricing（現在価格は敢えて大きく離した値を置く） */
+	function datedPricing(currentPrice = 20_000_000) {
+		return withDailyPrices(
+			[{ asset: 'btc', atMs: DEPOSIT_MS, price: DEPOSIT_DAY_OPEN }],
+			new Map([['btc', currentPrice]]),
+		);
+	}
+
+	it('入庫日の始値 × 数量が原価と復元数量に入り、実現損益には計上されない', () => {
+		const res = calcPnl([], 'btc', [], { deposits: [deposit], pricing: datedPricing() });
+		expect(res.reconstructed_qty).toBeCloseTo(0.5, 12);
+		expect(res.cost_basis).toBeCloseTo(4_000_000, 6);
+		expect(res.avg_buy_price).toBeCloseTo(DEPOSIT_DAY_OPEN, 6);
+		expect(res.realized_pnl).toBe(0);
+		expect(res.priced_deposit_count).toBe(1);
+		expect(res.unpriced_deposit_count).toBe(0);
+	});
+
+	it('入庫 → 売却の順で realized_pnl が入庫日原価ベースになる', () => {
+		const trades = [makeTrade({ side: 'sell', amount: '0.5', price: '10000000', executed_at: SELL_MS })];
+		const res = calcPnl(trades, 'btc', [], { deposits: [deposit], pricing: datedPricing() });
+		// 売却収入 5,000,000 − 入庫日原価 4,000,000
+		expect(res.realized_pnl).toBe(1_000_000);
+		expect(res.reconstructed_qty).toBe(0);
+	});
+
+	it('回帰の逆側: 入庫を渡さないと同じ売却が原価ゼロ扱いで実現損益を過大に出す', () => {
+		const trades = [makeTrade({ side: 'sell', amount: '0.5', price: '10000000', executed_at: SELL_MS })];
+		const res = calcPnl(trades, 'btc', []);
+		expect(res.realized_pnl).toBe(5_000_000);
+		expect(res.priced_deposit_count).toBe(0);
+		expect(res.unpriced_deposit_count).toBe(0);
+	});
+
+	/** 本 issue の眼目。現在価格を 2 倍に振っても原価が 1 円も動かないこと。 */
+	it('現在価格が動いても原価は動かない（入庫日の始値で固定）', () => {
+		const low = calcPnl([], 'btc', [], { deposits: [deposit], pricing: datedPricing(20_000_000) });
+		const high = calcPnl([], 'btc', [], { deposits: [deposit], pricing: datedPricing(40_000_000) });
+		expect(high.cost_basis).toBe(low.cost_basis);
+		expect(high.avg_buy_price).toBe(low.avg_buy_price);
+	});
+
+	/**
+	 * 現在価格フォールバックを原価に使わない理由: 使うとその入庫ぶんの評価損益が常に
+	 * ゼロ付近に貼り付き、誤差が相場と連動して動く（#53 の機序 6 を cost_basis 側に持ち込む）。
+	 * 算入しない代わりに件数を申告し、数量不変条件の理由コードに載せる。
+	 */
+	it('入庫日の始値を解決できない入庫は算入せず unpriced_deposit_count で申告する', () => {
+		const res = calcPnl([], 'btc', [], {
+			deposits: [deposit],
+			pricing: currentPriceOnly(new Map([['btc', 20_000_000]])),
+		});
+		expect(res.reconstructed_qty).toBe(0);
+		expect(res.cost_basis).toBeUndefined();
+		expect(res.avg_buy_price).toBeUndefined();
+		expect(res.priced_deposit_count).toBe(0);
+		expect(res.unpriced_deposit_count).toBe(1);
+	});
+
+	it('他銘柄の入庫は件数にも原価にも入らない', () => {
+		const other = makeDeposit({ uuid: 'dep-eth', asset: 'eth', amount: '3', confirmed_at: DEPOSIT_MS });
+		const res = calcPnl([], 'btc', [], { deposits: [other], pricing: datedPricing() });
+		expect(res.reconstructed_qty).toBe(0);
+		expect(res.priced_deposit_count).toBe(0);
+		expect(res.unpriced_deposit_count).toBe(0);
+	});
+
+	it('DONE 以外の入庫は無視する（未確定を原価にしない）', () => {
+		const pending = makeDeposit({ ...deposit, uuid: 'dep-pending', status: 'CONFIRMED' });
+		const res = calcPnl([], 'btc', [], { deposits: [pending], pricing: datedPricing() });
+		expect(res.reconstructed_qty).toBe(0);
+		expect(res.priced_deposit_count).toBe(0);
+		expect(res.unpriced_deposit_count).toBe(0);
+	});
+
+	it('数量ゼロ・数値不正の DONE 入庫は算入せず未算入として数える（乖離の証拠を残す）', () => {
+		const zero = makeDeposit({ ...deposit, uuid: 'dep-zero', amount: '0' });
+		const nan = makeDeposit({ ...deposit, uuid: 'dep-nan', amount: 'n/a' });
+		const res = calcPnl([], 'btc', [], { deposits: [zero, nan], pricing: datedPricing() });
+		expect(res.reconstructed_qty).toBe(0);
+		expect(res.priced_deposit_count).toBe(0);
+		expect(res.unpriced_deposit_count).toBe(2);
+	});
+
+	it('入庫 → 出庫の順で、出庫が入庫日原価を按分減少させる', () => {
+		const withdrawals = [
+			makeWithdrawal({ asset: 'btc', amount: '0.2', fee: '0.01', status: 'DONE', requested_at: SELL_MS }),
+		];
+		const res = calcPnl([], 'btc', withdrawals, { deposits: [deposit], pricing: datedPricing() });
+		// 0.5 − (0.2 + 0.01) = 0.29 が残り、平均単価は入庫日始値のまま
+		expect(res.reconstructed_qty).toBeCloseTo(0.29, 12);
+		expect(res.cost_basis).toBeCloseTo(0.29 * DEPOSIT_DAY_OPEN, 6);
+		expect(res.realized_pnl).toBe(0);
+	});
+
+	it('入庫より前の売却には入庫の原価が乗らない（時系列順で処理する）', () => {
+		const trades = [makeTrade({ side: 'sell', amount: '0.1', price: '10000000', executed_at: DEPOSIT_MS - 1000 })];
+		const res = calcPnl(trades, 'btc', [], { deposits: [deposit], pricing: datedPricing() });
+		// 売却時点で保有ゼロ → 収入がそのまま実現損益。入庫はその後に原価として積まれる
+		expect(res.realized_pnl).toBe(1_000_000);
+		expect(res.reconstructed_qty).toBeCloseTo(0.5, 12);
+		expect(res.cost_basis).toBeCloseTo(4_000_000, 6);
+	});
+});
+
+describe('calcPeriodRealizedPnl — 入庫の原価算入', () => {
+	const DEPOSIT_MS = Date.UTC(2026, 4, 16, 1, 0, 0, 0);
+	const SINCE_MS = DEPOSIT_MS + 86_400_000;
+	const SELL_MS = SINCE_MS + 3_600_000;
+	const DEPOSIT_DAY_OPEN = 8_000_000;
+
+	const deposit = makeDeposit({ uuid: 'dep-btc', asset: 'btc', amount: '0.5', confirmed_at: DEPOSIT_MS });
+	const pricing = withDailyPrices(
+		[{ asset: 'btc', atMs: DEPOSIT_MS, price: DEPOSIT_DAY_OPEN }],
+		new Map([['btc', 20_000_000]]),
+	);
+	const sell = [makeTrade({ side: 'sell', amount: '0.5', price: '10000000', executed_at: SELL_MS })];
+
+	it('期間開始前の入庫も avg_cost に積み上がり、期間内の売却が入庫日原価ベースになる', () => {
+		const res = calcPeriodRealizedPnl(sell, SINCE_MS, 'start', 'end', [], { deposits: [deposit], pricing });
+		expect(res.realized_pnl).toBe(1_000_000);
+		expect(res.sell_count).toBe(1);
+	});
+
+	/**
+	 * depositCost を渡し忘れると入庫ぶんが原価ゼロで売られ、同じ売却の実現損益が
+	 * calcPnl と食い違う（期間集計だけ過大になる）。その差を固定しておく。
+	 */
+	it('depositCost を渡さないと同じ売却が原価ゼロ扱いになり calcPnl と食い違う', () => {
+		const withDeposit = calcPnl(sell, 'btc', [], { deposits: [deposit], pricing });
+		const without = calcPeriodRealizedPnl(sell, SINCE_MS, 'start', 'end', []);
+		expect(without.realized_pnl).toBe(5_000_000);
+		expect(without.realized_pnl).not.toBe(withDeposit.realized_pnl);
+	});
+});
+
 describe('qtyMismatchReasonFor', () => {
 	function makeDw(overrides: Partial<DepositWithdrawalData> = {}): DepositWithdrawalData {
 		return { deposits: [], withdrawals: [], warnings: [], allFailed: false, isComplete: true, ...overrides };
 	}
 
-	it('該当銘柄に DONE 入庫あり → has_crypto_deposits', () => {
+	it('原価に算入できなかった入庫がある → has_crypto_deposits', () => {
+		expect(qtyMismatchReasonFor(makeDw(), false, 1)).toBe('has_crypto_deposits');
+	});
+
+	it('入庫件数が複数でも単一の has_crypto_deposits', () => {
+		expect(qtyMismatchReasonFor(makeDw(), false, 2)).toBe('has_crypto_deposits');
+	});
+
+	/**
+	 * (b) の要点。入庫日の始値で原価に算入できた入庫は数量にも入っているので、
+	 * もはや乖離の説明にならない。dw.deposits に DONE 入庫が残っていても
+	 * has_crypto_deposits を立ててはいけない（立てると「入庫のせい」で
+	 * 打ち切り由来の乖離を取り違え、原価が出せない理由を誤って説明する）。
+	 */
+	it('入庫があっても全件を原価に算入できていれば has_crypto_deposits にならない', () => {
 		const dw = makeDw({ deposits: [makeDeposit({ uuid: 'd1', asset: 'eth', amount: '1' })] });
-		expect(qtyMismatchReasonFor('eth', dw, false)).toBe('has_crypto_deposits');
-	});
-
-	it('入庫が他銘柄のみ・DONE 以外のみは has_crypto_deposits にならない', () => {
-		const other = makeDw({ deposits: [makeDeposit({ uuid: 'd1', asset: 'btc', amount: '1' })] });
-		expect(qtyMismatchReasonFor('eth', other, false)).toBe('unknown');
-		const pending = makeDw({ deposits: [makeDeposit({ uuid: 'd2', asset: 'eth', amount: '1', status: 'CONFIRMED' })] });
-		expect(qtyMismatchReasonFor('eth', pending, false)).toBe('unknown');
-	});
-
-	it('重複入庫（同銘柄 2 件）でも単一の has_crypto_deposits', () => {
-		const dw = makeDw({
-			deposits: [
-				makeDeposit({ uuid: 'd1', asset: 'eth', amount: '1' }),
-				makeDeposit({ uuid: 'd2', asset: 'eth', amount: '2' }),
-			],
-		});
-		expect(qtyMismatchReasonFor('eth', dw, false)).toBe('has_crypto_deposits');
+		expect(qtyMismatchReasonFor(dw, false, 0)).toBe('unknown');
+		expect(qtyMismatchReasonFor(dw, true, 0)).toBe('history_truncated');
 	});
 
 	it('約定履歴の打ち切り → history_truncated（dw null でも同様）', () => {
-		expect(qtyMismatchReasonFor('eth', makeDw(), true)).toBe('history_truncated');
-		expect(qtyMismatchReasonFor('eth', null, true)).toBe('history_truncated');
+		expect(qtyMismatchReasonFor(makeDw(), true, 0)).toBe('history_truncated');
+		expect(qtyMismatchReasonFor(null, true, 0)).toBe('history_truncated');
 	});
 
 	it('入出金履歴の打ち切り（isComplete=false）→ history_truncated', () => {
-		expect(qtyMismatchReasonFor('eth', makeDw({ isComplete: false }), false)).toBe('history_truncated');
+		expect(qtyMismatchReasonFor(makeDw({ isComplete: false }), false, 0)).toBe('history_truncated');
 	});
 
-	it('入庫ありは打ち切りより優先される（銘柄固有の証拠を採る）', () => {
-		const dw = makeDw({ deposits: [makeDeposit({ uuid: 'd1', asset: 'eth', amount: '1' })], isComplete: false });
-		expect(qtyMismatchReasonFor('eth', dw, true)).toBe('has_crypto_deposits');
+	it('未算入の入庫は打ち切りより優先される（銘柄固有の証拠を採る）', () => {
+		expect(qtyMismatchReasonFor(makeDw({ isComplete: false }), true, 1)).toBe('has_crypto_deposits');
 	});
 
 	it('手掛かりなし（dw null / 空履歴）→ unknown', () => {
-		expect(qtyMismatchReasonFor('eth', null, false)).toBe('unknown');
-		expect(qtyMismatchReasonFor('eth', makeDw(), false)).toBe('unknown');
+		expect(qtyMismatchReasonFor(null, false, 0)).toBe('unknown');
+		expect(qtyMismatchReasonFor(makeDw(), false, 0)).toBe('unknown');
 	});
 });
 

@@ -130,8 +130,17 @@ export interface PnlResult {
 	cost_basis: number | undefined;
 	realized_pnl: number;
 	trade_count: number;
-	/** 約定・出庫リプレイで復元した保有数量。実残高（onhand_amount）との突き合わせに使う */
+	/** 約定・入出庫リプレイで復元した保有数量。実残高（onhand_amount）との突き合わせに使う */
 	reconstructed_qty: number;
+	/** 入庫日の始値で原価に算入した DONE 暗号資産入庫の件数 */
+	priced_deposit_count: number;
+	/**
+	 * 入庫日の始値を解決できず原価にも数量にも算入しなかった DONE 暗号資産入庫の件数。
+	 *
+	 * 数量乖離の理由コード判定（`qtyMismatchReasonFor`）の入力。0 より大きければ
+	 * 復元数量は実残高より小さくなり得るので、`has_crypto_deposits` の根拠になる。
+	 */
+	unpriced_deposit_count: number;
 }
 
 export interface PeriodRealizedPnl {

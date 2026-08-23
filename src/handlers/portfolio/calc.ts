@@ -28,6 +28,7 @@ import type {
 	PeriodPerformance,
 	PeriodRealizedPnl,
 	PnlResult,
+	RawDeposit,
 	RawMarginTrade,
 	RawTrade,
 	RawWithdrawal,
@@ -42,8 +43,77 @@ import type {
 // 防御的にどちらも参照しても算術的に正しくなるロジックを採用する。
 
 /**
- * 約定履歴と暗号資産出庫から通貨ごとの平均取得単価と実現損益を算出する。
+ * 原価計算に入庫を算入するための入力。
+ *
+ * `pricing` は入庫日（`confirmed_at`）の始値を引くための価格ソース。**現在価格への
+ * フォールバックは原価には使わない**（`collectDepositCostEvents` の doc を参照）ので、
+ * `pricing.currentPrices` は実質参照されないが、`FlowPricing` をそのまま渡せるよう
+ * 型は共有する（呼び出し側で入出庫換算用に組み立てた 1 個をそのまま使い回すため）。
+ */
+export interface DepositCostBasisInput {
+	deposits: RawDeposit[];
+	pricing: FlowPricing;
+}
+
+/** 原価に算入できる入庫 1 件（入庫日の始値で JPY 換算済み） */
+interface PricedDepositEvent {
+	asset: string;
+	ts: number;
+	qty: number;
+	cost: number;
+}
+
+interface DepositCostEvents {
+	priced: PricedDepositEvent[];
+	/** asset（小文字）→ 入庫日の始値を解決できず原価にも数量にも算入しなかった DONE 入庫の件数 */
+	unpricedCounts: Map<string, number>;
+}
+
+/**
+ * 入庫を「入庫日の始値 × 数量」の取得原価として算入できる形に整える。
+ *
+ * **算入するのは入庫日の始値（`deposit_date_price`）を解決できた入庫だけ。**
+ * 現在価格フォールバックは意図的に使わない: 現在価格で原価を作ると、その入庫ぶんの
+ * 評価損益が常にゼロ付近に貼り付き、誤差が相場と連動して動く（#53 の機序 6 を
+ * cost_basis 側に持ち込むことになる）。嘘の原価を作らず、算入しなかった件数を
+ * `unpricedCounts` で申告して数量不変条件（`qtyMismatchReasonFor`）に載せる。
+ *
+ * 数量・数値が不正な DONE 入庫も「算入できなかった入庫」として数える。実残高には
+ * 効いているかもしれない一方こちらでは再現できないので、乖離の証拠としては残す。
+ */
+function collectDepositCostEvents(input: DepositCostBasisInput | undefined, assetFilter?: string): DepositCostEvents {
+	const priced: PricedDepositEvent[] = [];
+	const unpricedCounts = new Map<string, number>();
+	if (!input) return { priced, unpricedCounts };
+
+	for (const d of input.deposits) {
+		if (d.status !== 'DONE') continue;
+		if (d.asset === 'jpy') continue;
+		if (assetFilter != null && d.asset !== assetFilter) continue;
+
+		const qty = Number(d.amount);
+		const resolved =
+			Number.isFinite(qty) && qty > 0 ? resolveFlowPrice(input.pricing, d.asset, d.confirmed_at) : undefined;
+		if (resolved?.basis === 'deposit_date_price') {
+			priced.push({ asset: d.asset, ts: d.confirmed_at, qty, cost: qty * resolved.price });
+		} else {
+			unpricedCounts.set(d.asset, (unpricedCounts.get(d.asset) ?? 0) + 1);
+		}
+	}
+	return { priced, unpricedCounts };
+}
+
+/**
+ * 約定履歴・暗号資産入出庫から通貨ごとの平均取得単価と実現損益を算出する。
  * 移動平均法（総平均法）を採用。両 side の手数料（fee_amount_base / fee_amount_quote）を考慮。
+ *
+ * 暗号資産入庫（crypto deposit）は「入庫日の始値で買った」とみなして原価に算入する:
+ *   - holdingQty に数量、holdingCost に 数量 × 入庫日始値 を加算
+ *   - realized_pnl には計上しない（買いと同じく取得側のイベント）
+ * これは**真の取得原価ではなく「入庫時点の相場で取得した」という仮定**である。
+ * 入庫日の始値を解決できない入庫は算入せず、`unpriced_deposit_count` で申告する
+ * （`collectDepositCostEvents` の doc を参照）。`depositCost` 自体を渡さない呼び出しでは
+ * 全入庫が未算入になり、従来どおり「入庫は原価計算に入らない」挙動になる。
  *
  * 暗号資産出庫（crypto withdrawal）は「売却」ではなく原価の按分減少として扱う:
  *   - holdingQty と holdingCost を平均単価ベースで減らす
@@ -51,7 +121,12 @@ import type {
  * これにより、出庫後に残った少量保有の cost_basis が適正化され、
  * 評価損益が過大マイナスになる問題を防ぐ。
  */
-export function calcPnl(trades: RawTrade[], asset: string, withdrawals?: RawWithdrawal[]): PnlResult {
+export function calcPnl(
+	trades: RawTrade[],
+	asset: string,
+	withdrawals?: RawWithdrawal[],
+	depositCost?: DepositCostBasisInput,
+): PnlResult {
 	// この通貨に関する約定を古い順にソート
 	const pair = `${asset}_jpy`;
 	const relevantTrades = trades.filter((t) => t.pair === pair).sort((a, b) => a.executed_at - b.executed_at);
@@ -59,17 +134,31 @@ export function calcPnl(trades: RawTrade[], asset: string, withdrawals?: RawWith
 	// この通貨に関する完了済み暗号資産出庫
 	const relevantWithdrawals = (withdrawals ?? []).filter((w) => w.asset === asset && w.status === 'DONE');
 
-	if (relevantTrades.length === 0 && relevantWithdrawals.length === 0) {
-		return { avg_buy_price: undefined, cost_basis: undefined, realized_pnl: 0, trade_count: 0, reconstructed_qty: 0 };
+	// この通貨に関する完了済み暗号資産入庫（原価に算入できるものだけ）
+	const deposits = collectDepositCostEvents(depositCost, asset);
+	const unpricedDepositCount = deposits.unpricedCounts.get(asset) ?? 0;
+
+	if (relevantTrades.length === 0 && relevantWithdrawals.length === 0 && deposits.priced.length === 0) {
+		return {
+			avg_buy_price: undefined,
+			cost_basis: undefined,
+			realized_pnl: 0,
+			trade_count: 0,
+			reconstructed_qty: 0,
+			priced_deposit_count: 0,
+			unpriced_deposit_count: unpricedDepositCount,
+		};
 	}
 
-	// 約定と出庫を時系列順に統合して処理
+	// 約定・入庫・出庫を時系列順に統合して処理
 	type TradeEvent = { type: 'trade'; ts: number; trade: RawTrade };
+	type DepositEvent = { type: 'deposit'; ts: number; qty: number; cost: number };
 	type WithdrawalEvent = { type: 'withdrawal'; ts: number; amount: number };
-	type Event = TradeEvent | WithdrawalEvent;
+	type Event = TradeEvent | DepositEvent | WithdrawalEvent;
 
 	const events: Event[] = [
 		...relevantTrades.map((t): TradeEvent => ({ type: 'trade', ts: t.executed_at, trade: t })),
+		...deposits.priced.map((d): DepositEvent => ({ type: 'deposit', ts: d.ts, qty: d.qty, cost: d.cost })),
 		...relevantWithdrawals.map(
 			(w): WithdrawalEvent => ({
 				type: 'withdrawal',
@@ -84,7 +173,11 @@ export function calcPnl(trades: RawTrade[], asset: string, withdrawals?: RawWith
 	let realizedPnl = 0;
 
 	for (const event of events) {
-		if (event.type === 'trade') {
+		if (event.type === 'deposit') {
+			// Crypto deposit: 入庫日の始値で取得したとみなして原価に算入。realized_pnl には計上しない
+			holdingCost += event.cost;
+			holdingQty += event.qty;
+		} else if (event.type === 'trade') {
 			const t = event.trade;
 			const qty = Number(t.amount);
 			const price = Number(t.price);
@@ -147,6 +240,8 @@ export function calcPnl(trades: RawTrade[], asset: string, withdrawals?: RawWith
 		realized_pnl: Math.round(realizedPnl),
 		trade_count: relevantTrades.length,
 		reconstructed_qty: holdingQty,
+		priced_deposit_count: deposits.priced.length,
+		unpriced_deposit_count: unpricedDepositCount,
 	};
 }
 
@@ -181,17 +276,20 @@ export function qtyInvariantHolds(onhandAmount: number, reconstructedQty: number
 /**
  * 数量乖離の理由コードを推定する。
  *
- * - 該当銘柄に DONE の暗号資産入庫がある → `has_crypto_deposits`。入庫は `calcPnl` の
- *   イベントに含まれず数量にも原価にも入らないため、銘柄固有の証拠として最優先する
+ * - 該当銘柄に**原価へ算入できなかった** DONE の暗号資産入庫がある → `has_crypto_deposits`。
+ *   算入できなかった入庫は `calcPnl` の数量にも原価にも入らないため、銘柄固有の証拠として
+ *   最優先する。判定は `calcPnl` が返す `unpriced_deposit_count` を使う——入庫日の始値で
+ *   算入済みの入庫は数量に効いており、もはや乖離の説明にならないので、
+ *   `dw.deposits` を再走査して「入庫があるか」で判定してはいけない
  * - 約定履歴が打ち切られている / 入出金履歴が不完全 → `history_truncated`
  * - どちらでもない → `unknown`（例: 履歴に現れない出庫）
  */
 export function qtyMismatchReasonFor(
-	asset: string,
 	dw: DepositWithdrawalData | null,
 	tradesTruncated: boolean,
+	unpricedDepositCount: number,
 ): PortfolioQtyMismatchReason {
-	if (dw?.deposits.some((d) => d.asset === asset && d.status === 'DONE')) return 'has_crypto_deposits';
+	if (unpricedDepositCount > 0) return 'has_crypto_deposits';
 	if (tradesTruncated || (dw != null && !dw.isComplete)) return 'history_truncated';
 	return 'unknown';
 }
@@ -201,12 +299,14 @@ export function qtyMismatchReasonFor(
 /**
  * 指定期間内の実現損益を算出する。
  *
- * 入力は全履歴（trades / withdrawals とも）が前提。
- * 移動平均法の avg_cost は全履歴から積み上げ（期間開始前の買い・出庫も含む）、
+ * 入力は全履歴（trades / withdrawals / deposits とも）が前提。
+ * 移動平均法の avg_cost は全履歴から積み上げ（期間開始前の買い・入庫・出庫も含む）、
  * 期間内 (executed_at >= sinceMs) の売り約定のみ実現損益として集計する。
  *
+ * 暗号資産入庫は calcPnl と同じく入庫日の始値で原価に算入し、realized_pnl には計上しない。
  * 暗号資産出庫は calcPnl と同じく原価の按分減少として扱い、realized_pnl には計上しない。
- * これにより出庫を挟んだ売却でも残数量・平均原価が calcPnl と整合する。
+ * これにより入出庫を挟んだ売却でも残数量・平均原価が calcPnl と整合する
+ * （`depositCost` を渡さないと入庫ぶんの原価がゼロのまま売られ、期間実現損益が calcPnl と食い違う）。
  */
 export function calcPeriodRealizedPnl(
 	trades: RawTrade[],
@@ -214,17 +314,22 @@ export function calcPeriodRealizedPnl(
 	periodStart: string,
 	periodEnd: string,
 	withdrawals?: RawWithdrawal[],
+	depositCost?: DepositCostBasisInput,
 ): PeriodRealizedPnl {
-	// 約定と出庫を時系列順に統合（通貨を超えて単一タイムラインで処理）
+	// 約定・入庫・出庫を時系列順に統合（通貨を超えて単一タイムラインで処理）
 	type TradeEvent = { type: 'trade'; ts: number; trade: RawTrade };
+	type DepositEvent = { type: 'deposit'; ts: number; asset: string; qty: number; cost: number };
 	type WithdrawalEvent = { type: 'withdrawal'; ts: number; asset: string; amount: number };
-	type Event = TradeEvent | WithdrawalEvent;
+	type Event = TradeEvent | DepositEvent | WithdrawalEvent;
 
 	const events: Event[] = [];
 	for (const t of trades) {
 		const asset = t.pair.replace('_jpy', '');
 		if (asset === 'jpy') continue;
 		events.push({ type: 'trade', ts: t.executed_at, trade: t });
+	}
+	for (const d of collectDepositCostEvents(depositCost).priced) {
+		events.push({ type: 'deposit', ts: d.ts, asset: d.asset, qty: d.qty, cost: d.cost });
 	}
 	for (const w of withdrawals ?? []) {
 		if (w.asset === 'jpy') continue;
@@ -241,7 +346,13 @@ export function calcPeriodRealizedPnl(
 	let periodSellCount = 0;
 
 	for (const event of events) {
-		if (event.type === 'trade') {
+		if (event.type === 'deposit') {
+			// Crypto deposit: 入庫日の始値で原価に算入。realized_pnl には計上しない
+			const h = holdings.get(event.asset) ?? { qty: 0, cost: 0 };
+			h.cost += event.cost;
+			h.qty += event.qty;
+			holdings.set(event.asset, h);
+		} else if (event.type === 'trade') {
 			const t = event.trade;
 			const asset = t.pair.replace('_jpy', '');
 			const qty = Number(t.amount);

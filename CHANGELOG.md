@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+### Changed（**挙動変更**: `analyze_my_portfolio` の暗号資産入庫を取得原価に算入する）
+- **暗号資産の入庫を「入庫日（`confirmed_at`）の 1day 始値で取得した」とみなして取得原価に算入するようにした。** 従来は入庫が `calcPnl` のイベントに存在せず、入庫ぶんの保有が**原価ゼロ**で積まれていた（含み益が過大、売却時は売却収入がそのまま実現損益）。対象は `holdings[].cost_basis` / `avg_buy_price` / `unrealized_pnl` / `unrealized_pnl_pct` / `realized_pnl`、`data.total_cost_basis` / `total_unrealized_pnl`、`yearly_realized_pnl` / `monthly_realized_pnl` と口座全体 PnL。入庫は取得側のイベントなので実現損益には計上しない。
+- **入庫日の始値を解決できない入庫は原価に算入しない。** 現在価格へのフォールバックは**原価には使わない**——現在価格で原価を作るとその入庫ぶんの評価損益が常にゼロ付近に貼り付き、相場連動の誤差を `cost_basis` に持ち込むため。算入しなかった入庫は従来どおり数量不変条件で検出され、`cost_basis_unavailable_reason=has_crypto_deposits` として申告される（嘘の原価を作らない）。
+- **`has_crypto_deposits` の意味が変わった。** 従来の「該当銘柄に DONE の暗号資産入庫がある」から「該当銘柄に**入庫日の始値を解決できなかった** DONE の暗号資産入庫がある」へ。入庫日の始値で算入できた入庫は数量にも原価にも入るため、乖離の説明にはならず本値は立たない。enum 値・フィールドは不変で、意味の範囲が狭まる（従来 `has_crypto_deposits` が立っていたケースの多くは、原価が確定値として出るようになる）。summary / `meta.warnings` の原因表示も「暗号資産の入庫あり」→「入庫日の価格を解決できない暗号資産の入庫あり」に変えた。
+- **`include_pnl: true` のとき、入庫日価格の解決対象が全履歴の入庫に広がった。** 移動平均法は期間開始前の入庫も積み上げるため、`include_deposit_withdrawal: false` でも入庫は全履歴を換算する（出庫は従来どおり年初来のまま——全履歴で金額換算する消費者がいない）。追加取得は入庫が実在する (資産, 年) の組のみ・上限 `MAX_FLOW_PRICE_YEAR_CHUNKS = 12` で従来と同じ。
+- **summary の注記行を更新した。** 「評価損益は全履歴の約定・暗号資産出庫から移動平均法で算出した取得原価ベース」→ 入出庫を含む旨と、**入庫ぶんは「入庫時点の相場で取得した」という仮定であり真の取得原価ではない**旨を明記する。現在価格フォールバックの警告行にも「取得原価には算入しない」ことを添えた。
+
 ### Changed（**挙動変更**: `analyze_my_portfolio` の暗号資産入出庫を「入出庫日の価格」で評価する）
 - **暗号資産の入出庫を入出庫日（入庫: `confirmed_at` / 出庫: `requested_at`）の 1day open で JPY 換算するようにした。** 従来は現在価格での仮評価だったため、誤差が相場と連動して動く系統的バイアスになっていた（取引ゼロでも相場上昇だけで報告損益が悪化する）。対象は `deposit_withdrawal_summary.crypto_deposit_estimated_jpy` / `net_jpy_invested` / 口座全体リターン、`yearly_dw_summary` / `monthly_dw_summary` の `crypto_{deposit,withdrawal}_estimated_jpy`、`*_performance` の `net_flow_jpy` / `withdrawal_fee_jpy` / `adjusted_change_jpy`。出庫手数料も元本と同じ単価で換算する（元本だけ入出庫日・手数料だけ現在価格の混成にしない）。
 - **入出庫日価格が直近 400 日窓の外にある場合は (資産, 年) 単位で 1day chunk を追加取得する。** 追加取得は入出庫が実在する組だけに絞り、上限（`MAX_FLOW_PRICE_YEAR_CHUNKS = 12`）を超えた分と取得に失敗した分は現在価格にフォールバックする。**フォールバックは黙って混ぜず件数で申告する**（下記）。
@@ -16,11 +23,11 @@
 - **`*_valuation`（`FlowValuation`）を追加した**: `deposit_withdrawal_summary.crypto_deposit_valuation` / `yearly_dw_summary` / `monthly_dw_summary` の `crypto_deposit_valuation` / `crypto_withdrawal_valuation` / `*_performance.flow_valuation`。`deposit_date_price_count` / `current_price_fallback_count` / `basis`（`deposit_date_price` / `current_price_fallback` / `mixed`）を持つ。暗号資産の入出庫が無い、または全件で価格を解決できなかった場合はキーごと落ちる（従来出力と JSON 一致）。
 - **`meta.flowValuationBasis` / `meta.flowValuationFallbackCount` を追加した。** レスポンス全体で換算した入出庫の集計値。現在価格フォールバックが 1 件でもあると `meta.warnings` と summary 先頭に「n 件は現在価格で仮評価」を出す（各セクションの内訳は互いに部分集合なので、件数は母集合を 1 度だけ数える）。
 - **`*_performance.note`（`PERFORMANCE_NOTE`）と summary の注記行の文言を更新した。** 「暗号資産入出庫は現在価格で仮評価」→「入出庫日の始値で JPY 換算し、その日の価格を取得できなかった分のみ現在価格で仮評価」。
-- **「入庫時点の相場で取得した」という仮定であることは引き続き注記する**（真の取得原価ではない）。`calcPnl` への入庫原価算入（#57 (b)）は本変更に含まれないため、入庫のある銘柄の `cost_basis` は #56 の数量不変条件で従来どおり抑止される。
+- **「入庫時点の相場で取得した」という仮定であることは引き続き注記する**（真の取得原価ではない）。`calcPnl` への入庫原価算入は後続の変更（#57 (b) / 上記ブロック）で入った。
 
 ### Added（`analyze_my_portfolio` の数量不変条件: 復元数量 vs 実残高の突き合わせ）
 - **`holdings[].cost_basis_reliable`（boolean）を追加した。** `calcPnl` が約定・出庫リプレイで復元した保有数量と assets API の実残高（`onhand_amount`）を恒久的に突き合わせ、許容誤差 `max(10^-amount_precision × 5, 実残高 × 0.1%)`（絶対項 = 端数処理・ダスト、相対項 = 浮動小数点誤差の許容）を超えて乖離した銘柄は `false` になる。乖離時は `cost_basis` / `avg_buy_price` / `unrealized_pnl` / `unrealized_pnl_pct` を確定値として出さず（#54 の null 化経路）、`total_cost_basis` / `total_unrealized_pnl` の集計からも除外して銘柄名のみを `meta.warnings` と summary の警告行で申告する。原価計算の対象外（JPY / `include_pnl=false`）では省略。フィードバックの ETH 型（約 1000 倍乖離）が確定値のまま素通りしていた検知の穴を塞ぐ。
-- **理由コード enum を拡張した**（`holdings[].cost_basis_unavailable_reason`）: `has_crypto_deposits`（該当銘柄に DONE の暗号資産入庫があり原価計算に入っていない。原価算入は #57 のスコープ）/ `history_truncated`（約定履歴の件数上限打ち切り）/ `unknown`（原因を特定できない。例: 履歴に現れない出庫）。入出金取得起因の既存 2 値（`dw_fetch_failed` / `dw_history_incomplete`）と同一フィールドで返し、取得起因の抑止が掛かる場合はそちらが優先される。数量乖離側の 3 値は銘柄単位でのみ立ち、`total_cost_basis_unavailable_reason` / `*_performance.flow_unavailable_reason` / `meta.flowDataUnavailableReason` には現れない。
+- **理由コード enum を拡張した**（`holdings[].cost_basis_unavailable_reason`）: `has_crypto_deposits`（該当銘柄に DONE の暗号資産入庫があり原価計算に入っていない。#57 (b) 以降は「入庫日の始値を解決できなかった入庫がある」に意味が狭まる）/ `history_truncated`（約定履歴の件数上限打ち切り）/ `unknown`（原因を特定できない。例: 履歴に現れない出庫）。入出金取得起因の既存 2 値（`dw_fetch_failed` / `dw_history_incomplete`）と同一フィールドで返し、取得起因の抑止が掛かる場合はそちらが優先される。数量乖離側の 3 値は銘柄単位でのみ立ち、`total_cost_basis_unavailable_reason` / `*_performance.flow_unavailable_reason` / `meta.flowDataUnavailableReason` には現れない。
 
 ### Changed（**挙動変更**: `analyze_my_portfolio` の入出金履歴取得を `include_pnl` に紐づけた）
 - **`include_deposit_withdrawal` は入出金分析セクションの表示制御だけになった。** 従来は同フラグが入出金履歴の取得可否まで握っており、`false` にすると暗号資産の出庫履歴が `calcPnl` に渡らず取得原価が過大化し、期初評価額・資産推移シリーズも入出金を巻き戻せていなかった（`include_pnl` との偽の直交性）。今後は `include_pnl: true` なら同フラグの値に関わらず入出金履歴を取得して損益計算に供給する。`false` で抑止されるのは `deposit_withdrawal_summary` / `yearly_dw_summary` / `monthly_dw_summary` / 口座全体リターンの出力のみ。
