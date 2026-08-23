@@ -11,6 +11,8 @@ import { candlesBtcJpy1day120, generateOhlcv, tickersJpy } from '../fixtures/bit
 import {
 	mockBitbankError,
 	mockBitbankSuccess,
+	mockSpotPairSpec,
+	mockSpotPairsResponse,
 	rawAssetsResponse,
 	rawDepositHistoryResponse,
 	rawMarginPositionsResponse,
@@ -69,6 +71,17 @@ function maybeMarginAccountResponse(urlStr: string): Response | null {
 	return null;
 }
 
+/**
+ * 本テストの assets / tickers フィクスチャに出てくるペアを網羅した /spot/pairs レスポンス。
+ * price_digits は bitbank の実値に寄せる（btc/eth は整数刻み、xrp/doge/xlm は小数刻み）。
+ * 価格フィールドの丸めはこの桁数を単一ソースにするため、低価格ペアを含めておく。
+ */
+const defaultSpotPairsResponse = mockSpotPairsResponse([
+	mockSpotPairSpec({ name: 'xrp_jpy', base_asset: 'xrp', quote_asset: 'jpy', price_digits: 3, amount_digits: 6 }),
+	mockSpotPairSpec({ name: 'doge_jpy', base_asset: 'doge', quote_asset: 'jpy', price_digits: 4, amount_digits: 8 }),
+	mockSpotPairSpec({ name: 'xlm_jpy', base_asset: 'xlm', quote_asset: 'jpy', price_digits: 4, amount_digits: 4 }),
+]);
+
 const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
@@ -102,9 +115,21 @@ function setupFetchMock(opts?: {
 	tickers?: unknown;
 	/** candlestick のレスポンス差し替え。既定は 2024-03-08 起点の 120 本 */
 	candles?: unknown;
+	/** /spot/pairs のレスポンス差し替え（価格の丸め桁 price_digits を振るテスト用） */
+	pairs?: unknown;
+	/** /spot/pairs を失敗させる（丸め桁が解決できない経路の検証用） */
+	pairsFail?: boolean;
 }) {
 	globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
 		const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+
+		// Public API: /spot/pairs（価格フィールドの丸め桁 price_digits の供給元）
+		if (urlStr.includes('/spot/pairs')) {
+			if (opts?.pairsFail) {
+				return new Response(JSON.stringify(mockBitbankError(10000)), { status: 500 });
+			}
+			return new Response(JSON.stringify(opts?.pairs ?? defaultSpotPairsResponse), { status: 200 });
+		}
 
 		// Public API: tickers
 		if (urlStr.includes('tickers_jpy')) {
@@ -3250,7 +3275,9 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		expect(btc.cost_basis_reliable).toBe(true);
 		expect(btc.cost_basis_unavailable_reason).toBeUndefined();
 		expect(btc.cost_basis).toBe(74_925);
-		expect(btc.avg_buy_price).toBe(15_015_015);
+		// btc_jpy は price_digits=0 だが、avg_buy_price は板の刻みに縛られない加重平均なので
+		// +2 桁の余裕を持たせて丸める（整数丸めではない）。
+		expect(btc.avg_buy_price).toBe(15_015_015.02);
 		const eth = result.data.holdings.find((h: { asset: string }) => h.asset === 'eth');
 		expect(eth.cost_basis_reliable).toBe(true);
 		expect(eth.cost_basis).toBe(380_000);
@@ -3415,5 +3442,233 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 
 		const structured = (result as { structuredContent: { meta: { warnings?: string[] } } }).structuredContent;
 		expect(structured.meta.warnings?.some((w) => w.includes('ETH（原因不明）'))).toBe(true);
+	});
+});
+
+/**
+ * 価格フィールドの丸め（issue #58）: `avg_buy_price` / `current_price` はかつて無条件に
+ * `Math.round` で整数化されており、低価格ペアを壊していた（XLM: 実勢 26.686 → 27、
+ * 29.59 → 30 で誤差 1.4%。建値ストップ判断で損益の符号が変わる水準）。
+ * /spot/pairs の `price_digits`（最小値刻み = 10^-price_digits）を単一ソースにして丸める。
+ */
+describe('analyze_my_portfolio — 価格の price_digits 準拠の丸め', () => {
+	/** xrp のみ保有（fixture の onhand は 1000、amount_precision は 6） */
+	const xrpOnlyAssets = {
+		assets: [assetFixture('xrp'), assetFixture('jpy')],
+	};
+
+	/** 復元数量 1000 が onhand と一致する xrp 買い 1 件。price を差し替えて平均取得単価を作る */
+	function xrpBuy(price: string) {
+		return {
+			trades: [
+				{
+					trade_id: 5801,
+					pair: 'xrp_jpy',
+					order_id: 5801,
+					side: 'buy',
+					type: 'limit',
+					amount: '1000',
+					price,
+					maker_taker: 'maker',
+					fee_amount_base: '0',
+					fee_amount_quote: '0',
+					fee_occurred_amount_quote: '0',
+					executed_at: 1710000000000,
+				},
+			],
+		};
+	}
+
+	/** xrp_jpy の現在値だけ差し替えた tickers レスポンス */
+	function tickersWithXrpLast(last: string) {
+		return {
+			success: 1,
+			data: tickersJpy.data.map((t) => (t.pair === 'xrp_jpy' ? { ...t, last, sell: last, buy: last } : t)),
+		};
+	}
+
+	const emptyDw = { deposits: { deposits: [] }, withdrawals: { withdrawals: [] } };
+
+	function callHandler() {
+		return import('../../src/handlers/analyzeMyPortfolioHandler.js').then(({ default: handler }) =>
+			handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: true }),
+		);
+	}
+
+	it('受け入れ: 低価格ペア（price_digits=3）で小数が保持される — 26.686 → 26.686 / 29.59 → 29.59', async () => {
+		setupFetchMock({
+			assets: xrpOnlyAssets,
+			trades: xrpBuy('26.686'),
+			tickers: tickersWithXrpLast('29.59'),
+			...emptyDw,
+		});
+
+		const result = await callHandler();
+
+		assertOk(result);
+		const xrp = result.data.holdings.find((h: { asset: string }) => h.asset === 'xrp');
+		expect(xrp.cost_basis_reliable).toBe(true);
+		// 旧実装ではここが 27 / 30 になっていた（誤差 1.4%）
+		expect(xrp.avg_buy_price).toBe(26.686);
+		expect(xrp.current_price).toBe(29.59);
+	});
+
+	it('回帰: 高価格ペア（price_digits=0）の current_price は従来どおり整数', async () => {
+		setupFetchMock({
+			trades: rawTradeHistoryResponse,
+			tickers: {
+				success: 1,
+				data: tickersJpy.data.map((t) => (t.pair === 'btc_jpy' ? { ...t, last: '15500000.4' } : t)),
+			},
+			...emptyDw,
+		});
+
+		const result = await callHandler();
+
+		assertOk(result);
+		const btc = result.data.holdings.find((h: { asset: string }) => h.asset === 'btc');
+		expect(btc.current_price).toBe(15_500_000);
+	});
+
+	it('avg_buy_price は price_digits + 2 桁で丸める（板の刻みには縛らない）', async () => {
+		// 平均取得単価 = 26686.1234567 / 1000 = 26.6861234567 → price_digits=3 + 2 で 26.68612
+		setupFetchMock({
+			assets: xrpOnlyAssets,
+			trades: xrpBuy('26.6861234567'),
+			tickers: tickersWithXrpLast('29.5912345'),
+			...emptyDw,
+		});
+
+		const result = await callHandler();
+
+		assertOk(result);
+		const xrp = result.data.holdings.find((h: { asset: string }) => h.asset === 'xrp');
+		expect(xrp.avg_buy_price).toBe(26.68612);
+		// current_price は板の刻みちょうど（price_digits=3）
+		expect(xrp.current_price).toBe(29.591);
+	});
+
+	it('/spot/pairs 取得失敗時は丸めずに生値を出す（整数丸めにフォールバックしない）', async () => {
+		setupFetchMock({
+			assets: xrpOnlyAssets,
+			trades: xrpBuy('26.6861234567'),
+			tickers: tickersWithXrpLast('29.5912345'),
+			pairsFail: true,
+			...emptyDw,
+		});
+
+		const result = await callHandler();
+
+		assertOk(result);
+		const xrp = result.data.holdings.find((h: { asset: string }) => h.asset === 'xrp');
+		// 丸め桁が分からないので素通し。整数（27 / 30）に落ちないことが要点
+		expect(xrp.current_price).toBe(29.5912345);
+		expect(xrp.avg_buy_price).toBeCloseTo(26.6861234567, 9);
+		expect(xrp.avg_buy_price).not.toBe(Math.round(xrp.avg_buy_price));
+	});
+
+	it('/spot/pairs に無いペアも丸めずに生値を出す', async () => {
+		setupFetchMock({
+			assets: xrpOnlyAssets,
+			trades: xrpBuy('26.6861234567'),
+			tickers: tickersWithXrpLast('29.5912345'),
+			// btc_jpy / eth_jpy のみ（xrp_jpy を含まない）
+			pairs: mockSpotPairsResponse(),
+			...emptyDw,
+		});
+
+		const result = await callHandler();
+
+		assertOk(result);
+		const xrp = result.data.holdings.find((h: { asset: string }) => h.asset === 'xrp');
+		expect(xrp.current_price).toBe(29.5912345);
+		expect(xrp.avg_buy_price).toBeCloseTo(26.6861234567, 9);
+	});
+
+	it('holdings_performance.current_price も同じ丸めになる', async () => {
+		setupFetchMock({
+			assets: xrpOnlyAssets,
+			trades: xrpBuy('26.686'),
+			tickers: tickersWithXrpLast('29.59'),
+			...emptyDw,
+		});
+
+		const result = await callHandler();
+
+		assertOk(result);
+		const hp = result.data.holdings_performance?.find((h: { asset: string }) => h.asset === 'xrp');
+		expect(hp?.current_price).toBe(29.59);
+	});
+
+	it('回帰: ticker 未取得の銘柄は current_price が undefined のまま（丸めが値を作らない）', async () => {
+		setupFetchMock({
+			assets: xrpOnlyAssets,
+			trades: xrpBuy('26.686'),
+			// xrp_jpy を落とした tickers
+			tickers: { success: 1, data: tickersJpy.data.filter((t) => t.pair !== 'xrp_jpy') },
+			...emptyDw,
+		});
+
+		const result = await callHandler();
+
+		assertOk(result);
+		const xrp = result.data.holdings.find((h: { asset: string }) => h.asset === 'xrp');
+		expect(xrp.current_price).toBeUndefined();
+		expect(xrp.jpy_value).toBeUndefined();
+	});
+
+	it('回帰: 取得原価が抑止される経路では avg_buy_price が undefined のまま（current_price は丸めて出る）', async () => {
+		// 出庫履歴の取得失敗 → flowUnavailableReason=dw_fetch_failed で原価由来 4 フィールドを抑止
+		setupFetchMock({
+			assets: xrpOnlyAssets,
+			trades: xrpBuy('26.686'),
+			tickers: tickersWithXrpLast('29.59'),
+			dwFail: true,
+		});
+
+		const result = await callHandler();
+
+		assertOk(result);
+		const xrp = result.data.holdings.find((h: { asset: string }) => h.asset === 'xrp');
+		expect(xrp.cost_basis_unavailable_reason).toBe('dw_fetch_failed');
+		expect(xrp.avg_buy_price).toBeUndefined();
+		expect(xrp.current_price).toBe(29.59);
+	});
+
+	it('回帰: 数量乖離で抑止される経路でも current_price は丸めて出る', async () => {
+		setupFetchMock({
+			// onhand 1000 に対し約定は 1 のみ（1000 倍乖離）
+			assets: xrpOnlyAssets,
+			trades: {
+				trades: [{ ...xrpBuy('26.686').trades[0], amount: '1' }],
+			},
+			tickers: tickersWithXrpLast('29.59'),
+			...emptyDw,
+		});
+
+		const result = await callHandler();
+
+		assertOk(result);
+		const xrp = result.data.holdings.find((h: { asset: string }) => h.asset === 'xrp');
+		expect(xrp.cost_basis_reliable).toBe(false);
+		expect(xrp.avg_buy_price).toBeUndefined();
+		expect(xrp.current_price).toBe(29.59);
+	});
+
+	it('円建て金額の整数丸めは変えない（jpy_value / cost_basis は整数のまま）', async () => {
+		setupFetchMock({
+			assets: xrpOnlyAssets,
+			trades: xrpBuy('26.6861234567'),
+			tickers: tickersWithXrpLast('29.5912345'),
+			...emptyDw,
+		});
+
+		const result = await callHandler();
+
+		assertOk(result);
+		const xrp = result.data.holdings.find((h: { asset: string }) => h.asset === 'xrp');
+		expect(xrp.jpy_value).toBe(Math.round(xrp.jpy_value));
+		expect(xrp.cost_basis).toBe(Math.round(xrp.cost_basis));
+		expect(result.data.total_jpy_value).toBe(Math.round(result.data.total_jpy_value));
 	});
 });

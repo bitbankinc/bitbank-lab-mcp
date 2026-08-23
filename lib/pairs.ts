@@ -220,6 +220,41 @@ export async function fetchPairsSpec(opts: FetchPairsSpecOptions = {}): Promise<
 	}
 }
 
+// ── 価格の丸め ──
+
+/**
+ * 価格をペアの `price_digits` 桁で丸める。
+ *
+ * 表示層が価格を無条件に整数化すると低価格ペアが壊れる（XLM 26.686 → 27 で誤差 1.4%）ため、
+ * ペアごとの最小値刻み（10^-price_digits）に合わせて丸めるためのヘルパー。
+ *
+ * - `value` が `undefined` / 非有限なら `undefined`（呼び出し側の欠損経路をそのまま通す）
+ * - **`spec` が無いときは丸めずに生値を返す。** `/spot/pairs` の取得失敗や未知ペアで
+ *   整数丸めにフォールバックしてはならない（低価格ペアを壊すバグの再導入になる）
+ * - `extraDigits` は板の刻みに縛られない値（平均取得単価など）に桁の余裕を持たせるための加算
+ *
+ * @example
+ *  roundToPriceDigits(26.686000000000003, xlmSpec)                     // 26.686 (price_digits=3)
+ *  roundToPriceDigits(15015015.015, btcSpec)                           // 15015015 (price_digits=0)
+ *  roundToPriceDigits(26.686000000000003, undefined)                   // 26.686000000000003（素通し）
+ *  roundToPriceDigits(15015015.015, btcSpec, { extraDigits: 2 })       // 15015015.02
+ */
+export function roundToPriceDigits(
+	value: number | undefined,
+	spec: PairSpec | undefined,
+	opts: { extraDigits?: number } = {},
+): number | undefined {
+	if (value == null || !Number.isFinite(value)) return undefined;
+	if (spec == null) return value;
+	const digits = spec.price_digits + (opts.extraDigits ?? 0);
+	if (!Number.isFinite(digits) || digits < 0) return value;
+	const factor = 10 ** digits;
+	if (!Number.isFinite(factor)) return value;
+	const rounded = Math.round(value * factor) / factor;
+	// 巨大値 × factor が Infinity に飛んだ場合は丸めを諦めて生値を返す。
+	return Number.isFinite(rounded) ? rounded : value;
+}
+
 // ── 注文事前バリデーション ──
 
 export interface OrderConstraintsInput {

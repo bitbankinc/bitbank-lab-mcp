@@ -10,6 +10,7 @@
 import { normalizeAssetCodes } from '../../lib/asset-code.js';
 import { dayjs, nowIso } from '../../lib/datetime.js';
 import { formatPair, formatPercent, formatPrice, formatPriceJPY } from '../../lib/formatter.js';
+import { fetchPairsSpec, type PairSpec, roundToPriceDigits } from '../../lib/pairs.js';
 import { ok } from '../../lib/result.js';
 import { prependWarnings } from '../../lib/warning-propagation.js';
 import { getDefaultClient } from '../private/client.js';
@@ -114,6 +115,27 @@ function buildMarginPositionsBlock(info: MarginAccountInfo): string[] {
 	return lines;
 }
 
+/**
+ * 価格フィールド（`avg_buy_price` / `current_price`）の丸め方針。
+ *
+ * かつては両方を無条件に `Math.round` で整数化していたが、これは低価格ペアを壊す
+ * （XLM: 実勢 26.686 → 27、29.59 → 30 で誤差 1.4%。建値ストップ判断で損益の符号が変わる）。
+ * ペアごとの `price_digits`（最小値刻み = 10^-price_digits）を基準に丸める。
+ *
+ * - **`current_price`**: `price_digits` ちょうど。板に載る価格そのものなので刻みと一致させる。
+ * - **`avg_buy_price`**: `price_digits + AVG_BUY_PRICE_EXTRA_DIGITS`。移動平均法の加重平均
+ *   （cost_basis / 復元保有数量）であって板に発注できる価格ではないため、刻みに縛る理由が無い。
+ *   刻みちょうどで丸めると `amount × avg_buy_price` と `cost_basis` の再構成誤差が刻み幅ぶん
+ *   乗ってしまう（#53 の症状 1 が見ていた乖離を、丸めのほうから再導入することになる）。
+ *   一方で素通しにすると 26.686000000000003 のような浮動小数ノイズが LLM に渡るため、
+ *   桁の余裕を持たせたうえで丸める形にしている。
+ * - **`/spot/pairs` を取得できない / 未知ペアのときは丸めない**（生値素通し）。
+ *   整数丸めへのフォールバックは禁止 — それがこのバグそのものだから。
+ * - 円建て金額（`jpy_value` / `cost_basis` / `unrealized_pnl` 等）の整数丸めは対象外。
+ *   これらは JPY の最小単位が 1 円なので整数化が正しい。
+ */
+const AVG_BUY_PRICE_EXTRA_DIGITS = 2;
+
 /** 暗号資産入出庫の JPY 換算方式の表示ラベル（summary 用）。 */
 const FLOW_VALUATION_LABEL: Record<PortfolioFlowValuationBasis, string> = {
 	deposit_date_price: '入出庫日の始値ベース',
@@ -188,10 +210,15 @@ export default async function analyzeMyPortfolioHandler(args: {
 	const client = getDefaultClient();
 
 	try {
-		// 1. 保有資産 + ticker を並列取得
-		const [rawAssets, prices] = await Promise.all([
+		// 1. 保有資産 + ticker + ペア仕様を並列取得
+		// ペア仕様は価格フィールドの丸め桁（price_digits）にだけ使う。1 時間キャッシュ済みの
+		// 単発 GET なので、ここに載せればレイテンシは実質増えない。
+		// 取得失敗は握り潰して null にする（丸め桁が分からないだけで分析自体は成立する。
+		// null のときは丸めずに生値を出す — AVG_BUY_PRICE_EXTRA_DIGITS の doc 参照）。
+		const [rawAssets, prices, pairsSpec] = await Promise.all([
 			client.get<{ assets: RawAsset[] }>('/v1/user/assets'),
 			fetchTickerPrices(),
+			fetchPairsSpec().catch(() => null),
 		]);
 
 		// 取得境界での asset 正規化。以降は holdings の Map キー・`${asset}_jpy` の組み立て・
@@ -381,6 +408,12 @@ export default async function analyzeMyPortfolioHandler(args: {
 			}
 
 			const pair = `${a.asset}_jpy`;
+			// 価格フィールドの丸め桁。/spot/pairs を取得できなかった / 未知ペアなら undefined で、
+			// roundToPriceDigits はその場合に生値を素通しする（AVG_BUY_PRICE_EXTRA_DIGITS の doc 参照）。
+			const pairSpec: PairSpec | undefined = pairsSpec?.get(pair);
+			// 現在価格は板の刻み（price_digits）ちょうどで丸める。以降の 3 経路（原価抑止 /
+			// 数量乖離 / 通常）で同じ値を使う。
+			const roundedCurrentPrice = roundToPriceDigits(currentPrice, pairSpec);
 			const pnl = include_pnl ? calcPnl(allTrades, a.asset, dwData?.withdrawals, depositCost) : undefined;
 
 			if (pnl?.cost_basis != null) {
@@ -399,7 +432,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 					pair,
 					amount,
 					avg_buy_price: undefined,
-					current_price: currentPrice != null ? Math.round(currentPrice) : undefined,
+					current_price: roundedCurrentPrice,
 					jpy_value: jpyValue != null ? Math.round(jpyValue) : undefined,
 					cost_basis: undefined,
 					unrealized_pnl: undefined,
@@ -421,7 +454,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 					pair,
 					amount,
 					avg_buy_price: undefined,
-					current_price: currentPrice != null ? Math.round(currentPrice) : undefined,
+					current_price: roundedCurrentPrice,
 					jpy_value: jpyValue != null ? Math.round(jpyValue) : undefined,
 					cost_basis: undefined,
 					unrealized_pnl: undefined,
@@ -444,8 +477,11 @@ export default async function analyzeMyPortfolioHandler(args: {
 				asset: a.asset,
 				pair,
 				amount,
-				avg_buy_price: pnl?.avg_buy_price != null ? Math.round(pnl.avg_buy_price) : undefined,
-				current_price: currentPrice != null ? Math.round(currentPrice) : undefined,
+				// 平均取得単価は板の刻みに縛られないので桁の余裕を足して丸める
+				avg_buy_price: roundToPriceDigits(pnl?.avg_buy_price, pairSpec, {
+					extraDigits: AVG_BUY_PRICE_EXTRA_DIGITS,
+				}),
+				current_price: roundedCurrentPrice,
 				jpy_value: jpyValue != null ? Math.round(jpyValue) : undefined,
 				cost_basis: pnl?.cost_basis != null ? Math.round(pnl.cost_basis) : undefined,
 				unrealized_pnl: unrealizedPnl,

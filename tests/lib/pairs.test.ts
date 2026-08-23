@@ -9,6 +9,7 @@ import {
 	fetchPairsSpec,
 	fractionalDigitCount,
 	type PairSpec,
+	roundToPriceDigits,
 	SPOT_PAIRS_URL,
 	validateOrderConstraints,
 } from '../../lib/pairs.js';
@@ -591,5 +592,60 @@ describe('BITBANK_SPOT_PAIRS_TTL_MS の入力値検証', () => {
 		const spy = vi.fn(async () => new Response(JSON.stringify(mockSpotPairsResponse()), { status: 200 }));
 		// fetch 1 回でキャッシュが効き、2 回目は呼ばれない
 		expect(await fetchTwice(spy)).toBe(1);
+	});
+});
+
+describe('roundToPriceDigits', () => {
+	/** bitbank 実値に寄せたペア仕様（BTC は整数刻み、XLM / XRP は小数刻み） */
+	const btc = makePairSpec({ name: 'btc_jpy', price_digits: 0 });
+	const xrp = makePairSpec({ name: 'xrp_jpy', base_asset: 'xrp', price_digits: 3 });
+	const xlm = makePairSpec({ name: 'xlm_jpy', base_asset: 'xlm', price_digits: 4 });
+
+	it('低価格ペア（XLM, price_digits=4）は小数を保持する', () => {
+		expect(roundToPriceDigits(26.686, xlm)).toBe(26.686);
+		expect(roundToPriceDigits(29.59, xlm)).toBe(29.59);
+	});
+
+	it('低価格ペア（XRP, price_digits=3）は 3 桁で丸める', () => {
+		expect(roundToPriceDigits(90.12345, xrp)).toBe(90.123);
+	});
+
+	it('高価格ペア（BTC, price_digits=0）は整数に丸める', () => {
+		expect(roundToPriceDigits(15_500_000.4, btc)).toBe(15_500_000);
+		expect(roundToPriceDigits(15_015_015.5, btc)).toBe(15_015_016);
+	});
+
+	it('浮動小数ノイズを落とす', () => {
+		expect(roundToPriceDigits(26.686000000000003, xlm)).toBe(26.686);
+	});
+
+	it('extraDigits で桁の余裕を持たせられる', () => {
+		expect(roundToPriceDigits(15_015_015.0153, btc, { extraDigits: 2 })).toBe(15_015_015.02);
+		expect(roundToPriceDigits(26.6861234567, xrp, { extraDigits: 2 })).toBe(26.68612);
+	});
+
+	it('spec が undefined なら丸めず生値を返す（整数丸めにフォールバックしない）', () => {
+		expect(roundToPriceDigits(26.686, undefined)).toBe(26.686);
+		expect(roundToPriceDigits(29.59, undefined)).toBe(29.59);
+	});
+
+	it('value が undefined / 非有限なら undefined', () => {
+		expect(roundToPriceDigits(undefined, btc)).toBeUndefined();
+		expect(roundToPriceDigits(Number.NaN, btc)).toBeUndefined();
+		expect(roundToPriceDigits(Number.POSITIVE_INFINITY, btc)).toBeUndefined();
+	});
+
+	it('0 と負値も丸め対象（0 を欠損として扱わない）', () => {
+		expect(roundToPriceDigits(0, xlm)).toBe(0);
+		expect(roundToPriceDigits(-26.6864, xlm)).toBe(-26.6864);
+	});
+
+	it('price_digits が不正（負値）なら丸めず生値を返す', () => {
+		expect(roundToPriceDigits(26.686, makePairSpec({ price_digits: -1 }))).toBe(26.686);
+	});
+
+	it('丸めが非有限に飛ぶ大きさの値は生値を返す', () => {
+		const huge = 1e308;
+		expect(roundToPriceDigits(huge, makePairSpec({ price_digits: 8 }))).toBe(huge);
 	});
 });
