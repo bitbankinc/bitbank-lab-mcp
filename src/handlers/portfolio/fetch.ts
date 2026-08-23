@@ -184,7 +184,7 @@ export async function paginateTrades(
  *
  * 公式 docs (bitbankinc/bitbank-api-docs) の trade_history パラメータには `type=margin`
  * が記載されておらず、API が未知パラメータを無視する可能性がある。その場合は現物約定が
- * 混入し、calcMarginPnl が現物の fee_occurred_amount_quote まで margin_fee として控除して
+ * 混入し、calcMarginPnl が現物の fee_occurred_amount_quote まで margin_fee_cost として控除して
  * account_pnl を過小表示してしまう。docs では position_side が「信用取引の時のみ」と
  * 明記されているため、position_side != null で margin 約定のみに絞る防御フィルタを掛ける。
  *

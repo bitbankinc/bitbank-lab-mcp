@@ -304,7 +304,12 @@ describe('analyze_my_portfolio', () => {
 		expect(result.data.account_pnl.margin_realized_pnl).toBe(0);
 		expect(result.data.account_pnl.margin_interest).toBe(0);
 		expect(result.data.account_pnl.margin_fee).toBe(0);
+		// #72: 新設の *_cost も同じ 0。信用未使用の口座では出力が従来と一致する（回帰）
+		expect(result.data.account_pnl.margin_interest_cost).toBe(0);
+		expect(result.data.account_pnl.margin_fee_cost).toBe(0);
 		expect(result.data.account_pnl.total).toBe(result.data.account_pnl.spot_realized_pnl);
+		// コスト項がすべて 0 なので Margin 内訳行そのものが出ない（従来どおり）
+		expect(result.summary).not.toContain('Interest cost:');
 	});
 
 	it('信用約定あり: account_pnl.total が spot + margin - interest - fee と一致', async () => {
@@ -326,6 +331,52 @@ describe('analyze_my_portfolio', () => {
 		expect(pnl.margin_interest).toBe(30);
 		expect(pnl.margin_fee).toBe(155);
 		expect(pnl.total).toBe(pnl.spot_realized_pnl + 5000 - 30 - 155);
+	});
+
+	/**
+	 * #72: コスト項は `_cost` サフィックス付きが正で、旧名は **alias**（同じ正値）。
+	 *
+	 * JSON を直読みする消費者はフィールド名だけで「コスト = 正値・total では減算」と
+	 * 判別できる必要がある（旧名は名前から符号規約が読めず、足し算されていた）。
+	 * 新旧の一致・total の検算・wire キー順・summary ラベルを 1 シナリオで固定する。
+	 */
+	it('account_pnl: margin_*_cost が旧フィールドと同値で、total を減算で検算できる', async () => {
+		setupFetchMock({ marginTrades: rawMarginTradeHistoryResponse });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		const pnl = result.data.account_pnl;
+		// 新フィールドはコスト = 正値（負値で持たない）
+		expect(pnl.margin_interest_cost).toBe(30);
+		expect(pnl.margin_fee_cost).toBe(155);
+		// 旧フィールドは alias として同じ値を出し続ける
+		expect(pnl.margin_interest).toBe(pnl.margin_interest_cost);
+		expect(pnl.margin_fee).toBe(pnl.margin_fee_cost);
+		// total は新フィールドを **減算** して再現できる
+		expect(pnl.total).toBe(
+			pnl.spot_realized_pnl + pnl.margin_realized_pnl - pnl.margin_interest_cost - pnl.margin_fee_cost,
+		);
+
+		// 新設キーは既存キーの後ろに出す（既存消費者の JSON を中間から崩さない）
+		expect(Object.keys(pnl)).toEqual([
+			'spot_realized_pnl',
+			'margin_realized_pnl',
+			'margin_interest',
+			'margin_fee',
+			'total',
+			'margin_interest_cost',
+			'margin_fee_cost',
+		]);
+
+		// summary のラベルも新名称に揃える。表示は total への寄与なので `-` 前置のまま
+		expect(result.summary).toContain('Interest cost: -30円');
+		expect(result.summary).toContain('Fee cost: -155円');
 	});
 
 	it('信用約定レスポンスに現物 (position_side 欠損) が混入しても margin_fee は信用のみから集計', async () => {
@@ -694,6 +745,30 @@ describe('analyze_my_portfolio', () => {
 			expect(result.data.monthly_account_pnl.margin_realized_pnl).toBe(500);
 			expect(result.data.monthly_account_pnl.margin_interest).toBe(5);
 			expect(result.data.monthly_account_pnl.margin_fee).toBe(25);
+
+			// #72: 期間版にも同じリネームが効く（新旧同値 + total を減算で検算）
+			for (const periodPnl of [result.data.yearly_account_pnl, result.data.monthly_account_pnl]) {
+				expect(periodPnl.margin_interest_cost).toBe(periodPnl.margin_interest);
+				expect(periodPnl.margin_fee_cost).toBe(periodPnl.margin_fee);
+				expect(periodPnl.total).toBe(
+					periodPnl.spot_realized_pnl +
+						periodPnl.margin_realized_pnl -
+						periodPnl.margin_interest_cost -
+						periodPnl.margin_fee_cost,
+				);
+				// 期間版でも新設キーは既存キー（period_end まで）の後ろに出る
+				expect(Object.keys(periodPnl)).toEqual([
+					'spot_realized_pnl',
+					'margin_realized_pnl',
+					'margin_interest',
+					'margin_fee',
+					'total',
+					'period_start',
+					'period_end',
+					'margin_interest_cost',
+					'margin_fee_cost',
+				]);
+			}
 		} finally {
 			vi.useRealTimers();
 		}

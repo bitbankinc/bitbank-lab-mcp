@@ -19,6 +19,7 @@ import { dayjs } from '../../../lib/datetime.js';
 import {
 	buildAccountPnl,
 	buildEquitySeries,
+	buildPeriodAccountPnl,
 	buildPeriodPerformance,
 	calcDepositWithdrawalSummary,
 	calcMarginPnl,
@@ -966,7 +967,7 @@ describe('calcMarginPnl', () => {
 			makeMarginTrade({ trade_id: 3, profit_loss: '1000' }), // interest なし
 		];
 		const result = calcMarginPnl(trades);
-		expect(result.margin_interest).toBe(300);
+		expect(result.margin_interest_cost).toBe(300);
 	});
 
 	it('損失（負の profit_loss）を正しく集計する', () => {
@@ -982,8 +983,8 @@ describe('calcMarginPnl', () => {
 	it('空配列で 0 / 0 / 0 / 0 を返す', () => {
 		const result = calcMarginPnl([]);
 		expect(result.margin_realized_pnl).toBe(0);
-		expect(result.margin_interest).toBe(0);
-		expect(result.margin_fee).toBe(0);
+		expect(result.margin_interest_cost).toBe(0);
+		expect(result.margin_fee_cost).toBe(0);
 		expect(result.close_trade_count).toBe(0);
 	});
 
@@ -1004,8 +1005,8 @@ describe('calcMarginPnl', () => {
 		];
 		const result = calcMarginPnl(trades);
 		expect(result.margin_realized_pnl).toBe(1000);
-		expect(result.margin_interest).toBe(50);
-		expect(result.margin_fee).toBe(20);
+		expect(result.margin_interest_cost).toBe(50);
+		expect(result.margin_fee_cost).toBe(20);
 		expect(result.close_trade_count).toBe(1);
 	});
 
@@ -1016,8 +1017,8 @@ describe('calcMarginPnl', () => {
 		];
 		const result = calcMarginPnl(trades);
 		expect(result.margin_realized_pnl).toBe(8000);
-		expect(result.margin_interest).toBe(0);
-		expect(result.margin_fee).toBe(0);
+		expect(result.margin_interest_cost).toBe(0);
+		expect(result.margin_fee_cost).toBe(0);
 		expect(result.close_trade_count).toBe(2);
 	});
 
@@ -1029,8 +1030,8 @@ describe('calcMarginPnl', () => {
 		];
 		const result = calcMarginPnl(trades);
 		expect(result.margin_realized_pnl).toBe(0);
-		expect(result.margin_interest).toBe(100);
-		expect(result.margin_fee).toBe(0);
+		expect(result.margin_interest_cost).toBe(100);
+		expect(result.margin_fee_cost).toBe(0);
 		expect(result.close_trade_count).toBe(0);
 	});
 
@@ -1042,8 +1043,8 @@ describe('calcMarginPnl', () => {
 		];
 		const result = calcMarginPnl(trades);
 		expect(result.margin_realized_pnl).toBe(0);
-		expect(result.margin_interest).toBe(0);
-		expect(result.margin_fee).toBe(225);
+		expect(result.margin_interest_cost).toBe(0);
+		expect(result.margin_fee_cost).toBe(225);
 		expect(result.close_trade_count).toBe(0);
 	});
 
@@ -1067,8 +1068,8 @@ describe('calcMarginPnl', () => {
 		];
 		const result = calcMarginPnl(trades);
 		expect(result.margin_realized_pnl).toBe(8000);
-		expect(result.margin_interest).toBe(50);
-		expect(result.margin_fee).toBe(255);
+		expect(result.margin_interest_cost).toBe(50);
+		expect(result.margin_fee_cost).toBe(255);
 		expect(result.close_trade_count).toBe(2);
 	});
 });
@@ -1101,8 +1102,8 @@ describe('calcPeriodMarginPnl', () => {
 		];
 		const result = calcPeriodMarginPnl(trades, 1000, '2024-01-01T00:00:00+09:00', '2024-12-31T23:59:59+09:00');
 		expect(result.margin_realized_pnl).toBe(8000);
-		expect(result.margin_interest).toBe(150);
-		expect(result.margin_fee).toBe(250);
+		expect(result.margin_interest_cost).toBe(150);
+		expect(result.margin_fee_cost).toBe(250);
 		expect(result.close_trade_count).toBe(2);
 		expect(result.period_start).toBe('2024-01-01T00:00:00+09:00');
 		expect(result.period_end).toBe('2024-12-31T23:59:59+09:00');
@@ -1113,23 +1114,82 @@ describe('buildAccountPnl', () => {
 	it('total = spot + margin - interest - fee を返す', () => {
 		const result = buildAccountPnl(1000, {
 			margin_realized_pnl: 500,
-			margin_interest: 100,
-			margin_fee: 50,
+			margin_interest_cost: 100,
+			margin_fee_cost: 50,
 		});
 		expect(result.spot_realized_pnl).toBe(1000);
 		expect(result.margin_realized_pnl).toBe(500);
-		expect(result.margin_interest).toBe(100);
-		expect(result.margin_fee).toBe(50);
+		expect(result.margin_interest_cost).toBe(100);
+		expect(result.margin_fee_cost).toBe(50);
 		expect(result.total).toBe(1350); // 1000 + 500 - 100 - 50
 	});
 
 	it('信用約定なし（margin=0, interest=0, fee=0）のとき total === spot_realized_pnl', () => {
-		const result = buildAccountPnl(1234, { margin_realized_pnl: 0, margin_interest: 0, margin_fee: 0 });
+		const result = buildAccountPnl(1234, { margin_realized_pnl: 0, margin_interest_cost: 0, margin_fee_cost: 0 });
 		expect(result.spot_realized_pnl).toBe(1234);
 		expect(result.margin_realized_pnl).toBe(0);
-		expect(result.margin_interest).toBe(0);
-		expect(result.margin_fee).toBe(0);
+		expect(result.margin_interest_cost).toBe(0);
+		expect(result.margin_fee_cost).toBe(0);
 		expect(result.total).toBe(1234);
+	});
+
+	/**
+	 * #72: `_cost` サフィックス無しの旧フィールドは **alias として残す**。
+	 * 同じ正値を出し続けるので、旧フィールドを読んでいる消費者は壊れない。
+	 * 削除目標は `DEPRECATED_FIELD_REMOVAL_TARGET`（`src/schema/base.ts`）。
+	 */
+	it('旧フィールド margin_interest / margin_fee は新フィールドと同じ正値を返す（alias）', () => {
+		const result = buildAccountPnl(1000, {
+			margin_realized_pnl: 500,
+			margin_interest_cost: 100,
+			margin_fee_cost: 50,
+		});
+		expect(result.margin_interest).toBe(result.margin_interest_cost);
+		expect(result.margin_fee).toBe(result.margin_fee_cost);
+		// alias も「コスト = 正値」のまま（負値に反転させない）
+		expect(result.margin_interest).toBe(100);
+		expect(result.margin_fee).toBe(50);
+	});
+
+	/**
+	 * JSON を直読みする消費者が `_cost` を**引き算**して total を再現できること。
+	 * 足し込むと符号が反転する（#72 の症状そのもの）ので、その向きも固定する。
+	 */
+	it('total は新フィールドで検算できる（コスト項は減算）', () => {
+		const result = buildAccountPnl(-2000, {
+			margin_realized_pnl: 8000,
+			margin_interest_cost: 1,
+			margin_fee_cost: 149,
+		});
+		expect(result.total).toBe(
+			result.spot_realized_pnl + result.margin_realized_pnl - result.margin_interest_cost - result.margin_fee_cost,
+		);
+		expect(result.total).toBe(5850);
+		// 足し込むと 150 円ぶんずれる = 符号規約を取り違えたときの誤差
+		expect(
+			result.spot_realized_pnl + result.margin_realized_pnl + result.margin_interest_cost + result.margin_fee_cost,
+		).toBe(6150);
+	});
+});
+
+describe('buildPeriodAccountPnl', () => {
+	it('期間版でも新旧フィールドが同じ値で並び、total を新フィールドで検算できる', () => {
+		const result = buildPeriodAccountPnl(
+			300,
+			{ margin_realized_pnl: 200, margin_interest_cost: 15, margin_fee_cost: 75 },
+			'2026-01-01T00:00:00+09:00',
+			'2026-08-23T00:00:00+09:00',
+		);
+		expect(result.margin_interest_cost).toBe(15);
+		expect(result.margin_fee_cost).toBe(75);
+		expect(result.margin_interest).toBe(15);
+		expect(result.margin_fee).toBe(75);
+		expect(result.total).toBe(
+			result.spot_realized_pnl + result.margin_realized_pnl - result.margin_interest_cost - result.margin_fee_cost,
+		);
+		expect(result.total).toBe(410);
+		expect(result.period_start).toBe('2026-01-01T00:00:00+09:00');
+		expect(result.period_end).toBe('2026-08-23T00:00:00+09:00');
 	});
 });
 

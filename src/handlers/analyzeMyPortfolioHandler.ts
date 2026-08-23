@@ -1167,11 +1167,15 @@ export default async function analyzeMyPortfolioHandler(args: {
 			}
 			const totalSign = accountPnl.total >= 0 ? '+' : '';
 			const hasMargin =
-				accountPnl.margin_realized_pnl !== 0 || accountPnl.margin_interest !== 0 || accountPnl.margin_fee !== 0;
+				accountPnl.margin_realized_pnl !== 0 ||
+				accountPnl.margin_interest_cost !== 0 ||
+				accountPnl.margin_fee_cost !== 0;
 			if (hasMargin) {
 				const mSign = accountPnl.margin_realized_pnl >= 0 ? '+' : '';
+				// Interest / Fee は data 側では**コスト = 正値**（margin_interest_cost /
+				// margin_fee_cost）。表示は total への寄与を表すので `-` を前置する（#72）。
 				lines.push(
-					`Account PnL (全履歴): ${totalSign}${formatPriceJPY(accountPnl.total)} (Spot: ${spotSign}${formatPriceJPY(accountPnl.spot_realized_pnl)} / Margin: ${mSign}${formatPriceJPY(accountPnl.margin_realized_pnl)} / Interest: -${formatPriceJPY(accountPnl.margin_interest)} / Fee: -${formatPriceJPY(accountPnl.margin_fee)})`,
+					`Account PnL (全履歴): ${totalSign}${formatPriceJPY(accountPnl.total)} (Spot: ${spotSign}${formatPriceJPY(accountPnl.spot_realized_pnl)} / Margin: ${mSign}${formatPriceJPY(accountPnl.margin_realized_pnl)} / Interest cost: -${formatPriceJPY(accountPnl.margin_interest_cost)} / Fee cost: -${formatPriceJPY(accountPnl.margin_fee_cost)})`,
 				);
 			} else {
 				lines.push(`Account PnL (全履歴): ${totalSign}${formatPriceJPY(accountPnl.total)}`);

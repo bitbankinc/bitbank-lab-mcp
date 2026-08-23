@@ -425,6 +425,19 @@ export function calcPeriodRealizedPnl(
 // ── 信用 PnL 集計 ──
 
 /**
+ * 信用の集計値（決済損益とコスト項）。
+ *
+ * コスト項は `_cost` サフィックス付きで、**コスト = 正値**・`total` では減算という符号規約を
+ * 名前に出している（#72）。`AccountPnl` が出す deprecated な別名 `margin_interest` /
+ * `margin_fee` は wire 上の互換のためだけに存在し、内部の受け渡しには使わない。
+ */
+export interface MarginPnlTotals {
+	margin_realized_pnl: number;
+	margin_interest_cost: number;
+	margin_fee_cost: number;
+}
+
+/**
  * 信用約定履歴から実現損益・利息・手数料を集計する。
  *
  * bitbank API 仕様の整理（bitbank-api-docs / rest-api_JP.md + 信用取引ルール）:
@@ -440,18 +453,14 @@ export function calcPeriodRealizedPnl(
  *        後者は新規建て・決済の各約定で発生額を per-trade で正確に表すため、
  *        期間集計（年初来 / 月初来）でも timing 上のズレを最小化できる。
  *
- * total = spot + margin_realized - margin_interest - margin_fee
+ * total = spot + margin_realized - margin_interest_cost - margin_fee_cost
+ *   （`*_cost` はいずれもコスト = 正値で返し、total では減算する。#72 でサフィックスを付けた）
  *
  * - 建玉約定（profit_loss なし）でも fee_occurred_amount_quote / interest が
  *   付くケースは合算する（profit_loss の有無を close_trade_count の判定にのみ使う）。
  * - 期間絞り込みは呼び出し側で事前に行うか、calcPeriodMarginPnl を使う。
  */
-export function calcMarginPnl(trades: RawMarginTrade[]): {
-	margin_realized_pnl: number;
-	margin_interest: number;
-	margin_fee: number;
-	close_trade_count: number;
-} {
+export function calcMarginPnl(trades: RawMarginTrade[]): MarginPnlTotals & { close_trade_count: number } {
 	let realized = 0;
 	let interest = 0;
 	let fee = 0;
@@ -479,8 +488,8 @@ export function calcMarginPnl(trades: RawMarginTrade[]): {
 	}
 	return {
 		margin_realized_pnl: Math.round(realized),
-		margin_interest: Math.round(interest),
-		margin_fee: Math.round(fee),
+		margin_interest_cost: Math.round(interest),
+		margin_fee_cost: Math.round(fee),
 		close_trade_count: count,
 	};
 }
@@ -493,14 +502,7 @@ export function calcPeriodMarginPnl(
 	sinceMs: number,
 	periodStart: string,
 	periodEnd: string,
-): {
-	margin_realized_pnl: number;
-	margin_interest: number;
-	margin_fee: number;
-	close_trade_count: number;
-	period_start: string;
-	period_end: string;
-} {
+): MarginPnlTotals & { close_trade_count: number; period_start: string; period_end: string } {
 	const inPeriod = trades.filter((t) => t.executed_at >= sinceMs);
 	const result = calcMarginPnl(inPeriod);
 	return { ...result, period_start: periodStart, period_end: periodEnd };
@@ -508,19 +510,22 @@ export function calcPeriodMarginPnl(
 
 /**
  * 現物の実現損益と信用 PnL から口座全体 PnL を構築する。
- * total = spot_realized + margin_realized - margin_interest - margin_fee
- * （interest / fee はいずれもコスト = 正値で保持し、total では控除する）
+ * total = spot_realized_pnl + margin_realized_pnl - margin_interest_cost - margin_fee_cost
+ * （`*_cost` はいずれもコスト = 正値で保持し、total では控除する）
+ *
+ * deprecated な別名 `margin_interest` / `margin_fee` にも**同じ正値**を載せる。
+ * `DEPRECATED_FIELD_REMOVAL_TARGET`（`src/schema/base.ts`）で削除する際は、
+ * ここの 2 行とスキーマ・型定義・summary の参照をまとめて落とすこと。
  */
-export function buildAccountPnl(
-	spotRealizedPnl: number,
-	marginPnl: { margin_realized_pnl: number; margin_interest: number; margin_fee: number },
-): AccountPnl {
+export function buildAccountPnl(spotRealizedPnl: number, marginPnl: MarginPnlTotals): AccountPnl {
 	return {
 		spot_realized_pnl: spotRealizedPnl,
 		margin_realized_pnl: marginPnl.margin_realized_pnl,
-		margin_interest: marginPnl.margin_interest,
-		margin_fee: marginPnl.margin_fee,
-		total: spotRealizedPnl + marginPnl.margin_realized_pnl - marginPnl.margin_interest - marginPnl.margin_fee,
+		margin_interest: marginPnl.margin_interest_cost,
+		margin_fee: marginPnl.margin_fee_cost,
+		total: spotRealizedPnl + marginPnl.margin_realized_pnl - marginPnl.margin_interest_cost - marginPnl.margin_fee_cost,
+		margin_interest_cost: marginPnl.margin_interest_cost,
+		margin_fee_cost: marginPnl.margin_fee_cost,
 	};
 }
 
@@ -529,7 +534,7 @@ export function buildAccountPnl(
  */
 export function buildPeriodAccountPnl(
 	spotRealizedPnl: number,
-	marginPnl: { margin_realized_pnl: number; margin_interest: number; margin_fee: number },
+	marginPnl: MarginPnlTotals,
 	periodStart: string,
 	periodEnd: string,
 ): PeriodAccountPnl {

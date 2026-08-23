@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+### Added（`analyze_my_portfolio` の信用コスト項を `_cost` サフィックスへリネーム）
+- **`account_pnl.margin_interest_cost` / `margin_fee_cost` を追加した**（`yearly_account_pnl` / `monthly_account_pnl` も同様）。従来の `margin_interest` / `margin_fee` は JSON では**正値**なのに summary では `-149円` と負で表示され `total` でも減算されるため、`structuredContent` を直読みする消費者が符号規約を知らずに**足し算**してしまうリスクがあった（計算そのものは従来から正しい）。`_cost` サフィックスで「コスト = 正値・`total` では減算」という規約を名前に出す。
+- **値・符号・`total` の計算は一切変えていない**（命名と description の改善のみ）。`total = spot_realized_pnl + margin_realized_pnl − margin_interest_cost − margin_fee_cost` を `total` の description に明記し、新フィールドの description には符号規約を書いた。
+- **旧フィールドは alias として残す。** `margin_interest` / `margin_fee` は**同じ正値**を出し続けるので、旧フィールドを読んでいるクライアントは壊れない。description に写像先と削除目標バージョン（`0.4.0`、定数は `src/schema/base.ts` の `DEPRECATED_FIELD_REMOVAL_TARGET`）を明記した。猶予期間の考え方は `view` の deprecated alias と同じ（最低 1 リリース かつ 3 ヶ月）。
+- **「負値で持つ」案は採らなかった。** 素直に足し算できる利点はあるが、**同じフィールド名で符号の意味が変わる**変更は `.claude/rules/tools.md` §7 のとおり alias では救えず、旧フィールドを読み続けるクライアントに黙って符号反転が届く。やるなら一度削除して validation error を経由させる必要があり、コストが見合わない。
+- **新設キーは既存キーの後ろに出す。** `PeriodAccountPnlSchema` は `AccountPnlSchema.extend()` だと `period_start` の**手前**に新キーが入るため、shape を明示的に組み直して `period_end` の後ろに置いた（既存消費者の JSON を中間から崩さない）。キー順・description・新旧の一致は `tests/private/account-pnl-schema.test.ts` と `tests/private/analyze_my_portfolio.test.ts` で機械的に固定している。
+- **summary のラベルも `Interest cost:` / `Fee cost:` に揃えた。** 表示は `total` への寄与を表すので `-` 前置は従来どおり。信用未使用（すべてゼロ）の口座では Margin 内訳行そのものが出ないため、出力は従来と一致する。
+- **内部の受け渡しも `_cost` に揃えた**（`calcMarginPnl` / `calcPeriodMarginPnl` の戻り値、`buildAccountPnl` / `buildPeriodAccountPnl` の引数 = 新設の `MarginPnlTotals`）。deprecated な別名は wire 上の互換のためだけに存在する。
+
 ### Added（`analyze_my_portfolio` の資産推移に入出金フローマーカー）
 - **`monthly_equity_series[].flow_jpy` / `yearly_equity_series[].flow_jpy`（number, optional）を追加した。** 資産推移シリーズは入出金があった期間でも単一の連続線として出るため、大口入金のある口座では「ずっと同額を保有していた」ように誤読される（グラフ化されると注記行は消える前提なので、フロー発生点を**データとして**返す）。正 = 純入金、負 = 純出金。
 - **フローを載せる向きは「この点から次の点まで」。** `reconstructHoldingsAtDate` は「点の時刻以降」の入出金を巻き戻すため、点 P の `value_jpy` には P 以降の入出金が入っていない。この向きにすると不変条件 `value_jpy[i+1] - value_jpy[i] - flow_jpy[i] = 区間 i の市場変動` が成立し、かつ `timestamp` が入出金の発生日（月次点なら発生月）そのものを指す。最終点（現在のリアルタイム評価額）は次の点が無いため常に付かない。
