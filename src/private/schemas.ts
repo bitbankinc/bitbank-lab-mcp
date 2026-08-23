@@ -372,7 +372,7 @@ const DepositWithdrawalSummarySchema = z
 		net_jpy_invested: z
 			.number()
 			.describe(
-				'純投入額（JPY入金 - JPY出金 + 暗号資産入庫の JPY 換算額）。暗号資産入庫がある場合は JPY 純入金だけでなく換算分も含む',
+				'純投入額（JPY入金 - JPY出金 + 暗号資産入庫の JPY 換算額 - 暗号資産出庫の JPY 換算額）。暗号資産の入出庫がある場合は JPY 純入金だけでなく換算分も含む。出庫は JPY 出金と同じ「元本の回収」として減算する（外部ウォレットへ移して保有を続けていても口座外の値動きは測定できないため）',
 			),
 		crypto_deposit_count: z.number().describe('暗号資産入庫件数'),
 		crypto_deposit_estimated_jpy: z
@@ -394,6 +394,15 @@ const DepositWithdrawalSummarySchema = z
 		// オブジェクトを組み直すため（ハンドラ側の代入順ではなく）、ここが wire 上のキー順の単一ソース。
 		crypto_deposit_valuation: FlowValuationSchema.optional().describe(
 			'crypto_deposit_estimated_jpy の換算方式の内訳。暗号資産入庫が無い / 全件で価格を解決できなかった場合は undefined',
+		),
+		crypto_withdrawal_estimated_jpy: z
+			.number()
+			.optional()
+			.describe(
+				'暗号資産出庫の推定 JPY 評価額（元本のみ。出金手数料は含まない）。出庫日（requested_at）の 1day open で換算する（＝相場が動いても値は動かない）。日次価格を解決できなかった分のみ現在価格で仮評価し、その内訳は crypto_withdrawal_valuation に出る。この額は「元本の回収」として net_jpy_invested から差し引かれる',
+			),
+		crypto_withdrawal_valuation: FlowValuationSchema.optional().describe(
+			'crypto_withdrawal_estimated_jpy の換算方式の内訳。暗号資産出庫が無い / 全件で価格を解決できなかった場合は undefined',
 		),
 	})
 	.optional()

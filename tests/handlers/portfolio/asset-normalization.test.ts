@@ -126,12 +126,16 @@ describe('取得境界での asset 正規化 — 入出金（fetch → calc）',
 
 		expect(summary.total_jpy_deposited).toBe(1_000_000);
 		expect(summary.total_jpy_withdrawn).toBe(200_000);
-		// JPY純入金 800,000 + DOGE入庫の仮評価 20,000
-		expect(summary.net_jpy_invested).toBe(820_000);
+		// JPY純入金 800,000 + DOGE入庫の仮評価 20,000 - BTC出庫の仮評価 5,000,000
+		expect(summary.net_jpy_invested).toBe(800_000 + 20_000 - 5_000_000);
 		expect(summary.crypto_deposit_count).toBe(1);
 		expect(summary.crypto_deposit_estimated_jpy).toBe(20_000);
 		expect(summary.crypto_withdrawal_count).toBe(1);
-		expect(summary.account_return_jpy).toBe(10_000_000 - 820_000);
+		// 大文字 'BTC' が正規化されて価格と突き合わさっている（未正規化なら undefined になる）
+		expect(summary.crypto_withdrawal_estimated_jpy).toBe(5_000_000);
+		// 出庫が入金を上回り純投入額が負。既存分岐どおり口座全体リターンは出さない
+		expect(summary.account_return_jpy).toBeUndefined();
+		expect(summary.account_return_pct).toBeUndefined();
 	});
 
 	it('大文字 DOGE の入出庫が prices と突き合わさり unpriced_assets に載らない', async () => {

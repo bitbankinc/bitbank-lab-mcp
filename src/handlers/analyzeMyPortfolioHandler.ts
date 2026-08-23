@@ -384,9 +384,10 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// 入庫と出庫で消費者が非対称なので、下限時刻も別々に決める:
 		//   - 入庫: 純投入額・口座全体リターンに加えて取得原価が**全履歴**を換算する
 		//     （移動平均法は期間開始前の入庫も積み上げる）
-		//   - 出庫: 金額換算するのは期間集計（*_dw_summary / 期間ネットフロー）だけで、
-		//     calcDepositWithdrawalSummary は暗号資産出庫を件数しか出さない。
-		//     つまり年初より前の出庫は換算しても反映先が無い（→ 年初来で足りる）
+		//   - 出庫: 入出金分析セクションがある構成では calcDepositWithdrawalSummary が
+		//     **全履歴**を換算して純投入額から減算する（元本回収として扱う。#70）。
+		//     セクションを閉じた構成では消費者が期間集計（期間ネットフロー）だけになるので
+		//     年初来（yearly が最広の期間）で足りる
 		// どの消費者もいない構成では価格解決そのものを行わない。走らせてしまうと、
 		// (1) 出力に現れない換算のために candle 取得のレイテンシを払い、
 		// (2) meta / summary が「どの出力にも載っていない評価額」を申告して読み手を迷わせる。
@@ -407,8 +408,9 @@ export default async function analyzeMyPortfolioHandler(args: {
 						// 入庫は全履歴。dwSectionUsesFlow / pnlUsesFlow のどちらの経路でも
 						// 全履歴を要求するので、ここで年初来に絞れる構成は無い。
 						depositsSinceMs: undefined,
-						// 出庫は全履歴で換算する消費者がいないため、常に年初来（yearly が最広の期間）。
-						withdrawalsSinceMs: boundaries.yearStartMs,
+						// 出庫は入出金分析セクションがあるときだけ全履歴（純投入額の減算に使う）。
+						// 無ければ消費者は期間ネットフローだけなので年初来に絞る。
+						withdrawalsSinceMs: dwSectionUsesFlow ? undefined : boundaries.yearStartMs,
 					})
 				: [];
 		const flowPricing: FlowPricing = {
@@ -1038,8 +1040,18 @@ export default async function analyzeMyPortfolioHandler(args: {
 					`  暗号資産入庫の評価: ${formatPriceJPY(dwSummary.crypto_deposit_estimated_jpy)}（${dwSummary.crypto_deposit_count}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_deposit_valuation?.basis ?? 'current_price_fallback']}）`,
 				);
 			}
+			if (dwSummary.crypto_withdrawal_estimated_jpy) {
+				lines.push(
+					`  暗号資産出庫の評価: -${formatPriceJPY(dwSummary.crypto_withdrawal_estimated_jpy)}（${dwSummary.crypto_withdrawal_count}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_withdrawal_valuation?.basis ?? 'current_price_fallback']}）`,
+				);
+			}
+			// 内訳の式は実際に載っている項だけを並べる（0 円の項を書くと読み手が総額を追えない）。
+			const netInvestedTerms = [
+				dwSummary.crypto_deposit_estimated_jpy ? '+ 暗号資産入庫の評価額' : '',
+				dwSummary.crypto_withdrawal_estimated_jpy ? '- 暗号資産出庫の評価額' : '',
+			].filter(Boolean);
 			lines.push(
-				`  純投入額: ${formatPriceJPY(dwSummary.net_jpy_invested)}${dwSummary.crypto_deposit_estimated_jpy ? '（JPY純入金 + 暗号資産入庫の評価額）' : ''}`,
+				`  純投入額: ${formatPriceJPY(dwSummary.net_jpy_invested)}${netInvestedTerms.length > 0 ? `（JPY純入金 ${netInvestedTerms.join(' ')}）` : ''}`,
 			);
 			if (!dwSummary.is_complete) {
 				lines.push('  ※ 入出金履歴が多く全件取得できなかったため、概算値です');
@@ -1053,9 +1065,29 @@ export default async function analyzeMyPortfolioHandler(args: {
 					`  ※ うち ${depositFallbackCount}件は入庫日の価格を取得できず現在価格で仮評価（この分だけ相場変動で評価額が動きます）`,
 				);
 			}
-			if (dwSummary.crypto_withdrawal_count > 0) {
-				lines.push(`  ※ 暗号資産出庫 ${dwSummary.crypto_withdrawal_count}件は送金として損益計算から除外しています`);
+			if (dwSummary.crypto_withdrawal_count > 0 && !dwSummary.crypto_withdrawal_estimated_jpy) {
+				lines.push(
+					`  ※ 暗号資産出庫 ${dwSummary.crypto_withdrawal_count}件の価格が取得できず純投入額に反映されていません`,
+				);
 			}
+			const withdrawalFallbackCount = dwSummary.crypto_withdrawal_valuation?.current_price_fallback_count ?? 0;
+			if (withdrawalFallbackCount > 0) {
+				lines.push(
+					`  ※ うち ${withdrawalFallbackCount}件は出庫日の価格を取得できず現在価格で仮評価（この分だけ相場変動で評価額が動きます）`,
+				);
+			}
+			if (dwSummary.crypto_withdrawal_count > 0) {
+				lines.push(
+					`  ※ 暗号資産出庫 ${dwSummary.crypto_withdrawal_count}件は JPY 出金と同じ「元本の回収」として純投入額から差し引いています（外部ウォレットへ移して保有を続けている場合でも、口座外の値動きは測定対象外です）`,
+				);
+			}
+		} else if (dwSummary?.crypto_withdrawal_estimated_jpy) {
+			// 出庫の減算で純投入額が 0 以下になり、口座全体リターンを出せなかったケース。
+			// 黙ってブロックごと消すと「リターンが計算されたのに表示されていない」と読まれるため、
+			// 出せない理由を 1 行で明示する（`account_return_*` が undefined になる既存分岐）。
+			lines.push(
+				`口座全体リターン: 算出不可（暗号資産出庫 ${dwSummary.crypto_withdrawal_count}件を元本の回収として差し引いた結果、純投入額が ${formatPriceJPY(dwSummary.net_jpy_invested)} と 0 以下になりました。引き出しが投入を上回る口座ではリターン率を定義できません）`,
+			);
 		}
 
 		// 入出金取得の警告
@@ -1224,6 +1256,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 			crypto_deposit_count: 0,
 			crypto_deposit_estimated_jpy: undefined,
 			crypto_withdrawal_count: 0,
+			crypto_withdrawal_estimated_jpy: undefined,
 			account_return_pct: undefined,
 			account_return_jpy: undefined,
 			is_complete: false,
