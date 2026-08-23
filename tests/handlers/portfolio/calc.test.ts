@@ -2550,6 +2550,23 @@ describe('buildEquitySeries — 入出金フローマーカー', () => {
 			expect(series[1].flow_jpy).toBe(300_000);
 		});
 
+		/**
+		 * キーの不在は「入出金が無かった」ではない（`EquityPoint.flow_jpy` の
+		 * 「キーが無いことの意味」の (3)）。この区間には実際に入庫があるが、価格を解決できず
+		 * 計上対象が残らないためキーごと落ちる。落ちた資産名は
+		 * `*_performance.unpriced_flow_assets` が申告する。
+		 */
+		it('区間の入出庫が全件価格解決できないとキーごと落ちる（0 円計上しない）', () => {
+			const dw = makeDwData({
+				deposits: [makeDeposit({ asset: 'btc', amount: '0.05', confirmed_at: jstMs(2026, 8, 2, 10) })],
+			});
+			const series = build(dailyPoints(2026, 8, 1, 3), dw, currentPriceOnly(), BTC_ONLY, 2_000_000);
+
+			expect(series[1]).not.toHaveProperty('flow_jpy');
+			// 0 円のマーカーを立てていない（「純額ゼロ」と誤読させない）
+			expect(JSON.stringify(series)).not.toContain('flow_jpy');
+		});
+
 		it('出庫は出庫日の始値で換算し負値になる（手数料は含めない）', () => {
 			const withdrawAt = jstMs(2026, 8, 2, 18);
 			const dw = makeDwData({
