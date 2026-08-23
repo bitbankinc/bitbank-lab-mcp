@@ -4444,3 +4444,151 @@ describe('analyze_my_portfolio — 資産推移の入出金フローマーカー
 		expect(result.data.monthly_performance.flow_unavailable_reason).toBeDefined();
 	});
 });
+
+/**
+ * #71: 期初評価額が極小のとき、増減率は「運用成績」ではなく「期初がほぼ空だった」ことを
+ * 表す数になる（実口座で年初比 +26929.2% が出た）。抑止の基準は相対
+ * （期初評価額が現在評価額の 1% 未満）で、抑止したときは金額と理由を summary / meta に出す。
+ */
+describe('analyze_my_portfolio — 期初評価額が極小のときの増減率の抑止', () => {
+	/** 2026-05-16T03:00:00Z = JST 2026-05-16 12:00 */
+	const fixedNowMs = Date.UTC(2026, 4, 16, 3);
+	/** JST 2026-05-16 09:00（当日・当月・当年すべての期間内） */
+	const todayDepositAtMs = Date.UTC(2026, 4, 16, 0);
+	/** JST 2026-05-10 10:00（当月内・当年内だが当日より前） */
+	const earlierDepositAtMs = Date.UTC(2026, 4, 10, 1);
+
+	/** JPY 単独口座。価格解決を挟まず期初評価額を 1 円単位で狙うための最小構成。 */
+	function jpyOnlyAssets(onhand: string) {
+		return {
+			assets: [
+				{
+					asset: 'jpy',
+					free_amount: onhand,
+					amount_precision: 0,
+					onhand_amount: onhand,
+					locked_amount: '0',
+					withdrawing_amount: '0',
+					withdrawal_fee: { under: '550', over: '770', threshold: '30000' },
+					stop_deposit: false,
+					stop_withdrawal: false,
+					collateral_ratio: '1',
+				},
+			],
+		};
+	}
+
+	/** 約定なし・JPY 入金 1 件だけの口座（期初評価額 = onhand - 入金額）。 */
+	function setupJpyDepositMock(opts: { onhand: string; amount: string; confirmedAt: number }) {
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			const maybeMargin = maybeMarginAccountResponse(urlStr);
+			if (maybeMargin) return maybeMargin;
+			if (urlStr.includes('tickers_jpy')) return new Response(JSON.stringify(tickersJpy), { status: 200 });
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(jpyOnlyAssets(opts.onhand))), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ trades: [] })), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history')) {
+				return new Response(
+					JSON.stringify(
+						mockBitbankSuccess({
+							deposits: [
+								{
+									uuid: 'dep-1',
+									asset: 'jpy',
+									amount: opts.amount,
+									status: 'DONE',
+									found_at: opts.confirmedAt,
+									confirmed_at: opts.confirmedAt,
+								},
+							],
+						}),
+					),
+					{ status: 200 },
+				);
+			}
+			if (urlStr.includes('withdrawal_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ withdrawals: [] })), { status: 200 });
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+	}
+
+	async function analyze() {
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		return handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: true });
+	}
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('3 期間すべてで change_pct / adjusted_change_pct が落ち、理由コードが付く', async () => {
+		// 期初 5,745 円 → 現在 1,552,826 円（差は当日の入金）。従来は +26929.2% が出ていた。
+		setupJpyDepositMock({ onhand: '1552826', amount: '1547081', confirmedAt: todayDepositAtMs });
+
+		const result = await analyze();
+		assertOk(result);
+
+		for (const key of ['daily_performance', 'monthly_performance', 'yearly_performance'] as const) {
+			const p = result.data[key];
+			expect(p.start_value_jpy, key).toBe(5_745);
+			expect(p.change_jpy, key).toBe(1_547_081); // 金額は残す
+			expect(p.change_pct, key).toBeUndefined();
+			expect(p.adjusted_change_pct, key).toBeUndefined();
+			expect(p.change_pct_unavailable_reason, key).toBe('start_value_negligible');
+		}
+		// 5 桁の百分率が出力のどこにも現れない
+		expect(JSON.stringify(result.data)).not.toContain('26929');
+	});
+
+	it('summary は金額と「なぜ率が出ないか」を出す（率が消えた理由を読み手が判別できる）', async () => {
+		setupJpyDepositMock({ onhand: '1552826', amount: '1547081', confirmedAt: todayDepositAtMs });
+
+		const result = await analyze();
+		assertOk(result);
+
+		expect(result.summary).toContain('増減: +1,547,081円');
+		// 3 期間すべてに理由行が出る（行ごと省くと「率がゼロ」と区別できない）
+		expect(result.summary.match(/※ 増減率・入出金調整後増減率は非表示/g)).toHaveLength(3);
+		expect(result.summary).toContain('期初評価額が現在評価額の 1% 未満');
+		expect(result.summary).not.toContain('26929');
+	});
+
+	it('meta に抑止した期間と理由が出る（warning は content 先頭）', async () => {
+		setupJpyDepositMock({ onhand: '1552826', amount: '1547081', confirmedAt: todayDepositAtMs });
+
+		const result = await analyze();
+		assertOk(result);
+
+		expect(result.meta.changePctUnavailablePeriods).toEqual(['daily', 'yearly', 'monthly']);
+		const warning = (result.meta.warnings ?? []).find((w: string) => w.includes('増減率'));
+		expect(warning).toBeDefined();
+		expect(warning).toContain('前日比 / 年初比 / 月初比');
+		expect(warning).toContain('「ゼロ %」の意味ではありません');
+		// `.claude/rules/tools.md`: 計算層 warning は summary 先頭に出す
+		expect(result.summary.split('\n').slice(0, 5).join('\n')).toContain('増減率');
+	});
+
+	it('通常規模の期初評価額では従来どおり率が出る（回帰）', async () => {
+		// 期初 1,000,000 円 → 現在 1,500,000 円（差は 5/10 の入金）。期初は現在の 66% で閾値を大きく上回る。
+		setupJpyDepositMock({ onhand: '1500000', amount: '500000', confirmedAt: earlierDepositAtMs });
+
+		const result = await analyze();
+		assertOk(result);
+
+		expect(result.data.yearly_performance.start_value_jpy).toBe(1_000_000);
+		expect(result.data.yearly_performance.change_pct).toBe(50);
+		expect(result.data.yearly_performance.change_pct_unavailable_reason).toBeUndefined();
+		expect(result.meta.changePctUnavailablePeriods).toBeUndefined();
+		expect(result.summary).not.toContain('※ 増減率・入出金調整後増減率は非表示');
+	});
+});
