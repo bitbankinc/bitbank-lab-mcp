@@ -3708,6 +3708,7 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		],
 	};
 
+	/** eth の実残高（onhand）だけを差し替えた assets レスポンス。数量不変条件の成否を振る */
 	function ethAssets(onhand: string) {
 		return {
 			assets: [{ ...assetFixture('eth'), free_amount: onhand, onhand_amount: onhand }, assetFixture('jpy')],
@@ -4656,6 +4657,7 @@ describe('analyze_my_portfolio — 資産推移の入出金フローマーカー
 		}) as unknown as typeof fetch;
 	}
 
+	/** 損益・入出金セクションを両方出す既定の呼び出し（本 describe は原価の申告だけを見る） */
 	async function analyze() {
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
 		return handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: true });
@@ -4921,6 +4923,7 @@ describe('analyze_my_portfolio — 期初評価額が極小のときの増減率
 		}) as unknown as typeof fetch;
 	}
 
+	/** 損益・入出金セクションを両方出す既定の呼び出し（本 describe は原価の申告だけを見る） */
 	async function analyze() {
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
 		return handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: true });
@@ -5035,6 +5038,7 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 	/** JST 2023-06-01。candle fixture が 2024 年分しか持たないので始値を解決できない入庫日 */
 	const UNPRICED_DEPOSIT_AT = Date.UTC(2023, 4, 31, 15, 0, 0);
 
+	/** DONE 入庫のみの deposit / withdrawal レスポンスを組み立てる（入庫日で価格解決の可否を振る） */
 	function depositsOf(...entries: Array<{ uuid: string; asset: string; amount: string; at: number }>) {
 		return {
 			deposits: {
@@ -5051,12 +5055,14 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 		};
 	}
 
+	/** eth の実残高（onhand）だけを差し替えた assets レスポンス。数量不変条件の成否を振る */
 	function ethAssets(onhand: string) {
 		return {
 			assets: [{ ...assetFixture('eth'), free_amount: onhand, onhand_amount: onhand }, assetFixture('jpy')],
 		};
 	}
 
+	/** 損益・入出金セクションを両方出す既定の呼び出し（本 describe は原価の申告だけを見る） */
 	async function analyze() {
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
 		return handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: true });
@@ -5222,6 +5228,59 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 		// eth 側は入庫が無いので巻き込まれない
 		expect(warning).not.toContain('ETH');
 		expect(result.data.holdings.find((h) => h.asset === 'eth')?.unpriced_deposit_count).toBeUndefined();
+	});
+
+	it('売り切り銘柄の実現損益が 0 円に丸まっても申告を落とさない', async () => {
+		// realized_pnl は Math.round 済みで、0 円は「損益が無い」ではなく「丸めた結果 0」でもある。
+		// しかも未算入の入庫があるからこそ 0 に見えている可能性がある（本来の原価を引けていれば
+		// 非ゼロ）。金額の集計条件（realized_pnl !== 0）で警告まで絞ると、holdings にも載らない
+		// この銘柄の算出条件が出力から完全に消える。
+		const trades = {
+			trades: [
+				...ethBuy2.trades,
+				{
+					trade_id: 7004,
+					pair: 'xrp_jpy',
+					order_id: 7004,
+					side: 'buy',
+					type: 'limit',
+					amount: '100',
+					price: '80',
+					maker_taker: 'maker',
+					fee_amount_base: '0',
+					fee_amount_quote: '0',
+					executed_at: 1710000300000,
+				},
+				{
+					trade_id: 7005,
+					pair: 'xrp_jpy',
+					order_id: 7005,
+					side: 'sell',
+					type: 'limit',
+					amount: '100',
+					price: '80',
+					maker_taker: 'maker',
+					fee_amount_base: '0',
+					fee_amount_quote: '0',
+					executed_at: 1710000400000,
+				},
+			],
+		};
+		setupFetchMock({
+			assets: ethAssets('2.0'),
+			trades,
+			...depositsOf({ uuid: 'dep-xrp', asset: 'xrp', amount: '10', at: UNPRICED_DEPOSIT_AT }),
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		// 同値で買って売ったので実現損益はゼロ。金額側の集計には入らない
+		expect(result.data.closed_position_realized_pnl).toBe(0);
+		expect(result.data.closed_position_asset_count).toBe(0);
+		expect(result.data.holdings.find((h) => h.asset === 'xrp')).toBeUndefined();
+		// それでも算出条件は申告する
+		expect(unpricedWarning(result.meta.warnings)).toContain('XRP（1件）');
 	});
 
 	it('期間実現損益（年初来 / 月初来）にも同じ件数を出す', async () => {

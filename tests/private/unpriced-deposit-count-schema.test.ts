@@ -36,6 +36,7 @@ function periodRealizedPnlShape(field: 'yearly_realized_pnl' | 'monthly_realized
 	return optional.unwrap().shape;
 }
 
+/** shape から description を取り出す。無ければ落とす（description 前提のテストが黙って通らないように） */
 function descriptionOf(shape: Record<string, Described>, key: string): string {
 	const description = shape[key]?.description;
 	if (description == null) throw new Error(`description が無い: ${key}`);

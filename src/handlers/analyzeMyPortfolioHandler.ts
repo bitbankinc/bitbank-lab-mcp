@@ -636,16 +636,17 @@ export default async function analyzeMyPortfolioHandler(args: {
 			for (const asset of tradedAssets) {
 				if (!heldAssets.has(asset)) {
 					const pnl = calcPnl(allTrades, asset, dwData?.withdrawals, depositCost);
+					// 売り切り銘柄は holdings に載らず件数フィールドの置き場が無いので、警告行が
+					// 算出条件を伝える唯一の経路になる（#77）。**金額の集計条件とは切り離す**——
+					// realized_pnl は Math.round 済みで、未算入入庫があるからこそ 0 円に丸まる
+					// ケース（本来の原価を引けていれば非ゼロ）まで申告が消えるため。
+					if (pnl.unpriced_deposit_count > 0) {
+						unpricedDepositAssets.push({ asset, count: pnl.unpriced_deposit_count });
+					}
 					if (pnl.realized_pnl !== 0) {
 						totalRealizedPnl += pnl.realized_pnl;
 						closedSum += pnl.realized_pnl;
 						closedCount++;
-						// 売り切り銘柄は holdings に載らず件数フィールドの置き場が無いが、
-						// realized_pnl は total_realized_pnl / closed_position_realized_pnl に入る。
-						// 算出条件を落とさないよう警告行の対象には含める（#77）。
-						if (pnl.unpriced_deposit_count > 0) {
-							unpricedDepositAssets.push({ asset, count: pnl.unpriced_deposit_count });
-						}
 					}
 				}
 			}
