@@ -994,7 +994,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 				);
 			}
 			lines.push(
-				'※ 評価損益は全履歴の約定・暗号資産入出庫から移動平均法で算出した取得原価ベース。暗号資産入庫は入庫日（confirmed_at）の始値で取得したとみなして原価に算入（真の取得原価ではなく入庫時点の相場という仮定。入庫日の価格を取得できなかった入庫は原価に算入せず、その銘柄は取得原価を出しません）',
+				'※ 評価損益は全履歴の約定・暗号資産入出庫から移動平均法で算出した取得原価ベース。暗号資産入庫は入庫日（confirmed_at）の始値で取得したとみなして原価に算入（真の取得原価ではなく入庫時点の相場という仮定）。入庫日の価格を取得できなかった入庫は原価に算入しないため、その分だけ取得原価は過小になります（復元数量が実残高と乖離した銘柄は取得原価を出しません）',
 			);
 		}
 		if (qtyMismatchAssets.length > 0) {
@@ -1075,7 +1075,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 		const flowValuationFallbackCount = flowValuation?.current_price_fallback_count ?? 0;
 		if (flowValuationFallbackCount > 0) {
 			calcWarnings.push(
-				`暗号資産入出庫 ${flowValuationFallbackCount}件は入出庫日（入庫: confirmed_at / 出庫: requested_at）の価格を取得できず現在価格で仮評価しています。この分の評価額は相場変動で動きます（取得原価には算入しないため、該当する入庫のある銘柄は cost_basis_unavailable_reason=has_crypto_deposits になります）`,
+				`暗号資産入出庫 ${flowValuationFallbackCount}件は入出庫日（入庫: confirmed_at / 出庫: requested_at）の価格を取得できず現在価格で仮評価しています。この分の評価額は相場変動で動きます（取得原価には算入しないため、該当する入庫で復元数量が実残高と乖離した銘柄は cost_basis_unavailable_reason=has_crypto_deposits になり、乖離が許容誤差以内に収まった銘柄は取得原価がその分だけ過小のまま出ます）`,
 			);
 		}
 
