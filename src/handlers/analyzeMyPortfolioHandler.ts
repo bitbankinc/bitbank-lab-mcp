@@ -32,6 +32,7 @@ import {
 	calcPeriodRealizedPnl,
 	calcPnl,
 	collectFlowValuationTargets,
+	type DepositCostBasisInput,
 	flowUnavailableReasonFor,
 	getJstPeriodBoundaries,
 	type PeriodSpec,
@@ -135,7 +136,7 @@ const FLOW_UNAVAILABLE_NOTE: Record<PortfolioFlowUnavailableReason, string> = {
 
 /** 数量乖離の理由コードごとの原因表示（銘柄名に添える短句）。 */
 const QTY_MISMATCH_CAUSE: Record<PortfolioQtyMismatchReason, string> = {
-	has_crypto_deposits: '暗号資産の入庫あり',
+	has_crypto_deposits: '入庫日の価格を解決できない暗号資産の入庫あり',
 	history_truncated: '約定履歴の打ち切り',
 	unknown: '原因不明',
 };
@@ -281,6 +282,63 @@ export default async function analyzeMyPortfolioHandler(args: {
 				)
 			: Promise.resolve({ boundaryPrices: new Map(), dailyPrices: new Map() } as CandlePriceData);
 
+		// 2.5. 暗号資産入出庫の JPY 換算に使う価格を確定する。
+		// 入出庫日（入庫: confirmed_at / 出庫: requested_at）の 1day open を第一候補にし、
+		// 直近 400 日窓（fetchCandlePriceData）で解けない分だけ年単位 chunk を追加取得する。
+		// 現在価格で仮評価すると誤差が相場と連動して動く系統的バイアスになるため（#53 の機序 6）。
+		//
+		// 消費者は 3 つ:
+		//   (1) 入出金分析セクション（純投入額・口座全体リターン）
+		//   (2) 期間ネットフロー（*_performance.net_flow_jpy）
+		//   (3) 取得原価（calcPnl / calcPeriodRealizedPnl の入庫算入）
+		// (3) が入ったため、この確定はセクション 3 の損益算出**より前**に済ませる必要がある。
+		// candlePricePromise の await をここまで引き上げても、間に挟まる処理は同期計算だけなので
+		// 待ち時間は増えない（in-flight の promise を待つ位置が早まるだけ）。
+		//
+		// 追加取得の母集合は「換算結果を実際に出力するセクションがある入出庫」だけに絞る。
+		// 入庫と出庫で消費者が非対称なので、下限時刻も別々に決める:
+		//   - 入庫: 純投入額・口座全体リターンに加えて取得原価が**全履歴**を換算する
+		//     （移動平均法は期間開始前の入庫も積み上げる）
+		//   - 出庫: 金額換算するのは期間集計（*_dw_summary / 期間ネットフロー）だけで、
+		//     calcDepositWithdrawalSummary は暗号資産出庫を件数しか出さない。
+		//     つまり年初より前の出庫は換算しても反映先が無い（→ 年初来で足りる）
+		// どの消費者もいない構成では価格解決そのものを行わない。走らせてしまうと、
+		// (1) 出力に現れない換算のために candle 取得のレイテンシを払い、
+		// (2) meta / summary が「どの出力にも載っていない評価額」を申告して読み手を迷わせる。
+		// 具体例: include_deposit_withdrawal=false（セクションを閉じる）＋ 入出金履歴の部分失敗で
+		// buildPeriodPerformance が未計測に短絡し、取得原価も抑止されるケース。
+		const candlePriceData = await candlePricePromise;
+		// 部分失敗・打ち切りでも dwSummary は出るので、セクション側の消費判定に
+		// flowUnavailableReason は使わない（原価が信頼できないことと、入出金サマリーを
+		// 出せることは別問題 — flowUnavailableReasonFor の doc 参照）。
+		const dwSectionUsesFlow = include_deposit_withdrawal && dwData != null && !dwData.allFailed;
+		// 純入出金・取得原価は flowUnavailableReason があるとどちらも抑止される
+		// （buildPeriodPerformance は unmeasuredNetFlow() に短絡し、holdings は原価由来 4
+		// フィールドを落とす）。その時点で消費者ではなくなる。
+		const pnlUsesFlow = include_pnl && flowUnavailableReason == null;
+		const flowValuationTargets =
+			dwSectionUsesFlow || pnlUsesFlow
+				? collectFlowValuationTargets(dwData, {
+						// 入庫は全履歴。dwSectionUsesFlow / pnlUsesFlow のどちらの経路でも
+						// 全履歴を要求するので、ここで年初来に絞れる構成は無い。
+						depositsSinceMs: undefined,
+						// 出庫は全履歴で換算する消費者がいないため、常に年初来（yearly が最広の期間）。
+						withdrawalsSinceMs: boundaries.yearStartMs,
+					})
+				: [];
+		const flowPricing: FlowPricing = {
+			dailyPrices: await fetchFlowDatePrices(candlePriceData.dailyPrices, flowValuationTargets),
+			currentPrices: prices,
+		};
+		// 換算方式の申告は母集合を 1 度だけ数える。各セクションの内訳（全履歴 ⊃ 年初来 ⊃ 月初来）を
+		// 足すと二重計上になるため、meta / summary の件数はここで確定した値を使う。
+		const flowValuation = summarizeFlowValuation(flowValuationTargets, flowPricing);
+		// 取得原価への入庫算入に渡す入力。入庫日の始値を解決できた入庫だけが原価になり、
+		// 現在価格フォールバックしかない入庫は算入されない（calcPnl の doc 参照）。
+		// pnlUsesFlow が false の構成では原価由来フィールド自体を出さないので渡さない。
+		const depositCost: DepositCostBasisInput | undefined =
+			pnlUsesFlow && dwData != null ? { deposits: dwData.deposits, pricing: flowPricing } : undefined;
+
 		const timestamp = nowIso();
 
 		// 3. 各保有通貨の損益算出
@@ -323,7 +381,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 			}
 
 			const pair = `${a.asset}_jpy`;
-			const pnl = include_pnl ? calcPnl(allTrades, a.asset, dwData?.withdrawals) : undefined;
+			const pnl = include_pnl ? calcPnl(allTrades, a.asset, dwData?.withdrawals, depositCost) : undefined;
 
 			if (pnl?.cost_basis != null) {
 				_totalCostBasis += pnl.cost_basis;
@@ -356,7 +414,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 			// 数量不変条件: 復元数量が実残高と許容誤差を超えて乖離していたら、原価から派生する
 			// 4 フィールドは確定値を出さず（上と同じ null 化経路）、理由コードだけ返す。
 			if (pnl != null && !qtyInvariantHolds(Number(amount), pnl.reconstructed_qty, a.amount_precision)) {
-				const reason = qtyMismatchReasonFor(a.asset, dwData, tradesTruncated);
+				const reason = qtyMismatchReasonFor(dwData, tradesTruncated, pnl.unpriced_deposit_count);
 				qtyMismatchAssets.push({ asset: a.asset, reason });
 				return {
 					asset: a.asset,
@@ -405,7 +463,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 			const tradedAssets = new Set(allTrades.map((t) => t.pair.replace('_jpy', '')).filter((a) => a !== 'jpy'));
 			for (const asset of tradedAssets) {
 				if (!heldAssets.has(asset)) {
-					const pnl = calcPnl(allTrades, asset, dwData?.withdrawals);
+					const pnl = calcPnl(allTrades, asset, dwData?.withdrawals, depositCost);
 					if (pnl.realized_pnl !== 0) {
 						totalRealizedPnl += pnl.realized_pnl;
 					}
@@ -423,6 +481,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 				boundaries.yearStartIso,
 				boundaries.nowIso,
 				dwData?.withdrawals,
+				depositCost,
 			);
 			monthlyRealizedPnl = calcPeriodRealizedPnl(
 				allTrades,
@@ -430,6 +489,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 				boundaries.monthStartIso,
 				boundaries.nowIso,
 				dwData?.withdrawals,
+				depositCost,
 			);
 		}
 
@@ -469,49 +529,6 @@ export default async function analyzeMyPortfolioHandler(args: {
 				boundaries.nowIso,
 			);
 		}
-
-		// 6.5.5. 暗号資産入出庫の JPY 換算に使う価格を確定する。
-		// 入出庫日（入庫: confirmed_at / 出庫: requested_at）の 1day open を第一候補にし、
-		// 直近 400 日窓（fetchCandlePriceData）で解けない分だけ年単位 chunk を追加取得する。
-		// 現在価格で仮評価すると誤差が相場と連動して動く系統的バイアスになるため（#53 の機序 6）。
-		//
-		// 追加取得の母集合は「換算結果を実際に出力するセクションがある入出庫」だけに絞る。
-		// 入庫と出庫で消費者が非対称なので、下限時刻も別々に決める:
-		//   - 入庫: 入出金分析セクションの純投入額・口座全体リターンが**全履歴**を換算する
-		//   - 出庫: 金額換算するのは期間集計（*_dw_summary / 期間ネットフロー）だけで、
-		//     calcDepositWithdrawalSummary は暗号資産出庫を件数しか出さない。
-		//     つまり年初より前の出庫は換算しても反映先が無い（→ 年初来で足りる）
-		// どちらも消費しない構成では価格解決そのものを行わない。走らせてしまうと、
-		// (1) 出力に現れない換算のために candle 取得のレイテンシを払い、
-		// (2) meta / summary が「どの出力にも載っていない評価額」を申告して読み手を迷わせる。
-		// 具体例: include_deposit_withdrawal=false（セクションを閉じる）＋ 入出金履歴の部分失敗で
-		// buildPeriodPerformance が未計測に短絡するケース。
-		// candlePricePromise の await をここに引き上げるが、in-flight の promise を待つ位置は
-		// 元の 6.6 と同じで、間に別の I/O は挟まっていない。
-		const candlePriceData = await candlePricePromise;
-		// 部分失敗・打ち切りでも dwSummary は出るので、セクション側の消費判定に
-		// flowUnavailableReason は使わない（原価が信頼できないことと、入出金サマリーを
-		// 出せることは別問題 — flowUnavailableReasonFor の doc 参照）。
-		const dwSectionUsesFlow = include_deposit_withdrawal && dwData != null && !dwData.allFailed;
-		// 純入出金側は flowUnavailableReason があると buildPeriodPerformance が
-		// unmeasuredNetFlow() に短絡するため、その時点で消費者ではなくなる。
-		const netFlowUsesFlow = include_pnl && flowUnavailableReason == null;
-		const flowValuationTargets =
-			dwSectionUsesFlow || netFlowUsesFlow
-				? collectFlowValuationTargets(dwData, {
-						// 入庫だけが全履歴を要求する。セクションを出さない構成では年初来で足りる。
-						depositsSinceMs: dwSectionUsesFlow ? undefined : boundaries.yearStartMs,
-						// 出庫は全履歴で換算する消費者がいないため、常に年初来（yearly が最広の期間）。
-						withdrawalsSinceMs: boundaries.yearStartMs,
-					})
-				: [];
-		const flowPricing: FlowPricing = {
-			dailyPrices: await fetchFlowDatePrices(candlePriceData.dailyPrices, flowValuationTargets),
-			currentPrices: prices,
-		};
-		// 換算方式の申告は母集合を 1 度だけ数える。各セクションの内訳（全履歴 ⊃ 年初来 ⊃ 月初来）を
-		// 足すと二重計上になるため、meta / summary の件数はここで確定した値を使う。
-		const flowValuation = summarizeFlowValuation(flowValuationTargets, flowPricing);
 
 		// 6.6. 期間別パフォーマンス（評価額比較）— 主指標
 		let yearlyPerformance: PeriodPerformance | undefined;
@@ -976,7 +993,9 @@ export default async function analyzeMyPortfolioHandler(args: {
 					`合計評価損益（全履歴の約定ベース）: ${sign}${formatPriceJPY(totalUnrealizedPnl)} (${formatPercent(totalUnrealizedPnlPct, { sign: true })})`,
 				);
 			}
-			lines.push('※ 評価損益は全履歴の約定・暗号資産出庫から移動平均法で算出した取得原価ベース');
+			lines.push(
+				'※ 評価損益は全履歴の約定・暗号資産入出庫から移動平均法で算出した取得原価ベース。暗号資産入庫は入庫日（confirmed_at）の始値で取得したとみなして原価に算入（真の取得原価ではなく入庫時点の相場という仮定）。入庫日の価格を取得できなかった入庫は原価に算入しないため、その分だけ取得原価は過小になります（復元数量が実残高と乖離した銘柄は取得原価を出しません）',
+			);
 		}
 		if (qtyMismatchAssets.length > 0) {
 			lines.push(
@@ -1056,7 +1075,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 		const flowValuationFallbackCount = flowValuation?.current_price_fallback_count ?? 0;
 		if (flowValuationFallbackCount > 0) {
 			calcWarnings.push(
-				`暗号資産入出庫 ${flowValuationFallbackCount}件は入出庫日（入庫: confirmed_at / 出庫: requested_at）の価格を取得できず現在価格で仮評価しています。この分の評価額は相場変動で動きます`,
+				`暗号資産入出庫 ${flowValuationFallbackCount}件は入出庫日（入庫: confirmed_at / 出庫: requested_at）の価格を取得できず現在価格で仮評価しています。この分の評価額は相場変動で動きます（取得原価には算入しないため、該当する入庫で復元数量が実残高と乖離した銘柄は cost_basis_unavailable_reason=has_crypto_deposits になり、乖離が許容誤差以内に収まった銘柄は取得原価がその分だけ過小のまま出ます）`,
 			);
 		}
 

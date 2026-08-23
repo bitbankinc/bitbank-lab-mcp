@@ -2826,7 +2826,7 @@ describe('analyze_my_portfolio — API asset の取得境界正規化', () => {
 		// 2 本目は入出庫日価格の申告: candle fixture が 2024 年分のみで 2026 年の入出庫日を
 		// 解決できず現在価格フォールバックに落ちるため（#57 (a)）。
 		expect(result.meta.warnings).toHaveLength(2);
-		expect(result.meta.warnings?.[0]).toContain('BTC（暗号資産の入庫あり）');
+		expect(result.meta.warnings?.[0]).toContain('BTC（入庫日の価格を解決できない暗号資産の入庫あり）');
 		expect(result.meta.warnings?.[1]).toContain('現在価格で仮評価');
 		expect(result.data.daily_performance?.unpriced_flow_assets).toBeUndefined();
 		expect(result.data.daily_performance?.net_flow_jpy).toBe(Math.round(300_000 + 0.1 * 15_500_000 - 0.2 * 15_500_000));
@@ -3126,23 +3126,64 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		expect(result.summary).toContain('ETH は復元数量が実残高と乖離しているため合計評価損益に含めていません');
 	});
 
-	it('入庫あり銘柄の乖離: has_crypto_deposits（検出のみで入庫の原価算入はしない）', async () => {
+	/**
+	 * 入庫 1 件（1.998 ETH, confirmed_at = 2024-03-10 JST）の fixture。
+	 * 既定 candle（generateOhlcv 起点 2024-03-08）の 3 本目 = JST 2024-03-10 の始値 15,100,000 で
+	 * 解決できるので、(b) では原価に算入され復元数量が onhand 2.0 と一致する。
+	 */
+	const ethDeposit = {
+		deposits: {
+			deposits: [
+				{
+					uuid: 'dep-eth',
+					asset: 'eth',
+					amount: '1.998',
+					status: 'DONE',
+					found_at: 1710000100000,
+					confirmed_at: 1710000100000,
+				},
+			],
+		},
+		withdrawals: { withdrawals: [] },
+	};
+	/** 上の入庫日（JST 2024-03-10）の 1day open。既定 fixture の 3 本目 */
+	const ETH_DEPOSIT_DAY_OPEN = 15_100_000;
+
+	it('入庫は入庫日の始値で原価に算入され、数量不変条件が成立する', async () => {
+		setupFetchMock({ assets: ethAssets('2.0'), trades: tinyEthBuy, ...ethDeposit });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		const eth = result.data.holdings.find((h: { asset: string }) => h.asset === 'eth');
+		// (b) の眼目: 入庫ぶんの数量が復元に入るので、乖離は解消し原価が確定値として出る
+		expect(eth.cost_basis_reliable).toBe(true);
+		expect(eth.cost_basis_unavailable_reason).toBeUndefined();
+		// 買い 0.002 × 400,000 = 800 に、入庫 1.998 × 入庫日始値 を積む。
+		// 現在価格（380,000）で評価していたらこの値にはならない = 入庫日ベースの根拠。
+		expect(eth.cost_basis).toBe(Math.round(800 + 1.998 * ETH_DEPOSIT_DAY_OPEN));
+		expect(eth.avg_buy_price).toBe(Math.round((800 + 1.998 * ETH_DEPOSIT_DAY_OPEN) / 2));
+		expect(
+			(result.meta.warnings ?? []).some((w: string) => w.includes('入庫日の価格を解決できない暗号資産の入庫あり')),
+		).toBe(false);
+		expect(result.meta.flowDataUnavailableReason).toBeUndefined();
+		expect(result.meta.depositWithdrawalStatus).toBe('available');
+	});
+
+	it('入庫日の始値を解決できない入庫は原価に算入せず has_crypto_deposits で申告する', async () => {
+		// candle が空 → 入庫日の始値が引けず、resolveFlowPrice は現在価格フォールバックしか返せない。
+		// 現在価格で原価を作ると評価損益が常にゼロ付近に貼り付く（相場連動の誤差を cost_basis に
+		// 持ち込む）ので算入しない。結果として数量が復元されず理由コード経路に載る。
 		setupFetchMock({
 			assets: ethAssets('2.0'),
 			trades: tinyEthBuy,
-			deposits: {
-				deposits: [
-					{
-						uuid: 'dep-eth',
-						asset: 'eth',
-						amount: '1.998',
-						status: 'DONE',
-						found_at: 1710000100000,
-						confirmed_at: 1710000100000,
-					},
-				],
-			},
-			withdrawals: { withdrawals: [] },
+			...ethDeposit,
+			candles: { success: 1, data: { candlestick: [{ type: '1day', ohlcv: [] }] } },
 		});
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -3156,9 +3197,10 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		const eth = result.data.holdings.find((h: { asset: string }) => h.asset === 'eth');
 		expect(eth.cost_basis_reliable).toBe(false);
 		expect(eth.cost_basis_unavailable_reason).toBe('has_crypto_deposits');
-		// 入庫は検出・申告するだけで原価には算入しない（入庫日価格化は #57 のスコープ）
 		expect(eth.cost_basis).toBeUndefined();
-		expect(result.meta.warnings?.[0]).toContain('ETH（暗号資産の入庫あり）');
+		expect(
+			result.meta.warnings?.some((w: string) => w.includes('ETH（入庫日の価格を解決できない暗号資産の入庫あり）')),
+		).toBe(true);
 		// DONE 入庫があるだけでは入出金起因の抑止は掛からない
 		expect(result.meta.flowDataUnavailableReason).toBeUndefined();
 		expect(result.meta.depositWithdrawalStatus).toBe('available');
