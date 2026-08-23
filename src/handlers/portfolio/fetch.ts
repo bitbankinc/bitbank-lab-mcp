@@ -7,6 +7,7 @@
 
 import { normalizeAssetCodes } from '../../../lib/asset-code.js';
 import { toYearKey } from '../../../lib/calendar.js';
+import { retryAsync } from '../../../lib/http.js';
 import { normalizePairCodes } from '../../../lib/pair-code.js';
 import { fetchTickerPricesMap } from '../../../lib/tickers.js';
 import analyzeIndicators from '../../../tools/analyze_indicators.js';
@@ -444,10 +445,34 @@ export const MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS = 64;
  * 入庫は上限を実質外したので chunk 総数が伸びうる。全件を `Promise.all` に流すと
  * bitbank API のレート制限（HTTP 429）に当たるため、同時実行だけを頭打ちにする
  * （総数は絞らない ＝ 入庫を取り切る性質は変えない）。
- * バッチ間の遅延は入れない——テストが `vi.useFakeTimers()` 下で handler を回すため、
- * 実タイマー待ちを挟むと進まなくなる。
+ * バッチ間に無条件の遅延は入れない（成功時は 1 度も待たない）。実タイマー待ちが入るのは
+ * chunk 取得が失敗してリトライする経路だけで、そこは `FLOW_PRICE_CHUNK_RETRIES` の注意書きに従う。
+ *
+ * **12 → 4 に下げた（#81）。** `getCandles` は tz 暦年 1 年ぶんの窓に UTC 年 chunk を 2 本叩き、
+ * その 1 本ごとに HTTP リトライが最大 3 回入る。さらに本レイヤーのリトライ
+ * （`FLOW_PRICE_CHUNK_RETRIES`）が重なるため、同時実行 12 のままだと瞬間的な発射レートが
+ * リトライぶんだけ跳ね上がり、レート制限を自分で誘発して失敗率がむしろ上がる。
+ * 本件の目的は取得原価の**決定性**なので、総取得時間が伸びても成功率を取る。
+ * 総数は絞っていないので「入庫を取り切る」性質（#76）は変わらない。
  */
-const FLOW_PRICE_FETCH_CONCURRENCY = 12;
+const FLOW_PRICE_FETCH_CONCURRENCY = 4;
+
+/**
+ * 年 chunk 1 つあたりの再試行回数（初回 + N 回）。
+ *
+ * `getCandles` の内側では `fetchJsonWithRateLimit` が HTTP 1 本ごとにリトライ（`Retry-After` 解釈込み）
+ * しているが、**chunk 単位の成否判定はその外側**にあるため、
+ * 「HTTP は返ったが `success:0`」「UTC 年 chunk の過半数が落ちて upstream 失敗」は 1 回で諦めていた。
+ * ここが #81 の非決定性の入口——同じ口座を同じ日に叩いても解決できた入庫の件数が変わり、
+ * 移動平均の取得原価と過去の実現損益まで動く。
+ *
+ * 待機は `lib/http.ts` の `retryAsync`（`retryBackoffMs` の共通スケジュール）に委ねる。自前で書かない。
+ *
+ * **テスト注意**: 待機は実タイマーなので、chunk 取得の失敗を注入するテストで
+ * `vi.useFakeTimers()`（setTimeout ごと固める）を使うとハンドラが返ってこない。
+ * now の固定だけが要るなら `vi.useFakeTimers({ toFake: ['Date'] })` を使うこと。
+ */
+const FLOW_PRICE_CHUNK_RETRIES = 2;
 
 /** 入庫・出庫それぞれで「年 chunk を取れなかったせいで入出庫日価格を解決できなくなった」件数 */
 export interface FlowPriceShortfall {
@@ -485,6 +510,9 @@ export interface FlowDatePrices {
 	/**
 	 * chunk の**取得に失敗した**（`get_candles` が upstream / network で fail、throw、空応答）ために
 	 * 解決できなくなった件数。再実行で解消しうる一時的な不完全性。
+	 *
+	 * ここに載るのは**リトライ（`FLOW_PRICE_CHUNK_RETRIES`）を使い切ってなお失敗した分だけ**（#81）。
+	 * 1 回目で落ちただけの一過性の失敗は取得側で吸収されるので載らない。
 	 *
 	 * 「当日の足が無い」（上場前・データ欠損）はここには入らない。それは再実行しても変わらない
 	 * 恒久的な未解決なので、`current_price_fallback_count` だけで足りる。年 chunk が丸ごと
@@ -636,11 +664,30 @@ export async function fetchFlowDatePrices(
 	const isTransientFailure = (res: { meta?: { errorType?: string } } | undefined): boolean =>
 		res?.meta?.errorType !== 'user';
 
+	/**
+	 * `getCandles` の戻り値が `chunkFetchFailed` に計上される（＝再実行で解消しうる）ものか。
+	 *
+	 * リトライの判定と計上の判定を同じ述語に揃えることで、
+	 * **`chunkFetchFailed` に載る結果は必ずリトライを使い切ったあとのもの**という不変条件を作る。
+	 * 逆に `errorType='user'`（その年に足が無い）は何度叩いても同じなので `false` を返し、
+	 * 上場前の入庫に対して無駄なリクエストを撃たない。
+	 */
+	const isChunkFetchFailure = (res: Awaited<ReturnType<typeof getCandles>> | undefined): boolean => {
+		if (!res?.ok) return isTransientFailure(res);
+		const normalized = res.data?.normalized;
+		return !Array.isArray(normalized) || normalized.length === 0;
+	};
+
 	await runWithConcurrency(selected, FLOW_PRICE_FETCH_CONCURRENCY, async (chunk) => {
 		const { asset, year } = chunk;
 		try {
 			// 1day の年 chunk は最大 366 本。`fetchCandlePriceData` と同じ暦（JST）で足を切る。
-			const res = await getCandles(`${asset}_jpy`, '1day', year, 400, PORTFOLIO_CALENDAR_TZ);
+			// 一時的な失敗はここで吸収する（#81）。使い切っても失敗した場合は従来どおり
+			// `chunkFetchFailed` に計上し、#80 の抑止経路へ落とす（戻り値の形は変えない）。
+			const res = await retryAsync(() => getCandles(`${asset}_jpy`, '1day', year, 400, PORTFOLIO_CALENDAR_TZ), {
+				retries: FLOW_PRICE_CHUNK_RETRIES,
+				shouldRetry: isChunkFetchFailure,
+			});
 			if (!res?.ok) {
 				// 「その年に足が無い」失敗は再実行しても変わらないので取得失敗に数えない
 				// （現在価格フォールバック件数だけで足りる。`isTransientFailure` の doc 参照）。
