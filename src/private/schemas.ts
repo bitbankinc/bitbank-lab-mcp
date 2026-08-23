@@ -318,7 +318,12 @@ const HoldingPnlSchema = z.object({
 		),
 	unrealized_pnl: z.number().optional().describe('評価損益（JPY）'),
 	unrealized_pnl_pct: z.number().optional().describe('評価損益率（%）'),
-	realized_pnl: z.number().optional().describe('実現損益（JPY）'),
+	realized_pnl: z
+		.number()
+		.optional()
+		.describe(
+			'実現損益（JPY、全履歴・当該銘柄のみ）。holdings には**現在保有中の銘柄しか載らない**ため、この配列の合計は売り切り銘柄（保有ゼロだが約定履歴がある銘柄）の実現損益を含まない。検算式: Σ holdings[].realized_pnl + closed_position_realized_pnl = account_pnl.spot_realized_pnl = total_realized_pnl',
+		),
 	trade_count: z.number().optional().describe('約定件数'),
 	cost_basis_unavailable_reason: PortfolioCostBasisUnavailableReasonEnum.optional().describe(
 		'取得原価を確定できなかった理由。設定されている場合 avg_buy_price / cost_basis / unrealized_pnl / unrealized_pnl_pct はいずれも undefined（信頼できない値を確定値として出さないための抑止）。dw_fetch_failed=入出金 API の取得に失敗（一部チャネルのみの失敗を含む）, dw_history_incomplete=件数上限で入出金の全履歴を取得できていない, has_crypto_deposits=復元数量が実残高と乖離しており該当銘柄に入庫日の始値を解決できなかった DONE の暗号資産入庫がある（入庫日の始値で解決できた入庫は原価・数量に算入されるため本値は立たない。現在価格へのフォールバックは原価には使わない——相場連動の誤差を取得原価に持ち込まないため）, history_truncated=復元数量が実残高と乖離しており約定履歴が件数上限で打ち切られている, unknown=復元数量が実残高と乖離しているが原因を特定できない。include_deposit_withdrawal=false でも入出金履歴は損益計算のために取得されるため、同フラグ由来でこの値が立つことはない',
@@ -425,7 +430,11 @@ const PeriodDWSummarySchema = z
 
 const PeriodRealizedPnlSchema = z
 	.object({
-		realized_pnl: z.number().describe('期間内の合計実現損益（JPY）'),
+		realized_pnl: z
+			.number()
+			.describe(
+				'期間内の合計実現損益（JPY、現物単独・全銘柄）。売り切り銘柄も含むため holdings[].realized_pnl の合計とは一致しない（あちらは全履歴・現在保有中の銘柄のみ）。期間は period_start / period_end',
+			),
 		sell_count: z.number().int().describe('期間内の売却約定件数'),
 		period_start: z.string().describe('期間の開始日時（ISO8601 JST）'),
 		period_end: z.string().describe('期間の終了日時（ISO8601 JST）'),
@@ -433,7 +442,11 @@ const PeriodRealizedPnlSchema = z
 	.optional();
 
 const AccountPnlSchema = z.object({
-	spot_realized_pnl: z.number().describe('現物の実現損益（JPY）'),
+	spot_realized_pnl: z
+		.number()
+		.describe(
+			'現物の実現損益（JPY、全銘柄 = 現在保有中の銘柄 + 売り切り銘柄）。対象期間は本オブジェクトのスコープに従う（account_pnl=全履歴、yearly_account_pnl / monthly_account_pnl=period_start〜period_end）。全履歴版は total_realized_pnl と同値で、内訳は Σ holdings[].realized_pnl + closed_position_realized_pnl',
+		),
 	margin_realized_pnl: z.number().describe('信用の決済済み損益（JPY、グロス: 利息・手数料控除前）'),
 	margin_interest: z.number().describe('信用の支払利息合計（JPY、コスト = 正値）'),
 	margin_fee: z.number().describe('信用の発生手数料合計（JPY、fee_occurred_amount_quote の合算。コスト = 正値）'),
@@ -513,7 +526,25 @@ export const AnalyzeMyPortfolioDataSchema = z.object({
 	total_cost_basis_unavailable_reason: PortfolioFlowUnavailableReasonEnum.optional().describe(
 		'合計取得原価を確定できなかった理由（入出金履歴の取得起因 dw_fetch_failed / dw_history_incomplete のみ）。設定されている場合 total_cost_basis / total_unrealized_pnl / total_unrealized_pnl_pct はいずれも undefined。銘柄単位の数量乖離（holdings[].cost_basis_reliable=false）ではこのフィールドは立たず、当該銘柄を合計の集計から除外して meta.warnings / summary の警告行で申告する',
 	),
-	total_realized_pnl: z.number().optional().describe('合計実現損益（全履歴ベース）'),
+	total_realized_pnl: z
+		.number()
+		.optional()
+		.describe(
+			'合計実現損益（JPY、全履歴・全銘柄 = 現在保有中の銘柄 + 売り切り銘柄）。現物単独で、信用の決済損益・利息・手数料は含まない（それらを含む口座全体は account_pnl）。account_pnl.spot_realized_pnl と同値。0 のときは undefined',
+		),
+	closed_position_realized_pnl: z
+		.number()
+		.optional()
+		.describe(
+			'売り切り銘柄（現在保有ゼロだが約定履歴がある銘柄）の実現損益合計（JPY、全履歴）。holdings には載らないぶんの内訳で、Σ holdings[].realized_pnl + 本値 = account_pnl.spot_realized_pnl が成立する。0 = 集計した結果ゼロ（売り切り銘柄が無い / あっても実現損益ゼロ）、undefined = 集計していない（include_pnl=false または約定履歴 0 件）で、両者は別の意味',
+		),
+	closed_position_asset_count: z
+		.number()
+		.int()
+		.optional()
+		.describe(
+			'closed_position_realized_pnl に計上した売り切り**銘柄**の数（約定件数ではない）。実現損益がちょうど 0 の売り切り銘柄は合計に寄与しないため数えない。undefined の条件は closed_position_realized_pnl と同じ',
+		),
 	daily_performance: PeriodPerformanceSchema.describe('前日比パフォーマンス（当日0:00 JST〜現在の口座評価額増減）'),
 	yearly_performance: PeriodPerformanceSchema.describe(
 		'年初比パフォーマンス（当年1/1 00:00 JST〜現在の口座評価額増減）',
@@ -533,16 +564,20 @@ export const AnalyzeMyPortfolioDataSchema = z.object({
 		.describe(
 			'当年1/1 00:00 JSTから現在までの月次JPY建て総資産推移。各点はその月1日 00:00 JST時点の復元評価額。最終点は現在のリアルタイム評価額',
 		),
-	yearly_realized_pnl: PeriodRealizedPnlSchema.describe('年初来実現損益（現物単独、補助指標）'),
-	monthly_realized_pnl: PeriodRealizedPnlSchema.describe('月初来実現損益（現物単独、補助指標）'),
+	yearly_realized_pnl: PeriodRealizedPnlSchema.describe(
+		'年初来（当年1/1 00:00 JST〜現在）の実現損益（現物単独・全銘柄、補助指標）。全履歴の total_realized_pnl とは対象期間が異なる',
+	),
+	monthly_realized_pnl: PeriodRealizedPnlSchema.describe(
+		'月初来（当月1日 00:00 JST〜現在）の実現損益（現物単独・全銘柄、補助指標）。全履歴の total_realized_pnl とは対象期間が異なる',
+	),
 	account_pnl: AccountPnlSchema.optional().describe(
-		'全履歴の口座全体 PnL（現物実現損益 + 信用決済損益 - 信用支払利息 - 信用発生手数料）の約定ベース集計',
+		'全履歴（口座開設来）の口座全体 PnL（現物実現損益 + 信用決済損益 - 信用支払利息 - 信用発生手数料）の約定ベース集計。現物の内訳は現在保有中の銘柄 + 売り切り銘柄',
 	),
 	yearly_account_pnl: PeriodAccountPnlSchema.optional().describe(
-		'年初来の口座全体 PnL（現物 + 信用決済損益 - 利息 - 手数料）',
+		'年初来（当年1/1 00:00 JST〜現在）の口座全体 PnL（現物 + 信用決済損益 - 利息 - 手数料）。全履歴の account_pnl とは対象期間が異なる',
 	),
 	monthly_account_pnl: PeriodAccountPnlSchema.optional().describe(
-		'月初来の口座全体 PnL（現物 + 信用決済損益 - 利息 - 手数料）',
+		'月初来（当月1日 00:00 JST〜現在）の口座全体 PnL（現物 + 信用決済損益 - 利息 - 手数料）。全履歴の account_pnl とは対象期間が異なる',
 	),
 	deposit_withdrawal_summary: DepositWithdrawalSummarySchema,
 	yearly_dw_summary: PeriodDWSummarySchema.describe('年初来の入出金サマリー（当年1/1 00:00 JST〜現在）'),

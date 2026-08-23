@@ -3672,3 +3672,317 @@ describe('analyze_my_portfolio — 価格の price_digits 準拠の丸め', () =
 		expect(result.data.total_jpy_value).toBe(Math.round(result.data.total_jpy_value));
 	});
 });
+
+/**
+ * #59 6-1: Realized PnL 3 系統のスコープ明示。
+ *
+ * 同一出力に「全履歴・全銘柄（account_pnl.spot_realized_pnl / total_realized_pnl）」
+ * 「年初来・月初来（yearly_/monthly_）」「全履歴だが現在保有中の銘柄のみ（holdings[].realized_pnl の合計）」
+ * が併存する。差分は売り切り銘柄ぶんなので、その内訳を closed_position_realized_pnl として出し、
+ * 検算式が出力上で閉じることをここで固定する。
+ */
+describe('analyze_my_portfolio — Realized PnL のスコープと売り切り銘柄の内訳', () => {
+	/** xrp のみ保有（onhand 1000）+ JPY。doge / xlm は保有せず「売り切り銘柄」になる */
+	const xrpOnlyAssets = {
+		assets: [assetFixture('xrp'), assetFixture('jpy')],
+	};
+
+	const emptyDw = { deposits: { deposits: [] }, withdrawals: { withdrawals: [] } };
+
+	/** 手数料ゼロの約定 1 件（原価・実現損益を暗算できる形にそろえる） */
+	function trade(id: number, pair: string, side: 'buy' | 'sell', amount: string, price: string, executedAt: number) {
+		return {
+			trade_id: id,
+			pair,
+			order_id: id,
+			side,
+			type: 'limit',
+			amount,
+			price,
+			maker_taker: 'maker',
+			fee_amount_base: '0',
+			fee_amount_quote: '0',
+			fee_occurred_amount_quote: '0',
+			executed_at: executedAt,
+		};
+	}
+
+	/**
+	 * 保有中銘柄（xrp）: 買 1200 @20 → 売 200 @30 で realized +2,000、残 1000（onhand と一致）。
+	 * 売り切り銘柄（doge）: 買 1000 @10 → 売 1000 @15 で realized +5,000、残 0（holdings に載らない）。
+	 */
+	const heldAndClosedTrades = {
+		trades: [
+			trade(5901, 'xrp_jpy', 'buy', '1200', '20', 1710000000000),
+			trade(5902, 'xrp_jpy', 'sell', '200', '30', 1710000100000),
+			trade(5903, 'doge_jpy', 'buy', '1000', '10', 1710000200000),
+			trade(5904, 'doge_jpy', 'sell', '1000', '15', 1710000300000),
+		],
+	};
+
+	/** 保有中銘柄（xrp）だけ。売り切り銘柄は 1 件も無い */
+	const heldOnlyTrades = {
+		trades: [
+			trade(5901, 'xrp_jpy', 'buy', '1200', '20', 1710000000000),
+			trade(5902, 'xrp_jpy', 'sell', '200', '30', 1710000100000),
+		],
+	};
+
+	function callHandler() {
+		return import('../../src/handlers/analyzeMyPortfolioHandler.js').then(({ default: handler }) =>
+			handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: false }),
+		);
+	}
+
+	/** holdings[].realized_pnl の合計（undefined の JPY 行は除外） */
+	function sumHoldingsRealizedPnl(holdings: Array<{ realized_pnl?: number }>): number {
+		return holdings.reduce((acc, h) => acc + (h.realized_pnl ?? 0), 0);
+	}
+
+	it('受け入れ: 検算式 Σ holdings[].realized_pnl + closed_position_realized_pnl = account_pnl.spot_realized_pnl が成立する', async () => {
+		setupFetchMock({ assets: xrpOnlyAssets, trades: heldAndClosedTrades, ...emptyDw });
+
+		const result = await callHandler();
+
+		assertOk(result);
+		// 保有中銘柄ぶん（xrp のみ。doge は保有ゼロなので holdings に載らない）
+		const heldSum = sumHoldingsRealizedPnl(result.data.holdings);
+		expect(heldSum).toBeCloseTo(2000, 6);
+		expect(result.data.holdings.some((h: { asset: string }) => h.asset === 'doge')).toBe(false);
+
+		// 売り切り銘柄ぶん（doge）
+		expect(result.data.closed_position_realized_pnl).toBeCloseTo(5000, 6);
+		expect(result.data.closed_position_asset_count).toBe(1);
+
+		// 検算式が閉じる
+		expect(heldSum + result.data.closed_position_realized_pnl).toBeCloseTo(
+			result.data.account_pnl.spot_realized_pnl,
+			6,
+		);
+		expect(result.data.account_pnl.spot_realized_pnl).toBeCloseTo(7000, 6);
+		// total_realized_pnl は account_pnl.spot_realized_pnl と同値（3 系統の対応関係）
+		expect(result.data.total_realized_pnl).toBeCloseTo(result.data.account_pnl.spot_realized_pnl, 6);
+	});
+
+	it('受け入れ: summary のラベルにスコープが載り、内訳行で保有中 / 売り切りが分かれる', async () => {
+		setupFetchMock({ assets: xrpOnlyAssets, trades: heldAndClosedTrades, ...emptyDw });
+
+		const result = await callHandler();
+
+		assertOk(result);
+		// 旧実装は 'Realized PnL (Spot): ' のみでスコープが読めなかった
+		expect(result.summary).toContain('Realized PnL (Spot, 全履歴・売り切り銘柄含む): +7,000円');
+		expect(result.summary).toContain(
+			'内訳: 現在保有銘柄（holdings[].realized_pnl の合計）+2,000円 / 売り切り銘柄 1銘柄 +5,000円',
+		);
+		expect(result.summary).toContain('Account PnL (全履歴):');
+		// 年初来 / 月初来が data 側にしか無いことを text だけの LLM に伝える
+		expect(result.summary).toContain('yearly_account_pnl / monthly_account_pnl');
+	});
+
+	it('売り切り銘柄ゼロ件: closed_position_realized_pnl は 0（未集計の undefined とは区別）で検算式も成立', async () => {
+		setupFetchMock({ assets: xrpOnlyAssets, trades: heldOnlyTrades, ...emptyDw });
+
+		const result = await callHandler();
+
+		assertOk(result);
+		expect(result.data.closed_position_realized_pnl).toBe(0);
+		expect(result.data.closed_position_asset_count).toBe(0);
+		const heldSum = sumHoldingsRealizedPnl(result.data.holdings);
+		expect(heldSum).toBeCloseTo(result.data.account_pnl.spot_realized_pnl, 6);
+		expect(result.summary).toContain(
+			'内訳: 現在保有銘柄（holdings[].realized_pnl の合計）+2,000円 / 売り切り銘柄なし（0円）',
+		);
+	});
+
+	it('実現損益ちょうど 0 の売り切り銘柄は件数に数えない（合計にも寄与しない）', async () => {
+		setupFetchMock({
+			assets: xrpOnlyAssets,
+			trades: {
+				trades: [
+					...heldAndClosedTrades.trades,
+					// xlm: 買 100 @10 → 売 100 @10 で realized ちょうど 0 の売り切り銘柄
+					trade(5905, 'xlm_jpy', 'buy', '100', '10', 1710000400000),
+					trade(5906, 'xlm_jpy', 'sell', '100', '10', 1710000500000),
+				],
+			},
+			...emptyDw,
+		});
+
+		const result = await callHandler();
+
+		assertOk(result);
+		expect(result.data.closed_position_realized_pnl).toBeCloseTo(5000, 6);
+		// doge の 1 件のみ。xlm は 0 円なので合計に寄与せず件数にも入らない
+		expect(result.data.closed_position_asset_count).toBe(1);
+	});
+
+	it('売り切り銘柄が複数: 合計と件数が両方積み上がる', async () => {
+		setupFetchMock({
+			assets: xrpOnlyAssets,
+			trades: {
+				trades: [
+					...heldAndClosedTrades.trades,
+					// xlm: 買 100 @10 → 売 100 @7 で realized -300 の売り切り銘柄
+					trade(5905, 'xlm_jpy', 'buy', '100', '10', 1710000400000),
+					trade(5906, 'xlm_jpy', 'sell', '100', '7', 1710000500000),
+				],
+			},
+			...emptyDw,
+		});
+
+		const result = await callHandler();
+
+		assertOk(result);
+		expect(result.data.closed_position_realized_pnl).toBeCloseTo(4700, 6);
+		expect(result.data.closed_position_asset_count).toBe(2);
+		const heldSum = sumHoldingsRealizedPnl(result.data.holdings);
+		expect(heldSum + result.data.closed_position_realized_pnl).toBeCloseTo(
+			result.data.account_pnl.spot_realized_pnl,
+			6,
+		);
+	});
+
+	it('約定履歴 0 件: 集計していないので closed_position_* は undefined（0 ではない）で内訳行も出ない', async () => {
+		setupFetchMock({ assets: xrpOnlyAssets, trades: { trades: [] }, ...emptyDw });
+
+		const result = await callHandler();
+
+		assertOk(result);
+		expect(result.data.closed_position_realized_pnl).toBeUndefined();
+		expect(result.data.closed_position_asset_count).toBeUndefined();
+		expect(result.summary).not.toContain('内訳: 現在保有銘柄');
+	});
+
+	it('include_pnl=false: 損益出力自体が無いので closed_position_* も Realized PnL 行も出ない', async () => {
+		setupFetchMock({ assets: xrpOnlyAssets, trades: heldAndClosedTrades, ...emptyDw });
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: false,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		expect(result.data.closed_position_realized_pnl).toBeUndefined();
+		expect(result.data.closed_position_asset_count).toBeUndefined();
+		expect(result.summary).not.toContain('Realized PnL (Spot');
+	});
+});
+
+/**
+ * #59 6-2: ゼロ建玉の表示抑制。
+ *
+ * 実口座では決済済みペアのゼロ建玉が居座り、実建玉が埋もれる（#53 症状 7 前半）。
+ * 明細行からは落とすが、省略件数は集計行に必ず出す（黙って消さない）。
+ * structuredContent 側には元から建玉データを載せていないため、変更は表示テキストのみ。
+ */
+describe('analyze_my_portfolio — ゼロ建玉の表示抑制', () => {
+	/** 建玉数量・評価額ともゼロの行（決済済みペアの残骸） */
+	function zeroPosition(pair: string, side: 'long' | 'short') {
+		return {
+			pair,
+			position_side: side,
+			open_amount: '0',
+			product: '0',
+			average_price: '0',
+			unrealized_fee_amount: '0',
+			unrealized_interest_amount: '0',
+		};
+	}
+
+	function positionsResponse(positions: unknown[]) {
+		return {
+			notice: null,
+			payables: { amount: '0' },
+			positions,
+			losscut_threshold: { individual: '110', company: '120' },
+		};
+	}
+
+	function callHandler() {
+		return import('../../src/handlers/analyzeMyPortfolioHandler.js').then(({ default: handler }) =>
+			handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: false }),
+		);
+	}
+
+	it('受け入れ: 実建玉とゼロ建玉の混在では実建玉のみ表示し、省略件数を集計行に併記する', async () => {
+		setupFetchMock({
+			marginPositions: positionsResponse([
+				rawMarginPositionsResponse.positions[0], // btc ロング 0.01（実建玉）
+				zeroPosition('xrp_jpy', 'long'),
+				zeroPosition('ltc_jpy', 'short'),
+			]),
+		});
+
+		const result = await callHandler();
+
+		assertOk(result);
+		expect(result.summary).toContain('信用建玉:');
+		expect(result.summary).toContain('BTC/JPY ロング 0.01');
+		// ゼロ建玉の明細行は出ない
+		expect(result.summary).not.toContain('XRP/JPY ロング 0');
+		expect(result.summary).not.toContain('LTC/JPY ショート 0');
+		// 件数は実建玉のみを数え、省略件数を併記する
+		expect(result.summary).toContain('集計: ロング 1件 / ショート 0件 / ゼロ建玉 2件省略');
+	});
+
+	it('全建玉がゼロ: セクションは出すが明細行は 0 行、集計行で省略件数を申告する', async () => {
+		setupFetchMock({
+			marginPositions: positionsResponse([
+				zeroPosition('btc_jpy', 'long'),
+				zeroPosition('eth_jpy', 'short'),
+				zeroPosition('xrp_jpy', 'long'),
+			]),
+		});
+
+		const result = await callHandler();
+
+		assertOk(result);
+		// セクションごと消すと省略件数の申告先が無くなり「建玉なし」と区別できなくなる
+		expect(result.summary).toContain('信用建玉:');
+		expect(result.summary).toContain('集計: ロング 0件 / ショート 0件 / ゼロ建玉 3件省略');
+		// 明細行は 1 行も出ない
+		expect(result.summary).not.toContain('BTC/JPY ロング 0');
+		expect(result.summary).not.toContain('ETH/JPY ショート 0');
+		expect(result.summary).not.toContain('XRP/JPY ロング 0');
+	});
+
+	it('回帰: 建玉そのものが 0 件ならセクション自体を出さない（省略注記も出ない）', async () => {
+		setupFetchMock({ marginPositions: positionsResponse([]) });
+
+		const result = await callHandler();
+
+		assertOk(result);
+		expect(result.summary).not.toContain('信用建玉:');
+		expect(result.summary).not.toContain('ゼロ建玉');
+	});
+
+	it('回帰: 実建玉のみなら従来どおり全件表示し、省略注記は付かない', async () => {
+		setupFetchMock({ marginPositions: rawMarginPositionsResponse });
+
+		const result = await callHandler();
+
+		assertOk(result);
+		expect(result.summary).toContain('BTC/JPY ロング 0.01');
+		expect(result.summary).toContain('ETH/JPY ショート 1.0');
+		expect(result.summary).toContain('集計: ロング 1件 / ショート 1件');
+		expect(result.summary).not.toContain('ゼロ建玉');
+	});
+
+	it('open_amount=0 でも評価額が非ゼロなら抑制しない（ゼロと断定できる行だけ落とす）', async () => {
+		setupFetchMock({
+			marginPositions: positionsResponse([
+				{ ...zeroPosition('btc_jpy', 'long'), product: '150000' },
+				zeroPosition('eth_jpy', 'short'),
+			]),
+		});
+
+		const result = await callHandler();
+
+		assertOk(result);
+		expect(result.summary).toContain('BTC/JPY ロング 0 (評価額: ¥150,000円)');
+		expect(result.summary).toContain('集計: ロング 1件 / ショート 0件 / ゼロ建玉 1件省略');
+	});
+});
