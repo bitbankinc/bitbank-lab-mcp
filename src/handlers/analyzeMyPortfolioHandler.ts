@@ -16,6 +16,7 @@ import { prependWarnings } from '../../lib/warning-propagation.js';
 import { getDefaultClient } from '../private/client.js';
 import {
 	AnalyzeMyPortfolioOutputSchema,
+	type PortfolioChangePctUnavailableReason,
 	type PortfolioFlowUnavailableReason,
 	type PortfolioFlowValuationBasis,
 	type PortfolioQtyMismatchReason,
@@ -36,6 +37,7 @@ import {
 	type DepositCostBasisInput,
 	flowUnavailableReasonFor,
 	getJstPeriodBoundaries,
+	MIN_START_VALUE_RATIO,
 	type PeriodSpec,
 	type PortfolioPerformanceContext,
 	qtyInvariantHolds,
@@ -185,6 +187,17 @@ const FLOW_UNAVAILABLE_NOTE: Record<PortfolioFlowUnavailableReason, string> = {
 	dw_history_incomplete: '入出金履歴が多く全件取得できなかったため取得原価を確定できません（再実行しても解消しません）',
 };
 
+/**
+ * 増減率を出さなかった理由コードごとの説明句（summary の注記行 / meta.warnings 共通）。
+ *
+ * 率が消えた理由を書かないと「率を取れなかった」のか「ゼロ %」なのか読み手に区別できない。
+ * 閾値（現在評価額の 1%）は `MIN_START_VALUE_RATIO` が単一ソース。
+ */
+const CHANGE_PCT_UNAVAILABLE_NOTE: Record<PortfolioChangePctUnavailableReason, string> = {
+	start_value_zero: '期初評価額が 0 で率を定義できないため',
+	start_value_negligible: `期初評価額が現在評価額の ${MIN_START_VALUE_RATIO * 100}% 未満で、率が運用成績ではなく「期初がほぼ空だった」ことを表す数になるため`,
+};
+
 /** 数量乖離の理由コードごとの原因表示（銘柄名に添える短句）。 */
 const QTY_MISMATCH_CAUSE: Record<PortfolioQtyMismatchReason, string> = {
 	has_crypto_deposits: '入庫日の価格を解決できない暗号資産の入庫あり',
@@ -198,6 +211,11 @@ const QTY_MISMATCH_CAUSE: Record<PortfolioQtyMismatchReason, string> = {
  * 純入出金が未計測（`flow_measured: false`）のときは調整後増減の行を出す代わりに
  * 「未計測」であることを明示する。ここで黙って行を省くと、テキストしか読まない LLM には
  * 「入出金調整が不要な口座」に見えてしまう。
+ *
+ * 増減率を抑止した期間（`change_pct_unavailable_reason` あり）でも同じ理由で、率を黙って
+ * 落とさず**金額 + なぜ率が出ないか**を 1 行足す。率が消えた理由が分からないと
+ * 「率を取れなかった」のか「ゼロ %」なのかを読み手が区別できない。注記は増減額の直後に置く
+ * （`change_pct` と `adjusted_change_pct` は分母が同じで必ず同時に落ちるため 1 行で両方を説明する）。
  */
 function buildPerformanceLines(label: string, p: PeriodPerformance): string[] {
 	const lines: string[] = [];
@@ -206,6 +224,11 @@ function buildPerformanceLines(label: string, p: PeriodPerformance): string[] {
 	lines.push(
 		`  増減: ${sign}${formatPriceJPY(p.change_jpy)}${p.change_pct != null ? ` (${formatPercent(p.change_pct, { sign: true })})` : ''}`,
 	);
+	if (p.change_pct_unavailable_reason) {
+		lines.push(
+			`  ※ 増減率・入出金調整後増減率は非表示（${CHANGE_PCT_UNAVAILABLE_NOTE[p.change_pct_unavailable_reason]}）。増減額で読んでください`,
+		);
+	}
 
 	// flow_measured=false のとき 3 フィールドはすべて null。型の絞り込みも兼ねて null で分岐する。
 	if (p.net_flow_jpy == null || p.withdrawal_fee_jpy == null || p.adjusted_change_jpy == null) {
@@ -1230,6 +1253,15 @@ export default async function analyzeMyPortfolioHandler(args: {
 				...(yearlyPerformance?.unpriced_flow_assets ?? []),
 			]),
 		].sort();
+		// 増減率（change_pct / adjusted_change_pct）を抑止した期間（#71）。
+		// 理由は各期間の summary 注記行にも出るが、content 先頭の warning にも出す
+		// （`.claude/rules/tools.md`。率が undefined な理由を LLM が説明できないと「ゼロ %」と読まれる）。
+		// 並びは summary の期間ブロックと同じ（前日比 → 年初比 → 月初比）。
+		const changePctSuppressed = [
+			{ key: 'daily' as const, label: '前日比', reason: dailyPerformance?.change_pct_unavailable_reason },
+			{ key: 'yearly' as const, label: '年初比', reason: yearlyPerformance?.change_pct_unavailable_reason },
+			{ key: 'monthly' as const, label: '月初比', reason: monthlyPerformance?.change_pct_unavailable_reason },
+		].filter((e): e is typeof e & { reason: PortfolioChangePctUnavailableReason } => e.reason != null);
 		const calcWarnings: string[] = [];
 		// 取得原価が確定できない件は content 先頭に出す。summary 本文の「算出不能」行だけだと
 		// JSON より後ろに埋もれる位置に来ることがあり、LLM が数値の欠落理由に辿り着けない。
@@ -1247,6 +1279,15 @@ export default async function analyzeMyPortfolioHandler(args: {
 		if (netFlowUnpricedAssets.length > 0) {
 			calcWarnings.push(
 				`${netFlowUnpricedAssets.map((a) => a.toUpperCase()).join(', ')} は入出庫日価格・現在価格のいずれも取得できず、期間中の入出庫を純入出金に計上できませんでした（未計上が入庫なら純入出金は過小・入出金調整後増減は過大、出庫なら逆向きにずれます）`,
+			);
+		}
+		// 期間ごとに理由が割れうる（前日比は期初 0、年初比は期初が極小、など）ので理由コード単位でまとめる。
+		// キーの網羅は CHANGE_PCT_UNAVAILABLE_NOTE（Record<理由コード, string>）が型で保証する。
+		for (const reason of Object.keys(CHANGE_PCT_UNAVAILABLE_NOTE) as PortfolioChangePctUnavailableReason[]) {
+			const labels = changePctSuppressed.filter((e) => e.reason === reason).map((e) => e.label);
+			if (labels.length === 0) continue;
+			calcWarnings.push(
+				`${labels.join(' / ')}の増減率（change_pct / adjusted_change_pct）は出していません（${CHANGE_PCT_UNAVAILABLE_NOTE[reason]}）。増減額（change_jpy / adjusted_change_jpy）は出しているので成績はそちらで読むこと。率が無いのは「ゼロ %」の意味ではありません`,
 			);
 		}
 		// 入出庫日の日次価格を解決できず現在価格に落ちた分は、評価額が相場と連動して動く
@@ -1347,6 +1388,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 			flowDataUnavailableReason: flowUnavailableReason,
 			flowValuationBasis: flowValuation?.basis,
 			flowValuationFallbackCount: flowValuationFallbackCount > 0 ? flowValuationFallbackCount : undefined,
+			changePctUnavailablePeriods: changePctSuppressed.length > 0 ? changePctSuppressed.map((e) => e.key) : undefined,
 			warnings: calcWarnings.length > 0 ? calcWarnings : undefined,
 		};
 

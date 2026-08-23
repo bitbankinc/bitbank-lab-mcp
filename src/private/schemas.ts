@@ -232,6 +232,23 @@ export type PortfolioCostBasisUnavailableReason = z.infer<typeof PortfolioCostBa
 export type PortfolioQtyMismatchReason = Exclude<PortfolioCostBasisUnavailableReason, PortfolioFlowUnavailableReason>;
 
 /**
+ * 期間パフォーマンスの増減率（`change_pct` / `adjusted_change_pct`）を出せない理由コード。
+ *
+ * 両フィールドは分母が同じ `start_value_jpy` なので、抑止も必ず同時に起きる（片方だけ落ちることは無い）。
+ * `adjusted_change_pct` は純入出金が未計測のときに先に `null` になるため、その場合は
+ * 「未計測（null）」が優先され、本コードは `change_pct` 側の説明としてのみ意味を持つ。
+ */
+export const PortfolioChangePctUnavailableReasonEnum = z.enum([
+	/** 期初評価額が 0（0 除算になるため率を定義できない） */
+	'start_value_zero',
+	/** 期初評価額が現在評価額の `MIN_START_VALUE_RATIO`（1%）未満で、率が運用成績ではなく「期初がほぼ空だった」ことを表す数になる */
+	'start_value_negligible',
+]);
+
+/** @see PortfolioChangePctUnavailableReasonEnum */
+export type PortfolioChangePctUnavailableReason = z.infer<typeof PortfolioChangePctUnavailableReasonEnum>;
+
+/**
  * 暗号資産入出庫を JPY 換算した方式の単一ソース（`*_valuation.basis`）。
  *
  * 換算は**入出庫日（入庫: `confirmed_at` / 出庫: `requested_at`）当日の 1day open** を第一候補にする。
@@ -474,7 +491,12 @@ const PeriodPerformanceSchema = z
 			.describe('期初の口座評価額（JPY）。現在の保有状態から約定・入出金を逆算して復元し、期初時点の始値で評価'),
 		current_value_jpy: z.number().describe('現在の口座評価額（JPY）'),
 		change_jpy: z.number().describe('単純増減額 = current_value_jpy - start_value_jpy'),
-		change_pct: z.number().optional().describe('単純増減率（%）。start_value_jpy が 0 の場合は undefined'),
+		change_pct: z
+			.number()
+			.optional()
+			.describe(
+				'単純増減率（%）= change_jpy / start_value_jpy。**期初評価額が小さすぎて率が意味を持たない場合は undefined**（理由は change_pct_unavailable_reason）: (1) start_value_jpy が 0、(2) start_value_jpy が current_value_jpy の 1% 未満。(2) は年初にほぼ空だった口座に入金して運用を始めた場合に起き、率は運用成績ではなく「期初がほぼ空だった」ことを表す数になるため出さない（増減額 change_jpy は出す）。undefined は「率がゼロ」ではない',
+			),
 		net_flow_jpy: z
 			.number()
 			.nullable()
@@ -497,7 +519,9 @@ const PeriodPerformanceSchema = z
 			.number()
 			.nullable()
 			.optional()
-			.describe('調整後増減率（%）。start_value_jpy が 0 の場合は undefined、純入出金が未計測の場合は null'),
+			.describe(
+				'調整後増減率（%）= adjusted_change_jpy / start_value_jpy。null=純入出金が未計測で算出不能。undefined=change_pct と同じ理由で分母が使えない（start_value_jpy が 0、または current_value_jpy の 1% 未満。理由は change_pct_unavailable_reason）。分母が change_pct と共通なので抑止は必ず両方同時に起きる',
+			),
 		period_start: z.string().describe('期間の開始日時（ISO8601 JST）'),
 		period_end: z.string().describe('期間の終了日時（ISO8601 JST）'),
 		note: z.string().describe('計算方法・注意事項の説明'),
@@ -517,6 +541,9 @@ const PeriodPerformanceSchema = z
 			),
 		flow_valuation: FlowValuationSchema.optional().describe(
 			'net_flow_jpy に計上した暗号資産入出庫の換算方式の内訳。期間中に暗号資産の入出庫が無い / 全件で価格を解決できなかった場合は undefined（JPY のみの入出金は換算不要なので数えない）',
+		),
+		change_pct_unavailable_reason: PortfolioChangePctUnavailableReasonEnum.optional().describe(
+			'change_pct / adjusted_change_pct を出せなかった理由。start_value_zero=期初評価額が 0、start_value_negligible=期初評価額が現在評価額の 1% 未満（相対基準。絶対額固定は口座規模に依存するため採らない）。設定されている場合 change_pct は undefined で、adjusted_change_pct は undefined（純入出金が未計測なら null が優先）。増減額 change_jpy / adjusted_change_jpy は通常どおり出るので、成績はそちらで読むこと。率を出せている場合は undefined',
 		),
 	})
 	.optional();
@@ -669,6 +696,12 @@ export const AnalyzeMyPortfolioMetaSchema = z.object({
 		.optional()
 		.describe(
 			'入出庫日の日次価格を解決できず現在価格で仮評価した入出庫の件数。1 件以上あると deposit_withdrawal_summary / *_dw_summary / *_performance.net_flow_jpy の該当分が相場と連動して動く。該当なしのときは undefined。',
+		),
+	changePctUnavailablePeriods: z
+		.array(z.enum(['daily', 'monthly', 'yearly']))
+		.optional()
+		.describe(
+			'増減率（change_pct / adjusted_change_pct）を出さなかった期間の一覧。期初評価額が 0、または現在評価額の 1% 未満で率が意味を持たない期間が対象で、期間ごとの理由コードは *_performance.change_pct_unavailable_reason に載る。該当なしのときは undefined（「全期間で率が出ている」の意味であり、率がゼロという意味ではない）。',
 		),
 	warnings: z
 		.array(z.string())

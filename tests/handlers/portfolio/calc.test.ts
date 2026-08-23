@@ -2131,6 +2131,150 @@ describe('buildPeriodPerformance', () => {
 		expect(result.adjusted_change_jpy).toBe(0);
 		expect(result.change_pct).toBeUndefined();
 		expect(result.adjusted_change_pct).toBeUndefined();
+		expect(result.change_pct_unavailable_reason).toBe('start_value_zero');
+	});
+
+	/**
+	 * #71: 期初評価額が極小のとき増減率が意味を持たない。
+	 *
+	 * 分母がゼロでさえなければ通す従来のガードでは、年初にほぼ空だった口座に入金して運用を
+	 * 始めた場合に 5 桁の百分率（+26929.2% 等）が出る。抑止の基準は `MIN_START_VALUE_RATIO`
+	 * （期初評価額が現在評価額の 1% 未満）。以下のブロックはその境界と 3 期間の一致を固定する。
+	 */
+	describe('増減率の抑止（期初評価額が現在評価額に対して極小）', () => {
+		/**
+		 * JPY 単独口座で「現在 `currentValue` 円・うち `depositAmount` 円が期間中の入金」の
+		 * コンテキストを作る。期初評価額 = currentValue - depositAmount（入金を巻き戻した値）。
+		 * 価格解決を挟まないので期初評価額を 1 円単位で狙える。
+		 */
+		function jpyDepositCtx(currentValue: number, depositAmount: number): PortfolioPerformanceContext {
+			const dw: DepositWithdrawalData = {
+				deposits: [
+					{
+						uuid: 'd-jpy',
+						asset: 'jpy',
+						amount: String(depositAmount),
+						status: 'DONE',
+						found_at: 1500,
+						confirmed_at: 1500,
+					},
+				],
+				withdrawals: [],
+				warnings: [],
+				allFailed: false,
+				isComplete: true,
+			};
+			return makeCtx({
+				currentHoldings: [{ asset: 'jpy', amount: String(currentValue) }],
+				dwData: dw,
+				candlePriceData: { boundaryPrices: new Map(), dailyPrices: new Map() },
+				flowPricing: currentPriceOnly(),
+				currentValue,
+			});
+		}
+
+		it('期初評価額が現在評価額の 1% 未満: 率を落として金額だけ残す（5 桁の百分率を出さない）', () => {
+			// issue #71 の実測構成: 期初 5,745 円 → 現在 1,552,826 円（差の 1,547,081 円は期間中の入金）。
+			// 従来ガードでは change_pct = +26929.2% が出ていた。
+			const result = buildPeriodPerformance(
+				{ key: 'yearly', startMs: 1000, startIso: 's' },
+				jpyDepositCtx(1_552_826, 1_547_081),
+			);
+			expect(result.start_value_jpy).toBe(5_745);
+			expect(result.change_jpy).toBe(1_547_081); // 金額は残す
+			expect(result.change_pct).toBeUndefined();
+			expect(result.adjusted_change_pct).toBeUndefined();
+			expect(result.change_pct_unavailable_reason).toBe('start_value_negligible');
+		});
+
+		it('境界ちょうど（期初 = 現在の 1%）: 率を出す', () => {
+			// 現在 1,000,000 / 期初 10,000 = ちょうど 1%。閾値ちょうどは「率を出す」側に入れる。
+			const result = buildPeriodPerformance(
+				{ key: 'yearly', startMs: 1000, startIso: 's' },
+				jpyDepositCtx(1_000_000, 990_000),
+			);
+			expect(result.start_value_jpy).toBe(10_000);
+			expect(result.change_pct).toBe(9900); // 990_000 / 10_000
+			expect(result.adjusted_change_pct).toBe(0); // 増減が全額入金由来
+			expect(result.change_pct_unavailable_reason).toBeUndefined();
+		});
+
+		it('境界のわずかに上（期初が 1% + 1 円）: 率を出す', () => {
+			const result = buildPeriodPerformance(
+				{ key: 'yearly', startMs: 1000, startIso: 's' },
+				jpyDepositCtx(1_000_000, 989_999),
+			);
+			expect(result.start_value_jpy).toBe(10_001);
+			expect(result.change_pct).toBe(9899); // 989,999 / 10,001
+			expect(result.change_pct_unavailable_reason).toBeUndefined();
+		});
+
+		it('境界のわずかに下（期初が 1% - 1 円）: 率を落とす', () => {
+			const result = buildPeriodPerformance(
+				{ key: 'yearly', startMs: 1000, startIso: 's' },
+				jpyDepositCtx(1_000_000, 990_001),
+			);
+			expect(result.start_value_jpy).toBe(9_999);
+			expect(result.change_jpy).toBe(990_001);
+			expect(result.change_pct).toBeUndefined();
+			expect(result.adjusted_change_pct).toBeUndefined();
+			expect(result.change_pct_unavailable_reason).toBe('start_value_negligible');
+		});
+
+		it('daily / monthly / yearly の 3 期間で同じ判定になる（共通経路 buildPeriodPerformance）', () => {
+			const ctx = jpyDepositCtx(1_552_826, 1_547_081);
+			for (const key of ['daily', 'monthly', 'yearly'] as const) {
+				const result = buildPeriodPerformance({ key, startMs: 1000, startIso: 's' }, ctx);
+				expect(result.change_pct, key).toBeUndefined();
+				expect(result.adjusted_change_pct, key).toBeUndefined();
+				expect(result.change_pct_unavailable_reason, key).toBe('start_value_negligible');
+			}
+		});
+
+		it('通常規模の期初評価額では従来どおり率が出る（回帰）', () => {
+			// 期初 500,000 / 現在 1,000,000 → 期初は現在の 50% で閾値を大きく上回る。
+			const result = buildPeriodPerformance(
+				{ key: 'yearly', startMs: 1000, startIso: 's' },
+				jpyDepositCtx(1_000_000, 500_000),
+			);
+			expect(result.start_value_jpy).toBe(500_000);
+			expect(result.change_pct).toBe(100);
+			expect(result.adjusted_change_pct).toBe(0);
+			expect(result.change_pct_unavailable_reason).toBeUndefined();
+		});
+
+		it('純入出金が未計測なら adjusted_change_pct は null が優先される（抑止の undefined ではない）', () => {
+			// 「率を出せない」（undefined）と「そもそも算出できない」（null）は別の意味なので潰さない。
+			const ctx = { ...jpyDepositCtx(1_552_826, 1_547_081), flowUnavailableReason: 'dw_history_incomplete' as const };
+			const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
+			expect(result.change_pct).toBeUndefined();
+			expect(result.adjusted_change_pct).toBeNull();
+			expect(result.adjusted_change_jpy).toBeNull();
+			expect(result.change_pct_unavailable_reason).toBe('start_value_negligible');
+		});
+
+		it('全額出金して現在評価額が 0 になった口座は抑止しない（-100% は意味のある率）', () => {
+			// 期初 1,000,000 → 全額出金して現在 0。相対基準は分母（期初）側を見るので、
+			// 現在評価額が小さいことを理由に率を落としてはいけない。
+			const dw: DepositWithdrawalData = {
+				deposits: [],
+				withdrawals: [{ uuid: 'w-jpy', asset: 'jpy', amount: '1000000', fee: '0', status: 'DONE', requested_at: 1500 }],
+				warnings: [],
+				allFailed: false,
+				isComplete: true,
+			};
+			const ctx = makeCtx({
+				currentHoldings: [],
+				dwData: dw,
+				candlePriceData: { boundaryPrices: new Map(), dailyPrices: new Map() },
+				flowPricing: currentPriceOnly(),
+				currentValue: 0,
+			});
+			const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
+			expect(result.start_value_jpy).toBe(1_000_000);
+			expect(result.change_pct).toBe(-100);
+			expect(result.change_pct_unavailable_reason).toBeUndefined();
+		});
 	});
 
 	it('期間内に売買あり: reconstructHoldingsAtDate で期初保有が逆算される', () => {

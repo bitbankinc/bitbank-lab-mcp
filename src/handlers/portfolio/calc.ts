@@ -9,6 +9,7 @@
 import { dayjs } from '../../../lib/datetime.js';
 import type {
 	DepositWithdrawalStatus,
+	PortfolioChangePctUnavailableReason,
 	PortfolioFlowUnavailableReason,
 	PortfolioQtyMismatchReason,
 } from '../../private/schemas.js';
@@ -1307,7 +1308,7 @@ export function calcPeriodNetFlow(
 // ── 期間別パフォーマンス（評価額比較） ──
 
 export const PERFORMANCE_NOTE =
-	'期初評価額は現在の保有状態から約定・入出金を逆算して復元し、期初時点の始値（1day candle open）で評価。暗号資産の入出庫は入出庫日（入庫: confirmed_at / 出庫: requested_at）の始値で JPY 換算し、その日の価格を取得できなかった分のみ現在価格で仮評価する（内訳は flow_valuation）。純入出金は元本移動のみ（出金手数料を含まない）。調整後増減 = 単純増減 - 純入出金（市場変動 + 出金手数料コスト）。';
+	'期初評価額は現在の保有状態から約定・入出金を逆算して復元し、期初時点の始値（1day candle open）で評価。暗号資産の入出庫は入出庫日（入庫: confirmed_at / 出庫: requested_at）の始値で JPY 換算し、その日の価格を取得できなかった分のみ現在価格で仮評価する（内訳は flow_valuation）。純入出金は元本移動のみ（出金手数料を含まない）。調整後増減 = 単純増減 - 純入出金（市場変動 + 出金手数料コスト）。増減率（change_pct / adjusted_change_pct）は期初評価額が 0、または現在評価額の 1% 未満のときは出さない（分母が小さすぎて率が運用成績ではなく「期初がほぼ空だった」ことを表す数になるため。理由は change_pct_unavailable_reason、増減額は通常どおり出る）。';
 
 export type PeriodPerformanceKey = 'daily' | 'monthly' | 'yearly';
 
@@ -1343,12 +1344,61 @@ export interface PortfolioPerformanceContext {
 }
 
 /**
- * 調整後増減率を求める。純入出金が未計測（`adjusted` が null）なら `null`、
- * 期初評価額が 0 なら 0 除算回避で `undefined`（従来どおりキーごと落とす）。
+ * 増減率を出すために期初評価額が満たすべき、**現在評価額に対する**下限比率（1% = 1/100）。
+ *
+ * ## なぜ相対基準か
+ *
+ * 率が意味を持つかは口座の絶対規模ではなく、分母（期初評価額）が測ろうとしている変動に対して
+ * 十分な大きさかで決まる。「1 万円未満なら抑止」のような絶対額固定は、期初 5 万円の口座では
+ * 緩すぎ（+3,000% を通す）、期初 500 万円の口座では何も抑止しない。現在評価額との比で見れば
+ * 口座規模に依存しない。
+ *
+ * ## なぜ 1% か
+ *
+ * この比が増減率の上限をそのまま決めるため。`change_pct = current / start - 1` なので、
+ * `start >= current * 1%` を満たす限り増減率は +9,900% を超えられない。裏を返すと、
+ * 率が 5 桁になるのは期初評価額が現在評価額の 1% を割ったときだけで、そこでの率は
+ * 「運用成績」ではなく「期初がほぼ空だった」ことを表す数になる（年初にほぼ空の口座へ
+ * 入金して運用を始めた場合に必ず起きる）。
  */
-function adjustedChangePct(adjusted: number | null, startValue: number): number | undefined | null {
+export const MIN_START_VALUE_RATIO = 0.01;
+
+/**
+ * `MIN_START_VALUE_RATIO` の逆数。判定を `startValue >= currentValue * 0.01` ではなく
+ * `startValue * 100 >= currentValue` と整数どうしの積で書くために使う
+ * （両値とも `Math.round` 済みの整数なので積は厳密。0.01 を掛ける形だと閾値ちょうどが
+ * 浮動小数誤差でどちら側に落ちるか決まらない）。
+ */
+const MIN_START_VALUE_RATIO_INVERSE = 100;
+
+/**
+ * `change_pct` / `adjusted_change_pct` を出せない理由を返す。出せるなら `undefined`。
+ *
+ * 両フィールドは分母が同じ `start_value_jpy` なので判定も 1 か所に集約する
+ * （＝ 片方だけ率が出る状態は作らない）。閾値ちょうど（`startValue * 100 === currentValue`）は
+ * **率を出す側**に入れる。
+ */
+export function changePctUnavailableReasonFor(
+	startValue: number,
+	currentValue: number,
+): PortfolioChangePctUnavailableReason | undefined {
+	if (startValue <= 0) return 'start_value_zero';
+	if (startValue * MIN_START_VALUE_RATIO_INVERSE < currentValue) return 'start_value_negligible';
+	return undefined;
+}
+
+/**
+ * 調整後増減率を求める。純入出金が未計測（`adjusted` が null）なら `null`、
+ * 分母が使えないとき（`unavailableReason` あり）は `undefined` でキーごと落とす。
+ */
+function adjustedChangePct(
+	adjusted: number | null,
+	startValue: number,
+	unavailableReason: PortfolioChangePctUnavailableReason | undefined,
+): number | undefined | null {
 	if (adjusted == null) return null;
-	return startValue > 0 ? Math.round((adjusted / startValue) * 10000) / 100 : undefined;
+	if (unavailableReason) return undefined;
+	return Math.round((adjusted / startValue) * 10000) / 100;
 }
 
 function pickBoundaryPrice(
@@ -1397,6 +1447,9 @@ export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerforman
 		? unmeasuredNetFlow()
 		: calcPeriodNetFlow(ctx.dwData, spec.startMs, ctx.flowPricing);
 	const change = ctx.currentValue - startValue;
+	// 増減率の分母（期初評価額）が使えるか。change_pct / adjusted_change_pct は分母が同じなので
+	// 判定を 1 回で共有し、片方だけ率が出る状態を作らない。
+	const pctUnavailableReason = changePctUnavailableReasonFor(startValue, ctx.currentValue);
 	// 未計測のフローを 0 とみなして引かない。引いてしまうと adjusted_change が
 	// 「入出金ゼロの口座の成績」という誤った確定値になる（それが -60.9% 型の表示の一因）。
 	const adjusted = flow.net_flow_jpy != null ? change - flow.net_flow_jpy : null;
@@ -1408,11 +1461,11 @@ export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerforman
 		start_value_jpy: startValue,
 		current_value_jpy: ctx.currentValue,
 		change_jpy: change,
-		change_pct: startValue > 0 ? Math.round((change / startValue) * 10000) / 100 : undefined,
+		change_pct: pctUnavailableReason ? undefined : Math.round((change / startValue) * 10000) / 100,
 		net_flow_jpy: flow.net_flow_jpy,
 		withdrawal_fee_jpy: flow.withdrawal_fee_jpy,
 		adjusted_change_jpy: adjusted,
-		adjusted_change_pct: adjustedChangePct(adjusted, startValue),
+		adjusted_change_pct: adjustedChangePct(adjusted, startValue, pctUnavailableReason),
 		period_start: spec.startIso,
 		period_end: ctx.nowIso,
 		note: PERFORMANCE_NOTE,
@@ -1421,5 +1474,6 @@ export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerforman
 	if (unavailableReason) performance.flow_unavailable_reason = unavailableReason;
 	if (flow.unpriced_assets) performance.unpriced_flow_assets = flow.unpriced_assets;
 	if (flow.valuation) performance.flow_valuation = flow.valuation;
+	if (pctUnavailableReason) performance.change_pct_unavailable_reason = pctUnavailableReason;
 	return performance;
 }

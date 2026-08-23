@@ -8,6 +8,7 @@ import type { BitbankPrivateClient } from '../../private/client.js';
 import type {
 	GetMarginPositionsDataSchema,
 	GetMarginStatusDataSchema,
+	PortfolioChangePctUnavailableReason,
 	PortfolioFlowUnavailableReason,
 	PortfolioFlowValuationBasis,
 } from '../../private/schemas.js';
@@ -270,6 +271,10 @@ export interface PeriodPerformance {
 	start_value_jpy: number;
 	current_value_jpy: number;
 	change_jpy: number;
+	/**
+	 * 単純増減率。`undefined` = 期初評価額が分母として使えない
+	 * （`change_pct_unavailable_reason` に理由コードが入る）。
+	 */
 	change_pct: number | undefined;
 	/** 期間中の純入出金（元本移動のみ）。`null` = 未計測（`flow_measured: false`） */
 	net_flow_jpy: number | null;
@@ -277,7 +282,11 @@ export interface PeriodPerformance {
 	withdrawal_fee_jpy: number | null;
 	/** 調整後増減額 = change_jpy - net_flow_jpy。`null` = 純入出金が未計測で算出不能 */
 	adjusted_change_jpy: number | null;
-	/** 調整後増減率。`undefined` = start_value_jpy が 0、`null` = 純入出金が未計測 */
+	/**
+	 * 調整後増減率。`null` = 純入出金が未計測、`undefined` = `change_pct` と同じ理由で
+	 * 分母が使えない（`change_pct_unavailable_reason`）。分母が共通なので `change_pct` と
+	 * 同時にしか抑止されない。
+	 */
 	adjusted_change_pct: number | undefined | null;
 	period_start: string;
 	period_end: string;
@@ -316,6 +325,14 @@ export interface PeriodPerformance {
 	 * （`crypto_deposit_valuation` と同じ理由。そちらの doc を参照）。
 	 */
 	flow_valuation?: FlowValuationBreakdown;
+	/**
+	 * `change_pct` / `adjusted_change_pct` を出せなかった理由（出せた場合は `undefined`）。
+	 *
+	 * 両フィールドは分母が同じ `start_value_jpy` なので、抑止は必ず同時に起きる。
+	 * 既存の出力フィールド順を崩さないため末尾に置き、該当なしのときは `undefined`
+	 * （JSON.stringify でキーごと落ちるため従来出力と一致する）。
+	 */
+	change_pct_unavailable_reason?: PortfolioChangePctUnavailableReason;
 }
 
 export interface CandlePriceData {
