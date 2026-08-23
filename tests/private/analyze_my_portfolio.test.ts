@@ -2156,9 +2156,14 @@ describe('analyze_my_portfolio — 純入出金の価格解決 warning', () => {
 		expect(result.data.yearly_performance?.unpriced_flow_assets).toBeUndefined();
 		expect(result.summary).not.toContain('純入出金に計上できませんでした');
 		// candle fixture は 2024 年分しか無く 2026 年の入庫日価格を解決できないため、
-		// 現在価格フォールバックの申告だけが残る（#57 (a) の 3 経路目。unpriced とは別系統）。
-		expect(result.meta.warnings).toHaveLength(1);
-		expect(result.meta.warnings?.[0]).toContain('現在価格で仮評価');
+		// 現在価格フォールバックの申告が残る（#57 (a) の 3 経路目。unpriced とは別系統）。
+		// もう 1 本は同じ入庫が取得原価に算入されなかったことの申告（#77）。純入出金には
+		// 現在価格で計上されるのに原価には入らない、という非対称をここで固定する。
+		// 並びは原価の完全性（銘柄単位）→ 換算のフォールバック（レスポンス全体）の順。
+		expect(result.meta.warnings).toHaveLength(2);
+		expect(result.meta.warnings?.[0]).toContain('BTC（1件）');
+		expect(result.meta.warnings?.[1]).toContain('現在価格で仮評価');
+		expect(result.data.holdings.find((h) => h.asset === 'btc')?.unpriced_deposit_count).toBe(1);
 		// 入庫は現在価格で引けているので net_flow に載る（0.1 BTC * 15_500_000 = 1_550_000）
 		expect(result.data.daily_performance?.net_flow_jpy).toBe(1_550_000);
 	});
@@ -3648,9 +3653,13 @@ describe('analyze_my_portfolio — API pair の取得境界正規化', () => {
 		expect(result.data.holdings.map((h) => h.asset).sort()).toEqual(['btc', 'jpy']);
 		// PR #37 の warning 経路。BTC の価格は引けているので誤検知してはいけない
 		expect(result.data.daily_performance?.unpriced_flow_assets).toBeUndefined();
-		// 残るのは入出庫日価格を解決できなかった申告のみ（candle fixture が 2024 年分だけのため）
-		expect(result.meta.warnings).toHaveLength(1);
-		expect(result.meta.warnings?.[0]).toContain('現在価格で仮評価');
+		// 残るのは入出庫日価格を解決できなかった申告と、その入庫を原価に算入していない申告（#77）。
+		// 上の cost_basis 6,000,000 は 0.1 BTC の入庫を除外した値なので、黙って出してはいけない。
+		expect(result.meta.warnings).toHaveLength(2);
+		expect(result.meta.warnings?.[0]).toContain('BTC（1件）');
+		expect(result.meta.warnings?.[1]).toContain('現在価格で仮評価');
+		expect(btc?.cost_basis_reliable).toBe(true);
+		expect(btc?.unpriced_deposit_count).toBe(1);
 		expect(result.data.daily_performance?.net_flow_jpy).toBe(Math.round(0.1 * 15_500_000));
 	});
 
@@ -3699,6 +3708,7 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		],
 	};
 
+	/** eth の実残高（onhand）だけを差し替えた assets レスポンス。数量不変条件の成否を振る */
 	function ethAssets(onhand: string) {
 		return {
 			assets: [{ ...assetFixture('eth'), free_amount: onhand, onhand_amount: onhand }, assetFixture('jpy')],
@@ -4647,6 +4657,7 @@ describe('analyze_my_portfolio — 資産推移の入出金フローマーカー
 		}) as unknown as typeof fetch;
 	}
 
+	/** 損益・入出金セクションを両方出す既定の呼び出し（本 describe は原価の申告だけを見る） */
 	async function analyze() {
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
 		return handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: true });
@@ -4912,6 +4923,7 @@ describe('analyze_my_portfolio — 期初評価額が極小のときの増減率
 		}) as unknown as typeof fetch;
 	}
 
+	/** 損益・入出金セクションを両方出す既定の呼び出し（本 describe は原価の申告だけを見る） */
 	async function analyze() {
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
 		return handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: true });
@@ -4985,5 +4997,376 @@ describe('analyze_my_portfolio — 期初評価額が極小のときの増減率
 		expect(result.data.yearly_performance.change_pct_unavailable_reason).toBeUndefined();
 		expect(result.meta.changePctUnavailablePeriods).toBeUndefined();
 		expect(result.summary).not.toContain('※ 増減率・入出金調整後増減率は非表示');
+	});
+});
+
+/**
+ * 原価に算入できなかった入庫の申告（issue #77）。
+ *
+ * `calcPnl` は入庫日の始値を解決できた入庫だけを取得原価に算入し、解決できなかったものは
+ * 算入せず件数だけ数える（嘘の原価を作らない設計）。数量不変条件が許容誤差内に収まった銘柄では
+ * **原価が不完全でも `cost_basis_reliable: true` のまま確定値が出る**ため、件数を出力に露出して
+ * おかないと「この realized_pnl は何件の入庫を除外して算出されたのか」が復元できない。
+ *
+ * 既存の `cost_basis_unavailable_reason`（＝原価を出せなかった理由）とは別軸で、
+ * こちらは「原価は出したが不完全」の度合いを表す。
+ */
+describe('analyze_my_portfolio — 原価に算入できなかった入庫の申告', () => {
+	/** eth 買い 2.0（手数料なし）。復元数量 2.0 / 原価 800,000 の起点 */
+	const ethBuy2 = {
+		trades: [
+			{
+				trade_id: 7001,
+				pair: 'eth_jpy',
+				order_id: 7001,
+				side: 'buy',
+				type: 'limit',
+				amount: '2.0',
+				price: '400000',
+				maker_taker: 'maker',
+				fee_amount_base: '0',
+				fee_amount_quote: '0',
+				executed_at: 1710000000000,
+			},
+		],
+	};
+
+	/** 既定 candle（2024-03-08 起点 120 本）の 3 本目 = JST 2024-03-10 の始値 */
+	const ETH_DEPOSIT_DAY_OPEN = 15_100_000;
+	/** JST 2024-03-10。既定 candle で始値を解決できる = 原価に算入される入庫日 */
+	const PRICED_DEPOSIT_AT = 1710000100000;
+	/** JST 2023-06-01。candle fixture が 2024 年分しか持たないので始値を解決できない入庫日 */
+	const UNPRICED_DEPOSIT_AT = Date.UTC(2023, 4, 31, 15, 0, 0);
+
+	/** DONE 入庫のみの deposit / withdrawal レスポンスを組み立てる（入庫日で価格解決の可否を振る） */
+	function depositsOf(...entries: Array<{ uuid: string; asset: string; amount: string; at: number }>) {
+		return {
+			deposits: {
+				deposits: entries.map((e) => ({
+					uuid: e.uuid,
+					asset: e.asset,
+					amount: e.amount,
+					status: 'DONE',
+					found_at: e.at,
+					confirmed_at: e.at,
+				})),
+			},
+			withdrawals: { withdrawals: [] },
+		};
+	}
+
+	/** eth の実残高（onhand）だけを差し替えた assets レスポンス。数量不変条件の成否を振る */
+	function ethAssets(onhand: string) {
+		return {
+			assets: [{ ...assetFixture('eth'), free_amount: onhand, onhand_amount: onhand }, assetFixture('jpy')],
+		};
+	}
+
+	/** 損益・入出金セクションを両方出す既定の呼び出し（本 describe は原価の申告だけを見る） */
+	async function analyze() {
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		return handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: true });
+	}
+
+	/** #77 の警告行（銘柄名と件数で原価の不完全さを申告するもの）を取り出す */
+	function unpricedWarning(warnings: string[] | undefined): string | undefined {
+		return (warnings ?? []).find((w) => w.includes('取得原価にも復元数量にも算入せずに'));
+	}
+
+	it('全件を原価に算入できた銘柄: 算入件数だけが出て未算入の申告は出ない', async () => {
+		// 入庫 0.5 ETH は 2024-03-10 の始値で解決できるので原価にも数量にも入る。
+		// 復元数量 2.5 = onhand 2.5 で数量不変条件も成立する。
+		setupFetchMock({
+			assets: ethAssets('2.5'),
+			trades: ethBuy2,
+			...depositsOf({ uuid: 'dep-priced', asset: 'eth', amount: '0.5', at: PRICED_DEPOSIT_AT }),
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		const eth = result.data.holdings.find((h) => h.asset === 'eth');
+		expect(eth?.priced_deposit_count).toBe(1);
+		expect(eth?.unpriced_deposit_count).toBeUndefined();
+		expect(eth?.cost_basis).toBe(Math.round(800_000 + 0.5 * ETH_DEPOSIT_DAY_OPEN));
+		expect(eth?.cost_basis_reliable).toBe(true);
+		expect(unpricedWarning(result.meta.warnings)).toBeUndefined();
+		expect(result.summary).not.toContain('取得原価に算入していないため');
+	});
+
+	it('受け入れ: cost_basis_reliable=true と unpriced_deposit_count>0 が同時に出る', async () => {
+		// 未算入の入庫は 0.001 ETH で、乖離は許容誤差 max(5e-8, 2.501 × 0.1% = 0.002501) 以内。
+		// 数量不変条件は成立する（= 原価は確定値として出る）のに、その原価は入庫 1 件ぶん欠けている。
+		// この組み合わせこそ #77 が可視化したい状態で、矛盾ではない。
+		setupFetchMock({
+			assets: ethAssets('2.501'),
+			trades: ethBuy2,
+			...depositsOf(
+				{ uuid: 'dep-priced', asset: 'eth', amount: '0.5', at: PRICED_DEPOSIT_AT },
+				{ uuid: 'dep-unpriced', asset: 'eth', amount: '0.001', at: UNPRICED_DEPOSIT_AT },
+			),
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		const eth = result.data.holdings.find((h) => h.asset === 'eth');
+		expect(eth?.cost_basis_reliable).toBe(true);
+		expect(eth?.cost_basis_unavailable_reason).toBeUndefined();
+		expect(eth?.unpriced_deposit_count).toBe(1);
+		// 算入できた件数も出すので、1/2 件が欠けている（不完全さの度合い）まで読める
+		expect(eth?.priced_deposit_count).toBe(1);
+		// 原価は未算入ぶんを除いた値のまま出る（0.001 ETH ぶんが入っていない）
+		expect(eth?.cost_basis).toBe(Math.round(800_000 + 0.5 * ETH_DEPOSIT_DAY_OPEN));
+
+		// 合計からは除外せず含める（除外すると許容誤差内の微小な未算入で銘柄ごと消えるため）
+		expect(result.data.total_cost_basis).toBe(eth?.cost_basis);
+		expect(result.data.total_unrealized_pnl).toBe((eth?.jpy_value ?? 0) - (eth?.cost_basis ?? 0));
+
+		// 含めたことは警告行で申告する
+		const warning = unpricedWarning(result.meta.warnings);
+		expect(warning).toContain('ETH（1件）');
+		expect(warning).toContain('cost_basis_reliable=true のまま確定値が出ますが、原価は不完全です');
+		// `.claude/rules/tools.md`: 計算層 warning は summary 先頭（= content の JSON より前）に出す
+		expect(result.summary.split('\n').slice(0, 5).join('\n')).toContain('ETH（1件）');
+		expect(result.summary).toContain('※ ETH（1件） は入庫日の始値を解決できなかった入庫');
+	});
+
+	it('警告に出るのは銘柄名と件数だけで、金額は漏れない', async () => {
+		setupFetchMock({
+			assets: ethAssets('2.501'),
+			trades: ethBuy2,
+			...depositsOf(
+				{ uuid: 'dep-priced', asset: 'eth', amount: '0.5', at: PRICED_DEPOSIT_AT },
+				{ uuid: 'dep-unpriced', asset: 'eth', amount: '0.001', at: UNPRICED_DEPOSIT_AT },
+			),
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		const warning = unpricedWarning(result.meta.warnings);
+		expect(warning).toBeDefined();
+		// 数字は件数の 1 だけ。原価・評価額・入庫数量が混ざっていないことを機械的に固定する
+		// （`.claude/rules/sensitive-data.md` の HIGH 分類）
+		expect(warning?.match(/\d[\d,.]*/g)).toEqual(['1']);
+	});
+
+	it('数量乖離で原価を抑止した銘柄は二重に警告しない（has_crypto_deposits と別軸）', async () => {
+		// 未算入の入庫 0.5 ETH は許容誤差を大きく超えるので数量不変条件が破れる。
+		// 原価そのものを出していない以上、#77 の「原価は出したが不完全」の申告対象ではない。
+		setupFetchMock({
+			assets: ethAssets('2.5'),
+			trades: ethBuy2,
+			...depositsOf({ uuid: 'dep-unpriced', asset: 'eth', amount: '0.5', at: UNPRICED_DEPOSIT_AT }),
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		const eth = result.data.holdings.find((h) => h.asset === 'eth');
+		expect(eth?.cost_basis_reliable).toBe(false);
+		expect(eth?.cost_basis_unavailable_reason).toBe('has_crypto_deposits');
+		expect(eth?.cost_basis).toBeUndefined();
+		// 抑止側の経路でも件数は出す（なぜ抑止されたかが件数で裏取りできる）
+		expect(eth?.unpriced_deposit_count).toBe(1);
+		expect(eth?.priced_deposit_count).toBeUndefined();
+		// 申告は既存の has_crypto_deposits 警告 1 本だけ
+		expect(unpricedWarning(result.meta.warnings)).toBeUndefined();
+		expect(
+			result.meta.warnings?.some((w: string) => w.includes('ETH（入庫日の価格を解決できない暗号資産の入庫あり）')),
+		).toBe(true);
+	});
+
+	it('売り切り銘柄の未算入入庫も申告する（holdings に載らないが total_realized_pnl に入る）', async () => {
+		// xrp は買って全量売ったので holdings に載らない。realized_pnl は
+		// closed_position_realized_pnl / total_realized_pnl に入るため、算出条件の申告が要る。
+		const trades = {
+			trades: [
+				...ethBuy2.trades,
+				{
+					trade_id: 7002,
+					pair: 'xrp_jpy',
+					order_id: 7002,
+					side: 'buy',
+					type: 'limit',
+					amount: '100',
+					price: '80',
+					maker_taker: 'maker',
+					fee_amount_base: '0',
+					fee_amount_quote: '0',
+					executed_at: 1710000300000,
+				},
+				{
+					trade_id: 7003,
+					pair: 'xrp_jpy',
+					order_id: 7003,
+					side: 'sell',
+					type: 'limit',
+					amount: '100',
+					price: '90',
+					maker_taker: 'taker',
+					fee_amount_base: '0',
+					fee_amount_quote: '0',
+					executed_at: 1710000400000,
+				},
+			],
+		};
+		setupFetchMock({
+			assets: ethAssets('2.0'),
+			trades,
+			...depositsOf({ uuid: 'dep-xrp', asset: 'xrp', amount: '10', at: UNPRICED_DEPOSIT_AT }),
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		expect(result.data.holdings.find((h) => h.asset === 'xrp')).toBeUndefined();
+		expect(result.data.closed_position_realized_pnl).toBe(1000);
+		const warning = unpricedWarning(result.meta.warnings);
+		expect(warning).toContain('XRP（1件）');
+		// eth 側は入庫が無いので巻き込まれない
+		expect(warning).not.toContain('ETH');
+		expect(result.data.holdings.find((h) => h.asset === 'eth')?.unpriced_deposit_count).toBeUndefined();
+	});
+
+	it('売り切り銘柄の実現損益が 0 円に丸まっても申告を落とさない', async () => {
+		// realized_pnl は Math.round 済みで、0 円は「損益が無い」ではなく「丸めた結果 0」でもある。
+		// しかも未算入の入庫があるからこそ 0 に見えている可能性がある（本来の原価を引けていれば
+		// 非ゼロ）。金額の集計条件（realized_pnl !== 0）で警告まで絞ると、holdings にも載らない
+		// この銘柄の算出条件が出力から完全に消える。
+		const trades = {
+			trades: [
+				...ethBuy2.trades,
+				{
+					trade_id: 7004,
+					pair: 'xrp_jpy',
+					order_id: 7004,
+					side: 'buy',
+					type: 'limit',
+					amount: '100',
+					price: '80',
+					maker_taker: 'maker',
+					fee_amount_base: '0',
+					fee_amount_quote: '0',
+					executed_at: 1710000300000,
+				},
+				{
+					trade_id: 7005,
+					pair: 'xrp_jpy',
+					order_id: 7005,
+					side: 'sell',
+					type: 'limit',
+					amount: '100',
+					price: '80',
+					maker_taker: 'maker',
+					fee_amount_base: '0',
+					fee_amount_quote: '0',
+					executed_at: 1710000400000,
+				},
+			],
+		};
+		setupFetchMock({
+			assets: ethAssets('2.0'),
+			trades,
+			...depositsOf({ uuid: 'dep-xrp', asset: 'xrp', amount: '10', at: UNPRICED_DEPOSIT_AT }),
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		// 同値で買って売ったので実現損益はゼロ。金額側の集計には入らない
+		expect(result.data.closed_position_realized_pnl).toBe(0);
+		expect(result.data.closed_position_asset_count).toBe(0);
+		expect(result.data.holdings.find((h) => h.asset === 'xrp')).toBeUndefined();
+		// それでも算出条件は申告する
+		expect(unpricedWarning(result.meta.warnings)).toContain('XRP（1件）');
+	});
+
+	it('期間実現損益（年初来 / 月初来）にも同じ件数を出す', async () => {
+		setupFetchMock({
+			assets: ethAssets('2.501'),
+			trades: ethBuy2,
+			...depositsOf(
+				{ uuid: 'dep-priced', asset: 'eth', amount: '0.5', at: PRICED_DEPOSIT_AT },
+				{ uuid: 'dep-unpriced', asset: 'eth', amount: '0.001', at: UNPRICED_DEPOSIT_AT },
+			),
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		// 移動平均法は期間開始前の入庫も原価に積むため、件数は全履歴・全銘柄の合計
+		expect(result.data.yearly_realized_pnl?.unpriced_deposit_count).toBe(1);
+		expect(result.data.yearly_realized_pnl?.priced_deposit_count).toBe(1);
+		expect(result.data.monthly_realized_pnl?.unpriced_deposit_count).toBe(1);
+		expect(result.data.monthly_realized_pnl?.priced_deposit_count).toBe(1);
+	});
+
+	it('回帰: 入庫が無い構成では JSON にキーが増えない', async () => {
+		setupFetchMock({
+			assets: ethAssets('2.0'),
+			trades: ethBuy2,
+			deposits: { deposits: [] },
+			withdrawals: { withdrawals: [] },
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		// JSON.stringify が唯一 LLM に届く形なので、その上でキーが増えていないことを見る
+		const wire = JSON.parse(JSON.stringify(result.data)) as {
+			holdings: Array<Record<string, unknown>>;
+			yearly_realized_pnl?: Record<string, unknown>;
+		};
+		for (const h of wire.holdings) {
+			expect(Object.keys(h)).not.toContain('priced_deposit_count');
+			expect(Object.keys(h)).not.toContain('unpriced_deposit_count');
+		}
+		expect(Object.keys(wire.yearly_realized_pnl ?? {})).not.toContain('unpriced_deposit_count');
+		expect(unpricedWarning(result.meta.warnings)).toBeUndefined();
+	});
+
+	it('新設キーは既存キーの後ろに出る（既存消費者の JSON を中間から崩さない）', async () => {
+		setupFetchMock({
+			assets: ethAssets('2.501'),
+			trades: ethBuy2,
+			...depositsOf(
+				{ uuid: 'dep-priced', asset: 'eth', amount: '0.5', at: PRICED_DEPOSIT_AT },
+				{ uuid: 'dep-unpriced', asset: 'eth', amount: '0.001', at: UNPRICED_DEPOSIT_AT },
+			),
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		const eth = result.data.holdings.find((h) => h.asset === 'eth');
+		expect(Object.keys(eth ?? {})).toEqual([
+			'asset',
+			'pair',
+			'amount',
+			'avg_buy_price',
+			'current_price',
+			'jpy_value',
+			'cost_basis',
+			'unrealized_pnl',
+			'unrealized_pnl_pct',
+			'realized_pnl',
+			'trade_count',
+			'cost_basis_unavailable_reason',
+			'cost_basis_reliable',
+			// #77 で追加
+			'priced_deposit_count',
+			'unpriced_deposit_count',
+		]);
+		expect(Object.keys(result.data.yearly_realized_pnl ?? {})).toEqual([
+			'realized_pnl',
+			'sell_count',
+			'period_start',
+			'period_end',
+			// #77 で追加
+			'priced_deposit_count',
+			'unpriced_deposit_count',
+		]);
 	});
 });

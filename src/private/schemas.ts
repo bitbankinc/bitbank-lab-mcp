@@ -332,7 +332,7 @@ const HoldingPnlSchema = z.object({
 		.number()
 		.optional()
 		.describe(
-			'取得原価合計（JPY）。全履歴の約定に加え、暗号資産入庫を入庫日（confirmed_at）の 1day 始値 × 数量で算入し、暗号資産出庫を平均単価で按分減少させた移動平均法ベース。入庫ぶんは「入庫時点の相場で取得した」という仮定であり真の取得原価ではない',
+			'取得原価合計（JPY）。全履歴の約定に加え、暗号資産入庫を入庫日（confirmed_at）の 1day 始値 × 数量で算入し、暗号資産出庫を平均単価で按分減少させた移動平均法ベース。入庫ぶんは「入庫時点の相場で取得した」という仮定であり真の取得原価ではない。入庫日の始値を解決できなかった入庫は算入しないので、unpriced_deposit_count が 0 でない銘柄では本値はその分だけ過小',
 		),
 	unrealized_pnl: z.number().optional().describe('評価損益（JPY）'),
 	unrealized_pnl_pct: z.number().optional().describe('評価損益率（%）'),
@@ -340,7 +340,7 @@ const HoldingPnlSchema = z.object({
 		.number()
 		.optional()
 		.describe(
-			'実現損益（JPY、全履歴・当該銘柄のみ）。holdings には**現在保有中の銘柄しか載らない**ため、この配列の合計は売り切り銘柄（保有ゼロだが約定履歴がある銘柄）の実現損益を含まない。検算式: Σ holdings[].realized_pnl + closed_position_realized_pnl = account_pnl.spot_realized_pnl = total_realized_pnl',
+			'実現損益（JPY、全履歴・当該銘柄のみ）。holdings には**現在保有中の銘柄しか載らない**ため、この配列の合計は売り切り銘柄（保有ゼロだが約定履歴がある銘柄）の実現損益を含まない。検算式: Σ holdings[].realized_pnl + closed_position_realized_pnl = account_pnl.spot_realized_pnl = total_realized_pnl。算出条件は unpriced_deposit_count を併せて読むこと——その件数の入庫は原価ゼロ扱いで除外されており、同じ値でも「全入庫を原価算入した結果」とは意味が異なる',
 		),
 	trade_count: z.number().optional().describe('約定件数'),
 	cost_basis_unavailable_reason: PortfolioCostBasisUnavailableReasonEnum.optional().describe(
@@ -350,7 +350,26 @@ const HoldingPnlSchema = z.object({
 		.boolean()
 		.optional()
 		.describe(
-			'取得原価の信頼性（数量不変条件の判定結果）。約定・出庫リプレイで復元した保有数量が実残高（onhand_amount）と許容誤差 max(10^-amount_precision × 5, 実残高 × 0.1%) 内で一致すれば true（絶対項は端数処理・ダスト、相対項は浮動小数点誤差の許容）。false のとき cost_basis_unavailable_reason に理由コードが載り、原価由来 4 フィールドは undefined、total_cost_basis / total_unrealized_pnl の集計からも除外される。原価計算の対象外（JPY / include_pnl=false）では省略',
+			'取得原価の信頼性（数量不変条件の判定結果）。約定・出庫リプレイで復元した保有数量が実残高（onhand_amount）と許容誤差 max(10^-amount_precision × 5, 実残高 × 0.1%) 内で一致すれば true（絶対項は端数処理・ダスト、相対項は浮動小数点誤差の許容）。false のとき cost_basis_unavailable_reason に理由コードが載り、原価由来 4 フィールドは undefined、total_cost_basis / total_unrealized_pnl の集計からも除外される。原価計算の対象外（JPY / include_pnl=false）では省略。**true は「復元数量が実残高と一致する」であって「原価が全入庫を含む」ではない**——許容誤差内に収まった未算入入庫は素通りするので、原価の完全性は unpriced_deposit_count で読むこと',
+		),
+	// 新設キーは既存キーの後ろに宣言する。`z.object` の parse は**スキーマの宣言順**で
+	// オブジェクトを組み直すため、ここが wire 上のキー順の単一ソース（既存消費者の JSON を
+	// 中間から崩さない）。件数はゼロ始まりの加算でしか動かないので負値は取り得ない。
+	priced_deposit_count: z
+		.number()
+		.int()
+		.nonnegative()
+		.optional()
+		.describe(
+			'入庫日（confirmed_at）の 1day 始値を解決できたため取得原価に**算入した** DONE 暗号資産入庫の件数（当該銘柄・全履歴）。unpriced_deposit_count との和が当該銘柄の DONE 入庫の総数で、原価がどれだけ入庫を取り込めているかの分母になる。0 件のときはキーごと省く（入庫が無い銘柄の出力は従来と JSON 一致）',
+		),
+	unpriced_deposit_count: z
+		.number()
+		.int()
+		.nonnegative()
+		.optional()
+		.describe(
+			'入庫日（confirmed_at）の 1day 始値を解決できず、取得原価にも復元数量にも**算入しなかった** DONE 暗号資産入庫の件数（当該銘柄・全履歴）。この銘柄の cost_basis / avg_buy_price / unrealized_pnl / unrealized_pnl_pct / realized_pnl は、**この件数の入庫を原価ゼロ扱いで除外して算出されている**（未算入ぶんを売却済みなら原価ゼロで売ったことになり realized_pnl は過大、保有継続なら cost_basis と復元数量がその分だけ過小）。**cost_basis_reliable=true でも本値が 0 でなければ原価は不完全**——数量不変条件は許容誤差内の乖離を通すため両者は同時に成立し、これは矛盾ではない（cost_basis_reliable=「復元数量が実残高と一致するか」、本値=「原価が全入庫を含むか」で別軸。原価を出せなかった理由を表す cost_basis_unavailable_reason とも別軸で、本値は「原価は出したが不完全」の度合い）。本値が 0 でない銘柄も total_cost_basis / total_unrealized_pnl / total_realized_pnl からは**除外せず含める**（除外すると許容誤差内の微小な未算入で銘柄まるごと合計から消えるため）。含めたことは meta.warnings / summary の警告行で申告する。0 件のときはキーごと省く',
 		),
 });
 
@@ -465,6 +484,23 @@ const PeriodRealizedPnlSchema = z
 		sell_count: z.number().int().describe('期間内の売却約定件数'),
 		period_start: z.string().describe('期間の開始日時（ISO8601 JST）'),
 		period_end: z.string().describe('期間の終了日時（ISO8601 JST）'),
+		// 新設キーは既存キーの後ろ（宣言順 = wire のキー順）。
+		priced_deposit_count: z
+			.number()
+			.int()
+			.nonnegative()
+			.optional()
+			.describe(
+				'平均原価の積み上げで取得原価に**算入した** DONE 暗号資産入庫の件数（全履歴・全銘柄）。期間内の入庫だけではない——移動平均法は期間開始前の入庫も原価に積むため、realized_pnl の算出条件は全履歴のリプレイで決まる。0 件のときはキーごと省く',
+			),
+		unpriced_deposit_count: z
+			.number()
+			.int()
+			.nonnegative()
+			.optional()
+			.describe(
+				'同じリプレイで入庫日（confirmed_at）の 1day 始値を解決できず、取得原価にも数量にも**算入しなかった** DONE 暗号資産入庫の件数（全履歴・全銘柄）。0 より大きければ、この期間の realized_pnl は未算入ぶんを**原価ゼロで売った**結果を含みうる（＝過大側にずれる）。銘柄別の内訳は holdings[].unpriced_deposit_count（売り切り銘柄は holdings に載らないため、本値の方が大きくなることがある）。0 件のときはキーごと省く',
+			),
 	})
 	.optional();
 
@@ -604,9 +640,24 @@ const EquityPointSchema = z.object({
 export const AnalyzeMyPortfolioDataSchema = z.object({
 	holdings: z.array(HoldingPnlSchema).describe('保有銘柄一覧（JPY評価額降順）'),
 	total_jpy_value: z.number().optional().describe('ポートフォリオ合計評価額'),
-	total_cost_basis: z.number().optional().describe('ポートフォリオ合計取得原価'),
-	total_unrealized_pnl: z.number().optional().describe('合計評価損益'),
-	total_unrealized_pnl_pct: z.number().optional().describe('合計評価損益率（%）'),
+	total_cost_basis: z
+		.number()
+		.optional()
+		.describe(
+			'ポートフォリオ合計取得原価。集計対象は現在価格を引けた暗号資産のうち cost_basis を確定できた銘柄（JPY 残高と、cost_basis_reliable=false で原価を抑止した銘柄は除外）。**原価が不完全な銘柄は除外せず含める**——holdings[].unpriced_deposit_count が 0 でない銘柄も、その原価（未算入入庫のぶんだけ過小）を積んだうえで合計する。許容誤差内の微小な未算入で銘柄まるごと合計から消える方が実害が大きいための判断で、含めたことは meta.warnings / summary の警告行が銘柄名と件数で申告する',
+		),
+	total_unrealized_pnl: z
+		.number()
+		.optional()
+		.describe(
+			'合計評価損益 = 現在評価額の合計 − total_cost_basis。母集合は total_cost_basis と同じで、原価が不完全な銘柄（holdings[].unpriced_deposit_count > 0）も除外せず含める。該当があると原価が過小 = 本値は過大側にずれる',
+		),
+	total_unrealized_pnl_pct: z
+		.number()
+		.optional()
+		.describe(
+			'合計評価損益率（%）= total_unrealized_pnl / total_cost_basis。母集合とずれの向きは total_unrealized_pnl と同じ',
+		),
 	total_cost_basis_unavailable_reason: PortfolioFlowUnavailableReasonEnum.optional().describe(
 		'合計取得原価を確定できなかった理由（入出金履歴の取得起因 dw_fetch_failed / dw_history_incomplete のみ）。設定されている場合 total_cost_basis / total_unrealized_pnl / total_unrealized_pnl_pct はいずれも undefined。銘柄単位の数量乖離（holdings[].cost_basis_reliable=false）ではこのフィールドは立たず、当該銘柄を合計の集計から除外して meta.warnings / summary の警告行で申告する',
 	),
@@ -614,7 +665,7 @@ export const AnalyzeMyPortfolioDataSchema = z.object({
 		.number()
 		.optional()
 		.describe(
-			'合計実現損益（JPY、全履歴・全銘柄 = 現在保有中の銘柄 + 売り切り銘柄）。現物単独で、信用の決済損益・利息・手数料は含まない（それらを含む口座全体は account_pnl）。account_pnl.spot_realized_pnl と同値。0 のときは undefined',
+			'合計実現損益（JPY、全履歴・全銘柄 = 現在保有中の銘柄 + 売り切り銘柄）。現物単独で、信用の決済損益・利息・手数料は含まない（それらを含む口座全体は account_pnl）。account_pnl.spot_realized_pnl と同値。0 のときは undefined。原価に算入できなかった入庫がある銘柄も除外せず含めるため、該当があると本値は過大側にずれる（銘柄名と件数は meta.warnings / summary の警告行、銘柄別の件数は holdings[].unpriced_deposit_count）',
 		),
 	closed_position_realized_pnl: z
 		.number()

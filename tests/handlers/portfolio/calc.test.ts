@@ -526,6 +526,50 @@ describe('calcPeriodRealizedPnl — 入庫の原価算入', () => {
 		expect(without.realized_pnl).toBe(5_000_000);
 		expect(without.realized_pnl).not.toBe(withDeposit.realized_pnl);
 	});
+
+	/**
+	 * 期間実現損益にも「何件の入庫を原価から除外したか」の申告が要る（#77）。
+	 * 件数は全履歴・全銘柄——移動平均法は期間開始前の入庫も原価に積むため、
+	 * `realized_pnl` の算出条件は期間内のイベントだけでは決まらない。
+	 */
+	it('算入した入庫・算入できなかった入庫の件数を返す', () => {
+		const unpriced = makeDeposit({ uuid: 'dep-eth', asset: 'eth', amount: '3', confirmed_at: DEPOSIT_MS });
+		const res = calcPeriodRealizedPnl(sell, SINCE_MS, 'start', 'end', [], {
+			deposits: [deposit, unpriced],
+			pricing,
+		});
+		// btc は入庫日の始値を持つので算入、eth は日次価格が無いので未算入
+		expect(res.priced_deposit_count).toBe(1);
+		expect(res.unpriced_deposit_count).toBe(1);
+	});
+
+	it('全件を算入できれば未算入件数はゼロ', () => {
+		const res = calcPeriodRealizedPnl(sell, SINCE_MS, 'start', 'end', [], { deposits: [deposit], pricing });
+		expect(res.priced_deposit_count).toBe(1);
+		expect(res.unpriced_deposit_count).toBe(0);
+	});
+
+	it('入庫ゼロ・depositCost 未指定では両件数ともゼロ', () => {
+		expect(calcPeriodRealizedPnl(sell, SINCE_MS, 'start', 'end', [])).toMatchObject({
+			priced_deposit_count: 0,
+			unpriced_deposit_count: 0,
+		});
+		expect(calcPeriodRealizedPnl(sell, SINCE_MS, 'start', 'end', [], { deposits: [], pricing })).toMatchObject({
+			priced_deposit_count: 0,
+			unpriced_deposit_count: 0,
+		});
+	});
+
+	it('複数銘柄の未算入入庫は合算する（銘柄で絞らない）', () => {
+		const unpricedEth = makeDeposit({ uuid: 'dep-eth', asset: 'eth', amount: '3', confirmed_at: DEPOSIT_MS });
+		const unpricedXrp = makeDeposit({ uuid: 'dep-xrp', asset: 'xrp', amount: '100', confirmed_at: DEPOSIT_MS });
+		const res = calcPeriodRealizedPnl(sell, SINCE_MS, 'start', 'end', [], {
+			deposits: [unpricedEth, unpricedXrp],
+			pricing,
+		});
+		expect(res.priced_deposit_count).toBe(0);
+		expect(res.unpriced_deposit_count).toBe(2);
+	});
 });
 
 describe('qtyMismatchReasonFor', () => {

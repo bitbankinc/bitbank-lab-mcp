@@ -308,6 +308,10 @@ export function qtyMismatchReasonFor(
  * 暗号資産出庫は calcPnl と同じく原価の按分減少として扱い、realized_pnl には計上しない。
  * これにより入出庫を挟んだ売却でも残数量・平均原価が calcPnl と整合する
  * （`depositCost` を渡さないと入庫ぶんの原価がゼロのまま売られ、期間実現損益が calcPnl と食い違う）。
+ *
+ * 入庫日の始値を解決できず算入できなかった入庫は、`unpriced_deposit_count` として
+ * 件数を返す（#77）。この件数ぶんの入庫は原価にも数量にも入っていないため、
+ * `realized_pnl` はその入庫を原価ゼロで売った結果を含みうる。
  */
 export function calcPeriodRealizedPnl(
 	trades: RawTrade[],
@@ -329,7 +333,10 @@ export function calcPeriodRealizedPnl(
 		if (asset === 'jpy') continue;
 		events.push({ type: 'trade', ts: t.executed_at, trade: t });
 	}
-	for (const d of collectDepositCostEvents(depositCost).priced) {
+	// 入庫の算入状況は `realized_pnl` の算出条件そのものなので、件数を数えて返す（#77）。
+	// 銘柄で絞らないのは、期間実現損益が全銘柄を単一タイムラインで処理するため。
+	const depositEvents = collectDepositCostEvents(depositCost);
+	for (const d of depositEvents.priced) {
 		events.push({ type: 'deposit', ts: d.ts, asset: d.asset, qty: d.qty, cost: d.cost });
 	}
 	for (const w of withdrawals ?? []) {
@@ -414,11 +421,16 @@ export function calcPeriodRealizedPnl(
 		}
 	}
 
+	let unpricedDepositCount = 0;
+	for (const count of depositEvents.unpricedCounts.values()) unpricedDepositCount += count;
+
 	return {
 		realized_pnl: Math.round(periodRealized),
 		sell_count: periodSellCount,
 		period_start: periodStart,
 		period_end: periodEnd,
+		priced_deposit_count: depositEvents.priced.length,
+		unpriced_deposit_count: unpricedDepositCount,
 	};
 }
 
