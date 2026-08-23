@@ -45,6 +45,7 @@ import { PORTFOLIO_CALENDAR_TZ, portfolioDayStartMs } from '../../../src/handler
 import type {
 	CandlePriceData,
 	DepositWithdrawalData,
+	FlowValuationTarget,
 	RawDeposit,
 	RawMarginTrade,
 	RawTrade,
@@ -1737,9 +1738,19 @@ describe('入出庫日価格での JPY 換算', () => {
 
 		it('DONE・非 JPY・数量が正の入出庫だけを返す（出庫は requested_at）', () => {
 			expect(collectFlowValuationTargets(dw)).toEqual([
-				{ asset: 'btc', atMs: FLOW_MS },
-				{ asset: 'eth', atMs: FLOW_MS },
+				{ asset: 'btc', atMs: FLOW_MS, kind: 'deposit' },
+				{ asset: 'eth', atMs: FLOW_MS, kind: 'withdrawal' },
 			]);
+		});
+
+		/**
+		 * `kind` は `fetchFlowDatePrices` が年 chunk の予算を入庫用・出庫用に分けるための情報（#76）。
+		 * ここで取り違えると出庫が入庫の枠を食い、取得原価が実行ごとに変わる状態に戻る。
+		 */
+		it('入庫は kind=deposit、出庫は kind=withdrawal を付ける', () => {
+			const targets = collectFlowValuationTargets(dw);
+			expect(targets.filter((t) => t.kind === 'deposit').map((t) => t.asset)).toEqual(['btc']);
+			expect(targets.filter((t) => t.kind === 'withdrawal').map((t) => t.asset)).toEqual(['eth']);
 		});
 
 		it('下限時刻で期間外を落とす', () => {
@@ -1757,11 +1768,11 @@ describe('入出庫日価格での JPY 換算', () => {
 		it('入庫と出庫の下限を別々に適用する', () => {
 			// 入庫は全履歴、出庫だけ FLOW_MS より後に絞る → 出庫が落ちて入庫だけ残る
 			expect(collectFlowValuationTargets(dw, { withdrawalsSinceMs: FLOW_MS + 1 })).toEqual([
-				{ asset: 'btc', atMs: FLOW_MS },
+				{ asset: 'btc', atMs: FLOW_MS, kind: 'deposit' },
 			]);
 			// 逆に入庫だけ絞る → 出庫だけ残る
 			expect(collectFlowValuationTargets(dw, { depositsSinceMs: FLOW_MS + 1 })).toEqual([
-				{ asset: 'eth', atMs: FLOW_MS },
+				{ asset: 'eth', atMs: FLOW_MS, kind: 'withdrawal' },
 			]);
 		});
 
@@ -1775,10 +1786,10 @@ describe('入出庫日価格での JPY 換算', () => {
 	});
 
 	describe('summarizeFlowValuation', () => {
-		const targets = [
-			{ asset: 'btc', atMs: FLOW_MS },
-			{ asset: 'eth', atMs: FLOW_MS },
-			{ asset: 'doge', atMs: FLOW_MS },
+		const targets: FlowValuationTarget[] = [
+			{ asset: 'btc', atMs: FLOW_MS, kind: 'deposit' },
+			{ asset: 'eth', atMs: FLOW_MS, kind: 'deposit' },
+			{ asset: 'doge', atMs: FLOW_MS, kind: 'withdrawal' },
 		];
 
 		it('母集合を 1 度だけ数える（各セクションの内訳を足し合わせない）', () => {

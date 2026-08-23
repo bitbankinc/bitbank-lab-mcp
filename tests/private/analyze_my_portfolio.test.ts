@@ -2900,6 +2900,326 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 	});
 });
 
+/**
+ * 取得原価の決定性 — 出庫が入庫の価格取得枠を奪わないこと（#76）。
+ *
+ * #70 で出庫の価格解決範囲を年初来から全履歴に広げた結果、入庫と出庫が 1 つの
+ * (資産, 年) chunk 予算を奪い合うようになった。年の新しい順に枠が埋まるため、
+ * 古い年の入庫が出庫に押し出され → 入庫日の始値で解けず → `collectDepositCostEvents` が
+ * 原価から丸ごと落とす → 移動平均の取得原価が変わり、**過去の実現損益まで変わる**。
+ * 売買が一切無くても実行タイミングで数字が動く状態だったので、ここで固定する。
+ */
+describe('analyze_my_portfolio — 取得原価の決定性（出庫に押し出されない）', () => {
+	/** 2026-05-16 12:00 JST */
+	const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
+	/** 2023-04-20 12:00 JST（直近 400 日窓の外。年 chunk の追加取得が要る） */
+	const depositMs = Date.UTC(2023, 3, 20, 3, 0, 0, 0);
+	/** 2024-06-01 12:00 JST（入庫年より**新しい**＝旧実装では入庫より先に枠を取る） */
+	const withdrawalMs = Date.UTC(2024, 5, 1, 3, 0, 0, 0);
+	/** 入庫日（2023-04-20）の 1day open */
+	const DEPOSIT_DAY_OPEN = 8_000_000;
+
+	/**
+	 * 出庫だけが要求する (資産, 年) chunk を作るための資産。
+	 * 出庫の上限（12）を超える 14 種類を並べ、旧実装なら 12 枠を全部食って
+	 * 入庫の btc:2023 が押し出される状況にする。
+	 */
+	const WITHDRAWAL_ASSETS = [
+		'xrp',
+		'ltc',
+		'bcc',
+		'mona',
+		'xlm',
+		'qtum',
+		'bat',
+		'link',
+		'dot',
+		'doge',
+		'astr',
+		'ada',
+		'avax',
+		'flr',
+	];
+
+	/** 入庫と同数量ぶん増やした btc 残高（0.00499 + 0.1）。入庫が原価に算入されて初めて数量が整合する */
+	const assetsWithDepositedBtc = {
+		assets: [
+			{ ...assetFixture('btc'), free_amount: '0.10499', onhand_amount: '0.10499', locked_amount: '0' },
+			assetFixture('jpy'),
+		],
+	};
+
+	function candles1day(rows: Array<{ tsMs: number; open: number }>) {
+		return {
+			success: 1,
+			data: {
+				candlestick: [
+					{
+						type: '1day',
+						ohlcv: rows.map(({ tsMs, open }) => [
+							String(open),
+							String(open + 100_000),
+							String(open - 100_000),
+							String(open + 50_000),
+							'10',
+							tsMs,
+						]),
+					},
+				],
+			},
+		};
+	}
+
+	const tickersBtcOnly = {
+		success: 1,
+		data: [
+			{
+				pair: 'btc_jpy',
+				sell: '15500000',
+				buy: '15500000',
+				high: '15500000',
+				low: '15500000',
+				open: '15500000',
+				last: '15500000',
+				vol: '100',
+				timestamp: fixedNowMs,
+			},
+		],
+	};
+
+	/**
+	 * 2023 年の btc 入庫 1 件（＋ JPY 入金）と、任意件数の出庫を持つ口座で handler を走らせる。
+	 *
+	 * @param withdrawalCount 出庫の総件数。`WITHDRAWAL_ASSETS` に均等に振る（＝出庫だけの chunk 数は資産数）
+	 * @param depositYearResolvable false なら入庫年の足を返さない（押し出されたのと同じ状態を作る）
+	 */
+	async function run(withdrawalCount: number, depositYearResolvable = true) {
+		const withdrawals = Array.from({ length: withdrawalCount }, (_, i) => ({
+			uuid: `wd-${i}`,
+			asset: WITHDRAWAL_ASSETS[i % WITHDRAWAL_ASSETS.length] as string,
+			amount: '1',
+			fee: '0',
+			status: 'DONE',
+			requested_at: withdrawalMs,
+		}));
+
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			const marginResponse = maybeMarginAccountResponse(urlStr);
+			if (marginResponse) return marginResponse;
+			if (urlStr.includes('tickers_jpy')) {
+				return new Response(JSON.stringify(tickersBtcOnly), { status: 200 });
+			}
+			if (urlStr.includes('candlestick')) {
+				// 入庫年（2023）の btc chunk にだけ入庫日の足を置く。直近窓には無い。
+				if (urlStr.includes('/btc_jpy/') && urlStr.includes('/2023')) {
+					const rows = depositYearResolvable ? [{ tsMs: Date.UTC(2023, 3, 20), open: DEPOSIT_DAY_OPEN }] : [];
+					return new Response(JSON.stringify(candles1day(rows)), { status: 200 });
+				}
+				if (urlStr.includes('/btc_jpy/')) {
+					return new Response(JSON.stringify(candles1day([{ tsMs: Date.UTC(2026, 4, 15), open: 20_000_000 }])), {
+						status: 200,
+					});
+				}
+				// 出庫資産は出庫日の足を返す（出庫側の取得失敗警告を混ぜないため）
+				return new Response(JSON.stringify(candles1day([{ tsMs: Date.UTC(2024, 5, 1), open: 100 }])), { status: 200 });
+			}
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(assetsWithDepositedBtc)), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				const payload = urlStr.includes('type=margin') ? { trades: [] } : rawTradeHistoryResponse;
+				return new Response(JSON.stringify(mockBitbankSuccess(payload)), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history')) {
+				return new Response(
+					JSON.stringify(
+						mockBitbankSuccess({
+							deposits: [
+								{
+									uuid: 'dep-jpy',
+									asset: 'jpy',
+									amount: '5000000',
+									status: 'DONE',
+									found_at: depositMs,
+									confirmed_at: depositMs,
+								},
+								{
+									uuid: 'dep-btc',
+									asset: 'btc',
+									amount: '0.1',
+									status: 'DONE',
+									found_at: depositMs,
+									confirmed_at: depositMs,
+								},
+							],
+						}),
+					),
+					{ status: 200 },
+				);
+			}
+			if (urlStr.includes('withdrawal_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ withdrawals })), { status: 200 });
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		// 1 つの it で handler を 2 回走らせるので、呼び出しごとにモジュールを捨てる。
+		// BitbankPrivateClient は生成時に globalThis.fetch を bind してキャッシュされるため、
+		// リセットしないと 2 回目の handler が 1 回目の fetch モックを掴んだままになる。
+		vi.resetModules();
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		return handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: true });
+	}
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	/** 出庫が 1 件も無い口座を基準にして、出庫が増えても入庫側の出力が動かないことを見る */
+	it('出庫ゼロ件の口座と出庫 98 件の口座で入庫の原価算入結果が一致する', async () => {
+		const noWithdrawals = await run(0);
+		// 98 件 = 出庫履歴 1 ページ（100 件）に収まる最大級。出庫だけの chunk は 14 組で上限 12 を超える
+		const manyWithdrawals = await run(98);
+
+		assertOk(noWithdrawals);
+		assertOk(manyWithdrawals);
+
+		// 入庫の原価算入結果（原価・平均取得単価・実現損益・数量不変条件）が 1 つも動かない
+		expect(manyWithdrawals.data.holdings).toEqual(noWithdrawals.data.holdings);
+		expect(manyWithdrawals.data.total_cost_basis).toBe(noWithdrawals.data.total_cost_basis);
+		expect(manyWithdrawals.data.total_realized_pnl).toBe(noWithdrawals.data.total_realized_pnl);
+		expect(manyWithdrawals.data.total_unrealized_pnl).toBe(noWithdrawals.data.total_unrealized_pnl);
+		// 入庫は 1 件も切り落とされていない（出庫が 14 組を要求しても入庫の枠は減らない）
+		expect(manyWithdrawals.meta.flowPriceChunkTruncatedDepositCount).toBeUndefined();
+		expect(manyWithdrawals.meta.flowPriceChunkFailedDepositCount).toBeUndefined();
+	});
+
+	/**
+	 * 上の一致が「どちらも原価を出せていないから一致している」という空振りでないことの確認。
+	 * 入庫年の足が取れないと原価算入対象から外れ、数量不変条件も崩れる ＝ 出力は確かに敏感。
+	 */
+	it('入庫年の足が取れないと原価・実現損益が変わる（一致テストが空振りでないことの確認）', async () => {
+		const resolvable = await run(0);
+		const unresolvable = await run(0, false);
+
+		assertOk(resolvable);
+		assertOk(unresolvable);
+
+		const withDeposit = resolvable.data.holdings.find((h) => h.asset === 'btc');
+		const withoutDeposit = unresolvable.data.holdings.find((h) => h.asset === 'btc');
+
+		// 入庫が原価に算入され、復元数量が実残高（0.10499）と整合する
+		expect(withDeposit?.cost_basis_reliable).toBe(true);
+		expect(withDeposit?.cost_basis).toBeGreaterThan(0);
+		// 算入されないと復元数量が 0.00499 に留まり、数量不変条件で原価が抑止される
+		expect(withoutDeposit?.cost_basis_reliable).toBe(false);
+		expect(withoutDeposit?.cost_basis).toBeUndefined();
+		// 実現損益も動く（移動平均の取得原価が変わるため）
+		expect(withoutDeposit?.realized_pnl).not.toBe(withDeposit?.realized_pnl);
+	});
+
+	/**
+	 * 出庫は表示専用なので従来どおり上限で妥協してよい。ただし黙って落とさず、
+	 * 「上限で切った」ことを現在価格フォールバック件数とは別枠で申告する（#76 仕様 2）。
+	 */
+	it('上限で切り落とした出庫を件数で申告する（現在価格フォールバック件数とは別枠）', async () => {
+		const result = await run(98);
+
+		assertOk(result);
+		// 出庫だけの chunk は 14 組、上限は 12 組 → 2 組ぶんの出庫が切り落とされる
+		// （98 件を 14 資産に均等配分すると 1 資産あたり 7 件）
+		expect(result.meta.flowPriceChunkTruncatedWithdrawalCount).toBe(14);
+		expect(result.meta.flowPriceChunkTruncatedDepositCount).toBeUndefined();
+		// LLM が読むのは content テキストだけ（.claude/rules/tools.md）。JSON より前の警告行に出す
+		expect(result.summary).toContain('暗号資産出庫 14件');
+		expect(result.summary).toContain('取得原価には影響しません');
+	});
+
+	/**
+	 * 入庫側の上限は「予算」ではなく暴走時の安全弁だが、当たったときは黙って落とさない。
+	 * 入庫が切られた ＝ 取得原価が不完全で、再実行で値が変わりうる状態なので必ず申告する。
+	 */
+	it('入庫が上限に当たったら「再実行で値が変わりうる」と申告する', async () => {
+		const { MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS } = await import('../../src/handlers/portfolio/fetch.js');
+		// 上限 +1 組ぶんの (資産, 年) を作る。1 組だけ切り落とされる想定
+		const chunkAssets = [
+			'xrp',
+			'ltc',
+			'bcc',
+			'mona',
+			'xlm',
+			'qtum',
+			'bat',
+			'link',
+			'dot',
+			'doge',
+			'astr',
+			'ada',
+			'avax',
+		];
+		const years = [2018, 2019, 2020, 2021, 2022];
+		const deposits = years.flatMap((year, yi) =>
+			chunkAssets.map((asset, ai) => ({
+				uuid: `dep-${asset}-${year}`,
+				asset,
+				amount: '1',
+				status: 'DONE',
+				found_at: Date.UTC(year, 5, 1),
+				confirmed_at: Date.UTC(year, 5, 1),
+				_order: yi * chunkAssets.length + ai,
+			})),
+		);
+		expect(deposits.length).toBe(MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS + 1);
+
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			const marginResponse = maybeMarginAccountResponse(urlStr);
+			if (marginResponse) return marginResponse;
+			if (urlStr.includes('tickers_jpy')) return new Response(JSON.stringify(tickersBtcOnly), { status: 200 });
+			if (urlStr.includes('candlestick')) {
+				return new Response(JSON.stringify(candles1day([{ tsMs: Date.UTC(2026, 4, 15), open: 20_000_000 }])), {
+					status: 200,
+				});
+			}
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ assets: [assetFixture('jpy')] })), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ trades: [] })), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ deposits })), { status: 200 });
+			}
+			if (urlStr.includes('withdrawal_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ withdrawals: [] })), { status: 200 });
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		expect(result.meta.flowPriceChunkTruncatedDepositCount).toBe(1);
+		// 読み手に「原価が不完全で、再実行で値が変わりうる」ことが伝わる文言であること
+		expect(result.summary).toContain('暗号資産入庫 1件');
+		expect(result.summary).toContain('取得原価に算入していません');
+		expect(result.summary).toContain('再実行で値が変わります');
+		// 警告は JSON より前（summary は content テキストの先頭に入る）
+		expect(result.summary.indexOf('暗号資産入庫 1件')).toBeGreaterThanOrEqual(0);
+	});
+});
+
 describe('analyze_my_portfolio — toolDef handler', () => {
 	it('handler がデフォルト引数で動作する', async () => {
 		// setup URL routing fetch mock
