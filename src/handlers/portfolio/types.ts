@@ -140,6 +140,10 @@ export interface PnlResult {
 	 *
 	 * 数量乖離の理由コード判定（`qtyMismatchReasonFor`）の入力。0 より大きければ
 	 * 復元数量は実残高より小さくなり得るので、`has_crypto_deposits` の根拠になる。
+	 *
+	 * 乖離が許容誤差に収まった銘柄では `cost_basis_reliable: true` のまま確定値が出るが、
+	 * その原価は本件数ぶんの入庫を欠いたままなので、`holdings[].unpriced_deposit_count`
+	 * として出力にも露出する（#77）。内部判定だけに使って握り潰さないこと。
 	 */
 	unpriced_deposit_count: number;
 }
@@ -153,6 +157,18 @@ export interface PeriodRealizedPnl {
 	period_start: string;
 	/** 期間の終了日時（ISO8601 JST） = 取得時点 */
 	period_end: string;
+	/**
+	 * 平均原価の積み上げ（全履歴・全銘柄）で入庫日の始値により原価に算入した
+	 * DONE 暗号資産入庫の件数。期間内の入庫だけではない——移動平均法は期間開始前の
+	 * 入庫も原価に積むため、`realized_pnl` の算出条件は全履歴のリプレイで決まる。
+	 */
+	priced_deposit_count: number;
+	/**
+	 * 同じリプレイで入庫日の始値を解決できず原価にも数量にも算入しなかった
+	 * DONE 暗号資産入庫の件数（全履歴・全銘柄）。0 より大きければ `realized_pnl` は
+	 * 未算入ぶんを原価ゼロで売った結果を含みうる（＝過大側にずれる）。
+	 */
+	unpriced_deposit_count: number;
 }
 
 // ── 口座全体 PnL（現物 + 信用決済損益 - 利息 - 手数料） ──

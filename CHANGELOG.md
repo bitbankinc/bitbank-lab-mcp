@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+### Added（`analyze_my_portfolio` に原価へ算入できなかった入庫の件数を露出）
+- **`holdings[].unpriced_deposit_count` / `priced_deposit_count`（number, optional）を追加した。** `calcPnl` は入庫日（`confirmed_at`）の始値を解決できた入庫だけを取得原価に算入し、解決できなかったものは**算入せず件数だけ数える**（嘘の原価を作らない設計）。従来この件数は `qtyMismatchReasonFor` の内部判定にしか使われておらず出力に出ていなかったため、消費者は「この銘柄の `cost_basis` / `realized_pnl` が何件の入庫を原価に含めずに算出されたのか」を知る術がなかった。`realized_pnl` は確定申告に使われうる数字で、同じ値でも「全入庫を原価算入した結果」と「入庫 n 件を原価ゼロ扱いで除外した結果」では意味がまったく違う。
+- **`cost_basis_reliable: true` と `unpriced_deposit_count > 0` は同時に成立する。** 数量不変条件は許容誤差 `max(10^-amount_precision × 5, 実残高 × 0.1%)` 内の乖離を通すため、未算入の入庫が許容誤差に収まった銘柄では**原価が不完全でも確定値が出る**。これは矛盾ではなく本変更が可視化したい状態で、`cost_basis_reliable`（復元数量が実残高と一致するか）と `unpriced_deposit_count`（原価が全入庫を含むか）は別軸。`cost_basis_reliable` の description にも「true は『原価が全入庫を含む』ではない」旨を追記した。
+- **既存の理由コード enum（`PortfolioCostBasisUnavailableReasonEnum`）とは別軸**なので値を足していない。あちらは「原価を出せなかった」理由、本フィールドは「原価は出したが不完全」の度合いを表す。
+- **合計値には含める（除外しない）。** `total_cost_basis` / `total_unrealized_pnl` / `total_realized_pnl` は原価が不完全な銘柄も集計に含めたうえで、`meta.warnings` と summary の警告行（銘柄名と件数のみ、金額は出さない）で申告する。許容誤差内の微小な未算入で銘柄まるごと合計から消える方が実害が大きいための判断で、方針は各フィールドの description に明記した（数量乖離で原価を抑止した銘柄は従来どおり合計から除外する）。
+- **`yearly_realized_pnl` / `monthly_realized_pnl` にも同じ 2 キーを追加した。** 移動平均法は期間開始前の入庫も原価に積むため、期間実現損益の算出条件も全履歴のリプレイで決まる。件数は全履歴・全銘柄の合計（売り切り銘柄も含むため `holdings[]` の合計より大きくなることがある）。
+- **売り切り銘柄の未算入入庫も警告行に出す。** `holdings` に載らないので件数フィールドの置き場は無いが、`realized_pnl` は `closed_position_realized_pnl` / `total_realized_pnl` に入るため、算出条件の申告だけは落とさない。
+- **値が 0 のときはキーごと落とす。** 入庫が 1 件も無い銘柄の出力は従来と JSON 一致する。新設キーは既存キーの後ろに宣言してあり（`z.object` の parse は宣言順でオブジェクトを組み直すため）、キー順・description・警告行は `tests/private/unpriced-deposit-count-schema.test.ts` と `tests/private/analyze_my_portfolio.test.ts` で機械的に固定している。
+
 ### Added（`analyze_my_portfolio` の信用コスト項を `_cost` サフィックスへリネーム）
 - **`account_pnl.margin_interest_cost` / `margin_fee_cost` を追加した**（`yearly_account_pnl` / `monthly_account_pnl` も同様）。従来の `margin_interest` / `margin_fee` は JSON では**正値**なのに summary では `-149円` と負で表示され `total` でも減算されるため、`structuredContent` を直読みする消費者が符号規約を知らずに**足し算**してしまうリスクがあった（計算そのものは従来から正しい）。`_cost` サフィックスで「コスト = 正値・`total` では減算」という規約を名前に出す。
 - **値・符号・`total` の計算は一切変えていない**（命名と description の改善のみ）。`total = spot_realized_pnl + margin_realized_pnl − margin_interest_cost − margin_fee_cost` を `total` の description に明記し、新フィールドの description には符号規約を書いた。

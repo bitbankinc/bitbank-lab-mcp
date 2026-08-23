@@ -208,6 +208,16 @@ const QTY_MISMATCH_CAUSE: Record<PortfolioQtyMismatchReason, string> = {
 };
 
 /**
+ * 入庫の算入件数は 0 のときキーごと落とす（#77）。
+ *
+ * 入庫が 1 件も無い銘柄の出力を従来と JSON 一致させるため。`0` を出すと「数えたが 0」と
+ * 「そもそも入庫が無い」が同じ表示になるうえ、入庫を持たない大多数の銘柄に無意味なキーが増える。
+ */
+function depositCountOrUndefined(count: number | undefined): number | undefined {
+	return count != null && count > 0 ? count : undefined;
+}
+
+/**
  * 期間パフォーマンス 1 期間ぶんの summary 行を組み立てる。
  *
  * 純入出金が未計測（`flow_measured: false`）のときは調整後増減の行を出す代わりに
@@ -467,6 +477,13 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// 数量不変条件で乖離を検出した銘柄（summary の警告行と合計からの除外に使う）
 		const qtyMismatchAssets: Array<{ asset: string; reason: PortfolioQtyMismatchReason }> = [];
 
+		// 原価に算入できなかった入庫があるのに、確定値を出している銘柄（#77）。
+		// 数量乖離で抑止した銘柄はここに入れない——あちらは値そのものを出しておらず
+		// `has_crypto_deposits` の警告行で申告済みなので、二重に警告すると読み手が
+		// 「抑止されたのか出ているのか」を取り違える。売り切り銘柄も後段の集計ループで足す
+		// （holdings に載らないが realized_pnl は total に入るため、算出条件の申告が要る）。
+		const unpricedDepositAssets: Array<{ asset: string; count: number }> = [];
+
 		const holdings = nonZeroAssets.map((a) => {
 			const amount = a.onhand_amount;
 			const isJpy = a.asset === 'jpy';
@@ -495,6 +512,8 @@ export default async function analyzeMyPortfolioHandler(args: {
 					trade_count: undefined,
 					cost_basis_unavailable_reason: undefined,
 					cost_basis_reliable: undefined,
+					priced_deposit_count: undefined,
+					unpriced_deposit_count: undefined,
 				};
 			}
 
@@ -532,6 +551,11 @@ export default async function analyzeMyPortfolioHandler(args: {
 					trade_count: pnl?.trade_count,
 					cost_basis_unavailable_reason: flowUnavailableReason,
 					cost_basis_reliable: false,
+					// この経路では depositCost を渡していない（pnlUsesFlow=false）ので両件数とも 0 になる。
+					// 「入庫を数えたうえで 0 件だった」ではなく「入庫の原価算入を行っていない」なので、
+					// 0 を出さずキーごと落とす（理由は cost_basis_unavailable_reason が表す）。
+					priced_deposit_count: depositCountOrUndefined(pnl?.priced_deposit_count),
+					unpriced_deposit_count: depositCountOrUndefined(pnl?.unpriced_deposit_count),
 				};
 			}
 
@@ -554,6 +578,8 @@ export default async function analyzeMyPortfolioHandler(args: {
 					trade_count: pnl.trade_count,
 					cost_basis_unavailable_reason: reason,
 					cost_basis_reliable: false,
+					priced_deposit_count: depositCountOrUndefined(pnl.priced_deposit_count),
+					unpriced_deposit_count: depositCountOrUndefined(pnl.unpriced_deposit_count),
 				};
 			}
 
@@ -563,6 +589,12 @@ export default async function analyzeMyPortfolioHandler(args: {
 				unrealizedPnl != null && pnl?.cost_basis != null && pnl.cost_basis > 0
 					? Math.round((unrealizedPnl / pnl.cost_basis) * 10000) / 100
 					: undefined;
+
+			// 確定値を出す経路。未算入の入庫があってもここを通る（数量乖離が許容誤差に収まった
+			// ケース）ので、cost_basis_reliable=true と unpriced_deposit_count>0 は同時に立つ。
+			if (pnl != null && pnl.unpriced_deposit_count > 0) {
+				unpricedDepositAssets.push({ asset: a.asset, count: pnl.unpriced_deposit_count });
+			}
 
 			return {
 				asset: a.asset,
@@ -581,6 +613,8 @@ export default async function analyzeMyPortfolioHandler(args: {
 				trade_count: pnl?.trade_count,
 				cost_basis_unavailable_reason: undefined,
 				cost_basis_reliable: pnl != null ? true : undefined,
+				priced_deposit_count: depositCountOrUndefined(pnl?.priced_deposit_count),
+				unpriced_deposit_count: depositCountOrUndefined(pnl?.unpriced_deposit_count),
 			};
 		});
 
@@ -606,6 +640,12 @@ export default async function analyzeMyPortfolioHandler(args: {
 						totalRealizedPnl += pnl.realized_pnl;
 						closedSum += pnl.realized_pnl;
 						closedCount++;
+						// 売り切り銘柄は holdings に載らず件数フィールドの置き場が無いが、
+						// realized_pnl は total_realized_pnl / closed_position_realized_pnl に入る。
+						// 算出条件を落とさないよう警告行の対象には含める（#77）。
+						if (pnl.unpriced_deposit_count > 0) {
+							unpricedDepositAssets.push({ asset, count: pnl.unpriced_deposit_count });
+						}
 					}
 				}
 			}
@@ -815,6 +855,14 @@ export default async function analyzeMyPortfolioHandler(args: {
 			totalUnrealizedPnl != null && validCostBasis > 0
 				? Math.round((totalUnrealizedPnl / validCostBasis) * 10000) / 100
 				: undefined;
+
+		// 原価不完全な銘柄の表示ラベル（#77）。銘柄名と件数のみで金額は出さない
+		// （`.claude/rules/sensitive-data.md` の HIGH 分類）。保有銘柄（評価額降順）と
+		// 売り切り銘柄（Set 由来で順序不定）が混ざるので、銘柄名でソートして出力を決定的にする。
+		const unpricedDepositLabel = [...unpricedDepositAssets]
+			.sort((x, y) => x.asset.localeCompare(y.asset))
+			.map((e) => `${e.asset.toUpperCase()}（${e.count}件）`)
+			.join(', ');
 
 		// ticker 未取得の銘柄がある場合は警告
 		const missingPriceAssets = cryptoHoldings
@@ -1215,6 +1263,11 @@ export default async function analyzeMyPortfolioHandler(args: {
 				`※ ${qtyMismatchAssets.map((m) => m.asset.toUpperCase()).join(', ')} は復元数量が実残高と乖離しているため合計評価損益に含めていません`,
 			);
 		}
+		if (unpricedDepositLabel !== '') {
+			lines.push(
+				`※ ${unpricedDepositLabel} は入庫日の始値を解決できなかった入庫（カッコ内は件数）を取得原価に算入していないため、取得原価・評価損益・実現損益がその分だけ不完全です。合計からは除外せず含めています`,
+			);
+		}
 		lines.push('');
 
 		// 保有銘柄のパフォーマンス（月次・年次の価格騰落率）
@@ -1285,6 +1338,13 @@ export default async function analyzeMyPortfolioHandler(args: {
 		if (qtyMismatchAssets.length > 0) {
 			calcWarnings.push(
 				`${qtyMismatchAssets.map((m) => `${m.asset.toUpperCase()}（${QTY_MISMATCH_CAUSE[m.reason]}）`).join(', ')} は約定・出庫から復元した保有数量が実残高と一致しないため、取得原価・評価損益を算出せず合計評価損益からも除外しています`,
+			);
+		}
+		// 原価は出したが不完全な銘柄（#77）。上の数量乖離とは別軸で、こちらは**確定値が出ている**。
+		// 申告しないと realized_pnl の算出条件（何件の入庫を除外したか）が出力から復元できない。
+		if (unpricedDepositLabel !== '') {
+			calcWarnings.push(
+				`${unpricedDepositLabel} は入庫日の始値を解決できなかった暗号資産入庫（カッコ内は件数）を取得原価にも復元数量にも算入せずに cost_basis / avg_buy_price / unrealized_pnl / realized_pnl を算出しています。未算入ぶんを売却済みなら原価ゼロで売ったことになり実現損益は過大、保有継続なら取得原価が過小です。数量乖離が許容誤差に収まっているため cost_basis_reliable=true のまま確定値が出ますが、原価は不完全です（件数は holdings[].unpriced_deposit_count。該当銘柄は total_cost_basis / total_unrealized_pnl / total_realized_pnl から除外せず含めています）`,
 			);
 		}
 		if (netFlowUnpricedAssets.length > 0) {
@@ -1385,6 +1445,8 @@ export default async function analyzeMyPortfolioHandler(args: {
 						sell_count: yearlyRealizedPnl.sell_count,
 						period_start: yearlyRealizedPnl.period_start,
 						period_end: yearlyRealizedPnl.period_end,
+						priced_deposit_count: depositCountOrUndefined(yearlyRealizedPnl.priced_deposit_count),
+						unpriced_deposit_count: depositCountOrUndefined(yearlyRealizedPnl.unpriced_deposit_count),
 					}
 				: undefined,
 			monthly_realized_pnl: monthlyRealizedPnl
@@ -1393,6 +1455,8 @@ export default async function analyzeMyPortfolioHandler(args: {
 						sell_count: monthlyRealizedPnl.sell_count,
 						period_start: monthlyRealizedPnl.period_start,
 						period_end: monthlyRealizedPnl.period_end,
+						priced_deposit_count: depositCountOrUndefined(monthlyRealizedPnl.priced_deposit_count),
+						unpriced_deposit_count: depositCountOrUndefined(monthlyRealizedPnl.unpriced_deposit_count),
 					}
 				: undefined,
 			account_pnl: accountPnl,
