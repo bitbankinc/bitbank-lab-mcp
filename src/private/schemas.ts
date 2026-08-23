@@ -4,6 +4,7 @@
  */
 
 import { z } from 'zod';
+import { deprecatedFieldNote } from '../schema/base.js';
 
 // FailResultSchema を直接定義（schemas.ts からの循環参照を避けるため）
 const PrivateFailResultSchema = z.object({
@@ -467,21 +468,62 @@ const PeriodRealizedPnlSchema = z
 	})
 	.optional();
 
-const AccountPnlSchema = z.object({
+/**
+ * `account_pnl` / `yearly_account_pnl` / `monthly_account_pnl` に共通の既存キー。
+ * **並び順を変えないこと**——`z.object` の parse は宣言順でオブジェクトを組み直すため、
+ * ここを触ると既存消費者の JSON のキー順が中間から変わる（#69 の回帰テストが固定している）。
+ */
+const accountPnlCoreShape = {
 	spot_realized_pnl: z
 		.number()
 		.describe(
 			'現物の実現損益（JPY、全銘柄 = 現在保有中の銘柄 + 売り切り銘柄）。対象期間は本オブジェクトのスコープに従う（account_pnl=全履歴、yearly_account_pnl / monthly_account_pnl=period_start〜period_end）。全履歴版は total_realized_pnl と同値で、内訳は Σ holdings[].realized_pnl + closed_position_realized_pnl',
 		),
 	margin_realized_pnl: z.number().describe('信用の決済済み損益（JPY、グロス: 利息・手数料控除前）'),
-	margin_interest: z.number().describe('信用の支払利息合計（JPY、コスト = 正値）'),
-	margin_fee: z.number().describe('信用の発生手数料合計（JPY、fee_occurred_amount_quote の合算。コスト = 正値）'),
-	total: z.number().describe('口座全体 PnL = spot + margin - interest - fee'),
-});
+	margin_interest: z
+		.number()
+		.describe(`信用の支払利息合計（JPY、コスト = 正値）。${deprecatedFieldNote('margin_interest_cost')}`),
+	margin_fee: z
+		.number()
+		.describe(
+			`信用の発生手数料合計（JPY、fee_occurred_amount_quote の合算。コスト = 正値）。${deprecatedFieldNote('margin_fee_cost')}`,
+		),
+	total: z
+		.number()
+		.describe(
+			'口座全体 PnL = spot_realized_pnl + margin_realized_pnl − margin_interest_cost − margin_fee_cost。コスト項は正値で入っているので**減算**する（足すと符号が反転する）',
+		),
+};
 
-const PeriodAccountPnlSchema = AccountPnlSchema.extend({
+/**
+ * #72 で追加した信用コスト項。**既存キーの後ろに宣言する**（wire の中間に新キーを挿さない）。
+ *
+ * `margin_interest` / `margin_fee` と同じ値だが、`_cost` サフィックスで
+ * 「コスト = 正値、`total` では減算」という符号規約を名前に出している。
+ */
+const marginCostShape = {
+	margin_interest_cost: z
+		.number()
+		.describe(
+			'信用の支払利息合計（JPY）。**コスト = 正値**で保持し、total では**減算**される。total を自前で組み直すときは足さずに引くこと。旧名 margin_interest と同じ値',
+		),
+	margin_fee_cost: z
+		.number()
+		.describe(
+			'信用の発生手数料合計（JPY、fee_occurred_amount_quote の合算）。**コスト = 正値**で保持し、total では**減算**される。旧名 margin_fee と同じ値',
+		),
+};
+
+const AccountPnlSchema = z.object({ ...accountPnlCoreShape, ...marginCostShape });
+
+// 期間版も既存キー（... total / period_start / period_end）の後ろに新設キーを置く。
+// AccountPnlSchema.extend() だと period_start の**手前**に入り、既存消費者の JSON の
+// 中間に挿さるため、shape を明示的に組み直している。
+const PeriodAccountPnlSchema = z.object({
+	...accountPnlCoreShape,
 	period_start: z.string().describe('期間の開始日時（ISO8601 JST）'),
 	period_end: z.string().describe('期間の終了日時（ISO8601 JST）'),
+	...marginCostShape,
 });
 
 const PeriodPerformanceSchema = z

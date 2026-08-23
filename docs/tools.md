@@ -260,6 +260,25 @@ API の応答をそのまま、または軽量整形して返す。指標計算�
 
 ---
 
+## 非推奨の出力フィールド（`0.4.0` で削除予定）
+
+`view` の enum 値とは別に、**出力フィールドの別名**にも同じ猶予期間（最低 1 リリース かつ 3 ヶ月）を置いています。旧フィールドは移行期間中も**新フィールドと同じ値**を返すので、読み替えるだけで移行できます。
+
+| ツール | 非推奨のフィールド | 新しいフィールド |
+|---|---|---|
+| `analyze_my_portfolio` | `account_pnl.margin_interest`（`yearly_account_pnl` / `monthly_account_pnl` も同様） | `margin_interest_cost` |
+| `analyze_my_portfolio` | `account_pnl.margin_fee`（`yearly_account_pnl` / `monthly_account_pnl` も同様） | `margin_fee_cost` |
+
+**信用のコスト項は `_cost` サフィックス付きが正です。** どちらの名前でも値は同じ**正値**（コスト = 正値）で、`total` では**減算**されます。
+
+```
+total = spot_realized_pnl + margin_realized_pnl − margin_interest_cost − margin_fee_cost
+```
+
+`structuredContent` を直読みする場合、コスト項を**足すと符号が反転します**。旧名 `margin_interest` / `margin_fee` は名前から符号規約が読み取れず実際に誤加算されていたため、名前に意味を出した `_cost` へ移行してください（値・符号は変わらないので、リネームだけで済みます）。
+
+---
+
 ## ヒント（参考）
 - `analyze_market_signal` で全体を把握 → 必要に応じて各専門ツールへ
 - チャートは必ず `render_chart_svg` の `data.svg` をそのまま表示（自前描画はしない）

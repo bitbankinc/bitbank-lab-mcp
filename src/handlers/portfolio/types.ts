@@ -155,19 +155,47 @@ export interface PeriodRealizedPnl {
 	period_end: string;
 }
 
-// ── 口座全体 PnL（現物 + 信用決済損益 - 利息） ──
+// ── 口座全体 PnL（現物 + 信用決済損益 - 利息 - 手数料） ──
 
+/**
+ * 信用のコスト項（利息・手数料）は **`_cost` サフィックス付きが正**で、コスト = 正値・
+ * `total` では減算という符号規約を名前で表す（#72）。サフィックス無しの
+ * `margin_interest` / `margin_fee` は同じ値を出し続ける **deprecated な別名**で、
+ * `DEPRECATED_FIELD_REMOVAL_TARGET`（`src/schema/base.ts`）で削除する。
+ *
+ * 「負値で持つ」案は採らない——同じフィールド名で符号の意味が変わる変更は
+ * `.claude/rules/tools.md` §7 のとおり alias では救えず、旧フィールドを読み続ける
+ * クライアントに黙って符号反転が届くため。
+ */
 export interface AccountPnl {
 	/** 現物の実現損益（JPY） */
 	spot_realized_pnl: number;
 	/** 信用の決済済み損益合計（JPY、グロス: 利息・手数料控除前） */
 	margin_realized_pnl: number;
-	/** 信用の支払利息合計（JPY、コスト = 正値） */
+	/**
+	 * `margin_interest_cost` の別名（同じ正値）。**非推奨**、`DEPRECATED_FIELD_REMOVAL_TARGET` で削除予定。
+	 *
+	 * @deprecated `margin_interest_cost` を使うこと（#72: 名前から符号規約が読み取れない）。
+	 */
 	margin_interest: number;
-	/** 信用の発生手数料合計（JPY、fee_occurred_amount_quote の合算。コスト = 正値） */
+	/**
+	 * `margin_fee_cost` の別名（同じ正値）。**非推奨**、`DEPRECATED_FIELD_REMOVAL_TARGET` で削除予定。
+	 *
+	 * @deprecated `margin_fee_cost` を使うこと（#72: 名前から符号規約が読み取れない）。
+	 */
 	margin_fee: number;
-	/** 口座全体 PnL = spot_realized + margin_realized - margin_interest - margin_fee */
+	/** 口座全体 PnL = spot_realized_pnl + margin_realized_pnl - margin_interest_cost - margin_fee_cost */
 	total: number;
+	/**
+	 * 信用の支払利息合計（JPY）。**コスト = 正値**で保持し、`total` では**減算**される。
+	 * 素直に足し込むと符号が反転するので、`total` を自前で組み直す場合は必ず引くこと。
+	 */
+	margin_interest_cost: number;
+	/**
+	 * 信用の発生手数料合計（JPY、`fee_occurred_amount_quote` の合算）。
+	 * **コスト = 正値**で保持し、`total` では**減算**される。
+	 */
+	margin_fee_cost: number;
 }
 
 export interface PeriodAccountPnl extends AccountPnl {

@@ -156,6 +156,29 @@ export function deprecatedViewNote(replacement: string): string {
 }
 
 /**
+ * deprecated な**出力フィールド**（別名として残した旧フィールド）を削除する目標バージョン。
+ *
+ * 猶予期間の考え方は `view` の alias と同じ（§6-4: 最低 1 リリース かつ 3 ヶ月）で、
+ * `0.2.0` で alias として導入し `0.4.0` で削除する。値は `DEPRECATED_VIEW_REMOVAL_TARGET` と
+ * 同じだが定数を分けているのは、削除の単位が別（enum 値 / 出力フィールド）で、片方だけ
+ * 期日を動かしたくなったときに巻き添えにしないため。
+ *
+ * **削除目標バージョンを書かない alias は作らないこと。** 期日の無い別名は「いつ消せるのか」
+ * が誰にも分からなくなり、恒久的な二重出力として残る。
+ */
+export const DEPRECATED_FIELD_REMOVAL_TARGET = '0.4.0';
+
+/**
+ * deprecated な出力フィールドの description に付ける定型文（写像先と削除目標バージョンを明示する）。
+ *
+ * `view` の alias（`deprecatedViewNote`）は**入力**の別名で、旧値を渡すと新しい挙動に正規化される。
+ * こちらは**出力**の別名で、旧フィールドは新フィールドと**同じ値**を出し続ける（符号も単位も同一）。
+ */
+export function deprecatedFieldNote(replacement: string): string {
+	return `**非推奨**（${replacement} の別名）。同じ値を返します。${DEPRECATED_FIELD_REMOVAL_TARGET} で削除予定なので ${replacement} へ移行してください`;
+}
+
+/**
  * `format` パラメータの共通 description（§3-3）。
  *
  * `format=json` は**トークン削減オプションではない**。同じデータを pretty JSON にすると
