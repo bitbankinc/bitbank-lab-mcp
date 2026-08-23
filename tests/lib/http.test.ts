@@ -5,6 +5,8 @@ import {
 	extractRateLimit,
 	fetchJson,
 	fetchJsonWithRateLimit,
+	retryAsync,
+	retryBackoffMs,
 } from '../../lib/http.js';
 
 describe('定数', () => {
@@ -210,5 +212,148 @@ describe('fetchJsonWithRateLimit', () => {
 		const result = await fetchJsonWithRateLimit('https://example.com/api', { retries: 1 });
 		expect(result.data).toEqual({ ok: true });
 		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+	});
+});
+
+/**
+ * 429 のリトライは `fetchFlowDatePrices` の年 chunk 取得（#81）が土台にしている挙動なので、
+ * 「`Retry-After` の秒数を待ってから再試行する」ことをここで固定する。
+ * 上位レイヤーは `Retry-After` を二重に解釈しない（待つのは HTTP レイヤーだけ）。
+ */
+describe('fetchJsonWithRateLimit — 429 と Retry-After', () => {
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	it('Retry-After の秒数だけ待ってから再試行する', async () => {
+		vi.useFakeTimers();
+		const okResponse = () =>
+			new Response(JSON.stringify({ success: 1 }), {
+				status: 200,
+				headers: { 'Content-Type': 'application/json' },
+			});
+		const fetchSpy = vi
+			.spyOn(globalThis, 'fetch')
+			.mockResolvedValueOnce(new Response('', { status: 429, headers: { 'Retry-After': '5' } }))
+			.mockResolvedValue(okResponse());
+
+		const pending = fetchJsonWithRateLimit('https://example.com/api', { retries: 1 });
+
+		// 指定の 5 秒が経つまでは次のリクエストを出さない
+		await vi.advanceTimersByTimeAsync(4_000);
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(1_000);
+		await expect(pending).resolves.toEqual({ data: { success: 1 }, rateLimit: null });
+		expect(fetchSpy).toHaveBeenCalledTimes(2);
+	});
+
+	it('リトライを使い切った 429 はレート制限のエラーになる', async () => {
+		vi.useFakeTimers();
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 429 }));
+
+		const pending = fetchJsonWithRateLimit('https://example.com/api', { retries: 1 });
+		const assertion = expect(pending).rejects.toThrow('レート制限超過');
+		await vi.runAllTimersAsync();
+		await assertion;
+	});
+});
+
+/**
+ * `retryAsync` — **戻り値で失敗を表す**処理（`Result` を返すツール呼び出し等）のリトライ。
+ *
+ * HTTP 1 本のリトライは `fetchJson` 系が担当するが、「ツール呼び出し 1 回」の単位で
+ * やり直したい層（`fetchFlowDatePrices` の年 chunk 取得 = #81）は戻り値で失敗を受け取るため
+ * そちらでは救えない。待機スケジュールを各所で書き起こさないための共通実装。
+ */
+describe('retryAsync', () => {
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	/** 保留中の retryAsync を fake timer で最後まで進める */
+	async function drain<T>(pending: Promise<T>): Promise<T> {
+		await vi.runAllTimersAsync();
+		return pending;
+	}
+
+	it('shouldRetry が false なら 1 回で返す（余分な実行をしない）', async () => {
+		const op = vi.fn().mockResolvedValue('ok');
+
+		await expect(retryAsync(op, { shouldRetry: () => false })).resolves.toBe('ok');
+		expect(op).toHaveBeenCalledTimes(1);
+	});
+
+	it('shouldRetry が true の間は再試行し、成功した時点で値を返す', async () => {
+		vi.useFakeTimers();
+		const op = vi.fn().mockResolvedValueOnce('fail').mockResolvedValue('ok');
+
+		await expect(drain(retryAsync(op, { retries: 2, shouldRetry: (v) => v === 'fail' }))).resolves.toBe('ok');
+		expect(op).toHaveBeenCalledTimes(2);
+	});
+
+	it('リトライを使い切ったら最後の値をそのまま返す（throw しない）', async () => {
+		vi.useFakeTimers();
+		const op = vi.fn().mockResolvedValue('fail');
+
+		await expect(drain(retryAsync(op, { retries: 2, shouldRetry: () => true }))).resolves.toBe('fail');
+		// 初回 + リトライ 2 回
+		expect(op).toHaveBeenCalledTimes(3);
+	});
+
+	it('throw は一時的な失敗として再試行し、次で成功すれば値を返す', async () => {
+		vi.useFakeTimers();
+		const op = vi.fn().mockRejectedValueOnce(new Error('boom')).mockResolvedValue('ok');
+
+		await expect(drain(retryAsync(op, { retries: 2, shouldRetry: () => false }))).resolves.toBe('ok');
+		expect(op).toHaveBeenCalledTimes(2);
+	});
+
+	it('throw のままリトライを使い切ったら最後の例外を投げる', async () => {
+		vi.useFakeTimers();
+		const op = vi.fn().mockRejectedValueOnce(new Error('first')).mockRejectedValue(new Error('last'));
+
+		const pending = retryAsync(op, { retries: 1, shouldRetry: () => false });
+		const assertion = expect(pending).rejects.toThrow('last');
+		await vi.runAllTimersAsync();
+		await assertion;
+		expect(op).toHaveBeenCalledTimes(2);
+	});
+
+	it('retries: 0 なら再試行しない', async () => {
+		const op = vi.fn().mockResolvedValue('fail');
+
+		await expect(retryAsync(op, { retries: 0, shouldRetry: () => true })).resolves.toBe('fail');
+		expect(op).toHaveBeenCalledTimes(1);
+	});
+
+	it('retries 未指定なら DEFAULT_RETRIES 回まで再試行する', async () => {
+		vi.useFakeTimers();
+		const op = vi.fn().mockResolvedValue('fail');
+
+		await drain(retryAsync(op, { shouldRetry: () => true }));
+		expect(op).toHaveBeenCalledTimes(DEFAULT_RETRIES + 1);
+	});
+
+	it('throw のあとに値の失敗が続いても最後の値を返す（例外を引きずらない）', async () => {
+		vi.useFakeTimers();
+		const op = vi.fn().mockRejectedValueOnce(new Error('boom')).mockResolvedValue('fail');
+
+		await expect(drain(retryAsync(op, { retries: 2, shouldRetry: () => true }))).resolves.toBe('fail');
+		expect(op).toHaveBeenCalledTimes(3);
+	});
+});
+
+describe('retryBackoffMs', () => {
+	it('試行ごとに倍のバックオフを返す', () => {
+		expect(retryBackoffMs(0)).toBe(200);
+		expect(retryBackoffMs(1)).toBe(400);
+		expect(retryBackoffMs(2)).toBe(800);
+	});
+
+	it('待機時間の上限（30秒）でキャップする', () => {
+		expect(retryBackoffMs(100)).toBe(30_000);
 	});
 });

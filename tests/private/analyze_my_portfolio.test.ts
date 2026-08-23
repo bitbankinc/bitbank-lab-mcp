@@ -5733,7 +5733,9 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 	});
 
 	it('期間実現損益は抑止した銘柄が売却した期間だけ落とす', async () => {
-		vi.useFakeTimers();
+		// `toFake: ['Date']` で Date だけを固定する。setTimeout まで固めると、年 chunk 取得の
+		// リトライ待機（#81）が進まずハンドラが返ってこない。このテストが要るのは now の固定だけ。
+		vi.useFakeTimers({ toFake: ['Date'] });
 		// 売り（JST 2024-03-15）は年初来に入り、月初来（2024-06）には入らない now を選ぶ
 		vi.setSystemTime(Date.UTC(2024, 5, 1, 3, 0, 0));
 		try {
