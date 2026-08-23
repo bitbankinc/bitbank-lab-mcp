@@ -413,14 +413,82 @@ export async function fetchCandlePriceData(
 // ── 入出庫日価格の追加取得 ──
 
 /**
- * 入出庫日価格の追加取得で発行する年単位 chunk の上限。
+ * **出庫**（表示専用）の追加取得で発行する年単位 chunk の上限。
  *
  * `getCandles` は tz 暦年 1 年ぶんの窓に対して UTC 年 chunk を 2 つ叩く（JST 年頭は UTC 前年）ため、
  * 実 HTTP リクエスト数はこの 2 倍程度になる。長期口座（多資産 × 多年）で青天井にならないよう頭を止める。
- * 上限を超えた組は取得せず、`resolveFlowPrice` の現在価格フォールバックに落ちて
- * `FlowValuationBreakdown` の `current_price_fallback_count` に計上される（黙って消えない）。
+ * 上限を超えた組は取得せず、`resolveFlowPrice` の現在価格フォールバックに落ちる。
+ *
+ * **入庫の chunk はこの上限を消費しない**（`MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS` が別枠）。
+ * 共有すると出庫が増えるだけで入庫が押し出され、取得原価と実現損益が実行ごとに変わる（#76）。
  */
-export const MAX_FLOW_PRICE_YEAR_CHUNKS = 12;
+export const MAX_WITHDRAWAL_FLOW_PRICE_YEAR_CHUNKS = 12;
+
+/**
+ * **入庫**の追加取得で発行する年単位 chunk の上限（暴走時の安全弁）。
+ *
+ * 入庫は取得原価に算入されるので、取れなかった分は原価から丸ごと落ちて実現損益が変わる
+ * （`collectDepositCostEvents` は `deposit_date_price` で解けた入庫だけを算入する）。
+ * したがってこれは「予算」ではなく、壊れたデータで際限なく HTTP を撃たないための安全弁であり、
+ * 実口座で当たらない水準に置く（bitbank の現物上場は 2017 年開始なので、実運用の (資産, 年) 組は
+ * 数十が上限）。**出庫の件数では 1 枠も減らない。**
+ *
+ * 当たった場合は黙って落とさず `FlowDatePrices.truncatedByChunkLimit.deposits` で申告し、
+ * 呼び出し側が「取得原価が不完全で再実行により変わりうる」ことを警告に出す。
+ */
+export const MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS = 64;
+
+/**
+ * 年 chunk 取得の最大同時実行数。
+ *
+ * 入庫は上限を実質外したので chunk 総数が伸びうる。全件を `Promise.all` に流すと
+ * bitbank API のレート制限（HTTP 429）に当たるため、同時実行だけを頭打ちにする
+ * （総数は絞らない ＝ 入庫を取り切る性質は変えない）。
+ * バッチ間の遅延は入れない——テストが `vi.useFakeTimers()` 下で handler を回すため、
+ * 実タイマー待ちを挟むと進まなくなる。
+ */
+const FLOW_PRICE_FETCH_CONCURRENCY = 12;
+
+/** 入庫・出庫それぞれで「年 chunk を取れなかったせいで入出庫日価格を解決できなくなった」件数 */
+export interface FlowPriceShortfall {
+	/** 入庫の件数。1 件以上なら取得原価が不完全（`calcPnl` の原価に算入されない） */
+	deposits: number;
+	/** 出庫の件数。1 件以上なら純投入額の減算が現在価格での仮評価に落ちる（表示のみ） */
+	withdrawals: number;
+}
+
+/** 追加取得の結果。日次価格に加えて「なぜ取れなかったか」を種類別に返す */
+export interface FlowDatePrices {
+	/**
+	 * 入出庫換算用の日次価格（`baseDailyPrices` に追加取得分をマージしたもの）。
+	 * 追加取得が 1 件も要らなければ `baseDailyPrices` インスタンスそのもの（下記「戻り値の所有権」）。
+	 */
+	dailyPrices: Map<string, Map<number, number>>;
+	/**
+	 * chunk 数の**上限で切り落とした**ために解決できなくなった件数。
+	 * 「取りに行けば解決できたはず」の分であり、上場前・API 失敗で本当に取れない分
+	 * （どちらも `current_price_fallback_count` に混ざる）とは区別して申告する（#76 仕様 2）。
+	 */
+	truncatedByChunkLimit: FlowPriceShortfall;
+	/**
+	 * chunk の**取得に失敗した**（`get_candles` が fail / throw / 空応答）ために
+	 * 解決できなくなった件数。再実行で解消しうる一時的な不完全性。
+	 *
+	 * 「取得は成功したが当日の足が無い」（上場前・データ欠損）はここには入らない。
+	 * それは再実行しても変わらない恒久的な未解決なので、`current_price_fallback_count` だけで足りる。
+	 */
+	chunkFetchFailed: FlowPriceShortfall;
+}
+
+/** (資産, 年) 1 組ぶんの取得候補。同じ組を要求した入庫・出庫の件数を持つ */
+interface FlowPriceChunk {
+	asset: string;
+	year: string;
+	depositCount: number;
+	withdrawalCount: number;
+}
+
+const emptyShortfall = (): FlowPriceShortfall => ({ deposits: 0, withdrawals: 0 });
 
 /**
  * 入出庫日（入庫: `confirmed_at` / 出庫: `requested_at`）の 1day open を解決するため、
@@ -435,10 +503,30 @@ export const MAX_FLOW_PRICE_YEAR_CHUNKS = 12;
  *    `resolveFlowPrice` が現在価格にフォールバックする。混ぜたことは
  *    `FlowValuationBreakdown` と summary / meta の警告で申告される
  *
+ * ## 入庫と出庫で予算を分ける理由（#76）
+ *
+ * 入庫と出庫を 1 つの上限で奪い合わせると、**出庫が増えただけで入庫の chunk が押し出される**。
+ * 押し出された入庫は `deposit_date_price` で解けず、`collectDepositCostEvents` が原価から
+ * 丸ごと落とすので、同じ口座・同じ期間でも実行タイミングで移動平均の取得原価が変わり、
+ * **過去の実現損益まで動く**（#70 で出庫の解決範囲を年初来から全履歴へ広げて顕在化した）。
+ *
+ * そこで候補を 2 つに割り、別々の上限を当てる:
+ *
+ * - **入庫が要求する (資産, 年)**: `MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS`（安全弁）。
+ *   **出庫の件数では 1 枠も減らない。** 上限が古い順に効くよう「古い年を先に」並べる
+ *   （新しい入庫が増えても既に取得できていた古い年の順位が動かない ＝ 過去の実現損益が
+ *   将来の入庫で書き換わらない）
+ * - **出庫だけが要求する (資産, 年)**: `MAX_WITHDRAWAL_FLOW_PRICE_YEAR_CHUNKS`。
+ *   表示専用なので従来どおり新しい年を優先する
+ *
+ * 入庫と出庫が同じ (資産, 年) を要求する組は**入庫側の予算で取得し、出庫はそれに相乗り**する。
+ * 逆に、入庫の上限で切られた組を出庫の残枠で拾い直すことはしない——拾えてしまうと
+ * 「出庫が増えたおかげで入庫が解決した」経路が復活し、本 issue の非決定性が形を変えて戻る。
+ *
  * ## 戻り値の所有権
  *
  * 追加取得が 1 件も要らなかった場合は**引数の `baseDailyPrices` インスタンスをそのまま返す**
- * （無駄なコピーを避けるため）。呼び出し側は戻り値を常に自分専用のコピーとみなして
+ * （無駄なコピーを避けるため）。呼び出し側は `dailyPrices` を常に自分専用のコピーとみなして
  * 書き換えてはいけない——読み取り専用に扱うこと。
  *
  * ## 引数の Map を破壊しない理由
@@ -451,9 +539,10 @@ export const MAX_FLOW_PRICE_YEAR_CHUNKS = 12;
 export async function fetchFlowDatePrices(
 	baseDailyPrices: Map<string, Map<number, number>>,
 	targets: FlowValuationTarget[],
-): Promise<Map<string, Map<number, number>>> {
+): Promise<FlowDatePrices> {
 	// 直近窓で解決できない (資産, 年) を洗い出す。同じ年に何件入出庫があっても chunk は 1 つ。
-	const missingYears = new Map<string, { asset: string; year: string }>();
+	// 件数は入庫・出庫別に数える（切り落とし・取得失敗の申告を種類別に出すため）。
+	const missingYears = new Map<string, FlowPriceChunk>();
 	for (const t of targets) {
 		if (t.asset === 'jpy') continue;
 		if (!Number.isFinite(t.atMs)) continue;
@@ -461,50 +550,113 @@ export async function fetchFlowDatePrices(
 		if (baseDailyPrices.get(t.asset)?.has(dayMs)) continue;
 		// 年も日次キーと同じ JST 暦で数える（`getCandles` に渡す date は anchorTz 解釈のため）。
 		const year = toYearKey(dayMs, PORTFOLIO_CALENDAR_TZ);
-		missingYears.set(`${t.asset}:${year}`, { asset: t.asset, year });
+		const key = `${t.asset}:${year}`;
+		const chunk = missingYears.get(key) ?? { asset: t.asset, year, depositCount: 0, withdrawalCount: 0 };
+		if (t.kind === 'deposit') chunk.depositCount++;
+		else chunk.withdrawalCount++;
+		missingYears.set(key, chunk);
 	}
-	if (missingYears.size === 0) return baseDailyPrices;
+	if (missingYears.size === 0) {
+		return {
+			dailyPrices: baseDailyPrices,
+			truncatedByChunkLimit: emptyShortfall(),
+			chunkFetchFailed: emptyShortfall(),
+		};
+	}
 
-	// 上限で切るときは新しい年を優先する（直近の入出庫ほど残高・損益への寄与が大きく、
+	const all = [...missingYears.values()];
+	// 入庫が 1 件でも要求する組は入庫側の予算で取る（出庫は相乗り）。
+	// 上限は古い年から埋める: 新しい入庫が増えても既存の順位が動かず、過去の原価が書き換わらない。
+	const depositChunks = all
+		.filter((c) => c.depositCount > 0)
+		.sort((a, b) => (a.year === b.year ? a.asset.localeCompare(b.asset) : a.year.localeCompare(b.year)));
+	// 出庫だけが要求する組。表示専用なので新しい年を優先する（直近の出庫ほど残高への寄与が大きく、
 	// 上場前で空振りする確率も低い）。同年内は資産名昇順で決定的に選ぶ。
-	const chunks = [...missingYears.values()].sort((a, b) =>
-		a.year === b.year ? a.asset.localeCompare(b.asset) : b.year.localeCompare(a.year),
-	);
-	const selected = chunks.slice(0, MAX_FLOW_PRICE_YEAR_CHUNKS);
+	const withdrawalOnlyChunks = all
+		.filter((c) => c.depositCount === 0)
+		.sort((a, b) => (a.year === b.year ? a.asset.localeCompare(b.asset) : b.year.localeCompare(a.year)));
+
+	const selected = [
+		...depositChunks.slice(0, MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS),
+		...withdrawalOnlyChunks.slice(0, MAX_WITHDRAWAL_FLOW_PRICE_YEAR_CHUNKS),
+	];
+	const truncatedByChunkLimit = emptyShortfall();
+	for (const c of depositChunks.slice(MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS)) {
+		truncatedByChunkLimit.deposits += c.depositCount;
+		// 入庫の上限で切られた組に相乗りしていた出庫も一緒に落ちる（出庫の残枠で拾い直さない）。
+		truncatedByChunkLimit.withdrawals += c.withdrawalCount;
+	}
+	for (const c of withdrawalOnlyChunks.slice(MAX_WITHDRAWAL_FLOW_PRICE_YEAR_CHUNKS)) {
+		truncatedByChunkLimit.withdrawals += c.withdrawalCount;
+	}
 
 	const merged = new Map<string, Map<number, number>>();
 	for (const [asset, byDate] of baseDailyPrices) merged.set(asset, new Map(byDate));
 
-	await Promise.all(
-		selected.map(async ({ asset, year }) => {
-			try {
-				// 1day の年 chunk は最大 366 本。`fetchCandlePriceData` と同じ暦（JST）で足を切る。
-				const res = await getCandles(`${asset}_jpy`, '1day', year, 400, PORTFOLIO_CALENDAR_TZ);
-				if (!res?.ok) return;
-				const normalized = res.data?.normalized;
-				if (!Array.isArray(normalized) || normalized.length === 0) return;
+	const chunkFetchFailed = emptyShortfall();
+	const markFailed = (chunk: FlowPriceChunk) => {
+		chunkFetchFailed.deposits += chunk.depositCount;
+		chunkFetchFailed.withdrawals += chunk.withdrawalCount;
+	};
 
-				let byDate = merged.get(asset);
-				if (!byDate) {
-					byDate = new Map<number, number>();
-					merged.set(asset, byDate);
-				}
-				for (const candle of normalized) {
-					const ts = candle.timestamp;
-					const open = candle.open;
-					if (ts == null || !Number.isFinite(ts) || !Number.isFinite(open) || open <= 0) continue;
-					// 直近窓の値を上書きしない（同じ 1day open なので値は一致するが、
-					// 取得経路によるブレを持ち込まないよう先に入っている方を優先する）。
-					const dayMs = portfolioDayStartMs(ts);
-					if (!byDate.has(dayMs)) byDate.set(dayMs, open);
-				}
-			} catch {
-				// Non-fatal: この (資産, 年) は現在価格フォールバックに落ちる
+	await runWithConcurrency(selected, FLOW_PRICE_FETCH_CONCURRENCY, async (chunk) => {
+		const { asset, year } = chunk;
+		try {
+			// 1day の年 chunk は最大 366 本。`fetchCandlePriceData` と同じ暦（JST）で足を切る。
+			const res = await getCandles(`${asset}_jpy`, '1day', year, 400, PORTFOLIO_CALENDAR_TZ);
+			if (!res?.ok) {
+				markFailed(chunk);
+				return;
 			}
-		}),
-	);
+			const normalized = res.data?.normalized;
+			if (!Array.isArray(normalized) || normalized.length === 0) {
+				markFailed(chunk);
+				return;
+			}
 
-	return merged;
+			let byDate = merged.get(asset);
+			if (!byDate) {
+				byDate = new Map<number, number>();
+				merged.set(asset, byDate);
+			}
+			for (const candle of normalized) {
+				const ts = candle.timestamp;
+				const open = candle.open;
+				if (ts == null || !Number.isFinite(ts) || !Number.isFinite(open) || open <= 0) continue;
+				// 直近窓の値を上書きしない（同じ 1day open なので値は一致するが、
+				// 取得経路によるブレを持ち込まないよう先に入っている方を優先する）。
+				const dayMs = portfolioDayStartMs(ts);
+				if (!byDate.has(dayMs)) byDate.set(dayMs, open);
+			}
+		} catch {
+			// Non-fatal: この (資産, 年) は現在価格フォールバックに落ちる（件数は申告する）
+			markFailed(chunk);
+		}
+	});
+
+	return { dailyPrices: merged, truncatedByChunkLimit, chunkFetchFailed };
+}
+
+/**
+ * `items` を最大 `limit` 並列で `worker` に流す。全件が終わるまで待つ。
+ *
+ * `lib/candle-fetch.ts` の `mergeChunks({ batched })` は同じ pair の chunk key を
+ * `fetchCandleChunk` に流して `OhlcvRow` をマージする専用ヘルパーで、ここで必要な
+ * 「(資産, 年) ごとに `getCandles` を呼び、chunk 単位で成否を分類する」形には嵌まらない。
+ * またバッチ間に実タイマー遅延を挟むため、`vi.useFakeTimers()` 下の handler テストが止まる。
+ */
+async function runWithConcurrency<T>(items: T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
+	let cursor = 0;
+	const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+		// cursor の読み書きは await を挟まないので、単一スレッドの JS では競合しない。
+		while (cursor < items.length) {
+			const item = items[cursor];
+			cursor++;
+			if (item === undefined) return;
+			await worker(item);
+		}
+	});
+	await Promise.all(runners);
 }
 
 // ── テクニカル分析 ──

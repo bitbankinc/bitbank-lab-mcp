@@ -737,7 +737,39 @@ export const AnalyzeMyPortfolioMetaSchema = z.object({
 		.nonnegative()
 		.optional()
 		.describe(
-			'入出庫日の日次価格を解決できず現在価格で仮評価した入出庫の件数。1 件以上あると deposit_withdrawal_summary / *_dw_summary / *_performance.net_flow_jpy の該当分が相場と連動して動く。該当なしのときは undefined。',
+			'入出庫日の日次価格を解決できず現在価格で仮評価した入出庫の件数。1 件以上あると deposit_withdrawal_summary / *_dw_summary / *_performance.net_flow_jpy の該当分が相場と連動して動く。該当なしのときは undefined。この件数は「年 chunk の取得上限で切り落とした」「取得に失敗した」「上場前で本当に価格が無い」を合算した値なので、再実行で解消しうるかは本フィールドだけでは判断できない（内訳は flowPriceChunkTruncated* / flowPriceChunkFailed*）。',
+		),
+	flowPriceChunkTruncatedDepositCount: z
+		.number()
+		.int()
+		.positive()
+		.optional()
+		.describe(
+			'入庫日価格の追加取得が (資産, 年) chunk の上限に達したため取りに行けず、取得原価に算入できなかった入庫の件数。**1 件以上なら取得原価・実現損益は不完全で、上限に収まる構成に変われば再実行で値が変わる**。入庫の chunk 予算は出庫と分離されているため（#76）、出庫が何件増えてもこの値は増えない。該当なしのときは undefined。',
+		),
+	flowPriceChunkTruncatedWithdrawalCount: z
+		.number()
+		.int()
+		.positive()
+		.optional()
+		.describe(
+			'出庫日価格の追加取得が (資産, 年) chunk の上限に達したため取りに行けず、現在価格で仮評価した出庫の件数。純投入額の減算（deposit_withdrawal_summary.crypto_withdrawal_estimated_jpy）にのみ効き、取得原価には影響しない。該当なしのときは undefined。',
+		),
+	flowPriceChunkFailedDepositCount: z
+		.number()
+		.int()
+		.positive()
+		.optional()
+		.describe(
+			'入庫日を含む年 chunk の取得に失敗（get_candles が失敗 / 空応答）したため、取得原価に算入できなかった入庫の件数。上限による切り落とし（flowPriceChunkTruncatedDepositCount）とは区別する——こちらは一時的な取得失敗なので、**再実行で解消すると取得原価・実現損益が変わる**。取得は成功したが上場前で当日の足が無い分は含まない（再実行しても変わらないため）。該当なしのときは undefined。',
+		),
+	flowPriceChunkFailedWithdrawalCount: z
+		.number()
+		.int()
+		.positive()
+		.optional()
+		.describe(
+			'出庫日を含む年 chunk の取得に失敗したため、現在価格で仮評価した出庫の件数。取得原価には影響しない（純投入額の減算のみ）。該当なしのときは undefined。',
 		),
 	changePctUnavailablePeriods: z
 		.array(z.enum(['daily', 'monthly', 'yearly']))

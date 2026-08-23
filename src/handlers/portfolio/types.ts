@@ -228,6 +228,15 @@ export interface FlowPricing {
 export interface FlowValuationTarget {
 	asset: string;
 	atMs: number;
+	/**
+	 * 入庫か出庫か。`fetchFlowDatePrices` が年 chunk の取得予算を入庫用・出庫用に分けるために使う。
+	 *
+	 * 消費者の性質が違うので予算も分ける必要がある（#76）:
+	 * - 入庫は取得原価に算入されるため、解決できないと**実現損益が静かに変わる**
+	 * - 出庫は純投入額の減算（表示）にしか使わず、解決できなくても
+	 *   `crypto_withdrawal_valuation` で申告したうえで現在価格に落とせる
+	 */
+	kind: 'deposit' | 'withdrawal';
 }
 
 /**

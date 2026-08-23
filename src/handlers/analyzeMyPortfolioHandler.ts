@@ -53,6 +53,8 @@ import {
 	fetchMarginAccountInfo,
 	fetchTechnical,
 	fetchTickerPrices,
+	MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS,
+	MAX_WITHDRAWAL_FLOW_PRICE_YEAR_CHUNKS,
 	paginateMarginTrades,
 	paginateTrades,
 } from './portfolio/fetch.js';
@@ -437,8 +439,13 @@ export default async function analyzeMyPortfolioHandler(args: {
 						withdrawalsSinceMs: dwSectionUsesFlow ? undefined : boundaries.yearStartMs,
 					})
 				: [];
+		// 年 chunk の予算は入庫用・出庫用に分かれている（#76）。出庫が何件増えても入庫の
+		// 取得結果は変わらないので、取得原価と実現損益は実行タイミングに依存しない。
+		// 取り切れなかった分は種類別に返るので、下の警告で「上限で切った」と「本当に取れない」を
+		// 区別して申告する。
+		const flowDatePrices = await fetchFlowDatePrices(candlePriceData.dailyPrices, flowValuationTargets);
 		const flowPricing: FlowPricing = {
-			dailyPrices: await fetchFlowDatePrices(candlePriceData.dailyPrices, flowValuationTargets),
+			dailyPrices: flowDatePrices.dailyPrices,
 			currentPrices: prices,
 		};
 		// 換算方式の申告は母集合を 1 度だけ数える。各セクションの内訳（全履歴 ⊃ 年初来 ⊃ 月初来）を
@@ -1302,6 +1309,31 @@ export default async function analyzeMyPortfolioHandler(args: {
 				`暗号資産入出庫 ${flowValuationFallbackCount}件は入出庫日（入庫: confirmed_at / 出庫: requested_at）の価格を取得できず現在価格で仮評価しています。この分の評価額は相場変動で動きます（取得原価には算入しないため、該当する入庫で復元数量が実残高と乖離した銘柄は cost_basis_unavailable_reason=has_crypto_deposits になり、乖離が許容誤差以内に収まった銘柄は取得原価がその分だけ過小のまま出ます）`,
 			);
 		}
+		// 上のフォールバック件数は「上限で取りに行かなかった」「取得に失敗した」「上場前で本当に無い」を
+		// 全部まとめた数字なので、そこからは再実行で直るのかどうかが読めない。前 2 つは件数を別枠で出す
+		// （#76 仕様 2）。特に入庫は取得原価に算入されないまま実現損益が動くので、必ず分けて申告する。
+		const chunkTruncated = flowDatePrices.truncatedByChunkLimit;
+		const chunkFailed = flowDatePrices.chunkFetchFailed;
+		if (chunkTruncated.deposits > 0) {
+			calcWarnings.push(
+				`暗号資産入庫 ${chunkTruncated.deposits}件は入庫日を含む年足の追加取得が上限（${MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS}組）に達したため取りに行けず、取得原価に算入していません。取得原価と実現損益はこの分だけ不完全で、上限に収まる構成に変われば再実行で値が変わります（上場前で本当に価格が無い分とは別枠の件数です）`,
+			);
+		}
+		if (chunkFailed.deposits > 0) {
+			calcWarnings.push(
+				`暗号資産入庫 ${chunkFailed.deposits}件は入庫日を含む年足の取得に失敗したため取得原価に算入していません（上限による切り落としではなく取得失敗なので、再実行で解消すると取得原価と実現損益が変わります）`,
+			);
+		}
+		if (chunkTruncated.withdrawals > 0) {
+			calcWarnings.push(
+				`暗号資産出庫 ${chunkTruncated.withdrawals}件は出庫日を含む年足の追加取得が上限（${MAX_WITHDRAWAL_FLOW_PRICE_YEAR_CHUNKS}組）に達したため取りに行けず、現在価格で仮評価しています（純投入額の減算に使う表示専用の値で、取得原価には影響しません）`,
+			);
+		}
+		if (chunkFailed.withdrawals > 0) {
+			calcWarnings.push(
+				`暗号資産出庫 ${chunkFailed.withdrawals}件は出庫日を含む年足の取得に失敗したため現在価格で仮評価しています（純投入額の減算に使う表示専用の値で、取得原価には影響しません）`,
+			);
+		}
 
 		// 取得層の warning（上の ⚠️ 行）とは別行・別フィールドで先頭に出す。
 		const summary = prependWarnings(lines.join('\n'), { warnings: calcWarnings }, { separator: '\n' });
@@ -1392,6 +1424,10 @@ export default async function analyzeMyPortfolioHandler(args: {
 			flowDataUnavailableReason: flowUnavailableReason,
 			flowValuationBasis: flowValuation?.basis,
 			flowValuationFallbackCount: flowValuationFallbackCount > 0 ? flowValuationFallbackCount : undefined,
+			flowPriceChunkTruncatedDepositCount: chunkTruncated.deposits > 0 ? chunkTruncated.deposits : undefined,
+			flowPriceChunkTruncatedWithdrawalCount: chunkTruncated.withdrawals > 0 ? chunkTruncated.withdrawals : undefined,
+			flowPriceChunkFailedDepositCount: chunkFailed.deposits > 0 ? chunkFailed.deposits : undefined,
+			flowPriceChunkFailedWithdrawalCount: chunkFailed.withdrawals > 0 ? chunkFailed.withdrawals : undefined,
 			changePctUnavailablePeriods: changePctSuppressed.length > 0 ? changePctSuppressed.map((e) => e.key) : undefined,
 			warnings: calcWarnings.length > 0 ? calcWarnings : undefined,
 		};

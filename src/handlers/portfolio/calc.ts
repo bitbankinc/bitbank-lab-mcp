@@ -651,16 +651,24 @@ export function collectFlowValuationTargets(
 ): FlowValuationTarget[] {
 	if (!dw) return [];
 	const targets: FlowValuationTarget[] = [];
-	const push = (asset: string, amount: string, status: string, atMs: number, sinceMs?: number) => {
+	const push = (
+		kind: 'deposit' | 'withdrawal',
+		asset: string,
+		amount: string,
+		status: string,
+		atMs: number,
+		sinceMs?: number,
+	) => {
 		if (status !== 'DONE') return;
 		if (asset === 'jpy') return;
 		const qty = Number(amount);
 		if (!Number.isFinite(qty) || qty <= 0) return;
 		if (sinceMs != null && !(atMs >= sinceMs)) return;
-		targets.push({ asset, atMs });
+		targets.push({ asset, atMs, kind });
 	};
-	for (const d of dw.deposits) push(d.asset, d.amount, d.status, d.confirmed_at, scope.depositsSinceMs);
-	for (const w of dw.withdrawals) push(w.asset, w.amount, w.status, w.requested_at, scope.withdrawalsSinceMs);
+	for (const d of dw.deposits) push('deposit', d.asset, d.amount, d.status, d.confirmed_at, scope.depositsSinceMs);
+	for (const w of dw.withdrawals)
+		push('withdrawal', w.asset, w.amount, w.status, w.requested_at, scope.withdrawalsSinceMs);
 	return targets;
 }
 
