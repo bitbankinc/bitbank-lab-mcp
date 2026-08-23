@@ -338,14 +338,21 @@ export interface EquityPoint {
 	 * - **元本移動のみ。出金手数料を含まない**（`PeriodPerformance.net_flow_jpy` と同一定義）。
 	 *   手数料も口座からは出ていくため、上の残差には市場変動と一緒に手数料コストが残る。
 	 *   これは `adjusted_change_jpy` の扱い（`PERFORMANCE_NOTE`）と揃えてある。
-	 * - JPY の入出金と、**入出庫日の始値で JPY 換算できた**暗号資産入出庫の合計。
-	 *   価格を解決できなかった入出庫は計上せず、資産名は同じ期間を張る
+	 * - JPY の入出金と、JPY 換算できた暗号資産入出庫の合計。換算は `resolveFlowPrice` に従い、
+	 *   **入出庫日の始値を解決できなかった分は現在価格にフォールバックする**（その入出庫も
+	 *   `flow_jpy` に載る）。つまり本値は全額が入出庫日で固定された評価額とは限らない。
+	 *   フォールバックの件数はレスポンス全体で `meta.flowValuationFallbackCount` /
+	 *   `meta.flowValuationBasis` と summary 先頭の「n 件は現在価格で仮評価」が申告する。
+	 *   どちらでも解決できなかった入出庫は計上せず、資産名は同じ期間を張る
 	 *   `PeriodPerformance.unpriced_flow_assets`（月次シリーズ ↔ `monthly_performance`、
 	 *   年次シリーズ ↔ `yearly_performance`）で申告済み。本フィールド専用の申告経路は作らない。
 	 * - 同じ区間の入金と出金は**純額で相殺**する。相殺してゼロになった区間はキーが落ちるため、
 	 *   キーの不在は「入出金が無かった」ではなく「純額がゼロ」を意味する。
 	 * - 最終点（現在のリアルタイム評価額）には常に付かない。次の点が無いため区間が空になる。
-	 * - 入出金履歴を取得できなかった場合（`dwData` が null）は全点で落ちる。この状態は
+	 * - 入出金履歴が欠けている構成（取得失敗 / 一部チャネル失敗 / 件数上限による打ち切り
+	 *   ＝ `flowUnavailableReasonFor` が理由コードを返す状態）では**全点で落ちる**。部分集合の
+	 *   合計を確定値として出すと、`*_performance` が「純入出金: 未計測」と言っている応答で
+	 *   点だけが金額を主張する自己矛盾になるため。この状態は
 	 *   `*_performance.flow_measured=false` / `flow_unavailable_reason` 側で申告される。
 	 */
 	flow_jpy?: number;

@@ -10,8 +10,9 @@
 ### Added（`analyze_my_portfolio` の資産推移に入出金フローマーカー）
 - **`monthly_equity_series[].flow_jpy` / `yearly_equity_series[].flow_jpy`（number, optional）を追加した。** 資産推移シリーズは入出金があった期間でも単一の連続線として出るため、大口入金のある口座では「ずっと同額を保有していた」ように誤読される（グラフ化されると注記行は消える前提なので、フロー発生点を**データとして**返す）。正 = 純入金、負 = 純出金。
 - **フローを載せる向きは「この点から次の点まで」。** `reconstructHoldingsAtDate` は「点の時刻以降」の入出金を巻き戻すため、点 P の `value_jpy` には P 以降の入出金が入っていない。この向きにすると不変条件 `value_jpy[i+1] - value_jpy[i] - flow_jpy[i] = 区間 i の市場変動` が成立し、かつ `timestamp` が入出金の発生日（月次点なら発生月）そのものを指す。最終点（現在のリアルタイム評価額）は次の点が無いため常に付かない。
-- **定義は `*_performance.net_flow_jpy` と揃えた**（元本移動のみ、出金手数料を含まない）。手数料コストは上式の残差に市場変動と一緒に残る（`adjusted_change_jpy` の扱いと同じ）。暗号資産の入出庫は入出庫日の始値（`resolveFlowPrice`）で JPY 換算し、日付キーは `portfolioDayStartMs`（JST 暦日境界）でシリーズの点と揃える。
-- **申告経路は増やしていない。** 価格を解決できなかった入出庫は計上せず、資産名は同じ期間を張る `*_performance.unpriced_flow_assets`（月次シリーズ ↔ `monthly_performance`、年次シリーズ ↔ `yearly_performance`）で申告済み。入出金履歴を取得できなかった場合は全点でキーが落ち、その状態は `*_performance.flow_measured=false` / `flow_unavailable_reason` が表す。
+- **定義は `*_performance.net_flow_jpy` と揃えた**（元本移動のみ、出金手数料を含まない）。手数料コストは上式の残差に市場変動と一緒に残る（`adjusted_change_jpy` の扱いと同じ）。暗号資産の入出庫は `resolveFlowPrice` で JPY 換算し、**入出庫日の始値を解決できなかった分は現在価格にフォールバックしたうえで計上する**（`flow_jpy` は全額が入出庫日で固定された評価額とは限らない。フォールバック件数は既存の `meta.flowValuationFallbackCount` / summary 先頭の「n 件は現在価格で仮評価」が申告する）。日付キーは `portfolioDayStartMs`（JST 暦日境界）でシリーズの点と揃える。
+- **申告経路は増やしていない。** 価格を解決できなかった入出庫は計上せず、資産名は同じ期間を張る `*_performance.unpriced_flow_assets`（月次シリーズ ↔ `monthly_performance`、年次シリーズ ↔ `yearly_performance`）で申告済み。
+- **入出金履歴が欠けている構成では全点でキーが落ちる。** 判定は `flowUnavailableReasonFor` と同一（取得失敗 / 一部チャネル失敗 / 件数上限による打ち切り）。取得できた部分集合だけを合計すると、`*_performance` が「純入出金: 未計測」と言っている応答で点だけが確定値を主張する自己矛盾になり、たとえば暗号資産出庫チャネルだけが落ちた構成では「入金しかない口座」に見えるため。この状態は `*_performance.flow_measured=false` / `flow_unavailable_reason` と summary の「入出金を巻き戻せていません」行が表す。
 - **同じ区間の入金と出金は純額で相殺する。** 相殺してゼロになった区間はキーごと落ちるため、**キーの不在は「入出金が無かった」ではなく「純額がゼロ」**を意味する。フローが 1 件も無い期間の出力は従来と JSON 一致する（キーが増えない）。
 - **summary の資産推移シリーズにマーカー行と読み方を追加した。** フローのあった点に `← 純入出金 +500,000円` を付け、見出しに「運用成績ではないのでグラフではマーカーとして扱い、線の変動として説明しない」を添える。フロー発生点が 1 つも無いシリーズでは注記もマーカーも出さず、従来と同じ行のまま。
 

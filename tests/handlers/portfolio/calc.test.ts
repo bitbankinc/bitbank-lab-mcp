@@ -2402,6 +2402,41 @@ describe('buildEquitySeries — 入出金フローマーカー', () => {
 		expect(JSON.stringify(series)).not.toContain('flow_jpy');
 	});
 
+	/**
+	 * 履歴が欠けている構成では部分集合の合計を確定値として出さない。
+	 *
+	 * `*_performance` は同じ状態で「純入出金: 未計測」（`flow_measured=false`）を返すので、
+	 * 点だけが金額を主張すると 1 つの応答の中で矛盾する（#53 が潰している型の自己矛盾）。
+	 * 判定は `flowUnavailableReasonFor` と同一にしてあり、`allFailed` / `isComplete` だけを
+	 * 見る判定では塞げない **`warnings`（一部チャネル失敗）** も含む点をケースで固定する。
+	 */
+	describe('履歴が欠けている構成では全点で落ちる', () => {
+		const deposits = [makeDeposit({ asset: 'jpy', amount: '500000', confirmed_at: jstMs(2026, 8, 2, 10) })];
+
+		it.each([
+			['件数上限による打ち切り（isComplete=false）', { isComplete: false }],
+			['全チャネル失敗（allFailed=true）', { allFailed: true }],
+			// 出庫チャネルだけが落ちると入金しか残らず「入金しかない口座」に見える。
+			// allFailed は false・isComplete は true なので、warnings を見ないと素通りする。
+			['一部チャネル失敗（warnings あり）', { warnings: ['出庫履歴の取得に失敗'] }],
+		])('%s', (_label, overrides: Partial<DepositWithdrawalData>) => {
+			const dw = makeDwData({ deposits, ...overrides });
+			// 前提: そのケースが実際に理由コードを立てる状態であること
+			expect(flowUnavailableReasonFor(dw)).toBeDefined();
+
+			const series = build(dailyPoints(2026, 8, 1, 3), dw);
+			expect(JSON.stringify(series)).not.toContain('flow_jpy');
+		});
+
+		it('履歴が完全なら同じ入金が載る（上の抑止が効きすぎていないことの対照）', () => {
+			const dw = makeDwData({ deposits });
+			expect(flowUnavailableReasonFor(dw)).toBeUndefined();
+
+			const series = build(dailyPoints(2026, 8, 1, 3), dw);
+			expect(series[1].flow_jpy).toBe(500_000);
+		});
+	});
+
 	it('最終点（現在のリアルタイム評価額）には付かない', () => {
 		// 最後の日次点 8/3 より後、現在（8/4 12:00）より前の入金は最後の日次点に寄る。
 		const dw = makeDwData({

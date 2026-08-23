@@ -956,12 +956,28 @@ export function calcPortfolioValue(holdings: Map<string, number>, priceMap: Map<
  *
  * 集計の範囲・向きは `EquityPoint.flow_jpy` の doc を単一ソースとする。実装上の要点のみ:
  *
+ * - 履歴が欠けている構成では**全点で載せない**。判定は `flowUnavailableReasonFor` に委ねる
+ *   （下記「履歴が欠けている場合」）。
  * - 最初の点より前の入出金は落とす。シリーズの外＝期初評価額に織り込み済みで、載せる点が無い。
- * - 暗号資産は `resolveFlowPrice`（入出庫日の始値 → 現在価格）で換算する。解決できない分は
- *   計上しない。申告は同じ期間を張る `PeriodPerformance.unpriced_flow_assets` が担当する。
+ * - 暗号資産は `resolveFlowPrice`（入出庫日の始値 → 解決できなければ現在価格）で換算する。
+ *   どちらでも解決できない分は計上しない。申告は同じ期間を張る
+ *   `PeriodPerformance.unpriced_flow_assets` が担当する。
  * - `status !== 'DONE'` / 数量が非有限・非正の入出金は除外する（`collectFlowValuationTargets` と
  *   同じ基準）。JPY も同じ検証を通す——1 件の不正値でバケット全体を NaN にしないため。
  * - 純額がゼロに丸まる点はキーごと落とす（フローゼロの期間で従来と同じ出力にするため）。
+ *
+ * ## 履歴が欠けている場合
+ *
+ * 判定は `flowUnavailableReasonFor(dw)` と**同一**にする（取得失敗 / 一部チャネル失敗 /
+ * 件数上限による打ち切り）。同じ述語を使うのは、`*_performance` が「純入出金: 未計測」と
+ * 言っている応答で、資産推移の点だけが `← 純入出金 +500,000円` と確定値を出す自己矛盾を
+ * 防ぐため。取得できた部分集合だけを合計すると、たとえば暗号資産出庫チャネルだけが
+ * 落ちた構成で「入金しかない口座」に見える（`allFailed` は false・`warnings` にのみ現れる
+ * ので、`allFailed` / `isComplete` だけを見る判定ではこの穴を塞げない）。
+ *
+ * 部分値を出さない代わりに、シリーズの段差は説明されないまま残る。この状態は
+ * `*_performance.flow_measured=false` / `flow_unavailable_reason` と summary の
+ * 「入出金を巻き戻せていません」行が既に申告している（本関数で新しい申告経路は作らない）。
  */
 export function buildEquityFlowByPoint(
 	dw: DepositWithdrawalData | null,
@@ -970,6 +986,8 @@ export function buildEquityFlowByPoint(
 ): Map<number, number> {
 	const byPoint = new Map<number, number>();
 	if (!dw || pointMsAsc.length === 0) return byPoint;
+	// 未計測を 0 でも部分値でもなく「キーの不在」で表す（上記「履歴が欠けている場合」）。
+	if (flowUnavailableReasonFor(dw) != null) return byPoint;
 	const firstPointMs = pointMsAsc[0];
 
 	const add = (asset: string, amount: string, status: string, atMs: number, signum: 1 | -1) => {
