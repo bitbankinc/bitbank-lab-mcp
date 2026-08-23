@@ -271,7 +271,7 @@ API の応答をそのまま、または軽量整形して返す。指標計算�
 
 **信用のコスト項は `_cost` サフィックス付きが正です。** どちらの名前でも値は同じ**正値**（コスト = 正値）で、`total` では**減算**されます。
 
-```
+```text
 total = spot_realized_pnl + margin_realized_pnl − margin_interest_cost − margin_fee_cost
 ```
 
