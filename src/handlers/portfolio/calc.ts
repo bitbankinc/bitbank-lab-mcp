@@ -609,14 +609,17 @@ function buildFlowValuationBreakdown(dated: number, fallback: number): FlowValua
 /**
  * 価格解決の対象範囲。入庫と出庫で下限時刻を**別々に**指定する。
  *
- * 消費者が非対称だから分けている:
- * - 入庫は `calcDepositWithdrawalSummary`（純投入額・口座全体リターン）が**全履歴**を換算する
- * - 出庫を金額換算するのは期間集計だけ（`calcPeriodDWSummary` / `calcPeriodNetFlow`）。
- *   `calcDepositWithdrawalSummary` は暗号資産出庫を `crypto_withdrawal_count` として
- *   **件数しか出さない**ので、年初より前の出庫を換算しても出力に反映される先が無い
+ * 消費者が構成によって非対称になるから分けている:
+ * - 入庫は `calcDepositWithdrawalSummary`（純投入額・口座全体リターン）と取得原価が
+ *   **常に全履歴**を換算する
+ * - 出庫は `calcDepositWithdrawalSummary` が**全履歴**を換算する（#70 で元本回収として
+ *   純投入額から減算するようになった）。ただし入出金分析セクションを出さない構成
+ *   （`include_deposit_withdrawal=false`）ではその消費者が消え、残るのは期間集計
+ *   （`calcPeriodDWSummary` / `calcPeriodNetFlow`）だけになるので年初来で足りる
  *
- * 片方の下限で両方を絞ると、出力に出ない出庫のために candle を追加取得し、
+ * 出力に反映される先が無い入出庫まで換算対象に含めると、そのために candle を追加取得し、
  * `FlowValuationBreakdown` の件数と「現在価格で仮評価」警告まで動いてしまう。
+ * 逆に反映先があるのに絞ると、その入出庫が黙って 0 円計上になる（#70 の機序そのもの）。
  */
 export interface FlowValuationScope {
 	/** 入庫を集める下限時刻（`confirmed_at >= depositsSinceMs`）。省略で全履歴 */
@@ -684,13 +687,23 @@ export function summarizeFlowValuation(
  * - 暗号資産入庫: **入庫日（`confirmed_at`）の 1day open** で JPY 換算し、投入額に加算。
  *   日次価格を解決できなかった分のみ現在価格にフォールバックし、内訳を
  *   `crypto_deposit_valuation` で申告する（黙って混ぜない）
- * - 暗号資産出庫: 損益計算からは除外（他所への送金であり売却ではない）
- * - 純投入額 = JPY入金合計 - JPY出金合計 + 暗号資産入庫の推定JPY評価額
+ * - 暗号資産出庫: **出庫日（`requested_at`）の 1day open** で JPY 換算し、JPY 出金と同じ
+ *   「元本の回収」として投入額から減算。内訳は `crypto_withdrawal_valuation` で申告する
+ * - 純投入額 = JPY入金合計 - JPY出金合計 + 暗号資産入庫の推定JPY評価額 - 暗号資産出庫の推定JPY評価額
  * - 口座全体リターン = (現在評価額 - 純投入額) / 純投入額
  *
- * 入庫を入庫日価格で固定するのは、現在価格で仮評価すると誤差が相場と連動して動き、
+ * 入出庫を入出庫日価格で固定するのは、現在価格で仮評価すると誤差が相場と連動して動き、
  * 取引ゼロでも相場上昇だけで報告リターンが悪化するため（#53 の機序 6）。
  * ただしこれは「入庫時点の相場で取得した」という**仮定**であって真の取得原価ではない。
+ *
+ * 出庫を元本回収として扱うのは、他所のウォレットへ移して保有を続けていても**この口座の外
+ * なので測れない**ため。口座内で完結する一貫した定義はこれしかない（外部保有分の値動きは
+ * 測定対象外であることを出力の注記に明記する）。減算しないと出た価値が「投入したまま
+ * 消えた損失」として残り、出庫が多いほどリターンが悪く見える（#70）。
+ *
+ * 出庫手数料（`fee`）は元本に含めない。`calcPeriodNetFlow` が元本移動（`net_flow_jpy`）と
+ * 手数料（`withdrawal_fee_jpy`）を分離しているのと同じ規約で、JPY 出金側も `amount` だけを
+ * 集計している（`total_jpy_withdrawn`）ため、暗号資産出庫だけ手数料込みにすると非対称になる。
  */
 export function calcDepositWithdrawalSummary(
 	dw: DepositWithdrawalData,
@@ -725,7 +738,26 @@ export function calcDepositWithdrawalSummary(
 		hasEstimate = true;
 	}
 
-	const netJpyInvested = totalJpyDeposited - totalJpyWithdrawn + (hasEstimate ? cryptoDepositEstimatedJpy : 0);
+	// 暗号資産出庫の推定 JPY 評価（出庫日の始値 → 解けなければ現在価格）。
+	// 元本のみ。手数料（w.fee）は含めない（本関数の doc 参照）。
+	let cryptoWithdrawalEstimatedJpy = 0;
+	let hasWithdrawalEstimate = false;
+	const withdrawalValuation = new FlowValuationCounter();
+	for (const w of cryptoWithdrawals) {
+		const amount = Number(w.amount);
+		if (!Number.isFinite(amount) || amount <= 0) continue;
+		const resolved = resolveFlowPrice(pricing, w.asset, w.requested_at);
+		if (!resolved) continue;
+		cryptoWithdrawalEstimatedJpy += amount * resolved.price;
+		withdrawalValuation.count(resolved.basis);
+		hasWithdrawalEstimate = true;
+	}
+
+	const netJpyInvested =
+		totalJpyDeposited -
+		totalJpyWithdrawn +
+		(hasEstimate ? cryptoDepositEstimatedJpy : 0) -
+		(hasWithdrawalEstimate ? cryptoWithdrawalEstimatedJpy : 0);
 
 	// 口座全体リターン
 	let accountReturnPct: number | undefined;
@@ -742,14 +774,17 @@ export function calcDepositWithdrawalSummary(
 		crypto_deposit_count: cryptoDeposits.length,
 		crypto_deposit_estimated_jpy: hasEstimate ? Math.round(cryptoDepositEstimatedJpy) : undefined,
 		crypto_withdrawal_count: cryptoWithdrawals.length,
+		crypto_withdrawal_estimated_jpy: hasWithdrawalEstimate ? Math.round(cryptoWithdrawalEstimatedJpy) : undefined,
 		account_return_pct: accountReturnPct,
 		account_return_jpy: accountReturnJpy,
 		is_complete: dw.isComplete,
 		analysis_basis: 'deposit_withdrawal',
 	};
-	// 該当なしのときはキーごと省き、暗号資産入庫が無い口座の出力を従来と JSON 一致させる。
+	// 該当なしのときはキーごと省き、暗号資産入出庫が無い口座の出力を従来と JSON 一致させる。
 	const valuation = depositValuation.toBreakdown();
 	if (valuation) summary.crypto_deposit_valuation = valuation;
+	const wdValuation = withdrawalValuation.toBreakdown();
+	if (wdValuation) summary.crypto_withdrawal_valuation = wdValuation;
 	return summary;
 }
 

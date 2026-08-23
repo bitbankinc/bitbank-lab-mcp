@@ -223,6 +223,7 @@ export interface DepositWithdrawalSummary {
 	crypto_deposit_count: number;
 	crypto_deposit_estimated_jpy: number | undefined;
 	crypto_withdrawal_count: number;
+	crypto_withdrawal_estimated_jpy: number | undefined;
 	account_return_pct: number | undefined;
 	account_return_jpy: number | undefined;
 	is_complete: boolean;
@@ -238,6 +239,13 @@ export interface DepositWithdrawalSummary {
 	 * 既存キーの後ろに出すための配置はスキーマ側で担保する。
 	 */
 	crypto_deposit_valuation?: FlowValuationBreakdown;
+	/**
+	 * `crypto_withdrawal_estimated_jpy` の換算方式の内訳。
+	 *
+	 * 該当なし（暗号資産出庫が無い / 全件で価格を解決できなかった）のときは `undefined`。
+	 * キー順の扱いは `crypto_deposit_valuation` と同じ（スキーマ側が単一ソース）。
+	 */
+	crypto_withdrawal_valuation?: FlowValuationBreakdown;
 }
 
 export interface PeriodDWSummary {

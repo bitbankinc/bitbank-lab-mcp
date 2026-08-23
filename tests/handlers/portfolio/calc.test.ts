@@ -1197,6 +1197,159 @@ describe('calcDepositWithdrawalSummary', () => {
 		expect(result.total_jpy_deposited).toBe(0);
 		expect(result.net_jpy_invested).toBe(0);
 	});
+
+	// ── 暗号資産出庫を元本の回収として純投入額から差し引く（#70） ──
+
+	describe('暗号資産出庫の減算', () => {
+		const prices = new Map([
+			['btc', 10_000_000],
+			['eth', 500_000],
+		]);
+
+		it('出庫の評価額だけ net_jpy_invested が減り、口座全体リターンが改善する', () => {
+			// JPY 入金 3,000,000 + BTC 0.2 出庫（= 2,000,000）→ 純投入額 1,000,000
+			const withdrawals = [makeWithdrawal({ uuid: 'w1', asset: 'btc', amount: '0.2', requested_at: 300 })];
+			const deposits = [makeDeposit({ uuid: 'd1', amount: '3000000', confirmed_at: 100 })];
+			const withWd = calcDepositWithdrawalSummary(
+				makeDwData({ deposits, withdrawals }),
+				2_000_000,
+				currentPriceOnly(prices),
+			);
+			const withoutWd = calcDepositWithdrawalSummary(makeDwData({ deposits }), 2_000_000, currentPriceOnly(prices));
+
+			expect(withWd.crypto_withdrawal_count).toBe(1);
+			expect(withWd.crypto_withdrawal_estimated_jpy).toBe(2_000_000);
+			expect(withWd.net_jpy_invested).toBe(withoutWd.net_jpy_invested - 2_000_000);
+			expect(withWd.net_jpy_invested).toBe(1_000_000);
+			// 出庫を引かないと「投入したまま消えた損失」になり、引くと実態に寄る（#70 の症状）
+			expect(withoutWd.account_return_pct).toBeCloseTo(-33.33, 1);
+			expect(withWd.account_return_jpy).toBe(1_000_000);
+			expect(withWd.account_return_pct).toBe(100);
+		});
+
+		it('出庫ゼロの口座では出力が従来と一致する（キーごと落ちる）', () => {
+			const dw = makeDwData({ deposits: [makeDeposit({ uuid: 'd1', amount: '1000000', confirmed_at: 100 })] });
+			const result = calcDepositWithdrawalSummary(dw, 1_500_000, currentPriceOnly(prices));
+
+			expect(result.net_jpy_invested).toBe(1_000_000);
+			expect(result.crypto_withdrawal_count).toBe(0);
+			expect(result.crypto_withdrawal_estimated_jpy).toBeUndefined();
+			expect(result.crypto_withdrawal_valuation).toBeUndefined();
+			expect('crypto_withdrawal_valuation' in result).toBe(false);
+		});
+
+		it('JPY 出金は暗号資産出庫の評価額に混ざらない（total_jpy_withdrawn 側の担当）', () => {
+			const dw = makeDwData({
+				deposits: [makeDeposit({ uuid: 'd1', amount: '3000000', confirmed_at: 100 })],
+				withdrawals: [
+					makeWithdrawal({ uuid: 'w-jpy', asset: 'jpy', amount: '500000', requested_at: 300 }),
+					makeWithdrawal({ uuid: 'w-btc', asset: 'btc', amount: '0.1', requested_at: 300 }),
+				],
+			});
+			const result = calcDepositWithdrawalSummary(dw, 2_000_000, currentPriceOnly(prices));
+
+			expect(result.total_jpy_withdrawn).toBe(500_000);
+			expect(result.crypto_withdrawal_count).toBe(1);
+			expect(result.crypto_withdrawal_estimated_jpy).toBe(1_000_000);
+			expect(result.net_jpy_invested).toBe(3_000_000 - 500_000 - 1_000_000);
+		});
+
+		it('出庫手数料は元本に含めない（calcPeriodNetFlow と同じ規約）', () => {
+			const withFee = makeWithdrawal({ uuid: 'w1', asset: 'btc', amount: '0.1', fee: '0.0006', requested_at: 300 });
+			const noFee = makeWithdrawal({ uuid: 'w1', asset: 'btc', amount: '0.1', fee: '0', requested_at: 300 });
+			const deposits = [makeDeposit({ uuid: 'd1', amount: '3000000', confirmed_at: 100 })];
+
+			const a = calcDepositWithdrawalSummary(
+				makeDwData({ deposits, withdrawals: [withFee] }),
+				2_000_000,
+				currentPriceOnly(prices),
+			);
+			const b = calcDepositWithdrawalSummary(
+				makeDwData({ deposits, withdrawals: [noFee] }),
+				2_000_000,
+				currentPriceOnly(prices),
+			);
+			expect(a.crypto_withdrawal_estimated_jpy).toBe(b.crypto_withdrawal_estimated_jpy);
+			expect(a.crypto_withdrawal_estimated_jpy).toBe(1_000_000);
+		});
+
+		it('入庫と出庫が同一資産で混在しても双方が計上される（順序に依存しない）', () => {
+			// BTC 0.3 入庫（3,000,000）→ BTC 0.1 出庫（1,000,000）。JPY 入金は無し
+			const flows = {
+				deposits: [makeDeposit({ uuid: 'd-btc', asset: 'btc', amount: '0.3', confirmed_at: 100 })],
+				withdrawals: [makeWithdrawal({ uuid: 'w-btc', asset: 'btc', amount: '0.1', requested_at: 200 })],
+			};
+			const forward = calcDepositWithdrawalSummary(makeDwData(flows), 2_500_000, currentPriceOnly(prices));
+			// 出庫が入庫より前に並ぶ履歴でも同じ（本関数は時系列を畳まず両建てで合計する）
+			const reversed = calcDepositWithdrawalSummary(
+				makeDwData({
+					deposits: [makeDeposit({ uuid: 'd-btc', asset: 'btc', amount: '0.3', confirmed_at: 300 })],
+					withdrawals: [makeWithdrawal({ uuid: 'w-btc', asset: 'btc', amount: '0.1', requested_at: 100 })],
+				}),
+				2_500_000,
+				currentPriceOnly(prices),
+			);
+
+			expect(forward.crypto_deposit_estimated_jpy).toBe(3_000_000);
+			expect(forward.crypto_withdrawal_estimated_jpy).toBe(1_000_000);
+			expect(forward.net_jpy_invested).toBe(2_000_000);
+			expect(reversed.net_jpy_invested).toBe(forward.net_jpy_invested);
+		});
+
+		it('出庫のみ（入庫ゼロ）で純投入額が負になると account_return_* は undefined', () => {
+			const dw = makeDwData({
+				withdrawals: [makeWithdrawal({ uuid: 'w-btc', asset: 'btc', amount: '0.1', requested_at: 100 })],
+			});
+			const result = calcDepositWithdrawalSummary(dw, 5_000_000, currentPriceOnly(prices));
+
+			expect(result.crypto_withdrawal_estimated_jpy).toBe(1_000_000);
+			expect(result.net_jpy_invested).toBe(-1_000_000);
+			expect(result.account_return_jpy).toBeUndefined();
+			expect(result.account_return_pct).toBeUndefined();
+		});
+
+		it('出庫の減算で純投入額が 0 ちょうどになっても account_return_* は undefined（境界）', () => {
+			const dw = makeDwData({
+				deposits: [makeDeposit({ uuid: 'd1', amount: '1000000', confirmed_at: 100 })],
+				withdrawals: [makeWithdrawal({ uuid: 'w-btc', asset: 'btc', amount: '0.1', requested_at: 200 })],
+			});
+			const result = calcDepositWithdrawalSummary(dw, 5_000_000, currentPriceOnly(prices));
+
+			expect(result.net_jpy_invested).toBe(0);
+			expect(result.account_return_jpy).toBeUndefined();
+			expect(result.account_return_pct).toBeUndefined();
+		});
+
+		it('DONE 以外・数量ゼロ・数値不正の出庫は評価額に寄与しない', () => {
+			const dw = makeDwData({
+				deposits: [makeDeposit({ uuid: 'd1', amount: '1000000', confirmed_at: 100 })],
+				withdrawals: [
+					makeWithdrawal({ uuid: 'w-pending', asset: 'btc', amount: '0.1', status: 'PROCESSING', requested_at: 200 }),
+					makeWithdrawal({ uuid: 'w-zero', asset: 'btc', amount: '0', requested_at: 200 }),
+					makeWithdrawal({ uuid: 'w-nan', asset: 'btc', amount: 'abc', requested_at: 200 }),
+				],
+			});
+			const result = calcDepositWithdrawalSummary(dw, 1_000_000, currentPriceOnly(prices));
+
+			// 未完了は件数からも外れ、数量ゼロ・不正は件数には残るが金額は動かない
+			expect(result.crypto_withdrawal_count).toBe(2);
+			expect(result.crypto_withdrawal_estimated_jpy).toBeUndefined();
+			expect(result.net_jpy_invested).toBe(1_000_000);
+		});
+
+		it('価格を解決できない出庫は件数だけ残り、純投入額は動かない（黙って 0 円計上しない）', () => {
+			const dw = makeDwData({
+				deposits: [makeDeposit({ uuid: 'd1', amount: '1000000', confirmed_at: 100 })],
+				withdrawals: [makeWithdrawal({ uuid: 'w-doge', asset: 'doge', amount: '1000', requested_at: 200 })],
+			});
+			const result = calcDepositWithdrawalSummary(dw, 1_200_000, currentPriceOnly(prices));
+
+			expect(result.crypto_withdrawal_count).toBe(1);
+			expect(result.crypto_withdrawal_estimated_jpy).toBeUndefined();
+			expect(result.crypto_withdrawal_valuation).toBeUndefined();
+			expect(result.net_jpy_invested).toBe(1_000_000);
+		});
+	});
 });
 
 // ── 入出庫日価格での JPY 換算（#57 (a)） ──
@@ -1417,6 +1570,72 @@ describe('入出庫日価格での JPY 換算', () => {
 		});
 	});
 
+	describe('calcDepositWithdrawalSummary — 出庫は出庫日の始値で評価する', () => {
+		/** 出庫日は入庫日の翌日。日付ごとに別の始値を持たせ、引き分けられていることを見る */
+		const withdrawalDayMs = Date.UTC(2025, 5, 11, 3, 0, 0, 0);
+		const WITHDRAWAL_DAY_PRICE = 9_000_000;
+		const dw = makeDwData({
+			deposits: [makeDeposit({ uuid: 'd-jpy', asset: 'jpy', amount: '3000000', confirmed_at: FLOW_MS })],
+			withdrawals: [
+				makeWithdrawal({ uuid: 'w-btc', asset: 'btc', amount: '0.1', fee: '0.0005', requested_at: withdrawalDayMs }),
+			],
+		});
+		const dated = [
+			{ asset: 'btc', atMs: FLOW_MS, price: FLOW_DAY_PRICE },
+			{ asset: 'btc', atMs: withdrawalDayMs, price: WITHDRAWAL_DAY_PRICE },
+		];
+
+		it('現在価格を変えても crypto_withdrawal_estimated_jpy / net_jpy_invested が動かない', () => {
+			const cheap = calcDepositWithdrawalSummary(dw, 3_000_000, withDailyPrices(dated, new Map([['btc', 10_000_000]])));
+			const rich = calcDepositWithdrawalSummary(dw, 3_000_000, withDailyPrices(dated, new Map([['btc', 30_000_000]])));
+
+			expect(cheap.crypto_withdrawal_estimated_jpy).toBe(rich.crypto_withdrawal_estimated_jpy);
+			expect(cheap.net_jpy_invested).toBe(rich.net_jpy_invested);
+			expect(cheap.account_return_jpy).toBe(rich.account_return_jpy);
+			// 入庫日ではなく**出庫日**の始値で換算する（0.1 BTC × 900,000）
+			expect(cheap.crypto_withdrawal_estimated_jpy).toBe(900_000);
+			expect(cheap.net_jpy_invested).toBe(3_000_000 - 900_000);
+			expect(cheap.crypto_withdrawal_valuation).toEqual({
+				deposit_date_price_count: 1,
+				current_price_fallback_count: 0,
+				basis: 'deposit_date_price',
+			});
+		});
+
+		it('出庫日の価格が無ければ現在価格にフォールバックし、内訳で申告する', () => {
+			// 入庫日の足だけ持たせ、出庫日は解けない状況を作る
+			const pricing = withDailyPrices(
+				[{ asset: 'btc', atMs: FLOW_MS, price: FLOW_DAY_PRICE }],
+				new Map([['btc', 20_000_000]]),
+			);
+			const result = calcDepositWithdrawalSummary(dw, 3_000_000, pricing);
+
+			expect(result.crypto_withdrawal_estimated_jpy).toBe(2_000_000);
+			expect(result.crypto_withdrawal_valuation).toEqual({
+				deposit_date_price_count: 0,
+				current_price_fallback_count: 1,
+				basis: 'current_price_fallback',
+			});
+		});
+
+		it('入庫と出庫の内訳は別フィールドで、互いに混ざらない', () => {
+			const mixed = makeDwData({
+				deposits: [makeDeposit({ uuid: 'd-btc', asset: 'btc', amount: '0.5', confirmed_at: FLOW_MS })],
+				// 出庫日の足が無い → 出庫だけ現在価格フォールバックになる
+				withdrawals: [makeWithdrawal({ uuid: 'w-btc', asset: 'btc', amount: '0.1', requested_at: withdrawalDayMs })],
+			});
+			const pricing = withDailyPrices(
+				[{ asset: 'btc', atMs: FLOW_MS, price: FLOW_DAY_PRICE }],
+				new Map([['btc', 20_000_000]]),
+			);
+			const result = calcDepositWithdrawalSummary(mixed, 5_000_000, pricing);
+
+			expect(result.crypto_deposit_valuation?.basis).toBe('deposit_date_price');
+			expect(result.crypto_withdrawal_valuation?.basis).toBe('current_price_fallback');
+			expect(result.net_jpy_invested).toBe(Math.round(0.5 * FLOW_DAY_PRICE) - 0.1 * 20_000_000);
+		});
+	});
+
 	describe('calcPeriodDWSummary — 入庫・出庫それぞれの換算方式を申告する', () => {
 		it('出庫は requested_at 当日の始値で換算し、内訳を別フィールドで返す', () => {
 			const withdrawalDayMs = Date.UTC(2025, 5, 11, 3, 0, 0, 0);
@@ -1470,9 +1689,10 @@ describe('入出庫日価格での JPY 換算', () => {
 		});
 
 		/**
-		 * 入庫と出庫で消費者が違う: 入庫は全履歴（純投入額・口座全体リターン）、
-		 * 出庫を金額換算するのは期間集計だけ（`calcDepositWithdrawalSummary` は件数しか出さない）。
-		 * 片方の下限で両方を絞ると、出力に出ない出庫のために candle を取りに行ってしまう。
+		 * 入庫と出庫で消費者が違う: 入庫は常に全履歴（純投入額・口座全体リターン・取得原価）、
+		 * 出庫は入出金分析セクションがある構成だけ全履歴で、無ければ期間集計だけが消費者になる。
+		 * 片方の下限で両方を絞ると、出力に出ない入出庫のために candle を取りに行ってしまう
+		 * （逆に反映先があるのに絞ると、その入出庫が黙って 0 円計上になる）。
 		 */
 		it('入庫と出庫の下限を別々に適用する', () => {
 			// 入庫は全履歴、出庫だけ FLOW_MS より後に絞る → 出庫が落ちて入庫だけ残る

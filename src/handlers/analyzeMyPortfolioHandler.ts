@@ -60,6 +60,7 @@ import type {
 	DepositWithdrawalSummary,
 	EquityPoint,
 	FlowPricing,
+	FlowValuationBreakdown,
 	MarginAccountInfo,
 	PeriodAccountPnl,
 	PeriodDWSummary,
@@ -384,9 +385,10 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// 入庫と出庫で消費者が非対称なので、下限時刻も別々に決める:
 		//   - 入庫: 純投入額・口座全体リターンに加えて取得原価が**全履歴**を換算する
 		//     （移動平均法は期間開始前の入庫も積み上げる）
-		//   - 出庫: 金額換算するのは期間集計（*_dw_summary / 期間ネットフロー）だけで、
-		//     calcDepositWithdrawalSummary は暗号資産出庫を件数しか出さない。
-		//     つまり年初より前の出庫は換算しても反映先が無い（→ 年初来で足りる）
+		//   - 出庫: 入出金分析セクションがある構成では calcDepositWithdrawalSummary が
+		//     **全履歴**を換算して純投入額から減算する（元本回収として扱う。#70）。
+		//     セクションを閉じた構成では消費者が期間集計（期間ネットフロー）だけになるので
+		//     年初来（yearly が最広の期間）で足りる
 		// どの消費者もいない構成では価格解決そのものを行わない。走らせてしまうと、
 		// (1) 出力に現れない換算のために candle 取得のレイテンシを払い、
 		// (2) meta / summary が「どの出力にも載っていない評価額」を申告して読み手を迷わせる。
@@ -407,8 +409,9 @@ export default async function analyzeMyPortfolioHandler(args: {
 						// 入庫は全履歴。dwSectionUsesFlow / pnlUsesFlow のどちらの経路でも
 						// 全履歴を要求するので、ここで年初来に絞れる構成は無い。
 						depositsSinceMs: undefined,
-						// 出庫は全履歴で換算する消費者がいないため、常に年初来（yearly が最広の期間）。
-						withdrawalsSinceMs: boundaries.yearStartMs,
+						// 出庫は入出金分析セクションがあるときだけ全履歴（純投入額の減算に使う）。
+						// 無ければ消費者は期間ネットフローだけなので年初来に絞る。
+						withdrawalsSinceMs: dwSectionUsesFlow ? undefined : boundaries.yearStartMs,
 					})
 				: [];
 		const flowPricing: FlowPricing = {
@@ -1020,6 +1023,18 @@ export default async function analyzeMyPortfolioHandler(args: {
 		}
 
 		// 入出金ベースの口座全体リターン（Phase 4）
+		//
+		// `crypto_*_count` は「入出庫の総件数」で、`crypto_*_estimated_jpy` に実際に載っているのは
+		// **価格を解決できた件数**だけ（解決できなかった分は黙って 0 円計上せず集計から落としている）。
+		// 一部だけ解決できた口座で総件数を使うと、金額と件数が食い違う説明になる。
+		// `FlowValuationBreakdown` の 2 つの件数の和が「評価できた件数」なので、そこから逆算する。
+		const valuedCounts = (breakdown: FlowValuationBreakdown | undefined) =>
+			(breakdown?.deposit_date_price_count ?? 0) + (breakdown?.current_price_fallback_count ?? 0);
+		const valuedDepositCount = valuedCounts(dwSummary?.crypto_deposit_valuation);
+		const valuedWithdrawalCount = valuedCounts(dwSummary?.crypto_withdrawal_valuation);
+		const unvaluedDepositCount = (dwSummary?.crypto_deposit_count ?? 0) - valuedDepositCount;
+		const unvaluedWithdrawalCount = (dwSummary?.crypto_withdrawal_count ?? 0) - valuedWithdrawalCount;
+
 		if (dwSummary && dwSummary.account_return_jpy != null) {
 			const sign = dwSummary.account_return_jpy >= 0 ? '+' : '';
 			const approxLabel = dwSummary.is_complete ? '' : '（概算）';
@@ -1035,17 +1050,27 @@ export default async function analyzeMyPortfolioHandler(args: {
 			lines.push(`  JPY純入金: ${formatPriceJPY(Math.round(netJpyDeposit))}`);
 			if (dwSummary.crypto_deposit_estimated_jpy) {
 				lines.push(
-					`  暗号資産入庫の評価: ${formatPriceJPY(dwSummary.crypto_deposit_estimated_jpy)}（${dwSummary.crypto_deposit_count}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_deposit_valuation?.basis ?? 'current_price_fallback']}）`,
+					`  暗号資産入庫の評価: ${formatPriceJPY(dwSummary.crypto_deposit_estimated_jpy)}（${valuedDepositCount}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_deposit_valuation?.basis ?? 'current_price_fallback']}）`,
 				);
 			}
+			if (dwSummary.crypto_withdrawal_estimated_jpy) {
+				lines.push(
+					`  暗号資産出庫の評価: -${formatPriceJPY(dwSummary.crypto_withdrawal_estimated_jpy)}（${valuedWithdrawalCount}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_withdrawal_valuation?.basis ?? 'current_price_fallback']}）`,
+				);
+			}
+			// 内訳の式は実際に載っている項だけを並べる（0 円の項を書くと読み手が総額を追えない）。
+			const netInvestedTerms = [
+				dwSummary.crypto_deposit_estimated_jpy ? '+ 暗号資産入庫の評価額' : '',
+				dwSummary.crypto_withdrawal_estimated_jpy ? '- 暗号資産出庫の評価額' : '',
+			].filter(Boolean);
 			lines.push(
-				`  純投入額: ${formatPriceJPY(dwSummary.net_jpy_invested)}${dwSummary.crypto_deposit_estimated_jpy ? '（JPY純入金 + 暗号資産入庫の評価額）' : ''}`,
+				`  純投入額: ${formatPriceJPY(dwSummary.net_jpy_invested)}${netInvestedTerms.length > 0 ? `（JPY純入金 ${netInvestedTerms.join(' ')}）` : ''}`,
 			);
 			if (!dwSummary.is_complete) {
 				lines.push('  ※ 入出金履歴が多く全件取得できなかったため、概算値です');
 			}
-			if (dwSummary.crypto_deposit_count > 0 && !dwSummary.crypto_deposit_estimated_jpy) {
-				lines.push(`  ※ 暗号資産入庫 ${dwSummary.crypto_deposit_count}件の価格が取得できず評価額に含まれていません`);
+			if (unvaluedDepositCount > 0) {
+				lines.push(`  ※ 暗号資産入庫 ${unvaluedDepositCount}件の価格が取得できず評価額に含まれていません`);
 			}
 			const depositFallbackCount = dwSummary.crypto_deposit_valuation?.current_price_fallback_count ?? 0;
 			if (depositFallbackCount > 0) {
@@ -1053,9 +1078,33 @@ export default async function analyzeMyPortfolioHandler(args: {
 					`  ※ うち ${depositFallbackCount}件は入庫日の価格を取得できず現在価格で仮評価（この分だけ相場変動で評価額が動きます）`,
 				);
 			}
-			if (dwSummary.crypto_withdrawal_count > 0) {
-				lines.push(`  ※ 暗号資産出庫 ${dwSummary.crypto_withdrawal_count}件は送金として損益計算から除外しています`);
+			if (unvaluedWithdrawalCount > 0) {
+				lines.push(`  ※ 暗号資産出庫 ${unvaluedWithdrawalCount}件は評価額を算出できず純投入額に反映されていません`);
 			}
+			const withdrawalFallbackCount = dwSummary.crypto_withdrawal_valuation?.current_price_fallback_count ?? 0;
+			if (withdrawalFallbackCount > 0) {
+				lines.push(
+					`  ※ うち ${withdrawalFallbackCount}件は出庫日の価格を取得できず現在価格で仮評価（この分だけ相場変動で評価額が動きます）`,
+				);
+			}
+			// 差し引いたと言えるのは評価できた件数だけ。総件数で書くと、価格を解決できず
+			// 純投入額に載っていない出庫まで「差し引いた」と説明することになる。
+			if (valuedWithdrawalCount > 0) {
+				lines.push(
+					`  ※ 暗号資産出庫 ${valuedWithdrawalCount}件は JPY 出金と同じ「元本の回収」として純投入額から差し引いています（外部ウォレットへ移して保有を続けている場合でも、口座外の値動きは測定対象外です）`,
+				);
+			}
+		} else if (dwSummary && dwSummary.net_jpy_invested <= 0) {
+			// 純投入額が 0 以下でリターン率を定義できないケース（`account_return_*` が undefined に
+			// なる既存分岐）。黙ってブロックごと消すと「リターンが計算されたのに表示されていない」と
+			// 読まれるため、出せない理由を 1 行で明示する。原因は暗号資産出庫の減算とは限らない
+			// （JPY 出金だけで入金と相殺されている口座も同じ状態になる）ので、出庫が効いている
+			// ときだけその内訳を添える。
+			const withdrawalCause =
+				valuedWithdrawalCount > 0 ? `暗号資産出庫 ${valuedWithdrawalCount}件を元本の回収として差し引いた結果、` : '';
+			lines.push(
+				`口座全体リターン: 算出不可（${withdrawalCause}純投入額が ${formatPriceJPY(dwSummary.net_jpy_invested)} と 0 以下になりました。引き出しが投入を上回る口座ではリターン率を定義できません）`,
+			);
 		}
 
 		// 入出金取得の警告
@@ -1224,6 +1273,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 			crypto_deposit_count: 0,
 			crypto_deposit_estimated_jpy: undefined,
 			crypto_withdrawal_count: 0,
+			crypto_withdrawal_estimated_jpy: undefined,
 			account_return_pct: undefined,
 			account_return_jpy: undefined,
 			is_complete: false,
