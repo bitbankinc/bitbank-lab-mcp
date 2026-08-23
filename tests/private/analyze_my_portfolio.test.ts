@@ -98,18 +98,22 @@ function setupFetchMock(opts?: {
 	marginPositions?: unknown;
 	deposits?: unknown;
 	withdrawals?: unknown;
+	/** tickers_jpy のレスポンス差し替え（現在価格を振って評価額の相場連動を見るテスト用） */
+	tickers?: unknown;
+	/** candlestick のレスポンス差し替え。既定は 2024-03-08 起点の 120 本 */
+	candles?: unknown;
 }) {
 	globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
 		const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
 
 		// Public API: tickers
 		if (urlStr.includes('tickers_jpy')) {
-			return new Response(JSON.stringify(tickersJpy), { status: 200 });
+			return new Response(JSON.stringify(opts?.tickers ?? tickersJpy), { status: 200 });
 		}
 
 		// Public API: candlestick
 		if (urlStr.includes('candlestick')) {
-			return new Response(JSON.stringify(candlesBtcJpy1day120), { status: 200 });
+			return new Response(JSON.stringify(opts?.candles ?? candlesBtcJpy1day120), { status: 200 });
 		}
 
 		// Private API: assets（既定は履歴と数量整合した consistentAssetsResponse）
@@ -2048,11 +2052,14 @@ describe('analyze_my_portfolio — 純入出金の価格解決 warning', () => {
 		});
 
 		assertOk(result);
-		expect(result.meta.warnings).toBeUndefined();
 		expect(result.data.daily_performance?.unpriced_flow_assets).toBeUndefined();
 		expect(result.data.yearly_performance?.unpriced_flow_assets).toBeUndefined();
 		expect(result.summary).not.toContain('純入出金に計上できませんでした');
-		// 入庫は価格が引けているので net_flow に載る（0.1 BTC * 15_500_000 = 1_550_000）
+		// candle fixture は 2024 年分しか無く 2026 年の入庫日価格を解決できないため、
+		// 現在価格フォールバックの申告だけが残る（#57 (a) の 3 経路目。unpriced とは別系統）。
+		expect(result.meta.warnings).toHaveLength(1);
+		expect(result.meta.warnings?.[0]).toContain('現在価格で仮評価');
+		// 入庫は現在価格で引けているので net_flow に載る（0.1 BTC * 15_500_000 = 1_550_000）
 		expect(result.data.daily_performance?.net_flow_jpy).toBe(1_550_000);
 	});
 
@@ -2120,6 +2127,477 @@ describe('analyze_my_portfolio — 純入出金の価格解決 warning', () => {
 		expect(text.split('\n').slice(0, 3).join('\n')).toContain('⚠️');
 		// data の JSON にも資産名が残る（structuredContent を見ないクライアント向け）
 		expect(text).toContain('unpriced_flow_assets');
+	});
+});
+
+/**
+ * 暗号資産入出庫の JPY 換算を入出庫日の 1day open で固定する（#57 (a)）。
+ *
+ * 本 issue の眼目は「相場が動いても入出庫の評価額が動かないこと」なので、
+ * **現在価格（tickers）だけを差し替えた 2 回の実行で同じ値が返ること**を軸に据える。
+ * 経路は 3 つ: 直近 400 日窓の日次価格で解ける / 400 日超で年 chunk を追加取得して解ける /
+ * どちらでも解けず現在価格にフォールバックする。
+ */
+describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
+	/** 2026-05-16 12:00 JST */
+	const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
+	/** 2026-05-16 10:00 JST（当日・当月・当年のいずれの期間にも入る） */
+	const recentFlowMs = Date.UTC(2026, 4, 16, 1, 0, 0, 0);
+	/** 2023-04-20 12:00 JST（直近 400 日窓の外。年 chunk の追加取得が要る） */
+	const oldFlowMs = Date.UTC(2023, 3, 20, 3, 0, 0, 0);
+
+	/** 入庫日の 1day open。現在価格（15,500,000 / 31,000,000）とは意図的に離す */
+	const FLOW_DAY_OPEN = 8_000_000;
+
+	/**
+	 * 指定した UTC 時刻の 1day 足だけを返す candlestick レスポンス。
+	 * `portfolioDayStartMs` は JST 暦日に丸めるため、UTC 0:00 の足は同じ日付の JST 暦日キーになる。
+	 */
+	function candles1day(rows: Array<{ tsMs: number; open: number }>) {
+		return {
+			success: 1,
+			data: {
+				candlestick: [
+					{
+						type: '1day',
+						ohlcv: rows.map(({ tsMs, open }) => [
+							String(open),
+							String(open + 100_000),
+							String(open - 100_000),
+							String(open + 50_000),
+							'10',
+							tsMs,
+						]),
+					},
+				],
+			},
+		};
+	}
+
+	/** btc の現在価格だけを差し替えた tickers_jpy レスポンス */
+	function tickersWithBtc(last: number) {
+		return {
+			success: 1,
+			data: [
+				{
+					pair: 'btc_jpy',
+					sell: String(last),
+					buy: String(last),
+					high: String(last),
+					low: String(last),
+					open: String(last),
+					last: String(last),
+					vol: '100',
+					timestamp: fixedNowMs,
+				},
+			],
+		};
+	}
+
+	/** btc を 0.1 だけ入庫した履歴（confirmed_at を引数で振る） */
+	function btcDeposit(confirmedAt: number) {
+		return {
+			deposits: [
+				{
+					uuid: 'dep-btc',
+					asset: 'btc',
+					amount: '0.1',
+					status: 'DONE',
+					found_at: confirmedAt,
+					confirmed_at: confirmedAt,
+				},
+			],
+		};
+	}
+
+	/** 現在価格だけを振って 2 回実行する */
+	async function runWithBtcPrice(last: number, opts: Parameters<typeof setupFetchMock>[0]) {
+		setupFetchMock({ ...opts, tickers: tickersWithBtc(last) });
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		return handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: true });
+	}
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('直近 400 日窓の日次価格で解ける: 現在価格を 2 倍にしても入庫の評価額が動かない', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		const mockOpts = {
+			deposits: btcDeposit(recentFlowMs),
+			withdrawals: { withdrawals: [] },
+			// 入庫当日（JST 2026-05-16）の足を持つ
+			candles: candles1day([{ tsMs: Date.UTC(2026, 4, 16), open: FLOW_DAY_OPEN }]),
+		};
+
+		const cheap = await runWithBtcPrice(15_500_000, mockOpts);
+		const rich = await runWithBtcPrice(31_000_000, mockOpts);
+
+		assertOk(cheap);
+		assertOk(rich);
+		// 本 issue の眼目: 現在価格が 2 倍でも入庫の評価額は 1 円も動かない
+		expect(cheap.data.daily_performance?.net_flow_jpy).toBe(rich.data.daily_performance?.net_flow_jpy);
+		expect(cheap.data.deposit_withdrawal_summary?.crypto_deposit_estimated_jpy).toBe(
+			rich.data.deposit_withdrawal_summary?.crypto_deposit_estimated_jpy,
+		);
+		// 0.1 BTC × 入庫日の始値
+		expect(cheap.data.daily_performance?.net_flow_jpy).toBe(Math.round(0.1 * FLOW_DAY_OPEN));
+		expect(cheap.data.deposit_withdrawal_summary?.crypto_deposit_estimated_jpy).toBe(Math.round(0.1 * FLOW_DAY_OPEN));
+
+		// 評価方式が出力から判別できる（受け入れ条件）
+		expect(cheap.meta.flowValuationBasis).toBe('deposit_date_price');
+		expect(cheap.meta.flowValuationFallbackCount).toBeUndefined();
+		expect(cheap.data.daily_performance?.flow_valuation).toEqual({
+			deposit_date_price_count: 1,
+			current_price_fallback_count: 0,
+			basis: 'deposit_date_price',
+		});
+		expect(cheap.data.deposit_withdrawal_summary?.crypto_deposit_valuation?.basis).toBe('deposit_date_price');
+		// 仮評価に落ちていないので警告も出ない
+		expect((cheap.meta.warnings ?? []).some((w: string) => w.includes('現在価格で仮評価'))).toBe(false);
+	});
+
+	it('400 日超: 年 chunk を追加取得して入庫日価格で評価する', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		// 直近窓（date 未指定）には入庫日の足が無く、2023 年 chunk（date='2023'）にだけ在る状況を作る。
+		// setupFetchMock は URL で分岐できないため、candlestick の URL から年 chunk を読み取る。
+		const mockOpts = {
+			deposits: btcDeposit(oldFlowMs),
+			withdrawals: { withdrawals: [] },
+		};
+		const recentCandles = candles1day([{ tsMs: Date.UTC(2026, 4, 15), open: 20_000_000 }]);
+		const oldCandles = candles1day([{ tsMs: Date.UTC(2023, 3, 20), open: FLOW_DAY_OPEN }]);
+
+		/** candlestick の URL は `/candlestick/{pair}/{type}/{yearOrDay}` 形式 */
+		const runWithYearChunks = async (last: number) => {
+			setupFetchMock({ ...mockOpts, tickers: tickersWithBtc(last) });
+			const routed = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+			const base = routed.getMockImplementation();
+			const candleUrls: string[] = [];
+			globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+				const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+				if (urlStr.includes('candlestick')) {
+					candleUrls.push(urlStr);
+					const body = urlStr.includes('/2023') ? oldCandles : recentCandles;
+					return new Response(JSON.stringify(body), { status: 200 });
+				}
+				return base?.(url);
+			}) as unknown as typeof fetch;
+			const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+			const result = await handler({
+				include_technical: false,
+				include_pnl: true,
+				include_deposit_withdrawal: true,
+			});
+			return { result, candleUrls };
+		};
+
+		const cheap = await runWithYearChunks(15_500_000);
+		const rich = await runWithYearChunks(31_000_000);
+
+		// 直近窓（当年 / 前年）だけでなく、入庫年の chunk を実際に叩いている
+		expect(cheap.candleUrls.some((u) => u.includes('/2023'))).toBe(true);
+		assertOk(cheap.result);
+		assertOk(rich.result);
+		// 全履歴を集計する入出金サマリーで、年 chunk 由来の入庫日価格が使われる
+		expect(cheap.result.data.deposit_withdrawal_summary?.crypto_deposit_estimated_jpy).toBe(
+			Math.round(0.1 * FLOW_DAY_OPEN),
+		);
+		expect(cheap.result.data.deposit_withdrawal_summary?.crypto_deposit_estimated_jpy).toBe(
+			rich.result.data.deposit_withdrawal_summary?.crypto_deposit_estimated_jpy,
+		);
+		expect(cheap.result.meta.flowValuationBasis).toBe('deposit_date_price');
+		expect(cheap.result.meta.flowValuationFallbackCount).toBeUndefined();
+	});
+
+	it('全く解決できない: 現在価格フォールバックに落ち、件数を meta / summary で申告する', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		const mockOpts = {
+			deposits: btcDeposit(oldFlowMs),
+			withdrawals: { withdrawals: [] },
+			// 入庫日（2023-04-20）を含まない足しか返さない → 追加取得しても解決できない
+			candles: candles1day([{ tsMs: Date.UTC(2026, 4, 15), open: 20_000_000 }]),
+		};
+
+		const cheap = await runWithBtcPrice(15_500_000, mockOpts);
+		const rich = await runWithBtcPrice(31_000_000, mockOpts);
+
+		assertOk(cheap);
+		assertOk(rich);
+		// フォールバックは相場連動する（だからこそ黙って混ぜず申告する）
+		expect(cheap.data.deposit_withdrawal_summary?.crypto_deposit_estimated_jpy).toBe(Math.round(0.1 * 15_500_000));
+		expect(rich.data.deposit_withdrawal_summary?.crypto_deposit_estimated_jpy).toBe(Math.round(0.1 * 31_000_000));
+
+		expect(cheap.meta.flowValuationBasis).toBe('current_price_fallback');
+		expect(cheap.meta.flowValuationFallbackCount).toBe(1);
+		expect(cheap.data.deposit_withdrawal_summary?.crypto_deposit_valuation).toEqual({
+			deposit_date_price_count: 0,
+			current_price_fallback_count: 1,
+			basis: 'current_price_fallback',
+		});
+		// 計算層 warning（content 先頭）と入出金セクションの両方で申告する
+		expect((cheap.meta.warnings ?? []).some((w: string) => w.includes('1件'))).toBe(true);
+		expect(cheap.summary).toContain('現在価格で仮評価');
+	});
+
+	it('JPY のみの入出金では換算方式を申告しない（換算対象が無い）', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		const result = await runWithBtcPrice(15_500_000, {
+			deposits: {
+				deposits: [
+					{
+						uuid: 'dep-jpy',
+						asset: 'jpy',
+						amount: '1000000',
+						status: 'DONE',
+						found_at: recentFlowMs,
+						confirmed_at: recentFlowMs,
+					},
+				],
+			},
+			withdrawals: { withdrawals: [] },
+		});
+
+		assertOk(result);
+		expect(result.meta.flowValuationBasis).toBeUndefined();
+		expect(result.meta.flowValuationFallbackCount).toBeUndefined();
+		expect(result.data.daily_performance?.flow_valuation).toBeUndefined();
+		expect(result.data.daily_performance?.net_flow_jpy).toBe(1_000_000);
+	});
+
+	/**
+	 * 換算結果を出力するセクションが 1 つも無い構成では、価格解決自体を走らせない。
+	 *
+	 * `include_deposit_withdrawal=false`（入出金セクションを閉じる）かつ入出金履歴の部分失敗で
+	 * 純入出金が未計測（`buildPeriodPerformance` が `unmeasuredNetFlow` に短絡）になると、
+	 * 換算値はどの出力にも現れない。それでも candle を追加取得すると、
+	 * (1) 出力に出ない値のためにレイテンシを払い、(2) meta / summary が
+	 * 「どこにも出ていない評価額」を申告してしまう（読み手が探しても見つからない）。
+	 */
+	it('換算結果を出力するセクションが無い構成では価格解決も申告も行わない', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+
+		// 暗号資産出庫チャネルだけ落として部分失敗にする（allFailed=false / warnings あり
+		// → flowUnavailableReason=dw_fetch_failed で純入出金が未計測になる）。
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			const marginResponse = maybeMarginAccountResponse(urlStr);
+			if (marginResponse) return marginResponse;
+			if (urlStr.includes('tickers_jpy')) {
+				return new Response(JSON.stringify(tickersWithBtc(15_500_000)), { status: 200 });
+			}
+			if (urlStr.includes('candlestick')) {
+				return new Response(JSON.stringify(candles1day([{ tsMs: Date.UTC(2026, 4, 15), open: 20_000_000 }])), {
+					status: 200,
+				});
+			}
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				const payload = urlStr.includes('type=margin') ? { trades: [] } : rawTradeHistoryResponse;
+				return new Response(JSON.stringify(mockBitbankSuccess(payload)), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history')) {
+				// 年初以降（= 純入出金の母集合に入る）の DONE 暗号資産入庫。
+				// candle は当日を含まないので、解決を試みれば現在価格フォールバックに落ちる。
+				return new Response(JSON.stringify(mockBitbankSuccess(btcDeposit(recentFlowMs))), { status: 200 });
+			}
+			if (urlStr.includes('withdrawal_history')) {
+				if (!urlStr.includes('asset=jpy')) {
+					return new Response(JSON.stringify(mockBitbankError(10007)), { status: 200 });
+				}
+				return new Response(JSON.stringify(mockBitbankSuccess({ withdrawals: [] })), { status: 200 });
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: false,
+		});
+
+		assertOk(result);
+		// 前提: 純入出金は未計測で、入出金セクションも出ていない = 換算値の出力先が無い
+		expect(result.meta.flowDataUnavailableReason).toBe('dw_fetch_failed');
+		expect(result.data.daily_performance?.flow_measured).toBe(false);
+		expect(result.data.daily_performance?.flow_valuation).toBeUndefined();
+		expect(result.data.deposit_withdrawal_summary).toBeUndefined();
+
+		// 出力に現れない換算を申告しない
+		expect(result.meta.flowValuationBasis).toBeUndefined();
+		expect(result.meta.flowValuationFallbackCount).toBeUndefined();
+		expect((result.meta.warnings ?? []).some((w: string) => w.includes('現在価格で仮評価'))).toBe(false);
+		expect(result.summary).not.toContain('現在価格で仮評価');
+	});
+
+	/**
+	 * 年初より前の暗号資産**出庫**は換算対象にしない。
+	 *
+	 * 出庫を金額換算する消費者は期間集計だけ（`yearly_dw_summary` / 期間ネットフロー）で、
+	 * 全履歴を集計する `calcDepositWithdrawalSummary` は暗号資産出庫を
+	 * `crypto_withdrawal_count` として**件数しか出さない**。したがって年初より前の出庫を
+	 * 解決しても反映先が無く、candle の追加取得と `flowValuationBasis` / フォールバック件数 /
+	 * 警告だけが動いてしまう（入庫と出庫で下限時刻を分けている理由）。
+	 */
+	it('年初より前の暗号資産出庫は追加取得も換算方式の申告も引き起こさない', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+
+		const candleUrls: string[] = [];
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			const marginResponse = maybeMarginAccountResponse(urlStr);
+			if (marginResponse) return marginResponse;
+			if (urlStr.includes('tickers_jpy')) {
+				return new Response(JSON.stringify(tickersWithBtc(15_500_000)), { status: 200 });
+			}
+			if (urlStr.includes('candlestick')) {
+				candleUrls.push(urlStr);
+				return new Response(JSON.stringify(candles1day([{ tsMs: Date.UTC(2026, 4, 15), open: 20_000_000 }])), {
+					status: 200,
+				});
+			}
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				const payload = urlStr.includes('type=margin') ? { trades: [] } : rawTradeHistoryResponse;
+				return new Response(JSON.stringify(mockBitbankSuccess(payload)), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history')) {
+				// 当年の暗号資産入庫は無い（JPY 入金のみ）
+				return new Response(
+					JSON.stringify(
+						mockBitbankSuccess({
+							deposits: [
+								{
+									uuid: 'dep-jpy',
+									asset: 'jpy',
+									amount: '1000000',
+									status: 'DONE',
+									found_at: recentFlowMs,
+									confirmed_at: recentFlowMs,
+								},
+							],
+						}),
+					),
+					{ status: 200 },
+				);
+			}
+			if (urlStr.includes('withdrawal_history')) {
+				// 2023 年の暗号資産出庫。全履歴を母集合にすると /2023 の chunk を取りに行ってしまう
+				return new Response(
+					JSON.stringify(
+						mockBitbankSuccess({
+							withdrawals: [
+								{
+									uuid: 'wd-btc-old',
+									asset: 'btc',
+									amount: '0.2',
+									fee: '0.0006',
+									status: 'DONE',
+									requested_at: oldFlowMs,
+								},
+							],
+						}),
+					),
+					{ status: 200 },
+				);
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			// 全履歴を母集合にする構成（入出金分析セクションあり）でも出庫は年初来に絞る
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		// 出庫は件数だけ出る（金額換算の消費者がいない）
+		expect(result.data.deposit_withdrawal_summary?.crypto_withdrawal_count).toBe(1);
+		expect(result.data.deposit_withdrawal_summary?.crypto_deposit_estimated_jpy).toBeUndefined();
+
+		// 出庫年（2023）の chunk を取りに行かない
+		expect(candleUrls.some((u) => u.includes('/2023'))).toBe(false);
+		// 換算した入出庫が 1 件も無いので方式の申告も出ない
+		expect(result.meta.flowValuationBasis).toBeUndefined();
+		expect(result.meta.flowValuationFallbackCount).toBeUndefined();
+		expect((result.meta.warnings ?? []).some((w: string) => w.includes('現在価格で仮評価'))).toBe(false);
+	});
+
+	/**
+	 * 新設フィールドは既存キーの後ろに出す（既存消費者の JSON を頭から崩さない）。
+	 *
+	 * **キー順を決めるのはハンドラの代入順ではなく Zod スキーマの宣言順**——`z.object` の
+	 * parse はスキーマ順でオブジェクトを組み直すため、代入順だけ末尾にしても wire では
+	 * 中間に入る。人手のレビューでは見えない差なので、実際の出力順で機械的に固定する。
+	 */
+	it('新設の *_valuation は既存キーの後ろに出る（既存キーの相対順も不変）', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		const result = await runWithBtcPrice(15_500_000, {
+			deposits: btcDeposit(recentFlowMs),
+			withdrawals: { withdrawals: [] },
+			candles: candles1day([{ tsMs: Date.UTC(2026, 4, 16), open: FLOW_DAY_OPEN }]),
+		});
+
+		assertOk(result);
+
+		const dwKeys = Object.keys(result.data.deposit_withdrawal_summary ?? {});
+		expect(dwKeys).toEqual([
+			'total_jpy_deposited',
+			'total_jpy_withdrawn',
+			'net_jpy_invested',
+			'crypto_deposit_count',
+			'crypto_deposit_estimated_jpy',
+			'crypto_withdrawal_count',
+			'account_return_pct',
+			'account_return_jpy',
+			'is_complete',
+			'analysis_basis',
+			'crypto_deposit_valuation',
+		]);
+
+		// performance 側も同様に、新設 2 フィールドが既存キーの後ろに並ぶ
+		const perfKeys = Object.keys(result.data.daily_performance ?? {});
+		expect(perfKeys.at(-1)).toBe('flow_valuation');
+		expect(perfKeys.indexOf('note')).toBeLessThan(perfKeys.indexOf('flow_valuation'));
+
+		// 期間 DW サマリーも同様
+		const periodKeys = Object.keys(result.data.yearly_dw_summary ?? {});
+		expect(periodKeys.indexOf('period_end')).toBeLessThan(periodKeys.indexOf('crypto_deposit_valuation'));
+	});
+
+	/**
+	 * `PERFORMANCE_NOTE` と summary の注記行は LLM が評価方式を読む唯一のチャネル
+	 * （`structuredContent` は見えない）。文言が現在価格ベースのまま取り残されないよう固定する。
+	 */
+	it('note / summary の注記が入出庫日ベースであることを明示する', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		const result = await runWithBtcPrice(15_500_000, {
+			deposits: btcDeposit(recentFlowMs),
+			withdrawals: { withdrawals: [] },
+			candles: candles1day([{ tsMs: Date.UTC(2026, 4, 16), open: FLOW_DAY_OPEN }]),
+		});
+
+		assertOk(result);
+		expect(result.data.daily_performance?.note).toContain('入出庫日');
+		expect(result.data.daily_performance?.note).not.toContain('暗号資産の入出庫は現在価格で仮評価');
+		expect(result.summary).toContain('暗号資産入出庫は入出庫日');
+		expect(result.summary).not.toContain('暗号資産入出庫は現在価格で仮評価');
+		expect(result.summary).toContain('暗号資産入庫の評価');
 	});
 });
 
@@ -2343,10 +2821,13 @@ describe('analyze_my_portfolio — API asset の取得境界正規化', () => {
 		expect(result.data.holdings.find((h) => h.asset === 'btc')?.jpy_value).toBe(0.6 * 15_500_000);
 		expect(result.data.total_jpy_value).toBe(0.6 * 15_500_000 + 500_000);
 		// BTC 入出庫は価格解決できるので unpriced 系 warning は出ない。一方 onhand 0.6 は
-		// 復元数量（出庫按分後 0）と乖離しているため、数量不変条件の warning だけが出る。
-		// 大文字レスポンスの入庫（'BTC', DONE）が正規化されて has_crypto_deposits に一致することも兼ねて固定する
-		expect(result.meta.warnings).toHaveLength(1);
+		// 復元数量（出庫按分後 0）と乖離しているため、数量不変条件の warning が出る。
+		// 大文字レスポンスの入庫（'BTC', DONE）が正規化されて has_crypto_deposits に一致することも兼ねて固定する。
+		// 2 本目は入出庫日価格の申告: candle fixture が 2024 年分のみで 2026 年の入出庫日を
+		// 解決できず現在価格フォールバックに落ちるため（#57 (a)）。
+		expect(result.meta.warnings).toHaveLength(2);
 		expect(result.meta.warnings?.[0]).toContain('BTC（暗号資産の入庫あり）');
+		expect(result.meta.warnings?.[1]).toContain('現在価格で仮評価');
 		expect(result.data.daily_performance?.unpriced_flow_assets).toBeUndefined();
 		expect(result.data.daily_performance?.net_flow_jpy).toBe(Math.round(300_000 + 0.1 * 15_500_000 - 0.2 * 15_500_000));
 	});
@@ -2548,7 +3029,9 @@ describe('analyze_my_portfolio — API pair の取得境界正規化', () => {
 		expect(result.data.holdings.map((h) => h.asset).sort()).toEqual(['btc', 'jpy']);
 		// PR #37 の warning 経路。BTC の価格は引けているので誤検知してはいけない
 		expect(result.data.daily_performance?.unpriced_flow_assets).toBeUndefined();
-		expect(result.meta.warnings).toBeUndefined();
+		// 残るのは入出庫日価格を解決できなかった申告のみ（candle fixture が 2024 年分だけのため）
+		expect(result.meta.warnings).toHaveLength(1);
+		expect(result.meta.warnings?.[0]).toContain('現在価格で仮評価');
 		expect(result.data.daily_performance?.net_flow_jpy).toBe(Math.round(0.1 * 15_500_000));
 	});
 

@@ -20,10 +20,12 @@ import {
 	buildPeriodPerformance,
 	calcDepositWithdrawalSummary,
 	calcMarginPnl,
+	calcPeriodDWSummary,
 	calcPeriodMarginPnl,
 	calcPeriodNetFlow,
 	calcPeriodRealizedPnl,
 	calcPnl,
+	collectFlowValuationTargets,
 	flowUnavailableReasonFor,
 	getJstPeriodBoundaries,
 	PERFORMANCE_NOTE,
@@ -33,6 +35,8 @@ import {
 	qtyMismatchReasonFor,
 	reconstructHoldingsAtDate,
 	resolveDepositWithdrawalStatus,
+	resolveFlowPrice,
+	summarizeFlowValuation,
 } from '../../../src/handlers/portfolio/calc.js';
 import { portfolioDayStartMs } from '../../../src/handlers/portfolio/calendar.js';
 import type {
@@ -43,6 +47,7 @@ import type {
 	RawTrade,
 	RawWithdrawal,
 } from '../../../src/handlers/portfolio/types.js';
+import { currentPriceOnly, withDailyPrices } from '../../_flowPricing.js';
 
 /** 必須フィールドを既定値で埋めた RawTrade を生成する */
 function makeTrade(overrides: Partial<RawTrade> = {}): RawTrade {
@@ -998,7 +1003,7 @@ describe('calcDepositWithdrawalSummary', () => {
 				makeDeposit({ uuid: 'd2', amount: '500000', confirmed_at: 2000 }),
 			],
 		});
-		const result = calcDepositWithdrawalSummary(dw, 2_000_000, new Map());
+		const result = calcDepositWithdrawalSummary(dw, 2_000_000, currentPriceOnly());
 		expect(result.total_jpy_deposited).toBe(1_500_000);
 		expect(result.total_jpy_withdrawn).toBe(0);
 		expect(result.net_jpy_invested).toBe(1_500_000);
@@ -1008,7 +1013,7 @@ describe('calcDepositWithdrawalSummary', () => {
 
 	it('入金のみで net_jpy_invested <= 0 のとき account_return_* は undefined', () => {
 		const dw = makeDwData(); // 入出金なし
-		const result = calcDepositWithdrawalSummary(dw, 1_000_000, new Map());
+		const result = calcDepositWithdrawalSummary(dw, 1_000_000, currentPriceOnly());
 		expect(result.net_jpy_invested).toBe(0);
 		expect(result.account_return_jpy).toBeUndefined();
 		expect(result.account_return_pct).toBeUndefined();
@@ -1023,7 +1028,7 @@ describe('calcDepositWithdrawalSummary', () => {
 			],
 		});
 		const prices = new Map([['btc', 15_000_000]]);
-		const result = calcDepositWithdrawalSummary(dw, 3_000_000, prices);
+		const result = calcDepositWithdrawalSummary(dw, 3_000_000, currentPriceOnly(prices));
 		expect(result.crypto_deposit_count).toBe(1);
 		expect(result.crypto_deposit_estimated_jpy).toBe(1_500_000);
 		expect(result.net_jpy_invested).toBe(2_500_000);
@@ -1037,9 +1042,380 @@ describe('calcDepositWithdrawalSummary', () => {
 				makeDeposit({ uuid: 'd2', amount: '500000', status: 'CONFIRMED', confirmed_at: 200 }),
 			],
 		});
-		const result = calcDepositWithdrawalSummary(dw, 1_000_000, new Map());
+		const result = calcDepositWithdrawalSummary(dw, 1_000_000, currentPriceOnly());
 		expect(result.total_jpy_deposited).toBe(0);
 		expect(result.net_jpy_invested).toBe(0);
+	});
+});
+
+// ── 入出庫日価格での JPY 換算（#57 (a)） ──
+
+/**
+ * 暗号資産入出庫の JPY 換算を「入出庫日の 1day open」で固定する経路の検証。
+ *
+ * 本 issue の眼目は「現在価格が動いても入出庫の評価額が動かないこと」なので、
+ * 各ケースで **現在価格だけを差し替えた 2 回の呼び出しが同じ値を返すこと**を軸に据える。
+ * 値の一致を目視の数値比較ではなく 2 回実行の突き合わせで見るのは、
+ * 「たまたま同じ数値になった」ではなく「現在価格に依存していない」を主張するため。
+ */
+describe('入出庫日価格での JPY 換算', () => {
+	function makeDwData(overrides: Partial<DepositWithdrawalData> = {}): DepositWithdrawalData {
+		return { deposits: [], withdrawals: [], warnings: [], allFailed: false, isComplete: true, ...overrides };
+	}
+
+	/** 2025-06-10 12:00 JST（入出庫日）。同じ JST 暦日に丸まる時刻なら値は変わらない */
+	const FLOW_MS = Date.UTC(2025, 5, 10, 3, 0, 0, 0);
+	/** 入出庫日の 1day open。現在価格（下記）とは意図的に離す */
+	const FLOW_DAY_PRICE = 8_000_000;
+
+	describe('resolveFlowPrice', () => {
+		it('入出庫日の日次価格があればそれを返す（basis=deposit_date_price）', () => {
+			const pricing = withDailyPrices(
+				[{ asset: 'btc', atMs: FLOW_MS, price: FLOW_DAY_PRICE }],
+				new Map([['btc', 20_000_000]]),
+			);
+			expect(resolveFlowPrice(pricing, 'btc', FLOW_MS)).toEqual({
+				price: FLOW_DAY_PRICE,
+				basis: 'deposit_date_price',
+			});
+		});
+
+		it('同じ JST 暦日の別時刻でも同じ日次価格に丸まる', () => {
+			const pricing = withDailyPrices([{ asset: 'btc', atMs: FLOW_MS, price: FLOW_DAY_PRICE }]);
+			// 2025-06-10 00:30 JST と 23:30 JST。どちらも同じ暦日
+			const dayStartJst = Date.UTC(2025, 5, 9, 15, 30, 0, 0);
+			const dayEndJst = Date.UTC(2025, 5, 10, 14, 30, 0, 0);
+			expect(resolveFlowPrice(pricing, 'btc', dayStartJst)?.price).toBe(FLOW_DAY_PRICE);
+			expect(resolveFlowPrice(pricing, 'btc', dayEndJst)?.price).toBe(FLOW_DAY_PRICE);
+		});
+
+		it('日次価格が無ければ現在価格に落ちる（basis=current_price_fallback）', () => {
+			const pricing = currentPriceOnly(new Map([['btc', 20_000_000]]));
+			expect(resolveFlowPrice(pricing, 'btc', FLOW_MS)).toEqual({
+				price: 20_000_000,
+				basis: 'current_price_fallback',
+			});
+		});
+
+		it('どちらも無ければ undefined（呼び出し側が unpriced_assets に載せる）', () => {
+			expect(resolveFlowPrice(currentPriceOnly(), 'doge', FLOW_MS)).toBeUndefined();
+		});
+
+		it('atMs が非有限でも throw せず現在価格に落ちる', () => {
+			// portfolioDayStartMs は非有限で TypeError を投げるため、日次 lookup 前に弾く必要がある
+			const pricing = withDailyPrices(
+				[{ asset: 'btc', atMs: FLOW_MS, price: FLOW_DAY_PRICE }],
+				new Map([['btc', 20_000_000]]),
+			);
+			expect(resolveFlowPrice(pricing, 'btc', Number.NaN)).toEqual({
+				price: 20_000_000,
+				basis: 'current_price_fallback',
+			});
+		});
+
+		it('日次価格がゼロ・負なら採用せず現在価格に落ちる', () => {
+			const pricing = withDailyPrices([{ asset: 'btc', atMs: FLOW_MS, price: 0 }], new Map([['btc', 20_000_000]]));
+			expect(resolveFlowPrice(pricing, 'btc', FLOW_MS)?.basis).toBe('current_price_fallback');
+		});
+	});
+
+	describe('calcPeriodNetFlow — 現在価格を変えても入出庫の評価額が動かない', () => {
+		const dw = makeDwData({
+			deposits: [makeDeposit({ uuid: 'd-btc', asset: 'btc', amount: '0.5', confirmed_at: FLOW_MS })],
+			withdrawals: [
+				makeWithdrawal({ uuid: 'w-btc', asset: 'btc', amount: '0.1', fee: '0.0005', requested_at: FLOW_MS }),
+			],
+		});
+		const dated = [{ asset: 'btc', atMs: FLOW_MS, price: FLOW_DAY_PRICE }];
+
+		it('現在価格を 2 倍にしても net_flow_jpy / withdrawal_fee_jpy が変わらない', () => {
+			const cheap = calcPeriodNetFlow(dw, 0, withDailyPrices(dated, new Map([['btc', 10_000_000]])));
+			const rich = calcPeriodNetFlow(dw, 0, withDailyPrices(dated, new Map([['btc', 20_000_000]])));
+
+			expect(cheap.net_flow_jpy).toBe(rich.net_flow_jpy);
+			expect(cheap.withdrawal_fee_jpy).toBe(rich.withdrawal_fee_jpy);
+			// 入庫 0.5 - 出庫 0.1 = 正味 0.4 BTC を入出庫日の始値で換算
+			expect(cheap.net_flow_jpy).toBe(Math.round(0.4 * FLOW_DAY_PRICE));
+			// 出庫手数料も同じ単価で換算する（元本だけ入出庫日・手数料だけ現在価格の混成にしない）
+			expect(cheap.withdrawal_fee_jpy).toBe(Math.round(0.0005 * FLOW_DAY_PRICE));
+			expect(cheap.valuation).toEqual({
+				deposit_date_price_count: 2,
+				current_price_fallback_count: 0,
+				basis: 'deposit_date_price',
+			});
+		});
+
+		it('現在価格しか無い場合は同じ入力でも現在価格に連動して動く（フォールバックの性質）', () => {
+			// 「入出庫日価格で固定する」ことの対偶。フォールバックが相場連動なのは既知の性質で、
+			// だからこそ basis / 件数で申告する必要がある。
+			const cheap = calcPeriodNetFlow(dw, 0, currentPriceOnly(new Map([['btc', 10_000_000]])));
+			const rich = calcPeriodNetFlow(dw, 0, currentPriceOnly(new Map([['btc', 20_000_000]])));
+
+			expect(cheap.net_flow_jpy).not.toBe(rich.net_flow_jpy);
+			expect(cheap.valuation?.basis).toBe('current_price_fallback');
+			expect(cheap.valuation?.current_price_fallback_count).toBe(2);
+		});
+
+		it('一部だけ日次価格がある場合は basis=mixed で件数を申告する', () => {
+			const otherDayMs = Date.UTC(2025, 5, 11, 3, 0, 0, 0);
+			const mixedDw = makeDwData({
+				deposits: [
+					makeDeposit({ uuid: 'd-1', asset: 'btc', amount: '0.5', confirmed_at: FLOW_MS }),
+					makeDeposit({ uuid: 'd-2', asset: 'btc', amount: '0.5', confirmed_at: otherDayMs }),
+				],
+			});
+			const result = calcPeriodNetFlow(mixedDw, 0, withDailyPrices(dated, new Map([['btc', 20_000_000]])));
+
+			expect(result.valuation).toEqual({
+				deposit_date_price_count: 1,
+				current_price_fallback_count: 1,
+				basis: 'mixed',
+			});
+			// 混在時も合計は「日次で解けた分 + 現在価格の分」
+			expect(result.net_flow_jpy).toBe(Math.round(0.5 * FLOW_DAY_PRICE + 0.5 * 20_000_000));
+		});
+
+		/**
+		 * 取りこぼしのずれの向きは入庫・出庫で逆になる。
+		 * `netFlow` は入庫で加算・出庫で減算されるため、落ちた入庫は net_flow を過小に、
+		 * 落ちた出庫は過大にする。`adjusted_change_jpy = change_jpy - net_flow_jpy` なので
+		 * 調整後増減は常に net_flow と逆向きにずれる。スキーマ・型・warning の説明文が
+		 * この向きを取り違えないよう、実際の符号をテストで固定する。
+		 */
+		it('取りこぼしの向き: 入庫が落ちると net_flow は過小、出庫が落ちると過大', () => {
+			const priced = withDailyPrices([{ asset: 'btc', atMs: FLOW_MS, price: FLOW_DAY_PRICE }]);
+			// doge は日次価格も現在価格も無いので必ず落ちる
+			const depositOnly = makeDwData({
+				deposits: [makeDeposit({ uuid: 'd-doge', asset: 'doge', amount: '1000', confirmed_at: FLOW_MS })],
+			});
+			const withdrawalOnly = makeDwData({
+				withdrawals: [makeWithdrawal({ uuid: 'w-doge', asset: 'doge', amount: '1000', requested_at: FLOW_MS })],
+			});
+
+			// 基準: 落ちる入出庫が 1 件も無いときの net_flow は 0
+			expect(calcPeriodNetFlow(makeDwData(), 0, priced).net_flow_jpy).toBe(0);
+
+			// 落ちた入庫は「加算されるはずの正値」が消える → 真値より過小（真値 > 0、報告は 0）
+			const withLostDeposit = calcPeriodNetFlow(depositOnly, 0, priced);
+			expect(withLostDeposit.net_flow_jpy).toBe(0);
+			expect(withLostDeposit.unpriced_assets).toEqual(['doge']);
+
+			// 落ちた出庫は「減算されるはずの正値」が消える → 真値より過大（真値 < 0、報告は 0）
+			const withLostWithdrawal = calcPeriodNetFlow(withdrawalOnly, 0, priced);
+			expect(withLostWithdrawal.net_flow_jpy).toBe(0);
+			expect(withLostWithdrawal.unpriced_assets).toEqual(['doge']);
+
+			// 同じ入出庫を価格解決できたときの値（＝真値）と直接突き合わせる。
+			// 「落ちると 0 になる」だけでは欠落しか示せず、過小/過大の向きは主張できない。
+			const resolvable = withDailyPrices([{ asset: 'doge', atMs: FLOW_MS, price: 20 }]);
+			const pricedDeposit = calcPeriodNetFlow(depositOnly, 0, resolvable);
+			const pricedWithdrawal = calcPeriodNetFlow(withdrawalOnly, 0, resolvable);
+			// 入庫は正、出庫は負に寄与する（向きが逆になることの根拠）
+			expect(pricedDeposit.net_flow_jpy).toBe(20_000);
+			expect(pricedWithdrawal.net_flow_jpy).toBe(-20_000);
+			// 入庫の取りこぼし → 真値より小さい（過小）
+			expect(Number(withLostDeposit.net_flow_jpy)).toBeLessThan(Number(pricedDeposit.net_flow_jpy));
+			// 出庫の取りこぼし → 真値より大きい（過大）
+			expect(Number(withLostWithdrawal.net_flow_jpy)).toBeGreaterThan(Number(pricedWithdrawal.net_flow_jpy));
+		});
+
+		it('日次価格も現在価格も無い資産は valuation に数えず unpriced_assets に載る', () => {
+			const unpricedDw = makeDwData({
+				deposits: [makeDeposit({ uuid: 'd-doge', asset: 'doge', amount: '1000', confirmed_at: FLOW_MS })],
+			});
+			const result = calcPeriodNetFlow(unpricedDw, 0, withDailyPrices(dated));
+
+			expect(result.unpriced_assets).toEqual(['doge']);
+			// 換算できていないので内訳にも載らない（キーごと落ちる）
+			expect(result.valuation).toBeUndefined();
+		});
+	});
+
+	describe('calcDepositWithdrawalSummary — 入庫は入庫日の始値で評価する', () => {
+		const dw = makeDwData({
+			deposits: [
+				makeDeposit({ uuid: 'd-jpy', asset: 'jpy', amount: '1000000', confirmed_at: FLOW_MS }),
+				makeDeposit({ uuid: 'd-btc', asset: 'btc', amount: '0.1', confirmed_at: FLOW_MS }),
+			],
+		});
+		const dated = [{ asset: 'btc', atMs: FLOW_MS, price: FLOW_DAY_PRICE }];
+
+		it('現在価格を変えても crypto_deposit_estimated_jpy / net_jpy_invested が動かない', () => {
+			const cheap = calcDepositWithdrawalSummary(dw, 3_000_000, withDailyPrices(dated, new Map([['btc', 10_000_000]])));
+			const rich = calcDepositWithdrawalSummary(dw, 3_000_000, withDailyPrices(dated, new Map([['btc', 30_000_000]])));
+
+			expect(cheap.crypto_deposit_estimated_jpy).toBe(rich.crypto_deposit_estimated_jpy);
+			expect(cheap.net_jpy_invested).toBe(rich.net_jpy_invested);
+			// 0.1 BTC × 入庫日の始値 800_000 + JPY 入金 1_000_000
+			expect(cheap.crypto_deposit_estimated_jpy).toBe(800_000);
+			expect(cheap.net_jpy_invested).toBe(1_800_000);
+			expect(cheap.crypto_deposit_valuation).toEqual({
+				deposit_date_price_count: 1,
+				current_price_fallback_count: 0,
+				basis: 'deposit_date_price',
+			});
+		});
+
+		it('暗号資産入庫が無ければ crypto_deposit_valuation はキーごと落ちる', () => {
+			const jpyOnly = makeDwData({
+				deposits: [makeDeposit({ uuid: 'd-jpy', asset: 'jpy', amount: '1000000', confirmed_at: FLOW_MS })],
+			});
+			const result = calcDepositWithdrawalSummary(jpyOnly, 2_000_000, withDailyPrices(dated));
+			expect(result.crypto_deposit_valuation).toBeUndefined();
+			expect('crypto_deposit_valuation' in result).toBe(false);
+		});
+	});
+
+	describe('calcPeriodDWSummary — 入庫・出庫それぞれの換算方式を申告する', () => {
+		it('出庫は requested_at 当日の始値で換算し、内訳を別フィールドで返す', () => {
+			const withdrawalDayMs = Date.UTC(2025, 5, 11, 3, 0, 0, 0);
+			const dw = makeDwData({
+				deposits: [makeDeposit({ uuid: 'd-btc', asset: 'btc', amount: '0.2', confirmed_at: FLOW_MS })],
+				withdrawals: [makeWithdrawal({ uuid: 'w-btc', asset: 'btc', amount: '0.1', requested_at: withdrawalDayMs })],
+			});
+			// 入庫日と出庫日で別の始値を持たせ、日付ごとに引き分けられていることを見る
+			const pricing = withDailyPrices(
+				[
+					{ asset: 'btc', atMs: FLOW_MS, price: FLOW_DAY_PRICE },
+					{ asset: 'btc', atMs: withdrawalDayMs, price: 9_000_000 },
+				],
+				new Map([['btc', 30_000_000]]),
+			);
+			const result = calcPeriodDWSummary(dw, 0, 'start', 'end', pricing);
+
+			expect(result.crypto_deposit_estimated_jpy).toBe(Math.round(0.2 * FLOW_DAY_PRICE));
+			expect(result.crypto_withdrawal_estimated_jpy).toBe(Math.round(0.1 * 9_000_000));
+			expect(result.crypto_deposit_valuation?.basis).toBe('deposit_date_price');
+			expect(result.crypto_withdrawal_valuation?.basis).toBe('deposit_date_price');
+		});
+	});
+
+	describe('collectFlowValuationTargets', () => {
+		const dw = makeDwData({
+			deposits: [
+				makeDeposit({ uuid: 'd-btc', asset: 'btc', amount: '0.5', confirmed_at: FLOW_MS }),
+				// JPY は換算不要
+				makeDeposit({ uuid: 'd-jpy', asset: 'jpy', amount: '1000', confirmed_at: FLOW_MS }),
+				// 未完了は集計対象外
+				makeDeposit({ uuid: 'd-pending', asset: 'eth', amount: '1', status: 'CONFIRMED', confirmed_at: FLOW_MS }),
+				// 数量ゼロ・数値不正は金額に寄与しない
+				makeDeposit({ uuid: 'd-zero', asset: 'eth', amount: '0', confirmed_at: FLOW_MS }),
+				makeDeposit({ uuid: 'd-nan', asset: 'eth', amount: 'abc', confirmed_at: FLOW_MS }),
+			],
+			withdrawals: [makeWithdrawal({ uuid: 'w-eth', asset: 'eth', amount: '1', requested_at: FLOW_MS })],
+		});
+
+		it('DONE・非 JPY・数量が正の入出庫だけを返す（出庫は requested_at）', () => {
+			expect(collectFlowValuationTargets(dw)).toEqual([
+				{ asset: 'btc', atMs: FLOW_MS },
+				{ asset: 'eth', atMs: FLOW_MS },
+			]);
+		});
+
+		it('下限時刻で期間外を落とす', () => {
+			const since = (ms: number) => ({ depositsSinceMs: ms, withdrawalsSinceMs: ms });
+			expect(collectFlowValuationTargets(dw, since(FLOW_MS + 1))).toEqual([]);
+			expect(collectFlowValuationTargets(dw, since(FLOW_MS))).toHaveLength(2);
+		});
+
+		/**
+		 * 入庫と出庫で消費者が違う: 入庫は全履歴（純投入額・口座全体リターン）、
+		 * 出庫を金額換算するのは期間集計だけ（`calcDepositWithdrawalSummary` は件数しか出さない）。
+		 * 片方の下限で両方を絞ると、出力に出ない出庫のために candle を取りに行ってしまう。
+		 */
+		it('入庫と出庫の下限を別々に適用する', () => {
+			// 入庫は全履歴、出庫だけ FLOW_MS より後に絞る → 出庫が落ちて入庫だけ残る
+			expect(collectFlowValuationTargets(dw, { withdrawalsSinceMs: FLOW_MS + 1 })).toEqual([
+				{ asset: 'btc', atMs: FLOW_MS },
+			]);
+			// 逆に入庫だけ絞る → 出庫だけ残る
+			expect(collectFlowValuationTargets(dw, { depositsSinceMs: FLOW_MS + 1 })).toEqual([
+				{ asset: 'eth', atMs: FLOW_MS },
+			]);
+		});
+
+		it('scope 省略なら全履歴（入庫・出庫とも絞らない）', () => {
+			expect(collectFlowValuationTargets(dw)).toHaveLength(2);
+		});
+
+		it('dw が null なら空配列', () => {
+			expect(collectFlowValuationTargets(null)).toEqual([]);
+		});
+	});
+
+	describe('summarizeFlowValuation', () => {
+		const targets = [
+			{ asset: 'btc', atMs: FLOW_MS },
+			{ asset: 'eth', atMs: FLOW_MS },
+			{ asset: 'doge', atMs: FLOW_MS },
+		];
+
+		it('母集合を 1 度だけ数える（各セクションの内訳を足し合わせない）', () => {
+			const pricing = withDailyPrices(
+				[{ asset: 'btc', atMs: FLOW_MS, price: FLOW_DAY_PRICE }],
+				new Map([['eth', 400_000]]),
+			);
+			// btc=日次、eth=現在価格、doge=解決不能（数えない）
+			expect(summarizeFlowValuation(targets, pricing)).toEqual({
+				deposit_date_price_count: 1,
+				current_price_fallback_count: 1,
+				basis: 'mixed',
+			});
+		});
+
+		it('対象が空なら undefined', () => {
+			expect(summarizeFlowValuation([], currentPriceOnly())).toBeUndefined();
+		});
+
+		it('全件で価格を解決できなければ undefined（換算していないので内訳も無い）', () => {
+			expect(summarizeFlowValuation(targets, currentPriceOnly())).toBeUndefined();
+		});
+
+		/**
+		 * `basis` と 2 つの件数の整合は**構築時に保証する**（`buildFlowValuationBreakdown` が唯一の
+		 * 生成経路）。スキーマ側で refine して弾く方針は取らない——`AnalyzeMyPortfolioOutputSchema`
+		 * の parse 失敗はレスポンス全体を fail に落とすため、ラベルの不整合を理由に
+		 * ポートフォリオ分析ごと失わせるのは割に合わない。代わりに不変条件をここで固定する。
+		 */
+		it('不変条件: basis は 2 つの件数から一意に決まり、件数は必ず非負整数', () => {
+			const dated = { asset: 'btc', atMs: FLOW_MS };
+			const fallback = { asset: 'eth', atMs: FLOW_MS };
+			const pricing = withDailyPrices(
+				[{ asset: 'btc', atMs: FLOW_MS, price: FLOW_DAY_PRICE }],
+				new Map([['eth', 400_000]]),
+			);
+
+			// (dated 件数, fallback 件数) の全組み合わせを網羅する
+			const cases: Array<{ input: typeof targets; dated: number; fallback: number }> = [
+				{ input: [], dated: 0, fallback: 0 },
+				{ input: [dated], dated: 1, fallback: 0 },
+				{ input: [fallback], dated: 0, fallback: 1 },
+				{ input: [dated, fallback], dated: 1, fallback: 1 },
+				{ input: [dated, dated, fallback], dated: 2, fallback: 1 },
+			];
+
+			for (const c of cases) {
+				const result = summarizeFlowValuation(c.input, pricing);
+				if (c.dated === 0 && c.fallback === 0) {
+					// 換算 0 件は内訳ごと落とす（'mixed' の 0/0 のような無意味な組み合わせを作らない）
+					expect(result).toBeUndefined();
+					continue;
+				}
+				expect(result).toBeDefined();
+				expect(result?.deposit_date_price_count).toBe(c.dated);
+				expect(result?.current_price_fallback_count).toBe(c.fallback);
+				expect(Number.isInteger(result?.deposit_date_price_count)).toBe(true);
+				expect(Number.isInteger(result?.current_price_fallback_count)).toBe(true);
+				// basis は件数から一意に決まる
+				const expected = c.fallback === 0 ? 'deposit_date_price' : c.dated === 0 ? 'current_price_fallback' : 'mixed';
+				expect(result?.basis).toBe(expected);
+				// 'mixed' は必ず両方が正
+				if (result?.basis === 'mixed') {
+					expect(c.dated).toBeGreaterThan(0);
+					expect(c.fallback).toBeGreaterThan(0);
+				}
+			}
+		});
 	});
 });
 
@@ -1061,7 +1437,7 @@ describe('calcPeriodNetFlow', () => {
 		const dw = makeDwData({
 			deposits: [makeDeposit({ uuid: 'd-doge', asset: 'doge', amount: '1000', confirmed_at: 2000 })],
 		});
-		const result = calcPeriodNetFlow(dw, 1000, new Map());
+		const result = calcPeriodNetFlow(dw, 1000, currentPriceOnly());
 		expect(result.net_flow_jpy).toBe(0); // 価格不明なので計上されない（＝過小になる）
 		expect(result.unpriced_assets).toEqual(['doge']);
 	});
@@ -1070,14 +1446,14 @@ describe('calcPeriodNetFlow', () => {
 		const dw = makeDwData({
 			withdrawals: [makeWithdrawal({ uuid: 'w-doge', asset: 'doge', amount: '1000', fee: '5', requested_at: 2000 })],
 		});
-		const result = calcPeriodNetFlow(dw, 1000, new Map());
+		const result = calcPeriodNetFlow(dw, 1000, currentPriceOnly());
 		expect(result.net_flow_jpy).toBe(0);
 		// 出金手数料も JPY 換算できていない
 		expect(result.withdrawal_fee_jpy).toBe(0);
 		expect(result.unpriced_assets).toEqual(['doge']);
 	});
 
-	it('価格が全て引ける場合: unpriced_assets は付かず measured=true の 3 フィールドのみ', () => {
+	it('価格が全て引ける場合: unpriced_assets は付かず valuation で換算方式を申告する', () => {
 		const dw = makeDwData({
 			deposits: [makeDeposit({ uuid: 'd-btc', asset: 'btc', amount: '0.5', confirmed_at: 2000 })],
 			withdrawals: [makeWithdrawal({ uuid: 'w-eth', asset: 'eth', amount: '1', fee: '0.005', requested_at: 2000 })],
@@ -1086,21 +1462,31 @@ describe('calcPeriodNetFlow', () => {
 			['btc', 10_000_000],
 			['eth', 400_000],
 		]);
-		const result = calcPeriodNetFlow(dw, 1000, prices);
+		const result = calcPeriodNetFlow(dw, 1000, currentPriceOnly(prices));
 		// 入庫 5_000_000 - 出庫 400_000 = 4_600_000、手数料 0.005 * 400_000 = 2_000
-		expect(result).toEqual({ net_flow_jpy: 4_600_000, withdrawal_fee_jpy: 2_000, measured: true });
-		expect(Object.keys(result)).toEqual(['net_flow_jpy', 'withdrawal_fee_jpy', 'measured']);
+		expect(result).toEqual({
+			net_flow_jpy: 4_600_000,
+			withdrawal_fee_jpy: 2_000,
+			measured: true,
+			// 日次価格が無いので 2 件とも現在価格フォールバックで換算された
+			valuation: {
+				deposit_date_price_count: 0,
+				current_price_fallback_count: 2,
+				basis: 'current_price_fallback',
+			},
+		});
+		expect(Object.keys(result)).toEqual(['net_flow_jpy', 'withdrawal_fee_jpy', 'measured', 'valuation']);
 	});
 
 	it('dw が null: 0 ではなく未計測（null + measured=false）を返す', () => {
 		// 0 を返すと呼び出し側で「本当にフローがゼロ」と区別できず、
 		// adjusted_change = change - 0 がフローゼロ前提の確定値になってしまう。
-		const result = calcPeriodNetFlow(null, 1000, new Map());
+		const result = calcPeriodNetFlow(null, 1000, currentPriceOnly());
 		expect(result).toEqual({ net_flow_jpy: null, withdrawal_fee_jpy: null, measured: false });
 	});
 
 	it('履歴 0 件の dw: 未計測ではなく実測の 0（本当にフローがゼロ）', () => {
-		const result = calcPeriodNetFlow(makeDwData(), 1000, new Map());
+		const result = calcPeriodNetFlow(makeDwData(), 1000, currentPriceOnly());
 		expect(result).toEqual({ net_flow_jpy: 0, withdrawal_fee_jpy: 0, measured: true });
 	});
 
@@ -1109,10 +1495,13 @@ describe('calcPeriodNetFlow', () => {
 			deposits: [makeDeposit({ uuid: 'd-jpy', asset: 'jpy', amount: '1000000', confirmed_at: 2000 })],
 			withdrawals: [makeWithdrawal({ uuid: 'w-jpy', asset: 'jpy', amount: '200000', fee: '550', requested_at: 2000 })],
 		});
-		const result = calcPeriodNetFlow(dw, 1000, new Map());
+		const result = calcPeriodNetFlow(dw, 1000, currentPriceOnly());
 		expect(result.net_flow_jpy).toBe(800_000);
 		expect(result.withdrawal_fee_jpy).toBe(550);
 		expect(result.unpriced_assets).toBeUndefined();
+		// JPY は換算不要なので valuation も立たない（キーごと落ちて従来出力と JSON 一致する）
+		expect(result.valuation).toBeUndefined();
+		expect(Object.keys(result)).toEqual(['net_flow_jpy', 'withdrawal_fee_jpy', 'measured']);
 	});
 
 	it('同一資産が複数件落ちても資産名は重複しない（昇順で返る）', () => {
@@ -1124,7 +1513,7 @@ describe('calcPeriodNetFlow', () => {
 			],
 			withdrawals: [makeWithdrawal({ uuid: 'w-doge', asset: 'doge', amount: '500', requested_at: 4000 })],
 		});
-		const result = calcPeriodNetFlow(dw, 1000, new Map());
+		const result = calcPeriodNetFlow(dw, 1000, currentPriceOnly());
 		expect(result.unpriced_assets).toEqual(['doge', 'mona']);
 	});
 
@@ -1139,7 +1528,7 @@ describe('calcPeriodNetFlow', () => {
 				makeWithdrawal({ uuid: 'w-pending', asset: 'mona', amount: '5', status: 'PROCESSING', requested_at: 2000 }),
 			],
 		});
-		const result = calcPeriodNetFlow(dw, 1000, new Map());
+		const result = calcPeriodNetFlow(dw, 1000, currentPriceOnly());
 		expect(result).toEqual({ net_flow_jpy: 0, withdrawal_fee_jpy: 0, measured: true });
 	});
 
@@ -1151,7 +1540,7 @@ describe('calcPeriodNetFlow', () => {
 			],
 			withdrawals: [makeWithdrawal({ uuid: 'w-zero', asset: 'doge', amount: '0', requested_at: 2000 })],
 		});
-		const result = calcPeriodNetFlow(dw, 1000, new Map());
+		const result = calcPeriodNetFlow(dw, 1000, currentPriceOnly());
 		expect(result.unpriced_assets).toBeUndefined();
 	});
 });
@@ -1249,7 +1638,7 @@ describe('buildPeriodPerformance', () => {
 			trades: [],
 			dwData: null,
 			candlePriceData: { boundaryPrices: new Map(), dailyPrices: new Map() },
-			currentPrices: new Map(),
+			flowPricing: currentPriceOnly(),
 			currentValue: 0,
 			nowIso: '2026-05-16T12:00:00+09:00',
 			...overrides,
@@ -1267,7 +1656,7 @@ describe('buildPeriodPerformance', () => {
 				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
 				dailyPrices: new Map(),
 			},
-			currentPrices: new Map([['btc', 12_000_000]]),
+			flowPricing: currentPriceOnly(new Map([['btc', 12_000_000]])),
 			currentValue: 12_000_000,
 		});
 		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: '2026-01-01T00:00:00+09:00' }, ctx);
@@ -1304,7 +1693,7 @@ describe('buildPeriodPerformance', () => {
 				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
 				dailyPrices: new Map(),
 			},
-			currentPrices: new Map([['btc', 12_500_000]]),
+			flowPricing: currentPriceOnly(new Map([['btc', 12_500_000]])),
 			currentValue: 12_500_000,
 		});
 		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: '2026-01-01T00:00:00+09:00' }, ctx);
@@ -1334,7 +1723,7 @@ describe('buildPeriodPerformance', () => {
 			currentHoldings: [{ asset: 'jpy', amount: '900000' }],
 			dwData: dw,
 			candlePriceData: { boundaryPrices: new Map(), dailyPrices: new Map() },
-			currentPrices: new Map(),
+			flowPricing: currentPriceOnly(),
 			currentValue: 900_000,
 		});
 		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
@@ -1361,7 +1750,7 @@ describe('buildPeriodPerformance', () => {
 			currentHoldings: [{ asset: 'jpy', amount: '1000000' }],
 			dwData: dw,
 			candlePriceData: { boundaryPrices: new Map(), dailyPrices: new Map() },
-			currentPrices: new Map(),
+			flowPricing: currentPriceOnly(),
 			currentValue: 1_000_000,
 		});
 		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: '2026-01-01T00:00:00+09:00' }, ctx);
@@ -1400,7 +1789,7 @@ describe('buildPeriodPerformance', () => {
 				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
 				dailyPrices: new Map(),
 			},
-			currentPrices: new Map([['btc', 12_000_000]]),
+			flowPricing: currentPriceOnly(new Map([['btc', 12_000_000]])),
 			currentValue: 6_000_000, // 0.5 BTC @ 12M
 		});
 		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: '2026-01-01T00:00:00+09:00' }, ctx);
@@ -1420,7 +1809,7 @@ describe('buildPeriodPerformance', () => {
 		const baseCtx = makeCtx({
 			currentHoldings: [{ asset: 'btc', amount: '1' }],
 			candlePriceData: { boundaryPrices, dailyPrices: new Map() },
-			currentPrices: new Map([['btc', 12_000_000]]),
+			flowPricing: currentPriceOnly(new Map([['btc', 12_000_000]])),
 			currentValue: 12_000_000,
 		});
 
@@ -1447,10 +1836,12 @@ describe('buildPeriodPerformance', () => {
 				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
 				dailyPrices: new Map(),
 			},
-			currentPrices: new Map([
-				['btc', 12_000_000],
-				['eth', 300_000],
-			]),
+			flowPricing: currentPriceOnly(
+				new Map([
+					['btc', 12_000_000],
+					['eth', 300_000],
+				]),
+			),
 			currentValue: 13_500_000, // 1 BTC @ 12M + 5 ETH @ 300k
 		});
 		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
@@ -1468,7 +1859,7 @@ describe('buildPeriodPerformance', () => {
 				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
 				dailyPrices: new Map(),
 			},
-			currentPrices: new Map([['btc', 12_000_000]]),
+			flowPricing: currentPriceOnly(new Map([['btc', 12_000_000]])),
 			currentValue: 12_000_000,
 		});
 		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
@@ -1505,7 +1896,7 @@ describe('buildPeriodPerformance', () => {
 				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
 				dailyPrices: new Map(),
 			},
-			currentPrices: new Map([['btc', 12_000_000]]),
+			flowPricing: currentPriceOnly(new Map([['btc', 12_000_000]])),
 			currentValue: 12_000_000,
 		});
 		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
@@ -1541,7 +1932,7 @@ describe('buildPeriodPerformance', () => {
 				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
 				dailyPrices: new Map(),
 			},
-			currentPrices: new Map([['btc', 12_000_000]]),
+			flowPricing: currentPriceOnly(new Map([['btc', 12_000_000]])),
 			currentValue: 12_000_000,
 		});
 		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
@@ -1565,7 +1956,7 @@ describe('buildPeriodPerformance', () => {
 				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
 				dailyPrices: new Map(),
 			},
-			currentPrices: new Map([['btc', 12_000_000]]),
+			flowPricing: currentPriceOnly(new Map([['btc', 12_000_000]])),
 			currentValue: 12_000_000,
 		});
 		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
@@ -1602,7 +1993,7 @@ describe('buildPeriodPerformance', () => {
 				boundaryPrices: makeBoundaryPrices([['btc', { yearStart: 10_000_000 }]]),
 				dailyPrices: new Map(),
 			},
-			currentPrices: new Map([['btc', 12_000_000]]),
+			flowPricing: currentPriceOnly(new Map([['btc', 12_000_000]])),
 			currentValue: 12_500_000,
 		});
 		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);

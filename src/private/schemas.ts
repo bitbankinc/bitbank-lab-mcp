@@ -231,6 +231,62 @@ export type PortfolioCostBasisUnavailableReason = z.infer<typeof PortfolioCostBa
 /** 数量不変条件の乖離検出で立つ理由コード（上位集合のうち入出金取得起因を除いたもの） */
 export type PortfolioQtyMismatchReason = Exclude<PortfolioCostBasisUnavailableReason, PortfolioFlowUnavailableReason>;
 
+/**
+ * 暗号資産入出庫を JPY 換算した方式の単一ソース（`*_valuation.basis`）。
+ *
+ * 換算は**入出庫日（入庫: `confirmed_at` / 出庫: `requested_at`）当日の 1day open** を第一候補にする。
+ * 現在価格で換算すると誤差が相場と連動して動く系統的バイアスになり、取引ゼロでも相場上昇だけで
+ * 報告損益が悪化するため（#53 の機序）。日次価格を解決できなかった分だけ現在価格に落とし、
+ * 混ぜたことを本フィールドで申告する。
+ *
+ * 個々の入出庫が取りうるのは `deposit_date_price` / `current_price_fallback` の 2 値だけで、
+ * `mixed` は両方が 1 件以上ある**集計値でのみ**現れる。
+ */
+export const PortfolioFlowValuationBasisEnum = z.enum([
+	/** 入出庫日の 1day open で換算した（相場が動いても評価額は動かない） */
+	'deposit_date_price',
+	/** 入出庫日の日次価格を解決できず、現在価格で仮評価した（相場と連動して動く） */
+	'current_price_fallback',
+	/** 入出庫日価格と現在価格フォールバックが混在している（集計値でのみ現れる） */
+	'mixed',
+]);
+
+/** @see PortfolioFlowValuationBasisEnum */
+export type PortfolioFlowValuationBasis = z.infer<typeof PortfolioFlowValuationBasisEnum>;
+
+/**
+ * 暗号資産入出庫の JPY 換算方式の内訳。
+ *
+ * 換算対象（DONE・非 JPY・数量が正）が 1 件も無い場合、および全件で価格を解決できなかった
+ * 場合はフィールドごと省略する（`undefined`）。件数は換算**できた**件数のみを数える。
+ *
+ * ## 不変条件（`basis` は 2 つの件数から一意に決まる）
+ *
+ * `fallback === 0` → `deposit_date_price` / `dated === 0` → `current_price_fallback` /
+ * 両方が正 → `mixed`。両方 0 のときはフィールドごと落とすので `mixed` の 0/0 は存在しない。
+ *
+ * この不変条件は**構築時に保証する**（`portfolio/calc.ts` の `buildFlowValuationBreakdown` が
+ * 唯一の生成経路）。ここで `.refine()` して弾く方針は取らない——出力スキーマの parse 失敗は
+ * `AnalyzeMyPortfolioOutputSchema` 経由でレスポンス全体を fail に落とすため、ラベルの不整合を
+ * 理由にポートフォリオ分析ごと失わせるのは割に合わない。ガードは
+ * `tests/handlers/portfolio/calc.test.ts` の不変条件テスト。
+ */
+const FlowValuationSchema = z
+	.object({
+		// 件数はゼロ始まりの加算でしか動かないので負値は取り得ない。公開スキーマ（MCP の
+		// output JSON Schema）は実際に出す値の範囲をそのまま表すべきなので minimum: 0 まで書く。
+		deposit_date_price_count: z.number().int().nonnegative().describe('入出庫日の 1day open で換算できた件数'),
+		current_price_fallback_count: z
+			.number()
+			.int()
+			.nonnegative()
+			.describe('入出庫日の価格を解決できず現在価格で仮評価した件数。0 より大きいと評価額が相場と連動して動く'),
+		basis: PortfolioFlowValuationBasisEnum.describe(
+			'支配的な換算方式。両方の件数が正のときのみ mixed になる（個々の入出庫は 2 値のいずれか）',
+		),
+	})
+	.describe('暗号資産入出庫の JPY 換算方式の内訳（換算できた件数のみを数える）');
+
 /** analyze_my_portfolio の入出金分析状態（meta.depositWithdrawalStatus の単一ソース） */
 export const DepositWithdrawalStatusEnum = z.enum(['available', 'fallback', 'no_history', 'not_requested']);
 
@@ -291,13 +347,15 @@ const DepositWithdrawalSummarySchema = z
 		net_jpy_invested: z
 			.number()
 			.describe(
-				'純投入額（JPY入金 - JPY出金 + 暗号資産入庫の現在価格での仮評価）。暗号資産入庫がある場合は JPY 純入金だけでなく仮評価分も含む',
+				'純投入額（JPY入金 - JPY出金 + 暗号資産入庫の JPY 換算額）。暗号資産入庫がある場合は JPY 純入金だけでなく換算分も含む',
 			),
 		crypto_deposit_count: z.number().describe('暗号資産入庫件数'),
 		crypto_deposit_estimated_jpy: z
 			.number()
 			.optional()
-			.describe('暗号資産入庫の推定 JPY 評価額（現在の市場価格で仮評価。入庫時点の価格ではない）'),
+			.describe(
+				'暗号資産入庫の推定 JPY 評価額。入庫日（confirmed_at）の 1day open で換算する（＝相場が動いても値は動かない）。日次価格を解決できなかった分のみ現在価格で仮評価し、その内訳は crypto_deposit_valuation に出る。「入庫時点の相場で取得した」という仮定であり、真の取得原価ではない',
+			),
 		crypto_withdrawal_count: z.number().describe('暗号資産出庫件数'),
 		account_return_pct: z.number().optional().describe('口座全体リターン率（%）: (現在評価額 - 純投入額) / 純投入額'),
 		account_return_jpy: z.number().optional().describe('口座全体リターン額（JPY）'),
@@ -307,6 +365,11 @@ const DepositWithdrawalSummarySchema = z
 		analysis_basis: z
 			.enum(['deposit_withdrawal', 'trade_only'])
 			.describe('分析基準（deposit_withdrawal: 入出金込み, trade_only: 約定ベース）'),
+		// 新設フィールドは既存キーの後ろに置く。`z.object` の parse は**スキーマの宣言順**で
+		// オブジェクトを組み直すため（ハンドラ側の代入順ではなく）、ここが wire 上のキー順の単一ソース。
+		crypto_deposit_valuation: FlowValuationSchema.optional().describe(
+			'crypto_deposit_estimated_jpy の換算方式の内訳。暗号資産入庫が無い / 全件で価格を解決できなかった場合は undefined',
+		),
 	})
 	.optional()
 	.describe(
@@ -322,14 +385,20 @@ const PeriodDWSummarySchema = z
 		crypto_deposit_estimated_jpy: z
 			.number()
 			.optional()
-			.describe('期間中の暗号資産入庫の推定JPY評価額（現在価格で仮評価）'),
+			.describe('期間中の暗号資産入庫の推定JPY評価額（入庫日 confirmed_at の 1day open で換算）'),
 		crypto_withdrawal_count: z.number().int().describe('期間中の暗号資産出庫件数'),
 		crypto_withdrawal_estimated_jpy: z
 			.number()
 			.optional()
-			.describe('期間中の暗号資産出庫の推定JPY評価額（現在価格で仮評価）'),
+			.describe('期間中の暗号資産出庫の推定JPY評価額（出庫日 requested_at の 1day open で換算）'),
 		period_start: z.string().describe('期間の開始日時（ISO8601 JST）'),
 		period_end: z.string().describe('期間の終了日時（ISO8601 JST）'),
+		crypto_deposit_valuation: FlowValuationSchema.optional().describe(
+			'crypto_deposit_estimated_jpy の換算方式の内訳。該当なしのときは undefined',
+		),
+		crypto_withdrawal_valuation: FlowValuationSchema.optional().describe(
+			'crypto_withdrawal_estimated_jpy の換算方式の内訳。該当なしのときは undefined',
+		),
 	})
 	.optional()
 	.describe('期間内の入出金サマリー');
@@ -368,7 +437,7 @@ const PeriodPerformanceSchema = z
 			.number()
 			.nullable()
 			.describe(
-				'期間中の純入出金額（JPY、元本移動のみ）。正=純入金、負=純出金。出金手数料は含まない。暗号資産の入出庫は現在価格で仮評価。null=未計測（入出金履歴が無く「本当にゼロ」と区別できないため 0 を返さない。理由は flow_unavailable_reason）',
+				'期間中の純入出金額（JPY、元本移動のみ）。正=純入金、負=純出金。出金手数料は含まない。暗号資産の入出庫は入出庫日（入庫: confirmed_at / 出庫: requested_at）の 1day open で換算し、日次価格を解決できなかった分のみ現在価格で仮評価する（内訳は flow_valuation）。null=未計測（入出金履歴が無く「本当にゼロ」と区別できないため 0 を返さない。理由は flow_unavailable_reason）',
 			),
 		withdrawal_fee_jpy: z
 			.number()
@@ -402,8 +471,11 @@ const PeriodPerformanceSchema = z
 			.array(z.string())
 			.optional()
 			.describe(
-				'net_flow_jpy の算出時に現在価格を解決できなかった暗号資産シンボル一覧（小文字）。該当資産の入出庫は 0 円計上と等価で net_flow_jpy が過小になり、adjusted_change_jpy も同じ向きにずれる。全て解決できた場合は undefined。',
+				'net_flow_jpy の算出時に入出庫日価格・現在価格のいずれも解決できなかった暗号資産シンボル一覧（小文字）。該当資産の入出庫は 0 円計上と等価。ずれの向きは方向で逆になり、未計上が入庫なら net_flow_jpy は過小・出庫なら過大。adjusted_change_jpy = change_jpy - net_flow_jpy なので、そちらは常に net_flow_jpy と逆向きにずれる（入庫の取りこぼしで過大、出庫の取りこぼしで過小）。出庫では withdrawal_fee_jpy も同時に過小になる。全て解決できた場合は undefined。',
 			),
+		flow_valuation: FlowValuationSchema.optional().describe(
+			'net_flow_jpy に計上した暗号資産入出庫の換算方式の内訳。期間中に暗号資産の入出庫が無い / 全件で価格を解決できなかった場合は undefined（JPY のみの入出金は換算不要なので数えない）',
+		),
 	})
 	.optional();
 
@@ -517,11 +589,22 @@ export const AnalyzeMyPortfolioMetaSchema = z.object({
 	flowDataUnavailableReason: PortfolioFlowUnavailableReasonEnum.optional().describe(
 		'入出金履歴を損益計算に使えなかった理由。depositWithdrawalStatus とは別軸で、status=available でも一部チャネルの取得失敗・件数上限により出庫履歴が欠けていれば設定される（status は「どの分析セクションを出力したか」、本フィールドは「取得原価を信頼できるか」を表す）。include_deposit_withdrawal=false でも入出金履歴は損益計算のために取得されるため、同フラグ由来では設定されない。設定されている場合の影響: (1) holdings[].cost_basis / avg_buy_price / unrealized_pnl / unrealized_pnl_pct と total_cost_basis / total_unrealized_pnl / total_unrealized_pnl_pct が undefined、(2) *_performance の net_flow_jpy / withdrawal_fee_jpy / adjusted_change_jpy が null（flow_measured=false）、(3) *_equity_series と *_performance.start_value_jpy が入出金を巻き戻していないため、入出金があった期間は実態と乖離する。入出金履歴を計算に使えている場合と、include_pnl=false で損益出力自体が無い場合は undefined。',
 	),
+	flowValuationBasis: PortfolioFlowValuationBasisEnum.optional().describe(
+		'暗号資産入出庫を JPY 換算した方式（本レスポンスで換算した全件の集計）。deposit_date_price=全件を入出庫日の 1day open で換算（相場が動いても評価額は動かない）, current_price_fallback=全件を現在価格で仮評価, mixed=混在。暗号資産の入出庫が無い / 全件で価格を解決できなかった場合は undefined。',
+	),
+	flowValuationFallbackCount: z
+		.number()
+		.int()
+		.nonnegative()
+		.optional()
+		.describe(
+			'入出庫日の日次価格を解決できず現在価格で仮評価した入出庫の件数。1 件以上あると deposit_withdrawal_summary / *_dw_summary / *_performance.net_flow_jpy の該当分が相場と連動して動く。該当なしのときは undefined。',
+		),
 	warnings: z
 		.array(z.string())
 		.optional()
 		.describe(
-			'計算層の不完全性（価格を解決できず集計から落ちた入出庫など）。取得層の不完全性を表す各種 *FetchFailed / *Truncated フラグとは別系統で、summary 先頭にも別行で出力される。該当なしのときは undefined。',
+			'計算層の不完全性（価格を解決できず集計から落ちた入出庫、現在価格フォールバックでの仮評価など）。取得層の不完全性を表す各種 *FetchFailed / *Truncated フラグとは別系統で、summary 先頭にも別行で出力される。該当なしのときは undefined。',
 		),
 });
 

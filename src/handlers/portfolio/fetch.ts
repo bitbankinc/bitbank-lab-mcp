@@ -6,6 +6,7 @@
  */
 
 import { normalizeAssetCodes } from '../../../lib/asset-code.js';
+import { toYearKey } from '../../../lib/calendar.js';
 import { normalizePairCodes } from '../../../lib/pair-code.js';
 import { fetchTickerPricesMap } from '../../../lib/tickers.js';
 import analyzeIndicators from '../../../tools/analyze_indicators.js';
@@ -17,6 +18,7 @@ import { PORTFOLIO_CALENDAR_TZ, portfolioDayStartMs } from './calendar.js';
 import {
 	type CandlePriceData,
 	type DepositWithdrawalData,
+	type FlowValuationTarget,
 	type MarginAccountInfo,
 	type RawDeposit,
 	type RawMarginTrade,
@@ -406,6 +408,103 @@ export async function fetchCandlePriceData(
 
 	await Promise.all(promises);
 	return { boundaryPrices, dailyPrices };
+}
+
+// ── 入出庫日価格の追加取得 ──
+
+/**
+ * 入出庫日価格の追加取得で発行する年単位 chunk の上限。
+ *
+ * `getCandles` は tz 暦年 1 年ぶんの窓に対して UTC 年 chunk を 2 つ叩く（JST 年頭は UTC 前年）ため、
+ * 実 HTTP リクエスト数はこの 2 倍程度になる。長期口座（多資産 × 多年）で青天井にならないよう頭を止める。
+ * 上限を超えた組は取得せず、`resolveFlowPrice` の現在価格フォールバックに落ちて
+ * `FlowValuationBreakdown` の `current_price_fallback_count` に計上される（黙って消えない）。
+ */
+export const MAX_FLOW_PRICE_YEAR_CHUNKS = 12;
+
+/**
+ * 入出庫日（入庫: `confirmed_at` / 出庫: `requested_at`）の 1day open を解決するため、
+ * `fetchCandlePriceData` の 400 日窓に無い **(資産, 年) の組だけ**を年単位 chunk で追加取得し、
+ * 既存の日次価格にマージした Map を返す（追加取得が不要なら引数をそのまま返す。下記「戻り値の所有権」）。
+ *
+ * ## 400 日超のフォールバック規則（#57 (a)-2）
+ *
+ * 1. 直近 400 日窓（`fetchCandlePriceData`）に当日の始値があればそれを使う（追加取得しない）
+ * 2. 無ければ当該 (資産, 年) の 1day chunk を追加取得して解決を試みる
+ * 3. それでも取れない（取得失敗 / 上限超過 / 上場前）場合は本関数では何もせず、
+ *    `resolveFlowPrice` が現在価格にフォールバックする。混ぜたことは
+ *    `FlowValuationBreakdown` と summary / meta の警告で申告される
+ *
+ * ## 戻り値の所有権
+ *
+ * 追加取得が 1 件も要らなかった場合は**引数の `baseDailyPrices` インスタンスをそのまま返す**
+ * （無駄なコピーを避けるため）。呼び出し側は戻り値を常に自分専用のコピーとみなして
+ * 書き換えてはいけない——読み取り専用に扱うこと。
+ *
+ * ## 引数の Map を破壊しない理由
+ *
+ * 入力の `baseDailyPrices` は資産推移シリーズ（`buildEquitySeries`）と
+ * `equitySeriesQuality` の判定にも使われる。ここで古い年を混ぜ込むと
+ * 「直近 400 日窓が揃っているか」という品質判定の意味が変わってしまうため、
+ * 入出庫換算専用の別 Map として返す。
+ */
+export async function fetchFlowDatePrices(
+	baseDailyPrices: Map<string, Map<number, number>>,
+	targets: FlowValuationTarget[],
+): Promise<Map<string, Map<number, number>>> {
+	// 直近窓で解決できない (資産, 年) を洗い出す。同じ年に何件入出庫があっても chunk は 1 つ。
+	const missingYears = new Map<string, { asset: string; year: string }>();
+	for (const t of targets) {
+		if (t.asset === 'jpy') continue;
+		if (!Number.isFinite(t.atMs)) continue;
+		const dayMs = portfolioDayStartMs(t.atMs);
+		if (baseDailyPrices.get(t.asset)?.has(dayMs)) continue;
+		// 年も日次キーと同じ JST 暦で数える（`getCandles` に渡す date は anchorTz 解釈のため）。
+		const year = toYearKey(dayMs, PORTFOLIO_CALENDAR_TZ);
+		missingYears.set(`${t.asset}:${year}`, { asset: t.asset, year });
+	}
+	if (missingYears.size === 0) return baseDailyPrices;
+
+	// 上限で切るときは新しい年を優先する（直近の入出庫ほど残高・損益への寄与が大きく、
+	// 上場前で空振りする確率も低い）。同年内は資産名昇順で決定的に選ぶ。
+	const chunks = [...missingYears.values()].sort((a, b) =>
+		a.year === b.year ? a.asset.localeCompare(b.asset) : b.year.localeCompare(a.year),
+	);
+	const selected = chunks.slice(0, MAX_FLOW_PRICE_YEAR_CHUNKS);
+
+	const merged = new Map<string, Map<number, number>>();
+	for (const [asset, byDate] of baseDailyPrices) merged.set(asset, new Map(byDate));
+
+	await Promise.all(
+		selected.map(async ({ asset, year }) => {
+			try {
+				// 1day の年 chunk は最大 366 本。`fetchCandlePriceData` と同じ暦（JST）で足を切る。
+				const res = await getCandles(`${asset}_jpy`, '1day', year, 400, PORTFOLIO_CALENDAR_TZ);
+				if (!res?.ok) return;
+				const normalized = res.data?.normalized;
+				if (!Array.isArray(normalized) || normalized.length === 0) return;
+
+				let byDate = merged.get(asset);
+				if (!byDate) {
+					byDate = new Map<number, number>();
+					merged.set(asset, byDate);
+				}
+				for (const candle of normalized) {
+					const ts = candle.timestamp;
+					const open = candle.open;
+					if (ts == null || !Number.isFinite(ts) || !Number.isFinite(open) || open <= 0) continue;
+					// 直近窓の値を上書きしない（同じ 1day open なので値は一致するが、
+					// 取得経路によるブレを持ち込まないよう先に入っている方を優先する）。
+					const dayMs = portfolioDayStartMs(ts);
+					if (!byDate.has(dayMs)) byDate.set(dayMs, open);
+				}
+			} catch {
+				// Non-fatal: この (資産, 年) は現在価格フォールバックに落ちる
+			}
+		}),
+	);
+
+	return merged;
 }
 
 // ── テクニカル分析 ──
