@@ -85,21 +85,49 @@ function positionSideLabel(side: string): string {
 }
 
 /**
+ * 建玉数量・評価額がともにゼロの行か（表示スキップの判定）。
+ *
+ * 実口座では過去に建てて決済し終えたペアがゼロ建玉として残り続ける。数値化できない値
+ * （`Number()` が NaN になる想定外の応答）は「ゼロと断定できない」ので false を返し、
+ * 表示に倒す（抑制の誤爆で実建玉を消さないため）。
+ */
+function isZeroMarginPosition(p: { open_amount: string; product: string }): boolean {
+	return Number(p.open_amount) === 0 && Number(p.product) === 0;
+}
+
+/**
  * 信用建玉サマリを生成する。建玉なし時は空配列を返してハンドラ側で表示スキップ。
+ *
+ * ゼロ建玉（`open_amount == 0` かつ `product == 0`）は明細行に出さない。実口座では
+ * 決済済みペアのゼロ建玉が 10 行前後居座り、実建玉が埋もれる（#53 症状 7）。
+ * ただし**黙って消さず**、省略件数を集計行に併記する。
+ *
+ * 全建玉がゼロだった場合もセクション自体は出す（明細 0 行 + 集計行のみ）。ここで
+ * セクションごと消すと省略件数の申告先が無くなり、「建玉なし」と区別できなくなるため。
+ * `positions` が空（建玉そのものが無い）ときだけ空配列を返す。
+ *
+ * ロング / ショートの件数はゼロ建玉を除いた実建玉のみを数える（建玉が無いのに
+ * 「ロング 10件」と出ると実エクスポージャの誤読になる）。
  */
 function buildMarginPositionsBlock(info: MarginAccountInfo): string[] {
 	const positions = info.positions?.positions ?? [];
 	if (positions.length === 0) return [];
 
+	const openPositions = positions.filter((p) => !isZeroMarginPosition(p));
+	const zeroPositionCount = positions.length - openPositions.length;
+
 	const lines: string[] = [];
 	lines.push('信用建玉:');
-	for (const p of positions) {
+	for (const p of openPositions) {
 		const sideLabel = positionSideLabel(p.position_side);
 		lines.push(`  ${formatPair(p.pair)} ${sideLabel} ${p.open_amount} (評価額: ${formatPrice(Number(p.product))}円)`);
 	}
-	const longCount = positions.filter((p) => p.position_side === 'long').length;
-	const shortCount = positions.filter((p) => p.position_side === 'short').length;
+	const longCount = openPositions.filter((p) => p.position_side === 'long').length;
+	const shortCount = openPositions.filter((p) => p.position_side === 'short').length;
 	const aggregateParts: string[] = [`ロング ${longCount}件 / ショート ${shortCount}件`];
+	if (zeroPositionCount > 0) {
+		aggregateParts.push(`ゼロ建玉 ${zeroPositionCount}件省略`);
+	}
 
 	// 信用口座状態が取得できている場合、建玉含み損益（マージン口座全体集計）も併記する。
 	// 個別建玉に unrealized_pnl フィールドが無いため API 値（margin_position_profit_loss）を採用。
@@ -493,8 +521,19 @@ export default async function analyzeMyPortfolioHandler(args: {
 			};
 		});
 
-		// 売り切り銘柄の実現損益を集計（現在保有ゼロだが約定履歴がある通貨）
+		// ここまでの totalRealizedPnl は holdings[] に載る銘柄ぶんだけ。下の売り切り集計を足す前に
+		// 退避しておき、summary の内訳行はこの値を使う（spot_realized_pnl - closed の引き算で
+		// 出すと浮動小数の残差が表示に乗るため）。
+		const heldRealizedPnl = totalRealizedPnl;
+
+		// 売り切り銘柄の実現損益を集計（現在保有ゼロだが約定履歴がある通貨）。
+		// undefined = 集計自体を行っていない（include_pnl=false / 約定履歴なし）で、0 =「売り切りは
+		// あったが実現損益ゼロ / 売り切り銘柄なし」と区別する。
+		let closedPositionRealizedPnl: number | undefined;
+		let closedPositionAssetCount: number | undefined;
 		if (include_pnl && allTrades.length > 0) {
+			let closedSum = 0;
+			let closedCount = 0;
 			const heldAssets = new Set(nonZeroAssets.map((a) => a.asset));
 			const tradedAssets = new Set(allTrades.map((t) => t.pair.replace('_jpy', '')).filter((a) => a !== 'jpy'));
 			for (const asset of tradedAssets) {
@@ -502,9 +541,13 @@ export default async function analyzeMyPortfolioHandler(args: {
 					const pnl = calcPnl(allTrades, asset, dwData?.withdrawals, depositCost);
 					if (pnl.realized_pnl !== 0) {
 						totalRealizedPnl += pnl.realized_pnl;
+						closedSum += pnl.realized_pnl;
+						closedCount++;
 					}
 				}
 			}
+			closedPositionRealizedPnl = closedSum;
+			closedPositionAssetCount = closedCount;
 		}
 
 		// 6.5. 年初来・月初来の実現損益を算出（JST 基準、現物単独）
@@ -1001,20 +1044,43 @@ export default async function analyzeMyPortfolioHandler(args: {
 			lines.push('');
 		}
 
-		// 実現損益（現物単独）と口座全体 PnL（現物 + 信用決済損益 - 利息 - 手数料）
+		// 実現損益（現物単独）と口座全体 PnL（現物 + 信用決済損益 - 利息 - 手数料）。
+		// ラベルにスコープ（期間 / 対象銘柄）を書く: 同じ出力に全履歴（account_pnl）と
+		// 年初来 / 月初来（yearly_account_pnl / monthly_account_pnl）が併存し、text しか読まない
+		// LLM には「Realized PnL (Spot)」だけでどれなのか判別できないため（#53 症状 5）。
 		if (accountPnl != null) {
 			const spotSign = accountPnl.spot_realized_pnl >= 0 ? '+' : '';
-			lines.push(`Realized PnL (Spot): ${spotSign}${formatPriceJPY(accountPnl.spot_realized_pnl)}`);
+			lines.push(
+				`Realized PnL (Spot, 全履歴・売り切り銘柄含む): ${spotSign}${formatPriceJPY(accountPnl.spot_realized_pnl)}`,
+			);
+			// 内訳を出して holdings[].realized_pnl の合計との差分（= 売り切り銘柄ぶん）を追えるようにする。
+			// 集計を行っていない構成（約定履歴なし）では差分そのものが定義されないので出さない。
+			if (closedPositionRealizedPnl != null) {
+				const heldSign = heldRealizedPnl >= 0 ? '+' : '';
+				const closedPart =
+					closedPositionAssetCount != null && closedPositionAssetCount > 0
+						? `売り切り銘柄 ${closedPositionAssetCount}銘柄 ${closedPositionRealizedPnl >= 0 ? '+' : ''}${formatPriceJPY(closedPositionRealizedPnl)}`
+						: '売り切り銘柄なし（0円）';
+				lines.push(
+					`  内訳: 現在保有銘柄（holdings[].realized_pnl の合計）${heldSign}${formatPriceJPY(heldRealizedPnl)} / ${closedPart}`,
+				);
+			}
 			const totalSign = accountPnl.total >= 0 ? '+' : '';
 			const hasMargin =
 				accountPnl.margin_realized_pnl !== 0 || accountPnl.margin_interest !== 0 || accountPnl.margin_fee !== 0;
 			if (hasMargin) {
 				const mSign = accountPnl.margin_realized_pnl >= 0 ? '+' : '';
 				lines.push(
-					`Account PnL: ${totalSign}${formatPriceJPY(accountPnl.total)} (Spot: ${spotSign}${formatPriceJPY(accountPnl.spot_realized_pnl)} / Margin: ${mSign}${formatPriceJPY(accountPnl.margin_realized_pnl)} / Interest: -${formatPriceJPY(accountPnl.margin_interest)} / Fee: -${formatPriceJPY(accountPnl.margin_fee)})`,
+					`Account PnL (全履歴): ${totalSign}${formatPriceJPY(accountPnl.total)} (Spot: ${spotSign}${formatPriceJPY(accountPnl.spot_realized_pnl)} / Margin: ${mSign}${formatPriceJPY(accountPnl.margin_realized_pnl)} / Interest: -${formatPriceJPY(accountPnl.margin_interest)} / Fee: -${formatPriceJPY(accountPnl.margin_fee)})`,
 				);
 			} else {
-				lines.push(`Account PnL: ${totalSign}${formatPriceJPY(accountPnl.total)}`);
+				lines.push(`Account PnL (全履歴): ${totalSign}${formatPriceJPY(accountPnl.total)}`);
+			}
+			// 年初来 / 月初来は data 側にしか出ないので、全履歴の値と取り違えられないよう所在を示す。
+			if (yearlyAccountPnl != null || monthlyAccountPnl != null) {
+				lines.push(
+					'※ 上の Realized PnL / Account PnL は全履歴（口座開設来）の集計です。年初来 / 月初来は yearly_account_pnl / monthly_account_pnl（現物単独は yearly_realized_pnl / monthly_realized_pnl）を参照してください',
+				);
 			}
 		}
 
@@ -1151,6 +1217,8 @@ export default async function analyzeMyPortfolioHandler(args: {
 			total_unrealized_pnl_pct: totalUnrealizedPnlPct,
 			total_cost_basis_unavailable_reason: flowUnavailableReason,
 			total_realized_pnl: totalRealizedPnl !== 0 ? totalRealizedPnl : undefined,
+			closed_position_realized_pnl: closedPositionRealizedPnl,
+			closed_position_asset_count: closedPositionAssetCount,
 			daily_performance: dailyPerformance,
 			yearly_performance: yearlyPerformance,
 			monthly_performance: monthlyPerformance,
