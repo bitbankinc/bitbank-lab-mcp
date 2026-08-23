@@ -2616,6 +2616,149 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 	});
 
 	/**
+	 * summary の件数は「入出庫の総件数」ではなく**評価できた件数**で書く。
+	 *
+	 * `crypto_*_count` は総件数で、`crypto_*_estimated_jpy` に載るのは価格を解決できた分だけ
+	 * （解決できなかった分は黙って 0 円計上せず集計から落ちる）。総件数で説明すると、
+	 * 純投入額に反映されていない出庫まで「差し引いた」と書くことになる。
+	 */
+	describe('価格を一部しか解決できない出庫の申告', () => {
+		/** btc（価格あり）と mona（tickers にも candle にも無い）の出庫を持つ口座で走らせる */
+		async function runWithPartiallyPricedWithdrawals() {
+			globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+				const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+				const marginResponse = maybeMarginAccountResponse(urlStr);
+				if (marginResponse) return marginResponse;
+				if (urlStr.includes('tickers_jpy')) {
+					// btc だけ現在価格を持つ = mona は日次・現在価格のどちらでも解決できない
+					return new Response(JSON.stringify(tickersWithBtc(15_500_000)), { status: 200 });
+				}
+				if (urlStr.includes('candlestick')) {
+					const payload = urlStr.includes('mona')
+						? { success: 1, data: { candlestick: [{ type: '1day', ohlcv: [] }] } }
+						: candles1day([{ tsMs: Date.UTC(2026, 4, 16), open: FLOW_DAY_OPEN }]);
+					return new Response(JSON.stringify(payload), { status: 200 });
+				}
+				if (urlStr.includes('/v1/user/assets')) {
+					return new Response(JSON.stringify(mockBitbankSuccess(rawAssetsResponse)), { status: 200 });
+				}
+				if (urlStr.includes('trade_history')) {
+					const payload = urlStr.includes('type=margin') ? { trades: [] } : rawTradeHistoryResponse;
+					return new Response(JSON.stringify(mockBitbankSuccess(payload)), { status: 200 });
+				}
+				if (urlStr.includes('deposit_history')) {
+					return new Response(
+						JSON.stringify(
+							mockBitbankSuccess({
+								deposits: [
+									{
+										uuid: 'dep-jpy',
+										asset: 'jpy',
+										amount: '5000000',
+										status: 'DONE',
+										found_at: recentFlowMs,
+										confirmed_at: recentFlowMs,
+									},
+								],
+							}),
+						),
+						{ status: 200 },
+					);
+				}
+				if (urlStr.includes('withdrawal_history')) {
+					return new Response(
+						JSON.stringify(
+							mockBitbankSuccess({
+								withdrawals: [
+									{ uuid: 'wd-btc', asset: 'btc', amount: '0.2', status: 'DONE', requested_at: recentFlowMs },
+									{ uuid: 'wd-mona', asset: 'mona', amount: '100', status: 'DONE', requested_at: recentFlowMs },
+								],
+							}),
+						),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+			}) as unknown as typeof fetch;
+
+			const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+			return handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: true });
+		}
+
+		it('評価できた件数で内訳と元本回収の注記を書き、未評価分は別行で申告する', async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(fixedNowMs);
+
+			const result = await runWithPartiallyPricedWithdrawals();
+
+			assertOk(result);
+			const dw = result.data.deposit_withdrawal_summary;
+			// 総件数は 2 件、金額に載っているのは btc の 1 件だけ
+			expect(dw?.crypto_withdrawal_count).toBe(2);
+			expect(dw?.crypto_withdrawal_estimated_jpy).toBe(Math.round(0.2 * FLOW_DAY_OPEN));
+			expect(dw?.crypto_withdrawal_valuation).toEqual({
+				deposit_date_price_count: 1,
+				current_price_fallback_count: 0,
+				basis: 'deposit_date_price',
+			});
+			expect(dw?.net_jpy_invested).toBe(5_000_000 - Math.round(0.2 * FLOW_DAY_OPEN));
+
+			// 内訳行・元本回収の注記は評価できた 1 件で書く（2 件と書くと金額と食い違う）
+			expect(result.summary).toContain('暗号資産出庫の評価: -1,600,000円（1件、入出庫日の始値ベース）');
+			expect(result.summary).toContain(
+				'※ 暗号資産出庫 1件は JPY 出金と同じ「元本の回収」として純投入額から差し引いています',
+			);
+			expect(result.summary).not.toContain('暗号資産出庫 2件は JPY 出金と同じ');
+			// 落ちた 1 件は黙って消さず別行で申告する
+			expect(result.summary).toContain('※ 暗号資産出庫 1件は評価額を算出できず純投入額に反映されていません');
+		});
+	});
+
+	/**
+	 * 純投入額が 0 以下でリターンを出せないのは暗号資産出庫のせいとは限らない。
+	 * JPY 出金だけで入金と相殺されている口座も同じ状態になるので、理由の提示は
+	 * 出庫の有無に依存させず、出庫が効いているときだけ内訳を添える。
+	 */
+	it('JPY 入出金だけで純投入額が 0 になった口座にも算出不可の理由を出す', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+
+		setupFetchMock({
+			tickers: tickersWithBtc(15_500_000),
+			deposits: {
+				deposits: [
+					{
+						uuid: 'dep-jpy',
+						asset: 'jpy',
+						amount: '1000000',
+						status: 'DONE',
+						found_at: recentFlowMs,
+						confirmed_at: recentFlowMs,
+					},
+				],
+			},
+			withdrawals: {
+				withdrawals: [
+					{ uuid: 'wd-jpy', asset: 'jpy', amount: '1000000', fee: '550', status: 'DONE', requested_at: recentFlowMs },
+				],
+			},
+		});
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		expect(result.data.deposit_withdrawal_summary?.net_jpy_invested).toBe(0);
+		expect(result.data.deposit_withdrawal_summary?.account_return_pct).toBeUndefined();
+		expect(result.summary).toContain('口座全体リターン: 算出不可');
+		// 暗号資産出庫は 1 件も無いので、出庫由来の内訳は添えない
+		expect(result.summary).not.toContain('元本の回収');
+	});
+
+	/**
 	 * 新設フィールドは既存キーの後ろに出す（既存消費者の JSON を頭から崩さない）。
 	 *
 	 * **キー順を決めるのはハンドラの代入順ではなく Zod スキーマの宣言順**——`z.object` の

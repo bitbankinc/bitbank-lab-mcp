@@ -60,6 +60,7 @@ import type {
 	DepositWithdrawalSummary,
 	EquityPoint,
 	FlowPricing,
+	FlowValuationBreakdown,
 	MarginAccountInfo,
 	PeriodAccountPnl,
 	PeriodDWSummary,
@@ -1022,6 +1023,18 @@ export default async function analyzeMyPortfolioHandler(args: {
 		}
 
 		// 入出金ベースの口座全体リターン（Phase 4）
+		//
+		// `crypto_*_count` は「入出庫の総件数」で、`crypto_*_estimated_jpy` に実際に載っているのは
+		// **価格を解決できた件数**だけ（解決できなかった分は黙って 0 円計上せず集計から落としている）。
+		// 一部だけ解決できた口座で総件数を使うと、金額と件数が食い違う説明になる。
+		// `FlowValuationBreakdown` の 2 つの件数の和が「評価できた件数」なので、そこから逆算する。
+		const valuedCounts = (breakdown: FlowValuationBreakdown | undefined) =>
+			(breakdown?.deposit_date_price_count ?? 0) + (breakdown?.current_price_fallback_count ?? 0);
+		const valuedDepositCount = valuedCounts(dwSummary?.crypto_deposit_valuation);
+		const valuedWithdrawalCount = valuedCounts(dwSummary?.crypto_withdrawal_valuation);
+		const unvaluedDepositCount = (dwSummary?.crypto_deposit_count ?? 0) - valuedDepositCount;
+		const unvaluedWithdrawalCount = (dwSummary?.crypto_withdrawal_count ?? 0) - valuedWithdrawalCount;
+
 		if (dwSummary && dwSummary.account_return_jpy != null) {
 			const sign = dwSummary.account_return_jpy >= 0 ? '+' : '';
 			const approxLabel = dwSummary.is_complete ? '' : '（概算）';
@@ -1037,12 +1050,12 @@ export default async function analyzeMyPortfolioHandler(args: {
 			lines.push(`  JPY純入金: ${formatPriceJPY(Math.round(netJpyDeposit))}`);
 			if (dwSummary.crypto_deposit_estimated_jpy) {
 				lines.push(
-					`  暗号資産入庫の評価: ${formatPriceJPY(dwSummary.crypto_deposit_estimated_jpy)}（${dwSummary.crypto_deposit_count}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_deposit_valuation?.basis ?? 'current_price_fallback']}）`,
+					`  暗号資産入庫の評価: ${formatPriceJPY(dwSummary.crypto_deposit_estimated_jpy)}（${valuedDepositCount}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_deposit_valuation?.basis ?? 'current_price_fallback']}）`,
 				);
 			}
 			if (dwSummary.crypto_withdrawal_estimated_jpy) {
 				lines.push(
-					`  暗号資産出庫の評価: -${formatPriceJPY(dwSummary.crypto_withdrawal_estimated_jpy)}（${dwSummary.crypto_withdrawal_count}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_withdrawal_valuation?.basis ?? 'current_price_fallback']}）`,
+					`  暗号資産出庫の評価: -${formatPriceJPY(dwSummary.crypto_withdrawal_estimated_jpy)}（${valuedWithdrawalCount}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_withdrawal_valuation?.basis ?? 'current_price_fallback']}）`,
 				);
 			}
 			// 内訳の式は実際に載っている項だけを並べる（0 円の項を書くと読み手が総額を追えない）。
@@ -1056,8 +1069,8 @@ export default async function analyzeMyPortfolioHandler(args: {
 			if (!dwSummary.is_complete) {
 				lines.push('  ※ 入出金履歴が多く全件取得できなかったため、概算値です');
 			}
-			if (dwSummary.crypto_deposit_count > 0 && !dwSummary.crypto_deposit_estimated_jpy) {
-				lines.push(`  ※ 暗号資産入庫 ${dwSummary.crypto_deposit_count}件の価格が取得できず評価額に含まれていません`);
+			if (unvaluedDepositCount > 0) {
+				lines.push(`  ※ 暗号資産入庫 ${unvaluedDepositCount}件の価格が取得できず評価額に含まれていません`);
 			}
 			const depositFallbackCount = dwSummary.crypto_deposit_valuation?.current_price_fallback_count ?? 0;
 			if (depositFallbackCount > 0) {
@@ -1065,10 +1078,8 @@ export default async function analyzeMyPortfolioHandler(args: {
 					`  ※ うち ${depositFallbackCount}件は入庫日の価格を取得できず現在価格で仮評価（この分だけ相場変動で評価額が動きます）`,
 				);
 			}
-			if (dwSummary.crypto_withdrawal_count > 0 && !dwSummary.crypto_withdrawal_estimated_jpy) {
-				lines.push(
-					`  ※ 暗号資産出庫 ${dwSummary.crypto_withdrawal_count}件の価格が取得できず純投入額に反映されていません`,
-				);
+			if (unvaluedWithdrawalCount > 0) {
+				lines.push(`  ※ 暗号資産出庫 ${unvaluedWithdrawalCount}件は評価額を算出できず純投入額に反映されていません`);
 			}
 			const withdrawalFallbackCount = dwSummary.crypto_withdrawal_valuation?.current_price_fallback_count ?? 0;
 			if (withdrawalFallbackCount > 0) {
@@ -1076,17 +1087,23 @@ export default async function analyzeMyPortfolioHandler(args: {
 					`  ※ うち ${withdrawalFallbackCount}件は出庫日の価格を取得できず現在価格で仮評価（この分だけ相場変動で評価額が動きます）`,
 				);
 			}
-			if (dwSummary.crypto_withdrawal_count > 0) {
+			// 差し引いたと言えるのは評価できた件数だけ。総件数で書くと、価格を解決できず
+			// 純投入額に載っていない出庫まで「差し引いた」と説明することになる。
+			if (valuedWithdrawalCount > 0) {
 				lines.push(
-					`  ※ 暗号資産出庫 ${dwSummary.crypto_withdrawal_count}件は JPY 出金と同じ「元本の回収」として純投入額から差し引いています（外部ウォレットへ移して保有を続けている場合でも、口座外の値動きは測定対象外です）`,
+					`  ※ 暗号資産出庫 ${valuedWithdrawalCount}件は JPY 出金と同じ「元本の回収」として純投入額から差し引いています（外部ウォレットへ移して保有を続けている場合でも、口座外の値動きは測定対象外です）`,
 				);
 			}
-		} else if (dwSummary?.crypto_withdrawal_estimated_jpy) {
-			// 出庫の減算で純投入額が 0 以下になり、口座全体リターンを出せなかったケース。
-			// 黙ってブロックごと消すと「リターンが計算されたのに表示されていない」と読まれるため、
-			// 出せない理由を 1 行で明示する（`account_return_*` が undefined になる既存分岐）。
+		} else if (dwSummary && dwSummary.net_jpy_invested <= 0) {
+			// 純投入額が 0 以下でリターン率を定義できないケース（`account_return_*` が undefined に
+			// なる既存分岐）。黙ってブロックごと消すと「リターンが計算されたのに表示されていない」と
+			// 読まれるため、出せない理由を 1 行で明示する。原因は暗号資産出庫の減算とは限らない
+			// （JPY 出金だけで入金と相殺されている口座も同じ状態になる）ので、出庫が効いている
+			// ときだけその内訳を添える。
+			const withdrawalCause =
+				valuedWithdrawalCount > 0 ? `暗号資産出庫 ${valuedWithdrawalCount}件を元本の回収として差し引いた結果、` : '';
 			lines.push(
-				`口座全体リターン: 算出不可（暗号資産出庫 ${dwSummary.crypto_withdrawal_count}件を元本の回収として差し引いた結果、純投入額が ${formatPriceJPY(dwSummary.net_jpy_invested)} と 0 以下になりました。引き出しが投入を上回る口座ではリターン率を定義できません）`,
+				`口座全体リターン: 算出不可（${withdrawalCause}純投入額が ${formatPriceJPY(dwSummary.net_jpy_invested)} と 0 以下になりました。引き出しが投入を上回る口座ではリターン率を定義できません）`,
 			);
 		}
 
