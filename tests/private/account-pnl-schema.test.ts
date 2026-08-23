@@ -33,6 +33,8 @@ const ALL_HISTORY_KEYS = [
 	'total',
 	'margin_interest_cost',
 	'margin_fee_cost',
+	// #80 で追加
+	'spot_realized_pnl_unavailable_reason',
 ];
 
 const PERIOD_KEYS = [
@@ -45,6 +47,8 @@ const PERIOD_KEYS = [
 	'period_end',
 	'margin_interest_cost',
 	'margin_fee_cost',
+	// #80 で追加
+	'spot_realized_pnl_unavailable_reason',
 ];
 
 describe('AccountPnl スキーマ（#72: 信用コスト項の命名）', () => {

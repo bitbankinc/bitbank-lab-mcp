@@ -77,6 +77,8 @@ describe('入庫の原価算入件数 — キー順', () => {
 			'period_end',
 			'priced_deposit_count',
 			'unpriced_deposit_count',
+			// #80 で追加。以降も新設キーは末尾に足す
+			'realized_pnl_unavailable_reason',
 		]);
 	});
 });

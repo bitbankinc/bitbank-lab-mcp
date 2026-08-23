@@ -11,6 +11,7 @@ import type {
 	PortfolioChangePctUnavailableReason,
 	PortfolioFlowUnavailableReason,
 	PortfolioFlowValuationBasis,
+	PortfolioUnresolvedDepositReason,
 } from '../../private/schemas.js';
 
 // ── Private API レスポンス型 ──
@@ -153,6 +154,15 @@ export interface PeriodRealizedPnl {
 	realized_pnl: number;
 	/** 期間内の売却約定件数 */
 	sell_count: number;
+	/**
+	 * 期間内に売却があった銘柄（資産コード小文字、重複なし）。
+	 *
+	 * 抑止判定専用の内部フィールドで wire には出さない。`realized_pnl` は全銘柄を単一
+	 * タイムラインで処理した合算値なので、**どの銘柄の原価が欠けると本値が壊れるか**を
+	 * ここでしか判定できない。期間内に売却が無い銘柄の原価が欠けても本値は動かないため、
+	 * これを使って抑止範囲を必要最小限に絞る（#80）。
+	 */
+	sold_assets: string[];
 	/** 期間の開始日時（ISO8601 JST） */
 	period_start: string;
 	/** 期間の終了日時（ISO8601 JST） = 取得時点 */
@@ -184,8 +194,12 @@ export interface PeriodRealizedPnl {
  * クライアントに黙って符号反転が届くため。
  */
 export interface AccountPnl {
-	/** 現物の実現損益（JPY） */
-	spot_realized_pnl: number;
+	/**
+	 * 現物の実現損益（JPY）。
+	 * 入庫日価格の取得失敗・打ち切りで銘柄を抑止した実行では `undefined`
+	 * （理由は `spot_realized_pnl_unavailable_reason`）。
+	 */
+	spot_realized_pnl: number | undefined;
 	/** 信用の決済済み損益合計（JPY、グロス: 利息・手数料控除前） */
 	margin_realized_pnl: number;
 	/**
@@ -200,8 +214,11 @@ export interface AccountPnl {
 	 * @deprecated `margin_fee_cost` を使うこと（#72: 名前から符号規約が読み取れない）。
 	 */
 	margin_fee: number;
-	/** 口座全体 PnL = spot_realized_pnl + margin_realized_pnl - margin_interest_cost - margin_fee_cost */
-	total: number;
+	/**
+	 * 口座全体 PnL = spot_realized_pnl + margin_realized_pnl - margin_interest_cost - margin_fee_cost。
+	 * `spot_realized_pnl` が抑止された実行では `undefined`（信用側だけの合計を口座全体 PnL として出さない）。
+	 */
+	total: number | undefined;
 	/**
 	 * 信用の支払利息合計（JPY）。**コスト = 正値**で保持し、`total` では**減算**される。
 	 * 素直に足し込むと符号が反転するので、`total` を自前で組み直す場合は必ず引くこと。
@@ -212,6 +229,11 @@ export interface AccountPnl {
 	 * **コスト = 正値**で保持し、`total` では**減算**される。
 	 */
 	margin_fee_cost: number;
+	/**
+	 * `spot_realized_pnl` / `total` を確定値として出せなかった理由（#80）。
+	 * 立っているときその 2 つは `undefined`、信用側の 4 フィールドはそのまま出る。
+	 */
+	spot_realized_pnl_unavailable_reason: PortfolioUnresolvedDepositReason | undefined;
 }
 
 export interface PeriodAccountPnl extends AccountPnl {

@@ -29,6 +29,7 @@ import {
 	calcPeriodRealizedPnl,
 	calcPnl,
 	collectFlowValuationTargets,
+	dominantUnresolvedDepositReason,
 	flowUnavailableReasonFor,
 	getJstPeriodBoundaries,
 	PERFORMANCE_NOTE,
@@ -40,6 +41,7 @@ import {
 	resolveDepositWithdrawalStatus,
 	resolveFlowPrice,
 	summarizeFlowValuation,
+	unresolvedDepositReasonsByAsset,
 } from '../../../src/handlers/portfolio/calc.js';
 import { PORTFOLIO_CALENDAR_TZ, portfolioDayStartMs } from '../../../src/handlers/portfolio/calendar.js';
 import type {
@@ -572,6 +574,40 @@ describe('calcPeriodRealizedPnl — 入庫の原価算入', () => {
 	});
 });
 
+describe('unresolvedDepositReasonsByAsset / dominantUnresolvedDepositReason（#80）', () => {
+	it('取りこぼした銘柄だけに理由コードが付く（0 件の銘柄は載らない）', () => {
+		const reasons = unresolvedDepositReasonsByAsset(new Map([['btc', 2]]), new Map([['eth', 1]]));
+		expect(reasons.get('btc')).toBe('deposit_price_chunk_truncated');
+		expect(reasons.get('eth')).toBe('deposit_price_fetch_failed');
+		expect(reasons.size).toBe(2);
+	});
+
+	it('件数 0 の銘柄は抑止対象にしない', () => {
+		expect(unresolvedDepositReasonsByAsset(new Map([['btc', 0]]), new Map([['eth', 0]])).size).toBe(0);
+	});
+
+	it('同じ銘柄が両方に載ったら取得失敗を採る（再現性が無い方が重い）', () => {
+		const reasons = unresolvedDepositReasonsByAsset(new Map([['eth', 1]]), new Map([['eth', 1]]));
+		expect(reasons.get('eth')).toBe('deposit_price_fetch_failed');
+	});
+
+	it('入力が空なら空（取りこぼしゼロで抑止も起きない）', () => {
+		expect(unresolvedDepositReasonsByAsset(new Map(), new Map()).size).toBe(0);
+	});
+
+	it('合計値の理由は取得失敗が 1 銘柄でもあればそれを採る', () => {
+		expect(dominantUnresolvedDepositReason([])).toBeUndefined();
+		expect(dominantUnresolvedDepositReason(['deposit_price_chunk_truncated'])).toBe('deposit_price_chunk_truncated');
+		expect(dominantUnresolvedDepositReason(['deposit_price_chunk_truncated', 'deposit_price_fetch_failed'])).toBe(
+			'deposit_price_fetch_failed',
+		);
+		// 並び順に依存しない
+		expect(dominantUnresolvedDepositReason(['deposit_price_fetch_failed', 'deposit_price_chunk_truncated'])).toBe(
+			'deposit_price_fetch_failed',
+		);
+	});
+});
+
 describe('qtyMismatchReasonFor', () => {
 	function makeDw(overrides: Partial<DepositWithdrawalData> = {}): DepositWithdrawalData {
 		return { deposits: [], withdrawals: [], warnings: [], allFailed: false, isComplete: true, ...overrides };
@@ -613,6 +649,45 @@ describe('qtyMismatchReasonFor', () => {
 	it('手掛かりなし（dw null / 空履歴）→ unknown', () => {
 		expect(qtyMismatchReasonFor(null, false, 0)).toBe('unknown');
 		expect(qtyMismatchReasonFor(makeDw(), false, 0)).toBe('unknown');
+	});
+});
+
+describe('calcPeriodRealizedPnl — 期間内に売却した銘柄（#80）', () => {
+	/**
+	 * `realized_pnl` は全銘柄を単一タイムラインで合算した値なので、原価が欠けた銘柄が
+	 * **その期間に売却しているか**でしか壊れるかどうかを判定できない。抑止範囲を
+	 * 必要最小限に絞るための情報なので、期間内の売りだけを拾うことを固定する。
+	 */
+	it('期間内に売った銘柄だけを返す（期間外の売り・買い・入出庫は含めない）', () => {
+		const trades: RawTrade[] = [
+			// 期間外の売り（btc）
+			makeTrade({ trade_id: 1, executed_at: 100, side: 'buy', amount: '2', price: '10000000' }),
+			makeTrade({ trade_id: 2, executed_at: 200, side: 'sell', amount: '1', price: '11000000' }),
+			// 期間内の売り（eth）
+			makeTrade({ trade_id: 3, pair: 'eth_jpy', executed_at: 300, side: 'buy', amount: '2', price: '400000' }),
+			makeTrade({ trade_id: 4, pair: 'eth_jpy', executed_at: 1500, side: 'sell', amount: '1', price: '500000' }),
+			// 期間内だが買いだけの銘柄（xrp）
+			makeTrade({ trade_id: 5, pair: 'xrp_jpy', executed_at: 1600, side: 'buy', amount: '100', price: '80' }),
+		];
+		const result = calcPeriodRealizedPnl(trades, 1000, '2024-01-01T00:00:00+09:00', '2024-12-31T23:59:59+09:00');
+		expect(result.sold_assets).toEqual(['eth']);
+		expect(result.sell_count).toBe(1);
+	});
+
+	it('同じ銘柄を期間内に複数回売っても 1 回だけ載る', () => {
+		const trades: RawTrade[] = [
+			makeTrade({ trade_id: 1, executed_at: 100, side: 'buy', amount: '3', price: '10000000' }),
+			makeTrade({ trade_id: 2, executed_at: 1500, side: 'sell', amount: '1', price: '11000000' }),
+			makeTrade({ trade_id: 3, executed_at: 1600, side: 'sell', amount: '1', price: '12000000' }),
+		];
+		const result = calcPeriodRealizedPnl(trades, 1000, '2024-01-01T00:00:00+09:00', '2024-12-31T23:59:59+09:00');
+		expect(result.sold_assets).toEqual(['btc']);
+		expect(result.sell_count).toBe(2);
+	});
+
+	it('約定が 1 件も無ければ空配列', () => {
+		const result = calcPeriodRealizedPnl([], 1000, '2024-01-01T00:00:00+09:00', '2024-12-31T23:59:59+09:00');
+		expect(result.sold_assets).toEqual([]);
 	});
 });
 
@@ -1214,6 +1289,48 @@ describe('buildAccountPnl', () => {
 		expect(
 			result.spot_realized_pnl + result.margin_realized_pnl + result.margin_interest_cost + result.margin_fee_cost,
 		).toBe(6150);
+	});
+});
+
+describe('buildAccountPnl — 現物側の抑止（#80）', () => {
+	const marginPnl = { margin_realized_pnl: 500, margin_interest_cost: 100, margin_fee_cost: 50 };
+
+	it('spot が undefined なら total も出さず理由コードを載せる', () => {
+		const result = buildAccountPnl(undefined, marginPnl, 'deposit_price_fetch_failed');
+		expect(result.spot_realized_pnl).toBeUndefined();
+		// 信用だけの合計を口座全体 PnL として出さない（現物ゼロ円と区別できなくなるため）
+		expect(result.total).toBeUndefined();
+		expect(result.spot_realized_pnl_unavailable_reason).toBe('deposit_price_fetch_failed');
+		// 信用側は現物と独立に確定するのでそのまま出す
+		expect(result.margin_realized_pnl).toBe(500);
+		expect(result.margin_interest_cost).toBe(100);
+		expect(result.margin_fee_cost).toBe(50);
+	});
+
+	it('spot が 0 円のときは抑止と区別して確定値を出す', () => {
+		const result = buildAccountPnl(0, marginPnl, 'deposit_price_fetch_failed');
+		expect(result.spot_realized_pnl).toBe(0);
+		expect(result.total).toBe(350);
+		expect(result.spot_realized_pnl_unavailable_reason).toBeUndefined();
+	});
+
+	it('抑止していなければ理由コードは載らない', () => {
+		expect(buildAccountPnl(1000, marginPnl).spot_realized_pnl_unavailable_reason).toBeUndefined();
+	});
+
+	it('期間版も同じ規約で抑止する（期間の境界は残す）', () => {
+		const result = buildPeriodAccountPnl(
+			undefined,
+			marginPnl,
+			'2026-01-01T00:00:00+09:00',
+			'2026-08-23T00:00:00+09:00',
+			'deposit_price_chunk_truncated',
+		);
+		expect(result.spot_realized_pnl).toBeUndefined();
+		expect(result.total).toBeUndefined();
+		expect(result.spot_realized_pnl_unavailable_reason).toBe('deposit_price_chunk_truncated');
+		expect(result.period_start).toBe('2026-01-01T00:00:00+09:00');
+		expect(result.period_end).toBe('2026-08-23T00:00:00+09:00');
 	});
 });
 

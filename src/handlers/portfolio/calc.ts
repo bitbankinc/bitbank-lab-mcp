@@ -12,6 +12,7 @@ import type {
 	PortfolioChangePctUnavailableReason,
 	PortfolioFlowUnavailableReason,
 	PortfolioQtyMismatchReason,
+	PortfolioUnresolvedDepositReason,
 } from '../../private/schemas.js';
 import { PORTFOLIO_CALENDAR_TZ, portfolioDayStartMs } from './calendar.js';
 import type {
@@ -295,6 +296,54 @@ export function qtyMismatchReasonFor(
 	return 'unknown';
 }
 
+// ── 入庫日価格を解決できなかった銘柄の抑止（#80） ──
+
+/**
+ * 「取りに行けば解決できたはず」の入庫を抱えた銘柄と、その理由コードを返す。
+ *
+ * 入力は `fetchFlowDatePrices` が返す 2 つの資産別内訳
+ * （`truncatedByChunkLimit.depositsByAsset` / `chunkFetchFailed.depositsByAsset`）。
+ * 両方に載っている銘柄は**取得失敗を優先**する: 上限切り落としは決定的なのに対し
+ * 取得失敗は実行ごとに結果が変わるので、読み手にとってより重い性質の方を申告する。
+ *
+ * 恒久的に解決できない未算入（上場前・当日足の欠損）はどちらの内訳にも載らないため、
+ * ここには現れない。再実行しても変わらない不完全さで抑止すると当該銘柄の原価が
+ * 永久に出せなくなるので、そちらは従来どおり値を出して件数で申告する（#57 / #77）。
+ */
+export function unresolvedDepositReasonsByAsset(
+	truncatedDepositsByAsset: ReadonlyMap<string, number>,
+	failedDepositsByAsset: ReadonlyMap<string, number>,
+): Map<string, PortfolioUnresolvedDepositReason> {
+	const reasons = new Map<string, PortfolioUnresolvedDepositReason>();
+	for (const [asset, count] of truncatedDepositsByAsset) {
+		if (count > 0) reasons.set(asset, 'deposit_price_chunk_truncated');
+	}
+	// 取得失敗を後に置いて上書きする（上の doc のとおり取得失敗が優先）。
+	for (const [asset, count] of failedDepositsByAsset) {
+		if (count > 0) reasons.set(asset, 'deposit_price_fetch_failed');
+	}
+	return reasons;
+}
+
+/**
+ * 複数銘柄を巻き込む合計値に載せる理由コードを 1 つ選ぶ。
+ *
+ * 銘柄ごとに理由が割れうるが、合計値は 1 つしか理由を持てない。
+ * `deposit_price_fetch_failed` が 1 銘柄でもあればそれを選ぶ——合計値が実行ごとに
+ * 変わりうるという最も重い性質が、そこで決まるため。銘柄別の内訳は
+ * `holdings[].cost_basis_unavailable_reason` と警告行で読める。
+ */
+export function dominantUnresolvedDepositReason(
+	reasons: Iterable<PortfolioUnresolvedDepositReason>,
+): PortfolioUnresolvedDepositReason | undefined {
+	let found: PortfolioUnresolvedDepositReason | undefined;
+	for (const reason of reasons) {
+		if (reason === 'deposit_price_fetch_failed') return reason;
+		found = reason;
+	}
+	return found;
+}
+
 // ── 期間別実現損益（年初来 / 月初来） ──
 
 /**
@@ -352,6 +401,9 @@ export function calcPeriodRealizedPnl(
 	const holdings = new Map<string, { qty: number; cost: number }>();
 	let periodRealized = 0;
 	let periodSellCount = 0;
+	// 期間内に売却があった銘柄。realized_pnl は全銘柄の合算なので、どの銘柄の原価が
+	// 欠けると本値が壊れるかはここでしか判定できない（#80 の抑止範囲の絞り込みに使う）。
+	const soldAssets = new Set<string>();
 
 	for (const event of events) {
 		if (event.type === 'deposit') {
@@ -400,6 +452,7 @@ export function calcPeriodRealizedPnl(
 				if (t.executed_at >= sinceMs) {
 					periodRealized += sellRealized;
 					periodSellCount++;
+					soldAssets.add(asset);
 				}
 			}
 
@@ -427,6 +480,7 @@ export function calcPeriodRealizedPnl(
 	return {
 		realized_pnl: Math.round(periodRealized),
 		sell_count: periodSellCount,
+		sold_assets: [...soldAssets],
 		period_start: periodStart,
 		period_end: periodEnd,
 		priced_deposit_count: depositEvents.priced.length,
@@ -525,19 +579,33 @@ export function calcPeriodMarginPnl(
  * total = spot_realized_pnl + margin_realized_pnl - margin_interest_cost - margin_fee_cost
  * （`*_cost` はいずれもコスト = 正値で保持し、total では控除する）
  *
+ * `spotRealizedPnl` に `undefined` を渡すと現物側を抑止した構築になる（#80）:
+ * `spot_realized_pnl` と `total` を出さず、`spot_realized_pnl_unavailable_reason` に
+ * `suppressedReason` を載せる。信用側の 4 フィールドは現物と独立に確定するのでそのまま出す
+ * （信用だけの合計を口座全体 PnL として `total` に載せると、現物ぶんが 0 円だったのと
+ * 区別できなくなるため `total` は落とす）。
+ *
  * deprecated な別名 `margin_interest` / `margin_fee` にも**同じ正値**を載せる。
  * `DEPRECATED_FIELD_REMOVAL_TARGET`（`src/schema/base.ts`）で削除する際は、
  * ここの 2 行とスキーマ・型定義・summary の参照をまとめて落とすこと。
  */
-export function buildAccountPnl(spotRealizedPnl: number, marginPnl: MarginPnlTotals): AccountPnl {
+export function buildAccountPnl(
+	spotRealizedPnl: number | undefined,
+	marginPnl: MarginPnlTotals,
+	suppressedReason?: PortfolioUnresolvedDepositReason,
+): AccountPnl {
 	return {
 		spot_realized_pnl: spotRealizedPnl,
 		margin_realized_pnl: marginPnl.margin_realized_pnl,
 		margin_interest: marginPnl.margin_interest_cost,
 		margin_fee: marginPnl.margin_fee_cost,
-		total: spotRealizedPnl + marginPnl.margin_realized_pnl - marginPnl.margin_interest_cost - marginPnl.margin_fee_cost,
+		total:
+			spotRealizedPnl == null
+				? undefined
+				: spotRealizedPnl + marginPnl.margin_realized_pnl - marginPnl.margin_interest_cost - marginPnl.margin_fee_cost,
 		margin_interest_cost: marginPnl.margin_interest_cost,
 		margin_fee_cost: marginPnl.margin_fee_cost,
+		spot_realized_pnl_unavailable_reason: spotRealizedPnl == null ? suppressedReason : undefined,
 	};
 }
 
@@ -545,13 +613,14 @@ export function buildAccountPnl(spotRealizedPnl: number, marginPnl: MarginPnlTot
  * 期間版の口座全体 PnL を構築する。
  */
 export function buildPeriodAccountPnl(
-	spotRealizedPnl: number,
+	spotRealizedPnl: number | undefined,
 	marginPnl: MarginPnlTotals,
 	periodStart: string,
 	periodEnd: string,
+	suppressedReason?: PortfolioUnresolvedDepositReason,
 ): PeriodAccountPnl {
 	return {
-		...buildAccountPnl(spotRealizedPnl, marginPnl),
+		...buildAccountPnl(spotRealizedPnl, marginPnl, suppressedReason),
 		period_start: periodStart,
 		period_end: periodEnd,
 	};
