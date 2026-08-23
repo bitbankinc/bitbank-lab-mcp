@@ -297,8 +297,18 @@ const HoldingPnlSchema = z.object({
 	asset: z.string().describe('通貨コード'),
 	pair: z.string().describe('通貨ペア（例: btc_jpy）'),
 	amount: z.string().describe('保有数量'),
-	avg_buy_price: z.number().optional().describe('平均取得単価（JPY）= cost_basis / 復元保有数量'),
-	current_price: z.number().optional().describe('現在価格（JPY）'),
+	avg_buy_price: z
+		.number()
+		.optional()
+		.describe(
+			'平均取得単価（JPY）= cost_basis / 復元保有数量。板に発注できる価格ではなく加重平均なので、/spot/pairs の price_digits + 2 桁で丸める（刻みちょうどで丸めると amount × avg_buy_price と cost_basis の再構成誤差が刻み幅ぶん乗るため）。/spot/pairs を取得できなかった場合は丸めず生値',
+		),
+	current_price: z
+		.number()
+		.optional()
+		.describe(
+			'現在価格（JPY）。/spot/pairs の price_digits（最小値刻み = 10^-price_digits）で丸める。低価格ペア（XRP / XLM 等）では小数が保持される。/spot/pairs を取得できなかった場合は丸めず生値',
+		),
 	jpy_value: z.number().optional().describe('現在の評価額（JPY）'),
 	cost_basis: z
 		.number()
@@ -324,7 +334,12 @@ const HoldingPnlSchema = z.object({
 const HoldingPerformanceSchema = z.object({
 	asset: z.string().describe('通貨コード'),
 	pair: z.string().describe('通貨ペア（例: btc_jpy）'),
-	current_price: z.number().optional().describe('現在価格（JPY）'),
+	current_price: z
+		.number()
+		.optional()
+		.describe(
+			'現在価格（JPY）。holdings[].current_price と同値（/spot/pairs の price_digits で丸め、取得できなければ生値）',
+		),
 	monthly_change_pct: z
 		.number()
 		.optional()
