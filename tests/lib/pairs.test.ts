@@ -619,6 +619,29 @@ describe('roundToPriceDigits', () => {
 		expect(roundToPriceDigits(26.686000000000003, xlm)).toBe(26.686);
 	});
 
+	it('ちょうど半刻みの値を取りこぼさない（2 進の乗算誤差で下に落ちない）', () => {
+		// value * 10 ** digits を経由すると 1.005 * 100 === 100.49999999999999 となり
+		// 1.01 ではなく 1 が返っていた
+		const twoDigits = makePairSpec({ price_digits: 2 });
+		expect(roundToPriceDigits(1.005, twoDigits)).toBe(1.01);
+		expect(roundToPriceDigits(2.675, twoDigits)).toBe(2.68);
+		expect(roundToPriceDigits(0.015, twoDigits)).toBe(0.02);
+		// extraDigits を足した桁でも同じ
+		expect(roundToPriceDigits(1.005, makePairSpec({ price_digits: 0 }), { extraDigits: 2 })).toBe(1.01);
+	});
+
+	it('半刻みは +∞ 方向（円建て金額の Math.round と揃える）', () => {
+		const twoDigits = makePairSpec({ price_digits: 2 });
+		expect(roundToPriceDigits(-1.005, twoDigits)).toBe(-1);
+		expect(roundToPriceDigits(-1.015, twoDigits)).toBe(-1.01);
+		expect(roundToPriceDigits(15_015_015.5, btc)).toBe(15_015_016);
+	});
+
+	it('指数表記に化ける極小値も丸められる', () => {
+		// `${1e-7}e4` は "1e-7e4" という不正な文字列になるため素朴な乗算に落ちる経路
+		expect(roundToPriceDigits(1e-7, xlm)).toBe(0);
+	});
+
 	it('extraDigits で桁の余裕を持たせられる', () => {
 		expect(roundToPriceDigits(15_015_015.0153, btc, { extraDigits: 2 })).toBe(15_015_015.02);
 		expect(roundToPriceDigits(26.6861234567, xrp, { extraDigits: 2 })).toBe(26.68612);
