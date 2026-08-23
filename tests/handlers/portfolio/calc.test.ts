@@ -15,8 +15,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { dayjs } from '../../../lib/datetime.js';
 import {
 	buildAccountPnl,
+	buildEquitySeries,
 	buildPeriodPerformance,
 	calcDepositWithdrawalSummary,
 	calcMarginPnl,
@@ -38,7 +40,7 @@ import {
 	resolveFlowPrice,
 	summarizeFlowValuation,
 } from '../../../src/handlers/portfolio/calc.js';
-import { portfolioDayStartMs } from '../../../src/handlers/portfolio/calendar.js';
+import { PORTFOLIO_CALENDAR_TZ, portfolioDayStartMs } from '../../../src/handlers/portfolio/calendar.js';
 import type {
 	CandlePriceData,
 	DepositWithdrawalData,
@@ -2247,5 +2249,369 @@ describe('getJstPeriodBoundaries: JST 暦日境界', () => {
 		for (const nowMs of cases) {
 			expect(boundariesAt(nowMs).dayStartMs).toBe(portfolioDayStartMs(nowMs));
 		}
+	});
+});
+
+/**
+ * 資産推移シリーズの入出金フローマーカー（`EquityPoint.flow_jpy`）。
+ *
+ * 月次資産推移は入出金があった期間でも単一の連続線として出るため、大口入金のある口座では
+ * 「ずっと同額を保有していた」と誤読される（#53 の症状 7 後半）。グラフ化されると注記行は
+ * 消える前提なので、フロー発生点を**データとして**返す。
+ *
+ * 本 describe が固定する契約:
+ *   - 点にフローを寄せる向き（`value_jpy[i+1] - value_jpy[i] - flow_jpy[i]` が市場変動）
+ *   - 日付キーが `portfolioDayStartMs`（JST 暦日境界）と揃うこと
+ *   - フローが無い期間は従来と JSON 一致すること
+ */
+describe('buildEquitySeries — 入出金フローマーカー', () => {
+	/** JST の壁時計時刻を epoch ms に変換する（JST は DST を持たないので UTC+9 固定）。 */
+	function jstMs(y: number, m: number, d: number, h = 0, min = 0): number {
+		return Date.UTC(y, m - 1, d, h - 9, min);
+	}
+
+	/** JST 暦日 0:00 の連続点（日次シリーズ）を作る */
+	function dailyPoints(y: number, m: number, fromDay: number, toDay: number) {
+		const dates = [];
+		for (let d = fromDay; d <= toDay; d++) dates.push(dayjs(jstMs(y, m, d)).tz(PORTFOLIO_CALENDAR_TZ));
+		return dates;
+	}
+
+	function makeDwData(overrides: Partial<DepositWithdrawalData> = {}): DepositWithdrawalData {
+		return { deposits: [], withdrawals: [], warnings: [], allFailed: false, isComplete: true, ...overrides };
+	}
+
+	/** JPY のみ保有。価格解決を挟まずフローの寄せ方だけを見るための最小構成。 */
+	const JPY_ONLY = [{ asset: 'jpy', amount: '1500000' }];
+	const NOW_ISO = '2026-08-04T12:00:00+09:00';
+
+	function build(
+		dates: ReturnType<typeof dailyPoints>,
+		dw: DepositWithdrawalData | null,
+		pricing = currentPriceOnly(),
+		currentHoldings = JPY_ONLY,
+		currentValueJpy = 1_500_000,
+	) {
+		return buildEquitySeries(dates, currentHoldings, [], dw, new Map(), currentValueJpy, NOW_ISO, new Map(), pricing);
+	}
+
+	it('JPY 入金があった日の点に flow_jpy が付く', () => {
+		// 8/1〜8/3 の日次点 + 現在。8/2 に 500,000 円入金。
+		const dw = makeDwData({
+			deposits: [makeDeposit({ asset: 'jpy', amount: '500000', confirmed_at: jstMs(2026, 8, 2, 10) })],
+		});
+		const series = build(dailyPoints(2026, 8, 1, 3), dw);
+
+		expect(series.map((p) => p.flow_jpy)).toEqual([undefined, 500_000, undefined, undefined]);
+		expect(series[1].timestamp).toBe('2026-08-02T00:00:00+09:00');
+	});
+
+	/**
+	 * 向きの契約。`reconstructHoldingsAtDate` は「点の時刻以降」の入出金を巻き戻すため、
+	 * 8/2 の入金が評価額に現れるのは 8/3 の点から。flow_jpy を「この点から次の点まで」に
+	 * 取ることで、増減からフローを引いた残りが市場変動になる。
+	 * 逆向き（直前の点からこの点まで）に取ると、この式が 1 点ずれて成立しなくなる。
+	 */
+	it('value_jpy[i+1] - value_jpy[i] - flow_jpy[i] が市場変動になる（JPY のみ保有なら 0）', () => {
+		const dw = makeDwData({
+			deposits: [makeDeposit({ asset: 'jpy', amount: '500000', confirmed_at: jstMs(2026, 8, 2, 10) })],
+		});
+		const series = build(dailyPoints(2026, 8, 1, 3), dw);
+
+		// 現在 1,500,000 円 / 8/2 の入金 500,000 円を巻き戻すと 8/1・8/2 は 1,000,000 円。
+		expect(series.map((p) => p.value_jpy)).toEqual([1_000_000, 1_000_000, 1_500_000, 1_500_000]);
+		for (let i = 0; i < series.length - 1; i++) {
+			expect(series[i + 1].value_jpy - series[i].value_jpy - (series[i].flow_jpy ?? 0)).toBe(0);
+		}
+	});
+
+	it('同じ日の入金と出金は純額で集約される', () => {
+		const dw = makeDwData({
+			deposits: [makeDeposit({ asset: 'jpy', amount: '800000', confirmed_at: jstMs(2026, 8, 2, 9) })],
+			withdrawals: [
+				makeWithdrawal({ asset: 'jpy', amount: '300000', fee: '550', requested_at: jstMs(2026, 8, 2, 18) }),
+			],
+		});
+		const series = build(dailyPoints(2026, 8, 1, 3), dw);
+
+		// 元本のみの純額。出金手数料 550 円は含まない（*_performance.net_flow_jpy と同一定義）。
+		expect(series[1].flow_jpy).toBe(500_000);
+	});
+
+	it('純額がゼロに相殺される日はキーごと落ちる', () => {
+		const dw = makeDwData({
+			deposits: [makeDeposit({ asset: 'jpy', amount: '300000', confirmed_at: jstMs(2026, 8, 2, 9) })],
+			withdrawals: [makeWithdrawal({ asset: 'jpy', amount: '300000', fee: '0', requested_at: jstMs(2026, 8, 2, 18) })],
+		});
+		const series = build(dailyPoints(2026, 8, 1, 3), dw);
+
+		expect(series[1]).not.toHaveProperty('flow_jpy');
+	});
+
+	/**
+	 * 出金手数料は flow_jpy に含めない（`*_performance.net_flow_jpy` と同一定義）。
+	 * 結果として増減からフローを引いた残差に手数料コストが残る。これは
+	 * `adjusted_change_jpy` の扱い（`PERFORMANCE_NOTE`）と揃えてある。
+	 */
+	it('出金は負値になり、出金手数料は残差に残る', () => {
+		const dw = makeDwData({
+			withdrawals: [
+				makeWithdrawal({ asset: 'jpy', amount: '200000', fee: '550', requested_at: jstMs(2026, 8, 2, 18) }),
+			],
+		});
+		const series = build(
+			dailyPoints(2026, 8, 1, 3),
+			dw,
+			currentPriceOnly(),
+			[{ asset: 'jpy', amount: '800000' }],
+			800_000,
+		);
+
+		expect(series[1].flow_jpy).toBe(-200_000);
+		// 8/2 は出金前（1,000,550 円）、8/3 は出金後（800,000 円）。
+		expect(series[1].value_jpy).toBe(1_000_550);
+		expect(series[2].value_jpy).toBe(800_000);
+		expect(series[2].value_jpy - series[1].value_jpy - (series[1].flow_jpy ?? 0)).toBe(-550);
+	});
+
+	/**
+	 * 回帰（JSON レベル）。フローゼロの期間では従来の点と完全一致し、キーも増えない。
+	 * `toEqual` は undefined のプロパティを無視するので `JSON.stringify` で比較する。
+	 */
+	it('フローが無い期間は従来の出力（timestamp / value_jpy のみ）と JSON 一致する', () => {
+		const dates = dailyPoints(2026, 8, 1, 3);
+		const withFlowArg = build(dates, makeDwData());
+		const legacy = buildEquitySeries(dates, JPY_ONLY, [], makeDwData(), new Map(), 1_500_000, NOW_ISO, new Map());
+
+		expect(JSON.stringify(withFlowArg)).toBe(JSON.stringify(legacy));
+		expect(JSON.stringify(withFlowArg)).not.toContain('flow_jpy');
+	});
+
+	it('flowPricing を渡さなければ flow_jpy を一切載せない（既存呼び出しの互換）', () => {
+		const dw = makeDwData({
+			deposits: [makeDeposit({ asset: 'jpy', amount: '500000', confirmed_at: jstMs(2026, 8, 2, 10) })],
+		});
+		const dates = dailyPoints(2026, 8, 1, 3);
+		const series = buildEquitySeries(dates, JPY_ONLY, [], dw, new Map(), 1_500_000, NOW_ISO, new Map());
+
+		expect(JSON.stringify(series)).not.toContain('flow_jpy');
+	});
+
+	it('入出金履歴が無い（dwData=null）と全点で落ちる', () => {
+		const series = build(dailyPoints(2026, 8, 1, 3), null);
+		expect(JSON.stringify(series)).not.toContain('flow_jpy');
+	});
+
+	/**
+	 * 履歴が欠けている構成では部分集合の合計を確定値として出さない。
+	 *
+	 * `*_performance` は同じ状態で「純入出金: 未計測」（`flow_measured=false`）を返すので、
+	 * 点だけが金額を主張すると 1 つの応答の中で矛盾する（#53 が潰している型の自己矛盾）。
+	 * 判定は `flowUnavailableReasonFor` と同一にしてあり、`allFailed` / `isComplete` だけを
+	 * 見る判定では塞げない **`warnings`（一部チャネル失敗）** も含む点をケースで固定する。
+	 */
+	describe('履歴が欠けている構成では全点で落ちる', () => {
+		const deposits = [makeDeposit({ asset: 'jpy', amount: '500000', confirmed_at: jstMs(2026, 8, 2, 10) })];
+
+		it.each([
+			['件数上限による打ち切り（isComplete=false）', { isComplete: false }],
+			['全チャネル失敗（allFailed=true）', { allFailed: true }],
+			// 出庫チャネルだけが落ちると入金しか残らず「入金しかない口座」に見える。
+			// allFailed は false・isComplete は true なので、warnings を見ないと素通りする。
+			['一部チャネル失敗（warnings あり）', { warnings: ['出庫履歴の取得に失敗'] }],
+		])('%s', (_label, overrides: Partial<DepositWithdrawalData>) => {
+			const dw = makeDwData({ deposits, ...overrides });
+			// 前提: そのケースが実際に理由コードを立てる状態であること
+			expect(flowUnavailableReasonFor(dw)).toBeDefined();
+
+			const series = build(dailyPoints(2026, 8, 1, 3), dw);
+			expect(JSON.stringify(series)).not.toContain('flow_jpy');
+		});
+
+		it('履歴が完全なら同じ入金が載る（上の抑止が効きすぎていないことの対照）', () => {
+			const dw = makeDwData({ deposits });
+			expect(flowUnavailableReasonFor(dw)).toBeUndefined();
+
+			const series = build(dailyPoints(2026, 8, 1, 3), dw);
+			expect(series[1].flow_jpy).toBe(500_000);
+		});
+	});
+
+	it('最終点（現在のリアルタイム評価額）には付かない', () => {
+		// 最後の日次点 8/3 より後、現在（8/4 12:00）より前の入金は最後の日次点に寄る。
+		const dw = makeDwData({
+			deposits: [makeDeposit({ asset: 'jpy', amount: '500000', confirmed_at: jstMs(2026, 8, 4, 9) })],
+		});
+		const series = build(dailyPoints(2026, 8, 1, 3), dw);
+
+		expect(series[series.length - 1].timestamp).toBe(NOW_ISO);
+		expect(series[series.length - 1]).not.toHaveProperty('flow_jpy');
+		expect(series[2].flow_jpy).toBe(500_000);
+	});
+
+	it('最初の点より前の入出金は載せない（期初評価額に織り込み済み）', () => {
+		const dw = makeDwData({
+			deposits: [makeDeposit({ asset: 'jpy', amount: '500000', confirmed_at: jstMs(2026, 7, 31, 23) })],
+		});
+		const series = build(dailyPoints(2026, 8, 1, 3), dw);
+
+		expect(JSON.stringify(series)).not.toContain('flow_jpy');
+	});
+
+	it('DONE 以外のステータスは載せない', () => {
+		const dw = makeDwData({
+			deposits: [
+				makeDeposit({ asset: 'jpy', amount: '500000', status: 'CONFIRMED', confirmed_at: jstMs(2026, 8, 2, 10) }),
+			],
+		});
+		const series = build(dailyPoints(2026, 8, 1, 3), dw);
+
+		expect(JSON.stringify(series)).not.toContain('flow_jpy');
+	});
+
+	/**
+	 * 日付キーの暦。JST 深夜（UTC ではまだ前日）の入金が前日の点に落ちると、
+	 * マーカーと評価額の段差が 1 日ずれる。
+	 */
+	it('JST 深夜の入金は JST 暦日の点に寄る（UTC 暦日に落ちない）', () => {
+		const dw = makeDwData({
+			// JST 8/2 01:00 = 2026-08-01T16:00Z
+			deposits: [makeDeposit({ asset: 'jpy', amount: '500000', confirmed_at: jstMs(2026, 8, 2, 1) })],
+		});
+		const series = build(dailyPoints(2026, 8, 1, 3), dw);
+
+		expect(series[0].flow_jpy).toBeUndefined();
+		expect(series[1].flow_jpy).toBe(500_000);
+	});
+
+	it('JST 暦日 0:00 ちょうどの入金はその日の点に寄る', () => {
+		const dw = makeDwData({
+			deposits: [makeDeposit({ asset: 'jpy', amount: '500000', confirmed_at: jstMs(2026, 8, 2) })],
+		});
+		const series = build(dailyPoints(2026, 8, 1, 3), dw);
+
+		expect(series[1].flow_jpy).toBe(500_000);
+	});
+
+	it('confirmed_at が非有限の入出金でバケットを壊さない', () => {
+		const dw = makeDwData({
+			deposits: [
+				makeDeposit({ uuid: 'd-bad', asset: 'jpy', amount: '100000', confirmed_at: Number.NaN }),
+				makeDeposit({ uuid: 'd-ok', asset: 'jpy', amount: '500000', confirmed_at: jstMs(2026, 8, 2, 10) }),
+			],
+		});
+		const series = build(dailyPoints(2026, 8, 1, 3), dw);
+
+		expect(series[1].flow_jpy).toBe(500_000);
+	});
+
+	describe('暗号資産の入出庫', () => {
+		const BTC_ONLY = [{ asset: 'btc', amount: '0.1' }];
+
+		it('入庫日の始値で JPY 換算される（現在価格ではない）', () => {
+			const depositAt = jstMs(2026, 8, 2, 10);
+			const dw = makeDwData({
+				deposits: [makeDeposit({ asset: 'btc', amount: '0.05', confirmed_at: depositAt })],
+			});
+			// 入庫日 10,000,000 円 / 現在 20,000,000 円。現在価格で換算すると 1,000,000 円になる。
+			const pricing = withDailyPrices(
+				[{ asset: 'btc', atMs: depositAt, price: 10_000_000 }],
+				new Map([['btc', 20_000_000]]),
+			);
+			const series = build(dailyPoints(2026, 8, 1, 3), dw, pricing, BTC_ONLY, 2_000_000);
+
+			expect(series[1].flow_jpy).toBe(500_000);
+		});
+
+		it('入庫日の始値が無ければ現在価格にフォールバックする', () => {
+			const dw = makeDwData({
+				deposits: [makeDeposit({ asset: 'btc', amount: '0.05', confirmed_at: jstMs(2026, 8, 2, 10) })],
+			});
+			const pricing = currentPriceOnly(new Map([['btc', 20_000_000]]));
+			const series = build(dailyPoints(2026, 8, 1, 3), dw, pricing, BTC_ONLY, 2_000_000);
+
+			expect(series[1].flow_jpy).toBe(1_000_000);
+		});
+
+		/**
+		 * 価格を解決できない入出庫は計上しない（0 円として黙って混ぜない）。
+		 * 申告経路は同じ期間を張る `*_performance.unpriced_flow_assets` なので、
+		 * ここで専用のフィールドは増やさない。
+		 */
+		it('価格を解決できない入出庫は計上しない（他の入出金は残る）', () => {
+			const dw = makeDwData({
+				deposits: [
+					makeDeposit({ uuid: 'd-btc', asset: 'btc', amount: '0.05', confirmed_at: jstMs(2026, 8, 2, 10) }),
+					makeDeposit({ uuid: 'd-jpy', asset: 'jpy', amount: '300000', confirmed_at: jstMs(2026, 8, 2, 11) }),
+				],
+			});
+			const series = build(dailyPoints(2026, 8, 1, 3), dw, currentPriceOnly(), BTC_ONLY, 2_000_000);
+
+			expect(series[1].flow_jpy).toBe(300_000);
+		});
+
+		/**
+		 * キーの不在は「入出金が無かった」ではない（`EquityPoint.flow_jpy` の
+		 * 「キーが無いことの意味」の (3)）。この区間には実際に入庫があるが、価格を解決できず
+		 * 計上対象が残らないためキーごと落ちる。落ちた資産名は
+		 * `*_performance.unpriced_flow_assets` が申告する。
+		 */
+		it('区間の入出庫が全件価格解決できないとキーごと落ちる（0 円計上しない）', () => {
+			const dw = makeDwData({
+				deposits: [makeDeposit({ asset: 'btc', amount: '0.05', confirmed_at: jstMs(2026, 8, 2, 10) })],
+			});
+			const series = build(dailyPoints(2026, 8, 1, 3), dw, currentPriceOnly(), BTC_ONLY, 2_000_000);
+
+			expect(series[1]).not.toHaveProperty('flow_jpy');
+			// 0 円のマーカーを立てていない（「純額ゼロ」と誤読させない）
+			expect(JSON.stringify(series)).not.toContain('flow_jpy');
+		});
+
+		it('出庫は出庫日の始値で換算し負値になる（手数料は含めない）', () => {
+			const withdrawAt = jstMs(2026, 8, 2, 18);
+			const dw = makeDwData({
+				withdrawals: [makeWithdrawal({ asset: 'btc', amount: '0.05', fee: '0.0005', requested_at: withdrawAt })],
+			});
+			const pricing = withDailyPrices([{ asset: 'btc', atMs: withdrawAt, price: 10_000_000 }]);
+			const series = build(dailyPoints(2026, 8, 1, 3), dw, pricing, BTC_ONLY, 2_000_000);
+
+			expect(series[1].flow_jpy).toBe(-500_000);
+		});
+	});
+
+	/**
+	 * 年次シリーズ（月次点）。日次点と同じ実装で、入出庫日はその月の点に寄る。
+	 * 逆向き（直前の点からこの点まで）に取ると 8 月のフローが `2026-08-01` ではなく
+	 * `2026-09-01` に載り、日付ラベルと発生月がずれる。
+	 */
+	describe('月次点（年次シリーズ）', () => {
+		function monthlyPoints(y: number, fromMonth: number, toMonth: number) {
+			const dates = [];
+			for (let m = fromMonth; m <= toMonth; m++) dates.push(dayjs(jstMs(y, m, 1)).tz(PORTFOLIO_CALENDAR_TZ));
+			return dates;
+		}
+
+		it('月の途中の入金はその月の点に寄る', () => {
+			const dw = makeDwData({
+				deposits: [makeDeposit({ asset: 'jpy', amount: '500000', confirmed_at: jstMs(2026, 8, 5, 10) })],
+			});
+			const series = build(monthlyPoints(2026, 6, 8), dw);
+
+			expect(series[2].timestamp).toBe('2026-08-01T00:00:00+09:00');
+			expect(series.map((p) => p.flow_jpy)).toEqual([undefined, undefined, 500_000, undefined]);
+		});
+
+		it('同じ月の複数フローは 1 点に集約される', () => {
+			const dw = makeDwData({
+				deposits: [
+					makeDeposit({ uuid: 'd1', asset: 'jpy', amount: '500000', confirmed_at: jstMs(2026, 7, 3) }),
+					makeDeposit({ uuid: 'd2', asset: 'jpy', amount: '200000', confirmed_at: jstMs(2026, 7, 28) }),
+				],
+				withdrawals: [makeWithdrawal({ asset: 'jpy', amount: '100000', requested_at: jstMs(2026, 7, 15) })],
+			});
+			const series = build(monthlyPoints(2026, 6, 8), dw);
+
+			expect(series[1].flow_jpy).toBe(600_000);
+		});
 	});
 });

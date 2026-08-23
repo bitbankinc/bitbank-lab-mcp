@@ -944,6 +944,100 @@ export function calcPortfolioValue(holdings: Map<string, number>, priceMap: Map<
 }
 
 /**
+ * 資産推移シリーズの各点に載せる純入出金額（`EquityPoint.flow_jpy`）を求める。
+ *
+ * `pointMsAsc` は**昇順の日次点・月次点の時刻**（最終点＝現在のリアルタイム評価額は含めない）。
+ * 入出金 1 件は、その入出庫日（JST 暦日 0:00 に丸めた `confirmed_at` / `requested_at`）**以前で
+ * 最も新しい点**のバケットに入る。点の間隔が日次でも月次でも同じ実装で成立する。
+ *
+ * 丸めに `portfolioDayStartMs` を使うのは点のキーと暦を共有するため（`./calendar.ts`）。点のキー
+ * 自体が JST 暦日 0:00 なので生の時刻で比較しても結果は同じだが、点の間隔が変わっても
+ * 「入出庫日で寄せる」意図が実装から読めるように丸めを明示する。
+ *
+ * 集計の範囲・向きは `EquityPoint.flow_jpy` の doc を単一ソースとする。実装上の要点のみ:
+ *
+ * - 履歴が欠けている構成では**全点で載せない**。判定は `flowUnavailableReasonFor` に委ねる
+ *   （下記「履歴が欠けている場合」）。
+ * - 最初の点より前の入出金は落とす。シリーズの外＝期初評価額に織り込み済みで、載せる点が無い。
+ * - 暗号資産は `resolveFlowPrice`（入出庫日の始値 → 解決できなければ現在価格）で換算する。
+ *   どちらでも解決できない分は計上しない。申告は同じ期間を張る
+ *   `PeriodPerformance.unpriced_flow_assets` が担当する。
+ * - `status !== 'DONE'` / 数量が非有限・非正の入出金は除外する（`collectFlowValuationTargets` と
+ *   同じ基準）。JPY も同じ検証を通す——1 件の不正値でバケット全体を NaN にしないため。
+ * - 純額がゼロに丸まる点はキーごと落とす（フローゼロの期間で従来と同じ出力にするため）。
+ *
+ * ## 履歴が欠けている場合
+ *
+ * 判定は `flowUnavailableReasonFor(dw)` と**同一**にする（取得失敗 / 一部チャネル失敗 /
+ * 件数上限による打ち切り）。同じ述語を使うのは、`*_performance` が「純入出金: 未計測」と
+ * 言っている応答で、資産推移の点だけが `← 純入出金 +500,000円` と確定値を出す自己矛盾を
+ * 防ぐため。取得できた部分集合だけを合計すると、たとえば暗号資産出庫チャネルだけが
+ * 落ちた構成で「入金しかない口座」に見える（`allFailed` は false・`warnings` にのみ現れる
+ * ので、`allFailed` / `isComplete` だけを見る判定ではこの穴を塞げない）。
+ *
+ * 部分値を出さない代わりに、シリーズの段差は説明されないまま残る。この状態は
+ * `*_performance.flow_measured=false` / `flow_unavailable_reason` と summary の
+ * 「入出金を巻き戻せていません」行が既に申告している（本関数で新しい申告経路は作らない）。
+ */
+export function buildEquityFlowByPoint(
+	dw: DepositWithdrawalData | null,
+	pricing: FlowPricing,
+	pointMsAsc: number[],
+): Map<number, number> {
+	const byPoint = new Map<number, number>();
+	if (!dw || pointMsAsc.length === 0) return byPoint;
+	// 未計測を 0 でも部分値でもなく「キーの不在」で表す（上記「履歴が欠けている場合」）。
+	if (flowUnavailableReasonFor(dw) != null) return byPoint;
+	const firstPointMs = pointMsAsc[0];
+
+	const add = (asset: string, amount: string, status: string, atMs: number, signum: 1 | -1) => {
+		if (status !== 'DONE') return;
+		if (!Number.isFinite(atMs)) return;
+		const qty = Number(amount);
+		if (!Number.isFinite(qty) || qty <= 0) return;
+		const dayMs = portfolioDayStartMs(atMs);
+		if (dayMs < firstPointMs) return;
+
+		let jpy: number;
+		if (asset === 'jpy') {
+			jpy = qty;
+		} else {
+			const resolved = resolveFlowPrice(pricing, asset, atMs);
+			if (!resolved) return;
+			jpy = qty * resolved.price;
+		}
+		const key = lastPointAtOrBefore(pointMsAsc, dayMs);
+		byPoint.set(key, (byPoint.get(key) ?? 0) + signum * jpy);
+	};
+
+	for (const d of dw.deposits) add(d.asset, d.amount, d.status, d.confirmed_at, 1);
+	for (const w of dw.withdrawals) add(w.asset, w.amount, w.status, w.requested_at, -1);
+
+	// value_jpy と同じ粒度に丸め、相殺してゼロになった点はキーごと落とす。
+	for (const [key, value] of byPoint) {
+		const rounded = Math.round(value);
+		if (rounded === 0) byPoint.delete(key);
+		else byPoint.set(key, rounded);
+	}
+	return byPoint;
+}
+
+/**
+ * 昇順の点列から `atMs` 以下で最大の要素を返す。呼び出し前に `atMs >= pointMsAsc[0]` が
+ * 保証されている前提（`buildEquityFlowByPoint` が範囲外を先に落としている）。
+ */
+function lastPointAtOrBefore(pointMsAsc: number[], atMs: number): number {
+	let lo = 0;
+	let hi = pointMsAsc.length - 1;
+	while (lo < hi) {
+		const mid = Math.ceil((lo + hi) / 2);
+		if (pointMsAsc[mid] <= atMs) lo = mid;
+		else hi = mid - 1;
+	}
+	return pointMsAsc[lo];
+}
+
+/**
  * 指定日付群について保有状態を復元し、各時点の JPY 建て総資産額を算出する。
  * 最終点として現在のリアルタイム評価額を追加する。
  *
@@ -951,6 +1045,11 @@ export function calcPortfolioValue(holdings: Map<string, number>, priceMap: Map<
  * 取得できない場合は `fallbackPrices`（現在 ticker 価格）にフォールバックする。
  * フォールバックは JPY のみ保有 / 一部資産で candle 取得失敗時にも equity series を
  * 構築可能にし、最終点 `currentValueJpy` との整合性を保つために重要。
+ *
+ * `flowPricing` を渡すと各点に `flow_jpy`（その点から次の点までの純入出金）を載せる。
+ * 入出金は `reconstructHoldingsAtDate` に渡すのと同じ `dwData` から拾うので、巻き戻した
+ * 保有と載せるフローが同じ母集合になる（詳細は `buildEquityFlowByPoint` / `EquityPoint.flow_jpy`）。
+ * 省略した場合は従来どおり `timestamp` / `value_jpy` のみの点を返す。
  */
 export function buildEquitySeries(
 	dates: ReturnType<typeof dayjs>[],
@@ -961,8 +1060,16 @@ export function buildEquitySeries(
 	currentValueJpy: number,
 	currentIso: string,
 	fallbackPrices?: Map<string, number>,
+	flowPricing?: FlowPricing,
 ): EquityPoint[] {
 	const series: EquityPoint[] = [];
+	const flowByPoint = flowPricing
+		? buildEquityFlowByPoint(
+				dwData,
+				flowPricing,
+				dates.map((d) => d.valueOf()),
+			)
+		: undefined;
 
 	for (const date of dates) {
 		const dateMs = date.valueOf();
@@ -984,10 +1091,14 @@ export function buildEquitySeries(
 		}
 
 		const value = Math.round(calcPortfolioValue(holdings, priceMap));
-		series.push({
+		const point: EquityPoint = {
 			timestamp: date.format('YYYY-MM-DDTHH:mm:ssZ'),
 			value_jpy: value,
-		});
+		};
+		// 純額ゼロ・フロー未取得の点はキーごと落として、フローが無い期間の出力を従来と JSON 一致させる。
+		const flow = flowByPoint?.get(dateMs);
+		if (flow != null) point.flow_jpy = flow;
+		series.push(point);
 	}
 
 	// Final point: current real-time value

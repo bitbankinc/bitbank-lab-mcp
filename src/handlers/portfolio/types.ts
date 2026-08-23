@@ -318,6 +318,57 @@ export interface CandlePriceData {
 export interface EquityPoint {
 	timestamp: string;
 	value_jpy: number;
+	/**
+	 * この点から**次の点まで**の区間に発生した純入出金（元本移動のみ、JPY）。ゼロならキーごと省略。
+	 *
+	 * ## なぜ「次の点まで」なのか
+	 *
+	 * `reconstructHoldingsAtDate` は `confirmed_at >= 点の時刻` の入出金を巻き戻すため、
+	 * 点 P の `value_jpy` には **P 以降の入出金が入っていない**。P 当日（月次点なら P の月）に
+	 * 入金があると、増えた分が現れるのは次の点の `value_jpy` からになる。
+	 * つまり不変条件は `value_jpy[i+1] - value_jpy[i] - flow_jpy[i] = 区間 i の市場変動`
+	 * （最終点＝現在のリアルタイム評価額も同じ式に載る）。
+	 *
+	 * この向きなら「その日（その月）に入出金があった」という**発生日そのもの**が点の
+	 * `timestamp` と一致する。逆向き（直前の点からこの点まで）に取ると、月次点
+	 * `2026-08-01` が 7 月のフローを載せることになり、日付ラベルと発生日がずれる。
+	 *
+	 * ## 定義の範囲
+	 *
+	 * - **元本移動のみ。出金手数料を含まない**（`PeriodPerformance.net_flow_jpy` と同一定義）。
+	 *   手数料も口座からは出ていくため、上の残差には市場変動と一緒に手数料コストが残る。
+	 *   これは `adjusted_change_jpy` の扱い（`PERFORMANCE_NOTE`）と揃えてある。
+	 * - JPY の入出金と、JPY 換算できた暗号資産入出庫の合計。換算は `resolveFlowPrice` に従い、
+	 *   **入出庫日の始値を解決できなかった分は現在価格にフォールバックする**（その入出庫も
+	 *   `flow_jpy` に載る）。つまり本値は全額が入出庫日で固定された評価額とは限らない。
+	 *   フォールバックの件数はレスポンス全体で `meta.flowValuationFallbackCount` /
+	 *   `meta.flowValuationBasis` と summary 先頭の「n 件は現在価格で仮評価」が申告する。
+	 *   どちらでも解決できなかった入出庫は計上せず、資産名は同じ期間を張る
+	 *   `PeriodPerformance.unpriced_flow_assets`（月次シリーズ ↔ `monthly_performance`、
+	 *   年次シリーズ ↔ `yearly_performance`）で申告済み。本フィールド専用の申告経路は作らない。
+	 * - 同じ区間の入金と出金は**純額で相殺**する（日次点ならその日、月次点ならその月の純額）。
+	 * - 最終点（現在のリアルタイム評価額）には常に付かない。次の点が無いため区間が空になる。
+	 * - 入出金履歴が欠けている構成（取得失敗 / 一部チャネル失敗 / 件数上限による打ち切り
+	 *   ＝ `flowUnavailableReasonFor` が理由コードを返す状態）では**全点で落ちる**。部分集合の
+	 *   合計を確定値として出すと、`*_performance` が「純入出金: 未計測」と言っている応答で
+	 *   点だけが金額を主張する自己矛盾になるため。
+	 *
+	 * ## キーが無いことの意味
+	 *
+	 * **「マーカーを出していない」であって「入出金が無かった」ではない。** 次のいずれか:
+	 *
+	 * 1. その区間に対象の入出金が無い（最も普通のケース）
+	 * 2. 入金と出金が相殺して純額がゼロに丸まった
+	 * 3. その区間の入出庫がすべて価格解決できず、計上対象が残らなかった
+	 *    （資産名は `PeriodPerformance.unpriced_flow_assets` に出る）
+	 * 4. 最終点（区間が空）
+	 * 5. 入出金履歴が欠けていて全点で抑止した
+	 *
+	 * 1〜4 は「計測できたうえでマーカーが立たない」、5 は「そもそも計測していない」で意味が違う。
+	 * 区別が要るときは `*_performance.flow_measured`（false なら 5）と
+	 * `flow_unavailable_reason` を見る。**本フィールドの有無だけでは両者を区別できない。**
+	 */
+	flow_jpy?: number;
 }
 
 export interface PeriodNetFlowResult {
