@@ -229,6 +229,36 @@ function buildPerformanceLines(label: string, p: PeriodPerformance): string[] {
 	return lines;
 }
 
+/**
+ * 資産推移シリーズの見出しに足すマーカーの読み方。
+ *
+ * グラフ化されると注記行は消える前提で `flow_jpy` をデータとして返しているが、
+ * summary を読むだけの経路（LLM が本文から所感を書く）では「線が跳ねた ＝ 運用成績」の
+ * 誤読が残る。フロー発生点があるときだけ読み方を添える（#53 の症状 7 後半）。
+ */
+const EQUITY_FLOW_MARKER_NOTE =
+	'「← 純入出金」が付いた点は外部からの入出金が発生した点で、その点から次の点への増減に金額が含まれる。運用成績ではないのでグラフではマーカーとして扱い、線の変動として説明しない';
+
+/**
+ * 資産推移シリーズの見出し行 + 各点の行を組み立てる。
+ *
+ * `headingBase` は末尾のコロンを含めない（フロー発生点があるときだけ
+ * `EQUITY_FLOW_MARKER_NOTE` を挟んでからコロンを付けるため）。フロー発生点が 1 つも
+ * 無いシリーズでは注記もマーカーも出さず、従来と同じ行になる。
+ */
+function buildEquitySeriesLines(headingBase: string, series: EquityPoint[]): string[] {
+	const hasFlow = series.some((p) => p.flow_jpy != null);
+	const lines = [hasFlow ? `${headingBase}。${EQUITY_FLOW_MARKER_NOTE}:` : `${headingBase}:`];
+	for (let i = 0; i < series.length; i++) {
+		const p = series[i];
+		// 符号の出し方は buildPerformanceLines の純入出金行と揃える（負値は formatPriceJPY が符号を持つ）。
+		const marker = p.flow_jpy != null ? ` ← 純入出金 ${p.flow_jpy >= 0 ? '+' : ''}${formatPriceJPY(p.flow_jpy)}` : '';
+		const label = i === series.length - 1 ? '（現在）' : '';
+		lines.push(`  ${p.timestamp}: ${formatPriceJPY(p.value_jpy)}${marker}${label}`);
+	}
+	return lines;
+}
+
 export default async function analyzeMyPortfolioHandler(args: {
 	include_technical?: boolean;
 	include_pnl?: boolean;
@@ -672,6 +702,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 				currentJpyValueRounded,
 				boundaries.nowIso,
 				prices,
+				flowPricing,
 			);
 
 			// Yearly: monthly points from year start through current month start, + current
@@ -691,6 +722,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 				currentJpyValueRounded,
 				boundaries.nowIso,
 				prices,
+				flowPricing,
 			);
 
 			// equity series のデータ品質を判定。LLM が現在価格代替に気づけるよう summary / meta に明示する。
@@ -905,23 +937,19 @@ export default async function analyzeMyPortfolioHandler(args: {
 				lines.push(`※ 資産推移シリーズ: ${missing} の歴史的価格データが取得できなかったため、現在価格で代替`);
 			}
 			lines.push(
-				`月次資産推移（日次, ${monthlyEquitySeries.length}点）— グラフ「月次推移」タブ専用。年次タブでは使わない:`,
+				...buildEquitySeriesLines(
+					`月次資産推移（日次, ${monthlyEquitySeries.length}点）— グラフ「月次推移」タブ専用。年次タブでは使わない`,
+					monthlyEquitySeries,
+				),
 			);
-			for (let i = 0; i < monthlyEquitySeries.length; i++) {
-				const p = monthlyEquitySeries[i];
-				const label = i === monthlyEquitySeries.length - 1 ? '（現在）' : '';
-				lines.push(`  ${p.timestamp}: ${formatPriceJPY(p.value_jpy)}${label}`);
-			}
 		}
 		if (yearlyEquitySeries && yearlyEquitySeries.length > 0) {
 			lines.push(
-				`年次資産推移（月次, ${yearlyEquitySeries.length}点）— グラフ「年次推移」タブ専用。月次タブでは使わない:`,
+				...buildEquitySeriesLines(
+					`年次資産推移（月次, ${yearlyEquitySeries.length}点）— グラフ「年次推移」タブ専用。月次タブでは使わない`,
+					yearlyEquitySeries,
+				),
 			);
-			for (let i = 0; i < yearlyEquitySeries.length; i++) {
-				const p = yearlyEquitySeries[i];
-				const label = i === yearlyEquitySeries.length - 1 ? '（現在）' : '';
-				lines.push(`  ${p.timestamp}: ${formatPriceJPY(p.value_jpy)}${label}`);
-			}
 		}
 
 		// 年次・月次の入出金サマリー

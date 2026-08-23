@@ -318,6 +318,37 @@ export interface CandlePriceData {
 export interface EquityPoint {
 	timestamp: string;
 	value_jpy: number;
+	/**
+	 * この点から**次の点まで**の区間に発生した純入出金（元本移動のみ、JPY）。ゼロならキーごと省略。
+	 *
+	 * ## なぜ「次の点まで」なのか
+	 *
+	 * `reconstructHoldingsAtDate` は `confirmed_at >= 点の時刻` の入出金を巻き戻すため、
+	 * 点 P の `value_jpy` には **P 以降の入出金が入っていない**。P 当日（月次点なら P の月）に
+	 * 入金があると、増えた分が現れるのは次の点の `value_jpy` からになる。
+	 * つまり不変条件は `value_jpy[i+1] - value_jpy[i] - flow_jpy[i] = 区間 i の市場変動`
+	 * （最終点＝現在のリアルタイム評価額も同じ式に載る）。
+	 *
+	 * この向きなら「その日（その月）に入出金があった」という**発生日そのもの**が点の
+	 * `timestamp` と一致する。逆向き（直前の点からこの点まで）に取ると、月次点
+	 * `2026-08-01` が 7 月のフローを載せることになり、日付ラベルと発生日がずれる。
+	 *
+	 * ## 定義の範囲
+	 *
+	 * - **元本移動のみ。出金手数料を含まない**（`PeriodPerformance.net_flow_jpy` と同一定義）。
+	 *   手数料も口座からは出ていくため、上の残差には市場変動と一緒に手数料コストが残る。
+	 *   これは `adjusted_change_jpy` の扱い（`PERFORMANCE_NOTE`）と揃えてある。
+	 * - JPY の入出金と、**入出庫日の始値で JPY 換算できた**暗号資産入出庫の合計。
+	 *   価格を解決できなかった入出庫は計上せず、資産名は同じ期間を張る
+	 *   `PeriodPerformance.unpriced_flow_assets`（月次シリーズ ↔ `monthly_performance`、
+	 *   年次シリーズ ↔ `yearly_performance`）で申告済み。本フィールド専用の申告経路は作らない。
+	 * - 同じ区間の入金と出金は**純額で相殺**する。相殺してゼロになった区間はキーが落ちるため、
+	 *   キーの不在は「入出金が無かった」ではなく「純額がゼロ」を意味する。
+	 * - 最終点（現在のリアルタイム評価額）には常に付かない。次の点が無いため区間が空になる。
+	 * - 入出金履歴を取得できなかった場合（`dwData` が null）は全点で落ちる。この状態は
+	 *   `*_performance.flow_measured=false` / `flow_unavailable_reason` 側で申告される。
+	 */
+	flow_jpy?: number;
 }
 
 export interface PeriodNetFlowResult {

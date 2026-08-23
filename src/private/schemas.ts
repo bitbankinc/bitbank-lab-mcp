@@ -515,6 +515,12 @@ const PeriodPerformanceSchema = z
 const EquityPointSchema = z.object({
 	timestamp: z.string().describe('時点の日時（ISO8601 JST）'),
 	value_jpy: z.number().describe('その時点のJPY建て総資産額（円）'),
+	flow_jpy: z
+		.number()
+		.optional()
+		.describe(
+			'この点から**次の点まで**の区間に発生した純入出金（元本移動のみ、円）。正 = 純入金、負 = 純出金。value_jpy は「その時点で入出金を巻き戻した」値なので、この点の入出金が評価額に現れるのは次の点から: value_jpy[i+1] - value_jpy[i] - flow_jpy[i] = 区間 i の市場変動（最終点も同式に載る）。この向きにより timestamp は入出金の発生日（月次点なら発生月）そのものを指す。出金手数料は含まない（*_performance.net_flow_jpy と同一定義。手数料コストは上式の残差に市場変動と一緒に残る）。JPY の入出金と、入出庫日の始値で JPY 換算できた暗号資産入出庫の合計で、価格を解決できなかった入出庫は計上せず、資産名は同じ期間を張る *_performance.unpriced_flow_assets（monthly_equity_series ↔ monthly_performance、yearly_equity_series ↔ yearly_performance）で申告される。同じ区間の入金と出金は純額で相殺するため、**キーの不在は「入出金が無かった」ではなく「純額がゼロ」**を意味する。最終点（現在のリアルタイム評価額）は次の点が無いため常に undefined。入出金履歴を取得できなかった場合は全点で undefined になり、その状態は *_performance.flow_measured=false / flow_unavailable_reason で申告される',
+		),
 });
 
 export const AnalyzeMyPortfolioDataSchema = z.object({
@@ -556,13 +562,13 @@ export const AnalyzeMyPortfolioDataSchema = z.object({
 		.array(EquityPointSchema)
 		.optional()
 		.describe(
-			'当月1日 00:00 JSTから現在までの日次JPY建て総資産推移。各点はその日00:00 JST時点の復元評価額。最終点は現在のリアルタイム評価額',
+			'当月1日 00:00 JSTから現在までの日次JPY建て総資産推移。各点はその日00:00 JST時点の復元評価額。最終点は現在のリアルタイム評価額。flow_jpy を持つ点は外部からの入出金が発生した点で、そこから次の点への増減にはその金額が含まれる（市場変動ではないため、線の変動として読まずマーカーとして扱う）',
 		),
 	yearly_equity_series: z
 		.array(EquityPointSchema)
 		.optional()
 		.describe(
-			'当年1/1 00:00 JSTから現在までの月次JPY建て総資産推移。各点はその月1日 00:00 JST時点の復元評価額。最終点は現在のリアルタイム評価額',
+			'当年1/1 00:00 JSTから現在までの月次JPY建て総資産推移。各点はその月1日 00:00 JST時点の復元評価額。最終点は現在のリアルタイム評価額。flow_jpy を持つ点はその月に外部からの入出金が発生した点で、そこから次の点への増減にはその金額が含まれる（市場変動ではないため、線の変動として読まずマーカーとして扱う）',
 		),
 	yearly_realized_pnl: PeriodRealizedPnlSchema.describe(
 		'年初来（当年1/1 00:00 JST〜現在）の実現損益（現物単独・全銘柄、補助指標）。全履歴の total_realized_pnl とは対象期間が異なる',

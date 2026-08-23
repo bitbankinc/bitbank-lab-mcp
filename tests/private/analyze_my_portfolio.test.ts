@@ -3986,3 +3986,262 @@ describe('analyze_my_portfolio — ゼロ建玉の表示抑制', () => {
 		expect(result.summary).toContain('集計: ロング 1件 / ショート 0件 / ゼロ建玉 1件省略');
 	});
 });
+
+/**
+ * 資産推移シリーズの入出金フローマーカー（#60）。
+ *
+ * 月次・年次の資産推移は入出金があった期間でも単一の連続線として出るため、大口入金のある
+ * 口座では「ずっと同額を保有していた」ように誤読される（#53 の症状 7 後半）。グラフ化されると
+ * 注記行は消える前提なので、フロー発生点を `EquityPoint.flow_jpy` として**データで**返し、
+ * summary にも読み方を添える。
+ *
+ * 現在時刻は JST 2026-05-16 12:00 に固定する。シリーズの点は `Date.now()` 由来の
+ * JST 暦日境界から生えるため、固定しないと「当月内の入金」を仕込めない。
+ */
+describe('analyze_my_portfolio — 資産推移の入出金フローマーカー', () => {
+	/** 2026-05-16T03:00:00Z = JST 2026-05-16 12:00 */
+	const fixedNowMs = Date.UTC(2026, 4, 16, 3);
+	/** JST 2026-05-10 10:00（当月内・当年内） */
+	const depositAtMs = Date.UTC(2026, 4, 10, 1);
+	/** JST 2026-05-12 18:00（同じ当月内、入金より後） */
+	const withdrawalAtMs = Date.UTC(2026, 4, 12, 9);
+
+	/** JPY のみ保有。価格解決を挟まずフローの寄せ方と表示だけを見るための最小構成。 */
+	function jpyOnlyAssets(onhand: string) {
+		return {
+			assets: [
+				{
+					asset: 'jpy',
+					free_amount: onhand,
+					amount_precision: 0,
+					onhand_amount: onhand,
+					locked_amount: '0',
+					withdrawing_amount: '0',
+					withdrawal_fee: { under: '550', over: '770', threshold: '30000' },
+					stop_deposit: false,
+					stop_withdrawal: false,
+					collateral_ratio: '1',
+				},
+			],
+		};
+	}
+
+	/** 約定・信用なし、入出金だけを差し込める JPY 単独口座の fetch モック */
+	function setupJpyOnlyMock(opts: { onhand: string; deposits?: unknown[]; withdrawals?: unknown[] }) {
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			const maybeMargin = maybeMarginAccountResponse(urlStr);
+			if (maybeMargin) return maybeMargin;
+			if (urlStr.includes('tickers_jpy')) {
+				return new Response(JSON.stringify(tickersJpy), { status: 200 });
+			}
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(jpyOnlyAssets(opts.onhand))), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ trades: [] })), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ deposits: opts.deposits ?? [] })), { status: 200 });
+			}
+			if (urlStr.includes('withdrawal_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ withdrawals: opts.withdrawals ?? [] })), {
+					status: 200,
+				});
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+	}
+
+	async function analyze() {
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		return handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: true });
+	}
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('大口入金があった日の点から機械的にフロー発生点を判別できる', async () => {
+		// 現在 1,500,000 円。うち 500,000 円は 5/10 の入金。
+		setupJpyOnlyMock({
+			onhand: '1500000',
+			deposits: [
+				{
+					uuid: 'dep-1',
+					asset: 'jpy',
+					amount: '500000',
+					status: 'DONE',
+					found_at: depositAtMs,
+					confirmed_at: depositAtMs,
+				},
+			],
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		const monthly = result.data.monthly_equity_series ?? [];
+		const flowPoints = monthly.filter((p: { flow_jpy?: number }) => p.flow_jpy != null);
+		expect(flowPoints).toHaveLength(1);
+		expect(flowPoints[0].timestamp).toBe('2026-05-10T00:00:00+09:00');
+		expect(flowPoints[0].flow_jpy).toBe(500_000);
+
+		// 年次シリーズ（月次点）では 5 月の点に寄る
+		const yearly = result.data.yearly_equity_series ?? [];
+		const yearlyFlowPoints = yearly.filter((p: { flow_jpy?: number }) => p.flow_jpy != null);
+		expect(yearlyFlowPoints).toHaveLength(1);
+		expect(yearlyFlowPoints[0].timestamp).toBe('2026-05-01T00:00:00+09:00');
+		expect(yearlyFlowPoints[0].flow_jpy).toBe(500_000);
+	});
+
+	/**
+	 * フローマーカーの存在理由そのもの。入金による段差を「運用成績」と読ませないために、
+	 * 増減からフローを引いた残りがゼロ（JPY のみ保有なので市場変動が無い）になることを固定する。
+	 */
+	it('増減からフローを引くと市場変動が残る（JPY のみ保有なら全区間ゼロ）', async () => {
+		setupJpyOnlyMock({
+			onhand: '1500000',
+			deposits: [
+				{
+					uuid: 'dep-1',
+					asset: 'jpy',
+					amount: '500000',
+					status: 'DONE',
+					found_at: depositAtMs,
+					confirmed_at: depositAtMs,
+				},
+			],
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		const monthly: Array<{ value_jpy: number; flow_jpy?: number }> = result.data.monthly_equity_series ?? [];
+		expect(monthly.length).toBeGreaterThan(1);
+		for (let i = 0; i < monthly.length - 1; i++) {
+			expect(monthly[i + 1].value_jpy - monthly[i].value_jpy - (monthly[i].flow_jpy ?? 0)).toBe(0);
+		}
+		// 段差そのものは実在する（フローを引くとゼロになるだけで、線は動いている）
+		expect(monthly[0].value_jpy).toBe(1_000_000);
+		expect(monthly[monthly.length - 1].value_jpy).toBe(1_500_000);
+	});
+
+	it('同じ日の入金と出金は純額で 1 点に集約される', async () => {
+		// 5/12 に 300,000 入金 + 100,000 出金（手数料 550）→ 純額 +200,000
+		setupJpyOnlyMock({
+			onhand: '1200000',
+			deposits: [
+				{
+					uuid: 'dep-1',
+					asset: 'jpy',
+					amount: '300000',
+					status: 'DONE',
+					found_at: withdrawalAtMs,
+					confirmed_at: withdrawalAtMs,
+				},
+			],
+			withdrawals: [
+				{ uuid: 'wd-1', asset: 'jpy', amount: '100000', fee: '550', status: 'DONE', requested_at: withdrawalAtMs },
+			],
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		const monthly = result.data.monthly_equity_series ?? [];
+		const flowPoints = monthly.filter((p: { flow_jpy?: number }) => p.flow_jpy != null);
+		expect(flowPoints).toHaveLength(1);
+		expect(flowPoints[0].timestamp).toBe('2026-05-12T00:00:00+09:00');
+		// 出金手数料 550 円は含まない（*_performance.net_flow_jpy と同一定義）
+		expect(flowPoints[0].flow_jpy).toBe(200_000);
+	});
+
+	it('summary にフロー発生点のマーカーと読み方が出る', async () => {
+		setupJpyOnlyMock({
+			onhand: '1500000',
+			deposits: [
+				{
+					uuid: 'dep-1',
+					asset: 'jpy',
+					amount: '500000',
+					status: 'DONE',
+					found_at: depositAtMs,
+					confirmed_at: depositAtMs,
+				},
+			],
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		expect(result.summary).toContain('2026-05-10T00:00:00+09:00: 1,000,000円 ← 純入出金 +500,000円');
+		expect(result.summary).toContain('マーカーとして扱い、線の変動として説明しない');
+		// 見出しに読み方が乗る（月次・年次それぞれ）
+		const headings = result.summary.split('\n').filter((l: string) => l.includes('資産推移（'));
+		expect(headings).toHaveLength(2);
+		for (const h of headings) expect(h).toContain('「← 純入出金」');
+	});
+
+	it('出金は summary で負値のマーカーになる', async () => {
+		setupJpyOnlyMock({
+			onhand: '800000',
+			withdrawals: [
+				{ uuid: 'wd-1', asset: 'jpy', amount: '200000', fee: '550', status: 'DONE', requested_at: withdrawalAtMs },
+			],
+		});
+
+		const result = await analyze();
+		assertOk(result);
+		expect(result.summary).toContain('2026-05-12T00:00:00+09:00: 1,000,550円 ← 純入出金 -200,000円');
+	});
+
+	/**
+	 * 回帰。フローが無い期間では従来と JSON レベルで一致し、summary の見出しも変わらない。
+	 * `toEqual` は undefined のプロパティを無視するため `JSON.stringify` で確かめる。
+	 */
+	it('フローが無い期間の出力は従来と一致する（JSON / 見出しとも）', async () => {
+		setupJpyOnlyMock({ onhand: '1000000' });
+
+		const result = await analyze();
+		assertOk(result);
+
+		expect(JSON.stringify(result.data.monthly_equity_series)).not.toContain('flow_jpy');
+		expect(JSON.stringify(result.data.yearly_equity_series)).not.toContain('flow_jpy');
+		expect(result.summary).toContain('月次資産推移（日次, 17点）— グラフ「月次推移」タブ専用。年次タブでは使わない:');
+		expect(result.summary).toContain('年次資産推移（月次, 6点）— グラフ「年次推移」タブ専用。月次タブでは使わない:');
+		expect(result.summary).not.toContain('純入出金 +');
+	});
+
+	it('入出金履歴の取得に失敗した場合はフローを載せない（未計測は performance 側で申告済み）', async () => {
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+			const maybeMargin = maybeMarginAccountResponse(urlStr);
+			if (maybeMargin) return maybeMargin;
+			if (urlStr.includes('tickers_jpy')) return new Response(JSON.stringify(tickersJpy), { status: 200 });
+			if (urlStr.includes('/v1/user/assets')) {
+				return new Response(JSON.stringify(mockBitbankSuccess(jpyOnlyAssets('1500000'))), { status: 200 });
+			}
+			if (urlStr.includes('trade_history')) {
+				return new Response(JSON.stringify(mockBitbankSuccess({ trades: [] })), { status: 200 });
+			}
+			if (urlStr.includes('deposit_history') || urlStr.includes('withdrawal_history')) {
+				return new Response(JSON.stringify(mockBitbankError(10007)), { status: 200 });
+			}
+			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const result = await analyze();
+		assertOk(result);
+
+		expect(JSON.stringify(result.data.monthly_equity_series)).not.toContain('flow_jpy');
+		// 「フローがゼロ」ではなく「未計測」であることは既存の申告経路が担う
+		expect(result.data.monthly_performance.flow_measured).toBe(false);
+		expect(result.data.monthly_performance.flow_unavailable_reason).toBeDefined();
+	});
+});
