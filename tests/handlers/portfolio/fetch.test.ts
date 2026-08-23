@@ -1077,6 +1077,9 @@ describe('fetchFlowDatePrices', () => {
 	/** 実際に叩いた (pair, year) の組を昇順で返す */
 	const requestedChunks = () => mockedGetCandles.mock.calls.map((c) => `${c[0]}:${c[2]}`).sort();
 
+	/** 取りこぼしゼロの申告（資産別内訳も空）。`toEqual` で完全一致を見るため毎回新しい Map を返す */
+	const noShortfall = () => ({ deposits: 0, withdrawals: 0, depositsByAsset: new Map() });
+
 	/** 指定 JST 暦日の 1day 足 1 本だけを返す get_candles レスポンス */
 	function candleAt(dayMs: number, open: number) {
 		return {
@@ -1101,8 +1104,8 @@ describe('fetchFlowDatePrices', () => {
 		expect(mockedGetCandles).not.toHaveBeenCalled();
 		// 追加取得が無ければ入力の Map をそのまま返す（無駄なコピーを作らない）
 		expect(result.dailyPrices).toBe(base);
-		expect(result.truncatedByChunkLimit).toEqual({ deposits: 0, withdrawals: 0 });
-		expect(result.chunkFetchFailed).toEqual({ deposits: 0, withdrawals: 0 });
+		expect(result.truncatedByChunkLimit).toEqual(noShortfall());
+		expect(result.chunkFetchFailed).toEqual(noShortfall());
 	});
 
 	it('直近窓の外にある入出庫は (資産, 年) 単位で年 chunk を追加取得する', async () => {
@@ -1206,8 +1209,8 @@ describe('fetchFlowDatePrices', () => {
 		// 切り捨てられるのは最も古い 2 年（2005, 2006）
 		expect(requestedYears).toEqual(years.slice(2));
 		// 黙って消さず、上限起因であることを件数で申告する
-		expect(result.truncatedByChunkLimit).toEqual({ deposits: 0, withdrawals: 2 });
-		expect(result.chunkFetchFailed).toEqual({ deposits: 0, withdrawals: 0 });
+		expect(result.truncatedByChunkLimit).toEqual({ deposits: 0, withdrawals: 2, depositsByAsset: new Map() });
+		expect(result.chunkFetchFailed).toEqual(noShortfall());
 	});
 
 	/**
@@ -1285,7 +1288,12 @@ describe('fetchFlowDatePrices', () => {
 			// 出庫の枠は空いているが、入庫が諦めた組を取りに行くことはしない
 			expect(requestedChunks()).not.toContain(`btc_jpy:${overflowYear}`);
 			// 相乗りしていた出庫も一緒に落ちたことを申告する
-			expect(result.truncatedByChunkLimit).toEqual({ deposits: 1, withdrawals: 1 });
+			expect(result.truncatedByChunkLimit).toEqual({
+				deposits: 1,
+				withdrawals: 1,
+				// 抑止は銘柄単位で判断するので、入庫の取りこぼしは資産別にも数える（#80）
+				depositsByAsset: new Map([['btc', 1]]),
+			});
 		});
 
 		it('入庫の上限は古い年から埋める（後から入庫が増えても過去の原価が書き換わらない）', async () => {
@@ -1325,8 +1333,8 @@ describe('fetchFlowDatePrices', () => {
 				withdrawal('eth', jstMs(2019, 3, 1, 12)),
 			]);
 
-			expect(result.chunkFetchFailed).toEqual({ deposits: 2, withdrawals: 1 });
-			expect(result.truncatedByChunkLimit).toEqual({ deposits: 0, withdrawals: 0 });
+			expect(result.chunkFetchFailed).toEqual({ deposits: 2, withdrawals: 1, depositsByAsset: new Map([['btc', 2]]) });
+			expect(result.truncatedByChunkLimit).toEqual(noShortfall());
 		});
 
 		it('get_candles が throw した chunk も取得失敗として数える', async () => {
@@ -1354,6 +1362,27 @@ describe('fetchFlowDatePrices', () => {
 			expect(result.chunkFetchFailed.deposits).toBe(1);
 		});
 
+		/**
+		 * `get_candles` はその (資産, 年) に足が無いとき `errorType='user'` で失敗する
+		 * （`No candle data returned` / `before bitbank service start` / HTTP 404）。
+		 * 再実行しても結果が変わらないので取得失敗に数えない——数えると #80 の抑止に載り、
+		 * 恒久的に価格を解決できない入庫のせいで当該銘柄の原価が永久に出せなくなる。
+		 */
+		it('その年に足が無い失敗（errorType=user）は取得失敗に数えない', async () => {
+			mockedGetCandles.mockResolvedValue({
+				ok: false as const,
+				summary: 'Error: No candle data',
+				data: {},
+				meta: { errorType: 'user' },
+			} as unknown as Awaited<ReturnType<typeof getCandles>>);
+
+			const { fetchFlowDatePrices } = await import('../../../src/handlers/portfolio/fetch.js');
+			const result = await fetchFlowDatePrices(new Map(), [deposit('btc', jstMs(2018, 3, 1, 12))]);
+
+			expect(result.chunkFetchFailed).toEqual(noShortfall());
+			expect(result.truncatedByChunkLimit).toEqual(noShortfall());
+		});
+
 		it('取得は成功したが当日の足が無い（上場前）は失敗にも切り落としにも数えない', async () => {
 			// 2018 年の chunk は返るが、入庫日（3/1）の足は含まれない
 			mockedGetCandles.mockResolvedValue(candleAt(jstMs(2018, 12, 1), 1_000_000));
@@ -1362,8 +1391,8 @@ describe('fetchFlowDatePrices', () => {
 			const result = await fetchFlowDatePrices(new Map(), [deposit('btc', jstMs(2018, 3, 1, 12))]);
 
 			// 再実行しても変わらない恒久的な未解決なので、現在価格フォールバック件数だけで足りる
-			expect(result.chunkFetchFailed).toEqual({ deposits: 0, withdrawals: 0 });
-			expect(result.truncatedByChunkLimit).toEqual({ deposits: 0, withdrawals: 0 });
+			expect(result.chunkFetchFailed).toEqual(noShortfall());
+			expect(result.truncatedByChunkLimit).toEqual(noShortfall());
 			expect(result.dailyPrices.get('btc')?.has(jstMs(2018, 3, 1))).toBe(false);
 		});
 
@@ -1372,8 +1401,8 @@ describe('fetchFlowDatePrices', () => {
 			const empty = await fetchFlowDatePrices(new Map(), []);
 
 			expect(mockedGetCandles).not.toHaveBeenCalled();
-			expect(empty.truncatedByChunkLimit).toEqual({ deposits: 0, withdrawals: 0 });
-			expect(empty.chunkFetchFailed).toEqual({ deposits: 0, withdrawals: 0 });
+			expect(empty.truncatedByChunkLimit).toEqual(noShortfall());
+			expect(empty.chunkFetchFailed).toEqual(noShortfall());
 		});
 	});
 });

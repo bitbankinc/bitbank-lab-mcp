@@ -20,6 +20,7 @@ import {
 	type PortfolioFlowUnavailableReason,
 	type PortfolioFlowValuationBasis,
 	type PortfolioQtyMismatchReason,
+	type PortfolioUnresolvedDepositReason,
 } from '../private/schemas.js';
 import { failPrivateToolError } from '../private/tool-error.js';
 import {
@@ -35,6 +36,7 @@ import {
 	calcPnl,
 	collectFlowValuationTargets,
 	type DepositCostBasisInput,
+	dominantUnresolvedDepositReason,
 	flowUnavailableReasonFor,
 	getJstPeriodBoundaries,
 	MIN_START_VALUE_RATIO,
@@ -44,6 +46,7 @@ import {
 	qtyMismatchReasonFor,
 	resolveDepositWithdrawalStatus,
 	summarizeFlowValuation,
+	unresolvedDepositReasonsByAsset,
 } from './portfolio/calc.js';
 import { PORTFOLIO_CALENDAR_TZ } from './portfolio/calendar.js';
 import {
@@ -205,6 +208,18 @@ const QTY_MISMATCH_CAUSE: Record<PortfolioQtyMismatchReason, string> = {
 	has_crypto_deposits: '入庫日の価格を解決できない暗号資産の入庫あり',
 	history_truncated: '約定履歴の打ち切り',
 	unknown: '原因不明',
+};
+
+/**
+ * 入庫日価格を解決できなかった理由コードごとの警告文（#80）。
+ *
+ * 「なぜ取れなかったか」と「だから何を出していないか」を 1 文に閉じる。原価だけでなく
+ * **実現損益まで確定値を出さない**のがこの抑止の眼目なので、対象フィールドを毎回列挙する。
+ */
+const UNRESOLVED_DEPOSIT_NOTE: Record<PortfolioUnresolvedDepositReason, string> = {
+	deposit_price_fetch_failed:
+		'入庫日を含む年足の取得に失敗したため取得原価に算入していません（上限による切り落としではなく取得失敗なので、取得の成否が実行ごとに変わり、同じ口座を同じ日に叩いても取得原価と実現損益が変わります）',
+	deposit_price_chunk_truncated: `入庫日を含む年足の追加取得が上限（${MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS}組）に達したため取りに行けず、取得原価に算入していません（上限は決定的なので同じ入力なら同じ結果になりますが、上限に収まる構成に変われば再実行で値が変わります）`,
 };
 
 /**
@@ -484,6 +499,27 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// （holdings に載らないが realized_pnl は total に入るため、算出条件の申告が要る）。
 		const unpricedDepositAssets: Array<{ asset: string; count: number }> = [];
 
+		// 入庫日価格を「取りに行けば解決できたはず」なのに解決できなかった銘柄（#80）。
+		// pnlUsesFlow が false の構成では入庫を原価に算入しておらず（depositCost を渡さない）、
+		// 原価由来フィールドは flowUnavailableReason で既に抑止されているので判定しない。
+		const unresolvedDepositReasons = pnlUsesFlow
+			? unresolvedDepositReasonsByAsset(
+					flowDatePrices.truncatedByChunkLimit.depositsByAsset,
+					flowDatePrices.chunkFetchFailed.depositsByAsset,
+				)
+			: new Map<string, PortfolioUnresolvedDepositReason>();
+		// 上のうち、実際に出力を抑止した銘柄（保有銘柄と売り切り銘柄の両方が入る）。入庫があっても
+		// 保有も約定も無い銘柄は損益のどこにも現れないので抑止対象にならない。
+		const suppressedRealizedAssets: Array<{
+			asset: string;
+			count: number;
+			reason: PortfolioUnresolvedDepositReason;
+		}> = [];
+		/** 当該銘柄の未算入入庫のうち「取りに行けば解決できたはず」の件数（警告に出す件数の単一ソース） */
+		const unresolvedDepositCountOf = (asset: string): number =>
+			(flowDatePrices.chunkFetchFailed.depositsByAsset.get(asset) ?? 0) +
+			(flowDatePrices.truncatedByChunkLimit.depositsByAsset.get(asset) ?? 0);
+
 		const holdings = nonZeroAssets.map((a) => {
 			const amount = a.onhand_amount;
 			const isJpy = a.asset === 'jpy';
@@ -529,7 +565,10 @@ export default async function analyzeMyPortfolioHandler(args: {
 			if (pnl?.cost_basis != null) {
 				_totalCostBasis += pnl.cost_basis;
 			}
-			if (pnl) {
+			// 入庫日価格の取得失敗・打ち切りで抑止する銘柄は、その realized_pnl 自体が
+			// 実行ごとに変わりうる値なので合計にも積まない（下の分岐で undefined を返す）。
+			const unresolvedDepositReason = unresolvedDepositReasons.get(a.asset);
+			if (pnl && unresolvedDepositReason == null) {
 				totalRealizedPnl += pnl.realized_pnl;
 			}
 
@@ -556,6 +595,38 @@ export default async function analyzeMyPortfolioHandler(args: {
 					// 0 を出さずキーごと落とす（理由は cost_basis_unavailable_reason が表す）。
 					priced_deposit_count: depositCountOrUndefined(pnl?.priced_deposit_count),
 					unpriced_deposit_count: depositCountOrUndefined(pnl?.unpriced_deposit_count),
+				};
+			}
+
+			// 入庫日価格を取りに行けなかった / 取得に失敗した銘柄（#80）。原価由来 4 フィールドに
+			// 加えて **realized_pnl も確定値として出さない**——移動平均法では入庫 1 件の欠落が
+			// 過去の売却の按分原価を丸ごと変えるので、実現損益まで実行ごとに動く。
+			// 数量不変条件より先に判定する: 両方成立する構成では抑止が広いこちらを載せないと
+			// realized_pnl が漏れる（has_crypto_deposits は realized_pnl を出す経路）。
+			if (pnl != null && unresolvedDepositReason != null) {
+				suppressedRealizedAssets.push({
+					asset: a.asset,
+					count: unresolvedDepositCountOf(a.asset),
+					reason: unresolvedDepositReason,
+				});
+				return {
+					asset: a.asset,
+					pair,
+					amount,
+					avg_buy_price: undefined,
+					current_price: roundedCurrentPrice,
+					jpy_value: jpyValue != null ? Math.round(jpyValue) : undefined,
+					cost_basis: undefined,
+					unrealized_pnl: undefined,
+					unrealized_pnl_pct: undefined,
+					realized_pnl: undefined,
+					// 約定件数は原価に依存しないのでそのまま出す（何件の約定を見た結果かが読める）。
+					trade_count: pnl.trade_count,
+					cost_basis_unavailable_reason: unresolvedDepositReason,
+					cost_basis_reliable: false,
+					// 件数は抑止の根拠そのものなので落とさない。
+					priced_deposit_count: depositCountOrUndefined(pnl.priced_deposit_count),
+					unpriced_deposit_count: depositCountOrUndefined(pnl.unpriced_deposit_count),
 				};
 			}
 
@@ -631,11 +702,27 @@ export default async function analyzeMyPortfolioHandler(args: {
 		if (include_pnl && allTrades.length > 0) {
 			let closedSum = 0;
 			let closedCount = 0;
+			// 売り切り銘柄側で抑止が起きたか。1 銘柄でも抑止したら closed 系は部分和になるので
+			// 確定値を出さない（下で undefined に畳む）。
+			let closedSuppressed = false;
 			const heldAssets = new Set(nonZeroAssets.map((a) => a.asset));
 			const tradedAssets = new Set(allTrades.map((t) => t.pair.replace('_jpy', '')).filter((a) => a !== 'jpy'));
 			for (const asset of tradedAssets) {
 				if (!heldAssets.has(asset)) {
 					const pnl = calcPnl(allTrades, asset, dwData?.withdrawals, depositCost);
+					// 入庫日価格を解決できなかった銘柄（#80）は holdings に載らないので抑止する
+					// フィールドが無いが、closed / total には確実に効く。ここで合計に積むのをやめ、
+					// 下で closed 系・total 系を undefined にする。
+					const unresolvedDepositReason = unresolvedDepositReasons.get(asset);
+					if (unresolvedDepositReason != null) {
+						suppressedRealizedAssets.push({
+							asset,
+							count: unresolvedDepositCountOf(asset),
+							reason: unresolvedDepositReason,
+						});
+						closedSuppressed = true;
+						continue;
+					}
 					// 売り切り銘柄は holdings に載らず件数フィールドの置き場が無いので、警告行が
 					// 算出条件を伝える唯一の経路になる（#77）。**金額の集計条件とは切り離す**——
 					// realized_pnl は Math.round 済みで、未算入入庫があるからこそ 0 円に丸まる
@@ -650,9 +737,16 @@ export default async function analyzeMyPortfolioHandler(args: {
 					}
 				}
 			}
-			closedPositionRealizedPnl = closedSum;
-			closedPositionAssetCount = closedCount;
+			closedPositionRealizedPnl = closedSuppressed ? undefined : closedSum;
+			closedPositionAssetCount = closedSuppressed ? undefined : closedCount;
 		}
+
+		// 全履歴の実現損益を確定値として出せるか（#80）。保有・売り切りのどちらで抑止しても、
+		// 残りを足した部分和は「口座の実現損益」ではないので合計そのものを出さない。
+		// 抑止した銘柄を除外しても含めても正しい合計にならない以上、黙って混ぜる方が有害。
+		const totalRealizedPnlUnavailableReason = dominantUnresolvedDepositReason(
+			suppressedRealizedAssets.map((e) => e.reason),
+		);
 
 		// 6.5. 年初来・月初来の実現損益を算出（JST 基準、現物単独）
 		let yearlyRealizedPnl: PeriodRealizedPnl | undefined;
@@ -676,6 +770,21 @@ export default async function analyzeMyPortfolioHandler(args: {
 			);
 		}
 
+		// 期間実現損益は全銘柄を単一タイムラインで合算した値なので、抑止した銘柄が
+		// **その期間に売却している**ときだけ壊れる。期間内に売却が無ければ抑止した銘柄の
+		// 原価が欠けていても値は動かないので、抑止範囲を広げない（#80 仕様 2）。
+		const periodRealizedPnlUnavailableReasonFor = (
+			period: PeriodRealizedPnl | undefined,
+		): PortfolioUnresolvedDepositReason | undefined => {
+			if (period == null) return undefined;
+			const sold = new Set(period.sold_assets);
+			return dominantUnresolvedDepositReason(
+				suppressedRealizedAssets.filter((e) => sold.has(e.asset)).map((e) => e.reason),
+			);
+		};
+		const yearlyRealizedPnlUnavailableReason = periodRealizedPnlUnavailableReasonFor(yearlyRealizedPnl);
+		const monthlyRealizedPnlUnavailableReason = periodRealizedPnlUnavailableReasonFor(monthlyRealizedPnl);
+
 		// 6.5b. 信用 PnL の集計 + 口座全体 PnL の構築
 		// 現物の totalRealizedPnl と yearly/monthlyRealizedPnl は現物単独の値として維持し、
 		// account_pnl 系として「現物 + 信用決済損益 - 信用支払利息」をまとめて公開する。
@@ -684,7 +793,11 @@ export default async function analyzeMyPortfolioHandler(args: {
 		let monthlyAccountPnl: PeriodAccountPnl | undefined;
 		if (include_pnl) {
 			const marginPnlAll = calcMarginPnl(allMarginTrades);
-			accountPnl = buildAccountPnl(totalRealizedPnl, marginPnlAll);
+			accountPnl = buildAccountPnl(
+				totalRealizedPnlUnavailableReason != null ? undefined : totalRealizedPnl,
+				marginPnlAll,
+				totalRealizedPnlUnavailableReason,
+			);
 
 			const marginPnlYearly = calcPeriodMarginPnl(
 				allMarginTrades,
@@ -693,10 +806,11 @@ export default async function analyzeMyPortfolioHandler(args: {
 				boundaries.nowIso,
 			);
 			yearlyAccountPnl = buildPeriodAccountPnl(
-				yearlyRealizedPnl?.realized_pnl ?? 0,
+				yearlyRealizedPnlUnavailableReason != null ? undefined : (yearlyRealizedPnl?.realized_pnl ?? 0),
 				marginPnlYearly,
 				boundaries.yearStartIso,
 				boundaries.nowIso,
+				yearlyRealizedPnlUnavailableReason,
 			);
 
 			const marginPnlMonthly = calcPeriodMarginPnl(
@@ -706,10 +820,11 @@ export default async function analyzeMyPortfolioHandler(args: {
 				boundaries.nowIso,
 			);
 			monthlyAccountPnl = buildPeriodAccountPnl(
-				monthlyRealizedPnl?.realized_pnl ?? 0,
+				monthlyRealizedPnlUnavailableReason != null ? undefined : (monthlyRealizedPnl?.realized_pnl ?? 0),
 				marginPnlMonthly,
 				boundaries.monthStartIso,
 				boundaries.nowIso,
+				monthlyRealizedPnlUnavailableReason,
 			);
 		}
 
@@ -864,6 +979,16 @@ export default async function analyzeMyPortfolioHandler(args: {
 			.sort((x, y) => x.asset.localeCompare(y.asset))
 			.map((e) => `${e.asset.toUpperCase()}（${e.count}件）`)
 			.join(', ');
+
+		// 入庫日価格を取得できず確定値を抑止した銘柄の表示ラベル（#80）。上の #77 と同じく
+		// 銘柄名と件数のみで金額は出さない。保有銘柄と売り切り銘柄が混ざるので銘柄名でソートする。
+		const suppressedLabelOf = (reason?: PortfolioUnresolvedDepositReason): string =>
+			[...suppressedRealizedAssets]
+				.filter((e) => reason == null || e.reason === reason)
+				.sort((x, y) => x.asset.localeCompare(y.asset))
+				.map((e) => `${e.asset.toUpperCase()}（${e.count}件）`)
+				.join(', ');
+		const suppressedRealizedLabel = suppressedLabelOf();
 
 		// ticker 未取得の銘柄がある場合は警告
 		const missingPriceAssets = cryptoHoldings
@@ -1205,36 +1330,50 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// 年初来 / 月初来（yearly_account_pnl / monthly_account_pnl）が併存し、text しか読まない
 		// LLM には「Realized PnL (Spot)」だけでどれなのか判別できないため（#53 症状 5）。
 		if (accountPnl != null) {
-			const spotSign = accountPnl.spot_realized_pnl >= 0 ? '+' : '';
-			lines.push(
-				`Realized PnL (Spot, 全履歴・売り切り銘柄含む): ${spotSign}${formatPriceJPY(accountPnl.spot_realized_pnl)}`,
-			);
-			// 内訳を出して holdings[].realized_pnl の合計との差分（= 売り切り銘柄ぶん）を追えるようにする。
-			// 集計を行っていない構成（約定履歴なし）では差分そのものが定義されないので出さない。
-			if (closedPositionRealizedPnl != null) {
-				const heldSign = heldRealizedPnl >= 0 ? '+' : '';
-				const closedPart =
-					closedPositionAssetCount != null && closedPositionAssetCount > 0
-						? `売り切り銘柄 ${closedPositionAssetCount}銘柄 ${closedPositionRealizedPnl >= 0 ? '+' : ''}${formatPriceJPY(closedPositionRealizedPnl)}`
-						: '売り切り銘柄なし（0円）';
-				lines.push(
-					`  内訳: 現在保有銘柄（holdings[].realized_pnl の合計）${heldSign}${formatPriceJPY(heldRealizedPnl)} / ${closedPart}`,
-				);
-			}
-			const totalSign = accountPnl.total >= 0 ? '+' : '';
+			const spotRealized = accountPnl.spot_realized_pnl;
 			const hasMargin =
 				accountPnl.margin_realized_pnl !== 0 ||
 				accountPnl.margin_interest_cost !== 0 ||
 				accountPnl.margin_fee_cost !== 0;
-			if (hasMargin) {
-				const mSign = accountPnl.margin_realized_pnl >= 0 ? '+' : '';
-				// Interest / Fee は data 側では**コスト = 正値**（margin_interest_cost /
-				// margin_fee_cost）。表示は total への寄与を表すので `-` を前置する（#72）。
+			// Interest / Fee は data 側では**コスト = 正値**（margin_interest_cost /
+			// margin_fee_cost）。表示は total への寄与を表すので `-` を前置する（#72）。
+			const marginPart = `Margin: ${accountPnl.margin_realized_pnl >= 0 ? '+' : ''}${formatPriceJPY(accountPnl.margin_realized_pnl)} / Interest cost: -${formatPriceJPY(accountPnl.margin_interest_cost)} / Fee cost: -${formatPriceJPY(accountPnl.margin_fee_cost)}`;
+			if (spotRealized == null && totalRealizedPnlUnavailableReason != null) {
+				// 抑止した銘柄を除いた部分和を「実現損益」として見出しに載せない（#80）。
+				// テキストしか読まない LLM には金額が唯一の手掛かりなので、数字を出した時点で
+				// 口座の実現損益として読まれる。信用側は現物と独立に確定するので内訳だけ残す。
 				lines.push(
-					`Account PnL (全履歴): ${totalSign}${formatPriceJPY(accountPnl.total)} (Spot: ${spotSign}${formatPriceJPY(accountPnl.spot_realized_pnl)} / Margin: ${mSign}${formatPriceJPY(accountPnl.margin_realized_pnl)} / Interest cost: -${formatPriceJPY(accountPnl.margin_interest_cost)} / Fee cost: -${formatPriceJPY(accountPnl.margin_fee_cost)})`,
+					`Realized PnL (Spot, 全履歴・売り切り銘柄含む): 算出不能（${UNRESOLVED_DEPOSIT_NOTE[totalRealizedPnlUnavailableReason]}）`,
+				);
+				lines.push(
+					hasMargin
+						? `Account PnL (全履歴): 算出不能（現物の実現損益が確定しないため。信用のみの内訳: ${marginPart}）`
+						: 'Account PnL (全履歴): 算出不能（現物の実現損益が確定しないため）',
 				);
 			} else {
-				lines.push(`Account PnL (全履歴): ${totalSign}${formatPriceJPY(accountPnl.total)}`);
+				const spotSign = (spotRealized ?? 0) >= 0 ? '+' : '';
+				lines.push(`Realized PnL (Spot, 全履歴・売り切り銘柄含む): ${spotSign}${formatPriceJPY(spotRealized ?? 0)}`);
+				// 内訳を出して holdings[].realized_pnl の合計との差分（= 売り切り銘柄ぶん）を追えるようにする。
+				// 集計を行っていない構成（約定履歴なし）では差分そのものが定義されないので出さない。
+				if (closedPositionRealizedPnl != null) {
+					const heldSign = heldRealizedPnl >= 0 ? '+' : '';
+					const closedPart =
+						closedPositionAssetCount != null && closedPositionAssetCount > 0
+							? `売り切り銘柄 ${closedPositionAssetCount}銘柄 ${closedPositionRealizedPnl >= 0 ? '+' : ''}${formatPriceJPY(closedPositionRealizedPnl)}`
+							: '売り切り銘柄なし（0円）';
+					lines.push(
+						`  内訳: 現在保有銘柄（holdings[].realized_pnl の合計）${heldSign}${formatPriceJPY(heldRealizedPnl)} / ${closedPart}`,
+					);
+				}
+				const total = accountPnl.total ?? 0;
+				const totalSign = total >= 0 ? '+' : '';
+				if (hasMargin) {
+					lines.push(
+						`Account PnL (全履歴): ${totalSign}${formatPriceJPY(total)} (Spot: ${spotSign}${formatPriceJPY(spotRealized ?? 0)} / ${marginPart})`,
+					);
+				} else {
+					lines.push(`Account PnL (全履歴): ${totalSign}${formatPriceJPY(total)}`);
+				}
 			}
 			// 年初来 / 月初来は data 側にしか出ないので、全履歴の値と取り違えられないよう所在を示す。
 			if (yearlyAccountPnl != null || monthlyAccountPnl != null) {
@@ -1267,6 +1406,11 @@ export default async function analyzeMyPortfolioHandler(args: {
 		if (unpricedDepositLabel !== '') {
 			lines.push(
 				`※ ${unpricedDepositLabel} は入庫日の始値を解決できなかった入庫（カッコ内は件数）を取得原価に算入していないため、取得原価・評価損益・実現損益がその分だけ不完全です。合計からは除外せず含めています`,
+			);
+		}
+		if (suppressedRealizedLabel !== '') {
+			lines.push(
+				`※ ${suppressedRealizedLabel} は入庫日を含む年足を取得できなかった入庫（カッコ内は件数）があるため、取得原価・評価損益・実現損益を出していません（合計評価損益からは除外しています）。合計実現損益・口座全体 PnL も、抑止した銘柄を除いた部分和は出さず算出不能にしています`,
 			);
 		}
 		lines.push('');
@@ -1372,18 +1516,31 @@ export default async function analyzeMyPortfolioHandler(args: {
 		}
 		// 上のフォールバック件数は「上限で取りに行かなかった」「取得に失敗した」「上場前で本当に無い」を
 		// 全部まとめた数字なので、そこからは再実行で直るのかどうかが読めない。前 2 つは件数を別枠で出す
-		// （#76 仕様 2）。特に入庫は取得原価に算入されないまま実現損益が動くので、必ず分けて申告する。
+		// （#76 仕様 2）。前 2 つは「取りに行けば解決できたはず」の分でもあり、入庫側は該当銘柄の
+		// 確定値そのものを抑止する（#80）ので、件数と一緒に抑止した銘柄も申告する。
 		const chunkTruncated = flowDatePrices.truncatedByChunkLimit;
 		const chunkFailed = flowDatePrices.chunkFetchFailed;
+		/**
+		 * 入庫側の取りこぼしを 1 行で申告する（#80）。
+		 *
+		 * 件数だけでは「値が出ているのか抑止されたのか」が読めないので、抑止した銘柄名と
+		 * その件数を同じ行に載せる。抑止が起きていない構成（`pnlUsesFlow=false` で原価を
+		 * そもそも出していない / 該当銘柄に保有も約定も無い）は取りこぼしが損益のどこにも
+		 * 効かないので、そう明記して確定値の心配をさせない。
+		 */
+		const depositShortfallWarning = (count: number, reason: PortfolioUnresolvedDepositReason): string => {
+			const label = suppressedLabelOf(reason);
+			const head = `暗号資産入庫 ${count}件は${UNRESOLVED_DEPOSIT_NOTE[reason]}`;
+			if (label === '') {
+				return `${head}。該当銘柄は保有・約定のいずれにも現れないため、抑止した出力はありません`;
+			}
+			return `${head}。${label}（カッコ内は件数）は取得原価・平均取得単価・評価損益・実現損益を確定値として出さず cost_basis_unavailable_reason=${reason} で抑止しています。合計実現損益（total_realized_pnl / account_pnl.spot_realized_pnl）と、抑止した銘柄が売却している期間の期間実現損益も、残りを足した部分和は出さず undefined です`;
+		};
 		if (chunkTruncated.deposits > 0) {
-			calcWarnings.push(
-				`暗号資産入庫 ${chunkTruncated.deposits}件は入庫日を含む年足の追加取得が上限（${MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS}組）に達したため取りに行けず、取得原価に算入していません。取得原価と実現損益はこの分だけ不完全で、上限に収まる構成に変われば再実行で値が変わります（上場前で本当に価格が無い分とは別枠の件数です）`,
-			);
+			calcWarnings.push(depositShortfallWarning(chunkTruncated.deposits, 'deposit_price_chunk_truncated'));
 		}
 		if (chunkFailed.deposits > 0) {
-			calcWarnings.push(
-				`暗号資産入庫 ${chunkFailed.deposits}件は入庫日を含む年足の取得に失敗したため取得原価に算入していません（上限による切り落としではなく取得失敗なので、再実行で解消すると取得原価と実現損益が変わります）`,
-			);
+			calcWarnings.push(depositShortfallWarning(chunkFailed.deposits, 'deposit_price_fetch_failed'));
 		}
 		if (chunkTruncated.withdrawals > 0) {
 			calcWarnings.push(
@@ -1432,7 +1589,8 @@ export default async function analyzeMyPortfolioHandler(args: {
 			total_unrealized_pnl: totalUnrealizedPnl,
 			total_unrealized_pnl_pct: totalUnrealizedPnlPct,
 			total_cost_basis_unavailable_reason: flowUnavailableReason,
-			total_realized_pnl: totalRealizedPnl !== 0 ? totalRealizedPnl : undefined,
+			total_realized_pnl:
+				totalRealizedPnlUnavailableReason == null && totalRealizedPnl !== 0 ? totalRealizedPnl : undefined,
 			closed_position_realized_pnl: closedPositionRealizedPnl,
 			closed_position_asset_count: closedPositionAssetCount,
 			daily_performance: dailyPerformance,
@@ -1442,22 +1600,24 @@ export default async function analyzeMyPortfolioHandler(args: {
 			yearly_equity_series: yearlyEquitySeries,
 			yearly_realized_pnl: yearlyRealizedPnl
 				? {
-						realized_pnl: yearlyRealizedPnl.realized_pnl,
+						realized_pnl: yearlyRealizedPnlUnavailableReason != null ? undefined : yearlyRealizedPnl.realized_pnl,
 						sell_count: yearlyRealizedPnl.sell_count,
 						period_start: yearlyRealizedPnl.period_start,
 						period_end: yearlyRealizedPnl.period_end,
 						priced_deposit_count: depositCountOrUndefined(yearlyRealizedPnl.priced_deposit_count),
 						unpriced_deposit_count: depositCountOrUndefined(yearlyRealizedPnl.unpriced_deposit_count),
+						realized_pnl_unavailable_reason: yearlyRealizedPnlUnavailableReason,
 					}
 				: undefined,
 			monthly_realized_pnl: monthlyRealizedPnl
 				? {
-						realized_pnl: monthlyRealizedPnl.realized_pnl,
+						realized_pnl: monthlyRealizedPnlUnavailableReason != null ? undefined : monthlyRealizedPnl.realized_pnl,
 						sell_count: monthlyRealizedPnl.sell_count,
 						period_start: monthlyRealizedPnl.period_start,
 						period_end: monthlyRealizedPnl.period_end,
 						priced_deposit_count: depositCountOrUndefined(monthlyRealizedPnl.priced_deposit_count),
 						unpriced_deposit_count: depositCountOrUndefined(monthlyRealizedPnl.unpriced_deposit_count),
+						realized_pnl_unavailable_reason: monthlyRealizedPnlUnavailableReason,
 					}
 				: undefined,
 			account_pnl: accountPnl,
@@ -1469,6 +1629,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 			holdings_performance: holdingsPerformance && holdingsPerformance.length > 0 ? holdingsPerformance : undefined,
 			technical: technical && technical.length > 0 ? technical : undefined,
 			timestamp,
+			total_realized_pnl_unavailable_reason: totalRealizedPnlUnavailableReason,
 		};
 
 		const meta = {

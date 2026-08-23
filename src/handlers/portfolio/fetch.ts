@@ -455,6 +455,14 @@ export interface FlowPriceShortfall {
 	deposits: number;
 	/** 出庫の件数。1 件以上なら純投入額の減算が現在価格での仮評価に落ちる（表示のみ） */
 	withdrawals: number;
+	/**
+	 * `deposits` の資産別内訳（資産コード小文字 → 件数。0 件の資産はキーごと持たない）。
+	 *
+	 * 原価・実現損益の抑止は**銘柄単位**で判断する（#80）。合計件数だけでは
+	 * 「どの銘柄の原価が欠けているか」が分からず、抑止範囲が全銘柄に広がってしまう。
+	 * 出庫側は表示専用で銘柄単位の抑止対象にならないため内訳を持たない。
+	 */
+	depositsByAsset: Map<string, number>;
 }
 
 /** 追加取得の結果。日次価格に加えて「なぜ取れなかったか」を種類別に返す */
@@ -468,14 +476,22 @@ export interface FlowDatePrices {
 	 * chunk 数の**上限で切り落とした**ために解決できなくなった件数。
 	 * 「取りに行けば解決できたはず」の分であり、上場前・API 失敗で本当に取れない分
 	 * （どちらも `current_price_fallback_count` に混ざる）とは区別して申告する（#76 仕様 2）。
+	 *
+	 * 上限は決定的（同じ入力なら同じ結果）だが、原価に入るはずの入庫が落ちている点は
+	 * 取得失敗と同じなので、`depositsByAsset` に載った銘柄は原価・実現損益を確定値として
+	 * 出さない（#80。理由コードは `deposit_price_chunk_truncated`）。
 	 */
 	truncatedByChunkLimit: FlowPriceShortfall;
 	/**
-	 * chunk の**取得に失敗した**（`get_candles` が fail / throw / 空応答）ために
+	 * chunk の**取得に失敗した**（`get_candles` が upstream / network で fail、throw、空応答）ために
 	 * 解決できなくなった件数。再実行で解消しうる一時的な不完全性。
 	 *
-	 * 「取得は成功したが当日の足が無い」（上場前・データ欠損）はここには入らない。
-	 * それは再実行しても変わらない恒久的な未解決なので、`current_price_fallback_count` だけで足りる。
+	 * 「当日の足が無い」（上場前・データ欠損）はここには入らない。それは再実行しても変わらない
+	 * 恒久的な未解決なので、`current_price_fallback_count` だけで足りる。年 chunk が丸ごと
+	 * 空で `getCandles` が `errorType='user'` で失敗するケース（その年に足が存在しない）も同じ扱い。
+	 *
+	 * `depositsByAsset` に載った銘柄は**実行ごとに取得原価と実現損益が変わる**ため、
+	 * 確定値を出さない（#80。理由コードは `deposit_price_fetch_failed`）。
 	 */
 	chunkFetchFailed: FlowPriceShortfall;
 }
@@ -488,7 +504,16 @@ interface FlowPriceChunk {
 	withdrawalCount: number;
 }
 
-const emptyShortfall = (): FlowPriceShortfall => ({ deposits: 0, withdrawals: 0 });
+const emptyShortfall = (): FlowPriceShortfall => ({ deposits: 0, withdrawals: 0, depositsByAsset: new Map() });
+
+/** `shortfall` に (資産, 年) 1 組ぶんの取りこぼしを加算する（資産別内訳も同時に積む） */
+function addShortfall(shortfall: FlowPriceShortfall, chunk: FlowPriceChunk): void {
+	shortfall.deposits += chunk.depositCount;
+	shortfall.withdrawals += chunk.withdrawalCount;
+	if (chunk.depositCount > 0) {
+		shortfall.depositsByAsset.set(chunk.asset, (shortfall.depositsByAsset.get(chunk.asset) ?? 0) + chunk.depositCount);
+	}
+}
 
 /**
  * 入出庫日（入庫: `confirmed_at` / 出庫: `requested_at`）の 1day open を解決するため、
@@ -582,22 +607,34 @@ export async function fetchFlowDatePrices(
 	];
 	const truncatedByChunkLimit = emptyShortfall();
 	for (const c of depositChunks.slice(MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS)) {
-		truncatedByChunkLimit.deposits += c.depositCount;
 		// 入庫の上限で切られた組に相乗りしていた出庫も一緒に落ちる（出庫の残枠で拾い直さない）。
-		truncatedByChunkLimit.withdrawals += c.withdrawalCount;
+		addShortfall(truncatedByChunkLimit, c);
 	}
 	for (const c of withdrawalOnlyChunks.slice(MAX_WITHDRAWAL_FLOW_PRICE_YEAR_CHUNKS)) {
-		truncatedByChunkLimit.withdrawals += c.withdrawalCount;
+		// depositCount は定義上 0 の組なので資産別内訳には積まれない。
+		addShortfall(truncatedByChunkLimit, c);
 	}
 
 	const merged = new Map<string, Map<number, number>>();
 	for (const [asset, byDate] of baseDailyPrices) merged.set(asset, new Map(byDate));
 
 	const chunkFetchFailed = emptyShortfall();
-	const markFailed = (chunk: FlowPriceChunk) => {
-		chunkFetchFailed.deposits += chunk.depositCount;
-		chunkFetchFailed.withdrawals += chunk.withdrawalCount;
-	};
+	const markFailed = (chunk: FlowPriceChunk) => addShortfall(chunkFetchFailed, chunk);
+
+	/**
+	 * `getCandles` の失敗が**再実行で解消しうる**ものか判定する。
+	 *
+	 * `errorType='user'` は「その (資産, 年) に足がそもそも存在しない」ことの表明で
+	 * （`No candle data returned` / `before bitbank service start` / HTTP 404）、
+	 * 何度叩いても同じ結果になる。これを取得失敗に数えると、恒久的に価格を解決できない
+	 * 入庫まで #80 の抑止対象に入り、当該銘柄の取得原価・実現損益が**永久に出せなくなる**。
+	 * 上場前・データ欠損を取得失敗に数えないという本 interface の規約
+	 * （`FlowDatePrices.chunkFetchFailed` の doc）を、年 chunk が丸ごと空のケースまで広げたもの。
+	 *
+	 * それ以外（`upstream` の HTTP エラー・レート制限・throw）は一時的な失敗として数える。
+	 */
+	const isTransientFailure = (res: { meta?: { errorType?: string } } | undefined): boolean =>
+		res?.meta?.errorType !== 'user';
 
 	await runWithConcurrency(selected, FLOW_PRICE_FETCH_CONCURRENCY, async (chunk) => {
 		const { asset, year } = chunk;
@@ -605,7 +642,9 @@ export async function fetchFlowDatePrices(
 			// 1day の年 chunk は最大 366 本。`fetchCandlePriceData` と同じ暦（JST）で足を切る。
 			const res = await getCandles(`${asset}_jpy`, '1day', year, 400, PORTFOLIO_CALENDAR_TZ);
 			if (!res?.ok) {
-				markFailed(chunk);
+				// 「その年に足が無い」失敗は再実行しても変わらないので取得失敗に数えない
+				// （現在価格フォールバック件数だけで足りる。`isTransientFailure` の doc 参照）。
+				if (isTransientFailure(res)) markFailed(chunk);
 				return;
 			}
 			const normalized = res.data?.normalized;

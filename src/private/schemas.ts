@@ -209,12 +209,41 @@ export const PortfolioFlowUnavailableReasonEnum = z.enum([
 export type PortfolioFlowUnavailableReason = z.infer<typeof PortfolioFlowUnavailableReasonEnum>;
 
 /**
+ * 入庫日価格を「取りに行けば解決できたはず」なのに解決できなかったことを表す理由コード（#80）。
+ *
+ * 入庫日の 1day 始値は年単位の chunk（`fetchFlowDatePrices`）で取りに行く。この取得が
+ * 転けると当該入庫は原価にも復元数量にも算入されず（`collectDepositCostEvents`）、
+ * **移動平均法の取得原価が変わって過去の売却の実現損益まで動く**。同じ口座を同じ日に
+ * 叩いて別の実現損益が出る以上どちらも確定申告に使えないので、該当銘柄では原価由来の
+ * フィールドに加えて `realized_pnl` も確定値として出さない。
+ *
+ * **「取りに行っても解決できない」分（上場前・当日足の欠損）はここに入らない。**
+ * そちらは再実行しても変わらない恒久的な未解決で、抑止すると当該銘柄の原価が永久に
+ * 出せなくなるため、従来どおり値を出したうえで `unpriced_deposit_count` と警告行で
+ * 不完全さを申告する（#57 / #77 の判断を維持する）。
+ */
+export const PortfolioUnresolvedDepositReasonEnum = z.enum([
+	/** 入庫日を含む年足 chunk の取得に失敗した（`get_candles` が fail / throw / 空応答）。**実行ごとに成否が変わる**ので値の再現性が無い */
+	'deposit_price_fetch_failed',
+	/** 入庫日を含む年足 chunk が件数上限に達して取りに行けなかった。上限は決定的だが、原価に入るはずの入庫が落ちている点は取得失敗と同じ */
+	'deposit_price_chunk_truncated',
+]);
+
+/** @see PortfolioUnresolvedDepositReasonEnum */
+export type PortfolioUnresolvedDepositReason = z.infer<typeof PortfolioUnresolvedDepositReasonEnum>;
+
+/**
  * 取得原価を確定できなかった理由コード（`holdings[].cost_basis_unavailable_reason` の単一ソース）。
  *
  * 入出金履歴の取得起因（`PortfolioFlowUnavailableReasonEnum`）を包含する上位集合で、
- * 復元数量と実残高の数量不変条件（`qtyInvariantHolds`）が破れたときの乖離要因を追加する。
- * 数量乖離側の 3 値は銘柄単位でのみ立ち、入出金取得系フィールド
+ * 復元数量と実残高の数量不変条件（`qtyInvariantHolds`）が破れたときの乖離要因と、
+ * 入庫日価格の取得に失敗した / 取りに行けなかった要因（`PortfolioUnresolvedDepositReasonEnum`）を追加する。
+ * 数量乖離側の 3 値と入庫日価格側の 2 値は銘柄単位でのみ立ち、入出金取得系フィールド
  * （`*_performance.flow_unavailable_reason` / `meta.flowDataUnavailableReason`）には現れない。
+ *
+ * **抑止するフィールドの範囲は値によって異なる。** 入庫日価格側の 2 値だけは
+ * `realized_pnl` も落とす（原価が欠けると移動平均法で過去の売却の実現損益まで動くため）。
+ * 他の値は従来どおり原価由来 4 フィールドのみを落として `realized_pnl` は出す。
  */
 export const PortfolioCostBasisUnavailableReasonEnum = z.enum([
 	...PortfolioFlowUnavailableReasonEnum.options,
@@ -224,13 +253,21 @@ export const PortfolioCostBasisUnavailableReasonEnum = z.enum([
 	'history_truncated',
 	/** 復元数量が実残高と乖離しているが、原因を特定できない（例: 履歴に現れない出庫） */
 	'unknown',
+	// #80 で追加。enum は既存値の後ろに足す（公開済みの列挙順を中間から崩さない）。
+	...PortfolioUnresolvedDepositReasonEnum.options,
 ]);
 
 /** @see PortfolioCostBasisUnavailableReasonEnum */
 export type PortfolioCostBasisUnavailableReason = z.infer<typeof PortfolioCostBasisUnavailableReasonEnum>;
 
-/** 数量不変条件の乖離検出で立つ理由コード（上位集合のうち入出金取得起因を除いたもの） */
-export type PortfolioQtyMismatchReason = Exclude<PortfolioCostBasisUnavailableReason, PortfolioFlowUnavailableReason>;
+/**
+ * 数量不変条件の乖離検出で立つ理由コード
+ * （上位集合のうち入出金取得起因と入庫日価格起因を除いたもの）。
+ */
+export type PortfolioQtyMismatchReason = Exclude<
+	PortfolioCostBasisUnavailableReason,
+	PortfolioFlowUnavailableReason | PortfolioUnresolvedDepositReason
+>;
 
 /**
  * 期間パフォーマンスの増減率（`change_pct` / `adjusted_change_pct`）を出せない理由コード。
@@ -340,11 +377,11 @@ const HoldingPnlSchema = z.object({
 		.number()
 		.optional()
 		.describe(
-			'実現損益（JPY、全履歴・当該銘柄のみ）。holdings には**現在保有中の銘柄しか載らない**ため、この配列の合計は売り切り銘柄（保有ゼロだが約定履歴がある銘柄）の実現損益を含まない。検算式: Σ holdings[].realized_pnl + closed_position_realized_pnl = account_pnl.spot_realized_pnl = total_realized_pnl。算出条件は unpriced_deposit_count を併せて読むこと——その件数の入庫は原価ゼロ扱いで除外されており、同じ値でも「全入庫を原価算入した結果」とは意味が異なる',
+			'実現損益（JPY、全履歴・当該銘柄のみ）。holdings には**現在保有中の銘柄しか載らない**ため、この配列の合計は売り切り銘柄（保有ゼロだが約定履歴がある銘柄）の実現損益を含まない。検算式: Σ holdings[].realized_pnl + closed_position_realized_pnl = account_pnl.spot_realized_pnl = total_realized_pnl（**cost_basis_unavailable_reason が deposit_price_fetch_failed / deposit_price_chunk_truncated の銘柄がある実行では成立しない**——両辺とも抑止されて undefined になる項が出るため。詳細は total_realized_pnl）。算出条件は unpriced_deposit_count を併せて読むこと——その件数の入庫は原価ゼロ扱いで除外されており、同じ値でも「全入庫を原価算入した結果」とは意味が異なる',
 		),
 	trade_count: z.number().optional().describe('約定件数'),
 	cost_basis_unavailable_reason: PortfolioCostBasisUnavailableReasonEnum.optional().describe(
-		'取得原価を確定できなかった理由。設定されている場合 avg_buy_price / cost_basis / unrealized_pnl / unrealized_pnl_pct はいずれも undefined（信頼できない値を確定値として出さないための抑止）。dw_fetch_failed=入出金 API の取得に失敗（一部チャネルのみの失敗を含む）, dw_history_incomplete=件数上限で入出金の全履歴を取得できていない, has_crypto_deposits=復元数量が実残高と乖離しており該当銘柄に入庫日の始値を解決できなかった DONE の暗号資産入庫がある（入庫日の始値で解決できた入庫は原価・数量に算入されるため本値は立たない。現在価格へのフォールバックは原価には使わない——相場連動の誤差を取得原価に持ち込まないため）, history_truncated=復元数量が実残高と乖離しており約定履歴が件数上限で打ち切られている, unknown=復元数量が実残高と乖離しているが原因を特定できない。include_deposit_withdrawal=false でも入出金履歴は損益計算のために取得されるため、同フラグ由来でこの値が立つことはない',
+		'取得原価を確定できなかった理由。設定されている場合 avg_buy_price / cost_basis / unrealized_pnl / unrealized_pnl_pct はいずれも undefined（信頼できない値を確定値として出さないための抑止）。dw_fetch_failed=入出金 API の取得に失敗（一部チャネルのみの失敗を含む）, dw_history_incomplete=件数上限で入出金の全履歴を取得できていない, has_crypto_deposits=復元数量が実残高と乖離しており該当銘柄に入庫日の始値を解決できなかった DONE の暗号資産入庫がある（入庫日の始値で解決できた入庫は原価・数量に算入されるため本値は立たない。現在価格へのフォールバックは原価には使わない——相場連動の誤差を取得原価に持ち込まないため）, history_truncated=復元数量が実残高と乖離しており約定履歴が件数上限で打ち切られている, unknown=復元数量が実残高と乖離しているが原因を特定できない, deposit_price_fetch_failed=入庫日を含む年足 chunk の取得に失敗した入庫がある, deposit_price_chunk_truncated=入庫日を含む年足 chunk が件数上限に達して取りに行けなかった入庫がある。**末尾 2 値だけは realized_pnl も undefined になる**（原価が 1 件欠けると移動平均法で過去の売却の実現損益まで動くため。他の値では realized_pnl は従来どおり出る）。この 2 値は数量不変条件より優先して判定するので、同時に成立する構成では has_crypto_deposits ではなくこちらが載る（抑止が広い方を選ぶ）。include_deposit_withdrawal=false でも入出金履歴は損益計算のために取得されるため、同フラグ由来でこの値が立つことはない',
 	),
 	cost_basis_reliable: z
 		.boolean()
@@ -478,8 +515,9 @@ const PeriodRealizedPnlSchema = z
 	.object({
 		realized_pnl: z
 			.number()
+			.optional()
 			.describe(
-				'期間内の合計実現損益（JPY、現物単独・全銘柄）。売り切り銘柄も含むため holdings[].realized_pnl の合計とは一致しない（あちらは全履歴・現在保有中の銘柄のみ）。期間は period_start / period_end',
+				'期間内の合計実現損益（JPY、現物単独・全銘柄）。売り切り銘柄も含むため holdings[].realized_pnl の合計とは一致しない（あちらは全履歴・現在保有中の銘柄のみ）。期間は period_start / period_end。**この期間に売却がある銘柄で入庫日価格の取得が失敗・打ち切りになった場合は undefined**（理由は realized_pnl_unavailable_reason）——抑止した銘柄を除いた部分和は出さない',
 			),
 		sell_count: z.number().int().describe('期間内の売却約定件数'),
 		period_start: z.string().describe('期間の開始日時（ISO8601 JST）'),
@@ -499,8 +537,12 @@ const PeriodRealizedPnlSchema = z
 			.nonnegative()
 			.optional()
 			.describe(
-				'同じリプレイで入庫日（confirmed_at）の 1day 始値を解決できず、取得原価にも数量にも**算入しなかった** DONE 暗号資産入庫の件数（全履歴・全銘柄）。0 より大きければ、この期間の realized_pnl は未算入ぶんを**原価ゼロで売った**結果を含みうる（＝過大側にずれる）。銘柄別の内訳は holdings[].unpriced_deposit_count（売り切り銘柄は holdings に載らないため、本値の方が大きくなることがある）。0 件のときはキーごと省く',
+				'同じリプレイで入庫日（confirmed_at）の 1day 始値を解決できず、取得原価にも数量にも**算入しなかった** DONE 暗号資産入庫の件数（全履歴・全銘柄）。0 より大きければ、この期間の realized_pnl は未算入ぶんを**原価ゼロで売った**結果を含みうる（＝過大側にずれる）。銘柄別の内訳は holdings[].unpriced_deposit_count（売り切り銘柄は holdings に載らないため、本値の方が大きくなることがある）。**本値が 0 でなくても realized_pnl は出る**——恒久的に解決できない未算入（上場前・当日足の欠損）は抑止対象ではないため。抑止されるのは realized_pnl_unavailable_reason が載る場合だけ。0 件のときはキーごと省く',
 			),
+		// #80 で追加。新設キーは既存キーの後ろ（宣言順 = wire のキー順）。
+		realized_pnl_unavailable_reason: PortfolioUnresolvedDepositReasonEnum.optional().describe(
+			'この期間の realized_pnl を確定値として出せなかった理由。設定されている場合 realized_pnl は undefined で、同じ期間の *_account_pnl.spot_realized_pnl / total も undefined になる。deposit_price_fetch_failed=入庫日を含む年足 chunk の取得に失敗した入庫がある銘柄が、この期間に売却している（取得の成否は実行ごとに変わるため値の再現性が無い）, deposit_price_chunk_truncated=同じく年足 chunk が件数上限で取りに行けなかった銘柄が、この期間に売却している。抑止しても sell_count は出る（売却件数は原価に依存しないため）。期間内に該当銘柄の売却が無ければ抑止しない（抑止範囲を必要最小限にするための判定）',
+		),
 	})
 	.optional();
 
@@ -512,8 +554,9 @@ const PeriodRealizedPnlSchema = z
 const accountPnlCoreShape = {
 	spot_realized_pnl: z
 		.number()
+		.optional()
 		.describe(
-			'現物の実現損益（JPY、全銘柄 = 現在保有中の銘柄 + 売り切り銘柄）。対象期間は本オブジェクトのスコープに従う（account_pnl=全履歴、yearly_account_pnl / monthly_account_pnl=period_start〜period_end）。全履歴版は total_realized_pnl と同値で、内訳は Σ holdings[].realized_pnl + closed_position_realized_pnl',
+			'現物の実現損益（JPY、全銘柄 = 現在保有中の銘柄 + 売り切り銘柄）。対象期間は本オブジェクトのスコープに従う（account_pnl=全履歴、yearly_account_pnl / monthly_account_pnl=period_start〜period_end）。全履歴版は total_realized_pnl と同値で、内訳は Σ holdings[].realized_pnl + closed_position_realized_pnl。**入庫日価格の取得失敗・打ち切りで銘柄を抑止した実行では undefined**（理由は spot_realized_pnl_unavailable_reason）——抑止した銘柄を除いた部分和は出さない',
 		),
 	margin_realized_pnl: z.number().describe('信用の決済済み損益（JPY、グロス: 利息・手数料控除前）'),
 	margin_interest: z
@@ -526,8 +569,9 @@ const accountPnlCoreShape = {
 		),
 	total: z
 		.number()
+		.optional()
 		.describe(
-			'口座全体 PnL = spot_realized_pnl + margin_realized_pnl − margin_interest_cost − margin_fee_cost。コスト項は正値で入っているので**減算**する（足すと符号が反転する）',
+			'口座全体 PnL = spot_realized_pnl + margin_realized_pnl − margin_interest_cost − margin_fee_cost。コスト項は正値で入っているので**減算**する（足すと符号が反転する）。spot_realized_pnl が抑止された実行では本値も undefined（信用側だけの合計を口座全体 PnL として出さない）。信用側の内訳は margin_realized_pnl / margin_interest_cost / margin_fee_cost に残るので、そこから読むこと',
 		),
 };
 
@@ -550,7 +594,16 @@ const marginCostShape = {
 		),
 };
 
-const AccountPnlSchema = z.object({ ...accountPnlCoreShape, ...marginCostShape });
+/**
+ * #80 で追加した抑止理由。**既存キーの後ろに宣言する**（wire の中間に新キーを挿さない）。
+ */
+const realizedPnlSuppressionShape = {
+	spot_realized_pnl_unavailable_reason: PortfolioUnresolvedDepositReasonEnum.optional().describe(
+		'spot_realized_pnl / total を確定値として出せなかった理由。設定されている場合その 2 フィールドは undefined で、信用側の 4 フィールドはそのまま出る。deposit_price_fetch_failed=入庫日を含む年足 chunk の取得に失敗した入庫がある銘柄を抑止した（取得の成否は実行ごとに変わるため値の再現性が無い）, deposit_price_chunk_truncated=同じく年足 chunk が件数上限で取りに行けなかった銘柄を抑止した。両方に該当する銘柄が居る実行では deposit_price_fetch_failed を載せる（再現性が無い方を優先して申告する）。銘柄別の理由は holdings[].cost_basis_unavailable_reason、銘柄名と件数は meta.warnings / summary の警告行',
+	),
+};
+
+const AccountPnlSchema = z.object({ ...accountPnlCoreShape, ...marginCostShape, ...realizedPnlSuppressionShape });
 
 // 期間版も既存キー（... total / period_start / period_end）の後ろに新設キーを置く。
 // AccountPnlSchema.extend() だと period_start の**手前**に入り、既存消費者の JSON の
@@ -560,6 +613,7 @@ const PeriodAccountPnlSchema = z.object({
 	period_start: z.string().describe('期間の開始日時（ISO8601 JST）'),
 	period_end: z.string().describe('期間の終了日時（ISO8601 JST）'),
 	...marginCostShape,
+	...realizedPnlSuppressionShape,
 });
 
 const PeriodPerformanceSchema = z
@@ -665,13 +719,13 @@ export const AnalyzeMyPortfolioDataSchema = z.object({
 		.number()
 		.optional()
 		.describe(
-			'合計実現損益（JPY、全履歴・全銘柄 = 現在保有中の銘柄 + 売り切り銘柄）。現物単独で、信用の決済損益・利息・手数料は含まない（それらを含む口座全体は account_pnl）。account_pnl.spot_realized_pnl と同値。0 のときは undefined。原価に算入できなかった入庫がある銘柄も除外せず含めるため、該当があると本値は過大側にずれる（銘柄名と件数は meta.warnings / summary の警告行、銘柄別の件数は holdings[].unpriced_deposit_count）',
+			'合計実現損益（JPY、全履歴・全銘柄 = 現在保有中の銘柄 + 売り切り銘柄）。現物単独で、信用の決済損益・利息・手数料は含まない（それらを含む口座全体は account_pnl）。account_pnl.spot_realized_pnl と同値。0 のときは undefined。恒久的に価格を解決できない入庫（上場前・当日足の欠損）で原価に算入できなかった分がある銘柄は除外せず含めるため、該当があると本値は過大側にずれる（銘柄名と件数は meta.warnings / summary の警告行、銘柄別の件数は holdings[].unpriced_deposit_count）。一方 total_realized_pnl_unavailable_reason が載る実行では**本値は undefined**——抑止した銘柄を含めても除いても口座の実現損益にはならないため、部分和を確定値として出さない',
 		),
 	closed_position_realized_pnl: z
 		.number()
 		.optional()
 		.describe(
-			'売り切り銘柄（現在保有ゼロだが約定履歴がある銘柄）の実現損益合計（JPY、全履歴）。holdings には載らないぶんの内訳で、Σ holdings[].realized_pnl + 本値 = account_pnl.spot_realized_pnl が成立する。0 = 集計した結果ゼロ（売り切り銘柄が無い / あっても実現損益ゼロ）、undefined = 集計していない（include_pnl=false または約定履歴 0 件）で、両者は別の意味',
+			'売り切り銘柄（現在保有ゼロだが約定履歴がある銘柄）の実現損益合計（JPY、全履歴）。holdings には載らないぶんの内訳で、Σ holdings[].realized_pnl + 本値 = account_pnl.spot_realized_pnl が成立する（total_realized_pnl_unavailable_reason が載る実行を除く。そこでは両辺に undefined の項が出て検算できない）。0 = 集計した結果ゼロ（売り切り銘柄が無い / あっても実現損益ゼロ）、undefined = 集計していない（include_pnl=false または約定履歴 0 件）か、売り切り銘柄に入庫日価格の取得失敗・打ち切りがあって抑止した（total_realized_pnl_unavailable_reason で区別できる）',
 		),
 	closed_position_asset_count: z
 		.number()
@@ -723,6 +777,11 @@ export const AnalyzeMyPortfolioDataSchema = z.object({
 		.describe('保有銘柄の月初比・年初比の価格騰落率（暗号資産のみ。JPY評価額降順）'),
 	technical: z.array(TechnicalSummarySchema).optional().describe('テクニカル分析サマリー'),
 	timestamp: z.string(),
+	// #80 で追加。新設キーは既存キーの後ろに宣言する（`z.object` の parse は宣言順で
+	// オブジェクトを組み直すため、宣言位置がそのまま wire のキー順になる）。
+	total_realized_pnl_unavailable_reason: PortfolioUnresolvedDepositReasonEnum.optional().describe(
+		'合計実現損益を確定値として出せなかった理由（入庫日価格の取得起因のみ）。設定されている場合 total_realized_pnl / account_pnl.spot_realized_pnl / account_pnl.total は undefined で、抑止した銘柄の holdings[].realized_pnl も undefined。抑止した銘柄が売り切り銘柄なら closed_position_realized_pnl / closed_position_asset_count も undefined になる。deposit_price_fetch_failed=年足 chunk の取得に失敗した入庫がある銘柄を抑止した, deposit_price_chunk_truncated=年足 chunk が件数上限で取りに行けなかった入庫がある銘柄を抑止した（両方居る実行では前者を載せる）。**この実行では検算式 Σ holdings[].realized_pnl + closed_position_realized_pnl = total_realized_pnl が成立しない**——抑止した銘柄の項が両辺から落ちるため。銘柄別の理由は holdings[].cost_basis_unavailable_reason、銘柄名と件数は meta.warnings / summary の警告行',
+	),
 });
 
 export const AnalyzeMyPortfolioMetaSchema = z.object({
