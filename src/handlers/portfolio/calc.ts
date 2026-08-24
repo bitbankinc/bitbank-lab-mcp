@@ -377,8 +377,14 @@ export function qtyInvariantHolds(onhandAmount: number, reconstructedQty: number
  *   （売った量が、履歴から積み上げられる量を上回っている）。上の 2 値より後ろに置くのは、
  *   あちらが**乖離を生んだ具体的な取得経路**を名指ししているのに対し、こちらは
  *   「経路は特定できないが、取得漏れがあること自体は確定」という強さだから。
- *   結果として本値は従来 `unknown` に落ちていたケースの一部を置き換える
- * - どれでもない → `unknown`（例: 履歴に現れない出庫）
+ * - どれでもない → `untracked_trade_suspected`（#93）。呼び出し契約上、本関数は
+ *   `!qtyInvariantHolds(...)` が成立した（＝許容誤差を超える乖離が既にある）ときにしか
+ *   呼ばれないため、上の 3 分岐に当てはまらない残りは必ず「復元数量が非負のまま実残高と
+ *   食い違っている」ケースになる（負に振れていれば `reconstructed_qty_negative` が先に返る）。
+ *   販売所取引など bitbank API に現れない取引があった可能性を示すが、**断定はできない**——
+ *   履歴に現れない出庫のような他の要因でも同じ乖離パターンになりうるため、値の名前自体に
+ *   「疑い（suspected）」を含めている。旧実装はこの分岐を `unknown` で返していた
+ *   （`unknown` は enum に残すが、本関数からは返さなくなった。他の判定経路のための予約値）。
  */
 export function qtyMismatchReasonFor(
 	dw: DepositWithdrawalData | null,
@@ -389,7 +395,55 @@ export function qtyMismatchReasonFor(
 	if (unpricedDepositCount > 0) return 'has_crypto_deposits';
 	if (tradesTruncated || (dw != null && !dw.isComplete)) return 'history_truncated';
 	if (reconstructedQty < 0) return 'reconstructed_qty_negative';
-	return 'unknown';
+	return 'untracked_trade_suspected';
+}
+
+/**
+ * 入庫はあるが、約定履歴にも現在残高にも現れない銘柄を検出する（issue #93 仕様 1）。
+ *
+ * `calcPnl` は約定履歴（`tradedAssets`）を起点に銘柄をループするため、可視の約定が
+ * 1 件も無い銘柄はそもそもループに乗らない。現在残高もゼロなら `nonZeroAssets` にも
+ * 入らないため、これまでは「入庫はあった」という事実そのものが出力から分からなかった
+ * （約定にも残高にも現れないので qtyMismatchReasonFor の判定対象にすら入らない）。
+ *
+ * 入出金履歴（DONE の暗号資産入庫）を起点に別経路で検出する。該当は「入庫した後、
+ * 販売所など bitbank API に現れない経路で全量を処分した」ことと矛盾しない状態で、
+ * 確定申告に必要な実現損益がまるごと出力から欠落している可能性を示す。
+ * `qtyMismatchReasonFor` 同様、**断定はできない**（同じ状態は他の要因でも起こりうる）。
+ *
+ * **この検出にも限界がある。**
+ * - 入庫そのものが無く、取引所約定も無く、販売所のみで買い→売りを完結させた銘柄は、
+ *   入出金履歴にも約定履歴にも痕跡が残らないため検出できない（issue #93 のスコープ外。
+ *   CSV 取り込み等の追加入力が無い限り原理的に検出不能）。
+ * - **DONE の暗号資産出庫が 1 件でもある銘柄は、量の多寡に関わらず対象から除外する。**
+ *   出庫（他ウォレットへの移動）だけで残高ゼロが完全に説明できる、販売所と無関係な
+ *   ありふれたケースを「取得漏れの可能性あり」と誤検知しないための保守的な判断。
+ *   代償として、出庫と販売所処分が同一銘柄に混在するケース（例: 一部を外部送付、
+ *   残りを販売所で売却）は見逃す——**取得漏れを見逃す方向にのみ誤る設計**で、実際には
+ *   無い懸念（外部送付しただけの銘柄）を利用者に警告する方向には誤らない。
+ *
+ * `heldAssets` / `tradedAssets` で除外するのは、その銘柄がすでに他経路（holdings の
+ * 数量不変条件 / closed_positions の実額計算）で扱われているため。二重に申告しない。
+ */
+export function depositOnlyAssets(
+	dw: DepositWithdrawalData | null,
+	heldAssets: ReadonlySet<string>,
+	tradedAssets: ReadonlySet<string>,
+): string[] {
+	if (dw == null) return [];
+	const withdrawnAssets = new Set(
+		dw.withdrawals.filter((w) => w.status === 'DONE' && w.asset !== 'jpy').map((w) => w.asset),
+	);
+	const found = new Set<string>();
+	for (const d of dw.deposits) {
+		if (d.status !== 'DONE') continue;
+		if (d.asset === 'jpy') continue;
+		if (heldAssets.has(d.asset)) continue;
+		if (tradedAssets.has(d.asset)) continue;
+		if (withdrawnAssets.has(d.asset)) continue;
+		found.add(d.asset);
+	}
+	return [...found].sort();
 }
 
 // ── 入庫日価格を解決できなかった銘柄の抑止（#80） ──

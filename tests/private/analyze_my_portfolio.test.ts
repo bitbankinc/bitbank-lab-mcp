@@ -104,6 +104,13 @@ function setupFetchMock(opts?: {
 	tradesFail?: boolean;
 	marginTradesFail?: boolean;
 	dwFail?: boolean;
+	/**
+	 * 出庫チャネルだけを失敗させる（dwFail と異なり入庫チャネルは成功のまま）。
+	 * flowUnavailableReason=dw_fetch_failed を、入庫データは残したまま再現するための専用フラグ
+	 * （#93: depositOnlyAssets の出庫による除外判定が不完全な入出金履歴でも誤って動くことがない
+	 * ことを確認するテスト用）。
+	 */
+	withdrawalsFail?: boolean;
 	marginTrades?: unknown;
 	marginStatusFail?: boolean;
 	marginStatus?: unknown;
@@ -211,7 +218,7 @@ function setupFetchMock(opts?: {
 
 		// Private API: withdrawal history
 		if (urlStr.includes('withdrawal_history')) {
-			if (opts?.dwFail) {
+			if (opts?.dwFail || opts?.withdrawalsFail) {
 				return new Response(JSON.stringify(mockBitbankError(10007)), { status: 200 });
 			}
 			return new Response(JSON.stringify(mockBitbankSuccess(opts?.withdrawals ?? rawWithdrawalHistoryResponse)), {
@@ -2119,9 +2126,15 @@ describe('analyze_my_portfolio — 純入出金の価格解決 warning', () => {
 		});
 
 		assertOk(result);
-		// 計算層 warning（meta.warnings）に資産名が載る。金額は含めない
-		expect(result.meta.warnings).toHaveLength(1);
-		const warning = result.meta.warnings?.[0] ?? '';
+		// 計算層 warning（meta.warnings）に資産名が載る。金額は含めない。
+		// doge はこのフィクスチャでは残高・約定のどちらも無い（既定 fixture 由来）ため、
+		// 入出金履歴に入庫記録があるこの構成では #93 の検出（untracked_trade_suspected）も
+		// 独立に発火し、warning が 2 本になる（doge の入庫由来 + 本テスト本来の netFlow 由来）。
+		expect(result.meta.warnings).toHaveLength(2);
+		const depositOnlyWarning = result.meta.warnings?.[0] ?? '';
+		expect(depositOnlyWarning).toContain('DOGE');
+		expect(depositOnlyWarning).not.toContain('MONA');
+		const warning = result.meta.warnings?.[1] ?? '';
 		expect(warning).toContain('DOGE');
 		expect(warning).toContain('MONA');
 		expect(warning).not.toContain('1000');
@@ -3733,7 +3746,7 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 
 	it('受け入れ: ETH 型（約 1000 倍乖離）で確定値ではなく cost_basis_reliable=false + 理由コードが出る', async () => {
 		// 出庫は withdrawals に無い（入出金取得は成功・complete）ので入出金起因の抑止は掛からず、
-		// 数量不変条件だけが乖離を検出する。原因の手掛かりが無いので unknown。
+		// 数量不変条件だけが乖離を検出する。他に具体的な手掛かりが無いので untracked_trade_suspected（#93）。
 		setupFetchMock({ assets: ethAssets('2.0'), trades: tinyEthBuy, ...emptyDw });
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -3746,7 +3759,7 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		assertOk(result);
 		const eth = result.data.holdings.find((h: { asset: string }) => h.asset === 'eth');
 		expect(eth.cost_basis_reliable).toBe(false);
-		expect(eth.cost_basis_unavailable_reason).toBe('unknown');
+		expect(eth.cost_basis_unavailable_reason).toBe('untracked_trade_suspected');
 		// 原価から派生する 4 フィールドは #54 と同じ null 化経路で抑止される
 		expect(eth.cost_basis).toBeUndefined();
 		expect(eth.avg_buy_price).toBeUndefined();
@@ -3764,7 +3777,7 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		expect(result.meta.flowDataUnavailableReason).toBeUndefined();
 		// 警告は銘柄名のみで、数量・金額を含めない（完全一致で固定する）
 		expect(result.meta.warnings).toEqual([
-			'ETH（原因不明） は約定・出庫から復元した保有数量が実残高と一致しないため、取得原価・評価損益を算出せず合計評価損益からも除外しています',
+			'ETH（販売所取引など API に現れない取引の可能性） は約定・出庫から復元した保有数量が実残高と一致しないため、取得原価・評価損益を算出せず合計評価損益からも除外しています',
 		]);
 		expect(result.summary).toContain('ETH は復元数量が実残高と乖離しているため合計評価損益に含めていません');
 	});
@@ -4150,7 +4163,7 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 			// 乖離 0.00041693 > 許容誤差 → 検出される（本 issue の眼目）
 			expect(Number('0.10731693') - btc.reconstructed_qty).toBeCloseTo(0.00041693, 9);
 			expect(btc.cost_basis_reliable).toBe(false);
-			expect(btc.cost_basis_unavailable_reason).toBe('unknown');
+			expect(btc.cost_basis_unavailable_reason).toBe('untracked_trade_suspected');
 			expect(btc.cost_basis).toBeUndefined();
 		});
 
@@ -4189,7 +4202,7 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		});
 
 		const text = (result as { content: Array<{ type: string; text: string }> }).content[0].text;
-		const warningIndex = text.indexOf('ETH（原因不明）');
+		const warningIndex = text.indexOf('ETH（販売所取引など API に現れない取引の可能性）');
 		const jsonIndex = text.indexOf('\n{');
 		expect(warningIndex).toBeGreaterThanOrEqual(0);
 		expect(jsonIndex).toBeGreaterThan(0);
@@ -4197,7 +4210,9 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		expect(text.split('\n')[0]).toContain('⚠️');
 
 		const structured = (result as { structuredContent: { meta: { warnings?: string[] } } }).structuredContent;
-		expect(structured.meta.warnings?.some((w) => w.includes('ETH（原因不明）'))).toBe(true);
+		expect(structured.meta.warnings?.some((w) => w.includes('ETH（販売所取引など API に現れない取引の可能性）'))).toBe(
+			true,
+		);
 	});
 });
 
@@ -6333,7 +6348,7 @@ describe('analyze_my_portfolio — 復元数量と許容誤差の露出（#87）
 		const eth = result.data.holdings.find((h) => h.asset === 'eth');
 		if (eth == null) throw new Error('eth holding が無い');
 		expect(eth.cost_basis_reliable).toBe(false);
-		expect(eth.cost_basis_unavailable_reason).toBe('unknown');
+		expect(eth.cost_basis_unavailable_reason).toBe('untracked_trade_suspected');
 		expect(eth.cost_basis).toBeUndefined();
 		// 理由コードだけでは「どれだけ乖離したのか」が読めない。約 1000 倍の乖離が数値で出る
 		expect(eth.reconstructed_qty).toBe(0.002);
@@ -6716,5 +6731,296 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 		const totalRealizedPnlUnavailableReasonIndex = keys.indexOf('total_realized_pnl_unavailable_reason');
 		expect(closedPositionsIndex).toBeGreaterThan(-1);
 		expect(closedPositionsIndex).toBeGreaterThan(totalRealizedPnlUnavailableReasonIndex);
+	});
+
+	/**
+	 * ゼロ残高銘柄の取得漏れ検出（issue #93 仕様 1）。
+	 *
+	 * #89 で保有継続中の銘柄の数量乖離は検出できるようになったが、約定も残高も無い銘柄は
+	 * どのループにも乗らず検出できなかった（本 issue が塞ぐ穴）。入出金履歴（DONE の暗号資産
+	 * 入庫）を起点に、約定履歴にも現在残高にも現れない銘柄を検出し、上の closed_positions に
+	 * realized_pnl を持たない検出専用エントリ（realized_pnl_unavailable_reason 付き）として
+	 * 申告する。この配列を新設せず既存の closed_positions に載せているのは #92 とのシナジー
+	 * ——消費者が読む場所を増やさないため。
+	 */
+	describe('ゼロ残高銘柄の取得漏れ検出（#93）', () => {
+		it('受け入れ: 入庫はあるが約定も残高も無い銘柄が closed_positions に申告される（本 issue の核）', async () => {
+			setupFetchMock({
+				assets: ethOnlyAssets,
+				trades: { trades: [ethBuy2] },
+				...depositsOf({ uuid: 'dep-flr', asset: 'flr', amount: '100', at: PRICED_DEPOSIT_AT }),
+			});
+
+			const result = await analyze();
+			assertOk(result);
+
+			const flr = result.data.closed_positions?.find((p) => p.asset === 'flr');
+			if (flr == null) throw new Error('flr の検出エントリが無い');
+			expect(flr.realized_pnl_unavailable_reason).toBe('untracked_trade_suspected');
+			expect(flr.realized_pnl).toBeUndefined();
+			expect(flr.priced_deposit_count).toBeUndefined();
+			expect(flr.unpriced_deposit_count).toBeUndefined();
+
+			// 検出のみのエントリは実額を持たないため、集計系フィールドには寄与しない。
+			// eth（保有継続）以外に売り切り銘柄が無いので、集計自体は「対象なし」の 0 になる
+			// （集計していない undefined とは区別する。#92 の既存方針どおり）。
+			expect(result.data.closed_position_realized_pnl).toBe(0);
+			expect(result.data.closed_position_asset_count).toBe(0);
+
+			// LLM 向けの申告（content にデータを含める: `.claude/rules/tools.md`）
+			expect(result.meta.warnings?.some((w) => w.includes('FLR'))).toBe(true);
+			expect(result.summary).toContain('FLR');
+
+			// JSON 上のキーは asset + realized_pnl_unavailable_reason のみ（未定義キーは落ちる）
+			const wire = JSON.parse(JSON.stringify(result.data)) as { closed_positions: Array<Record<string, unknown>> };
+			const flrWire = wire.closed_positions.find((p) => p.asset === 'flr');
+			expect(Object.keys(flrWire ?? {})).toEqual(['asset', 'realized_pnl_unavailable_reason']);
+		});
+
+		it('重複: 同一銘柄の DONE 入庫が複数件あっても closed_positions には 1 件だけ載る', async () => {
+			setupFetchMock({
+				assets: ethOnlyAssets,
+				trades: { trades: [ethBuy2] },
+				...depositsOf(
+					{ uuid: 'dep-flr-1', asset: 'flr', amount: '50', at: PRICED_DEPOSIT_AT },
+					{ uuid: 'dep-flr-2', asset: 'flr', amount: '50', at: PRICED_DEPOSIT_AT + 1000 },
+				),
+			});
+
+			const result = await analyze();
+			assertOk(result);
+
+			expect(result.data.closed_positions?.filter((p) => p.asset === 'flr')).toHaveLength(1);
+		});
+
+		it('保有継続中（held）の銘柄は誤検知しない——holdings 側の数量不変条件に任せる', async () => {
+			// eth は ethOnlyAssets で保有中。入庫を追加しても closed_positions には出さない
+			setupFetchMock({
+				assets: ethOnlyAssets,
+				trades: { trades: [ethBuy2] },
+				...depositsOf({ uuid: 'dep-eth', asset: 'eth', amount: '0.5', at: PRICED_DEPOSIT_AT }),
+			});
+
+			const result = await analyze();
+			assertOk(result);
+
+			expect(result.data.closed_positions?.some((p) => p.asset === 'eth')).toBe(false);
+			expect(result.data.holdings.some((h) => h.asset === 'eth')).toBe(true);
+		});
+
+		it('約定履歴がある売り切り銘柄は誤検知しない——実額計算（#92）に任せる', async () => {
+			const trades = { trades: [ethBuy2, ...closedPositionTrades(1, 'xrp', 80, 100)] };
+			setupFetchMock({
+				assets: ethOnlyAssets,
+				trades,
+				...depositsOf({ uuid: 'dep-xrp', asset: 'xrp', amount: '10', at: PRICED_DEPOSIT_AT }),
+			});
+
+			const result = await analyze();
+			assertOk(result);
+
+			const xrp = result.data.closed_positions?.find((p) => p.asset === 'xrp');
+			if (xrp == null) throw new Error('xrp の内訳が無い');
+			expect(typeof xrp.realized_pnl).toBe('number');
+			expect(xrp.realized_pnl_unavailable_reason).toBeUndefined();
+		});
+
+		it('入庫が無ければ誤検知しない（回帰）', async () => {
+			setupFetchMock({ assets: ethOnlyAssets, trades: { trades: [ethBuy2] }, ...depositsOf() });
+
+			const result = await analyze();
+			assertOk(result);
+
+			// eth（保有継続）しか無く売り切り銘柄も検出対象も無いので空配列（集計はしたが対象が無い）。
+			// undefined になるのは include_pnl=false か約定履歴が丸ごと 0 件のときだけ。
+			expect(result.data.closed_positions).toEqual([]);
+		});
+
+		it('エッジ: 全銘柄がゼロ残高・入出金履歴が空でもエラーにならない', async () => {
+			setupFetchMock({ assets: { assets: [assetFixture('jpy')] }, trades: { trades: [] }, ...depositsOf() });
+
+			const result = await analyze();
+			assertOk(result);
+
+			expect(result.data.closed_position_realized_pnl).toBeUndefined();
+			expect(result.data.closed_positions).toBeUndefined();
+		});
+
+		it('回帰: include_pnl=false では検出しない（closed_positions 自体を出さない既存方針と同じ）', async () => {
+			setupFetchMock({
+				assets: ethOnlyAssets,
+				trades: { trades: [ethBuy2] },
+				...depositsOf({ uuid: 'dep-flr', asset: 'flr', amount: '100', at: PRICED_DEPOSIT_AT }),
+			});
+
+			const result = await analyze({ include_pnl: false });
+			assertOk(result);
+
+			expect(result.data.closed_positions).toBeUndefined();
+		});
+
+		it('実額を計算できたエントリと検出のみのエントリが混在するとき、検出エントリは末尾に asset 昇順で並ぶ', async () => {
+			const trades = {
+				trades: [ethBuy2, ...closedPositionTrades(1, 'xrp', 80, 100), ...closedPositionTrades(2, 'mona', 10, 8)],
+			};
+			setupFetchMock({
+				assets: ethOnlyAssets,
+				trades,
+				...depositsOf(
+					{ uuid: 'dep-oas', asset: 'oas', amount: '10', at: PRICED_DEPOSIT_AT },
+					{ uuid: 'dep-arb', asset: 'arb', amount: '10', at: PRICED_DEPOSIT_AT },
+				),
+			});
+
+			const result = await analyze();
+			assertOk(result);
+
+			// xrp(+2000) / mona(-200) は実額計算済みなので降順で先頭、arb/oas は検出のみで
+			// realized_pnl を持たず末尾に asset 昇順でまとまる
+			expect(result.data.closed_positions?.map((p) => p.asset)).toEqual(['xrp', 'mona', 'arb', 'oas']);
+			expect(result.data.closed_position_asset_count).toBe(2);
+			expect(result.data.closed_position_realized_pnl).toBe(1800);
+		});
+
+		it('closedSuppressed（他の売り切り銘柄の入庫日価格解決失敗）とは独立に検出結果が残る', async () => {
+			// xrp は入庫日を含む年 chunk の取得に失敗して #80 経路で抑止される（closedSuppressed）。
+			// flr はそれとは無関係な検出専用エントリで、抑止に道連れにならず closed_positions に残る。
+			const trades = { trades: [ethBuy2, ...closedPositionTrades(1, 'xrp', 80, 100)] };
+			setupFetchMock({
+				assets: ethOnlyAssets,
+				trades,
+				...depositsOf(
+					{ uuid: 'dep-xrp-failed', asset: 'xrp', amount: '10', at: UNPRICED_DEPOSIT_AT },
+					{ uuid: 'dep-flr', asset: 'flr', amount: '100', at: PRICED_DEPOSIT_AT },
+				),
+				candleFail: (urlStr) =>
+					urlStr.includes('/xrp_jpy/candlestick/1day/2022') || urlStr.includes('/xrp_jpy/candlestick/1day/2023'),
+			});
+
+			const result = await analyze();
+			assertOk(result);
+
+			expect(result.data.total_realized_pnl_unavailable_reason).toBe('deposit_price_fetch_failed');
+			expect(result.data.closed_position_realized_pnl).toBeUndefined();
+			expect(result.data.closed_position_asset_count).toBeUndefined();
+			expect(result.data.closed_positions).toEqual([
+				expect.objectContaining({ asset: 'flr', realized_pnl_unavailable_reason: 'untracked_trade_suspected' }),
+			]);
+		});
+
+		it('description に販売所取引が反映されない既知の制約が明記されている（issue #93 仕様 3）', async () => {
+			const { toolDef } = await import('../../tools/private/analyze_my_portfolio.js');
+			expect(toolDef.description).toContain('販売所');
+			expect(toolDef.description).toContain('bitbank API に含まれない');
+		});
+
+		/**
+		 * CodeRabbit review（PR #95）で指摘: 約定履歴が打ち切られていると tradedAssets が
+		 * 実際の取引所約定の部分集合でしかなく、取引所で売買しただけの銘柄まで
+		 * 「約定に現れない」と誤検出しうる。qtyMismatchReasonFor が history_truncated を
+		 * untracked 系より優先する非対称と揃え、確度が落ちる場合はそちらに倒す。
+		 */
+		it('約定履歴が打ち切られている実行では history_truncated として検出する（誤って「販売所取引」と断定しない）', async () => {
+			// 同一ページ（1000 件フルページ・同一 executed_at）を返し続けると、2 ページ目で
+			// cursor が進まず paginateTrades が truncated=true で終了する（eth の取引のみで構成）。
+			const fullPage = {
+				trades: Array.from({ length: 1000 }, (_, i) => ({
+					...ethBuy2,
+					trade_id: 20000 + i,
+					order_id: 20000 + i,
+				})),
+			};
+			setupFetchMock({
+				assets: { assets: [assetFixture('jpy')] },
+				trades: fullPage,
+				...depositsOf({ uuid: 'dep-flr', asset: 'flr', amount: '100', at: PRICED_DEPOSIT_AT }),
+			});
+
+			const result = await analyze();
+			assertOk(result);
+
+			expect(result.meta.tradesTruncated).toBe(true);
+			const flr = result.data.closed_positions?.find((p) => p.asset === 'flr');
+			if (flr == null) throw new Error('flr の検出エントリが無い');
+			expect(flr.realized_pnl_unavailable_reason).toBe('history_truncated');
+			expect(result.meta.warnings?.some((w) => w.includes('FLR') && w.includes('打ち切られている'))).toBe(true);
+			expect(result.meta.warnings?.some((w) => w.includes('FLR') && w.includes('販売所'))).toBe(false);
+		});
+
+		/**
+		 * このガードが無いと、外部ウォレットへ送付しただけの銘柄まで「販売所取引の可能性」と
+		 * 誤って警告してしまう（CodeRabbit review 対応時に発見、issue #93 の当初スコープには
+		 * 無かった追加の誤検知パス）。
+		 */
+		it('入庫と出庫がある銘柄は誤検知しない——出庫（他ウォレットへの送付）だけで残高ゼロが説明できる', async () => {
+			setupFetchMock({
+				assets: ethOnlyAssets,
+				trades: { trades: [ethBuy2] },
+				deposits: {
+					deposits: [
+						{
+							uuid: 'dep-flr',
+							asset: 'flr',
+							amount: '100',
+							status: 'DONE',
+							found_at: PRICED_DEPOSIT_AT,
+							confirmed_at: PRICED_DEPOSIT_AT,
+						},
+					],
+				},
+				withdrawals: {
+					withdrawals: [
+						{
+							uuid: 'wd-flr',
+							asset: 'flr',
+							amount: '100',
+							fee: '0',
+							status: 'DONE',
+							requested_at: PRICED_DEPOSIT_AT + 1000,
+						},
+					],
+				},
+			});
+
+			const result = await analyze();
+			assertOk(result);
+
+			expect(result.data.closed_positions?.some((p) => p.asset === 'flr')).toBe(false);
+			expect(result.meta.warnings?.some((w) => w.includes('FLR')) ?? false).toBe(false);
+		});
+
+		/**
+		 * CodeRabbit review（PR #95）で指摘: 出庫による除外判定は dw.withdrawals の完全性が
+		 * 前提。出庫チャネルの取得に失敗した実行では、本来なら除外されるはずの出庫を
+		 * 見落として誤検出しうる（deposits 自体は取得できているので、ガードが無ければ
+		 * flr は「入庫はあるが約定にも残高にも無い」として検出されてしまう）。
+		 */
+		it('入出金履歴の取得に失敗した実行では検出しない——出庫の見落としによる誤検出を避ける', async () => {
+			setupFetchMock({
+				assets: ethOnlyAssets,
+				trades: { trades: [ethBuy2] },
+				deposits: {
+					deposits: [
+						{
+							uuid: 'dep-flr',
+							asset: 'flr',
+							amount: '100',
+							status: 'DONE',
+							found_at: PRICED_DEPOSIT_AT,
+							confirmed_at: PRICED_DEPOSIT_AT,
+						},
+					],
+				},
+				withdrawalsFail: true,
+			});
+
+			const result = await analyze();
+			assertOk(result);
+
+			// flowUnavailableReason が本当に立っていることを確認したうえで検出結果を見る
+			expect(result.data.total_cost_basis_unavailable_reason).toBe('dw_fetch_failed');
+			expect(result.data.closed_positions?.some((p) => p.asset === 'flr')).toBe(false);
+			expect(result.meta.warnings?.some((w) => w.includes('FLR')) ?? false).toBe(false);
+		});
 	});
 });

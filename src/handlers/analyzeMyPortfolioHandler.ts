@@ -17,6 +17,7 @@ import { getDefaultClient } from '../private/client.js';
 import {
 	AnalyzeMyPortfolioOutputSchema,
 	type PortfolioChangePctUnavailableReason,
+	type PortfolioCostBasisUnavailableReason,
 	type PortfolioFlowUnavailableReason,
 	type PortfolioFlowValuationBasis,
 	type PortfolioQtyMismatchReason,
@@ -36,6 +37,7 @@ import {
 	calcPnl,
 	collectFlowValuationTargets,
 	type DepositCostBasisInput,
+	depositOnlyAssets,
 	dominantUnresolvedDepositReason,
 	flowUnavailableReasonFor,
 	getJstPeriodBoundaries,
@@ -211,6 +213,9 @@ const QTY_MISMATCH_CAUSE: Record<PortfolioQtyMismatchReason, string> = {
 	history_truncated: '約定履歴の打ち切り',
 	unknown: '原因不明',
 	reconstructed_qty_negative: '復元数量が負（API に現れない取得あり）',
+	// #93: qtyMismatchReasonFor は現在この値しか返さないが、Record は enum 全体の網羅を
+	// 要求するため unknown も残す（他の判定経路のために enum 自体には残っているため）。
+	untracked_trade_suspected: '販売所取引など API に現れない取引の可能性',
 };
 
 /**
@@ -557,6 +562,10 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// 警告行が唯一の申告経路になる（#77 の unpricedDepositAssets と同じ事情）。
 		const qtyClampAssets: Array<{ asset: string; count: number }> = [];
 
+		// 入庫はあるが約定履歴にも現在残高にも現れない銘柄（#93）。closed_positions への
+		// 反映とは別に、警告行でも申告するため銘柄名だけ別途保持する。
+		let depositOnlyDetected: string[] = [];
+
 		// 入庫日価格を「取りに行けば解決できたはず」なのに解決できなかった銘柄（#80）。
 		// pnlUsesFlow が false の構成では入庫を原価に算入しておらず（depositCost を渡さない）、
 		// 原価由来フィールドは flowUnavailableReason で既に抑止されているので判定しない。
@@ -783,18 +792,25 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// あったが実現損益ゼロ / 売り切り銘柄なし」と区別する。
 		let closedPositionRealizedPnl: number | undefined;
 		let closedPositionAssetCount: number | undefined;
-		// 銘柄別の内訳（#92）。ループ内では元々銘柄ごとに算出済みだったが、closedSum に畳む時点で
-		// 捨てられていたため、合計値の変化がどの銘柄由来か出力から特定できなかった。undefined の
-		// 条件は closedPositionRealizedPnl と同一（集計していない / 抑止）——本配列は既存 2
-		// フィールドが従う「部分和を出さない」方針をそのまま引き継ぐ、値の分解にすぎない。
+		// 銘柄別の内訳（#92）+ 入庫はあるが約定履歴にも現在残高にも現れない銘柄の検出結果（#93）。
+		// 前者はループ内で元々銘柄ごとに算出済みだったが、closedSum に畳む時点で捨てられていたため、
+		// 合計値の変化がどの銘柄由来か出力から特定できなかった。undefined の条件は
+		// closedPositionRealizedPnl と同一（集計していない / 抑止）——本配列は既存 2 フィールドが
+		// 従う「部分和を出さない」方針をそのまま引き継ぐ、値の分解にすぎない。
+		// 後者（realized_pnl_unavailable_reason 付き要素）はこの抑止と独立に動く（下のブロック参照）。
 		let closedPositions:
 			| Array<{
 					asset: string;
-					realized_pnl: number;
+					realized_pnl: number | undefined;
 					priced_deposit_count: number | undefined;
 					unpriced_deposit_count: number | undefined;
+					realized_pnl_unavailable_reason: PortfolioCostBasisUnavailableReason | undefined;
 			  }>
 			| undefined;
+		// held / traded は #93 の検出（closedSuppressed や約定 0 件と無関係に動く）でも使うため、
+		// include_pnl の外側で一度だけ計算する。
+		const heldAssets = new Set(nonZeroAssets.map((a) => a.asset));
+		const tradedAssets = new Set(allTrades.map((t) => t.pair.replace('_jpy', '')).filter((a) => a !== 'jpy'));
 		if (include_pnl && allTrades.length > 0) {
 			let closedSum = 0;
 			let closedCount = 0;
@@ -802,8 +818,6 @@ export default async function analyzeMyPortfolioHandler(args: {
 			// 確定値を出さない（下で undefined に畳む）。
 			let closedSuppressed = false;
 			const closedBreakdown: NonNullable<typeof closedPositions> = [];
-			const heldAssets = new Set(nonZeroAssets.map((a) => a.asset));
-			const tradedAssets = new Set(allTrades.map((t) => t.pair.replace('_jpy', '')).filter((a) => a !== 'jpy'));
 			for (const asset of tradedAssets) {
 				if (!heldAssets.has(asset)) {
 					const pnl = calcPnl(allTrades, asset, dwData?.withdrawals, depositCost);
@@ -841,6 +855,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 						realized_pnl: pnl.realized_pnl,
 						priced_deposit_count: depositCountOrUndefined(pnl.priced_deposit_count),
 						unpriced_deposit_count: depositCountOrUndefined(pnl.unpriced_deposit_count),
+						realized_pnl_unavailable_reason: undefined,
 					});
 					if (pnl.realized_pnl !== 0) {
 						totalRealizedPnl += pnl.realized_pnl;
@@ -856,7 +871,50 @@ export default async function analyzeMyPortfolioHandler(args: {
 			// 部分和を「本当の合計」と誤認させる。並び順は realized_pnl 降順・同値は asset 昇順で決定的。
 			closedPositions = closedSuppressed
 				? undefined
-				: closedBreakdown.sort((x, y) => y.realized_pnl - x.realized_pnl || x.asset.localeCompare(y.asset));
+				: closedBreakdown.sort(
+						(x, y) => (y.realized_pnl ?? 0) - (x.realized_pnl ?? 0) || x.asset.localeCompare(y.asset),
+					);
+		}
+
+		// 入庫はあるが約定履歴にも現在残高にも現れない銘柄の検出（#93 仕様 1）。上のループは
+		// tradedAssets を起点にするため、可視の約定が 1 件も無い銘柄はそもそも対象にならない。
+		// closedSuppressed（他の売り切り銘柄の入庫日価格解決失敗）とは無関係に動く——検出結果は
+		// realized_pnl を持たず合計に寄与しないため、他銘柄の抑止に道連れにする理由が無い。
+		if (include_pnl) {
+			// depositOnlyAssets の除外判定は dw.withdrawals の完全性に依存する（DONE 出庫が
+			// 1 件でもあれば除外する設計のため、出庫を 1 件でも見落とすと除外できず誤検出になる）。
+			// flowUnavailableReason（dw 取得の全体的な失敗・打ち切り）が立っている実行では
+			// 除外判定そのものが信頼できないため、検出自体を行わない（CodeRabbit review, PR #95）。
+			depositOnlyDetected = flowUnavailableReason == null ? depositOnlyAssets(dwData, heldAssets, tradedAssets) : [];
+			if (depositOnlyDetected.length > 0) {
+				// 約定履歴が打ち切られていると tradedAssets は部分集合になり、取引所で売買した
+				// 銘柄まで「約定に現れない」と誤検出しうる。qtyMismatchReasonFor が
+				// has_crypto_deposits / history_truncated を untracked 系より優先する非対称と
+				// 揃え、確度が落ちる場合は history_truncated（本当に取得漏れかは断定しない）に倒す。
+				const detectionReason: PortfolioCostBasisUnavailableReason = tradesTruncated
+					? 'history_truncated'
+					: 'untracked_trade_suspected';
+				const detectedEntries: NonNullable<typeof closedPositions> = depositOnlyDetected.map((asset) => ({
+					asset,
+					realized_pnl: undefined,
+					priced_deposit_count: undefined,
+					unpriced_deposit_count: undefined,
+					realized_pnl_unavailable_reason: detectionReason,
+				}));
+				// realized_pnl_unavailable_reason 付き（realized_pnl 無し）の要素は順位付けできないため
+				// 常に末尾に asset 昇順でまとめる。`?? 0` で欠損値扱いすると負の realized_pnl を持つ
+				// 計算済み要素より前に出てしまう（0 より大きい値と誤認される）ので、まず defined/undefined
+				// で分けてから、計算済み同士は従来どおり降順 + asset 昇順で比較する。
+				closedPositions = [...(closedPositions ?? []), ...detectedEntries].sort((x, y) => {
+					if (x.realized_pnl == null || y.realized_pnl == null) {
+						if ((x.realized_pnl == null) !== (y.realized_pnl == null)) {
+							return x.realized_pnl == null ? 1 : -1;
+						}
+						return x.asset.localeCompare(y.asset);
+					}
+					return y.realized_pnl - x.realized_pnl || x.asset.localeCompare(y.asset);
+				});
+			}
 		}
 
 		// 全履歴の実現損益を確定値として出せるか（#80）。保有・売り切りのどちらで抑止しても、
@@ -1529,6 +1587,11 @@ export default async function analyzeMyPortfolioHandler(args: {
 				`※ ${qtyMismatchAssets.map((m) => m.asset.toUpperCase()).join(', ')} は復元数量が実残高と乖離しているため合計評価損益に含めていません`,
 			);
 		}
+		if (depositOnlyDetected.length > 0) {
+			lines.push(
+				`※ ${depositOnlyDetected.map((a) => a.toUpperCase()).join(', ')} は入庫記録はあるものの約定履歴にも現在残高にも現れません（closed_positions を参照）`,
+			);
+		}
 		if (unpricedDepositLabel !== '') {
 			lines.push(
 				`※ ${unpricedDepositLabel} は入庫日の始値を解決できなかった入庫（カッコ内は件数）を取得原価に算入していないため、取得原価・評価損益・実現損益がその分だけ不完全です。合計からは除外せず含めています`,
@@ -1614,6 +1677,19 @@ export default async function analyzeMyPortfolioHandler(args: {
 		if (qtyMismatchAssets.length > 0) {
 			calcWarnings.push(
 				`${qtyMismatchAssets.map((m) => `${m.asset.toUpperCase()}（${QTY_MISMATCH_CAUSE[m.reason]}）`).join(', ')} は約定・出庫から復元した保有数量が実残高と一致しないため、取得原価・評価損益を算出せず合計評価損益からも除外しています`,
+			);
+		}
+		// 入庫はあるが約定履歴にも現在残高にも現れない銘柄（#93）。ゼロ残高なので qtyMismatchAssets
+		// とは別経路の検出——入出金履歴（DONE の暗号資産入庫）を起点に、そこから約定・残高の
+		// どちらにも辿れない銘柄を拾う。realized_pnl は算出しておらず closed_positions（要素の
+		// realized_pnl_unavailable_reason）に検出結果だけを申告する。文言は tradesTruncated で
+		// 分岐する——約定履歴が打ち切られている実行では「販売所取引の可能性」と断定的に言うと、
+		// 単に取得できなかっただけの取引所約定を誤って販売所のせいと言い切ることになる。
+		if (depositOnlyDetected.length > 0) {
+			calcWarnings.push(
+				tradesTruncated
+					? `${depositOnlyDetected.map((a) => a.toUpperCase()).join(', ')} は入出金履歴に暗号資産の入庫記録があるものの、約定履歴にも現在残高にも現れません。約定履歴の取得が件数上限で打ち切られているため取引所約定を見落としている可能性があり、該当銘柄の実現損益はこの結果に含まれていません（closed_positions に realized_pnl_unavailable_reason=history_truncated 付きで申告しています）`
+					: `${depositOnlyDetected.map((a) => a.toUpperCase()).join(', ')} は入出金履歴に暗号資産の入庫記録があるものの、約定履歴にも現在残高にも現れません。販売所取引など bitbank API に現れない取引で全量を処分した可能性があり（断定はできません）、該当銘柄の実現損益はこの結果に含まれていません（closed_positions に realized_pnl_unavailable_reason=untracked_trade_suspected 付きで申告しています）`,
 			);
 		}
 		// 原価は出したが不完全な銘柄（#77）。上の数量乖離とは別軸で、こちらは**確定値が出ている**。
