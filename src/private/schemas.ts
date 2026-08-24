@@ -255,6 +255,13 @@ export const PortfolioCostBasisUnavailableReasonEnum = z.enum([
 	'unknown',
 	// #80 で追加。enum は既存値の後ろに足す（公開済みの列挙順を中間から崩さない）。
 	...PortfolioUnresolvedDepositReasonEnum.options,
+	/**
+	 * 復元数量が**負**。可視の約定・入出庫から積み上げられる量を超えて売却されており、
+	 * API に現れない取得（販売所での買い等）があったことの直接証拠（#89）。
+	 * 同じ「数量乖離」系でも `has_crypto_deposits` / `history_truncated` は乖離を生んだ
+	 * 取得経路を名指しできているケースなので、そちらが立つ構成では本値にならない。
+	 */
+	'reconstructed_qty_negative',
 ]);
 
 /** @see PortfolioCostBasisUnavailableReasonEnum */
@@ -381,7 +388,7 @@ const HoldingPnlSchema = z.object({
 		),
 	trade_count: z.number().optional().describe('約定件数'),
 	cost_basis_unavailable_reason: PortfolioCostBasisUnavailableReasonEnum.optional().describe(
-		'取得原価を確定できなかった理由。設定されている場合 avg_buy_price / cost_basis / unrealized_pnl / unrealized_pnl_pct はいずれも undefined（信頼できない値を確定値として出さないための抑止）。dw_fetch_failed=入出金 API の取得に失敗（一部チャネルのみの失敗を含む）, dw_history_incomplete=件数上限で入出金の全履歴を取得できていない, has_crypto_deposits=復元数量が実残高と乖離しており該当銘柄に入庫日の始値を解決できなかった DONE の暗号資産入庫がある（入庫日の始値で解決できた入庫は原価・数量に算入されるため本値は立たない。現在価格へのフォールバックは原価には使わない——相場連動の誤差を取得原価に持ち込まないため）, history_truncated=復元数量が実残高と乖離しており約定履歴が件数上限で打ち切られている, unknown=復元数量が実残高と乖離しているが原因を特定できない, deposit_price_fetch_failed=入庫日を含む年足 chunk の取得に失敗した入庫がある, deposit_price_chunk_truncated=入庫日を含む年足 chunk が件数上限に達して取りに行けなかった入庫がある。**末尾 2 値だけは realized_pnl も undefined になる**（原価が 1 件欠けると移動平均法で過去の売却の実現損益まで動くため。他の値では realized_pnl は従来どおり出る）。この 2 値は数量不変条件より優先して判定するので、同時に成立する構成では has_crypto_deposits ではなくこちらが載る（抑止が広い方を選ぶ）。include_deposit_withdrawal=false でも入出金履歴は損益計算のために取得されるため、同フラグ由来でこの値が立つことはない',
+		'取得原価を確定できなかった理由。設定されている場合 avg_buy_price / cost_basis / unrealized_pnl / unrealized_pnl_pct はいずれも undefined（信頼できない値を確定値として出さないための抑止）。dw_fetch_failed=入出金 API の取得に失敗（一部チャネルのみの失敗を含む）, dw_history_incomplete=件数上限で入出金の全履歴を取得できていない, has_crypto_deposits=復元数量が実残高と乖離しており該当銘柄に入庫日の始値を解決できなかった DONE の暗号資産入庫がある（入庫日の始値で解決できた入庫は原価・数量に算入されるため本値は立たない。現在価格へのフォールバックは原価には使わない——相場連動の誤差を取得原価に持ち込まないため）, history_truncated=復元数量が実残高と乖離しており約定履歴が件数上限で打ち切られている, unknown=復元数量が実残高と乖離しているが原因を特定できない, deposit_price_fetch_failed=入庫日を含む年足 chunk の取得に失敗した入庫がある, deposit_price_chunk_truncated=入庫日を含む年足 chunk が件数上限に達して取りに行けなかった入庫がある, reconstructed_qty_negative=復元数量が負（可視の履歴で積み上げられる量を超えて売却されており、API に現れない取得があったことの直接証拠。上の 3 つの数量乖離系より後ろに判定するので、取得経路を名指しできる構成では本値ではなくそちらが載る）。**deposit_price_fetch_failed / deposit_price_chunk_truncated の 2 値だけは realized_pnl も undefined になる**（原価が 1 件欠けると移動平均法で過去の売却の実現損益まで動くため。他の値では realized_pnl は従来どおり出る）。この 2 値は数量不変条件より優先して判定するので、同時に成立する構成では has_crypto_deposits ではなくこちらが載る（抑止が広い方を選ぶ）。include_deposit_withdrawal=false でも入出金履歴は損益計算のために取得されるため、同フラグ由来でこの値が立つことはない',
 	),
 	cost_basis_reliable: z
 		.boolean()
@@ -415,7 +422,7 @@ const HoldingPnlSchema = z.object({
 		.number()
 		.optional()
 		.describe(
-			'約定・入庫・出庫を時系列でリプレイして復元した保有数量（base 建て）。**実残高（amount）とは別物**——amount は assets API が返す口座の現在残高、本値は履歴から積み上げた理論値で、cost_basis / avg_buy_price はこちらの数量で算出している。cost_basis_reliable はこの 2 つの突き合わせ結果で、|Number(amount) − reconstructed_qty| ≤ qty_invariant_tolerance（= max(10^-amount_precision × 5, |実残高| × 0.1%)）なら true。**差そのものは別フィールドにしていない**（amount との引き算で得られ、許容誤差との比 |Number(amount) − reconstructed_qty| / qty_invariant_tolerance が 1 以下かどうかが判定と一致する）。**丸めていない**——判定に入った値をそのまま出す（amount_precision で丸めると境界付近で消費者の再計算が判定と食い違う）。amount が文字列なのに本値が数値なのは、amount が API の残高文字列を透過しているのに対し本値はリプレイの計算結果（IEEE754 の 2 進小数）だからで、10 進文字列に化かすと存在しない精度を主張することになる。**差がゼロでないこと自体は異常ではない**（端数処理・ダスト）が、許容誤差内でも差の分だけ cost_basis は不完全。API に現れない取引（販売所での売買など）がある口座では、この差がその存在を推定する唯一の手掛かりになる。0 のときもキーを落とさない（「全量売却済み / 履歴から復元できなかった」は判定の入力そのもので、省くと未計算と区別できなくなる。件数フィールドの 0 省略とは扱いが違う）。原価計算の対象外（JPY / include_pnl=false）では省略するが、**原価を抑止した銘柄（cost_basis_unavailable_reason あり）では出す**——抑止の妥当性こそ検算対象なので。売り切り銘柄は holdings に載らないため本値も出ない（実残高ゼロで数量不変条件の判定対象外。unpriced_deposit_count と同じ制約だが、あちらと違い申告すべき判定結果が無いので警告行も足していない）',
+			'約定・入庫・出庫を時系列でリプレイして復元した保有数量（base 建て）。**実残高（amount）とは別物**——amount は assets API が返す口座の現在残高、本値は履歴から積み上げた理論値で、cost_basis / avg_buy_price はこちらの数量で算出している。cost_basis_reliable はこの 2 つの突き合わせ結果で、|Number(amount) − reconstructed_qty| ≤ qty_invariant_tolerance（= max(10^-amount_precision × 5, |実残高| × 0.1%)）なら true。**差そのものは別フィールドにしていない**（amount との引き算で得られ、許容誤差との比 |Number(amount) − reconstructed_qty| / qty_invariant_tolerance が 1 以下かどうかが判定と一致する）。**丸めていない**——判定に入った値をそのまま出す（amount_precision で丸めると境界付近で消費者の再計算が判定と食い違う）。**代数和なので負になりうる**（#89）——原価側と違いゼロ床でクランプしないため、可視の履歴で説明できる量を超えて売った口座では負の値が出る。これは異常値ではなく API に現れない取得があったことの直接証拠で、その銘柄には cost_basis_unavailable_reason=reconstructed_qty_negative が載る。逆に**クランプすると取得漏れがそのまま吸収されて乖離が消える**（＝ 検出したいケースほど検出できなくなる）ため、意図的にクランプしていない。amount が文字列なのに本値が数値なのは、amount が API の残高文字列を透過しているのに対し本値はリプレイの計算結果（IEEE754 の 2 進小数）だからで、10 進文字列に化かすと存在しない精度を主張することになる。**差がゼロでないこと自体は異常ではない**（端数処理・ダスト）が、許容誤差内でも差の分だけ cost_basis は不完全。API に現れない取引（販売所での売買など）がある口座では、この差がその存在を推定する唯一の手掛かりになる。0 のときもキーを落とさない（「全量売却済み / 履歴から復元できなかった」は判定の入力そのもので、省くと未計算と区別できなくなる。件数フィールドの 0 省略とは扱いが違う）。原価計算の対象外（JPY / include_pnl=false）では省略するが、**原価を抑止した銘柄（cost_basis_unavailable_reason あり）では出す**——抑止の妥当性こそ検算対象なので。売り切り銘柄は holdings に載らないため本値も出ない（実残高ゼロで数量不変条件の判定対象外。unpriced_deposit_count と同じ制約だが、あちらと違い申告すべき判定結果が無いので警告行も足していない）',
 		),
 	qty_invariant_tolerance: z
 		.number()
@@ -423,6 +430,22 @@ const HoldingPnlSchema = z.object({
 		.optional()
 		.describe(
 			'数量不変条件の許容誤差（base 建て）= max(10^-amount_precision × 5, |Number(amount)| × 0.1%)。絶対項は取引所側の端数処理・ダスト、相対項は移動平均リプレイの浮動小数点誤差の許容で、判定式は |Number(amount) − reconstructed_qty| ≤ 本値。**amount_precision を出力に含めていないため、本値が無いと消費者は許容誤差を再現できない**（＝ cost_basis_reliable を検算できない）ので値として出す。出す条件は reconstructed_qty と同じ（JPY / include_pnl=false では省略、原価抑止時は出す）。**cost_basis_reliable=false の銘柄がすべて本判定で落ちたわけではない**——cost_basis_unavailable_reason が dw_fetch_failed / dw_history_incomplete / deposit_price_fetch_failed / deposit_price_chunk_truncated の銘柄は数量不変条件を評価する前に抑止しており、前者 2 値では出庫履歴を反映できていないぶん reconstructed_qty 自体が過大になりうる',
+		),
+	// 原価側クランプの発火申告（#89）。新設キーは既存キーの後ろ（宣言順 = wire のキー順）。
+	qty_clamp_count: z
+		.number()
+		.int()
+		.nonnegative()
+		.optional()
+		.describe(
+			'リプレイ上の保有を超える売りが起きて、原価の按分がゼロ床でクランプされた件数（当該銘柄・全履歴）。超過分は**原価ゼロ扱い**で按分されるため、本値が 0 でない銘柄の realized_pnl はその分だけ過大側に寄り、cost_basis も不完全（数量側はクランプせず代数和で追っているので reconstructed_qty には影響しない）。原価側のクランプ自体は実現損益の計算として妥当なので抑止はしないが、算出条件として申告する。**発火は取得漏れの症状**——履歴から積み上げた保有で賄えない売りがあったということなので、reconstructed_qty と実残高の乖離、unpriced_deposit_count と併せて読むこと。0 件のときはキーごと省く（クランプが起きていない銘柄の出力は従来と JSON 一致）',
+		),
+	qty_clamp_absorbed_qty: z
+		.number()
+		.nonnegative()
+		.optional()
+		.describe(
+			'上のクランプで原価側に吸収された数量の合計（base 建て、正値）。qty_clamp_count が 0 でないときのみ出す。**丸めていない**（reconstructed_qty と同じ理由）。#89 より前は数量にも同じクランプが効いており、この量がそのまま reconstructed_qty を実残高側へ押し戻して乖離を消していた（実口座では欠落の 96% がこれで消え cost_basis_reliable=true を素通りしていた）。現在は数量側をクランプしないので押し戻しは起きず、本値は「どれだけの売却数量が原価ゼロで処理されたか」＝ realized_pnl の過大寄りの度合いを読むための値。**出庫（withdrawal）側の同型クランプは数えていない**——#89 が扱ったのは売りのクランプだけで、出庫の数量は従来どおり保有量でクランプしている',
 		),
 });
 

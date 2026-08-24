@@ -38,9 +38,15 @@ function descriptionOf(key: string): string {
 describe('復元数量と許容誤差 — キー順', () => {
 	it('新設 2 キーは既存キーの後ろに宣言されている', () => {
 		const keys = Object.keys(holdingShape());
-		expect(keys.slice(-2)).toEqual(['reconstructed_qty', 'qty_invariant_tolerance']);
+		// #87 の 2 キーの後ろに #89 の 2 キーが足された（新設は常に末尾）
+		expect(keys.slice(-4)).toEqual([
+			'reconstructed_qty',
+			'qty_invariant_tolerance',
+			'qty_clamp_count',
+			'qty_clamp_absorbed_qty',
+		]);
 		// 既存キーの並びは崩さない（#69 / #72 / #77 と同じ理由: JSON を中間から変えない）
-		expect(keys.slice(0, -2)).toEqual([
+		expect(keys.slice(0, -4)).toEqual([
 			'asset',
 			'pair',
 			'amount',

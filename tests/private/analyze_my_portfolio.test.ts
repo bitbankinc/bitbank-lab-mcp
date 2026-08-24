@@ -4040,6 +4040,144 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		expect(result.summary).toContain('ETH は復元数量が実残高と乖離しているため合計評価損益に含めていません');
 	});
 
+	/**
+	 * #89 の受け入れ条件: 実口座データの完全リプレイで確定した機序（issue 本文）をそのまま
+	 * フィクスチャ化する。販売所の買い（API に現れない取得）が 0.00041693 BTC 欠けた口座で、
+	 * 売り 2 回がリプレイ上の保有を超えてクランプが発火する（吸収 0.0003 + 0.0001 = 0.0004）。
+	 *
+	 * 旧実装（数量もクランプ）は復元数量を実残高側へ 0.0004 押し戻し、乖離 0.00041693 が
+	 * 0.00001693（許容誤差 0.1% 未満）に圧縮されて cost_basis_reliable=true を素通りしていた。
+	 * 本 PR の後は乖離が圧縮されずに現れ、false として検出される。
+	 */
+	describe('#89: 売りのクランプが取得漏れを吸収して不変条件を素通りする回帰', () => {
+		const btcTrades = {
+			trades: [
+				{
+					trade_id: 1,
+					pair: 'btc_jpy',
+					order_id: 1,
+					side: 'buy',
+					type: 'limit',
+					amount: '0.0003',
+					price: '10000000',
+					maker_taker: 'maker',
+					fee_amount_base: '0',
+					fee_amount_quote: '0',
+					executed_at: 1710000000000,
+				},
+				// リプレイ上の保有 0.0003 を超える売り → クランプ発火（吸収 0.0003）
+				{
+					trade_id: 2,
+					pair: 'btc_jpy',
+					order_id: 2,
+					side: 'sell',
+					type: 'limit',
+					amount: '0.0006',
+					price: '10000000',
+					maker_taker: 'maker',
+					fee_amount_base: '0',
+					fee_amount_quote: '0',
+					executed_at: 1710000100000,
+				},
+				{
+					trade_id: 3,
+					pair: 'btc_jpy',
+					order_id: 3,
+					side: 'buy',
+					type: 'limit',
+					amount: '0.0014',
+					price: '10000000',
+					maker_taker: 'maker',
+					fee_amount_base: '0',
+					fee_amount_quote: '0',
+					executed_at: 1710000200000,
+				},
+				// リプレイ上の保有 0.0014 を超える売り → クランプ発火（吸収 0.0001）
+				{
+					trade_id: 4,
+					pair: 'btc_jpy',
+					order_id: 4,
+					side: 'sell',
+					type: 'limit',
+					amount: '0.0015',
+					price: '10000000',
+					maker_taker: 'maker',
+					fee_amount_base: '0',
+					fee_amount_quote: '0',
+					executed_at: 1710000300000,
+				},
+				{
+					trade_id: 5,
+					pair: 'btc_jpy',
+					order_id: 5,
+					side: 'buy',
+					type: 'limit',
+					amount: '0.1073',
+					price: '10000000',
+					maker_taker: 'maker',
+					fee_amount_base: '0',
+					fee_amount_quote: '0',
+					executed_at: 1710000400000,
+				},
+			],
+		};
+
+		/** 実残高 = 代数和 0.1069（可視の履歴が積み上げる量）+ 欠落 0.00041693（販売所の買い） */
+		function btcOnlyAssets(onhand: string) {
+			return {
+				assets: [
+					{ ...assetFixture('btc'), free_amount: onhand, onhand_amount: onhand, locked_amount: '0' },
+					assetFixture('jpy'),
+				],
+			};
+		}
+
+		it('乖離が 0.00041693 として現れ cost_basis_reliable=false になる（旧実装なら圧縮されて true だった）', async () => {
+			setupFetchMock({ assets: btcOnlyAssets('0.10731693'), trades: btcTrades, ...emptyDw });
+
+			const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+			const result = await handler({
+				include_technical: false,
+				include_pnl: true,
+				include_deposit_withdrawal: true,
+			});
+
+			assertOk(result);
+			const btc = result.data.holdings.find((h: { asset: string }) => h.asset === 'btc');
+			expect(btc.reconstructed_qty).toBeCloseTo(0.1069, 9);
+			// 許容誤差 max(5e-8, 0.10731693 * 0.1%) ≈ 0.00010731693
+			expect(btc.qty_invariant_tolerance).toBeCloseTo(0.00010731693, 9);
+			// 乖離 0.00041693 > 許容誤差 → 検出される（本 issue の眼目）
+			expect(Number('0.10731693') - btc.reconstructed_qty).toBeCloseTo(0.00041693, 9);
+			expect(btc.cost_basis_reliable).toBe(false);
+			expect(btc.cost_basis_unavailable_reason).toBe('unknown');
+			expect(btc.cost_basis).toBeUndefined();
+		});
+
+		it('クランプ発火（2 回・吸収 0.0004）を申告し、realized_pnl は原価側不変のクランプ前と一致する', async () => {
+			setupFetchMock({ assets: btcOnlyAssets('0.10731693'), trades: btcTrades, ...emptyDw });
+
+			const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+			const result = await handler({
+				include_technical: false,
+				include_pnl: true,
+				include_deposit_withdrawal: true,
+			});
+
+			assertOk(result);
+			const btc = result.data.holdings.find((h: { asset: string }) => h.asset === 'btc');
+			expect(btc.qty_clamp_count).toBe(2);
+			expect(btc.qty_clamp_absorbed_qty).toBeCloseTo(0.0004, 9);
+			// 原価側の按分ロジック自体は変えていないので、realized_pnl は本 PR の前後で変わらない
+			// （sell1: 6,000-3,000=3,000 / sell2: 15,000-14,000=1,000）
+			expect(btc.realized_pnl).toBe(4_000);
+			expect(
+				result.meta.warnings?.some((w: string) => w.includes('BTC（2件） は約定・入出庫から復元した保有を超える売却')),
+			).toBe(true);
+			expect(result.summary).toContain('BTC（2件） は履歴から復元した保有を超える売却');
+		});
+	});
+
 	it('toolDef: 数量乖離の warning 行が content の JSON より前に出る', async () => {
 		setupFetchMock({ assets: ethAssets('2.0'), trades: tinyEthBuy, ...emptyDw });
 
@@ -5375,6 +5513,9 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 			// #87 で追加（数量不変条件の検算に要る 2 値）
 			'reconstructed_qty',
 			'qty_invariant_tolerance',
+			// #89 で追加（売りの原価按分がゼロ床でクランプされた事実の申告）
+			'qty_clamp_count',
+			'qty_clamp_absorbed_qty',
 		]);
 		expect(Object.keys(result.data.yearly_realized_pnl ?? {})).toEqual([
 			'realized_pnl',
@@ -5529,6 +5670,71 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 		// meta 側でも「取得失敗が 1 件」と読める（上限切り落としではない）
 		expect(result.meta.flowPriceChunkFailedDepositCount).toBe(1);
 		expect(result.meta.flowPriceChunkTruncatedDepositCount).toBeUndefined();
+	});
+
+	/**
+	 * #89: 本抑止（realized_pnl も undefined にする経路）とクランプ発火が同一銘柄で
+	 * 同時に起きるケース。未算入の入庫（この経路の原因そのもの）は costQty にも netQty にも
+	 * 入らないため、後続の売りがそのぶん保有不足になりクランプが発火しやすい——両者の
+	 * 同時発生は偶然ではなく構造的に起こりうる。
+	 *
+	 * realized_pnl 自体を出していない銘柄で「realized_pnl は過大側にずれています」という
+	 * クランプ警告を出すと、出してもいない値を指す誤導になるため、warning 行には出ない
+	 * ことを固定する。一方 qty_clamp_count はリプレイの事実そのものなので、
+	 * reconstructed_qty と同じ理由で holdings には出す（抑止の妥当性こそ検算対象）。
+	 */
+	it('クランプ発火と #80 抑止が同一銘柄で重なっても、出していない realized_pnl を指す警告は出さない', async () => {
+		const buyThenOversell = {
+			trades: [
+				{
+					trade_id: 8101,
+					pair: 'eth_jpy',
+					order_id: 8101,
+					side: 'buy',
+					type: 'limit',
+					amount: '0.1',
+					price: '400000',
+					maker_taker: 'maker',
+					fee_amount_base: '0',
+					fee_amount_quote: '0',
+					executed_at: 1710000000000,
+				},
+				// 保有 0.1 を超える売り → クランプ発火（吸収 0.2）
+				{
+					trade_id: 8102,
+					pair: 'eth_jpy',
+					order_id: 8102,
+					side: 'sell',
+					type: 'limit',
+					amount: '0.3',
+					price: '500000',
+					maker_taker: 'maker',
+					fee_amount_base: '0',
+					fee_amount_quote: '0',
+					executed_at: 1710500000000,
+				},
+			],
+		};
+		setupFetchMock({
+			assets: ethAssets('0.05'),
+			trades: buyThenOversell,
+			// 年 chunk が取得失敗する入庫（#80 の抑止条件）。原価にも数量にも算入されない
+			...depositsOf({ uuid: 'dep-failed', asset: 'eth', amount: '0.4', at: OLD_DEPOSIT_AT }),
+			candleFail: eth2023ChunkFails,
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		const eth = result.data.holdings.find((h) => h.asset === 'eth');
+		expect(eth?.cost_basis_unavailable_reason).toBe('deposit_price_fetch_failed');
+		expect(eth?.realized_pnl).toBeUndefined();
+		// クランプの発火事実そのものは検算対象として出す（#87 と同じ「入力は握り潰さない」方針）
+		expect(eth?.qty_clamp_count).toBe(1);
+		expect(eth?.qty_clamp_absorbed_qty).toBeCloseTo(0.2, 9);
+		// realized_pnl を出していないのに「過大側にずれています」と言う警告は出さない
+		expect(result.meta.warnings?.some((w) => w.includes('復元した保有を超える売却'))).toBe(false);
+		expect(result.summary).not.toContain('復元した保有を超える売却');
 	});
 
 	it('合計実現損益・口座全体 PnL も部分和を出さず理由コードを添える', async () => {

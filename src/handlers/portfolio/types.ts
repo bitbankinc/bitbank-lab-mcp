@@ -139,6 +139,12 @@ export interface PnlResult {
 	 * として許容誤差（`holdings[].qty_invariant_tolerance`）と一緒に出力にも露出する（#87）。
 	 * 判定結果（`cost_basis_reliable`）だけを出して入力を握り潰すと、消費者は境界付近の妥当性を
 	 * 評価できず、API に現れない取引（販売所での売買など）の存在も推定できない。
+	 *
+	 * **代数和であって「保有量」ではない（#89）。負になりうる。** 原価側と違いゼロ床で
+	 * クランプしないので、可視の履歴で説明できる量を超えて売った口座では負の値が出る。
+	 * それは異常値ではなく、**API に現れない取得があったことの直接証拠**（負になった銘柄には
+	 * `reconstructed_qty_negative` が載る）。原価由来の値（`cost_basis` / `avg_buy_price`）は
+	 * これとは別の、クランプ付きの数量で算出している。
 	 */
 	reconstructed_qty: number;
 	/** 入庫日の始値で原価に算入した DONE 暗号資産入庫の件数 */
@@ -154,6 +160,23 @@ export interface PnlResult {
 	 * として出力にも露出する（#77）。内部判定だけに使って握り潰さないこと。
 	 */
 	unpriced_deposit_count: number;
+	/**
+	 * 売りの原価按分がゼロ床でクランプされた件数（#89）。
+	 *
+	 * 「リプレイ上の保有を超える売りがあった」＝ 履歴から積み上げた保有では賄えなかった、
+	 * ということ。超過分は原価ゼロ扱いで按分されるため、発火した銘柄の `realized_pnl` は
+	 * その分だけ過大側に寄る。`holdings[].qty_clamp_count` として出力にも露出する。
+	 * 出庫側の同型クランプは #89 のスコープ外なので数えない（`QtyClampTally` の doc 参照）。
+	 */
+	qty_clamp_count: number;
+	/**
+	 * 上の発火で原価側に吸収された数量の合計（base 建て、正値）。
+	 *
+	 * 旧実装ではこの量がそのまま `reconstructed_qty` を実残高側へ押し戻して乖離を消していた
+	 * （#89 の機序）。今は数量を代数和で追うので押し戻しは起きないが、**どれだけの売りが
+	 * 原価ゼロで処理されたか**は実現損益の算出条件なので値として残す。
+	 */
+	qty_clamp_absorbed_qty: number;
 }
 
 export interface PeriodRealizedPnl {
@@ -186,6 +209,18 @@ export interface PeriodRealizedPnl {
 	 * 未算入ぶんを原価ゼロで売った結果を含みうる（＝過大側にずれる）。
 	 */
 	unpriced_deposit_count: number;
+	/**
+	 * 同じリプレイで売りの原価按分がゼロ床でクランプされた件数（全履歴・全銘柄）（#89）。
+	 * 0 より大きければ `realized_pnl` は原価ゼロで按分した売却を含みうる（＝過大側にずれる）。
+	 *
+	 * **wire には出さない内部フィールド**（`sold_assets` と同じ扱い）。同じ約定集合を銘柄別に
+	 * リプレイする `calcPnl` 側が `holdings[].qty_clamp_count` として申告しており、そちらが
+	 * 銘柄の内訳まで読める上位互換になるため。ここで持つのは期間集計側でも同じ条件が
+	 * 成立していることをテストで固定するため。
+	 */
+	qty_clamp_count: number;
+	/** 上の発火で原価側に吸収された数量の合計（base 建て、正値、全銘柄合算）。wire には出さない */
+	qty_clamp_absorbed_qty: number;
 }
 
 // ── 口座全体 PnL（現物 + 信用決済損益 - 利息 - 手数料） ──

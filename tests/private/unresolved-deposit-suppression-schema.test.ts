@@ -75,6 +75,8 @@ describe('入庫日価格の抑止 — 理由コード enum', () => {
 			'unknown',
 			'deposit_price_fetch_failed',
 			'deposit_price_chunk_truncated',
+			// #89 で追加（末尾に足す）
+			'reconstructed_qty_negative',
 		]);
 	});
 });
