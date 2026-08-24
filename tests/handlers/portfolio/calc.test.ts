@@ -630,24 +630,24 @@ describe('calcPeriodRealizedPnl — 入庫の原価算入', () => {
 			pricing,
 		});
 		// btc は入庫日の始値を持つので算入、eth は日次価格が無いので未算入
-		expect(res.priced_deposit_count).toBe(1);
-		expect(res.unpriced_deposit_count).toBe(1);
+		expect(res.priced_deposit_count_all_time).toBe(1);
+		expect(res.unpriced_deposit_count_all_time).toBe(1);
 	});
 
 	it('全件を算入できれば未算入件数はゼロ', () => {
 		const res = calcPeriodRealizedPnl(sell, SINCE_MS, 'start', 'end', [], { deposits: [deposit], pricing });
-		expect(res.priced_deposit_count).toBe(1);
-		expect(res.unpriced_deposit_count).toBe(0);
+		expect(res.priced_deposit_count_all_time).toBe(1);
+		expect(res.unpriced_deposit_count_all_time).toBe(0);
 	});
 
 	it('入庫ゼロ・depositCost 未指定では両件数ともゼロ', () => {
 		expect(calcPeriodRealizedPnl(sell, SINCE_MS, 'start', 'end', [])).toMatchObject({
-			priced_deposit_count: 0,
-			unpriced_deposit_count: 0,
+			priced_deposit_count_all_time: 0,
+			unpriced_deposit_count_all_time: 0,
 		});
 		expect(calcPeriodRealizedPnl(sell, SINCE_MS, 'start', 'end', [], { deposits: [], pricing })).toMatchObject({
-			priced_deposit_count: 0,
-			unpriced_deposit_count: 0,
+			priced_deposit_count_all_time: 0,
+			unpriced_deposit_count_all_time: 0,
 		});
 	});
 
@@ -658,8 +658,8 @@ describe('calcPeriodRealizedPnl — 入庫の原価算入', () => {
 			deposits: [unpricedEth, unpricedXrp],
 			pricing,
 		});
-		expect(res.priced_deposit_count).toBe(0);
-		expect(res.unpriced_deposit_count).toBe(2);
+		expect(res.priced_deposit_count_all_time).toBe(0);
+		expect(res.unpriced_deposit_count_all_time).toBe(2);
 	});
 });
 

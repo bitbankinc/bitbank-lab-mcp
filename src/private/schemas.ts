@@ -577,14 +577,16 @@ const PeriodRealizedPnlSchema = z
 		sell_count: z.number().int().describe('期間内の売却約定件数'),
 		period_start: z.string().describe('期間の開始日時（ISO8601 JST）'),
 		period_end: z.string().describe('期間の終了日時（ISO8601 JST）'),
-		// 新設キーは既存キーの後ろ（宣言順 = wire のキー順）。
+		// #77 で追加。件数は全履歴・全銘柄（期間内の入庫だけではない）だが、フィールド名が
+		// 期間オブジェクト内にあるため期間スコープに読める。#85 で *_all_time へ改名し、
+		// 旧名は同じ値を返す alias として残す（.claude/rules/tools.md §7）。
 		priced_deposit_count: z
 			.number()
 			.int()
 			.nonnegative()
 			.optional()
 			.describe(
-				'平均原価の積み上げで取得原価に**算入した** DONE 暗号資産入庫の件数（全履歴・全銘柄）。期間内の入庫だけではない——移動平均法は期間開始前の入庫も原価に積むため、realized_pnl の算出条件は全履歴のリプレイで決まる。0 件のときはキーごと省く',
+				`取得原価に算入した DONE 暗号資産入庫の件数（全履歴・全銘柄）。期間スコープではない。${deprecatedFieldNote('priced_deposit_count_all_time')}`,
 			),
 		unpriced_deposit_count: z
 			.number()
@@ -592,12 +594,29 @@ const PeriodRealizedPnlSchema = z
 			.nonnegative()
 			.optional()
 			.describe(
-				'同じリプレイで入庫日（confirmed_at）の 1day 始値を解決できず、取得原価にも数量にも**算入しなかった** DONE 暗号資産入庫の件数（全履歴・全銘柄）。0 より大きければ、この期間の realized_pnl は未算入ぶんを**原価ゼロで売った**結果を含みうる（＝過大側にずれる）。銘柄別の内訳は holdings[].unpriced_deposit_count（売り切り銘柄は holdings に載らないため、本値の方が大きくなることがある）。**本値が 0 でなくても realized_pnl は出る**——恒久的に解決できない未算入（上場前・当日足の欠損）は抑止対象ではないため。抑止されるのは realized_pnl_unavailable_reason が載る場合だけ。0 件のときはキーごと省く',
+				`入庫日の始値を解決できず算入しなかった DONE 暗号資産入庫の件数（全履歴・全銘柄）。期間スコープではない。${deprecatedFieldNote('unpriced_deposit_count_all_time')}`,
 			),
 		// #80 で追加。新設キーは既存キーの後ろ（宣言順 = wire のキー順）。
 		realized_pnl_unavailable_reason: PortfolioUnresolvedDepositReasonEnum.optional().describe(
 			'この期間の realized_pnl を確定値として出せなかった理由。設定されている場合 realized_pnl は undefined で、同じ期間の *_account_pnl.spot_realized_pnl / total も undefined になる。deposit_price_fetch_failed=入庫日を含む年足 chunk の取得に失敗した入庫がある銘柄が、この期間に売却している（取得の成否は実行ごとに変わるため値の再現性が無い）, deposit_price_chunk_truncated=同じく年足 chunk が件数上限で取りに行けなかった銘柄が、この期間に売却している。抑止しても sell_count は出る（売却件数は原価に依存しないため）。期間内に該当銘柄の売却が無ければ抑止しない（抑止範囲を必要最小限にするための判定）',
 		),
+		// #85 で追加。新設キーは既存キーの後ろ（宣言順 = wire のキー順）。
+		priced_deposit_count_all_time: z
+			.number()
+			.int()
+			.nonnegative()
+			.optional()
+			.describe(
+				'平均原価の積み上げで取得原価に**算入した** DONE 暗号資産入庫の件数（全履歴・全銘柄）。**期間スコープではない**（period_start / period_end の件数ではない）——移動平均法は期間開始前の入庫も原価に積むため、realized_pnl の算出条件は全履歴のリプレイで決まる。年初来と月初来で同じ値になるのはこのため。0 件のときはキーごと省く',
+			),
+		unpriced_deposit_count_all_time: z
+			.number()
+			.int()
+			.nonnegative()
+			.optional()
+			.describe(
+				'同じリプレイで入庫日（confirmed_at）の 1day 始値を解決できず、取得原価にも数量にも**算入しなかった** DONE 暗号資産入庫の件数（全履歴・全銘柄）。**期間スコープではない**（period_start / period_end の件数ではない）。0 より大きければ、この期間の realized_pnl は未算入ぶんを**原価ゼロで売った**結果を含みうる（＝過大側にずれる）。銘柄別の内訳は holdings[].unpriced_deposit_count（売り切り銘柄は holdings に載らないため、本値の方が大きくなることがある）。**本値が 0 でなくても realized_pnl は出る**——恒久的に解決できない未算入（上場前・当日足の欠損）は抑止対象ではないため。抑止されるのは realized_pnl_unavailable_reason が載る場合だけ。0 件のときはキーごと省く',
+			),
 	})
 	.optional();
 

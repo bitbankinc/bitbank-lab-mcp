@@ -5463,11 +5463,18 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 		const result = await analyze();
 		assertOk(result);
 
-		// 移動平均法は期間開始前の入庫も原価に積むため、件数は全履歴・全銘柄の合計
-		expect(result.data.yearly_realized_pnl?.unpriced_deposit_count).toBe(1);
-		expect(result.data.yearly_realized_pnl?.priced_deposit_count).toBe(1);
-		expect(result.data.monthly_realized_pnl?.unpriced_deposit_count).toBe(1);
-		expect(result.data.monthly_realized_pnl?.priced_deposit_count).toBe(1);
+		// 移動平均法は期間開始前の入庫も原価に積むため、件数は全履歴・全銘柄の合計。
+		// 年初来と月初来で同じ件数になるのは、フィールドが期間スコープではないため（#85）。
+		for (const period of [result.data.yearly_realized_pnl, result.data.monthly_realized_pnl]) {
+			expect(period?.unpriced_deposit_count_all_time).toBe(1);
+			expect(period?.priced_deposit_count_all_time).toBe(1);
+			// 旧名は同じ値を返す alias
+			expect(period?.unpriced_deposit_count).toBe(period?.unpriced_deposit_count_all_time);
+			expect(period?.priced_deposit_count).toBe(period?.priced_deposit_count_all_time);
+		}
+		// 銘柄別の holdings[] は改名しない（配置と意味が一致している）
+		expect(result.data.holdings.find((h) => h.asset === 'eth')?.unpriced_deposit_count).toBe(1);
+		expect(result.data.holdings.find((h) => h.asset === 'eth')?.priced_deposit_count).toBe(1);
 	});
 
 	it('回帰: 入庫が無い構成では JSON にキーが増えない', async () => {
@@ -5491,6 +5498,9 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 			expect(Object.keys(h)).not.toContain('unpriced_deposit_count');
 		}
 		expect(Object.keys(wire.yearly_realized_pnl ?? {})).not.toContain('unpriced_deposit_count');
+		expect(Object.keys(wire.yearly_realized_pnl ?? {})).not.toContain('priced_deposit_count');
+		expect(Object.keys(wire.yearly_realized_pnl ?? {})).not.toContain('unpriced_deposit_count_all_time');
+		expect(Object.keys(wire.yearly_realized_pnl ?? {})).not.toContain('priced_deposit_count_all_time');
 		expect(unpricedWarning(result.meta.warnings)).toBeUndefined();
 	});
 
@@ -5537,12 +5547,18 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 			'sell_count',
 			'period_start',
 			'period_end',
-			// #77 で追加
+			// #77 で追加。#85 で *_all_time へ改名し、旧名は同じ位置に alias として残す
 			'priced_deposit_count',
 			'unpriced_deposit_count',
 			// #80 で追加
 			'realized_pnl_unavailable_reason',
+			// #85 で追加（canonical）
+			'priced_deposit_count_all_time',
+			'unpriced_deposit_count_all_time',
 		]);
+		expect(Object.keys(result.data.monthly_realized_pnl ?? {})).toEqual(
+			Object.keys(result.data.yearly_realized_pnl ?? {}),
+		);
 	});
 });
 

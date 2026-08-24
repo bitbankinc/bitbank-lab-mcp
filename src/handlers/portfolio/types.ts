@@ -201,14 +201,22 @@ export interface PeriodRealizedPnl {
 	 * 平均原価の積み上げ（全履歴・全銘柄）で入庫日の始値により原価に算入した
 	 * DONE 暗号資産入庫の件数。期間内の入庫だけではない——移動平均法は期間開始前の
 	 * 入庫も原価に積むため、`realized_pnl` の算出条件は全履歴のリプレイで決まる。
+	 *
+	 * wire では `priced_deposit_count_all_time` として出す（#85）。期間オブジェクト内に
+	 * 置くと期間スコープに読めるため、名前で全履歴であることを明示する。旧名
+	 * `priced_deposit_count` は同じ値を返す deprecated な別名。
 	 */
-	priced_deposit_count: number;
+	priced_deposit_count_all_time: number;
 	/**
 	 * 同じリプレイで入庫日の始値を解決できず原価にも数量にも算入しなかった
 	 * DONE 暗号資産入庫の件数（全履歴・全銘柄）。0 より大きければ `realized_pnl` は
 	 * 未算入ぶんを原価ゼロで売った結果を含みうる（＝過大側にずれる）。
+	 *
+	 * wire では `unpriced_deposit_count_all_time` として出す（#85）。
+	 * `holdings[].unpriced_deposit_count` とは別物——あちらは銘柄別・全履歴で、
+	 * 配置と意味が一致しているので改名しない。
 	 */
-	unpriced_deposit_count: number;
+	unpriced_deposit_count_all_time: number;
 	/**
 	 * 同じリプレイで売りの原価按分がゼロ床でクランプされた件数（全履歴・全銘柄）（#89）。
 	 * 0 より大きければ `realized_pnl` は原価ゼロで按分した売却を含みうる（＝過大側にずれる）。

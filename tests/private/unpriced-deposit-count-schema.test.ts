@@ -17,6 +17,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { AnalyzeMyPortfolioDataSchema } from '../../src/private/schemas.js';
+import { DEPRECATED_FIELD_REMOVAL_TARGET } from '../../src/schema/base.js';
 
 type Described = { description?: string };
 
@@ -82,11 +83,39 @@ describe('入庫の原価算入件数 — キー順', () => {
 			'sell_count',
 			'period_start',
 			'period_end',
+			// #77 で追加。#85 で *_all_time へ改名し、旧名は同じ位置に alias として残す
 			'priced_deposit_count',
 			'unpriced_deposit_count',
 			// #80 で追加。以降も新設キーは末尾に足す
 			'realized_pnl_unavailable_reason',
+			// #85 で追加（canonical。期間スコープではないことを名前で明示）
+			'priced_deposit_count_all_time',
+			'unpriced_deposit_count_all_time',
 		]);
+	});
+});
+
+describe('入庫の原価算入件数 — 期間損益の alias（#85）', () => {
+	it.each([
+		['priced_deposit_count', 'priced_deposit_count_all_time'],
+		['unpriced_deposit_count', 'unpriced_deposit_count_all_time'],
+	] as const)('%s の description に写像先と削除目標バージョンが書いてある', (deprecated, replacement) => {
+		for (const field of ['yearly_realized_pnl', 'monthly_realized_pnl'] as const) {
+			const description = descriptionOf(periodRealizedPnlShape(field), deprecated);
+			expect(description, `${field}.${deprecated}`).toContain('非推奨');
+			expect(description, `${field}.${deprecated}`).toContain(replacement);
+			expect(description, `${field}.${deprecated}`).toContain(DEPRECATED_FIELD_REMOVAL_TARGET);
+			expect(description, `${field}.${deprecated}`).toContain('期間スコープではない');
+		}
+	});
+
+	it('holdings[] の unpriced_deposit_count は改名していない（配置と意味が一致しているため）', () => {
+		const keys = Object.keys(holdingShape());
+		expect(keys).toContain('unpriced_deposit_count');
+		expect(keys).not.toContain('unpriced_deposit_count_all_time');
+		expect(keys).not.toContain('priced_deposit_count_all_time');
+		const description = descriptionOf(holdingShape(), 'unpriced_deposit_count');
+		expect(description).not.toContain('非推奨');
 	});
 });
 
@@ -144,9 +173,19 @@ describe('入庫の原価算入件数 — description', () => {
 	it.each([
 		'yearly_realized_pnl',
 		'monthly_realized_pnl',
-	] as const)('%s.unpriced_deposit_count は全履歴・全銘柄の件数であることを書いている', (field) => {
-		const description = descriptionOf(periodRealizedPnlShape(field), 'unpriced_deposit_count');
+	] as const)('%s.unpriced_deposit_count_all_time は全履歴・全銘柄の件数であることと期間スコープではないことを書いている', (field) => {
+		const description = descriptionOf(periodRealizedPnlShape(field), 'unpriced_deposit_count_all_time');
 		expect(description).toContain('全履歴・全銘柄');
 		expect(description).toContain('原価ゼロで売った');
+		expect(description).toContain('期間スコープではない');
+	});
+
+	it.each([
+		'yearly_realized_pnl',
+		'monthly_realized_pnl',
+	] as const)('%s.priced_deposit_count_all_time は期間スコープではないことを書いている', (field) => {
+		const description = descriptionOf(periodRealizedPnlShape(field), 'priced_deposit_count_all_time');
+		expect(description).toContain('全履歴・全銘柄');
+		expect(description).toContain('期間スコープではない');
 	});
 });
