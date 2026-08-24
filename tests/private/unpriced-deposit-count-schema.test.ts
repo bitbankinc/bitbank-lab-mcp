@@ -46,9 +46,8 @@ function descriptionOf(shape: Record<string, Described>, key: string): string {
 describe('入庫の原価算入件数 — キー順', () => {
 	it('holdings[] の新設 2 キーは既存キーの後ろに宣言されている', () => {
 		const keys = Object.keys(holdingShape());
-		expect(keys.slice(-2)).toEqual(['priced_deposit_count', 'unpriced_deposit_count']);
 		// 既存キーの並びは崩さない（#69 / #72 と同じ理由: JSON を中間から変えない）
-		expect(keys.slice(0, -2)).toEqual([
+		const beforeThisIssue = [
 			'asset',
 			'pair',
 			'amount',
@@ -62,6 +61,14 @@ describe('入庫の原価算入件数 — キー順', () => {
 			'trade_count',
 			'cost_basis_unavailable_reason',
 			'cost_basis_reliable',
+		];
+		expect(keys.slice(0, beforeThisIssue.length)).toEqual(beforeThisIssue);
+		// #77 の 2 キーはその**直後**。末尾からの相対位置では固定しない——後続の issue が
+		// さらに後ろへキーを足す（#87 の reconstructed_qty / qty_invariant_tolerance）と
+		// 「既存キーの後ろ」という本来の主張と無関係に落ちるため。
+		expect(keys.slice(beforeThisIssue.length, beforeThisIssue.length + 2)).toEqual([
+			'priced_deposit_count',
+			'unpriced_deposit_count',
 		]);
 	});
 
