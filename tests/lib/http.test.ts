@@ -5,6 +5,8 @@ import {
 	extractRateLimit,
 	fetchJson,
 	fetchJsonWithRateLimit,
+	HttpStatusError,
+	isRetriableHttpStatus,
 	retryAsync,
 	retryBackoffMs,
 } from '../../lib/http.js';
@@ -356,4 +358,80 @@ describe('retryBackoffMs', () => {
 	it('待機時間の上限（30秒）でキャップする', () => {
 		expect(retryBackoffMs(100)).toBe(30_000);
 	});
+});
+
+/**
+ * 恒久的な HTTP 失敗（404 等）をリトライ対象から外す（#84）。
+ *
+ * bitbank `/candlestick` は上場前・未来の期間キーに 404 を返す。同じ URL を叩き直しても
+ * 永久に 404 なので、リトライは待ち時間とレート制限枠を捨てるだけで、
+ * **同時に走っている他 chunk の成功率まで下げる**。
+ */
+describe('HTTP ステータス由来のリトライ判定（#84）', () => {
+	const originalFetch = globalThis.fetch;
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	describe('isRetriableHttpStatus', () => {
+		it('4xx はリトライしない（408 / 429 を除く）', () => {
+			expect(isRetriableHttpStatus(400)).toBe(false);
+			expect(isRetriableHttpStatus(404)).toBe(false);
+			expect(isRetriableHttpStatus(403)).toBe(false);
+			expect(isRetriableHttpStatus(499)).toBe(false);
+		});
+
+		it('5xx / 408 / 429 はリトライする', () => {
+			expect(isRetriableHttpStatus(500)).toBe(true);
+			expect(isRetriableHttpStatus(503)).toBe(true);
+			expect(isRetriableHttpStatus(408)).toBe(true);
+			expect(isRetriableHttpStatus(429)).toBe(true);
+		});
+	});
+
+	describe('HttpStatusError', () => {
+		it('メッセージは従来の `HTTP <status> <statusText>` 形式のまま（404 の正規表現判定が依存している）', () => {
+			const err = new HttpStatusError(404, 'Not Found');
+			expect(err.message).toBe('HTTP 404 Not Found');
+			expect(err.status).toBe(404);
+			expect(err).toBeInstanceOf(Error);
+		});
+	});
+
+	for (const [label, fn] of [
+		['fetchJson', fetchJson],
+		['fetchJsonWithRateLimit', fetchJsonWithRateLimit],
+	] as Array<[string, (url: string, o?: { retries?: number }) => Promise<unknown>]>) {
+		describe(label, () => {
+			it('404 は 1 回で諦める（リトライしない）', async () => {
+				const fetchMock = vi
+					.fn()
+					.mockResolvedValue({ ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null } });
+				globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+				await expect(fn('https://example.com/api', { retries: 2 })).rejects.toThrow('HTTP 404');
+				expect(fetchMock).toHaveBeenCalledTimes(1);
+			});
+
+			it('5xx は従来どおり初回 + retries 回まで試す', async () => {
+				vi.useFakeTimers();
+				const fetchMock = vi.fn().mockResolvedValue({
+					ok: false,
+					status: 503,
+					statusText: 'Service Unavailable',
+					headers: { get: () => null },
+				});
+				globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+				const pending = fn('https://example.com/api', { retries: 2 });
+				const assertion = expect(pending).rejects.toThrow('HTTP 503');
+				await vi.runAllTimersAsync();
+				await assertion;
+				expect(fetchMock).toHaveBeenCalledTimes(3);
+			});
+		});
+	}
 });
