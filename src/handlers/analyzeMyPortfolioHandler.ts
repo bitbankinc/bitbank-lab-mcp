@@ -241,6 +241,45 @@ function depositCountOrUndefined(count: number | undefined): number | undefined 
 }
 
 /**
+ * 期間実現損益を wire 形に写す（#85）。
+ *
+ * 件数は全履歴・全銘柄なので canonical 名は `*_all_time`。旧名
+ * `priced_deposit_count` / `unpriced_deposit_count` は同じ値を返す alias。
+ * 両方とも 0 のときはキーごと落とす（`depositCountOrUndefined`）。
+ *
+ * `DEPRECATED_FIELD_REMOVAL_TARGET`（`src/schema/base.ts`）で alias を削除する際は、
+ * ここの旧名 2 行とスキーマ・description をまとめて落とすこと。
+ */
+function periodRealizedPnlForWire(
+	period: PeriodRealizedPnl,
+	unavailableReason: PortfolioUnresolvedDepositReason | undefined,
+): {
+	realized_pnl: number | undefined;
+	sell_count: number;
+	period_start: string;
+	period_end: string;
+	priced_deposit_count: number | undefined;
+	unpriced_deposit_count: number | undefined;
+	realized_pnl_unavailable_reason: PortfolioUnresolvedDepositReason | undefined;
+	priced_deposit_count_all_time: number | undefined;
+	unpriced_deposit_count_all_time: number | undefined;
+} {
+	const priced = depositCountOrUndefined(period.priced_deposit_count_all_time);
+	const unpriced = depositCountOrUndefined(period.unpriced_deposit_count_all_time);
+	return {
+		realized_pnl: unavailableReason != null ? undefined : period.realized_pnl,
+		sell_count: period.sell_count,
+		period_start: period.period_start,
+		period_end: period.period_end,
+		priced_deposit_count: priced,
+		unpriced_deposit_count: unpriced,
+		realized_pnl_unavailable_reason: unavailableReason,
+		priced_deposit_count_all_time: priced,
+		unpriced_deposit_count_all_time: unpriced,
+	};
+}
+
+/**
  * 数量不変条件（`cost_basis_reliable`）の判定に入った 2 値を holdings 用に組み立てる（#87）。
  *
  * 判定結果だけを出していると、消費者は境界付近の妥当性を評価できず、API に現れない取引
@@ -1815,26 +1854,10 @@ export default async function analyzeMyPortfolioHandler(args: {
 			monthly_equity_series: monthlyEquitySeries,
 			yearly_equity_series: yearlyEquitySeries,
 			yearly_realized_pnl: yearlyRealizedPnl
-				? {
-						realized_pnl: yearlyRealizedPnlUnavailableReason != null ? undefined : yearlyRealizedPnl.realized_pnl,
-						sell_count: yearlyRealizedPnl.sell_count,
-						period_start: yearlyRealizedPnl.period_start,
-						period_end: yearlyRealizedPnl.period_end,
-						priced_deposit_count: depositCountOrUndefined(yearlyRealizedPnl.priced_deposit_count),
-						unpriced_deposit_count: depositCountOrUndefined(yearlyRealizedPnl.unpriced_deposit_count),
-						realized_pnl_unavailable_reason: yearlyRealizedPnlUnavailableReason,
-					}
+				? periodRealizedPnlForWire(yearlyRealizedPnl, yearlyRealizedPnlUnavailableReason)
 				: undefined,
 			monthly_realized_pnl: monthlyRealizedPnl
-				? {
-						realized_pnl: monthlyRealizedPnlUnavailableReason != null ? undefined : monthlyRealizedPnl.realized_pnl,
-						sell_count: monthlyRealizedPnl.sell_count,
-						period_start: monthlyRealizedPnl.period_start,
-						period_end: monthlyRealizedPnl.period_end,
-						priced_deposit_count: depositCountOrUndefined(monthlyRealizedPnl.priced_deposit_count),
-						unpriced_deposit_count: depositCountOrUndefined(monthlyRealizedPnl.unpriced_deposit_count),
-						realized_pnl_unavailable_reason: monthlyRealizedPnlUnavailableReason,
-					}
+				? periodRealizedPnlForWire(monthlyRealizedPnl, monthlyRealizedPnlUnavailableReason)
 				: undefined,
 			account_pnl: accountPnl,
 			yearly_account_pnl: yearlyAccountPnl,

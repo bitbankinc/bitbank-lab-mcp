@@ -145,10 +145,10 @@ describe('入庫日価格の抑止 — description', () => {
 		}
 	});
 
-	it('unpriced_deposit_count は「件数が 0 でなくても抑止されるとは限らない」ことを書いている', () => {
+	it('unpriced_deposit_count_all_time は「件数が 0 でなくても抑止されるとは限らない」ことを書いている', () => {
 		// 恒久的に解決できない未算入（上場前・当日足の欠損）は抑止対象外。
 		// ここを書かないと消費者は「件数 > 0 = 値が出ない」と読む。
-		const description = descriptionOf(unwrappedShape('yearly_realized_pnl'), 'unpriced_deposit_count');
+		const description = descriptionOf(unwrappedShape('yearly_realized_pnl'), 'unpriced_deposit_count_all_time');
 		expect(description).toContain('本値が 0 でなくても realized_pnl は出る');
 		expect(description).toContain('realized_pnl_unavailable_reason');
 	});

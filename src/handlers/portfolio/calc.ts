@@ -508,9 +508,10 @@ export function dominantUnresolvedDepositReason(
  * これにより入出庫を挟んだ売却でも残数量・平均原価が calcPnl と整合する
  * （`depositCost` を渡さないと入庫ぶんの原価がゼロのまま売られ、期間実現損益が calcPnl と食い違う）。
  *
- * 入庫日の始値を解決できず算入できなかった入庫は、`unpriced_deposit_count` として
- * 件数を返す（#77）。この件数ぶんの入庫は原価にも数量にも入っていないため、
- * `realized_pnl` はその入庫を原価ゼロで売った結果を含みうる。
+ * 入庫日の始値を解決できず算入できなかった入庫は、`unpriced_deposit_count_all_time`
+ * として件数を返す（#77 / #85）。この件数ぶんの入庫は原価にも数量にも入っていないため、
+ * `realized_pnl` はその入庫を原価ゼロで売った結果を含みうる。件数は全履歴・全銘柄で、
+ * 期間フィルタも銘柄フィルタも掛けない（移動平均法の算出条件そのものが全履歴のため）。
  */
 export function calcPeriodRealizedPnl(
 	trades: RawTrade[],
@@ -645,8 +646,8 @@ export function calcPeriodRealizedPnl(
 		sold_assets: [...soldAssets],
 		period_start: periodStart,
 		period_end: periodEnd,
-		priced_deposit_count: depositEvents.priced.length,
-		unpriced_deposit_count: unpricedDepositCount,
+		priced_deposit_count_all_time: depositEvents.priced.length,
+		unpriced_deposit_count_all_time: unpricedDepositCount,
 		qty_clamp_count: clamp.count,
 		qty_clamp_absorbed_qty: clamp.absorbed,
 	};

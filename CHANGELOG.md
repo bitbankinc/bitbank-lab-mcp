@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+### Changed（`analyze_my_portfolio` の期間損益の入庫件数を `_all_time` で全履歴と明示）
+- **`yearly_realized_pnl` / `monthly_realized_pnl` の `priced_deposit_count` / `unpriced_deposit_count` を `priced_deposit_count_all_time` / `unpriced_deposit_count_all_time` に改名した（#85）。** 件数は #77 導入時から全履歴・全銘柄で、description にもそう書いてあった。問題は配置（期間オブジェクト内）と名前が期間スコープに読めること。実口座検証では年初来と月初来に同じ `unpriced 1` が出て、2024 年の未解決入庫が「この期間の数字も汚染されている」と誤読された。値の計算は一切変えていない（命名と description のみ）。
+- **「期間内に売却があった銘柄に限定する」案は採らなかった。** 期間内に売却が無くても保有原価には影響しているため、「0 件だから期間の数字は完全」という別の誤読を生む。名前で全履歴と示す方が実態に忠実。
+- **旧フィールドは alias として残す。** `priced_deposit_count` / `unpriced_deposit_count` は**同じ値**を出し続けるので、旧フィールドを読んでいるクライアントは壊れない。description に写像先と削除目標バージョン（`0.4.0`、定数は `src/schema/base.ts` の `DEPRECATED_FIELD_REMOVAL_TARGET`）を明記した。猶予期間の考え方は `view` の deprecated alias と同じ（最低 1 リリース かつ 3 ヶ月）。
+- **`holdings[].unpriced_deposit_count` / `priced_deposit_count` は改名しない。** 銘柄別・全履歴で、配置と意味が一致している。`closed_positions[]` の同名フィールドも holdings と同義のまま。
+- **新設キーは既存キーの後ろに出す。** 旧名は #77 当時の位置に alias として残し、canonical 名は `realized_pnl_unavailable_reason` の後ろに足した（既存消費者の JSON を中間から崩さない）。キー順・description・新旧の一致は `tests/private/unpriced-deposit-count-schema.test.ts` と `tests/private/analyze_my_portfolio.test.ts` で機械的に固定している。
+- **内部の受け渡しも `_all_time` に揃えた**（`calcPeriodRealizedPnl` の戻り値 = `PeriodRealizedPnl`）。deprecated な別名は wire 上の互換のためだけに存在する。
+
 ### Added（`analyze_my_portfolio` が販売所取引の不可視性を検出・申告する）
 - **背景**: bitbank の販売所（即時売買）取引は、本ツールが依拠する REST エンドポイント——約定履歴 `/v1/user/spot/trade_history`、入出金履歴 `/v1/user/{deposit,withdrawal}_history`——のいずれにも一切現れない。実口座の多段検証で確定した事実（#93）。**MCP 単独ではこれを正しく計算することは原理的に不可能**（これらのエンドポイントを組み合わせても販売所取引のデータそのものが存在しないため）なので、本変更の目的は「正しい値を出す」ことではなく「不完全であることを利用者が知れる状態にする」こと。
 - **`closed_positions[]`（#92 で追加）に検出専用エントリが混在するようになった。** 入出金履歴（DONE の暗号資産入庫）はあるのに、約定履歴にも現在残高にも現れない銘柄を新たに検出する。#89 で数量不変条件により保有継続中の銘柄の乖離は検出できるようになっていたが、**約定も残高も無い銘柄はどのループにも乗らず検出できなかった**（売却が販売所だけだった銘柄の穴）。この銘柄を `closed_positions` に `{ asset, realized_pnl_unavailable_reason: 'untracked_trade_suspected' }` として追加する——`realized_pnl` を算出する入力（約定履歴）自体が無いため、`realized_pnl` / `priced_deposit_count` / `unpriced_deposit_count` はいずれも `undefined` のまま。新しい配列を作らず既存の `closed_positions` に載せたのは、消費者が読む場所を増やさないため（#92 との統合）。
