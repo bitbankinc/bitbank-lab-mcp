@@ -43,6 +43,7 @@ import {
 	type PeriodSpec,
 	type PortfolioPerformanceContext,
 	qtyInvariantHolds,
+	qtyInvariantTolerance,
 	qtyMismatchReasonFor,
 	resolveDepositWithdrawalStatus,
 	summarizeFlowValuation,
@@ -73,6 +74,7 @@ import type {
 	PeriodDWSummary,
 	PeriodPerformance,
 	PeriodRealizedPnl,
+	PnlResult,
 	RawAsset,
 	RawMarginTrade,
 	RawTrade,
@@ -230,6 +232,37 @@ const UNRESOLVED_DEPOSIT_NOTE: Record<PortfolioUnresolvedDepositReason, string> 
  */
 function depositCountOrUndefined(count: number | undefined): number | undefined {
 	return count != null && count > 0 ? count : undefined;
+}
+
+/**
+ * 数量不変条件（`cost_basis_reliable`）の判定に入った 2 値を holdings 用に組み立てる（#87）。
+ *
+ * 判定結果だけを出していると、消費者は境界付近の妥当性を評価できず、API に現れない取引
+ * （販売所での売買など）の存在も推定できない。**入力そのもの**を出して検算可能にする。
+ *
+ * - `reconstructed_qty` は**丸めない**。`amount_precision` で丸めると差が最大 0.5 quanta 動き、
+ *   絶対項が 5 quanta しかない境界付近で消費者の再計算が判定と食い違う。
+ * - 許容誤差は `amount_precision` から決まるが、その桁数は出力に無い。**値を出さないと
+ *   消費者側で許容誤差を再現できない**ので `qty_invariant_tolerance` として同梱する。
+ * - `reconstructed_qty` は 0 でもキーを落とさない（「復元したら 0 だった」は判定の入力そのもので、
+ *   落とすと未計算と区別できない）。件数フィールドの 0 省略（`depositCountOrUndefined`）とは別方針。
+ *
+ * 原価計算をしていない銘柄（JPY / `include_pnl=false` ＝ `pnl == null`）では両方 undefined。
+ * **原価を抑止した銘柄では出す**——抑止の妥当性こそ検算対象なので。
+ */
+function qtyInvariantInputsOf(
+	pnl: PnlResult | undefined,
+	onhandAmount: string,
+	amountPrecision: number,
+): { reconstructed_qty: number | undefined; qty_invariant_tolerance: number | undefined } {
+	if (pnl == null) return { reconstructed_qty: undefined, qty_invariant_tolerance: undefined };
+	const onhand = Number(onhandAmount);
+	return {
+		reconstructed_qty: Number.isFinite(pnl.reconstructed_qty) ? pnl.reconstructed_qty : undefined,
+		// 実残高が数値にならない構成では許容誤差も NaN になる。出力スキーマ（z.number()）は
+		// NaN を通さずレスポンス全体が parse error で落ちるため、値にならないものは出さない。
+		qty_invariant_tolerance: Number.isFinite(onhand) ? qtyInvariantTolerance(onhand, amountPrecision) : undefined,
+	};
 }
 
 /**
@@ -550,6 +583,9 @@ export default async function analyzeMyPortfolioHandler(args: {
 					cost_basis_reliable: undefined,
 					priced_deposit_count: undefined,
 					unpriced_deposit_count: undefined,
+					// JPY は calcPnl を呼んでいない（復元数量という概念が無い）ので両方省く。
+					reconstructed_qty: undefined,
+					qty_invariant_tolerance: undefined,
 				};
 			}
 
@@ -595,6 +631,10 @@ export default async function analyzeMyPortfolioHandler(args: {
 					// 0 を出さずキーごと落とす（理由は cost_basis_unavailable_reason が表す）。
 					priced_deposit_count: depositCountOrUndefined(pnl?.priced_deposit_count),
 					unpriced_deposit_count: depositCountOrUndefined(pnl?.unpriced_deposit_count),
+					// 数量不変条件を評価する**前**に抑止した経路。それでも復元数量は出す——
+					// 入出金履歴が欠けたリプレイの結果であることは cost_basis_unavailable_reason で
+					// 読めるので、「どれだけ乖離しているか」を消費者から隠す理由が無い（#87）。
+					...qtyInvariantInputsOf(pnl, amount, a.amount_precision),
 				};
 			}
 
@@ -627,6 +667,9 @@ export default async function analyzeMyPortfolioHandler(args: {
 					// 件数は抑止の根拠そのものなので落とさない。
 					priced_deposit_count: depositCountOrUndefined(pnl.priced_deposit_count),
 					unpriced_deposit_count: depositCountOrUndefined(pnl.unpriced_deposit_count),
+					// 復元数量も同じ理由で出す。こちらも数量不変条件より先に抑止しているので、
+					// 検算すると許容誤差内なのに cost_basis_reliable=false という組み合わせが出る（#87）。
+					...qtyInvariantInputsOf(pnl, amount, a.amount_precision),
 				};
 			}
 
@@ -651,6 +694,9 @@ export default async function analyzeMyPortfolioHandler(args: {
 					cost_basis_reliable: false,
 					priced_deposit_count: depositCountOrUndefined(pnl.priced_deposit_count),
 					unpriced_deposit_count: depositCountOrUndefined(pnl.unpriced_deposit_count),
+					// この経路こそ復元数量が要る。理由コードだけでは「どれだけ乖離したのか」が
+					// 読めず、抑止が妥当だったかを消費者が判断できない（#87）。
+					...qtyInvariantInputsOf(pnl, amount, a.amount_precision),
 				};
 			}
 
@@ -686,6 +732,9 @@ export default async function analyzeMyPortfolioHandler(args: {
 				cost_basis_reliable: pnl != null ? true : undefined,
 				priced_deposit_count: depositCountOrUndefined(pnl?.priced_deposit_count),
 				unpriced_deposit_count: depositCountOrUndefined(pnl?.unpriced_deposit_count),
+				// cost_basis_reliable=true の根拠。差がゼロでない（＝原価が入庫や販売所の売買を
+				// 取り込めていない）ことは、この値と amount の引き算でしか読めない（#87）。
+				...qtyInvariantInputsOf(pnl, amount, a.amount_precision),
 			};
 		});
 

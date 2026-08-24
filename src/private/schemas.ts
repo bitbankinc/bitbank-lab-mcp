@@ -387,7 +387,7 @@ const HoldingPnlSchema = z.object({
 		.boolean()
 		.optional()
 		.describe(
-			'取得原価の信頼性（数量不変条件の判定結果）。約定・出庫リプレイで復元した保有数量が実残高（onhand_amount）と許容誤差 max(10^-amount_precision × 5, 実残高 × 0.1%) 内で一致すれば true（絶対項は端数処理・ダスト、相対項は浮動小数点誤差の許容）。false のとき cost_basis_unavailable_reason に理由コードが載り、原価由来 4 フィールドは undefined、total_cost_basis / total_unrealized_pnl の集計からも除外される。原価計算の対象外（JPY / include_pnl=false）では省略。**true は「復元数量が実残高と一致する」であって「原価が全入庫を含む」ではない**——許容誤差内に収まった未算入入庫は素通りするので、原価の完全性は unpriced_deposit_count で読むこと',
+			'取得原価の信頼性（数量不変条件の判定結果）。約定・出庫リプレイで復元した保有数量が実残高（onhand_amount）と許容誤差 max(10^-amount_precision × 5, 実残高 × 0.1%) 内で一致すれば true（絶対項は端数処理・ダスト、相対項は浮動小数点誤差の許容）。false のとき cost_basis_unavailable_reason に理由コードが載り、原価由来 4 フィールドは undefined、total_cost_basis / total_unrealized_pnl の集計からも除外される。原価計算の対象外（JPY / include_pnl=false）では省略。**true は「復元数量が実残高と一致する」であって「原価が全入庫を含む」ではない**——許容誤差内に収まった未算入入庫は素通りするので、原価の完全性は unpriced_deposit_count で読むこと。**判定の入力は reconstructed_qty（復元数量）と qty_invariant_tolerance（許容誤差）で出しているので、この真偽値は出力だけで検算できる**（|Number(amount) − reconstructed_qty| ≤ qty_invariant_tolerance ⟺ true）。ただし cost_basis_unavailable_reason が dw_fetch_failed / dw_history_incomplete / deposit_price_fetch_failed / deposit_price_chunk_truncated の銘柄は数量不変条件を評価する**前**に抑止しているため、この不等式が成立していても false のまま',
 		),
 	// 新設キーは既存キーの後ろに宣言する。`z.object` の parse は**スキーマの宣言順**で
 	// オブジェクトを組み直すため、ここが wire 上のキー順の単一ソース（既存消費者の JSON を
@@ -407,6 +407,22 @@ const HoldingPnlSchema = z.object({
 		.optional()
 		.describe(
 			'入庫日（confirmed_at）の 1day 始値を解決できず、取得原価にも復元数量にも**算入しなかった** DONE 暗号資産入庫の件数（当該銘柄・全履歴）。この銘柄の cost_basis / avg_buy_price / unrealized_pnl / unrealized_pnl_pct / realized_pnl は、**この件数の入庫を原価ゼロ扱いで除外して算出されている**（未算入ぶんを売却済みなら原価ゼロで売ったことになり realized_pnl は過大、保有継続なら cost_basis と復元数量がその分だけ過小）。**cost_basis_reliable=true でも本値が 0 でなければ原価は不完全**——数量不変条件は許容誤差内の乖離を通すため両者は同時に成立し、これは矛盾ではない（cost_basis_reliable=「復元数量が実残高と一致するか」、本値=「原価が全入庫を含むか」で別軸。原価を出せなかった理由を表す cost_basis_unavailable_reason とも別軸で、本値は「原価は出したが不完全」の度合い）。本値が 0 でない銘柄も total_cost_basis / total_unrealized_pnl / total_realized_pnl からは**除外せず含める**（除外すると許容誤差内の微小な未算入で銘柄まるごと合計から消えるため）。含めたことは meta.warnings / summary の警告行で申告する。0 件のときはキーごと省く',
+		),
+	// 数量不変条件（cost_basis_reliable）の判定に入った 2 値（#87）。判定結果だけを出すと
+	// 消費者は境界付近の妥当性を評価できず、API に現れない取引の存在も推定できないので、
+	// **入力そのもの**を出す。新設キーは既存キーの後ろ（宣言順 = wire のキー順）。
+	reconstructed_qty: z
+		.number()
+		.optional()
+		.describe(
+			'約定・入庫・出庫を時系列でリプレイして復元した保有数量（base 建て）。**実残高（amount）とは別物**——amount は assets API が返す口座の現在残高、本値は履歴から積み上げた理論値で、cost_basis / avg_buy_price はこちらの数量で算出している。cost_basis_reliable はこの 2 つの突き合わせ結果で、|Number(amount) − reconstructed_qty| ≤ qty_invariant_tolerance（= max(10^-amount_precision × 5, |実残高| × 0.1%)）なら true。**差そのものは別フィールドにしていない**（amount との引き算で得られ、許容誤差との比 |Number(amount) − reconstructed_qty| / qty_invariant_tolerance が 1 以下かどうかが判定と一致する）。**丸めていない**——判定に入った値をそのまま出す（amount_precision で丸めると境界付近で消費者の再計算が判定と食い違う）。amount が文字列なのに本値が数値なのは、amount が API の残高文字列を透過しているのに対し本値はリプレイの計算結果（IEEE754 の 2 進小数）だからで、10 進文字列に化かすと存在しない精度を主張することになる。**差がゼロでないこと自体は異常ではない**（端数処理・ダスト）が、許容誤差内でも差の分だけ cost_basis は不完全。API に現れない取引（販売所での売買など）がある口座では、この差がその存在を推定する唯一の手掛かりになる。0 のときもキーを落とさない（「全量売却済み / 履歴から復元できなかった」は判定の入力そのもので、省くと未計算と区別できなくなる。件数フィールドの 0 省略とは扱いが違う）。原価計算の対象外（JPY / include_pnl=false）では省略するが、**原価を抑止した銘柄（cost_basis_unavailable_reason あり）では出す**——抑止の妥当性こそ検算対象なので。売り切り銘柄は holdings に載らないため本値も出ない（実残高ゼロで数量不変条件の判定対象外。unpriced_deposit_count と同じ制約だが、あちらと違い申告すべき判定結果が無いので警告行も足していない）',
+		),
+	qty_invariant_tolerance: z
+		.number()
+		.nonnegative()
+		.optional()
+		.describe(
+			'数量不変条件の許容誤差（base 建て）= max(10^-amount_precision × 5, |Number(amount)| × 0.1%)。絶対項は取引所側の端数処理・ダスト、相対項は移動平均リプレイの浮動小数点誤差の許容で、判定式は |Number(amount) − reconstructed_qty| ≤ 本値。**amount_precision を出力に含めていないため、本値が無いと消費者は許容誤差を再現できない**（＝ cost_basis_reliable を検算できない）ので値として出す。出す条件は reconstructed_qty と同じ（JPY / include_pnl=false では省略、原価抑止時は出す）。**cost_basis_reliable=false の銘柄がすべて本判定で落ちたわけではない**——cost_basis_unavailable_reason が dw_fetch_failed / dw_history_incomplete / deposit_price_fetch_failed / deposit_price_chunk_truncated の銘柄は数量不変条件を評価する前に抑止しており、前者 2 値では出庫履歴を反映できていないぶん reconstructed_qty 自体が過大になりうる',
 		),
 });
 

@@ -132,7 +132,14 @@ export interface PnlResult {
 	cost_basis: number | undefined;
 	realized_pnl: number;
 	trade_count: number;
-	/** 約定・入出庫リプレイで復元した保有数量。実残高（onhand_amount）との突き合わせに使う */
+	/**
+	 * 約定・入出庫リプレイで復元した保有数量。実残高（onhand_amount）との突き合わせに使う。
+	 *
+	 * 数量不変条件（`qtyInvariantHolds`）の入力そのものなので、`holdings[].reconstructed_qty`
+	 * として許容誤差（`holdings[].qty_invariant_tolerance`）と一緒に出力にも露出する（#87）。
+	 * 判定結果（`cost_basis_reliable`）だけを出して入力を握り潰すと、消費者は境界付近の妥当性を
+	 * 評価できず、API に現れない取引（販売所での売買など）の存在も推定できない。
+	 */
 	reconstructed_qty: number;
 	/** 入庫日の始値で原価に算入した DONE 暗号資産入庫の件数 */
 	priced_deposit_count: number;

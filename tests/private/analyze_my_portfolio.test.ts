@@ -5372,6 +5372,9 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 			// #77 で追加
 			'priced_deposit_count',
 			'unpriced_deposit_count',
+			// #87 で追加（数量不変条件の検算に要る 2 値）
+			'reconstructed_qty',
+			'qty_invariant_tolerance',
 		]);
 		expect(Object.keys(result.data.yearly_realized_pnl ?? {})).toEqual([
 			'realized_pnl',
@@ -5875,5 +5878,332 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 		expect(withoutPnl.data.total_realized_pnl_unavailable_reason).toBeUndefined();
 		expect(withoutPnl.data.account_pnl).toBeUndefined();
 		expect(withoutPnl.data.holdings.find((h) => h.asset === 'eth')?.cost_basis_unavailable_reason).toBeUndefined();
+	});
+});
+
+/**
+ * 数量不変条件の入力を出力に露出する（issue #87）。
+ *
+ * `cost_basis_reliable` は「約定・入庫・出庫のリプレイで復元した数量」と「assets API の実残高」の
+ * 突き合わせ結果だが、従来は**判定結果しか出ておらず入力が見えなかった**ため、消費者は
+ * 境界付近の判定が妥当かを評価できず、API に現れない取引（販売所での売買など）の存在も
+ * 推定できなかった。`reconstructed_qty`（復元数量）と `qty_invariant_tolerance`（許容誤差）を
+ * 出して、判定を出力だけで検算できるようにする。
+ *
+ * 許容誤差は `amount_precision` から決まるが、その桁数は出力に無い。**値を出さないと
+ * 消費者側で許容誤差を再現できない**ので、差（`amount − reconstructed_qty`）ではなく
+ * 許容誤差の方をフィールドにしている（差は引き算で得られる）。
+ */
+describe('analyze_my_portfolio — 復元数量と許容誤差の露出（#87）', () => {
+	/** eth 買い 2.0（手数料なし）。復元数量 2.0 の起点 */
+	const ethBuy2 = {
+		trades: [
+			{
+				trade_id: 8701,
+				pair: 'eth_jpy',
+				order_id: 8701,
+				side: 'buy',
+				type: 'limit',
+				amount: '2.0',
+				price: '400000',
+				maker_taker: 'maker',
+				fee_amount_base: '0',
+				fee_amount_quote: '0',
+				executed_at: 1710000000000,
+			},
+		],
+	};
+
+	/** eth 買い 0.002 のみ。onhand 2.0 と約 1000 倍乖離する（#56 の ETH 型フィードバック） */
+	const tinyEthBuy = {
+		trades: [
+			{
+				trade_id: 8702,
+				pair: 'eth_jpy',
+				order_id: 8702,
+				side: 'buy',
+				type: 'limit',
+				amount: '0.002',
+				price: '400000',
+				maker_taker: 'maker',
+				fee_amount_base: '0',
+				fee_amount_quote: '0',
+				executed_at: 1710000000000,
+			},
+		],
+	};
+
+	/** JST 2024-03-10。既定 candle（2024-03-08 起点 120 本）で始値を解決できる = 原価に算入される入庫日 */
+	const PRICED_DEPOSIT_AT = 1710000100000;
+	/** JST 2023-06-01。candle fixture が 2024 年分しか無いので始値を解決できない入庫日 */
+	const UNPRICED_DEPOSIT_AT = Date.UTC(2023, 4, 31, 15, 0, 0);
+	/** JST 暦年 2023 の chunk だけを取得失敗にする述語（#80 の抑止経路の注入。同 describe と同じ細工） */
+	const eth2023ChunkFails = (urlStr: string) => urlStr.includes('/eth_jpy/candlestick/1day/2022');
+
+	const emptyDw = { deposits: { deposits: [] }, withdrawals: { withdrawals: [] } };
+
+	/** DONE 入庫のみの deposit / withdrawal レスポンスを組み立てる（入庫日で価格解決の可否を振る） */
+	function depositsOf(...entries: Array<{ uuid: string; asset: string; amount: string; at: number }>) {
+		return {
+			deposits: {
+				deposits: entries.map((e) => ({
+					uuid: e.uuid,
+					asset: e.asset,
+					amount: e.amount,
+					status: 'DONE',
+					found_at: e.at,
+					confirmed_at: e.at,
+				})),
+			},
+			withdrawals: { withdrawals: [] },
+		};
+	}
+
+	/** eth の実残高（onhand）だけを差し替えた assets レスポンス。数量不変条件の成否を振る */
+	function ethAssets(onhand: string) {
+		return {
+			assets: [{ ...assetFixture('eth'), free_amount: onhand, onhand_amount: onhand }, assetFixture('jpy')],
+		};
+	}
+
+	async function analyze(args?: { include_pnl?: boolean }) {
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		return handler({
+			include_technical: false,
+			include_pnl: args?.include_pnl ?? true,
+			include_deposit_withdrawal: true,
+		});
+	}
+
+	/**
+	 * 出力だけで `cost_basis_reliable` を再現する（本 issue の受け入れ条件そのもの）。
+	 * 消費者が書けるコードと同じものをテストからも呼び、判定と一致することを固定する。
+	 */
+	function replayVerdict(holding: {
+		amount: string;
+		reconstructed_qty?: number;
+		qty_invariant_tolerance?: number;
+	}): boolean {
+		const { reconstructed_qty: reconstructed, qty_invariant_tolerance: tolerance } = holding;
+		if (reconstructed == null || tolerance == null) throw new Error('検算に要る 2 値が出力に無い');
+		return Math.abs(Number(holding.amount) - reconstructed) <= tolerance;
+	}
+
+	it('受け入れ: 通常の売買のみの銘柄は復元数量が実残高と一致し、判定を出力だけで再現できる', async () => {
+		setupFetchMock({ assets: ethAssets('2.0'), trades: ethBuy2, ...emptyDw });
+
+		const result = await analyze();
+		assertOk(result);
+
+		const eth = result.data.holdings.find((h) => h.asset === 'eth');
+		if (eth == null) throw new Error('eth holding が無い');
+		expect(eth.reconstructed_qty).toBe(2);
+		// 許容誤差 = max(10^-8 × 5, 2.0 × 0.1%) = 0.002（相対項が支配的）
+		expect(eth.qty_invariant_tolerance).toBe(0.002);
+		expect(eth.cost_basis_reliable).toBe(true);
+		expect(replayVerdict(eth)).toBe(eth.cost_basis_reliable);
+	});
+
+	it('受け入れ: 未算入入庫のある銘柄では差が出て、その差が unpriced_deposit_count と整合する', async () => {
+		// 未算入の入庫 0.001 ETH は許容誤差 max(5e-8, 2.501 × 0.1%) の内側なので確定値が出る。
+		// 「cost_basis_reliable=true なのに原価は不完全」という状態で、差 0.001 だけが手掛かり。
+		// 実口座で膠着した「販売所の買いが API に無い」の切り分けは、この差の読み取りそのもの。
+		setupFetchMock({
+			assets: ethAssets('2.501'),
+			trades: ethBuy2,
+			...depositsOf(
+				{ uuid: 'dep-priced', asset: 'eth', amount: '0.5', at: PRICED_DEPOSIT_AT },
+				{ uuid: 'dep-unpriced', asset: 'eth', amount: '0.001', at: UNPRICED_DEPOSIT_AT },
+			),
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		const eth = result.data.holdings.find((h) => h.asset === 'eth');
+		if (eth == null) throw new Error('eth holding が無い');
+		// 算入できた入庫 0.5 は数量に入り、算入できなかった 0.001 は入らない
+		expect(eth.reconstructed_qty).toBeCloseTo(2.5, 12);
+		expect(eth.unpriced_deposit_count).toBe(1);
+		// 差 = 未算入の入庫数量。許容誤差の内側なので判定は true のまま
+		expect(Number(eth.amount) - (eth.reconstructed_qty ?? 0)).toBeCloseTo(0.001, 12);
+		expect(eth.qty_invariant_tolerance).toBeGreaterThan(0.001);
+		expect(eth.cost_basis_reliable).toBe(true);
+		expect(replayVerdict(eth)).toBe(true);
+	});
+
+	it.each([
+		{ onhand: '2.002', reliable: true, tolerance: 0.002002, label: '許容誤差の内側' },
+		{ onhand: '2.003', reliable: false, tolerance: 0.002003, label: 'わずかに超過' },
+	])('境界（$label）で判定が反転し、どちらも出力だけで再現できる', async ({ onhand, reliable, tolerance }) => {
+		setupFetchMock({ assets: ethAssets(onhand), trades: ethBuy2, ...emptyDw });
+
+		const result = await analyze();
+		assertOk(result);
+
+		const eth = result.data.holdings.find((h) => h.asset === 'eth');
+		if (eth == null) throw new Error('eth holding が無い');
+		expect(eth.reconstructed_qty).toBe(2);
+		expect(eth.qty_invariant_tolerance).toBeCloseTo(tolerance, 12);
+		expect(eth.cost_basis_reliable).toBe(reliable);
+		// 判定が false 側でも入力は出す（抑止が妥当だったかを消費者が評価できる）
+		expect(replayVerdict(eth)).toBe(reliable);
+	});
+
+	it.each([
+		{ onhand: '0.00000005', reliable: true, label: '絶対項ちょうど' },
+		{ onhand: '0.00000006', reliable: false, label: '絶対項をわずかに超過' },
+	])('復元数量ゼロのダスト保有（$label）でも 0 をキーごと落とさない', async ({ onhand, reliable }) => {
+		// 約定が 1 件も無いので復元数量は 0。0 は「復元したら 0 だった」という判定の入力そのもので、
+		// 件数フィールドのように省くと「計算していない」と区別できなくなる。
+		setupFetchMock({ assets: ethAssets(onhand), trades: { trades: [] }, ...emptyDw });
+
+		const result = await analyze();
+		assertOk(result);
+
+		const eth = result.data.holdings.find((h) => h.asset === 'eth');
+		if (eth == null) throw new Error('eth holding が無い');
+		expect(eth.reconstructed_qty).toBe(0);
+		// 実残高がダストなので絶対項（10^-8 × 5）が支配的
+		expect(eth.qty_invariant_tolerance).toBe(5e-8);
+		expect(eth.cost_basis_reliable).toBe(reliable);
+		expect(replayVerdict(eth)).toBe(reliable);
+		// JSON に載ること（0 を falsy として落としていないこと）まで見る
+		const wire = JSON.parse(JSON.stringify(result.data)) as { holdings: Array<Record<string, unknown>> };
+		const ethWire = wire.holdings.find((h) => h.asset === 'eth');
+		expect(Object.keys(ethWire ?? {})).toContain('reconstructed_qty');
+		expect(ethWire?.reconstructed_qty).toBe(0);
+	});
+
+	it('amount_precision が異なる銘柄では許容誤差の絶対項が変わる', async () => {
+		// 同じ実残高 0.000004 でも、eth（8 桁）は許容誤差 5e-8 で乖離扱い、
+		// xrp（6 桁）は 5e-6 で許容範囲内。桁数は出力に無いので、許容誤差を出さないと
+		// 消費者はこの差を説明できない。
+		setupFetchMock({
+			assets: {
+				assets: [
+					{ ...assetFixture('eth'), free_amount: '0.000004', onhand_amount: '0.000004' },
+					{ ...assetFixture('xrp'), free_amount: '0.000004', onhand_amount: '0.000004' },
+					assetFixture('jpy'),
+				],
+			},
+			trades: { trades: [] },
+			...emptyDw,
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		const eth = result.data.holdings.find((h) => h.asset === 'eth');
+		const xrp = result.data.holdings.find((h) => h.asset === 'xrp');
+		if (eth == null || xrp == null) throw new Error('holding が無い');
+		expect(eth.qty_invariant_tolerance).toBe(5e-8);
+		expect(xrp.qty_invariant_tolerance).toBeCloseTo(5e-6, 12);
+		expect(eth.cost_basis_reliable).toBe(false);
+		expect(xrp.cost_basis_reliable).toBe(true);
+		expect(replayVerdict(eth)).toBe(false);
+		expect(replayVerdict(xrp)).toBe(true);
+	});
+
+	it('数量乖離で原価を抑止した銘柄でも出す（抑止の妥当性こそ検算対象）', async () => {
+		setupFetchMock({ assets: ethAssets('2.0'), trades: tinyEthBuy, ...emptyDw });
+
+		const result = await analyze();
+		assertOk(result);
+
+		const eth = result.data.holdings.find((h) => h.asset === 'eth');
+		if (eth == null) throw new Error('eth holding が無い');
+		expect(eth.cost_basis_reliable).toBe(false);
+		expect(eth.cost_basis_unavailable_reason).toBe('unknown');
+		expect(eth.cost_basis).toBeUndefined();
+		// 理由コードだけでは「どれだけ乖離したのか」が読めない。約 1000 倍の乖離が数値で出る
+		expect(eth.reconstructed_qty).toBe(0.002);
+		expect(eth.qty_invariant_tolerance).toBe(0.002);
+		expect(Number(eth.amount) - (eth.reconstructed_qty ?? 0)).toBeCloseTo(1.998, 12);
+		expect(replayVerdict(eth)).toBe(false);
+	});
+
+	it('入出金履歴の取得に失敗した銘柄でも出すが、この経路は数量不変条件より前に抑止している', async () => {
+		// dw_fetch_failed は出庫を反映できないまま原価を落とす経路で、数量不変条件は評価しない。
+		// そのため「検算すると許容誤差内なのに cost_basis_reliable=false」が正しく起きる。
+		// description に書いた非対称をここで固定する（消費者が矛盾と読まないように）。
+		setupFetchMock({ assets: ethAssets('2.0'), trades: ethBuy2, dwFail: true });
+
+		const result = await analyze();
+		assertOk(result);
+
+		const eth = result.data.holdings.find((h) => h.asset === 'eth');
+		if (eth == null) throw new Error('eth holding が無い');
+		expect(eth.cost_basis_unavailable_reason).toBe('dw_fetch_failed');
+		expect(eth.cost_basis_reliable).toBe(false);
+		expect(eth.reconstructed_qty).toBe(2);
+		expect(eth.qty_invariant_tolerance).toBe(0.002);
+		expect(replayVerdict(eth)).toBe(true);
+	});
+
+	it('入庫日価格を取得できず抑止した銘柄でも出す（#80 の経路）', async () => {
+		setupFetchMock({
+			assets: ethAssets('2.4'),
+			trades: ethBuy2,
+			...depositsOf(
+				{ uuid: 'dep-priced', asset: 'eth', amount: '0.5', at: PRICED_DEPOSIT_AT },
+				{ uuid: 'dep-failed', asset: 'eth', amount: '0.4', at: UNPRICED_DEPOSIT_AT },
+			),
+			candleFail: eth2023ChunkFails,
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		const eth = result.data.holdings.find((h) => h.asset === 'eth');
+		if (eth == null) throw new Error('eth holding が無い');
+		expect(eth.cost_basis_unavailable_reason).toBe('deposit_price_fetch_failed');
+		expect(eth.realized_pnl).toBeUndefined();
+		// 取得に失敗した入庫 0.4 は数量に入らないので、復元数量は 2.0 + 0.5 = 2.5
+		expect(eth.reconstructed_qty).toBeCloseTo(2.5, 12);
+		expect(eth.qty_invariant_tolerance).toBeCloseTo(0.0024, 12);
+	});
+
+	it('JPY と include_pnl=false ではキーごと出さない（復元数量という概念が無い）', async () => {
+		setupFetchMock({ assets: ethAssets('2.0'), trades: ethBuy2, ...emptyDw });
+
+		const withPnl = await analyze();
+		assertOk(withPnl);
+		const jpy = withPnl.data.holdings.find((h) => h.asset === 'jpy');
+		expect(jpy?.reconstructed_qty).toBeUndefined();
+		expect(jpy?.qty_invariant_tolerance).toBeUndefined();
+
+		const withoutPnl = await analyze({ include_pnl: false });
+		assertOk(withoutPnl);
+		const wire = JSON.parse(JSON.stringify(withoutPnl.data)) as { holdings: Array<Record<string, unknown>> };
+		for (const h of wire.holdings) {
+			expect(Object.keys(h)).not.toContain('reconstructed_qty');
+			expect(Object.keys(h)).not.toContain('qty_invariant_tolerance');
+		}
+	});
+
+	it('summary / 警告行は現状維持（数量を列挙して情報量を増やさない）', async () => {
+		setupFetchMock({
+			assets: ethAssets('2.501'),
+			trades: ethBuy2,
+			...depositsOf(
+				{ uuid: 'dep-priced', asset: 'eth', amount: '0.5', at: PRICED_DEPOSIT_AT },
+				{ uuid: 'dep-unpriced', asset: 'eth', amount: '0.001', at: UNPRICED_DEPOSIT_AT },
+			),
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		const eth = result.data.holdings.find((h) => h.asset === 'eth');
+		if (eth == null) throw new Error('eth holding が無い');
+		// 追加先は structuredContent だけ。保有数量は `.claude/rules/sensitive-data.md` の
+		// HIGH 分類に近く、既に出している amount を超えて text に増やさない
+		for (const text of [result.summary, ...(result.meta.warnings ?? [])]) {
+			expect(text).not.toContain('reconstructed_qty');
+			expect(text).not.toContain('qty_invariant_tolerance');
+			expect(text).not.toContain(String(eth.reconstructed_qty));
+			expect(text).not.toContain(String(eth.qty_invariant_tolerance));
+		}
 	});
 });

@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+### Added（`analyze_my_portfolio` に数量不変条件の判定入力を露出）
+- **`holdings[].reconstructed_qty` / `qty_invariant_tolerance`（number, optional）を追加した。** `cost_basis_reliable` は「約定・入庫・出庫のリプレイで復元した数量」と「assets API の実残高」の突き合わせ結果だが、従来は**判定結果しか出力に出ておらず入力が見えなかった**ため、消費者は境界付近の判定が妥当かを評価できなかった。実口座検証では `cost_basis` / `avg_buy_price` からの逆算でしか差を追えず（`cost_basis` は整数丸め、`avg_buy_price` は #58 で丸め規則が変わっている）、「API に現れない販売所の買いが本当に落ちているのか」の切り分けが膠着した。値そのものは `calcPnl` が既に返しており、本変更は出力スキーマへの露出と description だけ——**判定ロジック・許容誤差は一切変えていない**。
+- **許容誤差を値として出す（差ではなく）。** 許容誤差 `max(10^-amount_precision × 5, 実残高 × 0.1%)` は `amount_precision` から決まるが、**その桁数は出力に含まれていない**ので、式を description に書いても消費者は再現できない。差そのもの（`amount − reconstructed_qty`）は引き算で得られるため別フィールドにせず、代わりに再現できない方（許容誤差）を出した。判定は `|Number(amount) − reconstructed_qty| ≤ qty_invariant_tolerance` で、これが `cost_basis_reliable` と一致することをテストで固定している。
+- **`reconstructed_qty` は丸めない。** `amount_precision` で丸めると差が最大 0.5 quanta 動き、絶対項が 5 quanta しかない境界付近で消費者の再計算が判定と食い違う。型は数値のままで `amount`（文字列）に揃えない——`amount` は API の残高文字列の透過、本値はリプレイの計算結果（IEEE754 の 2 進小数）なので、10 進文字列に化かすと存在しない精度を主張することになる。
+- **原価を抑止した銘柄でも出す。** 判定の検算という目的からは抑止時こそ入力に価値がある（理由コードだけでは「どれだけ乖離したのか」が読めない）。ただし `dw_fetch_failed` / `dw_history_incomplete` / `deposit_price_fetch_failed` / `deposit_price_chunk_truncated` は**数量不変条件を評価する前**に抑止する経路なので、検算すると許容誤差内なのに `cost_basis_reliable=false` という組み合わせが出る。矛盾ではないことを両フィールドの description に明記した。原価計算の対象外（JPY / `include_pnl=false`）では従来どおり省く。
+- **`reconstructed_qty` は 0 でもキーを落とさない。** 「復元したら 0 だった」は判定の入力そのもので、省くと未計算と区別できなくなる（件数フィールド `priced_deposit_count` 等の 0 省略とは別方針。理由を description に書いた）。
+- **売り切り銘柄には出さない。** `holdings` に載らないのは #77 の件数フィールドと同じ制約だが、あちらと違い**申告すべき判定結果が無い**（実残高ゼロで数量不変条件の対象外）ため、警告行も足していない。
+- **summary / 警告行は現状維持。** 追加先は `structuredContent` だけで、保有数量を text に列挙して増やすことはしない（`.claude/rules/sensitive-data.md` の HIGH 分類。`amount` は従来から出しているので新たな露出増にはならない）。キー順・description・出す条件は `tests/private/reconstructed-qty-schema.test.ts` と `tests/private/analyze_my_portfolio.test.ts` で機械的に固定している。
+
 ### Changed（**挙動変更**: `analyze_my_portfolio` が入庫日価格を取得できない銘柄の実現損益を出さない）
 - **入庫日を含む年足 chunk を「取りに行けば解決できたはず」なのに解決できなかった銘柄では、`realized_pnl` も確定値として出さないようにした。** 従来この状態は警告行で申告するだけで数値は出していたため、**同じ口座を同じ日に叩いて異なる実現損益が返る**（実口座検証で `total_realized_pnl` が約 6 万円ぶれ、売り切り 13 銘柄の符号が反転した）。入庫 1 件が原価から落ちると移動平均法の取得原価が変わり、その銘柄の**過去の売却の実現損益まで動く**。どちらの値も確定申告に使えない以上、信頼できない数字を確定値として出さないのが正しい（#54 と同じ考え方）。
 - **抑止は既存の null 化経路（`PortfolioCostBasisUnavailableReasonEnum`）に接続した。** 新設値は `deposit_price_fetch_failed`（年足 chunk の取得に失敗した。実行ごとに成否が変わる）と `deposit_price_chunk_truncated`（年 chunk が件数上限 `MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS=64` に達して取りに行けなかった）の 2 値で、enum の末尾に足してある（公開済みの列挙順を中間から崩さない）。**この 2 値だけは原価由来 4 フィールドに加えて `realized_pnl` も `undefined` になる**——他の理由コードとの非対称は description に明記した。数量不変条件より先に判定するので、`has_crypto_deposits` と同時に成立する構成では抑止が広いこちらが載る。
