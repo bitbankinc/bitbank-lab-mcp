@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+### Added（`analyze_my_portfolio` に売り切り銘柄の実現損益の銘柄別内訳を露出）
+- **`closed_positions`（`Array<{ asset, realized_pnl, priced_deposit_count?, unpriced_deposit_count? }>`, optional）を追加した。** `closed_position_realized_pnl` は売り切り銘柄（保有ゼロだが約定履歴がある銘柄）ごとに算出した実現損益をループ内で合計に畳んでおり、従来は畳んだ時点で銘柄別の値を捨てていた。#84 マージ後の実口座検証で `closed_position_realized_pnl` が約 -35,867 円変化したが、件数（`closed_position_asset_count`）は不変（13→13）のため原因の切り分けが出力からは永久にできず調査が膠着した（#92）。ループ内では既に銘柄ごとの値を持っているので新規計算は不要——**捨てていたものを出力に載せるだけ**で、計算ロジック自体は一切変えていない。
+- **`realized_pnl` が 0 円の銘柄も含める。** `closed_position_asset_count` は寄与のあった銘柄（`realized_pnl !== 0`）しか数えないため、除外すると「ある銘柄が非ゼロ→ゼロに、別の銘柄がゼロ→非ゼロに同時に入れ替わる」ケースで件数の変化が相殺されて見えなくなる——これはまさに本 issue が塞ぎたかった盲点そのものなので、含めないという選択肢は取らなかった。結果として `closed_positions.length` は `closed_position_asset_count` と一致しないことがある（0 円の銘柄がある実行では前者の方が大きい）。Σ `closed_positions[].realized_pnl` = `closed_position_realized_pnl` は 0 を足しても変わらないので、0 円の銘柄の有無に関わらず常に成立する。
+- **抑止時（`closedSuppressed`）は内訳も `undefined` にする。** 既存の「部分和を出さない」方針（`total_realized_pnl_unavailable_reason` の description 参照）をそのまま引き継いだ。抑止されなかった銘柄だけの部分配列を出すと、合計は `undefined` なのに内訳の合計だけは計算できてしまい、部分和を「本当の合計」と誤認させるため。
+- **`priced_deposit_count` / `unpriced_deposit_count`（holdings と同義）を内訳に載せる。** 売り切り銘柄は `holdings` に載らないため、この 2 フィールドの置き場が無かった（#77 で認識済みの制約）。`closed_positions` がその自然な置き場になる。一方で `cost_basis_unavailable_reason` に相当するフィールドは持たせていない——原価（ひいては `realized_pnl`）を抑止された銘柄はそもそも値を算出できず `closed_positions` に載らないため、理由コードを持つ余地が無い（抑止は「1 件でもあれば内訳全体を undefined にする」という上のルールで表現される）。
+- **並び順は `realized_pnl` 降順・同値は `asset` 昇順で決定的にした。** `holdings` の「JPY 評価額降順」に倣い、寄与の大きい銘柄を先頭に出す。
+- **summary テキストは変更していない。** 主目的は `structuredContent` での診断能力で、既存の集計行（`Realized PnL (Spot, ...)` / `内訳: 現在保有銘柄 ... / 売り切り銘柄 N銘柄 ...`）に銘柄名を列挙して情報量を増やすことはしない。
+- キー順・検算式・並び順・0 円銘柄の扱いは `tests/private/closed-position-breakdown-schema.test.ts` と `tests/private/analyze_my_portfolio.test.ts` で機械的に固定している。
+
 ### Fixed（**挙動変更**: `get_candles` が上場前 chunk の 404 に巻き込まれなくなった）
 - **上場初年度の銘柄をその年で取得すると、データが存在する年ごと取得失敗になっていたのを直した。** `get_candles` は JST 1 年の窓を UTC 暦年 chunk 2 本で取りに行く（JST 年頭は UTC 前年）ため、上場初年度は**古い側が必ず上場前**になり 404 が返る。旧実装はこれを実失敗に数え、2 年中 1 年の失敗で全体を `fail` にしていた。確率的な失敗ではなく**構造的な確定失敗**で、該当銘柄はその年を永久に取得できなかった（実口座検証で `analyze_my_portfolio` の `total_realized_pnl` が恒久的に算出不能になっていた）。特定銘柄・特定口座の問題ではない。
 - **判定基準は「同じリクエストの他 chunk が実データを返したか」。** 「上場前だから 404」と「本来あるはずのデータが 404」は上流応答だけでは区別できない（どちらも `404 + code 10000`）ので、代理指標を置いた。1 本でも返っていれば上流は生きていて経路も正しく、隣接 chunk の 404 は「その期間に足が無い」の表明と読める → ℹ️ 注記に落として過半数判定の分母・分子から外す。1 本も返っていなければ判断材料が無いので従来どおり `fail`。過去期間の `200 + success:0`（「期間は在るが集計が未了」の応答）は実失敗のまま扱う。判定基準の全表は `docs/internal/bitbank-candle-tz.md`。
