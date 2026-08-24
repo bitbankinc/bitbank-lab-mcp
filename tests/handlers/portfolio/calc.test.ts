@@ -29,6 +29,7 @@ import {
 	calcPeriodRealizedPnl,
 	calcPnl,
 	collectFlowValuationTargets,
+	depositOnlyAssets,
 	dominantUnresolvedDepositReason,
 	flowUnavailableReasonFor,
 	getJstPeriodBoundaries,
@@ -717,7 +718,7 @@ describe('qtyMismatchReasonFor', () => {
 	 */
 	it('入庫があっても全件を原価に算入できていれば has_crypto_deposits にならない', () => {
 		const dw = makeDw({ deposits: [makeDeposit({ uuid: 'd1', asset: 'eth', amount: '1' })] });
-		expect(qtyMismatchReasonFor(dw, false, 0, 0)).toBe('unknown');
+		expect(qtyMismatchReasonFor(dw, false, 0, 0)).toBe('untracked_trade_suspected');
 		expect(qtyMismatchReasonFor(dw, true, 0, 0)).toBe('history_truncated');
 	});
 
@@ -734,9 +735,9 @@ describe('qtyMismatchReasonFor', () => {
 		expect(qtyMismatchReasonFor(makeDw({ isComplete: false }), true, 1, 0)).toBe('has_crypto_deposits');
 	});
 
-	it('手掛かりなし（dw null / 空履歴、復元数量は非負）→ unknown', () => {
-		expect(qtyMismatchReasonFor(null, false, 0, 0)).toBe('unknown');
-		expect(qtyMismatchReasonFor(makeDw(), false, 0, 0)).toBe('unknown');
+	it('手掛かりなし（dw null / 空履歴、復元数量は非負）→ untracked_trade_suspected（#93。旧 unknown を置き換えた）', () => {
+		expect(qtyMismatchReasonFor(null, false, 0, 0)).toBe('untracked_trade_suspected');
+		expect(qtyMismatchReasonFor(makeDw(), false, 0, 0)).toBe('untracked_trade_suspected');
 	});
 
 	/**
@@ -752,6 +753,74 @@ describe('qtyMismatchReasonFor', () => {
 		expect(qtyMismatchReasonFor(makeDw(), false, 1, -0.0004)).toBe('has_crypto_deposits');
 		expect(qtyMismatchReasonFor(makeDw(), true, 0, -0.0004)).toBe('history_truncated');
 		expect(qtyMismatchReasonFor(makeDw({ isComplete: false }), false, 0, -0.0004)).toBe('history_truncated');
+	});
+});
+
+/**
+ * 入庫はあるが約定履歴にも現在残高にも現れない銘柄の検出（issue #93 仕様 1）。
+ *
+ * 約定を起点にするループ（closed_positions の集計）も残高を起点にするループ（holdings）も、
+ * 「約定・残高のどちらにも現れない」銘柄は対象にしない。入出金履歴（DONE の暗号資産入庫）を
+ * 別経路の入力にすることで、この穴を埋める。
+ */
+describe('depositOnlyAssets', () => {
+	function makeDw(overrides: Partial<DepositWithdrawalData> = {}): DepositWithdrawalData {
+		return { deposits: [], withdrawals: [], warnings: [], allFailed: false, isComplete: true, ...overrides };
+	}
+
+	it('空配列: 入庫が無ければ検出しない', () => {
+		expect(depositOnlyAssets(makeDw(), new Set(), new Set())).toEqual([]);
+	});
+
+	it('dw が null なら検出しない', () => {
+		expect(depositOnlyAssets(null, new Set(), new Set())).toEqual([]);
+	});
+
+	it('単一要素: 入庫が 1 件だけで残高・約定のどちらにも無ければ検出する', () => {
+		const dw = makeDw({ deposits: [makeDeposit({ uuid: 'd1', asset: 'flr' })] });
+		expect(depositOnlyAssets(dw, new Set(), new Set())).toEqual(['flr']);
+	});
+
+	it('重複入力: 同一銘柄の入庫が複数件あっても銘柄名は 1 回だけ返す', () => {
+		const dw = makeDw({
+			deposits: [
+				makeDeposit({ uuid: 'd1', asset: 'flr' }),
+				makeDeposit({ uuid: 'd2', asset: 'flr' }),
+				makeDeposit({ uuid: 'd3', asset: 'flr' }),
+			],
+		});
+		expect(depositOnlyAssets(dw, new Set(), new Set())).toEqual(['flr']);
+	});
+
+	it('現在残高がある銘柄は除外する（保有継続中は holdings 側の数量不変条件が担当）', () => {
+		const dw = makeDw({ deposits: [makeDeposit({ uuid: 'd1', asset: 'flr' })] });
+		expect(depositOnlyAssets(dw, new Set(['flr']), new Set())).toEqual([]);
+	});
+
+	it('約定履歴がある銘柄は除外する（売り切りなら closed_positions の実額計算が担当）', () => {
+		const dw = makeDw({ deposits: [makeDeposit({ uuid: 'd1', asset: 'flr' })] });
+		expect(depositOnlyAssets(dw, new Set(), new Set(['flr']))).toEqual([]);
+	});
+
+	it('DONE 以外のステータスは無視する', () => {
+		const dw = makeDw({ deposits: [makeDeposit({ uuid: 'd1', asset: 'flr', status: 'CONFIRMED' })] });
+		expect(depositOnlyAssets(dw, new Set(), new Set())).toEqual([]);
+	});
+
+	it('jpy の入金は対象外（暗号資産の入庫のみが対象）', () => {
+		const dw = makeDw({ deposits: [makeDeposit({ uuid: 'd1', asset: 'jpy' })] });
+		expect(depositOnlyAssets(dw, new Set(), new Set())).toEqual([]);
+	});
+
+	it('複数銘柄を asset 昇順で決定的に返す', () => {
+		const dw = makeDw({
+			deposits: [
+				makeDeposit({ uuid: 'd1', asset: 'oas' }),
+				makeDeposit({ uuid: 'd2', asset: 'atom' }),
+				makeDeposit({ uuid: 'd3', asset: 'arb' }),
+			],
+		});
+		expect(depositOnlyAssets(dw, new Set(), new Set())).toEqual(['arb', 'atom', 'oas']);
 	});
 });
 

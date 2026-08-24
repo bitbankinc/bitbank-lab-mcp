@@ -1,22 +1,30 @@
 /**
- * 売り切り銘柄の実現損益の銘柄別内訳（`closed_positions`）の契約テスト（#92）。
+ * 売り切り銘柄の実現損益の銘柄別内訳（`closed_positions`）の契約テスト（#92 / #93）。
  *
  * `closed_position_realized_pnl` はループ内で銘柄ごとに算出した値を合計に畳んでおり、
  * 従来は畳んだ時点で銘柄別の値を捨てていた。合計値の変化がどの銘柄由来か出力から
- * 特定できず実口座検証が膠着したため、捨てずに `closed_positions` として出力する。
+ * 特定できず実口座検証が膠着したため、捨てずに `closed_positions` として出力する（#92）。
  * `structuredContent` を直読みする非 LLM クライアントにとって description が唯一の
  * 手掛かりなので、意味づけを人手のレビューに委ねず機械的に固定する
  * （`.claude/rules/tools.md`「規約はテストで機械的に固定する」）。
  *
- * 固定するのは 4 点。
+ * #93 で `closed_positions` の用途が広がった。入庫はあるが約定履歴にも現在残高にも
+ * 現れない銘柄（販売所取引などで API から不可視になった可能性がある銘柄）を、`realized_pnl`
+ * を持たない検出専用の要素（`realized_pnl_unavailable_reason` 付き）として同じ配列に混在させる。
+ * これにより #92 時点の「`cost_basis_unavailable_reason` に相当するフィールドは持たない」という
+ * 決定が覆っているため、そちらのテストは #93 の新しい契約に合わせて更新している。
+ *
+ * 固定するのは 5 点。
  * 1. **新設キーは既存キーの後ろに宣言されている。** `z.object` の parse は宣言順で
  *    オブジェクトを組み直すため、宣言位置がそのまま wire のキー順になる。
  * 2. **closed_position_realized_pnl / closed_position_asset_count との対応関係が
- *    description に書いてある。** 合計との検算式、抑止時に揃って undefined になること、
- *    0 円の銘柄を含むぶん closed_position_asset_count と配列長が食い違いうること。
- * 3. **並び順（realized_pnl 降順・asset 昇順）が description に書いてある。**
- * 4. **算出条件（priced/unpriced_deposit_count）を holdings と同義として書いてあり、
- *    cost_basis_unavailable_reason に相当するフィールドを持たない理由も書いてある。**
+ *    description に書いてある。** 合計との検算式（realized_pnl が定義されている要素のみが対象）、
+ *    0 円の銘柄・#93 の検出エントリを含むぶん closed_position_asset_count と配列長が
+ *    食い違いうること。
+ * 3. **並び順（realized_pnl 降順・asset 昇順、検出エントリは末尾）が description に書いてある。**
+ * 4. **算出条件（priced/unpriced_deposit_count）を holdings と同義として書いてある。**
+ * 5. **#93 の検出専用フィールド（`realized_pnl_unavailable_reason`）の意味・出す条件・
+ *    holdings 側の同名系フィールドとの違い・検出の限界が description に書いてある。**
  */
 import { describe, expect, it } from 'vitest';
 import { AnalyzeMyPortfolioDataSchema } from '../../src/private/schemas.js';
@@ -50,12 +58,14 @@ describe('売り切り銘柄の内訳 — キー順', () => {
 		expect(closedPositionsIndex).toBeGreaterThan(totalRealizedPnlUnavailableReasonIndex);
 	});
 
-	it('ClosedPositionPnlSchema（要素）のキー順は asset, realized_pnl, priced/unpriced_deposit_count', () => {
+	it('ClosedPositionPnlSchema（要素）のキー順は asset, realized_pnl, priced/unpriced_deposit_count, realized_pnl_unavailable_reason', () => {
 		expect(Object.keys(closedPositionShape())).toEqual([
 			'asset',
 			'realized_pnl',
 			'priced_deposit_count',
 			'unpriced_deposit_count',
+			// #93 で末尾に追加
+			'realized_pnl_unavailable_reason',
 		]);
 	});
 });
@@ -66,14 +76,26 @@ describe('売り切り銘柄の内訳 — description', () => {
 		expect(description).toContain('Σ closed_positions[].realized_pnl = closed_position_realized_pnl');
 	});
 
-	it('closed_positions は抑止時に undefined になる条件を closed_position_realized_pnl と揃えて書いている', () => {
+	it('closed_positions は抑止時（closedSuppressed）に実額エントリを出さないことを closed_position_realized_pnl と揃えて書いている', () => {
 		const description = descriptionOf(AnalyzeMyPortfolioDataSchema.shape, 'closed_positions');
-		expect(description).toContain(
-			'undefined の条件も closed_position_realized_pnl / closed_position_asset_count と同一',
-		);
-		expect(description).toContain('**抑止時は本配列も undefined**');
+		expect(description).toContain('**抑止時（closedSuppressed');
 		// 部分和を出さない既存方針の踏襲であることまで書く（issue #92 仕様 3）
 		expect(description).toContain('部分和を出さない既存方針をそのまま引き継ぐ');
+	});
+
+	/**
+	 * #93 で追加した契約: #93 の検出エントリ（realized_pnl_unavailable_reason 付き）は
+	 * closedSuppressed と独立に動くため、closed_position_realized_pnl / closed_position_asset_count
+	 * が undefined でも closed_positions 自体が undefined になるとは限らない。#92 時点の
+	 * 「undefined の条件は 3 フィールドで共通」という単純な等式は #93 でもう成立しないため、
+	 * その等式の代わりに新しい条件が description に書いてあることを固定する。
+	 */
+	it('closed_positions は #93 の検出エントリが抑止と独立に動くことを書いている', () => {
+		const description = descriptionOf(AnalyzeMyPortfolioDataSchema.shape, 'closed_positions');
+		expect(description).toContain('**#93 の検出エントリはこの抑止と独立に動く**');
+		expect(description).toContain(
+			'closed_position_realized_pnl / closed_position_asset_count が undefined の実行でも、検出エントリがあれば本配列自体は undefined にならない',
+		);
 	});
 
 	it('closed_positions は closed_position_asset_count と対象が異なる（0 円の扱い）ことを書いている', () => {
@@ -90,10 +112,32 @@ describe('売り切り銘柄の内訳 — description', () => {
 		expect(description).toContain('realized_pnl 降順・同値は asset 昇順で決定的');
 	});
 
-	it('closed_positions は cost_basis_unavailable_reason に相当するフィールドを持たない理由を書いている', () => {
+	/**
+	 * #93 で `closed_positions` に理由コード付きの検出エントリが追加された。#92 時点は
+	 * 「cost_basis_unavailable_reason に相当するフィールドは持たない」だったので、その決定が
+	 * 覆っていること・新フィールドの参照先が description に書いてあることを固定する。
+	 */
+	it('closed_positions は要素ごとの理由コード（realized_pnl_unavailable_reason）を参照していることを書いている', () => {
 		const description = descriptionOf(AnalyzeMyPortfolioDataSchema.shape, 'closed_positions');
-		expect(description).toContain('cost_basis_unavailable_reason に相当するフィールドは持たない');
-		expect(description).toContain('理由コードを持つ余地が無い');
+		expect(description).toContain('realized_pnl_unavailable_reason（#93）を参照');
+	});
+
+	it('realized_pnl_unavailable_reason（要素）は holdings 側との違い・検出の限界を書いている', () => {
+		const description = descriptionOf(closedPositionShape(), 'realized_pnl_unavailable_reason');
+		// 設定時に他の全フィールドが undefined になること
+		expect(description).toContain('realized_pnl / priced_deposit_count / unpriced_deposit_count はいずれも undefined');
+		// holdings[].cost_basis_unavailable_reason と同じ enum を共有するが意味が違う
+		expect(description).toContain('holdings[].cost_basis_unavailable_reason と同じ enum を共有するが意味は異なる');
+		// 断定できないこと（issue #93 の明示要求）
+		expect(description).toContain('**断定はできない**');
+		// 検出の限界（issue #93 で明記が必須とされている残存する穴）
+		expect(description).toContain('**この検出にも限界がある**');
+		expect(description).toContain(
+			'販売所（即時売買）のみで売買を完結させた銘柄は入出金履歴にも約定履歴にも痕跡が残らない',
+		);
+		// closedSuppressed（#92 の抑止機構）と独立に動くこと
+		expect(description).toContain('closedSuppressed');
+		expect(description).toContain('とは独立に動く');
 	});
 
 	it('closed_position_realized_pnl は closed_positions で検算できることを書いている', () => {

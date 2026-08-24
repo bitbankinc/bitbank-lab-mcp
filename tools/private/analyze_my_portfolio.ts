@@ -15,7 +15,7 @@ import type { ToolDefinition } from '../../src/tool-definition.js';
 export const toolDef: ToolDefinition = {
 	name: 'analyze_my_portfolio',
 	description:
-		'[Portfolio Analysis / PnL] 自分のポートフォリオ分析（portfolio / pnl / balance / return）。保有資産の評価損益・実現損益・口座リターンを一括算出。テクニカル分析統合オプション付き。Private API（要APIキー設定）。',
+		'[Portfolio Analysis / PnL] 自分のポートフォリオ分析（portfolio / pnl / balance / return）。保有資産の評価損益・実現損益・口座リターンを一括算出。テクニカル分析統合オプション付き。Private API（要APIキー設定）。既知の制約: 販売所（即時売買）の取引は bitbank API に含まれないため、取得原価・実現損益に反映されません。乖離が疑われる場合は holdings[].cost_basis_unavailable_reason / closed_positions[].realized_pnl_unavailable_reason の untracked_trade_suspected を確認してください。',
 	inputSchema: AnalyzeMyPortfolioInputSchema,
 	handler: async (args: {
 		include_technical?: boolean;

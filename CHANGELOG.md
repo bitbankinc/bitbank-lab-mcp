@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+### Added（`analyze_my_portfolio` が販売所取引の不可視性を検出・申告する）
+- **背景**: bitbank の販売所（即時売買）取引は Private API から完全に不可視——`/v1/user/spot/trade_history` にも `/v1/user/{deposit,withdrawal}_history` にも一切現れない。実口座の多段検証で確定した事実（#93）。**MCP 単独ではこれを正しく計算することは原理的に不可能**なので、本変更の目的は「正しい値を出す」ことではなく「不完全であることを利用者が知れる状態にする」こと。
+- **`closed_positions[]`（#92 で追加）に検出専用エントリが混在するようになった。** 入出金履歴（DONE の暗号資産入庫）はあるのに、約定履歴にも現在残高にも現れない銘柄を新たに検出する。#89 で数量不変条件により保有継続中の銘柄の乖離は検出できるようになっていたが、**約定も残高も無い銘柄はどのループにも乗らず検出できなかった**（売却が販売所だけだった銘柄の穴）。この銘柄を `closed_positions` に `{ asset, realized_pnl_unavailable_reason: 'untracked_trade_suspected' }` として追加する——`realized_pnl` を算出する入力（約定履歴）自体が無いため、`realized_pnl` / `priced_deposit_count` / `unpriced_deposit_count` はいずれも `undefined` のまま。新しい配列を作らず既存の `closed_positions` に載せたのは、消費者が読む場所を増やさないため（#92 との統合）。
+- **検出は closedSuppressed（入庫日価格を解決できない別銘柄がある場合の抑止、#92）と独立に動く。** 検出エントリは `realized_pnl` を持たず合計に寄与しないため、他銘柄の抑止に道連れにする理由が無い。`closed_position_realized_pnl` / `closed_position_asset_count` が `undefined` の実行でも、検出エントリがあれば `closed_positions` 自体は `undefined` にならない。
+- **数量乖離の理由コードに `untracked_trade_suspected` を追加した（`PortfolioCostBasisUnavailableReasonEnum` の末尾）。** 保有継続中の銘柄で、`has_crypto_deposits` / `history_truncated` / `reconstructed_qty_negative`（#89）のいずれにも当てはまらない乖離は、従来 `unknown` に落ちていた。実口座検証の BTC（乖離 0.00041693 = 販売所の買い 3 件の合計と 8 桁一致）もこのケースだった。`qtyMismatchReasonFor` は現在この分岐で `unknown` ではなく `untracked_trade_suspected` を返す（`unknown` は他の判定経路のため enum には残す）。**断定はできない**——同じ乖離パターンは他の要因（例: 履歴に現れない出庫）でも起こりうるため、値の名前・description とも「疑い（suspected）」の強さで表現している。
+- **新系統は作っていない。** 既存の `PortfolioCostBasisUnavailableReasonEnum` を 1 値拡張しただけで、`holdings[].cost_basis_unavailable_reason`（保有継続銘柄側）と `closed_positions[].realized_pnl_unavailable_reason`（ゼロ残高銘柄側、新設フィールド）の両方がこの 1 つの enum を共有する。
+- **ツール description に既知の制約を明記した。** `analyze_my_portfolio` の description に「販売所（即時売買）の取引は bitbank API に含まれないため、取得原価・実現損益に反映されません」と追記し、利用者が出力を見る前に前提を知れるようにした。
+- **残る限界（本 issue でも埋まらない穴）**: **入庫そのものが無く、取引所約定も無く、販売所のみで買い→売りを完結させた銘柄は検出できない。** 入出金履歴にも約定履歴にも痕跡が一切残らないため、本 issue が追加した検出経路（入出金履歴を起点にする）も、既存の数量不変条件（約定・残高を起点にする）も届かない。この限界を解消するには販売所履歴（CSV 等）の追加入力が要るが、ファイル入力の設計判断を伴うため本 issue のスコープ外とした（必要になった時点で別 issue とする）。
+- キー順・検算式・独立性・検出の限界は `tests/private/closed-position-breakdown-schema.test.ts`、`tests/handlers/portfolio/calc.test.ts`（`depositOnlyAssets` / `qtyMismatchReasonFor`）、`tests/private/analyze_my_portfolio.test.ts` で機械的に固定している。
+
 ### Added（`analyze_my_portfolio` に売り切り銘柄の実現損益の銘柄別内訳を露出）
 - **`closed_positions`（`Array<{ asset, realized_pnl, priced_deposit_count?, unpriced_deposit_count? }>`, optional）を追加した。** `closed_position_realized_pnl` は売り切り銘柄（保有ゼロだが約定履歴がある銘柄）ごとに算出した実現損益をループ内で合計に畳んでおり、従来は畳んだ時点で銘柄別の値を捨てていた。#84 マージ後の実口座検証で `closed_position_realized_pnl` が約 -35,867 円変化したが、件数（`closed_position_asset_count`）は不変（13→13）のため原因の切り分けが出力からは永久にできず調査が膠着した（#92）。ループ内では既に銘柄ごとの値を持っているので新規計算は不要——**捨てていたものを出力に載せるだけ**で、計算ロジック自体は一切変えていない。
 - **`realized_pnl` が 0 円の銘柄も含める。** `closed_position_asset_count` は寄与のあった銘柄（`realized_pnl !== 0`）しか数えないため、除外すると「ある銘柄が非ゼロ→ゼロに、別の銘柄がゼロ→非ゼロに同時に入れ替わる」ケースで件数の変化が相殺されて見えなくなる——これはまさに本 issue が塞ぎたかった盲点そのものなので、含めないという選択肢は取らなかった。結果として `closed_positions.length` は `closed_position_asset_count` と一致しないことがある（0 円の銘柄がある実行では前者の方が大きい）。Σ `closed_positions[].realized_pnl` = `closed_position_realized_pnl` は 0 を足しても変わらないので、0 円の銘柄の有無に関わらず常に成立する。
