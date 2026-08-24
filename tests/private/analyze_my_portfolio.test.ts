@@ -104,6 +104,13 @@ function setupFetchMock(opts?: {
 	tradesFail?: boolean;
 	marginTradesFail?: boolean;
 	dwFail?: boolean;
+	/**
+	 * 出庫チャネルだけを失敗させる（dwFail と異なり入庫チャネルは成功のまま）。
+	 * flowUnavailableReason=dw_fetch_failed を、入庫データは残したまま再現するための専用フラグ
+	 * （#93: depositOnlyAssets の出庫による除外判定が不完全な入出金履歴でも誤って動くことがない
+	 * ことを確認するテスト用）。
+	 */
+	withdrawalsFail?: boolean;
 	marginTrades?: unknown;
 	marginStatusFail?: boolean;
 	marginStatus?: unknown;
@@ -211,7 +218,7 @@ function setupFetchMock(opts?: {
 
 		// Private API: withdrawal history
 		if (urlStr.includes('withdrawal_history')) {
-			if (opts?.dwFail) {
+			if (opts?.dwFail || opts?.withdrawalsFail) {
 				return new Response(JSON.stringify(mockBitbankError(10007)), { status: 200 });
 			}
 			return new Response(JSON.stringify(mockBitbankSuccess(opts?.withdrawals ?? rawWithdrawalHistoryResponse)), {
@@ -6978,6 +6985,40 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 			const result = await analyze();
 			assertOk(result);
 
+			expect(result.data.closed_positions?.some((p) => p.asset === 'flr')).toBe(false);
+			expect(result.meta.warnings?.some((w) => w.includes('FLR')) ?? false).toBe(false);
+		});
+
+		/**
+		 * CodeRabbit review（PR #95）で指摘: 出庫による除外判定は dw.withdrawals の完全性が
+		 * 前提。出庫チャネルの取得に失敗した実行では、本来なら除外されるはずの出庫を
+		 * 見落として誤検出しうる（deposits 自体は取得できているので、ガードが無ければ
+		 * flr は「入庫はあるが約定にも残高にも無い」として検出されてしまう）。
+		 */
+		it('入出金履歴の取得に失敗した実行では検出しない——出庫の見落としによる誤検出を避ける', async () => {
+			setupFetchMock({
+				assets: ethOnlyAssets,
+				trades: { trades: [ethBuy2] },
+				deposits: {
+					deposits: [
+						{
+							uuid: 'dep-flr',
+							asset: 'flr',
+							amount: '100',
+							status: 'DONE',
+							found_at: PRICED_DEPOSIT_AT,
+							confirmed_at: PRICED_DEPOSIT_AT,
+						},
+					],
+				},
+				withdrawalsFail: true,
+			});
+
+			const result = await analyze();
+			assertOk(result);
+
+			// flowUnavailableReason が本当に立っていることを確認したうえで検出結果を見る
+			expect(result.data.total_cost_basis_unavailable_reason).toBe('dw_fetch_failed');
 			expect(result.data.closed_positions?.some((p) => p.asset === 'flr')).toBe(false);
 			expect(result.meta.warnings?.some((w) => w.includes('FLR')) ?? false).toBe(false);
 		});

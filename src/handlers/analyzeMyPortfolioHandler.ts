@@ -881,7 +881,11 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// closedSuppressed（他の売り切り銘柄の入庫日価格解決失敗）とは無関係に動く——検出結果は
 		// realized_pnl を持たず合計に寄与しないため、他銘柄の抑止に道連れにする理由が無い。
 		if (include_pnl) {
-			depositOnlyDetected = depositOnlyAssets(dwData, heldAssets, tradedAssets);
+			// depositOnlyAssets の除外判定は dw.withdrawals の完全性に依存する（DONE 出庫が
+			// 1 件でもあれば除外する設計のため、出庫を 1 件でも見落とすと除外できず誤検出になる）。
+			// flowUnavailableReason（dw 取得の全体的な失敗・打ち切り）が立っている実行では
+			// 除外判定そのものが信頼できないため、検出自体を行わない（CodeRabbit review, PR #95）。
+			depositOnlyDetected = flowUnavailableReason == null ? depositOnlyAssets(dwData, heldAssets, tradedAssets) : [];
 			if (depositOnlyDetected.length > 0) {
 				// 約定履歴が打ち切られていると tradedAssets は部分集合になり、取引所で売買した
 				// 銘柄まで「約定に現れない」と誤検出しうる。qtyMismatchReasonFor が

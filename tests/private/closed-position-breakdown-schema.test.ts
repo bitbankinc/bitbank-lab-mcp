@@ -165,6 +165,17 @@ describe('売り切り銘柄の内訳 — description', () => {
 		expect(description).toContain('出庫と販売所処分が同一銘柄に混在するケースは見逃す');
 	});
 
+	/**
+	 * CodeRabbit review（PR #95）で指摘: 出庫による除外判定は dw.withdrawals の完全性が前提。
+	 * 入出金履歴の取得自体が信頼できない実行では、除外すべき出庫を見落として誤検出しうるため、
+	 * 検出そのものを行わないことを description に書いている。
+	 */
+	it('realized_pnl_unavailable_reason（要素）は入出金履歴が信頼できない実行では検出を行わないことを書いている', () => {
+		const description = descriptionOf(closedPositionShape(), 'realized_pnl_unavailable_reason');
+		expect(description).toContain('**入出金履歴の取得自体が信頼できない実行');
+		expect(description).toContain('検出そのものを行わない');
+	});
+
 	it('closed_position_realized_pnl は closed_positions で検算できることを書いている', () => {
 		const description = descriptionOf(AnalyzeMyPortfolioDataSchema.shape, 'closed_position_realized_pnl');
 		expect(description).toContain('closed_positions で検算できる');
