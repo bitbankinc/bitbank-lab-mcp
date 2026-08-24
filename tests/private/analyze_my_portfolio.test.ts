@@ -5937,6 +5937,9 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 		expect(result.data.holdings.find((h) => h.asset === 'xrp')).toBeUndefined();
 		expect(result.data.closed_position_realized_pnl).toBeUndefined();
 		expect(result.data.closed_position_asset_count).toBeUndefined();
+		// 銘柄別の内訳も部分和を出さない（#92）。抑止されなかった eth 側は算出できているが、
+		// xrp を除いた部分配列を出すと合計不明のまま内訳だけ検算できてしまう。
+		expect(result.data.closed_positions).toBeUndefined();
 		expect(result.data.total_realized_pnl).toBeUndefined();
 		expect(result.data.total_realized_pnl_unavailable_reason).toBe('deposit_price_fetch_failed');
 		// 保有側の eth は抑止対象ではないので確定値のまま（抑止範囲を広げない）
@@ -6421,5 +6424,297 @@ describe('analyze_my_portfolio — 復元数量と許容誤差の露出（#87）
 			expect(text).not.toContain(String(eth.reconstructed_qty));
 			expect(text).not.toContain(String(eth.qty_invariant_tolerance));
 		}
+	});
+});
+
+/**
+ * 売り切り銘柄の実現損益の銘柄別内訳（issue #92）。
+ *
+ * 銘柄別の realized_pnl はループ内では元々算出済みだったが、closedSum に合計を畳む時点で
+ * 捨てられていた。実口座検証で closed_position_realized_pnl の変化がどの銘柄由来か出力から
+ * 特定できず調査が膠着したため、捨てずに closed_positions として出力する。
+ * 計算ロジックそのもの（各銘柄の realized_pnl の算出方法）は変更していない。
+ */
+describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => {
+	/** eth を保有継続（closed 側の集計に巻き込まれないための対照） */
+	const ethBuy2 = {
+		trade_id: 9001,
+		pair: 'eth_jpy',
+		order_id: 9001,
+		side: 'buy',
+		type: 'limit',
+		amount: '2.0',
+		price: '400000',
+		maker_taker: 'maker',
+		fee_amount_base: '0',
+		fee_amount_quote: '0',
+		executed_at: 1710000000000,
+	};
+
+	/** eth のみ保有（onhand 2.0）の assets レスポンス。売り切り銘柄側の検証に集中するための対照 */
+	const ethOnlyAssets = {
+		assets: [{ ...assetFixture('eth'), free_amount: '2.0', onhand_amount: '2.0' }, assetFixture('jpy')],
+	};
+
+	/**
+	 * 買って全量売った売り切り銘柄 1 件ぶんの約定 2 件（数量 100 固定）。
+	 * trade_id は `seed` から機械的に決めるので、テストごとに違う小さい整数を渡せば衝突しない。
+	 */
+	function closedPositionTrades(seed: number, asset: string, buyPrice: number, sellPrice: number) {
+		const pair = `${asset}_jpy`;
+		const buyId = 9000 + seed * 10 + 1;
+		const sellId = 9000 + seed * 10 + 2;
+		return [
+			{
+				trade_id: buyId,
+				pair,
+				order_id: buyId,
+				side: 'buy',
+				type: 'limit',
+				amount: '100',
+				price: String(buyPrice),
+				maker_taker: 'maker',
+				fee_amount_base: '0',
+				fee_amount_quote: '0',
+				executed_at: 1710000300000,
+			},
+			{
+				trade_id: sellId,
+				pair,
+				order_id: sellId,
+				side: 'sell',
+				type: 'limit',
+				amount: '100',
+				price: String(sellPrice),
+				maker_taker: 'maker',
+				fee_amount_base: '0',
+				fee_amount_quote: '0',
+				executed_at: 1710000400000,
+			},
+		];
+	}
+
+	/** JST 2024-03-10。既定 candle（2024-03-08 起点 120 本）で始値を解決できる入庫日 */
+	const PRICED_DEPOSIT_AT = 1710000100000;
+	/** JST 2023-06-01。candle fixture が 2024 年分しか無いので始値を解決できない入庫日 */
+	const UNPRICED_DEPOSIT_AT = Date.UTC(2023, 4, 31, 15, 0, 0);
+
+	/** DONE 入庫のみの deposit / withdrawal レスポンスを組み立てる（引数無しなら入庫ゼロ件） */
+	function depositsOf(...entries: Array<{ uuid: string; asset: string; amount: string; at: number }>) {
+		return {
+			deposits: {
+				deposits: entries.map((e) => ({
+					uuid: e.uuid,
+					asset: e.asset,
+					amount: e.amount,
+					status: 'DONE',
+					found_at: e.at,
+					confirmed_at: e.at,
+				})),
+			},
+			withdrawals: { withdrawals: [] },
+		};
+	}
+
+	async function analyze(args?: { include_pnl?: boolean }) {
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		return handler({
+			include_technical: false,
+			include_pnl: args?.include_pnl ?? true,
+			include_deposit_withdrawal: true,
+		});
+	}
+
+	it('受け入れ: 複数銘柄の内訳の合計が closed_position_realized_pnl と一致する', async () => {
+		const trades = {
+			trades: [
+				ethBuy2,
+				...closedPositionTrades(1, 'xrp', 80, 100), // +2000
+				...closedPositionTrades(2, 'doge', 10, 8), // -200
+			],
+		};
+		setupFetchMock({ assets: ethOnlyAssets, trades, ...depositsOf() });
+
+		const result = await analyze();
+		assertOk(result);
+
+		expect(result.data.closed_position_realized_pnl).toBe(1800);
+		expect(result.data.closed_position_asset_count).toBe(2);
+		expect(result.data.closed_positions).toHaveLength(2);
+		const sum = (result.data.closed_positions ?? []).reduce((acc, p) => acc + p.realized_pnl, 0);
+		expect(sum).toBe(result.data.closed_position_realized_pnl);
+		// holdings に載らない売り切り銘柄の実現損益は closed_positions でしか個別に読めない
+		expect(result.data.holdings.find((h) => h.asset === 'xrp' || h.asset === 'doge')).toBeUndefined();
+	});
+
+	it('単一銘柄の内訳', async () => {
+		const trades = { trades: [ethBuy2, ...closedPositionTrades(1, 'xrp', 80, 100)] };
+		setupFetchMock({ assets: ethOnlyAssets, trades, ...depositsOf() });
+
+		const result = await analyze();
+		assertOk(result);
+
+		expect(result.data.closed_positions).toEqual([expect.objectContaining({ asset: 'xrp', realized_pnl: 2000 })]);
+		expect(result.data.closed_position_asset_count).toBe(1);
+	});
+
+	it('売り切り銘柄が存在しない場合は空配列（集計はしたが対象が無い。undefined とは区別する）', async () => {
+		// eth のみを保有・売買し、売り切った銘柄が無い構成。closed_position_realized_pnl /
+		// closed_position_asset_count が「集計した結果ゼロ」を意味する 0 になるのと揃える。
+		setupFetchMock({ assets: ethOnlyAssets, trades: { trades: [ethBuy2] }, ...depositsOf() });
+
+		const result = await analyze();
+		assertOk(result);
+
+		expect(result.data.closed_position_realized_pnl).toBe(0);
+		expect(result.data.closed_position_asset_count).toBe(0);
+		expect(result.data.closed_positions).toEqual([]);
+	});
+
+	it('回帰: include_pnl=false では closed_positions を出さない', async () => {
+		setupFetchMock({ assets: ethOnlyAssets, trades: { trades: [ethBuy2] }, ...depositsOf() });
+		const result = await analyze({ include_pnl: false });
+		assertOk(result);
+		expect(result.data.closed_position_realized_pnl).toBeUndefined();
+		expect(result.data.closed_positions).toBeUndefined();
+	});
+
+	it('回帰: 約定履歴が無い場合は closed_positions を出さない', async () => {
+		setupFetchMock({ assets: ethOnlyAssets, trades: { trades: [] }, ...depositsOf() });
+		const result = await analyze();
+		assertOk(result);
+		expect(result.data.closed_position_realized_pnl).toBeUndefined();
+		expect(result.data.closed_positions).toBeUndefined();
+		// JSON.stringify が唯一 LLM に届く形なので、その上でキーが増えていないことを見る
+		const wire = JSON.parse(JSON.stringify(result.data)) as Record<string, unknown>;
+		expect(Object.keys(wire)).not.toContain('closed_positions');
+	});
+
+	it('realized_pnl が 0 の売り切り銘柄も内訳に含める（closed_position_asset_count とは配列長が食い違う）', async () => {
+		// xrp は非ゼロ、doge は買値=売値で実現損益がちょうど 0（closed_position_asset_count は
+		// 数えない）。0 円の銘柄を落とすと、この銘柄が非ゼロ⇄ゼロを跨いで動いたときに
+		// closed_position_asset_count の変化が相殺されて見えなくなる（issue #92 の発端）。
+		const trades = {
+			trades: [ethBuy2, ...closedPositionTrades(1, 'xrp', 80, 100), ...closedPositionTrades(2, 'doge', 10, 10)],
+		};
+		setupFetchMock({ assets: ethOnlyAssets, trades, ...depositsOf() });
+
+		const result = await analyze();
+		assertOk(result);
+
+		expect(result.data.closed_position_asset_count).toBe(1);
+		expect(result.data.closed_positions).toHaveLength(2);
+		expect(result.data.closed_positions?.find((p) => p.asset === 'doge')?.realized_pnl).toBe(0);
+	});
+
+	it('並び順は realized_pnl 降順・同値は asset 昇順で決定的', async () => {
+		const trades = {
+			trades: [
+				ethBuy2,
+				...closedPositionTrades(1, 'xrp', 80, 100), // +2000
+				...closedPositionTrades(2, 'doge', 10, 10), // 0
+				...closedPositionTrades(3, 'xlm', 5, 5), // 0（doge と同値 → asset 昇順で doge が先）
+				...closedPositionTrades(4, 'mona', 20, 15), // -500
+			],
+		};
+		setupFetchMock({ assets: ethOnlyAssets, trades, ...depositsOf() });
+
+		const result = await analyze();
+		assertOk(result);
+
+		expect(result.data.closed_positions?.map((p) => p.asset)).toEqual(['xrp', 'doge', 'xlm', 'mona']);
+		expect(result.data.closed_positions?.map((p) => p.realized_pnl)).toEqual([2000, 0, 0, -500]);
+	});
+
+	it('銘柄ごとの priced_deposit_count / unpriced_deposit_count を内訳に載せる', async () => {
+		// holdings に載らない売り切り銘柄では、この 2 フィールドの置き場が closed_positions
+		// しか無い（#77 で認識済みの制約）。
+		const trades = { trades: [ethBuy2, ...closedPositionTrades(2, 'doge', 10, 12)] };
+		setupFetchMock({
+			assets: ethOnlyAssets,
+			trades,
+			...depositsOf(
+				{ uuid: 'dep-doge-priced', asset: 'doge', amount: '5', at: PRICED_DEPOSIT_AT },
+				{ uuid: 'dep-doge-unpriced', asset: 'doge', amount: '3', at: UNPRICED_DEPOSIT_AT },
+			),
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		const doge = result.data.closed_positions?.find((p) => p.asset === 'doge');
+		if (doge == null) throw new Error('doge の内訳が無い');
+		expect(doge.priced_deposit_count).toBe(1);
+		expect(doge.unpriced_deposit_count).toBe(1);
+		expect(result.data.holdings.find((h) => h.asset === 'doge')).toBeUndefined();
+	});
+
+	it('入庫が無い銘柄では priced_deposit_count / unpriced_deposit_count をキーごと省く', async () => {
+		const trades = { trades: [ethBuy2, ...closedPositionTrades(1, 'xrp', 80, 100)] };
+		setupFetchMock({ assets: ethOnlyAssets, trades, ...depositsOf() });
+
+		const result = await analyze();
+		assertOk(result);
+
+		const xrp = result.data.closed_positions?.find((p) => p.asset === 'xrp');
+		if (xrp == null) throw new Error('xrp の内訳が無い');
+		expect(xrp.priced_deposit_count).toBeUndefined();
+		expect(xrp.unpriced_deposit_count).toBeUndefined();
+		const wire = JSON.parse(JSON.stringify(result.data)) as { closed_positions: Array<Record<string, unknown>> };
+		const xrpWire = wire.closed_positions.find((p) => p.asset === 'xrp');
+		expect(Object.keys(xrpWire ?? {})).toEqual(['asset', 'realized_pnl']);
+	});
+
+	it('入庫日価格を解決できず抑止された銘柄が 1 件でもあれば内訳全体を undefined にする（部分和を出さない）', async () => {
+		// xrp は入庫日を含む年 chunk（JST 2023 = UTC 2022/2023）の取得に失敗して #80 経路で抑止
+		// される。doge は無関係に売り切っているが、部分和を出さない既存方針により道連れで
+		// undefined になる（closed_position_realized_pnl / closed_position_asset_count と同じ挙動）。
+		const trades = {
+			trades: [ethBuy2, ...closedPositionTrades(1, 'xrp', 80, 100), ...closedPositionTrades(2, 'doge', 10, 12)],
+		};
+		setupFetchMock({
+			assets: ethOnlyAssets,
+			trades,
+			...depositsOf({ uuid: 'dep-xrp-failed', asset: 'xrp', amount: '10', at: UNPRICED_DEPOSIT_AT }),
+			candleFail: (urlStr) =>
+				urlStr.includes('/xrp_jpy/candlestick/1day/2022') || urlStr.includes('/xrp_jpy/candlestick/1day/2023'),
+		});
+
+		const result = await analyze();
+		assertOk(result);
+
+		expect(result.data.total_realized_pnl_unavailable_reason).toBe('deposit_price_fetch_failed');
+		expect(result.data.closed_position_realized_pnl).toBeUndefined();
+		expect(result.data.closed_position_asset_count).toBeUndefined();
+		expect(result.data.closed_positions).toBeUndefined();
+	});
+
+	it('summary には銘柄を列挙しない（内訳は structuredContent のみ）', async () => {
+		const trades = {
+			trades: [ethBuy2, ...closedPositionTrades(1, 'xrp', 80, 100), ...closedPositionTrades(2, 'doge', 10, 8)],
+		};
+		setupFetchMock({ assets: ethOnlyAssets, trades, ...depositsOf() });
+
+		const result = await analyze();
+		assertOk(result);
+
+		expect(result.data.closed_positions?.length).toBeGreaterThan(0);
+		expect(result.summary).not.toContain('XRP');
+		expect(result.summary).not.toContain('DOGE');
+		expect(result.summary).toContain(`売り切り銘柄 ${result.data.closed_position_asset_count}銘柄`);
+	});
+
+	it('closed_positions は既存キーの後ろに出る（既存消費者の JSON を中間から崩さない）', async () => {
+		const trades = { trades: [ethBuy2, ...closedPositionTrades(1, 'xrp', 80, 100)] };
+		setupFetchMock({ assets: ethOnlyAssets, trades, ...depositsOf() });
+
+		const result = await analyze();
+		assertOk(result);
+
+		const keys = Object.keys(result.data);
+		const closedPositionsIndex = keys.indexOf('closed_positions');
+		const totalRealizedPnlUnavailableReasonIndex = keys.indexOf('total_realized_pnl_unavailable_reason');
+		expect(closedPositionsIndex).toBeGreaterThan(-1);
+		expect(closedPositionsIndex).toBeGreaterThan(totalRealizedPnlUnavailableReasonIndex);
 	});
 });

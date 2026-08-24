@@ -783,12 +783,25 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// あったが実現損益ゼロ / 売り切り銘柄なし」と区別する。
 		let closedPositionRealizedPnl: number | undefined;
 		let closedPositionAssetCount: number | undefined;
+		// 銘柄別の内訳（#92）。ループ内では元々銘柄ごとに算出済みだったが、closedSum に畳む時点で
+		// 捨てられていたため、合計値の変化がどの銘柄由来か出力から特定できなかった。undefined の
+		// 条件は closedPositionRealizedPnl と同一（集計していない / 抑止）——本配列は既存 2
+		// フィールドが従う「部分和を出さない」方針をそのまま引き継ぐ、値の分解にすぎない。
+		let closedPositions:
+			| Array<{
+					asset: string;
+					realized_pnl: number;
+					priced_deposit_count: number | undefined;
+					unpriced_deposit_count: number | undefined;
+			  }>
+			| undefined;
 		if (include_pnl && allTrades.length > 0) {
 			let closedSum = 0;
 			let closedCount = 0;
 			// 売り切り銘柄側で抑止が起きたか。1 銘柄でも抑止したら closed 系は部分和になるので
 			// 確定値を出さない（下で undefined に畳む）。
 			let closedSuppressed = false;
+			const closedBreakdown: NonNullable<typeof closedPositions> = [];
 			const heldAssets = new Set(nonZeroAssets.map((a) => a.asset));
 			const tradedAssets = new Set(allTrades.map((t) => t.pair.replace('_jpy', '')).filter((a) => a !== 'jpy'));
 			for (const asset of tradedAssets) {
@@ -818,6 +831,17 @@ export default async function analyzeMyPortfolioHandler(args: {
 					if (pnl.qty_clamp_count > 0) {
 						qtyClampAssets.push({ asset, count: pnl.qty_clamp_count });
 					}
+					// realized_pnl が 0 の銘柄も内訳には含める（#92）。closedCount は寄与のあった
+					// 銘柄しか数えないため、ある銘柄が非ゼロ→ゼロに、別の銘柄がゼロ→非ゼロに同時に
+					// 入れ替わると件数の変化が相殺されて見えなくなる（本 issue の発端そのもの）。
+					// 0 を足しても合計は変わらないので、Σ closed_positions[].realized_pnl = closedSum
+					// は 0 円銘柄の有無に関わらず成立する。
+					closedBreakdown.push({
+						asset,
+						realized_pnl: pnl.realized_pnl,
+						priced_deposit_count: depositCountOrUndefined(pnl.priced_deposit_count),
+						unpriced_deposit_count: depositCountOrUndefined(pnl.unpriced_deposit_count),
+					});
 					if (pnl.realized_pnl !== 0) {
 						totalRealizedPnl += pnl.realized_pnl;
 						closedSum += pnl.realized_pnl;
@@ -827,6 +851,12 @@ export default async function analyzeMyPortfolioHandler(args: {
 			}
 			closedPositionRealizedPnl = closedSuppressed ? undefined : closedSum;
 			closedPositionAssetCount = closedSuppressed ? undefined : closedCount;
+			// 抑止時は内訳も undefined にする（部分和を出さない既存方針と揃える）。抑止されなかった
+			// 銘柄だけの部分配列を出すと、合計は undefined なのに内訳の合計だけは計算できてしまい、
+			// 部分和を「本当の合計」と誤認させる。並び順は realized_pnl 降順・同値は asset 昇順で決定的。
+			closedPositions = closedSuppressed
+				? undefined
+				: closedBreakdown.sort((x, y) => y.realized_pnl - x.realized_pnl || x.asset.localeCompare(y.asset));
 		}
 
 		// 全履歴の実現損益を確定値として出せるか（#80）。保有・売り切りのどちらで抑止しても、
@@ -1702,6 +1732,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 				totalRealizedPnlUnavailableReason == null && totalRealizedPnl !== 0 ? totalRealizedPnl : undefined,
 			closed_position_realized_pnl: closedPositionRealizedPnl,
 			closed_position_asset_count: closedPositionAssetCount,
+			closed_positions: closedPositions,
 			daily_performance: dailyPerformance,
 			yearly_performance: yearlyPerformance,
 			monthly_performance: monthlyPerformance,
