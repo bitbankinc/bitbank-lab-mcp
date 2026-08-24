@@ -25,7 +25,13 @@ import {
 import { formatDateInTz, toIsoTime, toIsoWithTz } from '../lib/datetime.js';
 import { getErrorMessage } from '../lib/error.js';
 import { formatSummary } from '../lib/formatter.js';
-import { BITBANK_API_BASE, DEFAULT_RETRIES, fetchJsonWithRateLimit, type RateLimitInfo } from '../lib/http.js';
+import {
+	BITBANK_API_BASE,
+	DEFAULT_RETRIES,
+	fetchJsonWithRateLimit,
+	HttpStatusError,
+	type RateLimitInfo,
+} from '../lib/http.js';
 import { isLatestBarProvisional, PROVISIONAL_BAR_NOTE, prependProvisionalNote } from '../lib/provisional-bar.js';
 import { fail, failFromError, failFromValidation, ok, parseAsResult, toStructured } from '../lib/result.js';
 import { createMeta, ensurePair, validateDate, validateLimit } from '../lib/validate.js';
@@ -213,40 +219,129 @@ function classifyAllChunksFailure(results: FetchChunkResult[]): FailResult | nul
 }
 
 /**
+ * 上流が HTTP 404 を返した失敗か。
+ *
+ * bitbank /candlestick は**その期間キー自体が存在しない**とき 404 を返す
+ * ——未来・上場前のどちらも 404（docs/internal/bitbank-candle-tz.md の実測 4 / 5）。
+ * 「期間は存在するが集計がまだ」は 200 + success:0 (code: 10000) で返るので別物として扱う。
+ * 5xx・タイムアウト・ネットワークエラーは含めない。
+ */
+function isChunkNotFoundError(err: unknown): boolean {
+	if (err instanceof HttpStatusError) return err.status === 404;
+	const msg = err instanceof Error ? err.message : String(err ?? '');
+	return /\b404\b/.test(msg);
+}
+
+/**
  * 上流の「データ未生成（まだ無い）」応答か。
  * bitbank /candlestick は未来・未開始の期間に HTTP 404 または success:0 (code: 10000) を返す
  * （docs/internal/bitbank-candle-tz.md 実測）。5xx・ネットワークエラーは含めない。
  */
 function isNotYetAvailableError(err: unknown): boolean {
 	if (err instanceof UpstreamApiError) return true;
-	const msg = err instanceof Error ? err.message : String(err ?? '');
-	return /\b404\b/.test(msg);
+	return isChunkNotFoundError(err);
+}
+
+/** `partitionFailedChunks` の分類結果。3 つの配列は互いに素で、合計が失敗 chunk の総数になる。 */
+interface FailedChunkPartition {
+	/** 実失敗。過半数判定の分子であり、⚠️ 警告に出る */
+	hardFailedKeys: string[];
+	/** 進行中・未来の UTC 期間で chunk がまだ生成されていない（時間が解決する） */
+	pendingGapKeys: string[];
+	/** 上流にその期間の足が存在しない（上場前など。時間では解決しない） */
+	absentGapKeys: string[];
 }
 
 /**
- * 失敗 chunk を「実失敗 (hard)」と「進行中 UTC 期間のデータ未生成 (expectedGap)」に分ける。
+ * 失敗 chunk を「実失敗 (hard)」と 2 種類の「データが無いだけ (gap)」に分ける。
+ * gap は過半数判定の分母・分子の両方から外し、注記に落とす。
  *
- * expectedGap = key が進行中の UTC 期間以降（辞書順比較。YYYYMMDD 日 key / YYYY 年 key 両対応）
- * かつエラーが 404 / success:0 のもの。UTC 期間の開始直後はその期間の chunk がまだ生成されて
- * いないことがあり、これは上流の正常応答（データが無いだけ）なので、過半数失敗の分母分子から
- * 除外して ℹ️ 注記に落とす。過去期間の失敗やネットワーク/5xx は実失敗として扱う。
+ * - **pendingGap**: key が進行中の UTC 期間以降（辞書順比較。YYYYMMDD 日 key / YYYY 年 key 両対応）
+ *   かつエラーが 404 / success:0。UTC 期間の開始直後はその期間の chunk がまだ生成されて
+ *   いないことがあり、これは上流の正常応答。
+ * - **absentGap**: 過去の期間の **HTTP 404** で、かつ**同じリクエストの別 chunk が実データを
+ *   返している**もの。上場初年度の銘柄を要求すると、JST 1 年の窓が UTC 年 chunk 2 本に割れて
+ *   古い側が必ず上場前になり、この 404 で全体を落としていた（#84）。
+ *
+ * `absentGap` の判定基準を「他 chunk に行があること」に置いた理由:
+ * 「上場前だから 404」と「本来あるはずのデータが 404」は上流応答だけでは区別できない。
+ * 区別できない以上、**同じ pair / type が同じリクエストで実データを返せたか**を代理指標にする。
+ * 返せていれば上流は生きていて経路も正しく、隣接 chunk の 404 は「その期間に足が無い」の表明と
+ * 読むのが妥当。1 本も返っていなければ判断材料が無いので従来どおり失敗のまま扱う
+ * （全 chunk 失敗は手前の `classifyAllChunksFailure` / 空応答 fail が拾う）。
+ * success:0 を absentGap に含めないのは、実測上それが「期間は在るが集計が未了」の応答であり、
+ * 過去期間で出たら本物の異常だから（判定基準の詳細は docs/internal/bitbank-candle-tz.md）。
  */
 function partitionFailedChunks(
 	keys: string[],
 	results: FetchChunkResult[],
 	nowUtcDayKey: string,
-): { hardFailedKeys: string[]; expectedGapKeys: string[] } {
+): FailedChunkPartition {
+	// 「同じリクエストで実データを返した chunk があるか」。error 付きの chunk は rows が空なので
+	// 成功 chunk だけが真になる。
+	const hasAnyRows = results.some((r) => r?.rows?.length > 0);
 	const hardFailedKeys: string[] = [];
-	const expectedGapKeys: string[] = [];
+	const pendingGapKeys: string[] = [];
+	const absentGapKeys: string[] = [];
 	for (let i = 0; i < keys.length; i++) {
 		const err = results[i]?.error;
 		if (err == null) continue;
 		const key = keys[i];
 		const isCurrentOrFuturePeriod = key >= nowUtcDayKey.slice(0, key.length);
-		if (isCurrentOrFuturePeriod && isNotYetAvailableError(err)) expectedGapKeys.push(key);
+		if (isCurrentOrFuturePeriod && isNotYetAvailableError(err)) pendingGapKeys.push(key);
+		else if (hasAnyRows && isChunkNotFoundError(err)) absentGapKeys.push(key);
 		else hardFailedKeys.push(key);
 	}
-	return { hardFailedKeys, expectedGapKeys };
+	return { hardFailedKeys, pendingGapKeys, absentGapKeys };
+}
+
+/**
+ * 実失敗が「過半数」（＝**半数超**。ちょうど半数は含まない）に達したか。
+ *
+ * 旧実装は `>= totalChunks / 2` で発火しながらメッセージは「過半数」と言っており、
+ * 半数ちょうどで「過半数が失敗」と表示していた（#84）。文言ではなく**閾値の方を**
+ * 過半数に寄せた理由:
+ * - YEARLY_TYPES の 1 年ぶんの要求は JST/UTC のずれで**常に UTC 年 chunk 2 本**になる。
+ *   `>=` だと片方が落ちただけで必ず全体 fail になり、取得できた 1 年ぶんの足ごと捨てる——
+ *   本 issue と同じ「部分成功を握り潰す」失敗モードを閾値側にも抱えていた。
+ * - 半数の欠損は ⚠️ 警告（失敗 key と原因を列挙）で申告すれば、呼び出し側はデータと欠損の
+ *   両方を受け取れる。捨てるより情報量が多い。
+ * - 全滅は手前の `classifyAllChunksFailure` / 空応答 fail が拾うので、緩めても「何も無いのに
+ *   成功を返す」経路は生まれない。
+ *
+ * 小数を避けるため両辺を 2 倍して比較する。
+ */
+function isMajorityChunkFailure(hardFailedCount: number, totalChunks: number): boolean {
+	return hardFailedCount > 0 && hardFailedCount * 2 > totalChunks;
+}
+
+/** 部分失敗・gap の注記行を組み立てる（年経路 / 日経路で共通。単位語と注記文だけが違う）。 */
+function buildChunkWarnLines(
+	keys: string[],
+	results: FetchChunkResult[],
+	partition: FailedChunkPartition,
+	totalChunks: number,
+	labels: { unit: string; calendar: string; pendingSuffix: string },
+): string[] {
+	const { hardFailedKeys, pendingGapKeys, absentGapKeys } = partition;
+	const lines: string[] = [];
+	if (hardFailedKeys.length > 0) {
+		const detail = describeFailedChunks(keys, results, new Set(hardFailedKeys));
+		lines.push(
+			`⚠️ ${totalChunks}${labels.unit}中${hardFailedKeys.length}${labels.unit}の取得に失敗しました（${detail}）。データが不完全な可能性があります。`,
+		);
+	}
+	if (pendingGapKeys.length > 0) {
+		lines.push(
+			`ℹ️ ${labels.calendar} ${pendingGapKeys.join(', ')} は開始直後でデータ未生成のためスキップしました${labels.pendingSuffix}。`,
+		);
+	}
+	if (absentGapKeys.length > 0) {
+		lines.push(
+			`ℹ️ ${labels.calendar} ${absentGapKeys.join(', ')} は上流に足がありません（上場前などデータが存在しない期間）。取得できた期間のみで応答しています。`,
+		);
+	}
+	return lines;
 }
 
 export default async function getCandles(
@@ -454,28 +549,25 @@ export default async function getCandles(
 				if (classified) return classified;
 			}
 
-			// 失敗を「実失敗」と「進行中 UTC 年のデータ未生成（許容）」に分け、実失敗のみで過半数判定する。
+			// 失敗を「実失敗」と「データが無いだけ（許容）」に分け、実失敗のみで過半数判定する。
+			// 上場初年度の銘柄では古い側の UTC 年 chunk が必ず上場前になり 404 が確定するので、
+			// それを実失敗に数えると取得できた年ごと捨ててしまう（#84）。
 			// 失敗メッセージには key と原因を必ず含める（「N年中M年失敗」だけでは診断不能）。
 			const nowUtcDayKey = toDayKey(Date.now(), FETCH_CHUNK_TZ);
-			const { hardFailedKeys, expectedGapKeys } = partitionFailedChunks(yearKeys, merged.results, nowUtcDayKey);
-			const totalChunks = merged.results.length - expectedGapKeys.length;
-			if (hardFailedKeys.length > 0 && hardFailedKeys.length >= totalChunks / 2) {
-				const detail = describeFailedChunks(yearKeys, merged.results, new Set(hardFailedKeys));
+			const partition = partitionFailedChunks(yearKeys, merged.results, nowUtcDayKey);
+			const totalChunks = merged.results.length - partition.pendingGapKeys.length - partition.absentGapKeys.length;
+			if (isMajorityChunkFailure(partition.hardFailedKeys.length, totalChunks)) {
+				const detail = describeFailedChunks(yearKeys, merged.results, new Set(partition.hardFailedKeys));
 				return fail(
-					`ローソク足取得の過半数が失敗しました（${chk.pair}/${type}, ${totalChunks}年中${hardFailedKeys.length}年失敗: ${detail}）`,
+					`ローソク足取得の過半数が失敗しました（${chk.pair}/${type}, ${totalChunks}年中${partition.hardFailedKeys.length}年失敗: ${detail}）`,
 					'upstream',
 				);
 			}
-			const warnLines: string[] = [];
-			if (hardFailedKeys.length > 0) {
-				const detail = describeFailedChunks(yearKeys, merged.results, new Set(hardFailedKeys));
-				warnLines.push(
-					`⚠️ ${totalChunks}年中${hardFailedKeys.length}年の取得に失敗しました（${detail}）。データが不完全な可能性があります。`,
-				);
-			}
-			if (expectedGapKeys.length > 0) {
-				warnLines.push(`ℹ️ UTC 暦年 ${expectedGapKeys.join(', ')} は開始直後でデータ未生成のためスキップしました。`);
-			}
+			const warnLines = buildChunkWarnLines(yearKeys, merged.results, partition, totalChunks, {
+				unit: '年',
+				calendar: 'UTC 暦年',
+				pendingSuffix: '',
+			});
 			if (warnLines.length > 0) fetchWarning = warnLines.join('\n');
 
 			ohlcvs = merged.rows;
@@ -506,33 +598,27 @@ export default async function getCandles(
 				if (classified) return classified;
 			}
 
-			// 失敗を「実失敗」と「進行中 UTC 日のデータ未生成（許容）」に分け、実失敗のみで過半数判定する。
+			// 失敗を「実失敗」と「データが無いだけ（許容）」に分け、実失敗のみで過半数判定する。
 			// 進行中の UTC 日は通常 200 + 部分データを返すが、UTC 日開始直後は chunk 未生成で
 			// 404 になることがある。これを過半数失敗に数えると、取得済みの正当なデータごと捨てて
-			// しまう（JST 早朝の当日取得が全滅する障害の原因）。
+			// しまう（JST 早朝の当日取得が全滅する障害の原因）。過去日の 404 も、他 chunk が
+			// 実データを返しているなら「その日に足が無い」として同様に許容する（#84）。
 			// 失敗メッセージには key と原因を必ず含める（「N日中M日失敗」だけでは診断不能）。
 			const nowUtcDayKey = toDayKey(Date.now(), FETCH_CHUNK_TZ);
-			const { hardFailedKeys, expectedGapKeys } = partitionFailedChunks(multiDayUtcKeys, merged.results, nowUtcDayKey);
-			const totalDays = merged.results.length - expectedGapKeys.length;
-			if (hardFailedKeys.length > 0 && hardFailedKeys.length >= totalDays / 2) {
-				const detail = describeFailedChunks(multiDayUtcKeys, merged.results, new Set(hardFailedKeys));
+			const partition = partitionFailedChunks(multiDayUtcKeys, merged.results, nowUtcDayKey);
+			const totalDays = merged.results.length - partition.pendingGapKeys.length - partition.absentGapKeys.length;
+			if (isMajorityChunkFailure(partition.hardFailedKeys.length, totalDays)) {
+				const detail = describeFailedChunks(multiDayUtcKeys, merged.results, new Set(partition.hardFailedKeys));
 				return fail(
-					`ローソク足取得の過半数が失敗しました（${chk.pair}/${type}, ${totalDays}日中${hardFailedKeys.length}日失敗: ${detail}）`,
+					`ローソク足取得の過半数が失敗しました（${chk.pair}/${type}, ${totalDays}日中${partition.hardFailedKeys.length}日失敗: ${detail}）`,
 					'upstream',
 				);
 			}
-			const warnLines: string[] = [];
-			if (hardFailedKeys.length > 0) {
-				const detail = describeFailedChunks(multiDayUtcKeys, merged.results, new Set(hardFailedKeys));
-				warnLines.push(
-					`⚠️ ${totalDays}日中${hardFailedKeys.length}日の取得に失敗しました（${detail}）。データが不完全な可能性があります。`,
-				);
-			}
-			if (expectedGapKeys.length > 0) {
-				warnLines.push(
-					`ℹ️ UTC 暦日 ${expectedGapKeys.join(', ')} は開始直後でデータ未生成のためスキップしました（当日分は形成され次第、以降の取得で揃います）。`,
-				);
-			}
+			const warnLines = buildChunkWarnLines(multiDayUtcKeys, merged.results, partition, totalDays, {
+				unit: '日',
+				calendar: 'UTC 暦日',
+				pendingSuffix: '（当日分は形成され次第、以降の取得で揃います）',
+			});
 			if (warnLines.length > 0) fetchWarning = warnLines.join('\n');
 
 			ohlcvs = merged.rows;

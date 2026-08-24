@@ -2126,20 +2126,39 @@ describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () =>
 		expect(res.meta.warning).toContain('20260708');
 	});
 
-	it('過去 UTC 日 chunk の実失敗（404）は過半数 fail し、メッセージに日付と原因を含む', async () => {
+	// #84 以前はここが「過半数 fail」だった。上場前の期間は必ず 404 になるため、
+	// 他 chunk が実データを返していれば「その期間に足が無い」として許容する（下の #84 ブロック参照）。
+	it('過去 UTC 日 chunk の 404 は、他 chunk にデータがあれば注記に落として成功させる', async () => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(dayjs.utc('2026-07-08T00:05:00Z').valueOf());
-		// date=20240115 (JST) → UTC keys [20240114, 20240115]。過去日 20240114 が HTTP 404 → 実失敗。
+		// date=20240115 (JST) → UTC keys [20240114, 20240115]。過去日 20240114 が HTTP 404。
 		mockPerUtcDay((key) =>
 			key === '20240114' ? { status: 404, body: notFoundBody } : { status: 200, body: okBody(key) },
 		);
 
 		const res = await getCandles('btc_jpy', '1hour', '20240115', 24);
-		assertFail(res);
-		expect(res.summary).toContain('過半数が失敗');
-		expect(res.summary).toContain('btc_jpy/1hour');
-		expect(res.summary).toContain('20240114');
-		expect(res.summary).toContain('404');
+		assertOk(res);
+		expect(res.data.normalized.length).toBeGreaterThan(0);
+		expect(res.meta.warning).toContain('ℹ️');
+		expect(res.meta.warning).toContain('20240114');
+		expect(res.meta.warning).toContain('上場前');
+		// 実失敗ではないので ⚠️ 側には出さない
+		expect(res.meta.warning).not.toContain('⚠️');
+	});
+
+	it('過去 UTC 日 chunk の実失敗（5xx）は 2 日中 1 日なら ⚠️ 警告付きで成功する（閾値は半数超）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(dayjs.utc('2026-07-08T00:05:00Z').valueOf());
+		// date=20240115 (JST) → UTC keys [20240114, 20240115]。過去日 20240114 が 5xx → 実失敗。
+		// 旧実装（>= totalChunks / 2）はここで全体 fail し、取得できた 20240115 ごと捨てていた。
+		mockPerUtcDay((key) => (key === '20240114' ? { status: 503, body: {} } : { status: 200, body: okBody(key) }));
+
+		const res = await getCandles('btc_jpy', '1hour', '20240115', 24);
+		assertOk(res);
+		expect(res.data.normalized.length).toBeGreaterThan(0);
+		expect(res.meta.warning).toContain('⚠️');
+		expect(res.meta.warning).toContain('20240114');
+		expect(res.meta.warning).toContain('503');
 	});
 
 	// tz=UTC は tz 暦日 = UTC 暦日のため window が 1 UTC 日に潰れやすく、
@@ -2186,5 +2205,155 @@ describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () =>
 		expect(res.meta?.errorType).toBe('user');
 		expect(res.summary).toContain('データ未生成');
 		expect(res.summary).toContain('20260708');
+	});
+});
+
+// ── 上場前 chunk の 404 に巻き込まれない（#84） ──
+// JST 1 年ぶんの窓は UTC 年 chunk 2 本に割れるため、上場初年度の銘柄では古い側が必ず上場前になる。
+// bitbank /candlestick は存在しない期間キーに 404 を返す（docs/internal/bitbank-candle-tz.md 実測 4/5）ので、
+// これは確率的な失敗ではなく**構造的な確定失敗**——旧実装では該当銘柄がその年を永久に取得できなかった。
+
+describe('上場前 chunk の 404 に巻き込まれない（#84）', () => {
+	const originalFetch = globalThis.fetch;
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	/** UTC 年キーごとに応答を返すモック。valid な年は 1 年ぶんの日足を返す。 */
+	const mockPerUtcYear = (respond: (yearKey: string) => { status: number; body: unknown }) =>
+		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+			const m = String(url).match(/\/1day\/(\d{4})$/);
+			const { status, body } = respond(m ? m[1] : '');
+			return {
+				ok: status >= 200 && status < 300,
+				status,
+				statusText: status === 404 ? 'Not Found' : status === 503 ? 'Service Unavailable' : 'OK',
+				headers: { get: () => null },
+				json: async () => body,
+			} as unknown as Response;
+		});
+
+	const yearBars = (yearKey: string) => {
+		const baseTs = Date.UTC(Number(yearKey), 0, 1);
+		return Array.from({ length: 365 }, (_, i) => ['100', '110', '90', '105', '1.0', String(baseTs + i * 86400000)]);
+	};
+	const okBody = (yearKey: string) => ({ success: 1, data: { candlestick: [{ ohlcv: yearBars(yearKey) }] } });
+	/** 上場前・未来の期間キー: HTTP 404 + code 10000（実測） */
+	const notFound = { status: 404, body: { success: 0, data: { code: 10000 } } };
+	/** 期間は在るが集計が未了: 200 + success:0（実測）。過去期間で出たら実失敗として扱う */
+	const upstreamZero = { status: 200, body: { success: 0, data: { code: 10000 } } };
+
+	const yearCalls = (yearKey: string) =>
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) => String(c[0]).endsWith(`/1day/${yearKey}`))
+			.length;
+
+	// 本 issue の核。実測は flr_jpy / date=2023 だが、上場初年度の銘柄すべてに共通する構造。
+	it('2 chunk のうち古い側が上場前 404・新しい側にデータあり → 成功してデータが返る', async () => {
+		// date=2020 + limit=400 → UTC 年 keys [2019, 2020]
+		mockPerUtcYear((key) => (key === '2019' ? notFound : { status: 200, body: okBody(key) }));
+
+		const res = await getCandles('btc_jpy', '1day', '2020', 400);
+		assertOk(res);
+		expect(res.data.normalized.length).toBeGreaterThan(0);
+		// 取得できた 2020 年の足が返っていること（404 の巻き添えで捨てられていない）
+		expect(res.data.normalized.every((c) => c.timestamp >= Date.UTC(2020, 0, 1))).toBe(true);
+		// 実失敗ではないので ⚠️ ではなく ℹ️ で申告する
+		expect(res.meta.warning).toContain('ℹ️');
+		expect(res.meta.warning).toContain('2019');
+		expect(res.meta.warning).toContain('上場前');
+		expect(res.meta.warning).not.toContain('⚠️');
+	});
+
+	it('全 chunk が 404 なら従来どおり失敗する（データが 1 本も無く判断材料が無い）', async () => {
+		mockPerUtcYear(() => notFound);
+
+		const res = await getCandles('btc_jpy', '1day', '2020', 400);
+		assertFail(res);
+		expect(res.summary).toContain('404');
+	});
+
+	it('上場前 404 はリトライしない（同じ期間キーを 1 回しか叩かない）', async () => {
+		mockPerUtcYear((key) => (key === '2019' ? notFound : { status: 200, body: okBody(key) }));
+
+		const res = await getCandles('btc_jpy', '1day', '2020', 400);
+		assertOk(res);
+		// 何度叩いても 404 なので初回のみ。旧実装は DEFAULT_RETRIES ぶん 3 回撃っていた
+		expect(yearCalls('2019')).toBe(1);
+		expect(yearCalls('2020')).toBe(1);
+	});
+
+	it('5xx は従来どおりリトライする（一時的な失敗は再試行で解消しうる）', async () => {
+		mockPerUtcYear((key) => (key === '2019' ? { status: 503, body: {} } : { status: 200, body: okBody(key) }));
+
+		const res = await getCandles('btc_jpy', '1day', '2020', 400);
+		assertOk(res);
+		// 初回 + DEFAULT_RETRIES(2) 回
+		expect(yearCalls('2019')).toBe(3);
+		// 実失敗なので ⚠️ 側に出る（2 年中 1 年 = 半数ちょうど → fail しない）
+		expect(res.meta.warning).toContain('⚠️');
+		expect(res.meta.warning).toContain('2年中1年');
+	});
+
+	it('過去 chunk の success:0 は上場前扱いにしない（実失敗として ⚠️ に出る）', async () => {
+		// 200 + success:0 は「期間は在るが集計が未了」の応答。過去期間で出たら本物の異常。
+		mockPerUtcYear((key) => (key === '2019' ? upstreamZero : { status: 200, body: okBody(key) }));
+
+		const res = await getCandles('btc_jpy', '1day', '2020', 400);
+		assertOk(res);
+		expect(res.meta.warning).toContain('⚠️');
+		expect(res.meta.warning).toContain('2年中1年');
+		expect(res.meta.warning).not.toContain('上場前');
+	});
+
+	it('上場前 404 は過半数判定の分母から外れる（実失敗だけで判定する）', async () => {
+		// date=2020 + limit=800 → UTC 年 keys [2018, 2019, 2020]
+		// 2018 が上場前 404（分母から除外）→ 分母 2 / 実失敗 1（2019 の 5xx）→ 半数ちょうどなので fail しない
+		mockPerUtcYear((key) => {
+			if (key === '2018') return notFound;
+			if (key === '2019') return { status: 503, body: {} };
+			return { status: 200, body: okBody(key) };
+		});
+
+		const res = await getCandles('btc_jpy', '1day', '2020', 800);
+		assertOk(res);
+		expect(res.meta.warning).toContain('2年中1年');
+		expect(res.meta.warning).toContain('上場前');
+	});
+
+	/**
+	 * 閾値は「半数以上」ではなく**半数超**（過半数）。メッセージの文言に閾値の方を寄せた。
+	 * `>=` のままだと、常に 2 chunk になる 1 年ぶんの要求が片方の失敗で必ず全滅する。
+	 */
+	describe('過半数の閾値（3 chunk = date 2020 + limit 800）', () => {
+		it('3 年中 1 年の実失敗 → ⚠️ 警告付きで成功する', async () => {
+			mockPerUtcYear((key) => (key === '2018' ? upstreamZero : { status: 200, body: okBody(key) }));
+
+			const res = await getCandles('btc_jpy', '1day', '2020', 800);
+			assertOk(res);
+			expect(res.meta.warning).toContain('⚠️');
+			expect(res.meta.warning).toContain('3年中1年');
+		});
+
+		it('3 年中 2 年の実失敗 → 過半数 fail', async () => {
+			mockPerUtcYear((key) => (key === '2020' ? { status: 200, body: okBody(key) } : upstreamZero));
+
+			const res = await getCandles('btc_jpy', '1day', '2020', 800);
+			assertFail(res);
+			expect(res.summary).toContain('過半数が失敗');
+			expect(res.summary).toContain('3年中2年失敗');
+			expect(res.meta?.errorType).toBe('upstream');
+		});
+
+		it('3 年中 3 年の実失敗 → 全 chunk 失敗として upstream fail', async () => {
+			mockPerUtcYear(() => upstreamZero);
+
+			const res = await getCandles('btc_jpy', '1day', '2020', 800);
+			assertFail(res);
+			expect(res.meta?.errorType).toBe('upstream');
+			expect(res.summary).toContain('code: 10000');
+		});
 	});
 });

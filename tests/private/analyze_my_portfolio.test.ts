@@ -5410,15 +5410,21 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 	/** 上の入庫日（JST 2024-03-10）の 1day open。既定 fixture の 3 本目 */
 	const ETH_DEPOSIT_DAY_OPEN = 15_100_000;
 
+	/** JST 暦年 `year` の取得を丸ごと失敗させる UTC 年キー（`getCandles` は 2 本叩く） */
+	const jstYearChunkKeys = (year: number) => [`${year - 1}`, `${year}`];
+
 	/**
-	 * JST 暦年 2023 の chunk だけを取得失敗にする述語。
+	 * JST 暦年 2023 の chunk **だけ**を取得失敗にする述語。
 	 *
-	 * `getCandles` は JST 1 年の窓を UTC 暦年 2 本（2022 / 2023）で取りに行き、**過半数が失敗**
-	 * したら upstream エラーを返す。UTC 2022 だけを落とせば JST 2023 の chunk は失敗する一方、
-	 * 直近 400 日窓（UTC 2025 / 2026）と JST 2024 の chunk（UTC 2023 / 2024）は無傷で残る。
-	 * 取得失敗の注入対象を 1 つの入庫に絞るための細工。
+	 * `getCandles` は JST 1 年の窓を UTC 暦年 2 本（2022 / 2023）で取りに行くので、
+	 * **両方**落として初めてその年が取得不能になる。片方だけでは（#84 以降）取得できた側の足を
+	 * 返して部分成功になり、取得失敗の注入にならない——半数ちょうどの欠損は ⚠️ 警告に落ちる。
+	 *
+	 * UTC 2023 も落とすが、直近 400 日窓（UTC 2025 / 2026）と JST 2024 の chunk（UTC 2023 / 2024）は
+	 * 片方だけの欠損なので無傷で残る。取得失敗の注入対象を 1 つの入庫に絞るための細工。
 	 */
-	const eth2023ChunkFails = (urlStr: string) => urlStr.includes('/eth_jpy/candlestick/1day/2022');
+	const eth2023ChunkFails = (urlStr: string) =>
+		jstYearChunkKeys(2023).some((key) => urlStr.includes(`/eth_jpy/candlestick/1day/${key}`));
 
 	/** eth 買い 2.0 → 売り 0.5。実現損益が出る最小構成 */
 	const ethTrades = {
@@ -5716,7 +5722,7 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 				{ uuid: 'dep-priced', asset: 'eth', amount: '0.5', at: PRICED_DEPOSIT_AT },
 				{ uuid: 'dep-xrp-failed', asset: 'xrp', amount: '10', at: OLD_DEPOSIT_AT },
 			),
-			candleFail: (urlStr) => urlStr.includes('/xrp_jpy/candlestick/1day/2022'),
+			candleFail: (urlStr) => jstYearChunkKeys(2023).some((key) => urlStr.includes(`/xrp_jpy/candlestick/1day/${key}`)),
 		});
 
 		const result = await analyze();
@@ -5937,8 +5943,12 @@ describe('analyze_my_portfolio — 復元数量と許容誤差の露出（#87）
 	const PRICED_DEPOSIT_AT = 1710000100000;
 	/** JST 2023-06-01。candle fixture が 2024 年分しか無いので始値を解決できない入庫日 */
 	const UNPRICED_DEPOSIT_AT = Date.UTC(2023, 4, 31, 15, 0, 0);
-	/** JST 暦年 2023 の chunk だけを取得失敗にする述語（#80 の抑止経路の注入。同 describe と同じ細工） */
-	const eth2023ChunkFails = (urlStr: string) => urlStr.includes('/eth_jpy/candlestick/1day/2022');
+	/**
+	 * JST 暦年 2023 の chunk だけを取得失敗にする述語（#80 の抑止経路の注入。同 describe と同じ細工）。
+	 * JST 1 年は UTC 年 chunk 2 本なので**両方**落とす。片方だけでは部分成功になり注入にならない（#84）。
+	 */
+	const eth2023ChunkFails = (urlStr: string) =>
+		['2022', '2023'].some((key) => urlStr.includes(`/eth_jpy/candlestick/1day/${key}`));
 
 	const emptyDw = { deposits: { deposits: [] }, withdrawals: { withdrawals: [] } };
 

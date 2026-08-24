@@ -43,6 +43,38 @@ export interface FetchJsonOptions {
 /** リトライ待機の上限（30秒） */
 const MAX_RETRY_WAIT_MS = 30_000;
 
+/**
+ * HTTP ステータス由来の失敗。**リトライしてよいかを呼び出し側が判定できる**ようにするため、
+ * ステータスコードを保持する（`message` は従来どおり `HTTP <status> <statusText>`。
+ * `get_candles` 等が本文の `404` を正規表現で拾っているので文言は変えない）。
+ */
+export class HttpStatusError extends Error {
+	readonly status: number;
+
+	constructor(status: number, statusText: string) {
+		super(`HTTP ${status} ${statusText}`);
+		this.name = 'HttpStatusError';
+		this.status = status;
+	}
+}
+
+/**
+ * この HTTP ステータスをもう一度叩く価値があるか。
+ *
+ * 4xx は上流の「その資源は無い / 要求が不正」の表明で、**同じ URL を叩き直しても永久に同じ結果**
+ * になる。bitbank `/candlestick` は上場前・未来の期間キーに 404 を返すため
+ * （`docs/internal/bitbank-candle-tz.md`）、ここをリトライすると上場前の 1 chunk につき
+ * リクエストが 3 倍になり、レート制限を自分で誘発して**他の chunk の成功率を下げる**（#84）。
+ *
+ * 例外は 2 つだけ:
+ * - 408 Request Timeout: 一時的な遅延なので再試行の価値がある
+ * - 429 Too Many Requests: `Retry-After` を解釈する専用経路で扱う（ここには到達しない）
+ */
+export function isRetriableHttpStatus(status: number): boolean {
+	if (status === 408 || status === 429) return true;
+	return status < 400 || status >= 500;
+}
+
 /** 汎用リトライの待機ベース（ms）。試行回数 i に対して BASE * 2^i を待つ */
 const RETRY_BACKOFF_BASE_MS = 200;
 
@@ -136,13 +168,16 @@ export async function fetchJson<T = unknown>(
 				}
 				throw new Error('レート制限超過 (HTTP 429)。しばらく待ってから再試行してください');
 			}
-			if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+			if (!res.ok) throw new HttpStatusError(res.status, res.statusText);
 			const json: unknown = await res.json();
 			if (schema) return schema.parse(json) as T;
 			return json as T;
 		} catch (e) {
 			clearTimeout(t);
 			lastErr = e;
+			// 恒久的な HTTP 失敗（404 等）はリトライしない。何度叩いても同じ結果で、
+			// 待ち時間とレート制限枠だけを消費する（#84）。
+			if (e instanceof HttpStatusError && !isRetriableHttpStatus(e.status)) break;
 			if (i < retries) await new Promise((r) => setTimeout(r, retryBackoffMs(i)));
 		}
 	}
@@ -178,7 +213,7 @@ export async function fetchJsonWithRateLimit<T = unknown>(
 				}
 				throw new Error('レート制限超過 (HTTP 429)。しばらく待ってから再試行してください');
 			}
-			if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+			if (!res.ok) throw new HttpStatusError(res.status, res.statusText);
 			const rateLimit = extractRateLimit(res.headers);
 			const json: unknown = await res.json();
 			const data = schema ? (schema.parse(json) as T) : (json as T);
@@ -186,6 +221,9 @@ export async function fetchJsonWithRateLimit<T = unknown>(
 		} catch (e) {
 			clearTimeout(t);
 			lastErr = e;
+			// 恒久的な HTTP 失敗（404 等）はリトライしない。何度叩いても同じ結果で、
+			// 待ち時間とレート制限枠だけを消費する（#84）。
+			if (e instanceof HttpStatusError && !isRetriableHttpStatus(e.status)) break;
 			if (i < retries) await new Promise((r) => setTimeout(r, retryBackoffMs(i)));
 		}
 	}
