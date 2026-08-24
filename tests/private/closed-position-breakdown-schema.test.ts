@@ -140,6 +140,31 @@ describe('売り切り銘柄の内訳 — description', () => {
 		expect(description).toContain('とは独立に動く');
 	});
 
+	/**
+	 * CodeRabbit review（PR #95）対応: 約定履歴が打ち切られていると tradedAssets が部分集合に
+	 * なり、取引所で売買しただけの銘柄まで「約定に現れない」と誤検出しうる。本フィールドは
+	 * untracked_trade_suspected 固定ではなく、確度が落ちる場合は history_truncated にも
+	 * 倒れることを description に書いている。
+	 */
+	it('realized_pnl_unavailable_reason（要素）は history_truncated にもなりうることを書いている', () => {
+		const description = descriptionOf(closedPositionShape(), 'realized_pnl_unavailable_reason');
+		expect(description).toContain('untracked_trade_suspected=');
+		expect(description).toContain('history_truncated=');
+		expect(description).toContain('tradedAssets が実際の取引所約定の部分集合でしかない');
+	});
+
+	/**
+	 * CodeRabbit review 対応時に発見した追加の誤検知パス（issue #93 の当初スコープには無かった）:
+	 * 出庫だけで残高ゼロが完全に説明できる、販売所と無関係なありふれたケース（他ウォレットへの
+	 * 送付など）を除外している。この保守的な判断（量を見ず「出庫が 1 件でもあれば除外」）と、
+	 * その代償（出庫と販売所処分の混在は見逃す）を description に書いている。
+	 */
+	it('realized_pnl_unavailable_reason（要素）は出庫がある銘柄を除外することとその代償を書いている', () => {
+		const description = descriptionOf(closedPositionShape(), 'realized_pnl_unavailable_reason');
+		expect(description).toContain('DONE の暗号資産出庫が 1 件でもある銘柄は対象から除外する');
+		expect(description).toContain('出庫と販売所処分が同一銘柄に混在するケースは見逃す');
+	});
+
 	it('closed_position_realized_pnl は closed_positions で検算できることを書いている', () => {
 		const description = descriptionOf(AnalyzeMyPortfolioDataSchema.shape, 'closed_position_realized_pnl');
 		expect(description).toContain('closed_positions で検算できる');

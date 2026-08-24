@@ -411,9 +411,16 @@ export function qtyMismatchReasonFor(
  * 確定申告に必要な実現損益がまるごと出力から欠落している可能性を示す。
  * `qtyMismatchReasonFor` 同様、**断定はできない**（同じ状態は他の要因でも起こりうる）。
  *
- * **この検出にも限界がある。** 入庫そのものが無く、取引所約定も無く、販売所のみで
- * 買い→売りを完結させた銘柄は、入出金履歴にも約定履歴にも痕跡が残らないため検出できない
- * （issue #93 のスコープ外。CSV 取り込み等の追加入力が無い限り原理的に検出不能）。
+ * **この検出にも限界がある。**
+ * - 入庫そのものが無く、取引所約定も無く、販売所のみで買い→売りを完結させた銘柄は、
+ *   入出金履歴にも約定履歴にも痕跡が残らないため検出できない（issue #93 のスコープ外。
+ *   CSV 取り込み等の追加入力が無い限り原理的に検出不能）。
+ * - **DONE の暗号資産出庫が 1 件でもある銘柄は、量の多寡に関わらず対象から除外する。**
+ *   出庫（他ウォレットへの移動）だけで残高ゼロが完全に説明できる、販売所と無関係な
+ *   ありふれたケースを「取得漏れの可能性あり」と誤検知しないための保守的な判断。
+ *   代償として、出庫と販売所処分が同一銘柄に混在するケース（例: 一部を外部送付、
+ *   残りを販売所で売却）は見逃す——**取得漏れを見逃す方向にのみ誤る設計**で、実際には
+ *   無い懸念（外部送付しただけの銘柄）を利用者に警告する方向には誤らない。
  *
  * `heldAssets` / `tradedAssets` で除外するのは、その銘柄がすでに他経路（holdings の
  * 数量不変条件 / closed_positions の実額計算）で扱われているため。二重に申告しない。
@@ -424,12 +431,16 @@ export function depositOnlyAssets(
 	tradedAssets: ReadonlySet<string>,
 ): string[] {
 	if (dw == null) return [];
+	const withdrawnAssets = new Set(
+		dw.withdrawals.filter((w) => w.status === 'DONE' && w.asset !== 'jpy').map((w) => w.asset),
+	);
 	const found = new Set<string>();
 	for (const d of dw.deposits) {
 		if (d.status !== 'DONE') continue;
 		if (d.asset === 'jpy') continue;
 		if (heldAssets.has(d.asset)) continue;
 		if (tradedAssets.has(d.asset)) continue;
+		if (withdrawnAssets.has(d.asset)) continue;
 		found.add(d.asset);
 	}
 	return [...found].sort();

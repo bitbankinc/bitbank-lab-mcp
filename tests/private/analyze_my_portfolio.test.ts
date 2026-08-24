@@ -6906,5 +6906,80 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 			expect(toolDef.description).toContain('販売所');
 			expect(toolDef.description).toContain('bitbank API に含まれない');
 		});
+
+		/**
+		 * CodeRabbit review（PR #95）で指摘: 約定履歴が打ち切られていると tradedAssets が
+		 * 実際の取引所約定の部分集合でしかなく、取引所で売買しただけの銘柄まで
+		 * 「約定に現れない」と誤検出しうる。qtyMismatchReasonFor が history_truncated を
+		 * untracked 系より優先する非対称と揃え、確度が落ちる場合はそちらに倒す。
+		 */
+		it('約定履歴が打ち切られている実行では history_truncated として検出する（誤って「販売所取引」と断定しない）', async () => {
+			// 同一ページ（1000 件フルページ・同一 executed_at）を返し続けると、2 ページ目で
+			// cursor が進まず paginateTrades が truncated=true で終了する（eth の取引のみで構成）。
+			const fullPage = {
+				trades: Array.from({ length: 1000 }, (_, i) => ({
+					...ethBuy2,
+					trade_id: 20000 + i,
+					order_id: 20000 + i,
+				})),
+			};
+			setupFetchMock({
+				assets: { assets: [assetFixture('jpy')] },
+				trades: fullPage,
+				...depositsOf({ uuid: 'dep-flr', asset: 'flr', amount: '100', at: PRICED_DEPOSIT_AT }),
+			});
+
+			const result = await analyze();
+			assertOk(result);
+
+			expect(result.meta.tradesTruncated).toBe(true);
+			const flr = result.data.closed_positions?.find((p) => p.asset === 'flr');
+			if (flr == null) throw new Error('flr の検出エントリが無い');
+			expect(flr.realized_pnl_unavailable_reason).toBe('history_truncated');
+			expect(result.meta.warnings?.some((w) => w.includes('FLR') && w.includes('打ち切られている'))).toBe(true);
+			expect(result.meta.warnings?.some((w) => w.includes('FLR') && w.includes('販売所'))).toBe(false);
+		});
+
+		/**
+		 * このガードが無いと、外部ウォレットへ送付しただけの銘柄まで「販売所取引の可能性」と
+		 * 誤って警告してしまう（CodeRabbit review 対応時に発見、issue #93 の当初スコープには
+		 * 無かった追加の誤検知パス）。
+		 */
+		it('入庫と出庫がある銘柄は誤検知しない——出庫（他ウォレットへの送付）だけで残高ゼロが説明できる', async () => {
+			setupFetchMock({
+				assets: ethOnlyAssets,
+				trades: { trades: [ethBuy2] },
+				deposits: {
+					deposits: [
+						{
+							uuid: 'dep-flr',
+							asset: 'flr',
+							amount: '100',
+							status: 'DONE',
+							found_at: PRICED_DEPOSIT_AT,
+							confirmed_at: PRICED_DEPOSIT_AT,
+						},
+					],
+				},
+				withdrawals: {
+					withdrawals: [
+						{
+							uuid: 'wd-flr',
+							asset: 'flr',
+							amount: '100',
+							fee: '0',
+							status: 'DONE',
+							requested_at: PRICED_DEPOSIT_AT + 1000,
+						},
+					],
+				},
+			});
+
+			const result = await analyze();
+			assertOk(result);
+
+			expect(result.data.closed_positions?.some((p) => p.asset === 'flr')).toBe(false);
+			expect(result.meta.warnings?.some((w) => w.includes('FLR')) ?? false).toBe(false);
+		});
 	});
 });

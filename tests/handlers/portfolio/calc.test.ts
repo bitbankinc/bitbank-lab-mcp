@@ -822,6 +822,36 @@ describe('depositOnlyAssets', () => {
 		});
 		expect(depositOnlyAssets(dw, new Set(), new Set())).toEqual(['arb', 'atom', 'oas']);
 	});
+
+	/**
+	 * 出庫だけで残高ゼロが説明できる、販売所と無関係なありふれたケース（他ウォレットへの
+	 * 送付など）を誤検知しないための除外（CodeRabbit review, PR #95）。量の多寡は見ない——
+	 * 出庫と販売所処分が同一銘柄に混在するケースは見逃す設計（取得漏れを見逃す方向にのみ
+	 * 誤り、無い懸念を警告する方向には誤らない）。
+	 */
+	it('DONE の出庫が 1 件でもある銘柄は除外する（出庫だけで残高ゼロが説明できるため）', () => {
+		const dw = makeDw({
+			deposits: [makeDeposit({ uuid: 'd1', asset: 'flr' })],
+			withdrawals: [makeWithdrawal({ uuid: 'w1', asset: 'flr' })],
+		});
+		expect(depositOnlyAssets(dw, new Set(), new Set())).toEqual([]);
+	});
+
+	it('DONE 以外の出庫は除外条件に数えない', () => {
+		const dw = makeDw({
+			deposits: [makeDeposit({ uuid: 'd1', asset: 'flr' })],
+			withdrawals: [makeWithdrawal({ uuid: 'w1', asset: 'flr', status: 'REQUESTED' })],
+		});
+		expect(depositOnlyAssets(dw, new Set(), new Set())).toEqual(['flr']);
+	});
+
+	it('別銘柄の出庫は対象銘柄を除外しない', () => {
+		const dw = makeDw({
+			deposits: [makeDeposit({ uuid: 'd1', asset: 'flr' })],
+			withdrawals: [makeWithdrawal({ uuid: 'w1', asset: 'oas' })],
+		});
+		expect(depositOnlyAssets(dw, new Set(), new Set())).toEqual(['flr']);
+	});
 });
 
 describe('calcPeriodRealizedPnl — 期間内に売却した銘柄（#80）', () => {

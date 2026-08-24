@@ -883,12 +883,19 @@ export default async function analyzeMyPortfolioHandler(args: {
 		if (include_pnl) {
 			depositOnlyDetected = depositOnlyAssets(dwData, heldAssets, tradedAssets);
 			if (depositOnlyDetected.length > 0) {
+				// 約定履歴が打ち切られていると tradedAssets は部分集合になり、取引所で売買した
+				// 銘柄まで「約定に現れない」と誤検出しうる。qtyMismatchReasonFor が
+				// has_crypto_deposits / history_truncated を untracked 系より優先する非対称と
+				// 揃え、確度が落ちる場合は history_truncated（本当に取得漏れかは断定しない）に倒す。
+				const detectionReason: PortfolioCostBasisUnavailableReason = tradesTruncated
+					? 'history_truncated'
+					: 'untracked_trade_suspected';
 				const detectedEntries: NonNullable<typeof closedPositions> = depositOnlyDetected.map((asset) => ({
 					asset,
 					realized_pnl: undefined,
 					priced_deposit_count: undefined,
 					unpriced_deposit_count: undefined,
-					realized_pnl_unavailable_reason: 'untracked_trade_suspected',
+					realized_pnl_unavailable_reason: detectionReason,
 				}));
 				// realized_pnl_unavailable_reason 付き（realized_pnl 無し）の要素は順位付けできないため
 				// 常に末尾に asset 昇順でまとめる。`?? 0` で欠損値扱いすると負の realized_pnl を持つ
@@ -1671,10 +1678,14 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// 入庫はあるが約定履歴にも現在残高にも現れない銘柄（#93）。ゼロ残高なので qtyMismatchAssets
 		// とは別経路の検出——入出金履歴（DONE の暗号資産入庫）を起点に、そこから約定・残高の
 		// どちらにも辿れない銘柄を拾う。realized_pnl は算出しておらず closed_positions（要素の
-		// realized_pnl_unavailable_reason=untracked_trade_suspected）に検出結果だけを申告する。
+		// realized_pnl_unavailable_reason）に検出結果だけを申告する。文言は tradesTruncated で
+		// 分岐する——約定履歴が打ち切られている実行では「販売所取引の可能性」と断定的に言うと、
+		// 単に取得できなかっただけの取引所約定を誤って販売所のせいと言い切ることになる。
 		if (depositOnlyDetected.length > 0) {
 			calcWarnings.push(
-				`${depositOnlyDetected.map((a) => a.toUpperCase()).join(', ')} は入出金履歴に暗号資産の入庫記録があるものの、約定履歴にも現在残高にも現れません。販売所取引など bitbank API に現れない取引で全量を処分した可能性があり（断定はできません）、該当銘柄の実現損益はこの結果に含まれていません（closed_positions に realized_pnl_unavailable_reason 付きで申告しています）`,
+				tradesTruncated
+					? `${depositOnlyDetected.map((a) => a.toUpperCase()).join(', ')} は入出金履歴に暗号資産の入庫記録があるものの、約定履歴にも現在残高にも現れません。約定履歴の取得が件数上限で打ち切られているため取引所約定を見落としている可能性があり、該当銘柄の実現損益はこの結果に含まれていません（closed_positions に realized_pnl_unavailable_reason=history_truncated 付きで申告しています）`
+					: `${depositOnlyDetected.map((a) => a.toUpperCase()).join(', ')} は入出金履歴に暗号資産の入庫記録があるものの、約定履歴にも現在残高にも現れません。販売所取引など bitbank API に現れない取引で全量を処分した可能性があり（断定はできません）、該当銘柄の実現損益はこの結果に含まれていません（closed_positions に realized_pnl_unavailable_reason=untracked_trade_suspected 付きで申告しています）`,
 			);
 		}
 		// 原価は出したが不完全な銘柄（#77）。上の数量乖離とは別軸で、こちらは**確定値が出ている**。
