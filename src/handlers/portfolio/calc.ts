@@ -71,6 +71,58 @@ interface DepositCostEvents {
 	unpricedCounts: Map<string, number>;
 }
 
+// ── 数量追跡の共通部品（#89） ──
+
+/**
+ * 数量のダスト閾値。移動平均リプレイで生じる二進小数の残差をゼロに畳む。
+ *
+ * **判定は必ず絶対値で行う。** 旧実装の `qty < 1e-12` は数量がゼロ床でクランプされている
+ * 前提の書き方で、数量を代数和に変えた今そのまま使うと**本物の負値**（＝ API に現れない
+ * 取得の証拠）まで 0 に握り潰す（#89 仕様 4）。原価のリセット条件（`costQty < 1e-12`）とは
+ * 意味が違うので、両者を同じ式で書かないこと。
+ */
+const QTY_DUST_EPSILON = 1e-12;
+
+/** 代数和のダスト（絶対値が `QTY_DUST_EPSILON` 未満）を 0 に畳む。符号は保つ。 */
+function normalizeQtyDust(qty: number): number {
+	return Math.abs(qty) < QTY_DUST_EPSILON ? 0 : qty;
+}
+
+/**
+ * 売りにおける原価側クランプの発火記録（#89 仕様 3）。
+ *
+ * 「リプレイ上の保有を超える売りがあった」という事実そのもの。原価は保有分しか
+ * 按分できない（超過分は原価ゼロ扱い）ため、発火した分だけ実現損益は過大側に寄り、
+ * 取得原価は不完全になる。**黙って捨てず件数と吸収量で申告する**
+ * （#77 / #87 と同じ「算出条件を出力から読めるようにする」方針）。
+ *
+ * **出庫（withdrawal）の `Math.min(wdQty, costQty)` は本 issue の対象外。** #89 は売りの
+ * クランプ（`coveredQty`）だけを扱う。出庫側にも同型の吸収は残っているが、既存の
+ * 数量・原価の挙動を動かさないためここでは触れない。
+ */
+export interface QtyClampTally {
+	/** クランプが発火した売りの件数 */
+	count: number;
+	/** 原価側で吸収された数量の合計（base 建て、正値） */
+	absorbed: number;
+}
+
+/**
+ * 売り 1 件ぶんのクランプ発火を記録する。
+ *
+ * `requestedQty` は口座から減るはずだった数量、`coveredQty` は原価を按分できた数量。
+ * 保有ゼロ状態での売り（`coveredQty = 0`）も発火として数える——クランプ分岐と
+ * else 分岐は「リプレイの保有で賄えなかった」という同じ事象の別表現なので、
+ * 片方だけ申告すると発火回数が過小になる。
+ */
+function tallyQtyClamp(tally: QtyClampTally, requestedQty: number, coveredQty: number): void {
+	const uncovered = requestedQty - coveredQty;
+	if (uncovered > QTY_DUST_EPSILON) {
+		tally.count++;
+		tally.absorbed += uncovered;
+	}
+}
+
 /**
  * 入庫を「入庫日の始値 × 数量」の取得原価として算入できる形に整える。
  *
@@ -118,10 +170,24 @@ function collectDepositCostEvents(input: DepositCostBasisInput | undefined, asse
  * 全入庫が未算入になり、従来どおり「入庫は原価計算に入らない」挙動になる。
  *
  * 暗号資産出庫（crypto withdrawal）は「売却」ではなく原価の按分減少として扱う:
- *   - holdingQty と holdingCost を平均単価ベースで減らす
+ *   - costQty と holdingCost を平均単価ベースで減らす
  *   - realized_pnl には計上しない
  * これにより、出庫後に残った少量保有の cost_basis が適正化され、
  * 評価損益が過大マイナスになる問題を防ぐ。
+ *
+ * **数量は 2 本立てで追跡する（#89）。**
+ *   - `costQty`: `holdingCost` を背負う数量。**従来どおりゼロ床でクランプする**——
+ *     保有を超える売りの原価をゼロ扱いにするのは実現損益として妥当だし、代数和に
+ *     すると次の買いで平均単価の分母が縮んで `realized_pnl` / `cost_basis` が動く。
+ *     `avg_buy_price` / `cost_basis` はこちらで決まる（＝ 旧実装と 1 円も変わらない）。
+ *   - `netQty`: 口座残高の代数和。**クランプしない（負を許容）**。`reconstructed_qty` として
+ *     返し、実残高との突き合わせ（`qtyInvariantHolds`）に使う。
+ *
+ * 分離の理由（#89）: 旧実装は 1 本の `holdingQty` に両方の役割を負わせており、
+ * 原価側のクランプが**取得漏れ（API に現れない買い）をそのまま吸収して**復元数量を
+ * 実残高側へ押し戻していた。乖離から取得漏れを検出するのが数量不変条件（#56）の
+ * 目的なのに、取得漏れが大きいほどクランプの発火機会が増えて検出能力が落ちる、という
+ * 逆転が起きる。実口座では欠落 0.00041693 BTC のうち 96% がこれで消えていた。
  */
 export function calcPnl(
 	trades: RawTrade[],
@@ -149,6 +215,8 @@ export function calcPnl(
 			reconstructed_qty: 0,
 			priced_deposit_count: 0,
 			unpriced_deposit_count: unpricedDepositCount,
+			qty_clamp_count: 0,
+			qty_clamp_absorbed_qty: 0,
 		};
 	}
 
@@ -170,15 +238,20 @@ export function calcPnl(
 		),
 	].sort((a, b) => a.ts - b.ts);
 
-	let holdingQty = 0;
+	// 原価を背負う数量（ゼロ床クランプあり）と、口座残高の代数和（クランプなし）を分けて追う。
+	// 詳細は本関数の doc（#89）。旧実装の `holdingQty` は前者と完全に同じ挙動をする。
+	let costQty = 0;
+	let netQty = 0;
 	let holdingCost = 0; // 保有分の取得原価合計（手数料込み）
 	let realizedPnl = 0;
+	const clamp: QtyClampTally = { count: 0, absorbed: 0 };
 
 	for (const event of events) {
 		if (event.type === 'deposit') {
 			// Crypto deposit: 入庫日の始値で取得したとみなして原価に算入。realized_pnl には計上しない
 			holdingCost += event.cost;
-			holdingQty += event.qty;
+			costQty += event.qty;
+			netQty += event.qty;
 		} else if (event.type === 'trade') {
 			const t = event.trade;
 			const qty = Number(t.amount);
@@ -192,58 +265,73 @@ export function calcPnl(
 			if (t.side === 'buy') {
 				// 買い: JPY 出 = qty * price + feeQuote、base 入 = qty - feeBase
 				holdingCost += qty * price + feeQuote;
-				holdingQty += qty - feeBase;
+				costQty += qty - feeBase;
+				netQty += qty - feeBase;
 			} else {
+				// 売りで口座から減る base 量は qty + feeBase（reconstructHoldingsAtDate の巻き戻しと対称形。
+				// 冒頭の方針コメントのとおり売りの feeBase は API 仕様上ゼロだが、非ゼロでも
+				// 数量・原価が正しくなるよう base 建て手数料も平均原価で按分し実現損益に費用計上する）。
+				const soldQty = qty + feeBase;
 				// sell: 移動平均法で原価を按分
-				if (holdingQty > 0) {
-					const avgCost = holdingCost / holdingQty;
-					// 売りで口座から減る base 量は qty + feeBase（reconstructHoldingsAtDate の巻き戻しと対称形。
-					// 冒頭の方針コメントのとおり売りの feeBase は API 仕様上ゼロだが、非ゼロでも
-					// 数量・原価が正しくなるよう base 建て手数料も平均原価で按分し実現損益に費用計上する）。
+				if (costQty > 0) {
+					const avgCost = holdingCost / costQty;
 					// 保有量を超える売りの場合、原価は保有分のみ按分（超過分は原価ゼロ扱い）
-					const coveredQty = Math.min(qty + feeBase, holdingQty);
+					const coveredQty = Math.min(soldQty, costQty);
 					const sellCost = coveredQty * avgCost;
 					const sellRevenue = qty * price - feeQuote; // 売却収入から手数料を差し引く
 					realizedPnl += sellRevenue - sellCost;
 					holdingCost -= sellCost;
-					holdingQty -= coveredQty;
-					// 誤差修正: 数量がゼロ近くなったらコストもリセット
-					if (holdingQty < 1e-12) {
-						holdingQty = 0;
+					costQty -= coveredQty;
+					tallyQtyClamp(clamp, soldQty, coveredQty);
+					// 誤差修正: 原価側の数量がゼロ近くなったらコストもリセット。
+					// **代数和（netQty）には適用しない**——負値は取得漏れの証拠なので握り潰さない（#89 仕様 4）
+					if (costQty < QTY_DUST_EPSILON) {
+						costQty = 0;
 						holdingCost = 0;
 					}
 				} else {
-					// 保有ゼロ状態での売り（空売り等）: 実現損益のみ計上
+					// 保有ゼロ状態での売り（空売り等）: 実現損益のみ計上。
+					// 原価を 1 円も按分できていないので、クランプ分岐と同じく発火として数える
 					realizedPnl += qty * price - feeQuote;
+					tallyQtyClamp(clamp, soldQty, 0);
 				}
+				// 数量は原価と切り離して常に代数和で引く（クランプしない）
+				netQty = normalizeQtyDust(netQty - soldQty);
 			}
 		} else {
-			// Crypto withdrawal: 原価を按分減少。realized_pnl には計上しない
+			// Crypto withdrawal: 原価を按分減少。realized_pnl には計上しない。
+			// **#89 のスコープ外**なので数量・原価とも従来どおり（`Math.min` のゼロ床クランプを残す）。
+			// 出庫にも同型の吸収は残っているが、本 issue が扱うのは売りの `coveredQty` だけ。
 			const wdQty = event.amount;
-			if (holdingQty > 0 && wdQty > 0) {
-				const avgCost = holdingCost / holdingQty;
-				const removedQty = Math.min(wdQty, holdingQty);
+			if (costQty > 0 && wdQty > 0) {
+				const avgCost = holdingCost / costQty;
+				const removedQty = Math.min(wdQty, costQty);
 				holdingCost -= removedQty * avgCost;
-				holdingQty -= removedQty;
-				if (holdingQty < 1e-12) {
-					holdingQty = 0;
+				costQty -= removedQty;
+				netQty = normalizeQtyDust(netQty - removedQty);
+				if (costQty < QTY_DUST_EPSILON) {
+					costQty = 0;
 					holdingCost = 0;
 				}
 			}
 		}
 	}
 
-	const avgBuyPrice = holdingQty > 0 ? holdingCost / holdingQty : undefined;
-	const costBasis = holdingQty > 0 ? holdingCost : undefined;
+	// 原価由来の 2 値は costQty で決まる（旧実装と同値）。netQty で判定すると、クランプ発火後の
+	// 負の繰り越しを抱えた銘柄で cost_basis が黙って消える
+	const avgBuyPrice = costQty > 0 ? holdingCost / costQty : undefined;
+	const costBasis = costQty > 0 ? holdingCost : undefined;
 
 	return {
 		avg_buy_price: avgBuyPrice,
 		cost_basis: costBasis,
 		realized_pnl: Math.round(realizedPnl),
 		trade_count: relevantTrades.length,
-		reconstructed_qty: holdingQty,
+		reconstructed_qty: normalizeQtyDust(netQty),
 		priced_deposit_count: deposits.priced.length,
 		unpriced_deposit_count: unpricedDepositCount,
+		qty_clamp_count: clamp.count,
+		qty_clamp_absorbed_qty: clamp.absorbed,
 	};
 }
 
@@ -284,15 +372,23 @@ export function qtyInvariantHolds(onhandAmount: number, reconstructedQty: number
  *   算入済みの入庫は数量に効いており、もはや乖離の説明にならないので、
  *   `dw.deposits` を再走査して「入庫があるか」で判定してはいけない
  * - 約定履歴が打ち切られている / 入出金履歴が不完全 → `history_truncated`
- * - どちらでもない → `unknown`（例: 履歴に現れない出庫）
+ * - 復元数量が**負**（`reconstructed_qty < 0`）→ `reconstructed_qty_negative`（#89）。
+ *   代数和が負になることは「API 可視分だけでは説明できない取得があった」ことの直接証拠
+ *   （売った量が、履歴から積み上げられる量を上回っている）。上の 2 値より後ろに置くのは、
+ *   あちらが**乖離を生んだ具体的な取得経路**を名指ししているのに対し、こちらは
+ *   「経路は特定できないが、取得漏れがあること自体は確定」という強さだから。
+ *   結果として本値は従来 `unknown` に落ちていたケースの一部を置き換える
+ * - どれでもない → `unknown`（例: 履歴に現れない出庫）
  */
 export function qtyMismatchReasonFor(
 	dw: DepositWithdrawalData | null,
 	tradesTruncated: boolean,
 	unpricedDepositCount: number,
+	reconstructedQty: number,
 ): PortfolioQtyMismatchReason {
 	if (unpricedDepositCount > 0) return 'has_crypto_deposits';
 	if (tradesTruncated || (dw != null && !dw.isComplete)) return 'history_truncated';
+	if (reconstructedQty < 0) return 'reconstructed_qty_negative';
 	return 'unknown';
 }
 
@@ -397,10 +493,18 @@ export function calcPeriodRealizedPnl(
 	}
 	events.sort((a, b) => a.ts - b.ts);
 
-	// 通貨ごとに移動平均法で avg_cost を追跡し、期間内の sell のみ realized に計上
-	const holdings = new Map<string, { qty: number; cost: number }>();
+	// 通貨ごとに移動平均法で avg_cost を追跡し、期間内の sell のみ realized に計上。
+	// `costQty` は**原価を背負う数量**で、`calcPnl` の同名変数と同じくゼロ床でクランプする
+	// （代数和にすると次の買いで平均単価の分母が縮み `realized_pnl` が動く）。
+	// **本関数は復元数量を返さない**——期間実現損益は全銘柄を単一タイムラインで処理する集計値で、
+	// 銘柄別の残数量を出す先が無いため。`calcPnl` の `netQty` に相当するものをここで持たせても
+	// 誰も読まないので置いていない。代わりにクランプの発火だけは `calcPnl` と同じ形で申告する
+	// （#89 仕様 3）——発火した分だけ `realized_pnl` は原価ゼロの売却を含み過大側に寄るので、
+	// 算出条件として読めないと困る。
+	const holdings = new Map<string, { costQty: number; cost: number }>();
 	let periodRealized = 0;
 	let periodSellCount = 0;
+	const clamp: QtyClampTally = { count: 0, absorbed: 0 };
 	// 期間内に売却があった銘柄。realized_pnl は全銘柄の合算なので、どの銘柄の原価が
 	// 欠けると本値が壊れるかはここでしか判定できない（#80 の抑止範囲の絞り込みに使う）。
 	const soldAssets = new Set<string>();
@@ -408,9 +512,9 @@ export function calcPeriodRealizedPnl(
 	for (const event of events) {
 		if (event.type === 'deposit') {
 			// Crypto deposit: 入庫日の始値で原価に算入。realized_pnl には計上しない
-			const h = holdings.get(event.asset) ?? { qty: 0, cost: 0 };
+			const h = holdings.get(event.asset) ?? { costQty: 0, cost: 0 };
 			h.cost += event.cost;
-			h.qty += event.qty;
+			h.costQty += event.qty;
 			holdings.set(event.asset, h);
 		} else if (event.type === 'trade') {
 			const t = event.trade;
@@ -421,31 +525,34 @@ export function calcPeriodRealizedPnl(
 
 			const feeQuote = Number(t.fee_amount_quote) || 0;
 			const feeBase = Number(t.fee_amount_base) || 0;
-			const h = holdings.get(asset) ?? { qty: 0, cost: 0 };
+			const h = holdings.get(asset) ?? { costQty: 0, cost: 0 };
 
 			if (t.side === 'buy') {
 				// 買い: JPY 出 = qty * price + feeQuote、base 入 = qty - feeBase
 				h.cost += qty * price + feeQuote;
-				h.qty += qty - feeBase;
+				h.costQty += qty - feeBase;
 			} else {
+				// 売りで減る base 量は qty + feeBase（calcPnl と同じ対称形。残数量・平均原価を一致させる）
+				const soldQty = qty + feeBase;
 				// sell
 				let sellRealized = 0;
-				if (h.qty > 0) {
-					const avgCost = h.cost / h.qty;
-					// 売りで減る base 量は qty + feeBase（calcPnl と同じ対称形。残数量・平均原価を一致させる）
+				if (h.costQty > 0) {
+					const avgCost = h.cost / h.costQty;
 					// 保有量を超える売りの場合、原価は保有分のみ按分
-					const coveredQty = Math.min(qty + feeBase, h.qty);
+					const coveredQty = Math.min(soldQty, h.costQty);
 					const sellCost = coveredQty * avgCost;
 					const sellRevenue = qty * price - feeQuote;
 					sellRealized = sellRevenue - sellCost;
 					h.cost -= sellCost;
-					h.qty -= coveredQty;
-					if (h.qty < 1e-12) {
-						h.qty = 0;
+					h.costQty -= coveredQty;
+					tallyQtyClamp(clamp, soldQty, coveredQty);
+					if (h.costQty < QTY_DUST_EPSILON) {
+						h.costQty = 0;
 						h.cost = 0;
 					}
 				} else {
 					sellRealized = qty * price - feeQuote;
+					tallyQtyClamp(clamp, soldQty, 0);
 				}
 
 				// 期間内の売りのみ集計
@@ -459,14 +566,15 @@ export function calcPeriodRealizedPnl(
 			holdings.set(asset, h);
 		} else {
 			// Crypto withdrawal: 原価を按分減少。realized_pnl には計上しない
-			const h = holdings.get(event.asset) ?? { qty: 0, cost: 0 };
-			if (h.qty > 0 && event.amount > 0) {
-				const avgCost = h.cost / h.qty;
-				const removedQty = Math.min(event.amount, h.qty);
+			// 出庫は #89 のスコープ外（calcPnl と同じく従来どおりクランプする）
+			const h = holdings.get(event.asset) ?? { costQty: 0, cost: 0 };
+			if (h.costQty > 0 && event.amount > 0) {
+				const avgCost = h.cost / h.costQty;
+				const removedQty = Math.min(event.amount, h.costQty);
 				h.cost -= removedQty * avgCost;
-				h.qty -= removedQty;
-				if (h.qty < 1e-12) {
-					h.qty = 0;
+				h.costQty -= removedQty;
+				if (h.costQty < QTY_DUST_EPSILON) {
+					h.costQty = 0;
 					h.cost = 0;
 				}
 				holdings.set(event.asset, h);
@@ -485,6 +593,8 @@ export function calcPeriodRealizedPnl(
 		period_end: periodEnd,
 		priced_deposit_count: depositEvents.priced.length,
 		unpriced_deposit_count: unpricedDepositCount,
+		qty_clamp_count: clamp.count,
+		qty_clamp_absorbed_qty: clamp.absorbed,
 	};
 }
 

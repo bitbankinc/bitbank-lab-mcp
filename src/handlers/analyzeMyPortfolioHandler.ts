@@ -210,6 +210,7 @@ const QTY_MISMATCH_CAUSE: Record<PortfolioQtyMismatchReason, string> = {
 	has_crypto_deposits: '入庫日の価格を解決できない暗号資産の入庫あり',
 	history_truncated: '約定履歴の打ち切り',
 	unknown: '原因不明',
+	reconstructed_qty_negative: '復元数量が負（API に現れない取得あり）',
 };
 
 /**
@@ -254,14 +255,32 @@ function qtyInvariantInputsOf(
 	pnl: PnlResult | undefined,
 	onhandAmount: string,
 	amountPrecision: number,
-): { reconstructed_qty: number | undefined; qty_invariant_tolerance: number | undefined } {
-	if (pnl == null) return { reconstructed_qty: undefined, qty_invariant_tolerance: undefined };
+): {
+	reconstructed_qty: number | undefined;
+	qty_invariant_tolerance: number | undefined;
+	qty_clamp_count: number | undefined;
+	qty_clamp_absorbed_qty: number | undefined;
+} {
+	if (pnl == null) {
+		return {
+			reconstructed_qty: undefined,
+			qty_invariant_tolerance: undefined,
+			qty_clamp_count: undefined,
+			qty_clamp_absorbed_qty: undefined,
+		};
+	}
 	const onhand = Number(onhandAmount);
+	const clamped = pnl.qty_clamp_count > 0;
 	return {
 		reconstructed_qty: Number.isFinite(pnl.reconstructed_qty) ? pnl.reconstructed_qty : undefined,
 		// 実残高が数値にならない構成では許容誤差も NaN になる。出力スキーマ（z.number()）は
 		// NaN を通さずレスポンス全体が parse error で落ちるため、値にならないものは出さない。
 		qty_invariant_tolerance: Number.isFinite(onhand) ? qtyInvariantTolerance(onhand, amountPrecision) : undefined,
+		// クランプ発火の申告（#89）。0 件は件数フィールドの慣例どおりキーごと落とす
+		// （発火していない銘柄の出力を従来と JSON 一致させる）。吸収量は件数と対で意味を持つので
+		// 同じ条件で出し入れする——件数 0 で吸収量 0 だけ出しても読み手には何の情報も無い。
+		qty_clamp_count: clamped ? pnl.qty_clamp_count : undefined,
+		qty_clamp_absorbed_qty: clamped ? pnl.qty_clamp_absorbed_qty : undefined,
 	};
 }
 
@@ -532,6 +551,12 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// （holdings に載らないが realized_pnl は total に入るため、算出条件の申告が要る）。
 		const unpricedDepositAssets: Array<{ asset: string; count: number }> = [];
 
+		// 売りの原価按分がゼロ床でクランプされた銘柄（#89）。リプレイ上の保有を超える売りが
+		// あったということで、その銘柄の realized_pnl は原価ゼロで按分した売却を含む。
+		// 保有銘柄は holdings[].qty_clamp_count にも出るが、**売り切り銘柄は holdings に載らない**ので
+		// 警告行が唯一の申告経路になる（#77 の unpricedDepositAssets と同じ事情）。
+		const qtyClampAssets: Array<{ asset: string; count: number }> = [];
+
 		// 入庫日価格を「取りに行けば解決できたはず」なのに解決できなかった銘柄（#80）。
 		// pnlUsesFlow が false の構成では入庫を原価に算入しておらず（depositCost を渡さない）、
 		// 原価由来フィールドは flowUnavailableReason で既に抑止されているので判定しない。
@@ -583,9 +608,11 @@ export default async function analyzeMyPortfolioHandler(args: {
 					cost_basis_reliable: undefined,
 					priced_deposit_count: undefined,
 					unpriced_deposit_count: undefined,
-					// JPY は calcPnl を呼んでいない（復元数量という概念が無い）ので両方省く。
+					// JPY は calcPnl を呼んでいない（復元数量という概念が無い）のでまとめて省く。
 					reconstructed_qty: undefined,
 					qty_invariant_tolerance: undefined,
+					qty_clamp_count: undefined,
+					qty_clamp_absorbed_qty: undefined,
 				};
 			}
 
@@ -606,6 +633,14 @@ export default async function analyzeMyPortfolioHandler(args: {
 			const unresolvedDepositReason = unresolvedDepositReasons.get(a.asset);
 			if (pnl && unresolvedDepositReason == null) {
 				totalRealizedPnl += pnl.realized_pnl;
+			}
+			// クランプ発火の申告（#89）。**`unresolvedDepositReason` が付く銘柄では集めない**——
+			// その経路は realized_pnl 自体を undefined で返す（下の分岐）ので、「realized_pnl が
+			// 過大側にずれている」という警告文が、出してもいない値を指すことになり誤導する。
+			// 銘柄別の件数は他の 3 経路すべてで `qtyInvariantInputsOf` が載せるが、警告行にも
+			// 出さないとテキストしか読まない LLM が realized_pnl の過大寄りに気づけない。
+			if (pnl != null && unresolvedDepositReason == null && pnl.qty_clamp_count > 0) {
+				qtyClampAssets.push({ asset: a.asset, count: pnl.qty_clamp_count });
 			}
 
 			// 入出金履歴が無いときの取得原価は過大な値になる。avg_buy_price 単体は出庫に対して
@@ -676,7 +711,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 			// 数量不変条件: 復元数量が実残高と許容誤差を超えて乖離していたら、原価から派生する
 			// 4 フィールドは確定値を出さず（上と同じ null 化経路）、理由コードだけ返す。
 			if (pnl != null && !qtyInvariantHolds(Number(amount), pnl.reconstructed_qty, a.amount_precision)) {
-				const reason = qtyMismatchReasonFor(dwData, tradesTruncated, pnl.unpriced_deposit_count);
+				const reason = qtyMismatchReasonFor(dwData, tradesTruncated, pnl.unpriced_deposit_count, pnl.reconstructed_qty);
 				qtyMismatchAssets.push({ asset: a.asset, reason });
 				return {
 					asset: a.asset,
@@ -778,6 +813,10 @@ export default async function analyzeMyPortfolioHandler(args: {
 					// ケース（本来の原価を引けていれば非ゼロ）まで申告が消えるため。
 					if (pnl.unpriced_deposit_count > 0) {
 						unpricedDepositAssets.push({ asset, count: pnl.unpriced_deposit_count });
+					}
+					// 売り切り銘柄は holdings に載らないので、クランプ発火も警告行でしか申告できない（#89）
+					if (pnl.qty_clamp_count > 0) {
+						qtyClampAssets.push({ asset, count: pnl.qty_clamp_count });
 					}
 					if (pnl.realized_pnl !== 0) {
 						totalRealizedPnl += pnl.realized_pnl;
@@ -1025,6 +1064,14 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// （`.claude/rules/sensitive-data.md` の HIGH 分類）。保有銘柄（評価額降順）と
 		// 売り切り銘柄（Set 由来で順序不定）が混ざるので、銘柄名でソートして出力を決定的にする。
 		const unpricedDepositLabel = [...unpricedDepositAssets]
+			.sort((x, y) => x.asset.localeCompare(y.asset))
+			.map((e) => `${e.asset.toUpperCase()}（${e.count}件）`)
+			.join(', ');
+
+		// 原価側クランプが発火した銘柄の表示ラベル（#89）。銘柄名と件数のみで金額・数量は出さない
+		// （`.claude/rules/sensitive-data.md` の HIGH 分類。吸収量は holdings[].qty_clamp_absorbed_qty で読む）。
+		// 保有銘柄と売り切り銘柄が混ざるので、上の #77 と同じく銘柄名でソートして出力を決定的にする。
+		const qtyClampLabel = [...qtyClampAssets]
 			.sort((x, y) => x.asset.localeCompare(y.asset))
 			.map((e) => `${e.asset.toUpperCase()}（${e.count}件）`)
 			.join(', ');
@@ -1462,6 +1509,11 @@ export default async function analyzeMyPortfolioHandler(args: {
 				`※ ${suppressedRealizedLabel} は入庫日を含む年足を取得できなかった入庫（カッコ内は件数）があるため、取得原価・評価損益・実現損益を出していません（合計評価損益からは除外しています）。合計実現損益・口座全体 PnL も、抑止した銘柄を除いた部分和は出さず算出不能にしています`,
 			);
 		}
+		if (qtyClampLabel !== '') {
+			lines.push(
+				`※ ${qtyClampLabel} は履歴から復元した保有を超える売却（カッコ内は発火件数）があり、超過分を原価ゼロで按分しています。その分だけ実現損益は過大側、取得原価は過小側です`,
+			);
+		}
 		lines.push('');
 
 		// 保有銘柄のパフォーマンス（月次・年次の価格騰落率）
@@ -1539,6 +1591,14 @@ export default async function analyzeMyPortfolioHandler(args: {
 		if (unpricedDepositLabel !== '') {
 			calcWarnings.push(
 				`${unpricedDepositLabel} は入庫日の始値を解決できなかった暗号資産入庫（カッコ内は件数）を取得原価にも復元数量にも算入せずに cost_basis / avg_buy_price / unrealized_pnl / realized_pnl を算出しています。未算入ぶんを売却済みなら原価ゼロで売ったことになり実現損益は過大、保有継続なら取得原価が過小です。数量乖離が許容誤差に収まっているため cost_basis_reliable=true のまま確定値が出ますが、原価は不完全です（件数は holdings[].unpriced_deposit_count。該当銘柄は total_cost_basis / total_unrealized_pnl / total_realized_pnl から除外せず含めています）`,
+			);
+		}
+		// 原価側クランプの発火（#89）。数量乖離の抑止とは別軸で、こちらは**確定値が出ている**
+		// （原価をゼロ扱いにするのは実現損益として妥当なので抑止しない）。申告しないと
+		// 「リプレイの保有で賄えない売りがあった」という realized_pnl の算出条件が出力から復元できない。
+		if (qtyClampLabel !== '') {
+			calcWarnings.push(
+				`${qtyClampLabel} は約定・入出庫から復元した保有を超える売却があり（カッコ内は発火件数）、超過分を原価ゼロで按分して realized_pnl を算出しています（その分だけ過大側、取得原価は過小側）。**これ自体が取得漏れの症状**——API に現れない取得（販売所での買いなど）があると復元保有が不足し、その状態の売却がここに出ます。吸収された数量は holdings[].qty_clamp_absorbed_qty、乖離そのものは reconstructed_qty と amount の差で読むこと（数量側はクランプしていないので、乖離は吸収されずに残ります）`,
 			);
 		}
 		if (netFlowUnpricedAssets.length > 0) {

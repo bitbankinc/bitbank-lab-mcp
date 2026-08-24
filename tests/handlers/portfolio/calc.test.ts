@@ -494,8 +494,96 @@ describe('calcPnl — 入庫の原価算入', () => {
 		const res = calcPnl(trades, 'btc', [], { deposits: [deposit], pricing: datedPricing() });
 		// 売却時点で保有ゼロ → 収入がそのまま実現損益。入庫はその後に原価として積まれる
 		expect(res.realized_pnl).toBe(1_000_000);
-		expect(res.reconstructed_qty).toBeCloseTo(0.5, 12);
+		// #89: 数量は代数和なので売却分を必ず引く（0.5 ではなく 0.4）。旧実装は保有ゼロでの売りを
+		// 数量から引かず 0.5 を返しており、その 0.1 は「API に現れない取得があった」証拠だったのに
+		// 復元数量が実残高側へ押し戻されて乖離が消えていた。原価側は従来どおり（cost_basis は不変）
+		expect(res.reconstructed_qty).toBeCloseTo(0.4, 12);
 		expect(res.cost_basis).toBeCloseTo(4_000_000, 6);
+		expect(res.qty_clamp_count).toBe(1);
+		expect(res.qty_clamp_absorbed_qty).toBeCloseTo(0.1, 12);
+	});
+});
+
+/**
+ * #89 の回帰: 実口座データの完全リプレイで確定した機序を最小フィクスチャで再現する。
+ *
+ * 実データ: 販売所の買い（API に現れない取得）が 0.00041693 BTC 欠けた口座で、
+ * 売り 2 回がそれぞれリプレイ上の保有を超え、クランプが発火（吸収 0.0003 + 0.0001 = 0.0004）。
+ * 旧実装（数量もクランプ）は復元数量を実残高側へ 0.0004 押し戻し、乖離が 0.00041693 →
+ * 0.00001693（許容誤差 0.1% 未満）に圧縮されて cost_basis_reliable=true を素通りしていた。
+ *
+ * 本テストの数量はその実データの構造をそのまま使う（buy 0.0003 → sell 0.0006 → buy 0.0014 →
+ * sell 0.0015 → buy 0.1073、価格は全イベント同一で固定）。手数料は 0 にして数量の挙動だけを見る
+ * （手数料込みの対称性は冒頭の fee_amount_base 系テストで別途固定済み）。
+ */
+describe('calcPnl — 数量の代数和追跡とクランプ申告（#89）', () => {
+	const trades: RawTrade[] = [
+		makeTrade({ trade_id: 1, executed_at: 1, side: 'buy', amount: '0.0003', price: '10000000' }),
+		// 保有 0.0003 を超える売り → クランプ発火（吸収 0.0003）
+		makeTrade({ trade_id: 2, executed_at: 2, side: 'sell', amount: '0.0006', price: '10000000' }),
+		makeTrade({ trade_id: 3, executed_at: 3, side: 'buy', amount: '0.0014', price: '10000000' }),
+		// 保有 0.0014 を超える売り → クランプ発火（吸収 0.0001）
+		makeTrade({ trade_id: 4, executed_at: 4, side: 'sell', amount: '0.0015', price: '10000000' }),
+		makeTrade({ trade_id: 5, executed_at: 5, side: 'buy', amount: '0.1073', price: '10000000' }),
+	];
+
+	it('reconstructed_qty は代数和（0.1069）で、クランプありの旧値 0.1073 より小さい', () => {
+		const res = calcPnl(trades, 'btc');
+		// 0.0003 - 0.0006 + 0.0014 - 0.0015 + 0.1073 = 0.1069
+		expect(res.reconstructed_qty).toBeCloseTo(0.1069, 9);
+	});
+
+	it('クランプは 2 回発火し、吸収量の合計 0.0004 が旧値との差と一致する', () => {
+		const res = calcPnl(trades, 'btc');
+		expect(res.qty_clamp_count).toBe(2);
+		expect(res.qty_clamp_absorbed_qty).toBeCloseTo(0.0004, 9);
+		// 0.1073（クランプありなら得られていたはずの数量）− 0.1069（代数和） = 吸収合計
+		expect(0.1073 - res.reconstructed_qty).toBeCloseTo(res.qty_clamp_absorbed_qty, 9);
+	});
+
+	it('realized_pnl は原価側クランプ（保有分のみ按分）が従来どおり効くので変わらない', () => {
+		// sell1: coveredQty=min(0.0006,0.0003)=0.0003 → sellCost=3,000, sellRevenue=6,000 → +3,000
+		// sell2: coveredQty=min(0.0015,0.0014)=0.0014 → sellCost=14,000, sellRevenue=15,000 → +1,000
+		const res = calcPnl(trades, 'btc');
+		expect(res.realized_pnl).toBe(4_000);
+		// 最後の買いだけが原価に残る（直前の 2 回の売りでそれぞれダストリセットされている）
+		expect(res.cost_basis).toBeCloseTo(1_073_000, 6);
+		expect(res.avg_buy_price).toBeCloseTo(10_000_000, 6);
+	});
+
+	it('通常の売買のみ（保有内に収まる売り）ではクランプは発火しない', () => {
+		const normalTrades: RawTrade[] = [
+			makeTrade({ trade_id: 1, executed_at: 1, side: 'buy', amount: '1', price: '10000000' }),
+			makeTrade({ trade_id: 2, executed_at: 2, side: 'sell', amount: '0.5', price: '11000000' }),
+		];
+		const res = calcPnl(normalTrades, 'btc');
+		expect(res.qty_clamp_count).toBe(0);
+		expect(res.qty_clamp_absorbed_qty).toBe(0);
+		expect(res.reconstructed_qty).toBeCloseTo(0.5, 12);
+	});
+
+	it('保有ゼロ状態での売り（空売り）もクランプ発火として数える', () => {
+		const res = calcPnl([makeTrade({ side: 'sell', amount: '0.001', price: '10000000' })], 'btc');
+		expect(res.qty_clamp_count).toBe(1);
+		expect(res.qty_clamp_absorbed_qty).toBeCloseTo(0.001, 12);
+		expect(res.reconstructed_qty).toBeCloseTo(-0.001, 12);
+	});
+
+	it('ダストリセットは代数和の負値を握り潰さない（原価のリセットと数量のリセットは別条件）', () => {
+		// 買い 0.1 → 売り 0.1 + 0.0000000000005（1e-12 未満の超過）: 原価側はダストで 0 にリセット
+		// されるが、代数和はその超過分ぶん厳密に負へ振れる（絶対値は 1e-12 未満なので
+		// normalizeQtyDust で 0 に畳まれる——これはダストの丸めであって「保有を超えた事実の隠蔽」ではない）
+		const res = calcPnl(
+			[
+				makeTrade({ trade_id: 1, executed_at: 1, side: 'buy', amount: '0.1', price: '10000000' }),
+				makeTrade({ trade_id: 2, executed_at: 2, side: 'sell', amount: '0.1000000000005', price: '10000000' }),
+			],
+			'btc',
+		);
+		expect(res.reconstructed_qty).toBe(0);
+		expect(res.cost_basis).toBeUndefined();
+		// 誤差レベル（1e-12 未満）の超過はクランプ発火として数えない（ダストと区別できないため）
+		expect(res.qty_clamp_count).toBe(0);
 	});
 });
 
@@ -614,11 +702,11 @@ describe('qtyMismatchReasonFor', () => {
 	}
 
 	it('原価に算入できなかった入庫がある → has_crypto_deposits', () => {
-		expect(qtyMismatchReasonFor(makeDw(), false, 1)).toBe('has_crypto_deposits');
+		expect(qtyMismatchReasonFor(makeDw(), false, 1, 0)).toBe('has_crypto_deposits');
 	});
 
 	it('入庫件数が複数でも単一の has_crypto_deposits', () => {
-		expect(qtyMismatchReasonFor(makeDw(), false, 2)).toBe('has_crypto_deposits');
+		expect(qtyMismatchReasonFor(makeDw(), false, 2, 0)).toBe('has_crypto_deposits');
 	});
 
 	/**
@@ -629,26 +717,41 @@ describe('qtyMismatchReasonFor', () => {
 	 */
 	it('入庫があっても全件を原価に算入できていれば has_crypto_deposits にならない', () => {
 		const dw = makeDw({ deposits: [makeDeposit({ uuid: 'd1', asset: 'eth', amount: '1' })] });
-		expect(qtyMismatchReasonFor(dw, false, 0)).toBe('unknown');
-		expect(qtyMismatchReasonFor(dw, true, 0)).toBe('history_truncated');
+		expect(qtyMismatchReasonFor(dw, false, 0, 0)).toBe('unknown');
+		expect(qtyMismatchReasonFor(dw, true, 0, 0)).toBe('history_truncated');
 	});
 
 	it('約定履歴の打ち切り → history_truncated（dw null でも同様）', () => {
-		expect(qtyMismatchReasonFor(makeDw(), true, 0)).toBe('history_truncated');
-		expect(qtyMismatchReasonFor(null, true, 0)).toBe('history_truncated');
+		expect(qtyMismatchReasonFor(makeDw(), true, 0, 0)).toBe('history_truncated');
+		expect(qtyMismatchReasonFor(null, true, 0, 0)).toBe('history_truncated');
 	});
 
 	it('入出金履歴の打ち切り（isComplete=false）→ history_truncated', () => {
-		expect(qtyMismatchReasonFor(makeDw({ isComplete: false }), false, 0)).toBe('history_truncated');
+		expect(qtyMismatchReasonFor(makeDw({ isComplete: false }), false, 0, 0)).toBe('history_truncated');
 	});
 
 	it('未算入の入庫は打ち切りより優先される（銘柄固有の証拠を採る）', () => {
-		expect(qtyMismatchReasonFor(makeDw({ isComplete: false }), true, 1)).toBe('has_crypto_deposits');
+		expect(qtyMismatchReasonFor(makeDw({ isComplete: false }), true, 1, 0)).toBe('has_crypto_deposits');
 	});
 
-	it('手掛かりなし（dw null / 空履歴）→ unknown', () => {
-		expect(qtyMismatchReasonFor(null, false, 0)).toBe('unknown');
-		expect(qtyMismatchReasonFor(makeDw(), false, 0)).toBe('unknown');
+	it('手掛かりなし（dw null / 空履歴、復元数量は非負）→ unknown', () => {
+		expect(qtyMismatchReasonFor(null, false, 0, 0)).toBe('unknown');
+		expect(qtyMismatchReasonFor(makeDw(), false, 0, 0)).toBe('unknown');
+	});
+
+	/**
+	 * #89: 代数和が負になることは、API に現れない取得（販売所での買い等）があったことの
+	 * 直接証拠。他に手掛かりが無ければこれを理由コードにする。
+	 */
+	it('復元数量が負 → reconstructed_qty_negative', () => {
+		expect(qtyMismatchReasonFor(makeDw(), false, 0, -0.0004)).toBe('reconstructed_qty_negative');
+		expect(qtyMismatchReasonFor(null, false, 0, -1e-9)).toBe('reconstructed_qty_negative');
+	});
+
+	it('復元数量が負でも、より具体的な理由（入庫・打ち切り）が優先される', () => {
+		expect(qtyMismatchReasonFor(makeDw(), false, 1, -0.0004)).toBe('has_crypto_deposits');
+		expect(qtyMismatchReasonFor(makeDw(), true, 0, -0.0004)).toBe('history_truncated');
+		expect(qtyMismatchReasonFor(makeDw({ isComplete: false }), false, 0, -0.0004)).toBe('history_truncated');
 	});
 });
 
