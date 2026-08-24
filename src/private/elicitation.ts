@@ -31,9 +31,14 @@
  *   - 「`structuredContent` は LLM 非可視」をホストの仕様保証として扱わない。
  *     SEP-1624 / 各ホスト挙動の詳細は docs/private-api.md「content /
  *     structuredContent / `_meta` の役割と HITL の境界」節を参照。
- *   - SEP-1865 iframe 起源の tools/call をサーバー側で識別できないため、
- *     token を structuredContent に載せる UI 実行経路（旧 trust-host モード）は
- *     採用しない。execute は elicitation / MRTR の accept のみ。
+ *   - token を `structuredContent` に載せる UI 実行経路（旧 trust-host モード）は
+ *     採用しない。`structuredContent` をモデルコンテキストへ入れるホストが実在するため。
+ *   - **MCP Apps ホスト向けの `_meta` 経路（2026-08-13 追加）**: elicitation 非対応かつ
+ *     運用者がオプトインしたホストに限り、token をツール結果 `_meta` にのみ載せて
+ *     iframe へ配送する（`isAppUiExecuteAllowed`）。SEP-1865 は iframe 起源の
+ *     tools/call を識別できないため、**トークン所持そのものが認可の実体**になる。
+ *     これは「ホストが `_meta` をモデルに渡さない」という観測された挙動への依存であり
+ *     仕様上の保証ではないので、既定 off。詳細と計測値は ADR-0007。
  */
 
 import {
@@ -43,12 +48,81 @@ import {
 	type ServerContext,
 } from '@modelcontextprotocol/server';
 import { toStructured } from '../../lib/result.js';
+import { CONFIRMATION_META_KEY, type ConfirmationMetaPayload } from '../mcp-apps-meta.js';
+import { APP_RESOURCE_MIME_TYPE, MCP_APPS_UI_EXTENSION_ID } from '../resources/app-resources.js';
 import type { Result } from '../schema/types.js';
 import type { McpResponse, ToolHandlerExtra } from '../tool-definition.js';
+import { isAppUiExecuteEnabled } from './config.js';
 import { type ConfirmRequestState, consumeNonce, digestArgs, mintConfirmState } from './request-state.js';
 
 /** inputResponses の confirm 応答を引くためのキー */
 const CONFIRM_KEY = 'confirm';
+
+/**
+ * 与えられた client capabilities が MCP Apps UI（SEP-1865）を、
+ * **本サーバーの UI リソースを描画できる形で**宣言しているかを判定する。
+ *
+ * `extensions["io.modelcontextprotocol/ui"]` の存在だけでは不十分で、
+ * `mimeTypes` に `APP_RESOURCE_MIME_TYPE` が含まれることまで要求する:
+ *   - 仕様上 `mimeTypes` は REQUIRED（ext-apps `specification/2026-01-26/apps.mdx`）
+ *   - 本サーバーの確認 UI は `APP_RESOURCE_MIME_TYPE` で配信している。描画できないホストに
+ *     トークンを載せても確認カードが出ないため、意味が無く露出面が増えるだけ
+ *
+ * 欠落・空配列・該当型を含まない場合はすべて false（fail-closed）。
+ */
+function declaresAppUi(caps: unknown): boolean {
+	const ext = (caps as { extensions?: Record<string, unknown> } | undefined)?.extensions;
+	const ui = ext?.[MCP_APPS_UI_EXTENSION_ID];
+	if (!ui || typeof ui !== 'object') return false;
+	const mimeTypes = (ui as { mimeTypes?: unknown }).mimeTypes;
+	if (!Array.isArray(mimeTypes)) return false;
+	return mimeTypes.includes(APP_RESOURCE_MIME_TYPE);
+}
+
+/**
+ * クライアントが MCP Apps UI を扱えるかを判定する（有効化ゲートの 2 段目）。
+ *
+ * **取得元の優先順位は `clientSupportsElicitation` と意図的に異なる。**
+ *   - こちら: per-request envelope があればそれを**権威として採用**し、無い場合のみ
+ *     `initialize` 時の宣言へフォールバックする
+ *   - あちら: 両者の OR
+ *
+ * 理由: `clientSupportsElicitation` は「elicitation を試してよいか」の判定で、
+ * 広めに倒しても SDK が capability 未宣言を検知して送信を塞ぐだけ。対してこちらは
+ * 「bearer token を渡してよいか」の判定なので、宣言が食い違うときは狭い側に倒す。
+ * 2026-07-28 系はリクエストごとの capability 提示が前提であり、envelope が
+ * 「UI 非対応」と言っているのに initialize 時の宣言を根拠に載せるのは、より新しい
+ * 宣言を無視することになる。
+ */
+export function clientSupportsAppUi(extra: ToolHandlerExtra | undefined): boolean {
+	const envelope = (extra as { mcpReq?: { envelope?: { clientCapabilities?: unknown } } } | undefined)?.mcpReq
+		?.envelope;
+	// envelope に clientCapabilities が載っている場合はそれだけを見る（initialize へ落ちない）。
+	if (envelope && 'clientCapabilities' in envelope && envelope.clientCapabilities != null) {
+		return declaresAppUi(envelope.clientCapabilities);
+	}
+	const server = (extra as { server?: { getClientCapabilities?: () => unknown } } | undefined)?.server;
+	const initCaps = typeof server?.getClientCapabilities === 'function' ? server.getClientCapabilities() : undefined;
+	return declaresAppUi(initCaps);
+}
+
+/**
+ * MCP Apps ホスト向けの `_meta` 経由 execute 経路が、この呼び出しで有効かを返す。
+ *
+ * 有効化ゲート 2 段の AND:
+ *   1. 運用者の明示的オプトイン（`BITBANK_MCP_APPS_EXECUTE=1`。既定 off）
+ *   2. クライアントが MCP Apps UI を MIME 型込みで宣言していること
+ *
+ * preview 側のトークン配送と execute ハンドラの解錠で**同じ述語**を使う。片方だけ緩いと
+ * 「載せないのに実行できる」「載せたのに実行できない」がすぐ生まれるため、1 箇所に集約する。
+ *
+ * なお「elicitation 対応ホストにはトークンを載せない」という優先順位の不変条件は、
+ * 本述語ではなく `withElicitedConfirmation` の**構造**で担保する（`_meta` を付けるのは
+ * elicitation 非対応と判定した後の fallback 経路だけ）。詳細は ADR-0007。
+ */
+export function isAppUiExecuteAllowed(extra: ToolHandlerExtra | undefined): boolean {
+	return isAppUiExecuteEnabled() && clientSupportsAppUi(extra);
+}
 
 /**
  * クライアントが elicitation を扱えるかを判定する。
@@ -124,10 +198,22 @@ function stripConfirmationTokenFields(value: Record<string, unknown>): Record<st
 
 /**
  * `create_order` / `cancel_order` / `cancel_orders` の MCP tools/call ハンドラが返す拒否メッセージ。
- * LLM / UI からの直接実行をサーバー側で拒否し、elicitation/MRTR 経路のみ許可する。
+ * 確認フローを経ない直接実行をサーバー側で拒否する。
+ *
+ * 文言の設計方針（ADR-0007「拒否メッセージの扱い」）:
+ *
+ * このメッセージは `content[0].text` に載る = **LLM が読む唯一のチャネル**。
+ * オプトイン有効時は「有効な confirmation_token を伴う呼び出しなら通る」が事実だが、
+ * **それをここに書かない**。認可の実体がトークン所持である以上、手順を明記することは
+ * プロンプトインジェクションの誘導面を自ら広げる行為になる（LLM はトークンを入手できないので
+ * 実害には直結しないが、攻撃者に手順書を渡す必要は無い）。
+ *
+ * 同じ理由で「elicitation/MRTR でのみ実行される」「トークンはクライアントに返らない」とも
+ * 書かない。オプトイン有効時には**事実に反する**ため。述べるのは「直接実行は不可」と
+ * 「正規の入口は preview_*」の 2 点に留め、実行手段の内訳はホスト構成依存なので断定しない。
  */
 export const DIRECT_EXECUTE_FORBIDDEN_MESSAGE =
-	'このツールは MCP tools/call（LLM / UI）からは実行できません。preview_* 経由の elicitation/MRTR 確認でのみ実行されます。';
+	'このツールは MCP tools/call から直接実行できません。発注・取消は preview_* 系ツールから始まるユーザー確認フローを経由してのみ実行されます。';
 
 /** MCP tools/call 経由の直接実行を拒否するときの errorType */
 export const DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE = 'direct_execute_forbidden';
@@ -194,6 +280,45 @@ export interface WithElicitedConfirmationOptions {
 	 * `content[0].text` 側は caller の責任で token を含めないこと。
 	 */
 	fallback: McpResponse;
+	/**
+	 * MCP Apps ホスト向けに、ツール結果 `_meta` へ載せる確認トークン（任意）。
+	 *
+	 * 渡しても**必ず載るわけではない**。`isAppUiExecuteAllowed` が真で、かつ
+	 * elicitation 非対応と判定した fallback 経路に入った場合にのみ載る。
+	 * elicitation 対応ホストには一切載らない（優先順位の不変条件）。
+	 *
+	 * `content` / `structuredContent` には決して載らない（`stripConfirmationTokenFields` は
+	 * 維持したまま、それとは別に `_meta` を組み立てる）。
+	 */
+	metaConfirmation?: ConfirmationMetaPayload;
+	/**
+	 * `metaConfirmation` が実際に `_meta` へ載ったときに `content[0].text` を差し替える文言。
+	 *
+	 * 経路 2（確認カードのボタンで実行できる）と経路 3（このホストでは実行不可）で
+	 * ユーザーへの案内が正反対になるため、caller が両方の文言を用意する。
+	 * 未指定なら `fallback` の文言をそのまま使う。**トークンは含めないこと。**
+	 */
+	appUiFallbackText?: string;
+}
+
+/**
+ * elicitation 非対応ホスト向けの fallback レスポンスに、条件を満たす場合のみ
+ * 確認トークンを `_meta` として付ける。
+ *
+ * 付ける条件（両方必要。`isAppUiExecuteAllowed`）:
+ *   1. `BITBANK_MCP_APPS_EXECUTE=1`（運用者のオプトイン）
+ *   2. クライアントが MCP Apps UI を MIME 型込みで宣言している
+ *
+ * 条件を満たさない場合は受け取った fallback をそのまま返す（既定の挙動 = 従来どおり
+ * トークン非露出）。`content` / `structuredContent` には一切手を加えない。
+ */
+function withConfirmationMeta(fallback: McpResponse, opts: WithElicitedConfirmationOptions): McpResponse {
+	if (!opts.metaConfirmation || !isAppUiExecuteAllowed(opts.extra)) return fallback;
+	return {
+		...fallback,
+		...(opts.appUiFallbackText ? { content: [{ type: 'text', text: opts.appUiFallbackText }] } : {}),
+		_meta: { ...fallback._meta, [CONFIRMATION_META_KEY]: opts.metaConfirmation },
+	};
 }
 
 /**
@@ -280,7 +405,10 @@ export async function withElicitedConfirmation(
 
 	// ── round 1: 確認要求の発行 ──
 	if (!clientSupportsElicitation(opts.extra)) {
-		return safeFallback;
+		// 経路 2 / 3 の分岐点。elicitation 非対応と確定したここでのみ `_meta` を付ける。
+		// これにより「elicitation を宣言したホストにはトークンを載せない」が
+		// 条件式ではなく**構造**で保証される（下の mint 失敗 fallback には付かない）。
+		return withConfirmationMeta(safeFallback, opts);
 	}
 
 	let requestState: string;

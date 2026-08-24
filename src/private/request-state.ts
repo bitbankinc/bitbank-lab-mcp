@@ -59,6 +59,12 @@ export const NONCE_RETENTION_MS = REQUEST_STATE_TTL_SECONDS * 1000;
  * mint / verify で同じ束縛文字列を返す。
  * 秘密（access token 等）は含めず、method・sessionId・clientId のみを使う。
  * 返値は envelope に生では載らず、ドメイン分離 HMAC タグになる。
+ *
+ * ⚠️ **未設定の `sessionId` / `principal` を空文字に畳んでいる。** stdio では両者が
+ * 常に空で mint↔verify が一致し、束縛は実質 no-op になる（既存挙動の維持が目的）。
+ * HTTP トランスポートを足すと空文字同士が一致してしまい、越境再利用を弾けない。
+ * ADR-0007 判断事項 B のとおり、トランスポート追加と同じ PR で「未設定は fail-closed」
+ * へ変更すること。tripwire は `tests/http-transport-tripwire.test.ts`。
  */
 export function bindRequestStateContext(ctx: ServerContext): string {
 	const method = typeof ctx.mcpReq?.method === 'string' ? ctx.mcpReq.method : '';

@@ -467,6 +467,56 @@ describe('server.ts smoke', () => {
 		expect(getUiSnapshot('ui://order/confirm.html')).toMatchObject({ ok: true });
 	});
 
+	// `_meta` は confirmation token を載せる唯一のチャネルで、`content[0].text` は LLM が読む
+	// 唯一のチャネル。respond() の 2 つのフォールバックは result 全体を流し込むため、
+	// `_meta` を落とさないとトークンが LLM 可視チャネルへ出る（ADR-0007）。
+	// 現行ハンドラはこの分岐に入らないが、将来のハンドラが黙って踏む罠なのでここで固定する。
+	it('結果レベル `_meta` は content / structuredContent のフォールバックに流れない', async () => {
+		const { z } = await import('zod');
+		const TOKEN = 'tok_must_not_leak';
+		const META = { 'cc.bitbank/confirmation': { confirmation_token: TOKEN, expires_at: 1 } };
+
+		runtime.toolDefs = [
+			{
+				// content が空 & summary 無し → JSON フォールバックへ落ちる
+				name: 'empty_content_tool',
+				description: 'content 空',
+				inputSchema: z.object({}),
+				handler: vi.fn(async () => ({
+					content: [],
+					structuredContent: { ok: true, data: { preview: {} } },
+					_meta: META,
+				})) as unknown as ToolDefinition['handler'],
+			},
+			{
+				// structuredContent が plain object でない → result 自体が structuredContent になる
+				name: 'non_object_structured_tool',
+				description: 'structuredContent が非オブジェクト',
+				inputSchema: z.object({}),
+				handler: vi.fn(async () => ({
+					content: [{ type: 'text', text: '確認カードを表示しました' }],
+					structuredContent: 'not-an-object',
+					_meta: META,
+				})) as unknown as ToolDefinition['handler'],
+			},
+		];
+
+		const server = await importServer();
+
+		for (const [index, label] of [
+			[0, 'JSON フォールバック'],
+			[1, 'structuredContent フォールバック'],
+		] as const) {
+			const result = await server.tools[index].handler({});
+			expect(JSON.stringify(result.content), `${label}: content にトークンが出た`).not.toContain(TOKEN);
+			expect(JSON.stringify(result.structuredContent), `${label}: structuredContent にトークンが出た`).not.toContain(
+				TOKEN,
+			);
+			// 配送そのものは壊さない: 結果レベル `_meta` は従来どおり透過する
+			expect(JSON.stringify(result._meta), `${label}: _meta の透過が壊れた`).toContain(TOKEN);
+		}
+	});
+
 	it('ハンドラには ctx と内部 Server を合流させた extra が渡る', async () => {
 		const { z } = await import('zod');
 
