@@ -7,7 +7,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { assertOk } from '../_assertResult.js';
+import { OrderStatusEnum, TERMINAL_ORDER_STATUSES } from '../../src/private/schemas.js';
+import { assertFail, assertOk } from '../_assertResult.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -250,6 +251,105 @@ describe('preview_cancel_order', () => {
 	});
 });
 
+describe('終端状態のガード（#28）', () => {
+	/** 終端状態 → 期待する拒否メッセージ（LLM がそのままユーザーに説明する文なので状態ごとに書き分ける） */
+	const TERMINAL_CASES: [string, string][] = [
+		['FULLY_FILLED', 'この注文は既に全量約定しているためキャンセルできません（status: FULLY_FILLED）'],
+		['REJECTED', 'この注文はシステムに拒否されており、キャンセル対象ではありません（status: REJECTED）'],
+		['CANCELED_UNFILLED', 'この注文は既にキャンセル済みです（status: CANCELED_UNFILLED）'],
+		['CANCELED_PARTIALLY_FILLED', 'この注文は既にキャンセル済みです（status: CANCELED_PARTIALLY_FILLED）'],
+	];
+
+	/**
+	 * 拒否リスト方式の要点。ここを許可リスト（UNFILLED / PARTIALLY_FILLED だけ許す）に
+	 * 反転させると INACTIVE / TRIGGERED を誤って拒否する（#28）。
+	 */
+	const CANCELABLE_STATUSES = ['INACTIVE', 'UNFILLED', 'PARTIALLY_FILLED', 'TRIGGERED'];
+
+	it.each(TERMINAL_CASES)('%s は fail を返し confirmation_token を発行しない', async (status, message) => {
+		mockGetOrderOnce(mockOrder({ status }));
+		const previewCancelOrder = await loadPreviewCancelOrder();
+		const result = await previewCancelOrder({ pair: 'btc_jpy', order_id: 2001 });
+
+		assertFail(result);
+		expect(result.summary).toBe(`Error: ${message}`);
+		expect(result.meta.errorType).toBe('validation_error');
+		expect(result.data.confirmation_token).toBeUndefined();
+		expect(result.data.expires_at).toBeUndefined();
+	});
+
+	it.each(CANCELABLE_STATUSES)('%s はプレビューを通す（許可リスト化への退行ガード）', async (status) => {
+		mockGetOrderOnce(mockOrder({ status }));
+		const previewCancelOrder = await loadPreviewCancelOrder();
+		const result = await previewCancelOrder({ pair: 'btc_jpy', order_id: 2001 });
+
+		assertOk(result);
+		expect(result.data.confirmation_token).toBeTypeOf('string');
+	});
+
+	it('OrderStatusEnum の全値が「終端で拒否」か「プレビューを通る」のどちらか一方に分類される', async () => {
+		const statuses = OrderStatusEnum.options;
+		// クライアントはコンストラクタで globalThis.fetch を bind するため、
+		// import 前に全ケース分のレスポンスをキューしておく（テストごとの再 import は afterEach の resetModules 任せ）。
+		const fetchMock = vi.fn();
+		for (const status of statuses) {
+			fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(mockOrder({ status })), { status: 200 }));
+		}
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+		const previewCancelOrder = await loadPreviewCancelOrder();
+		const classified: Record<string, 'terminal_rejected' | 'preview_ok'> = {};
+		for (const status of statuses) {
+			const result = await previewCancelOrder({ pair: 'btc_jpy', order_id: 2001 });
+			classified[status] = result.ok ? 'preview_ok' : 'terminal_rejected';
+			// 拒否＝終端集合に入っている、通過＝入っていない。両者は必ず一致する
+			expect(classified[status] === 'terminal_rejected').toBe(TERMINAL_ORDER_STATUSES.has(status));
+		}
+
+		// enum に status が増えたら、分類を書き足さない限りここで落ちる
+		expect(classified).toEqual({
+			INACTIVE: 'preview_ok',
+			UNFILLED: 'preview_ok',
+			PARTIALLY_FILLED: 'preview_ok',
+			FULLY_FILLED: 'terminal_rejected',
+			CANCELED_UNFILLED: 'terminal_rejected',
+			CANCELED_PARTIALLY_FILLED: 'terminal_rejected',
+			REJECTED: 'terminal_rejected',
+			TRIGGERED: 'preview_ok',
+		});
+	});
+
+	it('拒否メッセージに API キー / シークレット / トークン表記が混入しない', async () => {
+		mockGetOrderOnce(mockOrder({ status: 'FULLY_FILLED' }));
+		const previewCancelOrder = await loadPreviewCancelOrder();
+		const result = await previewCancelOrder({ pair: 'btc_jpy', order_id: 2001 });
+
+		assertFail(result);
+		const serialized = JSON.stringify(result);
+		expect(serialized).not.toContain('test_key');
+		expect(serialized).not.toContain('test_secret');
+		expect(serialized).not.toContain('confirmation_token');
+	});
+
+	it('elicitation 対応ホストでも終端状態なら elicitation を出す前に fail を返す', async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify(mockOrder({ status: 'FULLY_FILLED' })), { status: 200 }));
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+		const { mrtrRound1Ctx } = await import('./_mrtr-helpers.js');
+		const { toolDef } = await import('../../tools/private/preview_cancel_order.js');
+		const result = await toolDef.handler({ pair: 'btc_jpy', order_id: 2001 }, mrtrRound1Ctx());
+
+		assertFail(result);
+		expect(result.summary).toContain('全量約定');
+		// elicitation / input_required（= content つきの McpResponse）へは進んでいない
+		expect(result).not.toHaveProperty('content');
+		// fetch は get_order の 1 回のみ。cancel_order は呼ばれていない
+		expect(fetchMock.mock.calls).toHaveLength(1);
+	});
+});
+
 describe('preview_cancel_order — handler (toolDef)', () => {
 	it('handler が成功時に content + structuredContent を返す', async () => {
 		mockGetOrderOnce();
@@ -289,7 +389,7 @@ describe('preview_cancel_order — handler (toolDef)', () => {
 		const previewCancelOrder = await loadPreviewCancelOrder();
 		const result = await previewCancelOrder({ pair: 'btc_jpy', order_id: 2001 });
 
-		expect(result.ok).toBe(false);
+		assertFail(result);
 		expect(result.summary).toContain('既にキャンセル済み');
 		expect(result.meta.errorType).toBe('validation_error');
 	});

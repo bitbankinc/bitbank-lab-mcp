@@ -122,6 +122,24 @@ export const candlesBtcJpy1day120 = {
 	},
 };
 
+/**
+ * `Date.now()`（fake timers 含む）付近までカバーする 1day 120 本。
+ *
+ * 静的 `candlesBtcJpy1day120`（2024 起点）だと実行時点の期初始値が解決できず、
+ * `buildPeriodPerformance` の始値欠損検出（#86）が誤発火する。`setupFetchMock` の
+ * 既定はこちらにする。
+ */
+export function candlesBtcJpy1day120Near(nowMs = Date.now()) {
+	const dayMs = 86400000;
+	const baseTs = nowMs - 119 * dayMs;
+	return {
+		success: 1,
+		data: {
+			candlestick: [{ type: '1day', ohlcv: generateOhlcv(120, dayMs, 15_000_000, baseTs) }],
+		},
+	};
+}
+
 /** 5min 24本（detect_whale_events の lookback=2hour 用） */
 export const candlesBtcJpy5min = {
 	success: 1,

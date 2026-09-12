@@ -6,6 +6,7 @@ import {
 	formatDateInTz,
 	formatDateWithDayOfWeek,
 	nowIso,
+	resolveTz,
 	toDisplayTime,
 	today,
 	toIsoMs,
@@ -161,5 +162,33 @@ describe('formatDateWithDayOfWeek', () => {
 	});
 	it('無効な日付は n/a を返す', () => {
 		expect(formatDateWithDayOfWeek('invalid')).toBe('n/a');
+	});
+});
+
+describe('resolveTz', () => {
+	it('解決できる IANA 名はそのまま返す', () => {
+		expect(resolveTz('Asia/Tokyo')).toBe('Asia/Tokyo');
+		expect(resolveTz('UTC')).toBe('UTC');
+		expect(resolveTz('America/New_York')).toBe('America/New_York');
+	});
+
+	it('空文字 / null / undefined は Asia/Tokyo', () => {
+		expect(resolveTz('')).toBe('Asia/Tokyo');
+		expect(resolveTz(null)).toBe('Asia/Tokyo');
+		expect(resolveTz(undefined)).toBe('Asia/Tokyo');
+	});
+
+	it('解決できない IANA 名も Asia/Tokyo に畳む（formatDateInTz が null を返す値）', () => {
+		// formatDateInTz は不正 tz に対して null を返す契約なので、表示側は事前にここを通す。
+		expect(formatDateInTz(0, 'Tokyo')).toBeNull();
+		expect(resolveTz('Tokyo')).toBe('Asia/Tokyo');
+		expect(resolveTz('Not/AZone')).toBe('Asia/Tokyo');
+		expect(resolveTz('Invalid/Zone')).toBe('Asia/Tokyo');
+		expect(resolveTz('Invalid/Timezone')).toBe('Asia/Tokyo');
+	});
+
+	it('fallback は上書きできる', () => {
+		expect(resolveTz('Not/AZone', 'UTC')).toBe('UTC');
+		expect(resolveTz('', 'UTC')).toBe('UTC');
 	});
 });

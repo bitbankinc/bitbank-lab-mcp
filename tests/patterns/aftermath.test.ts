@@ -128,9 +128,9 @@ describe('analyzeAftermath', () => {
 				{ x: 20, y: 105 },
 			],
 			pivots: [
-				{ idx: 2, price: 90, kind: 'L' },
-				{ idx: 5, price: 110, kind: 'H' },
-				{ idx: 8, price: 90, kind: 'L' },
+				{ idx: 2, price: 90, kind: 'L', extremePrice: 90 },
+				{ idx: 5, price: 110, kind: 'H', extremePrice: 110 },
+				{ idx: 8, price: 90, kind: 'L', extremePrice: 90 },
 			],
 		};
 		const result = analyzeAftermath(p, candles, isoToIndex);
@@ -157,8 +157,8 @@ describe('analyzeAftermath', () => {
 				{ x: 20, y: 110 },
 			],
 			pivots: [
-				{ idx: 1, price: 90, kind: 'L' },
-				{ idx: 3, price: 100, kind: 'H' },
+				{ idx: 1, price: 90, kind: 'L', extremePrice: 90 },
+				{ idx: 3, price: 100, kind: 'H', extremePrice: 100 },
 			],
 		};
 		const result = analyzeAftermath(p, candles, isoToIndex);
@@ -184,7 +184,7 @@ describe('analyzeAftermath', () => {
 				{ x: 0, y: 105 },
 				{ x: 20, y: 105 },
 			],
-			pivots: [{ idx: 5, price: 90, kind: 'L' }],
+			pivots: [{ idx: 5, price: 90, kind: 'L', extremePrice: 90 }],
 		};
 		const result = analyzeAftermath(p, candles, isoToIndex);
 		expect(result).not.toBeNull();
@@ -240,7 +240,7 @@ describe('buildStatistics', () => {
 					{ x: 0, y: 100 },
 					{ x: 10, y: 100 },
 				],
-				pivots: [{ idx: 2, price: 90, kind: 'L' }],
+				pivots: [{ idx: 2, price: 90, kind: 'L', extremePrice: 90 }],
 			},
 		];
 		buildStatistics(patterns, candles);

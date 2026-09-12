@@ -25,16 +25,20 @@ import {
 const ACTION = 'create_order';
 const ARGS = { pair: 'btc_jpy', amount: '0.01', side: 'buy', type: 'limit' } as Record<string, unknown>;
 
-/** mint / verify 用の最小 ServerContext。 */
+/**
+ * mint / verify 用の最小 ServerContext。
+ *
+ * bind（`bindRequestStateContext`）が読むのは `mcpReq.method` / `sessionId` /
+ * `http.authInfo.clientId` だけなので、その 3 つ（と必須の `mcpReq.id`）のみを与える。
+ * ServerContext の残りのメンバはダミーを置かない——スタブを足すと ServerContext 側が
+ * この部分型へ代入できなくなり、キャストが TS2352（overlap 不足）になる。
+ */
 function ctx(overrides: { sessionId?: string; method?: string; clientId?: string } = {}): ServerContext {
 	return {
 		sessionId: overrides.sessionId,
 		mcpReq: {
 			id: 1,
 			method: overrides.method ?? 'tools/call',
-			log: async () => {},
-			elicitInput: async () => ({ action: 'cancel' }),
-			createMessage: async () => ({ role: 'assistant', content: { type: 'text', text: '' } }),
 		},
 		...(overrides.clientId
 			? {

@@ -74,11 +74,11 @@ export function buildVolatilityBeginnerText(input: VolViewInput): string {
 /**
  * 一行要約のテキスト組み立て。
  *
- * **本番未使用（テストからのみ参照）。将来の軽量 summary（opt-in）の土台として残す**
+ * **本番未使用（テストからのみ参照）。PR 6（軽量 summary の opt-in 追加）の土台として残す**
  * （docs/internal/view-vocabulary-unification.md §5-3 小項目 / §2-0）。
  * `view=summary` は上流の `res.summary` をそのまま流す——`content[0].text` が LLM への唯一の
  * チャネルなので、既定 view をこの一行要約に落とすと LLM が rolling window 別 RV / ATR を
- * 受け取れなくなる。軽量 summary をやらないと決めた時点で削除する。
+ * 受け取れなくなる。PR 6 をやらないと決めた時点で削除する。
  */
 export function buildVolatilitySummaryText(input: VolViewInput): string {
 	const { pair, type, sampleSize, rvAnn, pkAnn, gkAnn, rsAnn, atrAbs, tagsAll } = input;

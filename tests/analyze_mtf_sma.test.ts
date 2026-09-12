@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { asMockResult, assertOk } from './_assertResult.js';
+import { assertOk } from './_assertResult.js';
 
 vi.mock('../tools/analyze_sma_snapshot.js', () => ({
 	default: vi.fn(),
@@ -7,6 +7,9 @@ vi.mock('../tools/analyze_sma_snapshot.js', () => ({
 
 import analyzeMtfSma, { toolDef } from '../tools/analyze_mtf_sma.js';
 import analyzeSmaSnapshot from '../tools/analyze_sma_snapshot.js';
+
+/** analyze_sma_snapshot の戻り値型。モックが実型からズレないよう明示する。 */
+type SmaSnapshotResult = Awaited<ReturnType<typeof analyzeSmaSnapshot>>;
 
 describe('analyze_mtf_sma', () => {
 	const mockedAnalyzeSmaSnapshot = vi.mocked(analyzeSmaSnapshot);
@@ -22,57 +25,69 @@ describe('analyze_mtf_sma', () => {
 
 	it('requested timeframe に unknown が含まれる場合 confluence は aligned=false / direction=unknown であるべき', async () => {
 		mockedAnalyzeSmaSnapshot
-			.mockResolvedValueOnce(
-				asMockResult({
-					ok: true,
-					summary: 'ok',
-					data: {
-						alignment: 'bullish',
-						summary: { position: 'above_all' },
-						latest: { close: 100 },
-						sma: { SMA_25: 90, SMA_75: 80, SMA_200: 70 },
-						smas: {},
-						crosses: [],
-						recentCrosses: [],
-						tags: ['sma_bullish_alignment'],
-					},
-					meta: {},
-				}),
-			)
-			.mockResolvedValueOnce(
-				asMockResult({
-					ok: true,
-					summary: 'ok',
-					data: {
-						alignment: 'unknown',
-						summary: { position: 'unknown' },
-						latest: { close: 100 },
-						sma: { SMA_25: null, SMA_75: null, SMA_200: null },
-						smas: {},
-						crosses: [],
-						recentCrosses: [],
-						tags: [],
-					},
-					meta: {},
-				}),
-			)
-			.mockResolvedValueOnce(
-				asMockResult({
-					ok: true,
-					summary: 'ok',
-					data: {
-						alignment: 'bullish',
-						summary: { position: 'above_all' },
-						latest: { close: 100 },
-						sma: { SMA_25: 90, SMA_75: 80, SMA_200: 70 },
-						smas: {},
-						crosses: [],
-						recentCrosses: [],
-						tags: ['sma_bullish_alignment'],
-					},
-					meta: {},
-				}),
-			);
+			.mockResolvedValueOnce({
+				ok: true,
+				summary: 'ok',
+				data: {
+					alignment: 'bullish',
+					summary: { close: 100, align: 'bullish', position: 'above_all' },
+					latest: { close: 100 },
+					sma: { SMA_25: 90, SMA_75: 80, SMA_200: 70 },
+					smas: {},
+					crosses: [],
+					recentCrosses: [],
+					tags: ['sma_bullish_alignment'],
+				},
+				meta: {
+					pair: 'btc_jpy',
+					fetchedAt: '2024-01-01T00:00:00.000Z',
+					type: '1day',
+					count: 220,
+					periods: [25, 75, 200],
+				},
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				summary: 'ok',
+				data: {
+					alignment: 'unknown',
+					summary: { close: 100, align: 'unknown', position: 'unknown' },
+					latest: { close: 100 },
+					sma: { SMA_25: null, SMA_75: null, SMA_200: null },
+					smas: {},
+					crosses: [],
+					recentCrosses: [],
+					tags: [],
+				},
+				meta: {
+					pair: 'btc_jpy',
+					fetchedAt: '2024-01-01T00:00:00.000Z',
+					type: '1day',
+					count: 220,
+					periods: [25, 75, 200],
+				},
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				summary: 'ok',
+				data: {
+					alignment: 'bullish',
+					summary: { close: 100, align: 'bullish', position: 'above_all' },
+					latest: { close: 100 },
+					sma: { SMA_25: 90, SMA_75: 80, SMA_200: 70 },
+					smas: {},
+					crosses: [],
+					recentCrosses: [],
+					tags: ['sma_bullish_alignment'],
+				},
+				meta: {
+					pair: 'btc_jpy',
+					fetchedAt: '2024-01-01T00:00:00.000Z',
+					type: '1day',
+					count: 220,
+					periods: [25, 75, 200],
+				},
+			});
 
 		const res = await analyzeMtfSma('btc_jpy', ['1hour', '4hour', '1day'], [25, 75, 200]);
 
@@ -82,23 +97,27 @@ describe('analyze_mtf_sma', () => {
 	});
 
 	it('重複 timeframes 指定時は analyze_sma_snapshot を重複実行しないべき', async () => {
-		mockedAnalyzeSmaSnapshot.mockResolvedValue(
-			asMockResult({
-				ok: true,
-				summary: 'ok',
-				data: {
-					alignment: 'bullish',
-					summary: { position: 'above_all' },
-					latest: { close: 100 },
-					sma: { SMA_25: 90, SMA_75: 80, SMA_200: 70 },
-					smas: {},
-					crosses: [],
-					recentCrosses: [],
-					tags: ['sma_bullish_alignment'],
-				},
-				meta: {},
-			}),
-		);
+		mockedAnalyzeSmaSnapshot.mockResolvedValue({
+			ok: true,
+			summary: 'ok',
+			data: {
+				alignment: 'bullish',
+				summary: { close: 100, align: 'bullish', position: 'above_all' },
+				latest: { close: 100 },
+				sma: { SMA_25: 90, SMA_75: 80, SMA_200: 70 },
+				smas: {},
+				crosses: [],
+				recentCrosses: [],
+				tags: ['sma_bullish_alignment'],
+			},
+			meta: {
+				pair: 'btc_jpy',
+				fetchedAt: '2024-01-01T00:00:00.000Z',
+				type: '1day',
+				count: 220,
+				periods: [25, 75, 200],
+			},
+		});
 
 		const res = await analyzeMtfSma('btc_jpy', ['1hour', '1hour', '4hour'], [25, 75, 200]);
 
@@ -110,14 +129,14 @@ describe('analyze_mtf_sma', () => {
 
 	function smaSnapshotOk(
 		alignment: 'bullish' | 'bearish' | 'mixed' | 'unknown',
-		metaExtra: Record<string, unknown> = {},
-	) {
-		return asMockResult({
+		metaExtra: { warning?: string; warnings?: string[] } = {},
+	): SmaSnapshotResult {
+		return {
 			ok: true,
 			summary: 'ok',
 			data: {
 				alignment,
-				summary: { position: alignment === 'bullish' ? 'above_all' : 'unknown' },
+				summary: { close: 100, align: alignment, position: alignment === 'bullish' ? 'above_all' : 'unknown' },
 				latest: { close: 100 },
 				sma: { SMA_25: 90, SMA_75: 80, SMA_200: 70 },
 				smas: {},
@@ -125,14 +144,21 @@ describe('analyze_mtf_sma', () => {
 				recentCrosses: [],
 				tags: [],
 			},
-			meta: metaExtra,
-		});
+			meta: {
+				pair: 'btc_jpy',
+				fetchedAt: '2024-01-01T00:00:00.000Z',
+				type: '1day',
+				count: 220,
+				periods: [25, 75, 200],
+				...metaExtra,
+			},
+		};
 	}
 
 	it('失敗 TF の synthetic warning が `[tf]` prefix 付きで meta.warning に含まれる', async () => {
 		mockedAnalyzeSmaSnapshot
 			.mockResolvedValueOnce(smaSnapshotOk('bullish'))
-			.mockResolvedValueOnce(asMockResult({ ok: false, summary: 'indicators failed', meta: { errorType: 'internal' } }))
+			.mockResolvedValueOnce({ ok: false, summary: 'indicators failed', data: {}, meta: { errorType: 'internal' } })
 			.mockResolvedValueOnce(smaSnapshotOk('bullish'));
 
 		const res = await analyzeMtfSma('btc_jpy', ['1hour', '4hour', '1day'], [25, 75, 200]);

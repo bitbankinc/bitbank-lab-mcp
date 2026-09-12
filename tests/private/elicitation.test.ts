@@ -11,6 +11,7 @@
 import { isInputRequiredResult } from '@modelcontextprotocol/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ok } from '../../lib/result.js';
+import { CONFIRMATION_META_KEY } from '../../src/mcp-apps-meta.js';
 import {
 	CONFIRM_CAPACITY_EXCEEDED_MESSAGE,
 	CONFIRM_STATE_INVALID_MESSAGE,
@@ -18,6 +19,7 @@ import {
 	withElicitedConfirmation,
 } from '../../src/private/elicitation.js';
 import { _resetUsedNonces, digestArgs } from '../../src/private/request-state.js';
+import { APP_RESOURCE_MIME_TYPE, MCP_APPS_UI_EXTENSION_ID } from '../../src/resources/app-resources.js';
 
 const ACTION = 'create_order';
 const BIND_ARGS = { pair: 'btc_jpy', amount: '0.01', side: 'buy', type: 'limit' } as Record<string, unknown>;
@@ -106,6 +108,39 @@ function stateWithNonce(nonce: string): Record<string, unknown> {
 	return { action: ACTION, argsDigest: digestArgs(ACTION, BIND_ARGS), nonce };
 }
 
+/**
+ * elicitation capability の宣言形 × form モード対応の判定表（#27）。
+ * `declaresFormElicitation` の docstring の表と 1:1 で対応させる。
+ * 取得元（initialize / envelope）によらず同じ判定になることを両側で回す。
+ */
+const FORM_MODE_CASES: Array<{ label: string; elicitation: unknown; expected: boolean }> = [
+	{ label: '欠落（undefined）', elicitation: undefined, expected: false },
+	{ label: 'null', elicitation: null, expected: false },
+	{ label: 'オブジェクト以外（true）', elicitation: true, expected: false },
+	{ label: '空オブジェクト（2025 系の宣言形）', elicitation: {}, expected: true },
+	{ label: 'form のみ', elicitation: { form: {} }, expected: true },
+	{ label: 'form + url', elicitation: { form: {}, url: {} }, expected: true },
+	{ label: 'form + 未知のキー', elicitation: { form: {}, voice: {} }, expected: true },
+	{ label: 'url のみ', elicitation: { url: {} }, expected: false },
+	// 未知のモードだけを宣言したホストも url のみと同じ扱い（form を処理できない）
+	{ label: '未知のキーのみ', elicitation: { voice: {} }, expected: false },
+	// form の値が仕様の形（オブジェクト）でない宣言は fail-closed
+	{ label: 'form が null', elicitation: { form: null }, expected: false },
+	{ label: 'form が true', elicitation: { form: true }, expected: false },
+	{ label: 'form が配列', elicitation: { form: [] }, expected: false },
+	{ label: 'elicitation が配列', elicitation: [], expected: false },
+];
+
+/** initialize 時 capabilities で elicitation を宣言する ctx。 */
+function initCtx(elicitation: unknown): Record<string, unknown> {
+	return { server: { getClientCapabilities: () => ({ elicitation }) } };
+}
+
+/** per-request envelope で elicitation を宣言する ctx。 */
+function envelopeElicitCtx(elicitation: unknown): Record<string, unknown> {
+	return { mcpReq: { envelope: { clientCapabilities: { elicitation } } } };
+}
+
 describe('clientSupportsElicitation', () => {
 	it('extra が undefined の場合は false', () => {
 		expect(clientSupportsElicitation(undefined)).toBe(false);
@@ -141,6 +176,48 @@ describe('clientSupportsElicitation', () => {
 			mcpReq: { envelope: { clientCapabilities: { sampling: {} } } },
 		};
 		expect(clientSupportsElicitation(extra)).toBe(false);
+	});
+
+	// #27: 判定は「elicitation があるか」ではなく「form モードを扱えるか」。
+	// SEP-2322 の宣言形（{ form: {}, url: {} }）で url だけを宣言したホストに
+	// form リクエストを送ると処理できないため、非対応として扱う。
+	describe('form モードの宣言判定（#27）', () => {
+		for (const c of FORM_MODE_CASES) {
+			it(`initialize: ${c.label} → ${c.expected}`, () => {
+				expect(clientSupportsElicitation(initCtx(c.elicitation))).toBe(c.expected);
+			});
+
+			it(`envelope: ${c.label} → ${c.expected}`, () => {
+				expect(clientSupportsElicitation(envelopeElicitCtx(c.elicitation))).toBe(c.expected);
+			});
+		}
+	});
+
+	// 2 つの取得元を OR する現行構造は #27 でも変えていない（envelope 権威化は別の設計判断）。
+	describe('2 つの取得元の OR 構造は維持する（#27）', () => {
+		it('initialize が form / envelope に宣言なし → true', () => {
+			const extra = {
+				server: { getClientCapabilities: () => ({ elicitation: { form: {} } }) },
+				mcpReq: { envelope: { clientCapabilities: { sampling: {} } } },
+			};
+			expect(clientSupportsElicitation(extra)).toBe(true);
+		});
+
+		it('initialize に宣言なし / envelope が url のみ → false', () => {
+			const extra = {
+				server: { getClientCapabilities: () => ({ sampling: {} }) },
+				mcpReq: { envelope: { clientCapabilities: { elicitation: { url: {} } } } },
+			};
+			expect(clientSupportsElicitation(extra)).toBe(false);
+		});
+
+		it('initialize が url のみ / envelope が form → true（OR なので広い側に倒れる）', () => {
+			const extra = {
+				server: { getClientCapabilities: () => ({ elicitation: { url: {} } }) },
+				mcpReq: { envelope: { clientCapabilities: { elicitation: { form: {} } } } },
+			};
+			expect(clientSupportsElicitation(extra)).toBe(true);
+		});
 	});
 });
 
@@ -221,6 +298,73 @@ describe('withElicitedConfirmation', () => {
 			expect(data.confirmation_token).toBeUndefined();
 			expect(data.expires_at).toBeUndefined();
 			expect(data.preview).toEqual({ pair: 'btc_jpy' });
+		});
+
+		// #27: url モードだけを宣言したホストは form 形式の elicitation を処理できないため、
+		// 新しい分岐を作らず既存の fallback 経路（実行不可通知 / MCP Apps オプトイン時は `_meta`）へ倒す。
+		it('url モードのみを宣言したホストでは fallback を返す（input_required にしない）', async () => {
+			const onConfirmed = vi.fn();
+			const result = (await withElicitedConfirmation({
+				...baseOpts,
+				extra: { mcpReq: { envelope: { clientCapabilities: { elicitation: { url: {} } } } } },
+				onConfirmed,
+				fallback: {
+					content: [{ type: 'text', text: 'FALLBACK_TEXT' }],
+					structuredContent: {
+						confirmation_token: 'top-secret',
+						expires_at: 123,
+						data: { confirmation_token: 'nested-secret', expires_at: 456, preview: { pair: 'btc_jpy' } },
+					},
+				},
+			})) as { content: { text: string }[]; structuredContent: Record<string, unknown> };
+
+			expect(isInputRequiredResult(result)).toBe(false);
+			expect(result.content[0]?.text).toBe('FALLBACK_TEXT');
+			expect(onConfirmed).not.toHaveBeenCalled();
+			// fallback にトークンが混入しないこと（.claude/rules/sensitive-data.md）
+			expect(result.structuredContent.confirmation_token).toBeUndefined();
+			expect(result.structuredContent.expires_at).toBeUndefined();
+			const data = result.structuredContent.data as Record<string, unknown>;
+			expect(data.confirmation_token).toBeUndefined();
+			expect(data.expires_at).toBeUndefined();
+			expect(JSON.stringify(result.content)).not.toContain('top-secret');
+		});
+
+		it('url モードのみ + MCP Apps オプトイン + UI 宣言なら `_meta` にトークンが載る', async () => {
+			vi.stubEnv('BITBANK_MCP_APPS_EXECUTE', '1');
+			const onConfirmed = vi.fn();
+			const result = (await withElicitedConfirmation({
+				...baseOpts,
+				extra: {
+					mcpReq: {
+						envelope: {
+							clientCapabilities: {
+								elicitation: { url: {} },
+								extensions: { [MCP_APPS_UI_EXTENSION_ID]: { mimeTypes: [APP_RESOURCE_MIME_TYPE] } },
+							},
+						},
+					},
+				},
+				onConfirmed,
+				fallback: makeFallback(),
+				metaConfirmation: { confirmation_token: 'tok-url-only', expires_at: 1_700_000_000_000 },
+				appUiFallbackText: 'APP_UI_TEXT',
+			})) as {
+				content: { text: string }[];
+				structuredContent: Record<string, unknown>;
+				_meta?: Record<string, unknown>;
+			};
+
+			expect(result._meta?.[CONFIRMATION_META_KEY]).toEqual({
+				confirmation_token: 'tok-url-only',
+				expires_at: 1_700_000_000_000,
+			});
+			expect(result.content[0]?.text).toBe('APP_UI_TEXT');
+			expect(onConfirmed).not.toHaveBeenCalled();
+			// トークンは `_meta` にのみ載る（content / structuredContent には出ない）
+			expect(JSON.stringify(result.content)).not.toContain('tok-url-only');
+			expect(JSON.stringify(result.structuredContent)).not.toContain('tok-url-only');
+			expect(JSON.stringify(result.structuredContent)).not.toContain('confirmation_token');
 		});
 	});
 

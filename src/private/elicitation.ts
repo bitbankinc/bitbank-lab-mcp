@@ -124,24 +124,65 @@ export function isAppUiExecuteAllowed(extra: ToolHandlerExtra | undefined): bool
 	return isAppUiExecuteEnabled() && clientSupportsAppUi(extra);
 }
 
+/** capability の値が「仕様どおりのオブジェクト」か（配列・null・プリミティブは除く）。 */
+function isCapabilityObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /**
- * クライアントが elicitation を扱えるかを判定する。
+ * 与えられた client capabilities が **form モードの elicitation** を扱えると
+ * 宣言しているかを判定する。
  *
- * - 2025 系接続: initialize 時の client capabilities（server.getClientCapabilities()）
+ * MCP 2026-07-28（SEP-2322）では elicitation capability が対応モードの宣言
+ * （`{ form: {}, url: {} }`）になったため、「`elicitation` があるか」では判定できない。
+ * 本サーバーの確認フロー（`withElicitedConfirmation`）は **form 形式しか使わない**ので、
+ * 判定は「form モードを扱えるか」でなければならない。
+ *
+ * | `elicitation` の値 | 判定 | 理由 |
+ * |---|---|---|
+ * | 無い / `null` / `undefined` | `false` | 宣言なし |
+ * | オブジェクト以外（`true` / 配列 等） | `false` | 仕様に無い形。fail-closed |
+ * | `{}` | `true` | 2025 系の宣言形。後方互換 |
+ * | `{ form: {} }` / `{ form: {}, url: {} }` | `true` | form を宣言 |
+ * | `{ form: {}, 未知のキー }` | `true` | 未知のキーは無視し、form の有無だけ見る |
+ * | `{ url: {} }` | `false` | url のみ。form リクエストを処理できない |
+ * | `{ 未知のキーのみ }`（`{ voice: {} }` 等） | `false` | モードを宣言しているのに form が無い |
+ * | `{ form: null }` / `{ form: true }` | `false` | form の値が仕様の形でない。fail-closed |
+ *
+ * 境界は **form キーの有無ではなく「空オブジェクトか否か」**で引く。form キーの有無で引くと
+ * 2025 系の `{}` まで非対応になり、既存ホストが全部 fallback へ落ちる。逆に「未知のキーは
+ * モード宣言に数えない」としてしまうと、`{ voice: {} }` のような**form 以外のモードだけを
+ * 宣言したホスト**が本 issue と同じ経路で form リクエストを受け取る。空でない宣言は
+ * 2026-07-28 系のモード宣言とみなし、**form の値まで検証**して fail-closed に倒す。
+ */
+function declaresFormElicitation(caps: unknown): boolean {
+	const elicitation = (caps as { elicitation?: unknown } | undefined)?.elicitation;
+	if (!isCapabilityObject(elicitation)) return false;
+	// 空オブジェクト = 2025 系の宣言形。モードという概念が無かった世代なので form 対応とみなす。
+	if (Object.keys(elicitation).length === 0) return true;
+	// 空でない = 2026-07-28 系のモード宣言。form を宣言し、かつ値が仕様の形のときだけ true。
+	return isCapabilityObject(elicitation.form);
+}
+
+/**
+ * クライアントが **form モードの elicitation** を扱えるかを判定する。
+ *
+ * 取得元は 2 つあり、**どちらかが form 対応を宣言していれば true**（OR）:
+ * - 2025 系接続: initialize 時の client capabilities（`server.getClientCapabilities()`）
  * - 2026-07-28 系リクエスト: per-request の `_meta` envelope に載る clientCapabilities
  *
- * どちらにも `elicitation` が無いホストでは取引実行を行わず、呼び出し側が用意した
- * `fallback`（実行不可通知レスポンス）を返す。
+ * 判定の実体は `declaresFormElicitation`（宣言形ごとの真理値表はそちらの docstring）。
+ * どちらも form 対応を宣言していないホスト（宣言なし / url モードのみ）では取引実行を
+ * 行わず、呼び出し側が用意した `fallback`（実行不可通知レスポンス）を返す。
  */
 export function clientSupportsElicitation(extra: ToolHandlerExtra | undefined): boolean {
 	const server = (extra as { server?: { getClientCapabilities?: () => unknown } } | undefined)?.server;
 	const initCaps = typeof server?.getClientCapabilities === 'function' ? server.getClientCapabilities() : undefined;
-	if ((initCaps as { elicitation?: unknown } | undefined)?.elicitation) return true;
+	if (declaresFormElicitation(initCaps)) return true;
 
 	const envelope = (extra as { mcpReq?: { envelope?: { clientCapabilities?: unknown } } } | undefined)?.mcpReq
 		?.envelope;
-	const envCaps = envelope?.clientCapabilities;
-	return Boolean((envCaps as { elicitation?: unknown } | undefined)?.elicitation);
+	return declaresFormElicitation(envelope?.clientCapabilities);
 }
 
 /** 再入リクエストの inputResponses を ctx から取り出す。 */

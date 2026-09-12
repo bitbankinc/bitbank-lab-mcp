@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
+import { getHsShoulderMaxPctForTf, getSizeThresholdsForTf } from '../tools/patterns/config.js';
 import { detectDoubles } from '../tools/patterns/detect_doubles.js';
 import { linearRegressionWithR2 } from '../tools/patterns/regression.js';
 import type { Pivot } from '../tools/patterns/swing.js';
@@ -26,6 +27,8 @@ function buildCtx(opts: {
 	want?: Set<string>;
 	includeForming?: boolean;
 	type?: string;
+	/** 最小ピボット間隔。既定 5 は旧 `MIN_PIVOT_DISTANCE_BARS` と同値（既存ケースの挙動を保つ）。 */
+	minDist?: number;
 }): DetectContext {
 	const tol = opts.tolerancePct ?? 0.04;
 	return {
@@ -34,11 +37,14 @@ function buildCtx(opts: {
 		allPeaks: opts.allPeaks ?? opts.pivots.filter((p) => p.kind === 'H'),
 		allValleys: opts.allValleys ?? opts.pivots.filter((p) => p.kind === 'L'),
 		tolerancePct: tol,
-		minDist: 5,
+		headProminencePct: tol,
+		minDist: opts.minDist ?? 5,
 		want: opts.want ?? new Set(),
 		includeForming: opts.includeForming ?? false,
 		debugCandidates: [],
 		type: opts.type ?? '1day',
+		sizeThresholds: getSizeThresholdsForTf(opts.type ?? '1day'),
+		hsShoulderMaxPct: getHsShoulderMaxPctForTf(opts.type ?? '1day'),
 		swingDepth: 7,
 		near: (a: number, b: number) => Math.abs(a - b) <= Math.max(a, b) * tol,
 		pct: (a: number, b: number) => ((b - a) / Math.max(1, a)) * 100,
@@ -77,10 +83,10 @@ function buildDoubleTop(opts?: { peak1?: number; valley?: number; peak2?: number
 	for (let i = 0; i < 5; i++) candles.push(mkCandle(25 - i, brk + 5 - i, brk + 8 - i, brk - 2, brk));
 
 	const pivots: Pivot[] = [
-		{ idx: 0, price: p1, kind: 'H' },
-		{ idx: 10, price: v, kind: 'L' },
-		{ idx: 20, price: p2, kind: 'H' },
-		{ idx: 28, price: brk, kind: 'L' },
+		{ idx: 0, price: p1, kind: 'H', extremePrice: p1 },
+		{ idx: 10, price: v, kind: 'L', extremePrice: v },
+		{ idx: 20, price: p2, kind: 'H', extremePrice: p2 },
+		{ idx: 28, price: brk, kind: 'L', extremePrice: brk },
 	];
 
 	return { candles, pivots };
@@ -117,10 +123,10 @@ function buildDoubleBottom(opts?: { valley1?: number; peak?: number; valley2?: n
 	for (let i = 0; i < 5; i++) candles.push(mkCandle(25 - i, brk - 3 + i, brk + 2, brk - 5, brk));
 
 	const pivots: Pivot[] = [
-		{ idx: 0, price: v1, kind: 'L' },
-		{ idx: 10, price: p, kind: 'H' },
-		{ idx: 20, price: v2, kind: 'L' },
-		{ idx: 28, price: brk, kind: 'H' },
+		{ idx: 0, price: v1, kind: 'L', extremePrice: v1 },
+		{ idx: 10, price: p, kind: 'H', extremePrice: p },
+		{ idx: 20, price: v2, kind: 'L', extremePrice: v2 },
+		{ idx: 28, price: brk, kind: 'H', extremePrice: brk },
 	];
 
 	return { candles, pivots };
@@ -286,36 +292,41 @@ describe('detectDoubles', () => {
 	// ── relaxed fallback ─────────────────────────────────
 
 	it('通常判定で不検出 → relaxed (x1.3) で検出', () => {
-		// tolerance=4%, peak差=5% → 通常は不検出、relaxed(4%*1.3=5.2%)で検出
-		const { candles, pivots } = buildDoubleTop({ peak1: 200, peak2: 210 });
-		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.04 });
+		// tolerance=2%, peak差=5/205=2.44% → 通常は peaks_not_equal、relaxed(2%*1.3=2.6%)で検出。
+		// relaxed の許容幅は DOUBLE_LEVEL_MAX_PCT(3%) の hard cap で頭打ちになるため、
+		// cap を超える peak 差（旧 200/210 = 4.76%）では relaxed も必ず落ちる
+		// （peaks_not_equal_structural）。差は cap 内に収める必要がある。
+		const { candles, pivots } = buildDoubleTop({ peak1: 200, peak2: 205 });
+		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.02 });
 		const result = detectDoubles(ctx);
 
 		const dt = result.patterns.filter((p) => p.type === 'double_top');
-		if (dt.length > 0) {
-			expect(dt[0]._fallback).toContain('relaxed');
-		}
+		expect(dt.length).toBeGreaterThan(0);
+		expect(dt[0]._fallback).toContain('relaxed');
+		// 通常判定で一度弾かれてから relaxed に落ちたことを確認する
+		expect(ctx.debugCandidates.some((d) => d.type === 'double_top' && d.reason === 'peaks_not_equal')).toBe(true);
 	});
 
 	it('relaxed fallback でダブルボトムを検出', () => {
-		// tolerance=4%, valley差=5% → 通常は不検出、relaxed(4%*1.3=5.2%)で検出
-		const { candles, pivots } = buildDoubleBottom({ valley1: 100, valley2: 105, peak: 130, breakoutClose: 140 });
-		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.04 });
+		// tolerance=2%, valley差=2.5/102.5=2.44% → 通常は valleys_not_equal、relaxed(2.6%)で検出。
+		// ダブルトップ側と同じく DOUBLE_LEVEL_MAX_PCT(3%) の hard cap 内に収める。
+		const { candles, pivots } = buildDoubleBottom({ valley1: 100, valley2: 102.5, peak: 130, breakoutClose: 140 });
+		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.02 });
 		const result = detectDoubles(ctx);
 
 		const db = result.patterns.filter((p) => p.type === 'double_bottom');
-		if (db.length > 0) {
-			expect(db[0]._fallback).toContain('relaxed');
-		}
+		expect(db.length).toBeGreaterThan(0);
+		expect(db[0]._fallback).toContain('relaxed');
+		expect(ctx.debugCandidates.some((d) => d.type === 'double_bottom' && d.reason === 'valleys_not_equal')).toBe(true);
 	});
 
 	// ── ピボット不足 ─────────────────────────────────────
 
-	it('ピボット < 4 個では空結果', () => {
+	it('ピボット < 3 個では空結果', () => {
 		const candles = Array.from({ length: 30 }, (_, i) => mkCandle(30 - i, 100, 102, 98, 100));
 		const pivots: Pivot[] = [
-			{ idx: 0, price: 200, kind: 'H' },
-			{ idx: 10, price: 170, kind: 'L' },
+			{ idx: 0, price: 200, kind: 'H', extremePrice: 200 },
+			{ idx: 10, price: 170, kind: 'L', extremePrice: 170 },
 		];
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectDoubles(ctx);
@@ -324,53 +335,135 @@ describe('detectDoubles', () => {
 
 	// ── 間隔不足 ─────────────────────────────────────────
 
-	it('ピボット間隔 < 5 本 → スキップ', () => {
+	it('ピボット間隔 < ctx.minDist → スキップ', () => {
 		const candles = Array.from({ length: 30 }, (_, i) => mkCandle(30 - i, 100, 102, 98, 100));
 		const pivots: Pivot[] = [
-			{ idx: 0, price: 200, kind: 'H' },
-			{ idx: 3, price: 170, kind: 'L' }, // 間隔3 < minDistDB(5)
-			{ idx: 6, price: 200, kind: 'H' },
-			{ idx: 9, price: 170, kind: 'L' },
+			{ idx: 0, price: 200, kind: 'H', extremePrice: 200 },
+			{ idx: 3, price: 170, kind: 'L', extremePrice: 170 }, // 間隔3 < ctx.minDist(5)
+			{ idx: 6, price: 200, kind: 'H', extremePrice: 200 },
+			{ idx: 9, price: 170, kind: 'L', extremePrice: 170 },
 		];
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectDoubles(ctx);
 		expect(result.patterns).toHaveLength(0);
 	});
 
-	// ── 形成中ダブルトップ ───────────────────────────────
+	// ── issue #130: 偽陰性を生んでいた 3 点の回帰 ─────────
 
-	it('形成中ダブルトップ: 確定ピーク + 谷 + 現在価格がピーク付近', () => {
-		// 50本、peak@idx=15 → valley@idx=30 → 現在(idx=49)がピーク付近まで回復
-		const candles: CandleData[] = [];
-		for (let i = 0; i < 50; i++) candles.push(mkCandle(50 - i, 150, 155, 145, 150));
-		// 確定ピーク（lastIdx-2=47 より前）
-		candles[15] = mkCandle(35, 195, 200, 190, 195);
-		// 確定谷（ピーク後、lastIdx-1=48 より前）
-		candles[30] = mkCandle(20, 163, 168, 160, 165);
-		// 現在価格がピーク付近まで回復
-		for (let i = 45; i < 50; i++) candles[i] = mkCandle(50 - i, 195, 198, 190, 196);
+	describe('issue #130 の回帰', () => {
+		/**
+		 * **最小ピボット間隔は `ctx.minDist` を使う。**
+		 *
+		 * 以前は検出器ローカルの `MIN_PIVOT_DISTANCE_BARS = 5` が `ctx.minDist` を上書きしており、
+		 * 公開パラメータ `minBarsBetweenSwings` が double にだけ効かなかった
+		 * （`detect_triples` / `detect_hs` は当時から `ctx.minDist` を使っている）。
+		 * 日足の既定は 4、1時間足は 2 なので、既定パラメータでも常に上書きが起きていた。
+		 */
+		it('間隔 3 本は minDist=5 では落ち、minDist=2 では検出される', () => {
+			// valley1(idx=0, 100) → peak(idx=3, 130) → valley2(idx=6, 100) → breakout(idx=8〜, 140)
+			const candles: CandleData[] = [
+				mkCandle(30, 100, 105, 100, 100),
+				mkCandle(29, 110, 115, 105, 110),
+				mkCandle(28, 122, 127, 118, 122),
+				mkCandle(27, 130, 135, 126, 130),
+				mkCandle(26, 120, 125, 115, 120),
+				mkCandle(25, 108, 113, 103, 108),
+				mkCandle(24, 100, 105, 100, 100),
+				mkCandle(23, 115, 120, 110, 115),
+				mkCandle(22, 140, 145, 135, 140),
+				...Array.from({ length: 8 }, (_, i) => mkCandle(21 - i, 142, 147, 137, 142)),
+			];
+			const pivots: Pivot[] = [
+				{ idx: 0, price: 100, kind: 'L', extremePrice: 100 },
+				{ idx: 3, price: 130, kind: 'H', extremePrice: 135 },
+				{ idx: 6, price: 100, kind: 'L', extremePrice: 100 },
+			];
 
-		const allPeaks: Pivot[] = [{ idx: 15, price: 200, kind: 'H' }];
-		const allValleys: Pivot[] = [{ idx: 30, price: 160, kind: 'L' }];
+			const strict = detectDoubles(buildCtx({ candles, pivots, minDist: 5 }));
+			expect(strict.patterns.filter((p) => p.type === 'double_bottom')).toHaveLength(0);
 
-		const ctx = buildCtx({
-			candles,
-			pivots: [...allPeaks, ...allValleys],
-			allPeaks,
-			allValleys,
-			includeForming: true,
+			const loose = detectDoubles(buildCtx({ candles, pivots, minDist: 2 }));
+			const db = loose.patterns.filter((p) => p.type === 'double_bottom');
+			expect(db).toHaveLength(1);
+			expect((db[0].pivots ?? []).map((v) => v.idx)).toEqual([0, 3, 6]);
 		});
-		const result = detectDoubles(ctx);
 
-		const forming = result.patterns.filter((p) => p.type === 'double_top' && p.status === 'forming');
-		expect(forming.length).toBeGreaterThanOrEqual(1);
-		if (forming.length > 0) {
-			expect(forming[0].completionPct).toBeDefined();
-			expect(forming[0].breakoutTarget).toBeDefined();
-		}
+		/**
+		 * **サイズ検査は `extremePrice`（高安）基準。**
+		 *
+		 * 終値が圧縮されヒゲが大きい区間では、終値基準の値幅が実際の 1/6 になる。
+		 * この fixture は終値基準で `MIN_PATTERN_HEIGHT_PCT`(3%) / `MIN_DEPTH_PCT`(5%) を
+		 * 両方割るが、高安基準なら両方通る——BTC/JPY 日足 2026-08-03〜08-14 と同じ形。
+		 */
+		it('終値基準では閾値割れでも高安基準なら検出される', () => {
+			// valley1(close 100 / low 95) → peak(close 102 / high 108) → valley2(close 100.5 / low 95.5)
+			const candles: CandleData[] = [
+				...Array.from({ length: 5 }, (_, i) => mkCandle(40 - i, 100, 101, 95, 100)),
+				...Array.from({ length: 5 }, (_, i) => mkCandle(35 - i, 101, 108, 99, 102)),
+				...Array.from({ length: 5 }, (_, i) => mkCandle(30 - i, 100.5, 101, 95.5, 100.5)),
+				...Array.from({ length: 10 }, (_, i) => mkCandle(25 - i, 110, 112, 108, 110)),
+			];
+			const pivots: Pivot[] = [
+				{ idx: 0, price: 100, kind: 'L', extremePrice: 95 },
+				{ idx: 7, price: 102, kind: 'H', extremePrice: 108 },
+				{ idx: 14, price: 100.5, kind: 'L', extremePrice: 95.5 },
+			];
+
+			// 前提: 終値基準なら両閾値割れ / 高安基準なら両方通る
+			const heightClose = Math.abs(100 - 102) / 102;
+			const peakHeightClose = (102 - (100 + 100.5) / 2) / ((100 + 100.5) / 2);
+			expect(heightClose).toBeLessThan(0.03);
+			expect(peakHeightClose).toBeLessThan(0.05);
+			const heightExt = Math.abs(95 - 108) / 108;
+			const peakHeightExt = (108 - (95 + 95.5) / 2) / ((95 + 95.5) / 2);
+			expect(heightExt).toBeGreaterThan(0.03);
+			expect(peakHeightExt).toBeGreaterThan(0.05);
+
+			const ctx = buildCtx({ candles, pivots, minDist: 5 });
+			const result = detectDoubles(ctx);
+			const db = result.patterns.filter((p) => p.type === 'double_bottom');
+			expect(db).toHaveLength(1);
+			// サイズ検査で落ちた痕跡が残っていないこと（旧実装はここで pattern_too_small を積んだ）
+			expect(ctx.debugCandidates.map((c) => c.reason)).not.toContain('pattern_too_small');
+		});
+
+		/**
+		 * **窓の最後の 3 ピボットも走査対象。**
+		 *
+		 * 旧 `for (let i = 0; i < pivots.length - 3; i++)` は 4 ピボットぶんの端点を要求しており、
+		 * 3 ピボットのパターンでは**最後の 1 組が必ず走査から漏れていた**
+		 * （`detect_triples` は `i <= n - 3`、`detect_hs` は 5 ピボットに対し `i < n - 4` で正しい）。
+		 * 第2構成点が窓の最後のピボットになる形——つまり**最も直近のダブルトップ / ボトム**が
+		 * 構造的に検出できなかった。
+		 */
+		it('第2構成点が最後のピボットでも検出される（後続ピボット不要）', () => {
+			const { candles, pivots } = buildDoubleBottom();
+			// 4 本目（breakout 後のピボット）を落として 3 ピボットだけにする
+			const threePivots = pivots.slice(0, 3);
+			expect(threePivots).toHaveLength(3);
+
+			const result = detectDoubles(buildCtx({ candles, pivots: threePivots }));
+			const db = result.patterns.filter((p) => p.type === 'double_bottom');
+			expect(db).toHaveLength(1);
+			expect((db[0].pivots ?? []).map((v) => v.idx)).toEqual([0, 10, 20]);
+		});
 	});
 
-	it('includeForming=false では形成中パターンは検出しない', () => {
+	// ── 形成中経路は double に無い（issue #262 / #268 案 C）────────────────
+	//
+	// **`形成中ダブルトップ: 確定ピーク + 谷 + 現在価格がピーク付近` と
+	// `forming double_top: structureRange あり, confirmation=not_confirmed` を削除した。**
+	// `tryFormingDoubleTop` が #268 案 C で消えたので、`status: 'forming'` の `double_top` を
+	// 作れる入力が存在しない。同じ形（山1 + 谷 + 最新足が山の水準）は完成済み経路の
+	// 構成点 3 点が揃うまで候補にならず、揃った時点で `near_completion` になる。
+	// `structureRange` / `confirmation: 'not_confirmed'` の回帰は下の `near_completion` の
+	// テストが引き継いでいる。「1 件も出ない」ことは
+	// `tests/patterns/no-forming-double-268.test.ts` のトリップワイヤが固定する。
+
+	// `includeForming=false` では未ブレイク構造（`near_completion` / `expired` / `invalid`）も
+	// 出ない。`forming` は #268 案 C 以降 double では構造的に出ないので、このテストが見ているのは
+	// **`includeForming` のスイッチが効いていること**になった（`status` の名前は据え置き）。
+	it('includeForming=false では未ブレイク構造も形成中も検出しない', () => {
 		const candles: CandleData[] = [];
 		for (let i = 0; i < 50; i++) candles.push(mkCandle(50 - i, 150, 155, 145, 150));
 		candles[20] = mkCandle(30, 195, 200, 190, 195);
@@ -378,10 +471,10 @@ describe('detectDoubles', () => {
 		for (let i = 40; i < 50; i++) candles[i] = mkCandle(50 - i, 195, 198, 190, 196);
 
 		const pivots: Pivot[] = [
-			{ idx: 5, price: 150, kind: 'L' },
-			{ idx: 20, price: 200, kind: 'H' },
-			{ idx: 30, price: 160, kind: 'L' },
-			{ idx: 45, price: 198, kind: 'H' },
+			{ idx: 5, price: 150, kind: 'L', extremePrice: 150 },
+			{ idx: 20, price: 200, kind: 'H', extremePrice: 200 },
+			{ idx: 30, price: 160, kind: 'L', extremePrice: 160 },
+			{ idx: 45, price: 198, kind: 'H', extremePrice: 198 },
 		];
 
 		const ctx = buildCtx({ candles, pivots, includeForming: false });
@@ -390,26 +483,42 @@ describe('detectDoubles', () => {
 		expect(forming).toHaveLength(0);
 	});
 
-	// ── 形成中ダブルボトム ───────────────────────────────
+	// ── ブレイク待ちのダブルボトム（issue #262 で `forming` → `near_completion`）──────────
 
-	it('形成中ダブルボトム: 確定谷2つ + 現在価格がネックライン付近', () => {
+	/**
+	 * **期待値を `forming` から `near_completion` に変えた（issue #262）。**
+	 * この形（確定 2 谷 + 中間の山 + 未ブレイク）は構造が完成していてネックライン突破を
+	 * 待っている段階で、`forming`（＝最終構成点がまだ形成中）ではない。旧 `tryFormingDoubleBottom`
+	 * の誤ラベルを完成済み経路の `near_completion` に付け替えた。
+	 *
+	 * `completionPct` の検査を落としたのも同じ理由——完成度スコアは形成中経路の概念で、
+	 * triple / H&S の `near_completion` も持っていない。
+	 */
+	it('ブレイク待ちダブルボトム: 確定谷2つ + 現在価格がネックライン付近 → near_completion', () => {
 		const candles: CandleData[] = [];
-		for (let i = 0; i < 50; i++) candles.push(mkCandle(50 - i, 130, 135, 125, 130));
+		// 谷1 より前はネックライン(130)より上で推移させる。構造ゲート（issue #126）は
+		// 「谷1 前にネックライン水準を終値で下抜けた事象」を要求するので、
+		// 旧 fixture のように終値がネックラインとぴったり同値のまま横ばいだと、
+		// そもそも下抜けという事象が存在せず棄却される。
+		for (let i = 0; i < 50; i++) candles.push(mkCandle(50 - i, 140, 145, 135, 140));
 		// valley1
 		candles[10] = mkCandle(40, 102, 105, 100, 102);
 		// peak between
 		candles[20] = mkCandle(30, 128, 130, 125, 128);
 		// valley2
 		candles[30] = mkCandle(20, 103, 105, 100, 103);
-		// 現在価格がネックライン付近まで回復
-		for (let i = 40; i < 50; i++) candles[i] = mkCandle(50 - i, 125, 128, 122, 126);
+		// 谷2 以降は**ネックライン(130)を超えない**まま推移させる（issue #262）。
+		// 旧 fixture は idx 31〜39 が終値 140 のままで、実際には完成済みパスが idx 31 で
+		// ブレイクを拾っていた——`forming` の重複報告がまさにこの PR の動機なので、
+		// 「ブレイク待ち」を見たいこのテストでは埋め直す。
+		for (let i = 31; i < 50; i++) candles[i] = mkCandle(50 - i, 125, 128, 122, 126);
 
 		const pivots: Pivot[] = [
-			{ idx: 5, price: 135, kind: 'H' },
-			{ idx: 10, price: 100, kind: 'L' },
-			{ idx: 20, price: 130, kind: 'H' },
-			{ idx: 30, price: 100, kind: 'L' },
-			{ idx: 45, price: 128, kind: 'H' },
+			{ idx: 5, price: 140, kind: 'H', extremePrice: 145 },
+			{ idx: 10, price: 100, kind: 'L', extremePrice: 100 },
+			{ idx: 20, price: 130, kind: 'H', extremePrice: 130 },
+			{ idx: 30, price: 100, kind: 'L', extremePrice: 100 },
+			{ idx: 45, price: 128, kind: 'H', extremePrice: 128 },
 		];
 		const allPeaks = pivots.filter((p) => p.kind === 'H');
 		const allValleys = pivots.filter((p) => p.kind === 'L');
@@ -417,12 +526,14 @@ describe('detectDoubles', () => {
 		const ctx = buildCtx({ candles, pivots, allPeaks, allValleys, includeForming: true });
 		const result = detectDoubles(ctx);
 
-		const forming = result.patterns.filter((p) => p.type === 'double_bottom' && p.status === 'forming');
-		expect(forming.length).toBeGreaterThanOrEqual(1);
-		if (forming.length > 0) {
-			expect(forming[0].completionPct).toBeDefined();
-			expect(forming[0].breakoutTarget).toBeDefined();
-			expect(forming[0].targetMethod).toBe('neckline_projection');
+		const nearCompletion = result.patterns.filter((p) => p.type === 'double_bottom' && p.status === 'near_completion');
+		expect(nearCompletion.length).toBeGreaterThanOrEqual(1);
+		expect(result.patterns.filter((p) => p.type === 'double_bottom' && p.status === 'forming')).toHaveLength(0);
+		if (nearCompletion.length > 0) {
+			expect(nearCompletion[0].breakoutTarget).toBeDefined();
+			expect(nearCompletion[0].targetMethod).toBe('neckline_projection');
+			// 未ブレイクなので進捗は測れないことを名乗る（#224 症状 2）
+			expect(nearCompletion[0].targetProgressOmittedReason).toBe('not_broken_out');
 		}
 	});
 
@@ -481,59 +592,46 @@ describe('detectDoubles', () => {
 		expect(db.precedingTrend?.end).toBe(candles[0].isoTime);
 	});
 
-	it('forming double_top: structureRange あり, confirmation=not_confirmed', () => {
+	/**
+	 * **期待値を `forming` から `near_completion` に変えた（issue #262）。** 理由は上の
+	 * 「ブレイク待ちダブルボトム」の docstring を参照。`structureRange` が 2 谷で閉じることは
+	 * 変わらない（完成済み経路の `structureRange` も第1〜第2構成点で閉じる）。**`range.end` は
+	 * 最新足ではなく谷2 になった**——`detect_triples` の `near_completion` と同じ取り方。
+	 */
+	it('near_completion double_bottom: structureRange / range とも valley1〜valley2 で閉じる', () => {
 		const candles: CandleData[] = [];
-		for (let i = 0; i < 50; i++) candles.push(mkCandle(50 - i, 150, 155, 145, 150));
-		candles[15] = mkCandle(35, 195, 200, 190, 195);
-		candles[30] = mkCandle(20, 163, 168, 160, 165);
-		for (let i = 45; i < 50; i++) candles[i] = mkCandle(50 - i, 195, 198, 190, 196);
-
-		const allPeaks: Pivot[] = [{ idx: 15, price: 200, kind: 'H' }];
-		const allValleys: Pivot[] = [{ idx: 30, price: 160, kind: 'L' }];
-
-		const ctx = buildCtx({
-			candles,
-			pivots: [...allPeaks, ...allValleys],
-			allPeaks,
-			allValleys,
-			includeForming: true,
-		});
-		const result = detectDoubles(ctx);
-		const forming = result.patterns.find((p) => p.type === 'double_top' && p.status === 'forming');
-		expect(forming).toBeDefined();
-		if (!forming) return;
-
-		expect(forming.structureRange).toBeDefined();
-		expect(forming.confirmation?.type).toBe('not_confirmed');
-	});
-
-	it('forming double_bottom: structureRange は valley1〜valley2 で閉じる（lastIdx は含まない）', () => {
-		const candles: CandleData[] = [];
-		for (let i = 0; i < 50; i++) candles.push(mkCandle(50 - i, 130, 135, 125, 130));
+		// 谷1 前をネックライン(130)より上にするのは上の fixture と同じ理由（issue #126）
+		for (let i = 0; i < 50; i++) candles.push(mkCandle(50 - i, 140, 145, 135, 140));
 		candles[10] = mkCandle(40, 102, 105, 100, 102);
 		candles[20] = mkCandle(30, 128, 130, 125, 128);
 		candles[30] = mkCandle(20, 103, 105, 100, 103);
-		for (let i = 40; i < 50; i++) candles[i] = mkCandle(50 - i, 125, 128, 122, 126);
+		// 谷2 以降が未ブレイクであることは上の fixture と同じ理由（issue #262）
+		for (let i = 31; i < 50; i++) candles[i] = mkCandle(50 - i, 125, 128, 122, 126);
 
 		const pivots: Pivot[] = [
-			{ idx: 5, price: 135, kind: 'H' },
-			{ idx: 10, price: 100, kind: 'L' },
-			{ idx: 20, price: 130, kind: 'H' },
-			{ idx: 30, price: 100, kind: 'L' },
-			{ idx: 45, price: 128, kind: 'H' },
+			{ idx: 5, price: 140, kind: 'H', extremePrice: 145 },
+			{ idx: 10, price: 100, kind: 'L', extremePrice: 100 },
+			{ idx: 20, price: 130, kind: 'H', extremePrice: 130 },
+			{ idx: 30, price: 100, kind: 'L', extremePrice: 100 },
+			{ idx: 45, price: 128, kind: 'H', extremePrice: 128 },
 		];
 		const allPeaks = pivots.filter((p) => p.kind === 'H');
 		const allValleys = pivots.filter((p) => p.kind === 'L');
 
 		const ctx = buildCtx({ candles, pivots, allPeaks, allValleys, includeForming: true });
 		const result = detectDoubles(ctx);
-		const forming = result.patterns.find((p) => p.type === 'double_bottom' && p.status === 'forming');
-		expect(forming).toBeDefined();
-		if (!forming) return;
+		const nearCompletion = result.patterns.find((p) => p.type === 'double_bottom' && p.status === 'near_completion');
+		expect(nearCompletion).toBeDefined();
+		if (!nearCompletion) return;
 
-		expect(forming.structureRange?.start).toBe(candles[10].isoTime);
-		expect(forming.structureRange?.end).toBe(candles[30].isoTime);
-		expect(forming.confirmation?.type).toBe('not_confirmed');
+		expect(nearCompletion.structureRange?.start).toBe(candles[10].isoTime);
+		expect(nearCompletion.structureRange?.end).toBe(candles[30].isoTime);
+		expect(nearCompletion.range?.start).toBe(candles[10].isoTime);
+		expect(nearCompletion.range?.end).toBe(candles[30].isoTime);
+		expect(nearCompletion.confirmation?.type).toBe('not_confirmed');
+		// ブレイク足が無いので breakout 系は出さない
+		expect(nearCompletion.breakout).toBeUndefined();
+		expect(nearCompletion.breakoutBarIndex).toBeUndefined();
 	});
 
 	// ── targetReachedPct / targetReached (high/low ベース) ───
@@ -595,8 +693,9 @@ describe('detectDoubles', () => {
 		expect(dt.targetReachedPct).toBeGreaterThanOrEqual(0);
 	});
 
-	it('double_top: ブレイク close == target（距離ゼロ）→ targetReached=true & pct=100', () => {
-		// target=140, breakClose=140 → breakoutPrice == target → targetDistance=0
+	it('double_top: ブレイク close == target（距離ゼロ）→ 進捗を出さず理由を申告する', () => {
+		// target=140, breakClose=140 → breakoutPrice == target → targetDistance=0。
+		// #210 の退化ガードで target 進捗系は出さず、理由だけを申告する（breakoutTarget は出る）。
 		const { candles, pivots } = buildDoubleTop({ peak1: 200, valley: 170, peak2: 200, breakoutClose: 140 });
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectDoubles(ctx);
@@ -605,10 +704,11 @@ describe('detectDoubles', () => {
 		expect(dt).toBeDefined();
 		if (!dt) return;
 		expect(dt.breakoutTarget).toBe(140);
-		expect(dt.targetReached).toBe(true);
-		expect(dt.targetReachedPct).toBe(100);
-		expect(dt.targetReachedPrice).toBe(140);
-		expect(dt.targetReachedDate).toBeDefined();
+		expect(dt.targetProgressOmittedReason).toBe('degenerate_target_distance');
+		expect(dt.targetReached).toBeUndefined();
+		expect(dt.targetReachedPct).toBeUndefined();
+		expect(dt.targetReachedPrice).toBeUndefined();
+		expect(dt.targetReachedDate).toBeUndefined();
 	});
 
 	it('double_bottom: 一度 target 到達後に close が戻る → high/low ベースで targetReached=true', () => {
@@ -660,8 +760,8 @@ describe('detectDoubles', () => {
 		expect(db.targetReachedPct).toBeGreaterThanOrEqual(0);
 	});
 
-	it('double_bottom: ブレイク close == target（距離ゼロ）→ targetReached=true & pct=100', () => {
-		// target=160, breakClose=160
+	it('double_bottom: ブレイク close == target（距離ゼロ）→ 進捗を出さず理由を申告する', () => {
+		// target=160, breakClose=160（#210 の退化ガード）
 		const { candles, pivots } = buildDoubleBottom({ valley1: 100, peak: 130, valley2: 100, breakoutClose: 160 });
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectDoubles(ctx);
@@ -670,9 +770,10 @@ describe('detectDoubles', () => {
 		expect(db).toBeDefined();
 		if (!db) return;
 		expect(db.breakoutTarget).toBe(160);
-		expect(db.targetReached).toBe(true);
-		expect(db.targetReachedPct).toBe(100);
-		expect(db.targetReachedPrice).toBe(160);
-		expect(db.targetReachedDate).toBeDefined();
+		expect(db.targetProgressOmittedReason).toBe('degenerate_target_distance');
+		expect(db.targetReached).toBeUndefined();
+		expect(db.targetReachedPct).toBeUndefined();
+		expect(db.targetReachedPrice).toBeUndefined();
+		expect(db.targetReachedDate).toBeUndefined();
 	});
 });

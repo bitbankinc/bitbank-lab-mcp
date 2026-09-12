@@ -22,6 +22,7 @@ import {
 import { fetchDepositWithdrawal } from '../../../src/handlers/portfolio/fetch.js';
 import type { DepositWithdrawalData, RawTrade } from '../../../src/handlers/portfolio/types.js';
 import { BitbankPrivateClient } from '../../../src/private/client.js';
+import { currentPriceOnly } from '../../_flowPricing.js';
 import { mockBitbankSuccess } from '../../fixtures/private-api.js';
 
 beforeEach(() => {
@@ -94,6 +95,13 @@ const PRICES = new Map<string, number>([
 	['doge', 20],
 ]);
 
+/**
+ * 本ファイルの検証対象は asset コードの正規化なので、価格解決は現在価格 1 経路に固定する。
+ * 入出庫日価格を混ぜると、突き合わせ失敗が「大文字のまま」なのか「その日の足が無い」なのか
+ * 切り分けられなくなる（入出庫日価格そのものの検証は calc.test.ts / fetch.test.ts の担当）。
+ */
+const FLOW_PRICING = currentPriceOnly(PRICES);
+
 describe('取得境界での asset 正規化 — 入出金（fetch → calc）', () => {
 	it('大文字 JPY の入出金が fiat として net_flow_jpy に計上される', async () => {
 		const dw = await fetchDw(UPPERCASE_FIXTURE);
@@ -102,7 +110,7 @@ describe('取得境界での asset 正規化 — 入出金（fetch → calc）',
 		expect(dw.deposits.map((d) => d.asset).sort()).toEqual(['doge', 'jpy']);
 		expect(dw.withdrawals.map((w) => w.asset).sort()).toEqual(['btc', 'jpy']);
 
-		const flow = calcPeriodNetFlow(dw, 0, PRICES);
+		const flow = calcPeriodNetFlow(dw, 0, FLOW_PRICING);
 
 		// JPY入金 1,000,000 + DOGE入庫 1000*20 - BTC出庫 0.5*10,000,000 - JPY出金 200,000
 		expect(flow.net_flow_jpy).toBe(1_000_000 + 20_000 - 5_000_000 - 200_000);
@@ -114,16 +122,20 @@ describe('取得境界での asset 正規化 — 入出金（fetch → calc）',
 
 	it('大文字 JPY の入出金が net_jpy_invested に正しく計上される', async () => {
 		const dw = await fetchDw(UPPERCASE_FIXTURE);
-		const summary = calcDepositWithdrawalSummary(dw, 10_000_000, PRICES);
+		const summary = calcDepositWithdrawalSummary(dw, 10_000_000, FLOW_PRICING);
 
 		expect(summary.total_jpy_deposited).toBe(1_000_000);
 		expect(summary.total_jpy_withdrawn).toBe(200_000);
-		// JPY純入金 800,000 + DOGE入庫の仮評価 20,000
-		expect(summary.net_jpy_invested).toBe(820_000);
+		// JPY純入金 800,000 + DOGE入庫の仮評価 20,000 - BTC出庫の仮評価 5,000,000
+		expect(summary.net_jpy_invested).toBe(800_000 + 20_000 - 5_000_000);
 		expect(summary.crypto_deposit_count).toBe(1);
 		expect(summary.crypto_deposit_estimated_jpy).toBe(20_000);
 		expect(summary.crypto_withdrawal_count).toBe(1);
-		expect(summary.account_return_jpy).toBe(10_000_000 - 820_000);
+		// 大文字 'BTC' が正規化されて価格と突き合わさっている（未正規化なら undefined になる）
+		expect(summary.crypto_withdrawal_estimated_jpy).toBe(5_000_000);
+		// 出庫が入金を上回り純投入額が負。既存分岐どおり口座全体リターンは出さない
+		expect(summary.account_return_jpy).toBeUndefined();
+		expect(summary.account_return_pct).toBeUndefined();
 	});
 
 	it('大文字 DOGE の入出庫が prices と突き合わさり unpriced_assets に載らない', async () => {
@@ -143,7 +155,7 @@ describe('取得境界での asset 正規化 — 入出金（fetch → calc）',
 			],
 		});
 
-		const flow = calcPeriodNetFlow(dw, 0, PRICES);
+		const flow = calcPeriodNetFlow(dw, 0, FLOW_PRICING);
 
 		expect(flow.net_flow_jpy).toBe(1000 * 20 - 500 * 20);
 		// warning の誤検知が起きないこと（PR #37 の unpriced_flow_assets 経路）
@@ -164,7 +176,7 @@ describe('取得境界での asset 正規化 — 入出金（fetch → calc）',
 			],
 		});
 
-		const flow = calcPeriodNetFlow(dw, 0, PRICES);
+		const flow = calcPeriodNetFlow(dw, 0, FLOW_PRICING);
 
 		expect(flow.net_flow_jpy).toBe(0);
 		// 申告も小文字（`PeriodNetFlowResult.unpriced_assets` の契約）
@@ -307,9 +319,9 @@ describe('取得境界での asset 正規化 — 小文字レスポンスの回�
 		const lower = await fetchDw(LOWERCASE_FIXTURE);
 		const upper = await fetchDw(UPPERCASE_FIXTURE);
 
-		expect(calcPeriodNetFlow(lower, 0, PRICES)).toEqual(calcPeriodNetFlow(upper, 0, PRICES));
-		expect(calcDepositWithdrawalSummary(lower, 10_000_000, PRICES)).toEqual(
-			calcDepositWithdrawalSummary(upper, 10_000_000, PRICES),
+		expect(calcPeriodNetFlow(lower, 0, FLOW_PRICING)).toEqual(calcPeriodNetFlow(upper, 0, FLOW_PRICING));
+		expect(calcDepositWithdrawalSummary(lower, 10_000_000, FLOW_PRICING)).toEqual(
+			calcDepositWithdrawalSummary(upper, 10_000_000, FLOW_PRICING),
 		);
 	});
 });

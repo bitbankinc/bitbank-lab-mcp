@@ -11,7 +11,7 @@
  * | `get_flow_metrics` | `compact` | `view=full` + `nonZeroOnly=true` |
  * | `get_flow_metrics` | `buckets` | `view=detailed` |
  *
- * alias は DEPRECATED_VIEW_REMOVAL_TARGET まで受理し続ける（§6-4: 最低 1 リリース かつ 3 ヶ月）。本ファイルは
+ * alias は 0.4.0 まで受理し続ける（§6-4: 最低 1 リリース かつ 3 ヶ月）。本ファイルは
  * その期間中「旧値を送っているクライアントの応答が変わっていない」ことを固定する。
  *
  * **`content` と `structuredContent` を分けて検証する。** 「不変」を一語で片付けると、
@@ -58,16 +58,16 @@ function responseOf(res: unknown): { content: Array<{ type: string; text: string
 // ── get_flow_metrics ──────────────────────────────────────
 
 /**
- * **ゼロ出来高のバケットが連続して挟まる**フィクスチャ（§5-5 受け入れ基準①）。
+ * **真のゼロと欠損区間を両方含む**フィクスチャ（§5-5 受け入れ基準①）。
  *
  * 約定を 0 分 / 2 分 / 22 分に置くと、bucketMs=60000 で 23 バケットになり:
  *   - index 0 / 2 / 22 … 非ゼロ
- *   - index 1、3〜21   … 出来高ゼロ（約定が 1 件も無かった区間）
+ *   - index 1        … **真のゼロ**（hasData=true, buy=sell=0）。前後の間隔 2 分 < 欠損閾値 15 分
+ *   - index 3〜21    … **欠損**（hasData=false）。2 分目〜22 分目の 20 分 > 欠損閾値 15 分
  *
- * 旧 `compact` の絞り込みは `buyVolume > 0 || sellVolume > 0` の**素の非ゼロフィルタ**なので、
- * ゼロのバケットは 1 件だろうと 19 件連続だろうと等しく content から落ちる。
- * このフィクスチャは「落とす対象が単発（index 1）と連続（index 3〜21）の両方ある」状態を作り、
- * 写像先（`view=full` + `nonZeroOnly=true`）が同じ絞り込みをしていることを固定する。
+ * この 2 つが同時に無いと、旧 `compact` の 2 つの挙動——真のゼロを落とす / 欠損は畳んで残す——を
+ * どちらも検証できない。「非ゼロだけにフィルタしてから full のレンダラに渡す」素朴な実装は
+ * 欠損 19 バケットが 19 行に展開されるため、ここで落ちる。
  */
 /**
  * bitbank `/transactions` の 1 行。**数値も含めて全て文字列**で返る
@@ -88,11 +88,8 @@ const FLOW_TX_ROWS: BitbankTxRow[] = [
 	{ price: '5000100', amount: '0.2', side: 'sell', executed_at: String(FLOW_T0 + 2 * 60_000) },
 	{ price: '5000200', amount: '0.3', side: 'buy', executed_at: String(FLOW_T0 + 22 * 60_000) },
 ];
-/** 非ゼロのバケット index（この 3 件だけが nonZeroOnly の content に出る）。 */
-const FLOW_NON_ZERO_INDICES = [0, 2, 22] as const;
-/** 出来高ゼロのバケット index（単発 1 件 + 連続 19 件）。 */
-const FLOW_ZERO_INDICES = [1, ...Array.from({ length: 19 }, (_, i) => 3 + i)] as const;
-const FLOW_BUCKET_COUNT = 23;
+const FLOW_TRUE_ZERO_INDEX = 1;
+const FLOW_GAP_INDICES = { first: 3, last: 21, count: 19 };
 
 function runFlow(args: Record<string, unknown>) {
 	mockFetchJson({ success: 1, data: { transactions: FLOW_TX_ROWS } });
@@ -106,7 +103,7 @@ function bucketSection(text: string): { heading: string; lines: string[] } {
 	return { heading: m[1], lines: m[2].split('\n') };
 }
 
-/** `PAIR Flow Metrics (bucketMs=…)` + `Totals:` の 2 行ヘッダ（上位集合の保証で full / detailed に入った）。 */
+/** `PAIR Flow Metrics (bucketMs=…)` + `Totals:` の 2 行ヘッダ（PR 2 で full / detailed に入った）。 */
 function bucketHeaderBlock(text: string): string {
 	const m = text.match(/^[A-Z_]+ Flow Metrics \(bucketMs=\d+\)[^\n]*\nTotals: [^\n]*$/mu);
 	if (!m) throw new Error(`バケットヘッダが見つからない:\n${text}`);
@@ -133,41 +130,41 @@ describe('deprecated view alias の写像（§4-4）', () => {
 			expect(mapped.structured).toEqual(legacy.structured);
 		});
 
-		it('compact のバケット行: 出来高ゼロのバケットは単発でも連続でも content に出ない', async () => {
+		it('compact のバケット行: 真のゼロを出さず、欠損の連続区間は 1 行に畳む', async () => {
 			const { content, structured } = responseOf(await runFlow({ view: 'full', nonZeroOnly: true }));
-			const buckets = (
-				structured as {
-					data: { series: { buckets: Array<{ displayTime: string; buyVolume: number; sellVolume: number }> } };
-				}
-			).data.series.buckets;
+			const buckets = (structured as { data: { series: { buckets: Array<{ displayTime: string }> } } }).data.series
+				.buckets;
 			const label = (i: number) => buckets[i].displayTime;
 			const { heading, lines } = bucketSection(content[0].text);
 
-			// フィクスチャが意図どおり「非ゼロ 3 件 + ゼロ 20 件（単発 1 + 連続 19）」であること。
+			// フィクスチャが意図どおり「真のゼロ 1 件 + 欠損 19 件」を含んでいること。
 			// これが崩れると以下の assert は別のものを検証してしまう。
-			expect(buckets).toHaveLength(FLOW_BUCKET_COUNT);
-			for (const i of FLOW_ZERO_INDICES) {
-				expect(buckets[i].buyVolume === 0 && buckets[i].sellVolume === 0, `index ${i} が非ゼロ`).toBe(true);
-			}
+			expect(buckets).toHaveLength(23);
+			expect(buckets.filter((b) => (b as { hasData?: boolean }).hasData === false)).toHaveLength(
+				FLOW_GAP_INDICES.count,
+			);
 
-			// 見出しは旧 compact と同一文言（分母は全バケット数）
-			expect(heading).toBe(`Non-zero 3/${FLOW_BUCKET_COUNT} buckets:`);
+			// 見出しは旧 compact と同一文言（分母は全バケット数、欠損は件数を併記）
+			expect(heading).toBe(`Non-zero 3/23 buckets (+${FLOW_GAP_INDICES.count} no-data buckets shown as ranges):`);
 
-			// 非ゼロの 3 行だけ。行の順序も元のバケット順のまま
-			expect(lines).toHaveLength(FLOW_NON_ZERO_INDICES.length);
-			FLOW_NON_ZERO_INDICES.forEach((bucketIndex, lineIndex) => {
-				expect(lines[lineIndex].startsWith(`${label(bucketIndex)}  buy=`)).toBe(true);
-			});
+			// 非ゼロ 3 行 + 欠損の区間 1 行 = 4 行。19 行に展開されていない（素朴実装の回帰）
+			expect(lines).toHaveLength(4);
+			expect(lines[0].startsWith(`${label(0)}  buy=`)).toBe(true);
+			expect(lines[1].startsWith(`${label(2)}  buy=`)).toBe(true);
+			expect(lines[2]).toBe(
+				`⋯ 欠損 ${label(FLOW_GAP_INDICES.first)}〜${label(FLOW_GAP_INDICES.last)}（${FLOW_GAP_INDICES.count}バケット, データなし）`,
+			);
+			expect(lines[3].startsWith(`${label(22)}  buy=`)).toBe(true);
 
-			// ゼロのバケットは 1 行も出ない（structuredContent には残っている）
-			for (const i of FLOW_ZERO_INDICES) {
-				expect(content[0].text, `index ${i} の行が content に出ている`).not.toContain(`${label(i)}  buy=`);
-			}
+			// 真のゼロ（hasData=true / buy=sell=0）は 1 行も出ない
+			expect(content[0].text).not.toContain(label(FLOW_TRUE_ZERO_INDEX));
+			// 欠損は個別行に展開されない（区間表記のみ）
+			expect(content[0].text).not.toContain('データなし（欠損区間）');
 		});
 
 		/**
-		 * §3-3 の「旧 `compact` と完全一致」は **上位集合の保証（P3 の修正）以降そのままでは成立しない**。
-		 * `full` / `detailed` が `res.summary` ベースになった結果、バケット行の直前に
+		 * §3-3 の「旧 `compact` と完全一致」は **PR 2（#22）以降そのままでは成立しない**。
+		 * PR 2 で `full` / `detailed` が `res.summary` ベースになった結果、バケット行の直前に
 		 * 2 行ヘッダ（`PAIR Flow Metrics (bucketMs=…)` / `Totals:`）が入るためで、
 		 * `compact` は元から `res.summary` ベースでこのヘッダを持たない。
 		 *
@@ -188,7 +185,7 @@ describe('deprecated view alias の写像（§4-4）', () => {
 			const legacyCompactText = `${summaryText}\n\n${heading}\n${lines.join('\n')}`;
 			expect(text.replace(`${header}\n\n`, '')).toBe(legacyCompactText);
 
-			// 増えた 2 行は上位集合の保証で detailed / full に入ったヘッダそのもの
+			// 増えた 2 行は PR 2 が全 view に入れたヘッダそのもの
 			expect(header.split('\n')).toHaveLength(2);
 			expect(header).toContain('Flow Metrics (bucketMs=60000)');
 			expect(header).toContain('Totals: trades=3');
@@ -227,14 +224,16 @@ describe('deprecated view alias の写像（§4-4）', () => {
 		});
 
 		it('detailed + nonZeroOnly=true は旧 enum で表現できなかった組み合わせを表現する', async () => {
-			// 直近 N 件に絞ったうえで非ゼロだけを出す（量と絞り込みの 2 軸を分けた結果）。
+			// 直近 N 件に絞ったうえで非ゼロだけを出す。欠損の畳み込みは full と同じ扱い。
 			const { content } = responseOf(await runFlow({ view: 'detailed', bucketsN: 21, nonZeroOnly: true }));
 			const { heading, lines } = bucketSection(content[0].text);
 
-			// 直近 21 バケット（index 2〜22）が候補。うち非ゼロは index 2 / 22 の 2 件。
-			// 見出しは full と別文言にして、分母が「直近 N 件」であることを読み取れるようにしている。
-			expect(heading).toBe('Recent 21 buckets, non-zero 2:');
-			expect(lines).toHaveLength(2);
+			// 直近 21 バケット（index 2〜22）が候補。うち非ゼロは index 2 / 22 の 2 件、
+			// 欠損 19 件（index 3〜21）は 1 行の区間表記に畳まれる。
+			expect(heading).toBe(
+				`Recent 21 buckets, non-zero 2 (+${FLOW_GAP_INDICES.count} no-data buckets shown as ranges):`,
+			);
+			expect(lines).toHaveLength(3);
 		});
 	});
 
@@ -372,7 +371,7 @@ describe('deprecated view alias の写像（§4-4）', () => {
 		});
 
 		/**
-		 * **`structuredContent` は意図的に変わる**（語彙統一で唯一の shape 破壊。§4-4 / §4-5）。
+		 * **`structuredContent` は意図的に変わる**（Phase 1 唯一の shape 破壊。§4-4 / §4-5）。
 		 * 旧 `items` は `{ items, meta }` を返し `ok` / `summary` / `data.{raw,keyPoints,volumeStats}` を
 		 * 落としていた。新しい形（他ツールと同じ `Result` 封筒）をここで固定する。
 		 * 消費者は `structuredContent.items` → `structuredContent.data.normalized` へ読み替える。

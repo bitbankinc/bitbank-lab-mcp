@@ -13,8 +13,8 @@
  */
 import { EPSILON } from '../../lib/math.js';
 import { generatePatternDiagram, type PatternDiagramData } from '../../lib/pattern-diagrams.js';
+import { patternBarRange } from './bar-thresholds.js';
 import {
-	barsPerDay,
 	calcAlternationScoreEx,
 	calcApex,
 	calcATR,
@@ -23,7 +23,6 @@ import {
 	calculatePatternScoreEx,
 	checkContainment,
 	checkConvergenceEx,
-	computeTargetReach,
 	deduplicatePatterns,
 	detectWedgeBreak,
 	determineWedgeType,
@@ -31,12 +30,15 @@ import {
 	generateWindows,
 } from './helpers.js';
 import { smoothCandleExtremes } from './smoothing.js';
+import type { Pivot } from './swing.js';
+import { computeTargetReach, omittedTargetReach, type TargetReachResult, targetReachFields } from './target-reach.js';
 import type {
 	CandDebugEntry,
 	CandleData,
 	DeduplicablePattern,
 	DetectContext,
 	DetectResult,
+	TouchPoint,
 	TouchResult,
 } from './types.js';
 
@@ -93,30 +95,62 @@ const FORMING_PRICE_TOLERANCE_PCT = 0.01;
 // ── 時間軸別バーカウント ──
 
 /**
+ * 完成済みウェッジの走査窓の日数由来。**実効値はバー数**で、
+ * `patterns/bar-thresholds.ts` の `patternBarRange` が構造的下限と上限でクランプする。
+ * ここの日数は「その値がどこから来たか」を示す注記であって、暦日数の要件ではない。
+ */
+const WINDOW_MIN_DAYS = 25;
+const WINDOW_MAX_DAYS = 90;
+/** 形成中ウェッジの走査窓（同上）。 */
+const FORMING_WINDOW_MIN_DAYS = 20;
+const FORMING_WINDOW_MAX_DAYS = 120;
+
+/**
+ * 窓サイズに対する比で持つ内部パラメータ。分母は旧実装の日数（25 日窓）で、
+ * `1day` では旧値（5 / 25 / 10 / 15 本）と一致する。
+ *
+ * 構造的下限は掛けない——これらは「パターンの大きさ」ではなく**パターン内部の比率**で、
+ * 下限を掛けると許容ギャップが窓より広くなって意味を失う。
+ */
+const WINDOW_STEP_RATIO = 5 / WINDOW_MIN_DAYS;
+const MAX_TOUCH_GAP_RATIO = 25 / WINDOW_MIN_DAYS;
+const MAX_START_GAP_RATIO = 10 / WINDOW_MIN_DAYS;
+const MIN_BARS_BEFORE_BREAK_RATIO = 15 / WINDOW_MIN_DAYS;
+/** 上の比が小さくなりすぎたときの絶対下限（旧実装から据え置き）。 */
+const MIN_TOUCH_GAP_BARS = 8;
+const MIN_START_GAP_BARS = 3;
+const MIN_BARS_BEFORE_BREAK_BARS = 5;
+
+/**
  * 時間軸別ウェッジ検出のバー数パラメータ。
  *
- * 1day を基準（25 日 windowMin、90 日 windowMax）とし、他時間軸では
- * 「日数 × bars-per-day」で換算する。1week / 1month など bpd<1 で
- * バー数が小さくなりすぎる時間軸では、構造上の最低本数で下限を確保する。
+ * 窓の大きさは `patterns/bar-thresholds.ts` に集約した換算
+ * （`clamp(round(days × barsPerDay), structuralFloorBars, patternBarsCap)`）で決める。
+ * 旧実装のマジックナンバー `MIN_STRUCTURAL = 15` は `structuralFloorBars` に置き換えて廃止した。
  *
  * - windowSizeMin / windowSizeMax / windowStep: 完成済みウェッジのスキャンウィンドウ
  * - maxTouchGap: 隣接タッチ間の最大ギャップ
  * - maxStartGap: 上下最初タッチの開始位置差
  * - formingWindowMin / formingWindowMax: 形成中ウェッジのスキャンウィンドウ
  * - formingMinBarsBeforeBreak: 形成中ブレイク判定の最小バー数
+ *
+ * `patterns/min-bars.ts` が「時間足 → 最小要求バー数」を導出するのに参照するため export する。
  */
-function getWedgeBarParams(tf: string) {
-	const bpd = barsPerDay(tf);
-	const MIN_STRUCTURAL = 15;
+export function getWedgeBarParams(tf: string) {
+	const { minBars: windowSizeMin, maxBars: windowSizeMax } = patternBarRange(tf, WINDOW_MIN_DAYS, WINDOW_MAX_DAYS);
+	const forming = patternBarRange(tf, FORMING_WINDOW_MIN_DAYS, FORMING_WINDOW_MAX_DAYS);
 	return {
-		windowSizeMin: Math.max(MIN_STRUCTURAL, Math.round(25 * bpd)),
-		windowSizeMax: Math.max(MIN_STRUCTURAL + 5, Math.round(90 * bpd)),
-		windowStep: Math.max(1, Math.round(5 * bpd)),
-		maxTouchGap: Math.max(8, Math.round(25 * bpd)),
-		maxStartGap: Math.max(3, Math.round(10 * bpd)),
-		formingWindowMin: Math.max(MIN_STRUCTURAL - 5, Math.round(20 * bpd)),
-		formingWindowMax: Math.max(MIN_STRUCTURAL + 5, Math.round(120 * bpd)),
-		formingMinBarsBeforeBreak: Math.max(5, Math.round(15 * bpd)),
+		windowSizeMin,
+		windowSizeMax,
+		windowStep: Math.max(1, Math.round(windowSizeMin * WINDOW_STEP_RATIO)),
+		maxTouchGap: Math.max(MIN_TOUCH_GAP_BARS, Math.round(windowSizeMin * MAX_TOUCH_GAP_RATIO)),
+		maxStartGap: Math.max(MIN_START_GAP_BARS, Math.round(windowSizeMin * MAX_START_GAP_RATIO)),
+		formingWindowMin: forming.minBars,
+		formingWindowMax: forming.maxBars,
+		formingMinBarsBeforeBreak: Math.max(
+			MIN_BARS_BEFORE_BREAK_BARS,
+			Math.round(windowSizeMin * MIN_BARS_BEFORE_BREAK_RATIO),
+		),
 	};
 }
 
@@ -380,6 +414,55 @@ function validateRegressionCandidate(
 
 // ── Phase 2b: 回帰ベース候補の結果構築 ──
 
+/**
+ * トレンドラインのタッチ点から `PatternEntry.pivots`（構成点）を組む（issue #252 / #281）。
+ *
+ * 対象は上下トレンドラインの**非ブレイクタッチ点すべて**。ブレイク点（`isBreak: true`）は
+ * ラインを**割った / 抜けた**足であって構成点ではないので除く。
+ *
+ * **線ごとの `isBreak` だけでは足りない**（#281）。`evaluateTouchesEx`（`helpers.ts`）は
+ * `isBreak` を**線ごとに独立に**立てるので、下側ラインを割った足でも、同じ足の高値が
+ * 上側ラインの 0.5% 以内にあれば `upperTouches` 側は `isBreak: false` のまま残る。
+ * そのままだと下方ブレイクの足が `kind: 'H'` の構成点として出力に入る
+ * （実データで実体 8 / 59、うち 7 件が `rising_wedge`。PR #280 §5-1）。
+ * そこで `breakIdx` を受け取り、**`idx >= breakIdx` の点を線を問わず落とす**。
+ * `>=` なのは「ラインを割った足そのものは構成点ではない」から（#281）。
+ * 線ごとの `isBreak` フィルタは残す——ブレイク前に一時的に線を超えた足を落とす役目が別にある。
+ *
+ * **`evaluateTouchesEx` の判定は 1 行も変えていない。** タッチ数（`upperQuality` /
+ * `lowerQuality`）・`score`・`alternation`・採否はすべて現状維持で、変わるのは
+ * `PatternEntry.pivots` の中身だけ。
+ *
+ * **間引かない。** 間引きは図（`pivForDiagram`）の都合であって、データ側の都合ではない。
+ * 図とは別に組む（図は `MAX_DIAGRAM_POINTS` まで間引いた上で `price` に**終値**を入れているので、
+ * 図の点と `pivots` の点は同じ `idx` でも価格が違う）。
+ *
+ * **`price` は高安**（`kind='H'` なら `high`、`'L'` なら `low`）で、`extremePrice` も同値。
+ * `detect_triangles` の relaxed swing と同じ基準に揃えてある——タッチ判定自体が `c.high` / `c.low` と
+ * トレンドラインの距離で行われており（`helpers.ts` の `evaluateTouchesEx`）、`price` を終値にすると
+ * 構成点が自分のトレンドライン上に乗らなくなる（`swing.ts` の `Pivot` docstring と同じ論理）。
+ *
+ * 同じ `idx` が H / L 両方に現れ得る（外側バーが上下両ラインを同時に触るケース）。
+ * 配列のキーは `idx` ではなく `(idx, kind)` なので dedup しない（`detect_triangles` と同じ扱い。#141）。
+ *
+ * @param breakIdx そのエントリのブレイク足の `idx`。未ブレイクなら `null`（打ち切らない）。
+ */
+function buildTouchPivots(candles: readonly CandleData[], touches: TouchResult, breakIdx: number | null): Pivot[] {
+	const pick = (pts: readonly TouchPoint[], kind: 'H' | 'L'): Pivot[] =>
+		pts
+			.filter((t) => !t.isBreak)
+			.filter((t) => breakIdx === null || t.index < breakIdx)
+			.map((t) => {
+				const c = candles[t.index];
+				const price = Number(kind === 'H' ? c?.high : c?.low);
+				return { idx: t.index, price, kind, extremePrice: price };
+			})
+			.filter((p) => Number.isFinite(p.price));
+	return [...pick(touches.upperTouches ?? [], 'H'), ...pick(touches.lowerTouches ?? [], 'L')].sort(
+		(a, b) => a.idx - b.idx,
+	);
+}
+
 function downsamplePoints(pts: Array<{ idx: number; kind: 'H' | 'L' }>, maxPoints: number) {
 	if (pts.length <= maxPoints) return pts;
 	const out: typeof pts = [];
@@ -391,6 +474,14 @@ function downsamplePoints(pts: Array<{ idx: number; kind: 'H' | 'L' }>, maxPoint
 	return out.filter((p, i, arr) => arr.findIndex((q) => q.idx === p.idx && q.kind === p.kind) === i);
 }
 
+/**
+ * 検証を通った回帰ベース候補（4b）から出力エントリを 1 件組む。
+ *
+ * ブレイク検出・ターゲット価格・`aftermath`・構造図・`pivots` をここでまとめて作る。
+ * **`aftermath` を持つのはこのパスだけ**なので、出力から 4b 由来か 4d 由来かを判別できる。
+ *
+ * @returns 開始 / 終了のローソク足が取れなかった場合は `null`
+ */
 function buildRegressionEntry(
 	candles: CandleData[],
 	wedgeType: 'rising_wedge' | 'falling_wedge',
@@ -401,6 +492,8 @@ function buildRegressionEntry(
 	v: RegressionValidation,
 	useSmoothed: boolean,
 	debugCandidates: CandDebugEntry[],
+	tz: string | undefined,
+	type: string,
 ): DeduplicablePattern | null {
 	const start = candles[startIdx]?.isoTime;
 	const theoreticalEnd = candles[endIdx]?.isoTime;
@@ -434,13 +527,33 @@ function buildRegressionEntry(
 	// --- ターゲット価格計算（pattern_height 方式） ---
 	const patternHeight = Math.abs(upper.valueAt(startIdx) - lower.valueAt(startIdx));
 	let breakoutTarget: number | undefined;
-	let targetReach: ReturnType<typeof computeTargetReach> | undefined;
-	if (breakInfo.detected && breakoutDirection && Number.isFinite(breakInfo.breakPrice)) {
-		const bp = breakInfo.breakPrice as number;
-		breakoutTarget = breakoutDirection === 'up' ? bp + patternHeight : bp - patternHeight;
-		breakoutTarget = Math.round(breakoutTarget);
-		targetReach = computeTargetReach(candles, breakInfo.breakIdx, bp, breakoutTarget, breakoutDirection);
+	// 未ブレイク / ブレイク足の終値が非有限でも**理由を名乗る**（#224 症状 2）。
+	// **`breakoutTarget` を出す条件は 1 文字も変えない**——理由の申告だけを足している。
+	let targetReach: TargetReachResult = omittedTargetReach('not_broken_out');
+	if (breakInfo.detected && breakoutDirection) {
+		if (Number.isFinite(breakInfo.breakPrice)) {
+			const bp = breakInfo.breakPrice as number;
+			breakoutTarget = breakoutDirection === 'up' ? bp + patternHeight : bp - patternHeight;
+			breakoutTarget = Math.round(breakoutTarget);
+			targetReach = computeTargetReach(
+				candles,
+				breakInfo.breakIdx,
+				bp,
+				breakoutTarget,
+				breakoutDirection,
+				patternHeight,
+			);
+		} else {
+			targetReach = omittedTargetReach('invalid_breakout_price');
+		}
 	}
+
+	// 構成点（`pivots`）はタッチ点の非ブレイク分を**全件**、`price` は高安で出す（#252）。
+	// 下の図用の点（`pivForDiagram`）とは**別に組む**——図は間引き済みで `price` が終値なので流用できない。
+	// **ブレイク足以降は線を問わず落とす**（#281）。このパスのタッチは `validateRegressionCandidate` が
+	// `[startIdx, endIdx]`（窓全体）で取っているのでブレイク後の足まで含みうるが、走査範囲そのものは
+	// 変えない——変えるとタッチ数とスコアが動く。
+	const pivots = buildTouchPivots(candles, touches, breakInfo.detected ? breakInfo.breakIdx : null);
 
 	// ダイアグラム用にタッチポイントから主要点を間引きして pivots を構成
 	const upTouchPts = (touches.upperTouches || [])
@@ -459,7 +572,7 @@ function buildRegressionEntry(
 	}));
 	let diagram: PatternDiagramData | undefined;
 	try {
-		diagram = generatePatternDiagram(wedgeType, pivForDiagram, { price: 0 }, { start, end });
+		diagram = generatePatternDiagram(wedgeType, pivForDiagram, { price: 0 }, { start, end }, { tz, type });
 	} catch {
 		/* noop */
 	}
@@ -479,7 +592,10 @@ function buildRegressionEntry(
 				// 旧コードは false 固定だったため、wedge 到達済みケースで
 				// top-level `targetReached: true` と aftermath.targetReached: false が
 				// 同居していた。LLM/クライアントが aftermath を見ても整合するよう揃える。
-				targetReached: targetReach?.targetReached ?? false,
+				// 進捗を測れなかった（`kind: 'omitted'`）ときは top-level も出ないので false
+				// ——`aftermath.targetReached` は boolean 固定で「不明」を表せないため、
+				// 「到達したと名乗らない」側に倒す（#210）。
+				targetReached: targetReach?.kind === 'measured' ? targetReach.targetReached : false,
 				outcome: isSuccessfulBreakout
 					? wedgeType === 'falling_wedge'
 						? 'bullish_breakout'
@@ -502,6 +618,10 @@ function buildRegressionEntry(
 		type: wedgeType,
 		accepted: true,
 		reason: 'revamped_ok',
+		// 形成中パス（`detectFormingWedges` の成功エントリ）と同じく top-level に置く。ここに無いと `view=debug` の
+		// 候補行に `status=` が出ず、同じ検出器なのに形成中だけ状態が見える形になる（issue #162）。
+		// 値は上の `status4b` と同一——パターン側（下の return）と候補側で別々に計算しない。
+		status: status4b,
 		indices: [startIdx, actualEndIdx],
 		details: {
 			slopeHigh: upper.slope,
@@ -525,20 +645,14 @@ function buildRegressionEntry(
 		confidence,
 		range: { start, end },
 		status: status4b,
+		pivots,
 		daysToApex: apex.isValid ? apex.barsToApex : undefined,
 		breakoutDirection: breakoutDirection ?? undefined,
 		outcome: outcome4b,
 		breakoutDate: breakInfo.detected ? breakInfo.breakIsoTime : undefined,
 		breakoutBarIndex: breakInfo.detected ? breakInfo.breakIdx : undefined,
 		...(breakoutTarget !== undefined ? { breakoutTarget, targetMethod: 'pattern_height' as const } : {}),
-		...(targetReach
-			? {
-					targetReachedPct: targetReach.targetReachedPct,
-					targetReached: targetReach.targetReached,
-					...(targetReach.targetReachedDate ? { targetReachedDate: targetReach.targetReachedDate } : {}),
-					targetReachedPrice: targetReach.targetReachedPrice,
-				}
-			: {}),
+		...targetReachFields(targetReach),
 		...(aftermath ? { aftermath } : {}),
 		...(diagram ? { structureDiagram: diagram } : {}),
 	};
@@ -739,6 +853,8 @@ function detectRegressionWedges(
 			v,
 			useSmoothed,
 			debugCandidates,
+			ctx.tz,
+			ctx.type,
 		);
 		if (entry) patterns.push(entry);
 	}
@@ -844,6 +960,15 @@ function findLowerTrendlineF(
 
 // ── Phase 3: 形成中ウェッジ検出 ──
 
+/**
+ * 形成中ウェッジ（4d）を検出する。回帰ベース（4b）より緩い条件で、SG 平滑化した
+ * リラックスピボットから 2 点でトレンドラインを引き、収束・Apex・包含だけを見る。
+ *
+ * ブレイクを確認できた候補は `status: 'completed'` になるため、**`includeForming: false`
+ * でも出力に残る**（実データの既定オプションで出てくる `wedge_*` はほぼこれ）。
+ *
+ * @param existingPatterns 回帰パスの結果。期間が近い同型を重複として捨てるために参照する
+ */
 function detectFormingWedges(
 	pivotData: PivotData,
 	barParams: WedgeBarParams,
@@ -1059,21 +1184,35 @@ function detectFormingWedges(
 		// --- ターゲット価格計算（pattern_height 方式） ---
 		const fPatternHeight = Math.abs(upperLine.valueAt(startIdx) - lowerLine.valueAt(startIdx));
 		let fBreakoutTarget: number | undefined;
-		let fTargetReach: ReturnType<typeof computeTargetReach> | undefined;
+		// 上と同じ（#224 症状 2）。`undefined` 初期化＝無言の畳み込みを型で潰してある。
+		let fTargetReach: TargetReachResult = omittedTargetReach('not_broken_out');
 		if (breakoutDirection && breakoutIdx !== -1) {
 			const bp = Number(candles[breakoutIdx]?.close);
 			if (Number.isFinite(bp)) {
 				fBreakoutTarget = breakoutDirection === 'up' ? bp + fPatternHeight : bp - fPatternHeight;
 				fBreakoutTarget = Math.round(fBreakoutTarget);
-				fTargetReach = computeTargetReach(candles, breakoutIdx, bp, fBreakoutTarget, breakoutDirection);
+				fTargetReach = computeTargetReach(candles, breakoutIdx, bp, fBreakoutTarget, breakoutDirection, fPatternHeight);
+			} else {
+				fTargetReach = omittedTargetReach('invalid_breakout_price');
 			}
 		}
+
+		// 構成点（`pivots`）。回帰パスと同じ定義——上下トレンドラインの非ブレイクタッチ点を
+		// `evaluateTouchesEx` で取り、`price` は高安で出す（#252）。**検出には一切使わない**
+		// （このパスの採否は上のゲートで既に決まっている）ので、閾値も判定も動かない。
+		// 形成中パスもここで `pivots` を出さないと、同じ `wedge_*` なのに検出経路によって
+		// 構成点が有ったり無かったりする（実データの既定オプションで出る wedge はこちらのパス）。
+		// 走査終端が `actualEndIdx = breakoutIdx` なのでブレイク足は必ず走査範囲に入る。
+		// `breakoutIdx` を渡してその足以降を落とす（#281）。未ブレイクなら `null` で打ち切らない。
+		const fTouches = evaluateTouchesEx(candles, upperLine, lowerLine, startIdx, actualEndIdx);
+		const fPivots = buildTouchPivots(candles, fTouches, breakoutIdx !== -1 ? breakoutIdx : null);
 
 		const entry: DeduplicablePattern = {
 			type: wedgeType,
 			confidence,
 			range: { start, end },
 			status,
+			pivots: fPivots,
 			daysToApex: fApex.isValid ? fApex.barsToApex : undefined,
 			breakoutDirection: breakoutDirection ?? undefined,
 			outcome,
@@ -1082,14 +1221,7 @@ function detectFormingWedges(
 			...(fBreakoutTarget !== undefined
 				? { breakoutTarget: fBreakoutTarget, targetMethod: 'pattern_height' as const }
 				: {}),
-			...(fTargetReach
-				? {
-						targetReachedPct: fTargetReach.targetReachedPct,
-						targetReached: fTargetReach.targetReached,
-						...(fTargetReach.targetReachedDate ? { targetReachedDate: fTargetReach.targetReachedDate } : {}),
-						targetReachedPrice: fTargetReach.targetReachedPrice,
-					}
-				: {}),
+			...targetReachFields(fTargetReach),
 			_method: 'forming_relaxed',
 		};
 		patterns.push(entry);
@@ -1122,9 +1254,10 @@ export function detectWedges(ctx: DetectContext): DetectResult {
 	const pivotData = preparePivots(ctx);
 	const regressionPatterns = detectRegressionWedges(pivotData, barParams, ctx);
 	const formingPatterns = detectFormingWedges(pivotData, barParams, regressionPatterns, ctx);
-	// includeForming=false のときに forming / near_completion を残すと、
-	// 後段 globalDedup で completed が confidence/end-time の比較に負けて
-	// 消える可能性があるため、dedup より前で落とす。
+	// includeForming=false のとき forming / near_completion は dedup より前で落とす。
+	// #133 以降 dedup（deduplicatePatterns / globalDedup）は statusScore 最優先なので
+	// completed が forming に押し出されることは無くなったが、要求されていない status の
+	// 候補を dedup の比較対象に混ぜない意味で残している。
 	// 形成中ウィンドウでブレイク確認済みのもの（status='completed'）は
 	// 通常の完成済みと同列で扱う。
 	const merged = [...regressionPatterns, ...formingPatterns];

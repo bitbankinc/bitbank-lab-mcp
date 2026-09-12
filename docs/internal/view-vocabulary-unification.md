@@ -2,30 +2,17 @@
 
 `view` パラメータの値がツール間で不揃いで、**同じ語が異なる重さを指している**問題の調査記録と設計提案。
 起票時点では設計提案のみでコードは変更していなかった。**Phase 1（PR 0〜3）は実装済み**——
-実施状況と「各段階で実際に入ったもの」は §7 を参照すること。
+実施状況と「各 PR で実際に入ったもの」は §7 を参照すること。
 
 対象は MCP のツール入力スキーマ（`inputSchema`）として外部クライアントに公開される `view` の enum 値。
 enum 値の変更は破壊的変更になるため、移行方針まで含めて先に合意する。
 
-> **⚠️ 本ドキュメントの記述対象は 2 つある。読む前に必ず区別すること。**
->
-> | 節 | 記述対象 | 扱い |
-> |---|---|---|
-> | **§1 / §2 / 付録** | **fork（`tjackiet/bitbank-lab-mcp`）の `8a772c7` 時点**のコード | **調査記録**。当時の実測値であり、現状の説明ではない |
-> | **§3 以降** | **本リポジトリ（`bitbankinc/bitbank-lab-mcp`）の現行実装** | **仕様書**。実装に追随させる |
->
-> 設計は fork 側で 5 段階に分けて反復したのち、その成果を本リポジトリへ移植した（§7-6）。
-> **fork には本リポジトリに無い前段作業**（欠損バケットの検出 `hasData`、カバレッジ申告
-> `actualRange.gapMinutes`、計算層 warning `meta.warnings` 等）**が入っていたため、
-> §1 の記述の一部は本リポジトリの挙動と一致しない。** 該当箇所には
-> **「fork 固有」の注記**を付けてあるので、**本リポジトリの挙動は必ず §3 以降と実装で確認すること。**
->
-> §1〜§2 で挙げた指摘のうち実装で解消されたものも、本文はそのまま残してある——
-> 「なぜこの設計にしたか」の一次ソースであり、実装後に書き換えると設計判断の根拠が失われるため
-> （`docs/internal/bitbank-tx-archive-tz.md` と同じ扱い）。
-> **どの指摘がどの段階で解消済みかは §7「実施状況」を参照すること。**
->
-> 行番号はいずれも fork の `8a772c7` 基準で、本リポジトリでは最大 100 行以上ずれる。
+> **§1〜§2 と付録は調査記録であり、現状の説明ではない。**
+> 記述と行番号は本ドキュメント作成時点（PR #18 マージ時の `main` = `8a772c7`）のコードに対応する。
+> 以降の実装 PR で解消された指摘もそのまま残してある——「なぜこの設計にしたか」の一次ソースであり、
+> 実装後に書き換えると設計判断の根拠が失われるため（`docs/internal/bitbank-tx-archive-tz.md` と同じ扱い）。
+> **どの指摘がどの PR で解消済みかは §7「実施状況」を参照すること。**
+> §3 以降（設計・移行方針・PR ブリーフ）は後続セッションが仕様書として読むため、実装の進捗に追随させる。
 
 ---
 
@@ -111,19 +98,10 @@ enum 値の変更は破壊的変更になるため、移行方針まで含めて
 
 ### 1-3. `get_flow_metrics`（`tools/get_flow_metrics.ts:677-767`）
 
-> **⚠️ 本節は 2 箇所が fork 固有。本リポジトリには当てはまらない**（下表の 🔸 印）。
-> fork には前段作業で入った**欠損バケットの検出**（`hasData`）と**計算層 warning**（`meta.warnings`）が
-> あり、`compact` はそれを利用して欠損の連続区間を 1 行に畳んでいた。
-> **本リポジトリの `compact` は `buckets.filter((b) => b.buyVolume > 0 || b.sellVolume > 0)` の
-> 素の非ゼロフィルタ**で、欠損という概念自体が無い（出来高 0 のバケットは黙って落ちる）。
-> warning も `meta.warning`（取得層）の 1 系統だけ。
-> **この差は本節の指摘（P3 / P4）の成否には影響しない**——根拠は `res.summary` を捨てる点と
-> `buckets` を削る点にあり、`compact` の欠損処理には依存していないため。
-
 | view | `content[0].text` の内容 | `structuredContent` | 出力規模（hours=24 / bucketMs=60000 → 約 1,440 バケット） |
 |---|---|---|---|
-| **`summary`**（default） | `res.summary` そのまま。= baseSummary（pair / 最終値 / trades / buy% / CVD / スパイク上位3件 / 実取得範囲）＋ `⚠️` 取得層 warning ＋ 🔸`⚠️` 計算層 warnings（**fork 固有**。本リポジトリは取得層 1 系統のみ）＋ `aggregates:` 1 行 ＋ 4 行フッタ（`含まれるもの` / `含まれないもの` / `補完ツール` / `加工契約`）。**バケット行なし** | **`series.buckets` キーを削除**した `Result`（`:715-720`） | **≒ 10 行** |
-| `compact` | `res.summary`（上と同一・フッタ込み）＋ `Non-zero X/Y buckets:` ＋ **非ゼロバケット行**。🔸**fork 固有**: 欠損バケットは落とさず `⋯ 欠損 A〜B（Nバケット, データなし）` の区間 1 行に畳む（`:730-741`, `renderCompactBucketLines`）。**本リポジトリでは畳み込みは無く、出来高 0 のバケットは単発でも連続でも content から落ちる** | `series.buckets` を **非ゼロ ∪ 欠損** でフィルタした `Result`（`:731-736`。本リポジトリは **非ゼロのみ**でフィルタ） | 10 + 非ゼロ件数（データ依存、**0〜1,440 行**） |
+| **`summary`**（default） | `res.summary` そのまま。= baseSummary（pair / 最終値 / trades / buy% / CVD / スパイク上位3件 / 実取得範囲）＋ `⚠️` 取得層 warning ＋ `⚠️` 計算層 warnings ＋ `aggregates:` 1 行 ＋ 4 行フッタ（`含まれるもの` / `含まれないもの` / `補完ツール` / `加工契約`）。**バケット行なし** | **`series.buckets` キーを削除**した `Result`（`:715-720`） | **≒ 10 行** |
+| `compact` | `res.summary`（上と同一・フッタ込み）＋ `Non-zero X/Y buckets:` ＋ **非ゼロバケット行**。欠損バケットは落とさず `⋯ 欠損 A〜B（Nバケット, データなし）` の区間 1 行に畳む（`:730-741`, `renderCompactBucketLines`） | `series.buckets` を **非ゼロ ∪ 欠損** でフィルタした `Result`（`:731-736`） | 10 + 非ゼロ件数（データ依存、**0〜1,440 行**） |
 | `buckets` | **`res.summary` を使わない再構築テキスト**: `PAIR Flow Metrics (bucketMs=…) 実取得範囲…` ＋ `Totals:` ＋ warning 行 ＋ **直近 `bucketsN` 件**（既定 10 / 上限 100）（`:759-763`） | `Result` **全体（全バケット入り）** | 3 + `bucketsN` ≒ **13 行**（既定） |
 | `full` | `buckets` と同じ再構築ヘッダ ＋ **全バケット行**（`:765-766`） | `Result` 全体 | 3 + 1,440 ≒ **1,443 行** |
 
@@ -336,8 +314,7 @@ candidates は `accepted` 優先で 200 件まで）。全 view で `meta.debug`
    `data.resultsDetailed` 等）。削る＝既存消費者が壊れる / 足す＝壊れない、の非対称性による。
    それでも落とす必要が生じた場合は、**スキーマ側を optional にしたうえで
    `meta.omitted: ['series.buckets']` のように省略を申告する**。黙って必須フィールドを消さない
-   （本リポジトリの既存方針——データの不完全性を黙って消さず warning で申告する、
-   `.claude/rules/tools.md`「上流 warning の伝播」——と同じ扱い）。
+   （本リポジトリの既存方針——欠損を黙って消さない——と同じ扱い）。
 
    **「足す」の許容は view の階梯位置を問わない。** 上記の非対称性は階梯上か階梯外かに
    依存しないため。実際、許容している 3 件のうち 2 件（`detect_patterns(detailed)` の
@@ -387,46 +364,36 @@ candidates は `accepted` 優先で 200 件まで）。全 view で `meta.debug`
 旧 `compact` は `content` と `structuredContent` の**両方**を変えていたため、写像先の契約を
 曖昧にすると「不変」を主張できない。以下を確定仕様とする。
 
-> **契約は本リポジトリの旧 `compact` の実挙動から導出してある。**
-> 本節の初版は fork の `compact`（欠損バケットの区間畳み込み）を前提に書かれていたが、
-> **本リポジトリの `compact` は素の非ゼロフィルタ**——
-> `buckets.filter((b) => b.buyVolume > 0 || b.sellVolume > 0)` ——であり、
-> `hasData` も `renderCompactBucketLines` も存在しない（§1-3 の 🔸 注記）。
-> `nonZeroOnly` は**その挙動を 1 バイトも変えずに**別パラメータへ切り出したものなので、
-> 「欠損の連続区間を 1 行に畳む」は本リポジトリでは**適用されない**。
-> fork の欠損検出は view 語彙統一とは独立した機能追加であり、還元するなら別途行う。
-
 | 対象 | `nonZeroOnly=false`（既定） | `nonZeroOnly=true` |
 |---|---|---|
-| `content` のバケット行 | 全バケットを 1 行ずつ | **`buyVolume > 0 \|\| sellVolume > 0` のバケットのみ** 1 行ずつ。出来高 0 のバケットは、約定が 1 件も無かった区間であっても単発／連続を問わず落ちる |
-| バケット行の見出し | `All buckets:` / `Recent N buckets:` | `Non-zero X/Y buckets:`（`view=full`。**旧 `compact` と同一文言**）／ `Recent N buckets, non-zero M:`（`view=detailed`。母数が「直近 N 件」であることを読み取れるよう別文言にする） |
+| `content` のバケット行 | 全バケットを 1 行ずつ。欠損は `データなし（欠損区間）` の**個別行** | 非ゼロバケットのみ 1 行ずつ。**`hasData===false` の連続区間は 1 行の区間表記に畳む**（`⋯ 欠損 A〜B（Nバケット, データなし）`）。真のゼロ（`hasData===true` かつ buy=sell=0）は出さない |
 | `structuredContent.data.series.buckets` | 全バケット | **全バケット（変わらない）** ← §3-2 規約 4 |
 | `meta` | 変化なし | 変化なし。**`meta.omitted` は付けない**（`structuredContent` から何も省いていないため） |
 | `view=summary` との併用 | — | **no-op**（`content` にバケット行が無い）。エラーにはしない |
 | `view=detailed` との併用 | 直近 `bucketsN` 件を 1 行ずつ | 直近 `bucketsN` 件に上記フィルタを適用 |
 
-**実装上の必須要件**: `view=full` + `nonZeroOnly=true` の**バケット行**——どのバケットを出すか、
-および見出しの文言——は旧 `compact` と**完全一致**させる。
-ヘッダ・フッタ・注記行は §3-2 規約 3（上位集合）に従い、
+**実装上の必須要件**: `view=full` + `nonZeroOnly=true` の**バケット行**——どのバケットを出すか /
+欠損の連続区間の 1 行への畳み込み / 真のゼロ（`hasData=true` かつ buy=sell=0）の除外——は
+旧 `compact` と**完全一致**させる。ヘッダ・フッタ・注記行は §3-2 規約 3（上位集合）に従い、
 旧 `compact` に対して**増える方向の差分のみ許容**する（**減ってはならない**）。
 
 > **なぜ「content 全体の完全一致」ではないか。** 本節の初版はそう書いていたが、
-> **上位集合の保証（P3 の修正）以降そのままでは成立しない。** `full` / `buckets` が
-> `res.summary` ベースになった結果、`full` にはバケット行の直前に 2 行のヘッダ
+> **PR 2（#22）以降そのままでは成立しない。** PR 2 で `full` / `buckets` が `res.summary` ベースに
+> なった結果、`full` にはバケット行の直前に 2 行のヘッダ
 > （`PAIR Flow Metrics (bucketMs=…) 実取得範囲…` と `Totals: …`）が入る。`compact` は元から
 > `res.summary` ベースでこのヘッダを持たないため、`full` + `nonZeroOnly=true` はこの 2 行ぶん増える。
 > **ヘッダを削って完全一致させるのは誤り**——今度は §3-2 規約 3 に反する。
 
-出来高 0 のバケットが**単発（1 件）と連続（複数件）の両方**含まれるフィクスチャでの一致テストを
-受け入れ基準にする。連続ゼロが 1 件も無いフィクスチャだと、「連続をまとめて扱う」実装との
-差が出ずテストが素通りするため。
+「全バケットをフィルタしてから `full` のレンダラに渡す」という素朴な実装では
+**欠損の畳み込みが失われて N 行に展開され、一致しない**（旧 compact は区間 1 行）。
+既存の `renderCompactBucketLines`（`tools/get_flow_metrics.ts:65-91`）を再利用すること。
+真のゼロと欠損区間を含むフィクスチャでの一致テストを PR 3 の受け入れ基準にする。
 
 **旧 `compact` からの差分は `structuredContent` のみ**: 旧 `compact` は `series.buckets` を
-**非ゼロのみ**にフィルタしていた（fork の `8a772c7` では「非ゼロ ∪ 欠損」）。
-規約 4 によりこのフィルタは**廃止済み**（`structuredContent` の切り離し。該当コードは現在存在しない）。
-つまり**この差分は語彙統一より前の段階で既に発生している**。
-したがって §4-4 の alias 写像で「不変」と言うときは、
-**`structuredContent` 切り離し適用後の挙動に対して不変**を意味する。
+「非ゼロ ∪ 欠損」でフィルタしていた（`8a772c7` 時点の `tools/get_flow_metrics.ts:731-736`）。
+規約 4 によりこのフィルタは**廃止済み**（PR 1 / #20。該当コードは現在存在しない）。
+つまり**この差分は PR 1 の時点で既に発生している**。
+したがって §4-4 の alias 写像で「不変」と言うときは、**PR 1 適用後の挙動に対して不変**を意味する。
 
 ### 3-4. ツール固有値の判断（吸収 / 残す）と理由
 
@@ -530,8 +497,8 @@ PR 2 が P3 を、PR 1 が P4 を担当するという意味で、PR 3 の担当
 
 | Phase | リリース目安 | 内容 | 破壊性 |
 |---|---|---|---|
-| **1** | 次のマイナー（`0.4.0`。公開済みの最新が `0.3.1`） | 統一語彙を導入。旧値は **deprecated alias** として受理し、ハンドラ入口で新値に正規化。`format` / `nonZeroOnly` を追加。P3（上位集合）と P4（`structuredContent` 非依存）を修正。description を統一文言に | **互換性に影響あり**（`content` は既定・旧値経由とも不変。ただし `structuredContent` は変わる → §4-5） |
-| **2** | 次の次のマイナー（`0.6.0`、Phase 1 から最低 1 リリース かつ 3 ヶ月以上あける） | 旧 alias を enum から削除 | **破壊的**（旧値は validation error） |
+| **1** | 次のマイナー（例 `0.2.0`） | 統一語彙を導入。旧値は **deprecated alias** として受理し、ハンドラ入口で新値に正規化。`format` / `nonZeroOnly` を追加。P3（上位集合）と P4（`structuredContent` 非依存）を修正。description を統一文言に | **互換性に影響あり**（`content` は既定・旧値経由とも不変。ただし `structuredContent` は変わる → §4-5） |
+| **2** | 次の次のマイナー（例 `0.3.0`、Phase 1 から最低 1 リリース かつ 3 ヶ月以上あける） | 旧 alias を enum から削除 | **破壊的**（旧値は validation error） |
 | **3** | 需要ベース（別議論） | `get_candles` / `get_transactions` に軽量 `summary` を **opt-in 専用**で新設（既定は `full` のまま。§3-5） | **非破壊**（enum 値の追加のみ） |
 
 `0.x` 系なので SemVer 上はマイナーで破壊的変更を出せるが、**Phase 1 と Phase 2 を同一リリースに
@@ -547,15 +514,10 @@ PR 2 が P3 を、PR 1 が P4 を担当するという意味で、PR 3 の担当
 | `get_candles` | `items` | `view=full` + `format=json` | 不変 | **変わる**: `{ items, meta }` → `Result` 封筒（`ok`/`summary`/`data`/`meta`）。Phase 1 唯一の shape 破壊 |
 | `get_transactions` | `summary`（既定） | `view=full` | 不変 | 不変 |
 | `get_transactions` | `items` | `view=full` + `format=json` | 不変 | 不変（元から `Result` 封筒） |
-| `get_flow_metrics` | `compact` | `view=full` + `nonZeroOnly=true` | **バケット行（絞り込み条件と見出し文言）は不変。ヘッダ 2 行が増える**（`PAIR Flow Metrics (bucketMs=…)` / `Totals:`。上位集合の保証で `full` に入ったもの）。§3-3 の必須要件を満たす実装であること | **`structuredContent` 切り離しで変更済み**: 非ゼロフィルタを廃止し全バケット。語彙統一での追加変更なし |
+| `get_flow_metrics` | `compact` | `view=full` + `nonZeroOnly=true` | **バケット行は不変。ヘッダ 2 行が増える**（`PAIR Flow Metrics (bucketMs=…)` / `Totals:`。PR 2 で `full` に入ったもの）。§3-3 の必須要件を満たす実装であること | **PR 1 で変更済み**: 「非ゼロ ∪ 欠損」フィルタを廃止し全バケット。Phase 1 での追加変更なし |
 | `get_flow_metrics` | `buckets` | `view=detailed` | 不変 | 不変 |
 | `detect_patterns` | — | 変更なし | 不変 | 不変 |
-| `get_volatility_metrics` | — | 変更なし | 上位集合の保証でフッタが**増える** | 不変 |
-
-> **`compact` の写像で「バケット行は不変」と言えるのは、`nonZeroOnly` の絞り込みを
-> 旧 `compact` と同じ素の非ゼロフィルタにしてあるから**（§3-3）。
-> fork には欠損バケットの区間畳み込みがあり同じ表現にはならないが、
-> **本リポジトリの互換性の基準は本リポジトリの旧 `compact` の出力**であって fork ではない。
+| `get_volatility_metrics` | — | 変更なし | PR 2 でフッタが**増える** | 不変 |
 
 ### 4-5. 破壊的変更の影響範囲
 
@@ -564,8 +526,8 @@ PR 2 が P3 を、PR 1 が P4 を担当するという意味で、PR 3 の担当
 
 **Phase 1 で影響が出るもの（`structuredContent` の消費者のみ）**
 
-- `get_flow_metrics(view=summary)` に `series.buckets` が**戻る**（従来はキーごと欠落。`structuredContent` 切り離し）。
-  `view=compact` の `series.buckets` が全バケットになる（従来は非ゼロのみにフィルタ済み。同上）。
+- `get_flow_metrics(view=summary)` に `series.buckets` が**戻る**（従来はキーごと欠落。PR 1）。
+  `view=compact` の `series.buckets` が全バケットになる（従来は「非ゼロ ∪ 欠損」フィルタ済み。PR 1）。
 - `get_candles` の旧 `view=items` → `view=full` + `format=json` で `structuredContent` が
   `{ items, meta }` から `Result` 封筒に変わる（PR 3）。**旧 shape に依存するクライアントは要修正。**
   `structuredContent.items` → `structuredContent.data.normalized` の読み替えが必要。
@@ -673,7 +635,7 @@ PR 6  Phase 3（軽量 summary の opt-in 追加、需要ベース・任意）
 | **読むもの** | 本ドキュメント §1-3、§2-1 の P6 |
 | **触るファイル** | `src/prompts/intermediate.ts:90` |
 | **内容** | `get_flow_metrics(..., view=detailed)` は同ツールの enum（`summary`/`compact`/`buckets`/`full`）に存在せず、そのまま呼ぶと validation error。**現行の**有効値へ差し替える |
-| **判断が要る点** | 差し替え先。プロンプトの用途は「CVD 推移・スパイク・直近 1-3 時間重視」で `limit=300` / `bucketMs=60000`（＝最大約 300 バケット）。**`compact`（非ゼロバケットのみ）を推奨**。`full` は 300 行で用途に対して重く、`buckets`（既定 10 件）は「CVD 推移」を見るには短い |
+| **判断が要る点** | 差し替え先。プロンプトの用途は「CVD 推移・スパイク・直近 1-3 時間重視」で `limit=300` / `bucketMs=60000`（＝最大約 300 バケット）。**`compact`（非ゼロバケットのみ、欠損は区間表記で保持）を推奨**。`full` は 300 行で用途に対して重く、`buckets`（既定 10 件）は「CVD 推移」を見るには短い |
 | **受け入れ基準** | 差し替え後の値が `GetFlowMetricsInputSchema` の enum に含まれる。プロンプト経由の呼び出しが validation error にならないことをテストで固定する |
 | **やらないこと** | 語彙の変更。他プロンプトの整理。PR 3 の後に PR 4 で新語彙へ再度追従させる |
 | **依存** | なし。単独マージ可 |
@@ -714,7 +676,7 @@ PR 3 の着手前に §6 の以下を確定させる。**実装セッション�
 |---|---|---|---|
 | §6-1 | `format` を新パラメータにするか、`view` の値（例 `full_json`）のままにするか | PR 3 の入力スキーマ全体が変わる | **新パラメータにする** |
 | §6-3 | `get_tickers_jpy` の `view` を対象に含めるか | PR 3 の対象ツール数が変わる | **対象外**（改名は別 issue） |
-| §6-4 | alias の猶予期間（本提案は「最低 1 リリース かつ 3 ヶ月」） | PR 5 の実施時期が決まらない | **最低 1 リリース かつ 3 ヶ月。`0.4.0` 導入 → `0.6.0` 削除** |
+| §6-4 | alias の猶予期間（本提案は「最低 1 リリース かつ 3 ヶ月」） | PR 5 の実施時期が決まらない | **最低 1 リリース かつ 3 ヶ月。`0.2.0` 導入 → `0.4.0` 削除** |
 | ~~§6-6~~ | ~~階梯規約をテストで機械的に固定するか~~ | **決定済み → 下記** | **固定する** |
 
 §6-2（軽量 `summary` を新設するか）は PR 6 の要否であり、PR 3 は待たない。
@@ -738,7 +700,7 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 | **読むもの** | 本ドキュメント全体（特に §3 と §4）＋ 決定ゲートの結論 |
 | **触るファイル** | `src/schema/market-data.ts:250, 319, 498-505`、`src/schema/patterns.ts:65`、`src/schema/analysis.ts:24`、`tools/get_candles.ts:882-923`、`tools/get_transactions.ts:320-374`、`tools/get_flow_metrics.ts:677-769`、`tools/detect_macd_cross.ts:609`（description のみ）。加えて PR 1 で追加した `tests/view-structured-content-invariance.test.ts` の `get_candles` ケース（下記⑤で逸脱が解消するため、他ツールと同じ deep-equal 検証に置き換える）。**行番号は PR #20 マージ後の `main` = `26e7a0a` 時点** |
 | **内容** | ① enum を統一語彙に変更（§3-5 の表）② 旧値を deprecated alias として受理し、ハンドラ入口で正規化（§4-4 の写像表）③ `format` / `nonZeroOnly` を追加（§3-3）④ `get_transactions` の default を `full` に（挙動不変）⑤ `get_candles(view=full, format=json)` の `structuredContent` を `Result` 封筒に統一（**唯一の shape 破壊。PR 1 から持ち越した分**）⑥ description を統一文言に。「この view では〇〇が `content` に出ない」「`full` は常に最重量」「`detect_macd_cross` の `view` は `pair` 省略時のみ有効」を明記 |
-| **受け入れ基準** | ① §4-4 の写像表どおり、旧値と新値で `content` / `structuredContent` が一致するテスト（`compact` → `full`+`nonZeroOnly` は**出来高 0 のバケットが単発と連続の両方含まれるフィクスチャ**で**バケット行**の一致を検証し、差分がヘッダ 2 行ちょうどで**旧 `compact` の要素が消えていない**ことも見る。§3-3 の必須要件）② 階梯の包含テスト（§6-6 の方式。**文字列長の比較では検証しない**）③ 既定の応答が変わらないこと（既存テストを無改変で通すことを挙動不変の証明とする。`tests/get_candles.test.ts` / `get_transactions.test.ts` / `get_flow_metrics*.test.ts`） |
+| **受け入れ基準** | ① §4-4 の写像表どおり、旧値と新値で `content` / `structuredContent` が一致するテスト（`compact` → `full`+`nonZeroOnly` は**真のゼロと欠損区間を含むフィクスチャ**で**バケット行**の一致を検証し、差分がヘッダ 2 行ちょうどで**旧 `compact` の要素が消えていない**ことも見る。§3-3 の必須要件）② 階梯の包含テスト（§6-6 の方式。**文字列長の比較では検証しない**）③ 既定の応答が変わらないこと（既存テストを無改変で通すことを挙動不変の証明とする。`tests/get_candles.test.ts` / `get_transactions.test.ts` / `get_flow_metrics*.test.ts`） |
 | **やらないこと** | 既定を軽いほうへ倒す（§3-5）。alias の削除（PR 5）。軽量 `summary` の新設（PR 6） |
 | **CHANGELOG** | `### Schema (breaking)`。文面案は §4-6 |
 | **依存** | PR 1、PR 2、決定ゲート |
@@ -803,7 +765,7 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
    → **決定: 対象外。** `ranked` / `items` は射影であり量でも形式でもない。
    `view` という名前自体が誤用なので、**改名は別 issue として切り出す**（PR 3 では変更しない）。
 4. **alias の猶予期間**（本提案は「最低 1 リリース かつ 3 ヶ月」）。
-   → **決定: 最低 1 リリース かつ 3 ヶ月。** `0.4.0` で導入し **`0.6.0` で削除**を目標とし、
+   → **決定: 最低 1 リリース かつ 3 ヶ月。** `0.2.0` で導入し **`0.4.0` で削除**を目標とし、
    この目標バージョンを各 deprecated 値の description に明記する
    （実装は `DEPRECATED_VIEW_REMOVAL_TARGET`（`src/schema/base.ts`）を単一ソースにした）。
 5. ~~**P6 の即時修正**~~ → **対応済み（PR 0 / #19）。決定不要だった項目。**
@@ -849,16 +811,13 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 §1〜§2 の本文は調査記録として `8a772c7` 時点のまま据え置くので、本文だけを読むと解消済みの
 問題も未解消に見える。解消状況の二重管理を避けるため、§2-1 の問題一覧には解消列を持たせない。
 
-**PR 番号列は設計を反復した fork（`tjackiet/bitbank-lab-mcp`）のもの**で、本リポジトリの PR 番号ではない。
-本リポジトリへは 5 段階のコミットとして移植した（§7-6）。
-
-| PR | ブリーフ | 状態 | fork の PR 番号 | 解消した指摘 |
+| PR | ブリーフ | 状態 | PR 番号 | 解消した指摘 |
 |---|---|---|---|---|
 | PR 0 | §5-1 | **完了** | [#19](https://github.com/tjackiet/bitbank-lab-mcp/pull/19) | **P6**（`src/prompts/intermediate.ts` の無効な `view=detailed` → `view=compact`） |
 | PR 1 | §5-2 | **完了** | [#20](https://github.com/tjackiet/bitbank-lab-mcp/pull/20) | **P4**（`view` が `structuredContent` の契約を変える）— ただし `get_candles(view=items)` の封筒逸脱は**未解消**。§5-0 分割の原則 2 により PR 3 へ持ち越し |
 | PR 2 | §5-3 | **完了** | [#22](https://github.com/tjackiet/bitbank-lab-mcp/pull/22) | **P3**（重い view が軽い view の上位集合になっていない） |
-| PR 3 | §5-5 | **完了** | [#23](https://github.com/tjackiet/bitbank-lab-mcp/pull/23) | **P1 / P2 / P5 / P7** ＋ **P4 の残り**（`get_candles(view=items)` の封筒） |
-| PR 4 | §5-6 | **完了** | [#24](https://github.com/tjackiet/bitbank-lab-mcp/pull/24) | （呼び出し側追従とドキュメント。指摘の解消ではない） |
+| PR 3 | §5-5 | **完了** | — | **P1 / P2 / P5 / P7** ＋ **P4 の残り**（`get_candles(view=items)` の封筒） |
+| PR 4 | §5-6 | **完了** | — | （呼び出し側追従とドキュメント。指摘の解消ではない） |
 | PR 5 | §5-7 | 未着手 | — | （Phase 2: alias 削除） |
 | PR 6 | §5-8 | 未着手 | — | （Phase 3: 軽量 `summary` の opt-in 追加。§6-2 次第で実施しない） |
 
@@ -867,9 +826,9 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 ブリーフ（§5-2）との差分を残す。PR 2 / PR 3 のセッションが前提にできる**現状**は以下:
 
 - `get_flow_metrics` のハンドラは全 `view` で同一の `structuredContent` を返す。
-  `view=summary` の `series.buckets` 削除と `view=compact` の非ゼロフィルタは廃止。
+  `view=summary` の `series.buckets` 削除と `view=compact` の「非ゼロ ∪ 欠損」フィルタは廃止。
 - **`content` は PR 1 の前後で、全 `view` について 1 バイトも変わっていない**
-  （`compact` の非ゼロ絞り込み表示も従来どおり）。
+  （`compact` の絞り込み表示・欠損の区間表記も従来どおり）。
   これは「`view` を跨いで `content` が同一」という意味ではない——`content` の量を決めるのは
   引き続き `view` であり（`summary` はバケット行なし / `compact` は非ゼロのみ / `full` は全件）、
   **`view` に依存しなくなったのは `structuredContent` だけ**である。
@@ -944,19 +903,16 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 
   （手書きリテラルのままだと enum を消しても typecheck が通り、alias 分岐が黙って生き残る。
   PR 3 のレビュー中にこの drift を実測して塞いだ。）
-- **`nonZeroOnly=true` の絞り込みは旧 `compact` と同じ素の非ゼロフィルタ**
-  （`buyVolume > 0 || sellVolume > 0`）で、`full` の見出しも旧 `compact` と同一文言
-  （`Non-zero X/Y buckets:`）。これで旧値経由のバケット行が 1 バイトも変わらない。
+- **`nonZeroOnly=true` の行生成は `renderCompactBucketLines()` を再利用**する。
+  `full` の見出しは旧 `compact` と同一文言（`Non-zero X/Y buckets{gapNote}:`）。
   `detailed` + `nonZeroOnly=true`（旧 enum では表現できなかった組み合わせ）だけは
-  `Recent N buckets, non-zero M:` という別の見出しにしてある（母数が「直近 N 件」であることを
-  読み取れるようにするため）。
+  `Recent N buckets, non-zero M{gapNote}:` という別の見出しにしてある。
 - **`get_candles` の `structuredContent` を `Result` 封筒に統一した**（Phase 1 唯一の shape 破壊）。
   これで `tests/view-structured-content-invariance.test.ts` の逸脱ケースは無くなり、
   他ツールと同じ deep-equal に置き換えた。
 - **description の共通文言は `src/schema/base.ts` に集約**した
   （`VIEW_CONTRACT_NOTE` / `FORMAT_PARAM_NOTE` / `deprecatedViewNote()` /
-  `DEPRECATED_VIEW_REMOVAL_TARGET = '0.6.0'`）。PR 5 の削除時はこの定数を辿れば対象が全て出る。
-  **バージョン番号はリリース運用側で確定させる**——変更はこの定数 1 箇所で足りる。
+  `DEPRECATED_VIEW_REMOVAL_TARGET = '0.4.0'`）。PR 5 の削除時はこの定数を辿れば対象が全て出る。
 - **テスト**: `tests/view-alias-mapping.test.ts` を新設（§4-4 の写像表を固定）。
   `tests/view-content-superset.test.ts` に `detect_patterns`（`summary` ⊆ `detailed` ⊆ `full`）を
   ヘルパそのままで横展開し、`patternRowKeys()`（§6-6 の「pattern type + range」）を足した。
@@ -1009,7 +965,7 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
   >
   > **提案**: `view` を廃止し `includeRanked: boolean`（既定 `true`）へ改名する。
   > 並び順・件数は既にある `sortBy` / `limit` が担当している。破壊的変更なので、
-  > 旧 `view` 値の削除（`DEPRECATED_VIEW_REMOVAL_TARGET`、PR 5）と足並みを揃えるのが自然。
+  > 旧 `view` 値の削除（`0.4.0`、PR 5）と足並みを揃えるのが自然。
   >
   > **PR 3 のスコープ外にした根拠**: PR 3 は「量の語彙の統一」が対象で、射影の問題は別軸。
   > 1 つの PR に混ぜるとレビューの観点（互換性の判断 vs. パラメータ設計）が混ざる。
@@ -1054,7 +1010,7 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
   `view=items` という例示を `format=json` に差し替えた（旧値を規約文書に残さないため）。
 
 **PR 5 への申し送り**: §7-3 の PR 5 作業表の項目 5（プロンプト / ドキュメント）は
-「旧値が残っていないか再確認」だが、**`docs/tools.md` の「非推奨の値（`0.6.0` で削除予定）」表は
+「旧値が残っていないか再確認」だが、**`docs/tools.md` の「非推奨の値（`0.4.0` で削除予定）」表は
 意図的に旧値を載せている**（移行ガイドのため）。PR 5 ではこの表と、`get_transactions` の
 `summary` に関する注意書きを**削除する**こと。同様に `src/schema/market-data.ts` の
 `bucketsN` の description にある「（および deprecated な `view=buckets`）」も PR 5 の対象。
@@ -1072,50 +1028,6 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 （例: §5-2 は「階梯外 view がフィールドを足すのは許容」と書いているが、
 これは §3-2 規約 4 で**階梯位置を問わない**と改めた）。
 **規約の現行解釈は §3-2 を唯一のソースとすること。**
-
-ただし**「本リポジトリでは事実として成立しない記述」は訂正してある**（行番号の陳腐化とは別問題のため）。
-具体的には §5-1 の「欠損は区間表記で保持」と §5-5 の「真のゼロと欠損区間を含むフィクスチャ」で、
-どちらも fork 固有の挙動を前提にしていた（§1-3 の 🔸 注記 / §3-3）。
-
-### 7-6. 本リポジトリへの移植
-
-設計は fork（`tjackiet/bitbank-lab-mcp`）で PR 0〜4 として反復し、その成果を本リポジトリの
-`v0.3.1`（`31a8480`）を基点に**書き直して**移植した。fork の diff をそのまま当てる方式は採れない——
-fork には本リポジトリに無い前段作業（`lib/tx-fetch.ts` / `lib/calendar.ts` / `since`・`until` /
-欠損バケット検出 / カバレッジ申告）が積まれており、`tools/get_flow_metrics.ts` の view 差分が
-**本リポジトリに存在しない識別子**（`renderCompactBucketLines` / `hasData` /
-`actualRange.gapMinutes` / `meta.warnings`）に依存していたため。
-
-移植にあたっては **fork の前段作業は持ち込まず、本リポジトリの実装の範囲内で語彙統一を実現する**
-方針を採った（PR の主題を「view 語彙の統一」に保つため。欠損検出・カバレッジ申告は
-view 語彙統一とは独立した機能追加であり、還元するなら別途行う）。
-その帰結として **`nonZeroOnly` の契約は本リポジトリの旧 `compact`（素の非ゼロフィルタ）から
-導出し直してある**（§3-3）。
-
-| # | コミット | fork の対応 PR | 本リポジトリで欠陥が実在したか |
-|---|---|---|---|
-| 1 | プロンプトの無効値修正（P6） | PR 0 / #19 | **実在**（`src/prompts/intermediate.ts` が `get_flow_metrics(view=detailed)` を指示） |
-| 2 | `structuredContent` の切り離し（P4） | PR 1 / #20 | **実在**（`view=summary` の `series.buckets` 削除、`view=compact` のフィルタ） |
-| 3 | 上位集合の保証（P3） | PR 2 / #22 | **実在**（`get_flow_metrics(buckets/full)` と `get_volatility_metrics(detailed/full)`） |
-| 4 | 語彙統一 Phase 1（P1 / P2 / P5 / P7 + P4 の残り） | PR 3 / #23 | **実在**（enum・default・`items` の封筒逸脱とも §3-1 の表のまま） |
-| 5 | 呼び出し側追従 + docs | PR 4 / #24 | — |
-
-**P1〜P7 は 7 件すべて本リポジトリの `v0.3.1` で再現した。** fork 固有の前段作業に起因して
-本リポジトリには存在しなかった欠陥は無く、省略した段階は無い。
-
-移植で fork と変えた点:
-
-- **`nonZeroOnly` の絞り込み**を素の非ゼロフィルタにした（fork は欠損の区間畳み込みあり）。
-  `full` の見出しは旧 `compact` と同一文言のままなので、旧値経由のバケット行は不変。
-- **`DEPRECATED_VIEW_REMOVAL_TARGET` を `0.6.0`** にした（fork は `0.4.0`）。
-  公開済みの最新が `0.3.1` なので、導入 `0.4.0` → 削除 `0.6.0` が §6-4 の決定
-  （最低 1 リリース かつ 3 ヶ月、同一リリースに畳まない）に対応する。
-- **横断テスト 3 本のうち `get_flow_metrics` 関連のケースを書き直した。**
-  `hasData` / 欠損区間 / `meta.warnings` に依存していたため。
-  取得層 warning の検証は、本リポジトリで `meta.warning` が立つ唯一の経路である
-  `hours` 指定（カバレッジ 80% 未満）ベースのフィクスチャに置き換えた。
-  他ツール（`get_candles` / `get_transactions` / `get_volatility_metrics` / `detect_patterns` /
-  `detect_macd_cross`）のケースは**そのまま通った**。
 
 ---
 

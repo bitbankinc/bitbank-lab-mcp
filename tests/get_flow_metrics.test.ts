@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FlowMetricsBucket } from '../tools/get_flow_metrics.js';
 import getFlowMetrics, { buildFlowMetricsText, toolDef } from '../tools/get_flow_metrics.js';
 import { assertFail, assertOk } from './_assertResult.js';
+import { asMcp } from './helpers/mcp.js';
 
 function txPayload(txs?: Array<{ price: string; amount: string; side: string; executed_at: string }>) {
 	return {
@@ -301,51 +302,81 @@ describe('get_flow_metrics', () => {
 	// （GetFlowMetricsDataSchemaOut は series.buckets を必須で宣言）どおり全バケットを保つ。
 	it('handler: view=summary でも structuredContent には全バケットが入る（content からは省く）', async () => {
 		mockFetch(txPayload());
-		const res = (await toolDef.handler({
-			pair: 'btc_jpy',
-			limit: 3,
-			date: '20240101',
-			bucketMs: 60_000,
-			view: 'summary',
-		})) as {
-			content: Array<{ text: string }>;
-			structuredContent: { ok: boolean; data: { series: { buckets: FlowMetricsBucket[] } } };
-		};
+		const res = asMcp<{ ok: boolean; data: { series: { buckets: FlowMetricsBucket[] } } }>(
+			await toolDef.handler({
+				pair: 'btc_jpy',
+				limit: 3,
+				date: '20240101',
+				bucketMs: 60_000,
+				view: 'summary',
+			}),
+		);
 		expect(res.structuredContent.ok).toBe(true);
 		expect('buckets' in res.structuredContent.data.series).toBe(true);
 		expect(res.structuredContent.data.series.buckets).toHaveLength(3);
-		// content テキストにはバケット行が含まれない
+		// content テキストにもバケット行が含まれない
 		expect(res.content[0].text).not.toContain('📋 全');
 	});
 
 	it('handler: view=compact は content のバケット行のみ絞る（structuredContent は全バケット）', async () => {
-		// ゼロ埋めバケットを生むため、時間的に離れた2約定のみで bucketMs を小さめに
+		// 2約定を 20 分離す → 間の 19 バケットは欠損（ギャップ閾値 15 分超）
 		const payload = {
 			success: 1,
 			data: {
 				transactions: [
 					{ price: '5000000', amount: '0.1', side: 'buy', executed_at: '1700000000000' },
-					{ price: '5000100', amount: '0.2', side: 'sell', executed_at: '1700000600000' },
+					{ price: '5000100', amount: '0.2', side: 'sell', executed_at: '1700001200000' },
 				],
 			},
 		};
 		mockFetch(payload);
-		const res = (await toolDef.handler({
-			pair: 'btc_jpy',
-			limit: 10,
-			date: '20240101',
-			bucketMs: 60_000,
-			view: 'compact',
-		})) as {
-			content: Array<{ text: string }>;
-			structuredContent: { data: { series: { buckets: FlowMetricsBucket[] } } };
-		};
+		const res = asMcp<{ data: { series: { buckets: FlowMetricsBucket[] } } }>(
+			await toolDef.handler({
+				pair: 'btc_jpy',
+				limit: 10,
+				date: '20240101',
+				bucketMs: 60_000,
+				view: 'compact',
+			}),
+		);
 		const buckets = res.structuredContent.data.series.buckets;
-		// structuredContent は絞らない: 0〜10 分の 11 バケット全件（ゼロ埋めバケットも残る）
-		expect(buckets).toHaveLength(11);
-		expect(buckets.some((b) => b.buyVolume === 0 && b.sellVolume === 0)).toBe(true);
-		// content 側は従来どおり非ゼロの 2 件だけ
-		expect(res.content[0].text).toContain('Non-zero 2/11 buckets:');
+		// structuredContent は絞らない: 先頭 + 欠損 19 + 末尾 = 21 バケット全件
+		expect(buckets).toHaveLength(21);
+		// 欠損バケットは黙って消えない
+		expect(buckets.some((b) => b.hasData === false)).toBe(true);
+		// content では連続する欠損が 1 行の区間表記に畳まれる
+		expect(res.content[0].text).toMatch(/⋯ 欠損 .+〜.+（19バケット, データなし）/);
+		expect(res.content[0].text).toContain('no-data buckets shown as ranges');
+	});
+
+	it('handler: view=compact でもギャップ以外のゼロバケットは structuredContent に残る', async () => {
+		// 約定を 0/2/4 分に置く → 1 分目・3 分目はゼロだが欠損ではない（間隔 2 分 < 閾値 5 分）
+		const payload = {
+			success: 1,
+			data: {
+				transactions: [
+					{ price: '5000000', amount: '0.1', side: 'buy', executed_at: '1700000000000' },
+					{ price: '5000100', amount: '0.2', side: 'sell', executed_at: '1700000120000' },
+					{ price: '5000200', amount: '0.3', side: 'buy', executed_at: '1700000240000' },
+				],
+			},
+		};
+		mockFetch(payload);
+		const res = asMcp<{ data: { series: { buckets: FlowMetricsBucket[] } } }>(
+			await toolDef.handler({
+				pair: 'btc_jpy',
+				limit: 10,
+				date: '20240101',
+				bucketMs: 60_000,
+				view: 'compact',
+			}),
+		);
+		const buckets = res.structuredContent.data.series.buckets;
+		// 0/1/2/3/4 分の 5 バケット全件。真のゼロ（1・3 分目）も structuredContent には残る
+		expect(buckets).toHaveLength(5);
+		expect(buckets.every((b) => b.hasData !== false)).toBe(true);
+		// content 側は従来どおり非ゼロの 3 件だけ
+		expect(res.content[0].text).toContain('Non-zero 3/5 buckets:');
 	});
 
 	it('handler: 失敗時はそのまま返す', async () => {

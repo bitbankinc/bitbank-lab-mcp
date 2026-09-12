@@ -15,6 +15,7 @@
  *   6. includeForming=false で forming / near_completion 除外
  *   7. allow_partial_patterns=false で uses_partial_candle スキップ
  *   8. statistics と data.patterns の対象集合が一致する
+ *   9. 各検出器の最小要求バー数が既定スキャン窓に収まる（到達性）
  *
  * 設計方針:
  *   - 既存 fixture テスト（tests/patterns/*.test.ts, tests/analyze_candle_patterns.test.ts,
@@ -34,10 +35,15 @@ vi.mock('../../tools/analyze_indicators.js', () => ({
 	default: vi.fn(),
 }));
 
+import { CandleTypeEnum } from '../../src/schema/base.js';
+import { DetectPatternsInputSchema } from '../../src/schema/patterns.js';
 import analyzeCandlePatterns from '../../tools/analyze_candle_patterns.js';
 import analyzeIndicators from '../../tools/analyze_indicators.js';
 import detectPatterns from '../../tools/detect_patterns.js';
 import getCandles from '../../tools/get_candles.js';
+import { getDefaultParamsForTf } from '../../tools/patterns/config.js';
+import { MIN_BARS_DETECTORS, type MinBarsDetector, minBarsForDetector } from '../../tools/patterns/min-bars.js';
+import { assessScanWindow } from '../../tools/patterns/scan-window.js';
 
 // ── 型・ヘルパー ──────────────────────────────────
 
@@ -157,7 +163,14 @@ function buildCompletedDoubleTopCandles(year = 2026): Candle[] {
 
 /** 形成中 double_bottom（breakout 未成立） */
 function buildFormingDoubleBottomCandles(year = 2026): Candle[] {
-	const closes = [108, 104, 99, 92, 80, 84, 88, 92, 96, 99, 101, 98, 94, 89, 85, 82, 81, 84, 88, 91, 94, 95, 96, 95];
+	// 谷1(idx=4) → 山(idx=10) → 谷2(idx=16) → 直近が上昇中（3 点目が未確定）。
+	// `1day` の形成中 double は formationBars（= lastIdx - 谷1.idx）∈ [23, 148] を要求するので
+	// 末尾を伸ばして formationBars=25 にしてある（#118 問題 3 のバー数統一。旧実装は 19 本で通っていた）。
+	// 中間の山（101）を 1.5% のブレイクバッファ込みで超えないよう、末尾は 98 で頭打ちにする。
+	const closes = [
+		108, 104, 99, 92, 80, 84, 88, 92, 96, 99, 101, 98, 94, 89, 85, 82, 81, 84, 88, 91, 94, 95, 96, 95, 96, 96.5, 97,
+		97.5, 98, 98,
+	];
 	return closes.map((close, index) => makeCandle(index, close, year));
 }
 
@@ -214,9 +227,13 @@ function buildFormingSymmetricalTriangleCandles(year = 2026): Candle[] {
  * tests/detect_patterns_fixtures.test.ts の同名関数と等価の価格列。
  */
 function buildDescendingTriangleInvalidBreakoutCandles(year = 2026): Candle[] {
+	// 三角形本体は 24 本（旧 fixture の 18 本に 1 サイクル 6 本を先頭で追加）。
+	// `detect_triangles` の最小窓が時間足の構造的下限（1day = 23 本）になったため、
+	// 旧 fixture（本体 18 本）では windowSizes が空になり検出されない。
+	// 追加分は既存と同じ形（切り下がる高値・水平な安値 100〜101）を 1 サイクル伸ばしただけ。
 	const closes = [
-		120, 130, 124, 116, 100, 112, 125, 118, 101, 110, 120, 114, 100, 108, 115, 110, 101, 107, 128, 132, 130, 128, 126,
-		124,
+		130, 140, 132, 122, 100, 118, 120, 130, 124, 116, 100, 112, 125, 118, 101, 110, 120, 114, 100, 108, 115, 110, 101,
+		107, 128, 132, 130, 128, 126, 124,
 	];
 	return closes.map((close, index) => makeCandle(index, close, year));
 }
@@ -377,6 +394,65 @@ describe('patterns invariants — 横断契約', () => {
 					}
 				}
 			}
+		});
+
+		// #125: 報告された price から判定を検算できること。
+		// price は終値、extremePrice は極値判定に使った high / low で、両者は別物。
+		// これを落とすと「終値基準で極値を取っている」と誤読される（実際に誤読された）。
+		it('detect_patterns: 全 pivot が kind と、その足の high / low に一致する extremePrice を持つ', async () => {
+			const fixtures: Array<{
+				name: string;
+				candles: Candle[];
+				opts: Parameters<typeof detectPatterns>[3];
+			}> = [
+				{
+					name: 'double_top',
+					candles: buildCompletedDoubleTopCandles(),
+					opts: { patterns: ['double_top'], swingDepth: 2, tolerancePct: 0.02 },
+				},
+				{
+					name: 'forming_double_bottom',
+					candles: buildFormingDoubleBottomCandles(),
+					opts: { patterns: ['double_bottom'], includeForming: true, swingDepth: 2, tolerancePct: 0.03 },
+				},
+				{
+					name: 'head_and_shoulders',
+					candles: buildCompletedHeadAndShouldersCandles(),
+					opts: { patterns: ['head_and_shoulders'], swingDepth: 2, tolerancePct: 0.04 },
+				},
+				{
+					name: 'triple_top',
+					candles: buildCompletedTripleTopCandles(),
+					opts: { patterns: ['triple_top'], swingDepth: 2, tolerancePct: 0.02 },
+				},
+				{
+					name: 'triangle_symmetrical',
+					candles: buildFormingSymmetricalTriangleCandles(),
+					opts: { patterns: ['triangle_symmetrical'], includeForming: true },
+				},
+			];
+
+			let seenPivots = 0;
+			for (const fx of fixtures) {
+				mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(fx.candles)));
+				const res = await detectPatterns('btc_jpy', '1day', fx.candles.length, fx.opts);
+				assertOk(res);
+				const lastIdx = fx.candles.length - 1;
+				for (const p of res.data.patterns) {
+					for (const pv of p.pivots ?? []) {
+						seenPivots++;
+						expect(['H', 'L'], `${fx.name}: pivot kind`).toContain(pv.kind);
+						expect(Number.isFinite(pv.extremePrice), `${fx.name}: extremePrice 有限`).toBe(true);
+						const c = fx.candles[pv.idx];
+						// 形成中パターンの暫定構成点は最新足の終値（極値判定を通っていない）ので除く。
+						if (pv.idx === lastIdx && pv.extremePrice === pv.price) continue;
+						// triangle_* は独自 relaxed swing（price が最初から high / low）なので price 側も極値。
+						const expected = pv.kind === 'H' ? c.high : c.low;
+						expect(pv.extremePrice, `${fx.name}: idx=${pv.idx} の extremePrice`).toBe(expected);
+					}
+				}
+			}
+			expect(seenPivots, 'fixture が 1 つも pivot を返していない（テストが空回り）').toBeGreaterThan(0);
 		});
 	});
 
@@ -878,5 +954,92 @@ describe('patterns invariants — 横断契約', () => {
 				expect(stat.detected).toBe(patternCounts[type] ?? 0);
 			}
 		});
+	});
+});
+
+// ──────────────────────────────────────────────
+// 9. 到達性 — 各検出器の最小要求バー数 <= 既定スキャン窓
+//
+//    #114 でスキャン窓が「直近 limit 本」に一致した結果、日数ベースの閾値が窓を超えると
+//    **そのパターン種別だけが静かに 0 件になる**（issue #118）。閾値は 6 ファイルに散っていて
+//    人手では追えないので、`patterns/min-bars.ts` の導出値で機械的に固定する。
+//
+//    PR A ではこの表を allowlist（既知の未到達 16 組）付きで導入した。閾値のプリミティブを
+//    バー数に統一した（`patterns/bar-thresholds.ts`）ことで**全 16 組が解消し、allowlist は
+//    空になった**。以降は「未到達の組み合わせが 1 つも無い」が不変条件そのものになる。
+//    `detect_doubles` / `detect_hs` の形成中判定も同じ換算に乗ったので（#118 問題 3）、
+//    全検出器がこの表の対象になっている。
+//
+//    このテストは「閾値の**最小側**が窓に収まるか」だけを見る。窓に収まっていても
+//    検出できるとは限らない（形状の条件は別）。**最大側も見ていない**——旧実装の `1week` は
+//    最小側が 2〜3 本で到達可能に見えて、最大側（12 本）が構造的下限（25 本）を下回るため
+//    実質検出不能だった。最大側を含む実検出は `tests/patterns/default-limit-detection.test.ts`
+//    が合成データで固定する。
+// ──────────────────────────────────────────────
+
+describe('検出器の到達性 — 最小要求バー数 vs 既定スキャン窓', () => {
+	const ALL_TIMEFRAMES = CandleTypeEnum.options;
+	/** 既定のスキャン窓。detect_patterns は直近 limit 本をそのまま検出器に渡す（#114）。 */
+	const DEFAULT_SCAN_WINDOW = DetectPatternsInputSchema.shape.limit.parse(undefined) as number;
+
+	/**
+	 * 既定 `limit` では閾値に届かない組み合わせ。**現在は空**。
+	 *
+	 * 例外を足すときは `requiredBars`（`minBarsForDetector` の期待値）と理由を必ず書く。
+	 * 下の「allowlist は空」テストがループで各行を検証するので、閾値を下げて到達可能に
+	 * なった行を消し忘れると落ちる（stale 検出）。
+	 */
+	const KNOWN_UNREACHABLE: ReadonlyArray<{
+		tf: string;
+		detector: MinBarsDetector;
+		requiredBars: number;
+		reason: string;
+	}> = [];
+
+	const allowKey = (tf: string, detector: MinBarsDetector) => `${tf} ${detector}`;
+	const allowlist = new Map(KNOWN_UNREACHABLE.map((e) => [allowKey(e.tf, e.detector), e]));
+
+	it('既定 limit は 90（到達性判定の前提）', () => {
+		expect(DEFAULT_SCAN_WINDOW).toBe(90);
+	});
+
+	it('全時間足 × 全検出器が既定 limit で到達可能（allowlist 外に未到達が無い）', () => {
+		const unexpected: string[] = [];
+		for (const tf of ALL_TIMEFRAMES) {
+			for (const detector of MIN_BARS_DETECTORS) {
+				const required = minBarsForDetector(tf, detector);
+				if (required <= DEFAULT_SCAN_WINDOW) continue;
+				if (allowlist.has(allowKey(tf, detector))) continue;
+				unexpected.push(`${tf} x ${detector}: ${required}本 > 窓 ${DEFAULT_SCAN_WINDOW}本`);
+			}
+		}
+		expect(unexpected, `既定 limit で到達不能な組み合わせ:\n${unexpected.join('\n')}`).toEqual([]);
+	});
+
+	it('allowlist は空 — 例外行が残っている場合はその内容も検証する', () => {
+		for (const entry of KNOWN_UNREACHABLE) {
+			// 時間足 / 検出器の typo 検出
+			expect(ALL_TIMEFRAMES, `allowlist の時間足: ${entry.tf}`).toContain(entry.tf);
+			expect(MIN_BARS_DETECTORS, `allowlist の検出器: ${entry.detector}`).toContain(entry.detector);
+			// 要求本数の一致と、実際に未到達であること（stale 行の検出）
+			const required = minBarsForDetector(entry.tf, entry.detector);
+			expect(required, `allowlist: ${entry.tf} x ${entry.detector} の要求本数`).toBe(entry.requiredBars);
+			expect(
+				required,
+				`allowlist: ${entry.tf} x ${entry.detector} は既定 limit で到達可能になっている。allowlist から行を消すこと`,
+			).toBeGreaterThan(DEFAULT_SCAN_WINDOW);
+		}
+		// 重複行の検出も兼ねる（Map に畳んだ数が元の行数と一致すること）
+		expect(allowlist.size, 'allowlist に重複行がある').toBe(KNOWN_UNREACHABLE.length);
+		expect(KNOWN_UNREACHABLE, '未到達の例外は解消済み。行を足すなら理由を添えること').toEqual([]);
+	});
+
+	it('構造的下限（assessScanWindow）は全時間足で既定スキャン窓に収まる', () => {
+		// パターンサイズ閾値とは別軸の下限（#117 / docs 表 1）。こちらは既定 limit で全時間足が通る。
+		for (const tf of ALL_TIMEFRAMES) {
+			const { swingDepth, minBarsBetweenSwings } = getDefaultParamsForTf(tf);
+			const a = assessScanWindow(DEFAULT_SCAN_WINDOW, swingDepth, minBarsBetweenSwings);
+			expect(a.sufficient, `${tf}: 構造的下限 ${a.minViableLimit}本 > 窓 ${DEFAULT_SCAN_WINDOW}本`).toBe(true);
+		}
 	});
 });

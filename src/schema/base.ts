@@ -35,6 +35,92 @@ export const BaseMetaSchema = z.object({
 /** pair デフォルト入力: z.string().optional().default('btc_jpy') */
 export const BasePairInputSchema = z.object({ pair: z.string().optional().default('btc_jpy') });
 
+/**
+ * **オフセット付き** ISO8601 の絶対時刻。秒・小数秒は省略可、小数秒の桁数は任意。
+ * 例: `2026-08-01T00:00:00Z` / `2026-08-01T09:00:00+09:00` / `2026-08-01T00:00Z` /
+ * `2026-08-01T00:00:00.5Z`
+ *
+ * 絶対時刻の入力に `YYYYMMDD` を採らないのは、暦日の基準がツール間で割れている
+ * （`get_transactions` / `get_flow_metrics` は UTC 暦日、`get_candles` /
+ * `validate_candle_data` は `tz` 引数の暦日）ため。オフセットを必須にすると
+ * 「どの暦で解釈されるか」が入力そのものから一意に決まり、取り違えが起きない。
+ *
+ * キャプチャグループ（1: 日付+HH:mm / 2: 秒 / 3: 小数秒の桁 / 4: オフセット）は
+ * `lib/tx-fetch.ts` の `parseAbsoluteIso` が正準形 `.SSS` へ揃えるのに使う。**この
+ * パターンで受理する形は、すべて正準化後に `parseIso8601`（strict）が通ること。**
+ * 揃えないと「スキーマは通るが parse で落ちて『存在しない日付・時刻』と誤報する」
+ * 入力が生まれる（実際 `.5Z` / `.12Z` がそうだった: `parseIso8601` の strict format は
+ * `.SSS` の 3 桁のみ）。小数秒はミリ秒精度に切り捨てる（ISO8601 の小数秒は 10 進小数
+ * なので `.5` = 500ms）。
+ *
+ * Zod の `.regex()` はグループを無視するため、入力検証の挙動には影響しない。
+ */
+export const ISO8601_WITH_OFFSET_PATTERN =
+	/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?::(\d{2})(?:\.(\d+))?)?(Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * 約定集計ツール（`get_flow_metrics` / `analyze_volume_profile`）の `since`〜`until` に
+ * 指定できる最大範囲（日）。
+ *
+ * 根拠: 完了済み UTC 日アーカイブは 1 日 = 1 リクエストで、BTC/JPY の 1 UTC 日は実測
+ * 5,609〜8,040 件。上限 7 日なら最大 8 リクエスト・約 56,000 件を並列取得し、dedup 用の
+ * Set と正規化済み配列をメモリに載せることになる。ここまでは実用範囲だが、これを超えると
+ * リクエスト数・レスポンス parse・dedup がまとめて膨らみ、MCP 応答のタイムアウトにも近づく。
+ * より長い期間は日次・週次に分割して呼ぶこと。
+ *
+ * 超過の判定は `lib/tx-fetch.ts` の `resolveTxTimeRange`（user エラー）。定数をこちらに
+ * 置いているのは、この値が入力スキーマの description にも現れるため（schema 層は lib に
+ * 依存しない方向を保つ）。
+ */
+export const MAX_TX_RANGE_DAYS = 7;
+
+/**
+ * 約定集計ツール（`get_flow_metrics` / `analyze_volume_profile`）の**件数ベース取得**で
+ * `limit` に指定できる最大件数。件数ベース取得＝区間指定パラメータ（`date` / `hours` /
+ * `since`・`until`）をどれも渡さない呼び出しのこと。区間指定はいずれも `limit` を適用せず
+ * 区間の全件を集計するため、`limit` の用途は「直近 N 件」だけである。
+ *
+ * 2000 を据え置く根拠:
+ * - **十分に長い**: BTC/JPY の 1 UTC 日は実測 5,609〜8,040 件なので、2,000 件 ≒ 6〜8.5 時間分。
+ *   これより長い窓を「件数」で表現しても要求は曖昧になるだけで、時間で指定するほうが一意
+ *   （`hours` / `since`・`until` は `limit` を適用しない）。
+ * - **取得コストが跳ねない**: 件数ベースは latest（約60件）+ 完了済み UTC 日アーカイブの補完で
+ *   賄う。`lib/tx-fetch.ts` の `fetchSupplementTxs` は `limit > 500` のとき 2 日ぶんを補完する
+ *   （約 11,000〜16,000 件）ので、2,000 件はその 2 リクエストで確実に満たせる。上限を上げると
+ *   3 日目以降のアーカイブ取得が必要になり、リクエスト数と rate limit を消費する割に、
+ *   同じ範囲は `since`・`until` で切り捨てなく取れる。
+ * - **下げる実益がない**: 応答は時間バケット / 価格帯の集計なのでトークン量は件数に比例しない。
+ *   下げても得るものが無い一方、既存の呼び出しを壊す。
+ *
+ * 判定は各ツールの `validateLimit(limit, 1, MAX_TX_COUNT_LIMIT)`。定数をこちらに置いている
+ * のは、この値が入力スキーマの `.max()` と description の両方に現れるため。
+ */
+export const MAX_TX_COUNT_LIMIT = 2000;
+
+/** 約定集計ツール共通: 絶対時刻区間の開始（含む） */
+export const TX_RANGE_SINCE_SCHEMA = z
+	.string()
+	.regex(ISO8601_WITH_OFFSET_PATTERN)
+	.optional()
+	.describe(
+		'取得区間の開始時刻（**含む**）。オフセット付き ISO8601 のみ（例: 2026-08-01T00:00:00Z / 2026-08-01T09:00:00+09:00）。' +
+			'YYYYMMDD は不可 — 暦日の基準がツール間で割れている（約定系ツールの date は UTC 暦日、get_candles の date は tz 引数の暦日）ため、' +
+			'絶対時刻はオフセット必須にして解釈のブレを排除している。' +
+			`hours / date とは併用不可。since〜until は最大 ${MAX_TX_RANGE_DAYS} 日。指定時は limit を適用しない（区間の全件を集計）`,
+	);
+
+/** 約定集計ツール共通: 絶対時刻区間の終端（含まない） */
+export const TX_RANGE_UNTIL_SCHEMA = z
+	.string()
+	.regex(ISO8601_WITH_OFFSET_PATTERN)
+	.optional()
+	.describe(
+		'取得区間の終端時刻（**含まない**: [since, until)）。オフセット付き ISO8601 のみ。省略時は現在時刻まで。' +
+			'排他区間なので、連続する区間を続けて要求しても境界の約定が二重計上されない' +
+			'（例: since=2026-08-01T00:00:00Z, until=2026-08-02T00:00:00Z は UTC 8/1 のちょうど 1 日）。' +
+			'since 無しの until 単独指定は user エラー。未来時刻も user エラー（現在時刻までを対象にするなら until を省略する）',
+	);
+
 // === view の共通語彙（docs/internal/view-vocabulary-unification.md §3-2 / §3-3） ===
 
 /**
@@ -60,17 +146,36 @@ export const VIEW_CONTRACT_NOTE =
 
 /**
  * deprecated な `view` 値を削除する目標バージョン（§6-4 の決定: 最低 1 リリース かつ 3 ヶ月）。
- *
- * 公開済みの最新は `0.3.1` なので、alias の導入は次のマイナー `0.4.0`、削除はその次の次の
- * マイナー `0.6.0` を目標にする（同一リリースに畳まない・1 マイナー分の猶予を挟む、
- * という §4-3 の条件をそのまま upstream のリリース線に当てた値）。
- * **リリース運用側でバージョン番号を確定させる際は、この定数を単一ソースとして更新すること。**
+ * 0.2.0 で alias として導入し、0.4.0 で削除する。
  */
-export const DEPRECATED_VIEW_REMOVAL_TARGET = '0.6.0';
+export const DEPRECATED_VIEW_REMOVAL_TARGET = '0.4.0';
 
 /** deprecated な `view` 値の description に付ける定型文（写像先と削除目標バージョンを明示する）。 */
 export function deprecatedViewNote(replacement: string): string {
 	return `非推奨。${replacement} を使うこと。${DEPRECATED_VIEW_REMOVAL_TARGET} で削除予定`;
+}
+
+/**
+ * deprecated な**出力フィールド**（別名として残した旧フィールド）を削除する目標バージョン。
+ *
+ * 猶予期間の考え方は `view` の alias と同じ（§6-4: 最低 1 リリース かつ 3 ヶ月）で、
+ * `0.2.0` で alias として導入し `0.4.0` で削除する。値は `DEPRECATED_VIEW_REMOVAL_TARGET` と
+ * 同じだが定数を分けているのは、削除の単位が別（enum 値 / 出力フィールド）で、片方だけ
+ * 期日を動かしたくなったときに巻き添えにしないため。
+ *
+ * **削除目標バージョンを書かない alias は作らないこと。** 期日の無い別名は「いつ消せるのか」
+ * が誰にも分からなくなり、恒久的な二重出力として残る。
+ */
+export const DEPRECATED_FIELD_REMOVAL_TARGET = '0.4.0';
+
+/**
+ * deprecated な出力フィールドの description に付ける定型文（写像先と削除目標バージョンを明示する）。
+ *
+ * `view` の alias（`deprecatedViewNote`）は**入力**の別名で、旧値を渡すと新しい挙動に正規化される。
+ * こちらは**出力**の別名で、旧フィールドは新フィールドと**同じ値**を出し続ける（符号も単位も同一）。
+ */
+export function deprecatedFieldNote(replacement: string): string {
+	return `**非推奨**（${replacement} の別名）。同じ値を返します。${DEPRECATED_FIELD_REMOVAL_TARGET} で削除予定なので ${replacement} へ移行してください`;
 }
 
 /**

@@ -65,6 +65,9 @@ const summary = prependWarnings(baseSummary, upstream, { separator: '\n' });
       （window / 期間 / warning / warnings）を落とさない。
 - [ ] `content[0].text` の先頭に warning 行が含まれているか目視確認。
 - [ ] `JSON.stringify(data)` を含める場合は **JSON より前** に warning 行を出す。
+- [ ] `status` / 理由コードのような列挙値をラベル化する場合、**値ごとの表引きにし、未知値には
+      文言を当てない**（issue #286: 固定文字列で「無効（期待と逆方向にブレイク）」と書いており、
+      その文言に対応する理由コードは検出器に 1 つも存在しなかった）。
 - [ ] 加工ツールの場合、**そのツールがサポートする代替出力**（`view` の各値、`format` を
       持つなら `format=json` 等）でも warning 行が消えないようにする。
       `format` は現状 `get_candles` / `get_transactions` にしか無いので、加工ツールの

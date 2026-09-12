@@ -1,5 +1,19 @@
 import type { z } from 'zod';
 import {
+	type CalendarSpan,
+	diffCalendarDays,
+	enumerateDayKeys,
+	enumerateYearKeys,
+	isDayKeyFormat,
+	isSupportedTimeZone,
+	isYearKeyFormat,
+	parseDayKeyAllowingOverflow,
+	parseYearKey,
+	startOfYearMs,
+	toDayKey,
+	toYearKey,
+} from '../lib/calendar.js';
+import {
 	dedupeByTimestamp,
 	describeFailedChunks,
 	type FetchChunkResult,
@@ -8,10 +22,16 @@ import {
 	type OhlcvRow,
 	UpstreamApiError,
 } from '../lib/candle-fetch.js';
-import { dayjs, formatDateInTz, toIsoTime, toIsoWithTz } from '../lib/datetime.js';
+import { formatDateInTz, toIsoTime, toIsoWithTz } from '../lib/datetime.js';
 import { getErrorMessage } from '../lib/error.js';
 import { formatSummary } from '../lib/formatter.js';
-import { BITBANK_API_BASE, DEFAULT_RETRIES, fetchJsonWithRateLimit, type RateLimitInfo } from '../lib/http.js';
+import {
+	BITBANK_API_BASE,
+	DEFAULT_RETRIES,
+	fetchJsonWithRateLimit,
+	HttpStatusError,
+	type RateLimitInfo,
+} from '../lib/http.js';
 import { isLatestBarProvisional, PROVISIONAL_BAR_NOTE, prependProvisionalNote } from '../lib/provisional-bar.js';
 import { fail, failFromError, failFromValidation, ok, parseAsResult, toStructured } from '../lib/result.js';
 import { createMeta, ensurePair, validateDate, validateLimit } from '../lib/validate.js';
@@ -32,6 +52,11 @@ const TYPES: Set<CandleType | string> = new Set([
 	'1week',
 	'1month',
 ]);
+
+// bitbank /candlestick の chunk がグルーピングされる暦。UTC 暦日 / UTC 暦年で固定されており、
+// tz 引数（anchor / 表示の暦）とは独立（docs/internal/bitbank-candle-tz.md）。
+// anchorTz != 'UTC' のとき「tz 暦日」と「UTC 暦日」が最大 1 日ずれるのがこのツールの複雑さの根源。
+const FETCH_CHUNK_TZ = 'UTC';
 
 // 年単位でリクエストする時間足（YYYY形式）
 const YEARLY_TYPES: Set<string> = new Set(['4hour', '8hour', '12hour', '1day', '1week', '1month']);
@@ -101,96 +126,47 @@ const CANDLE_LIMIT = {
 	multiDay: 10_000,
 } as const;
 
+/** 空文字・undefined・不正 tz のフォールバック先（表示層が円建て・JST 前提のため）。 */
+const DEFAULT_ANCHOR_TZ = 'Asia/Tokyo';
+
 /**
  * tz 引数を正規化する。空文字・undefined・不正値は Asia/Tokyo にフォールバック。
  *
- * dayjs.tz は不正な timezone 文字列を渡すと throw する実装系もあるため、
- * 呼び出し側で safe な値に揃えてから渡す。
+ * 不正 tz を既定値へ倒すかどうかは呼び出し側のポリシーなので、lib/calendar.ts は
+ * 判定（isSupportedTimeZone）だけを提供する。倒し先を決めるのがこの関数の責務。
  */
 function normalizeAnchorTz(tz: string | undefined): string {
-	if (typeof tz !== 'string' || tz.length === 0) return 'Asia/Tokyo';
-	try {
-		// dummy timestamp で tz が dayjs に認識されるか検証
-		if (dayjs(0).tz(tz).isValid()) return tz;
-	} catch {
-		// fallthrough
-	}
-	return 'Asia/Tokyo';
+	return isSupportedTimeZone(tz) ? tz : DEFAULT_ANCHOR_TZ;
 }
 
 /**
- * date 指定時の「これ以下の足だけ返す」上限 timestamp (ms since epoch) を返す。
+ * date 指定時の対象期間を tz 暦の区間として返す（`{ startMs, endMs }`、endMs は inclusive）。
  *
- * tz 引数の暦日基準で解釈する（既定 Asia/Tokyo、空文字・不正 tz は Asia/Tokyo にフォールバック）:
- * - YYYYMMDD: その日の終端 23:59:59.999 (in tz)
- * - YYYY: その年の終端 12-31 23:59:59.999 (in tz)（YEARLY_TYPES でのみ用いる）
+ * **この関数が持つのは date の「文法」だけ**——どの形式をどの暦の単位として読むか——で、
+ * 区間そのものの計算は lib/calendar.ts に委ねる:
+ * - YYYYMMDD: その tz 暦日（00:00:00.000 〜 23:59:59.999 in tz）
+ * - YYYY: その tz 暦年（YEARLY_TYPES でのみ受け付ける。API が年単位で返す時間足だけの互換形式）
  * - 形式不一致: null（validateDate 通過後を前提に呼ぶため通常は起きない）
+ *
+ * 終端は「これ以下の足だけ返す」anchor に、開始は未来日の早期判定に使う。未来日判定を
+ * 終端ではなく開始で行うのは、終端で判定すると当日（進行中の tz 暦日）が『未来』扱いになり、
+ * 当日途中の部分データ取得という正当なユースケースを拒否してしまうため。
  *
  * bitbank /candlestick API は UTC 暦日でグルーピングする（docs/internal/bitbank-candle-tz.md）。
  * 「API は UTC キーで fetch、anchor は tz 暦日終端で filter」という二段構え（tz anchor 仕様）。
  * 旧実装（date を UTC 暦日終端のみで解釈）では、JST で date を指定したときに
  * 結果が最大 9 時間ズレる問題があった。
- */
-function computeAnchorEndMs(rawDate: string, type: string, tz: string = 'Asia/Tokyo'): number | null {
-	const safeTz = normalizeAnchorTz(tz);
-	if (/^\d{8}$/.test(rawDate)) {
-		const year = rawDate.slice(0, 4);
-		const month = rawDate.slice(4, 6);
-		const day = rawDate.slice(6, 8);
-		const d = dayjs.tz(`${year}-${month}-${day}`, safeTz);
-		return d.isValid() ? d.endOf('day').valueOf() : null;
-	}
-	if (YEARLY_TYPES.has(type) && /^\d{4}$/.test(rawDate)) {
-		const d = dayjs.tz(`${rawDate}-01-01`, safeTz);
-		return d.isValid() ? d.endOf('year').valueOf() : null;
-	}
-	return null;
-}
-
-/**
- * date 指定時の対象期間の「開始」timestamp (ms since epoch) を返す（未来日の早期判定用）。
  *
- * computeAnchorEndMs と対になる関数で、tz 暦日/暦年の先頭 00:00:00.000 (in tz) を返す:
- * - YYYYMMDD: その日の先頭
- * - YYYY: その年の 1/1 先頭（YEARLY_TYPES でのみ用いる）
- *
- * 未来日判定は「終端 > now」ではなく「開始 > now」で行う。終端で判定すると
- * 当日（進行中の tz 暦日）が『未来』扱いになり、当日途中の部分データ取得という
- * 正当なユースケースを拒否してしまう。
+ * **繰り上げ許容版の parseDayKey を使う理由**: validateDate は形式（`/^\d{8}$/`）しか見ず
+ * 実在日を検証しないため、20260230 のような入力がここまで到達する。現行はこれを
+ * グレゴリオ暦の繰り上げ（→ 3/2）で解釈しており、実在日必須の parseDayKey に替えると
+ * anchor が無効化されて「最新側 limit 本」に化ける（回帰テストで固定済み）。
  */
-function computeAnchorStartMs(rawDate: string, type: string, tz: string = 'Asia/Tokyo'): number | null {
+function computeAnchorSpan(rawDate: string, type: string, tz: string = DEFAULT_ANCHOR_TZ): CalendarSpan | null {
 	const safeTz = normalizeAnchorTz(tz);
-	if (/^\d{8}$/.test(rawDate)) {
-		const year = rawDate.slice(0, 4);
-		const month = rawDate.slice(4, 6);
-		const day = rawDate.slice(6, 8);
-		const d = dayjs.tz(`${year}-${month}-${day}`, safeTz);
-		return d.isValid() ? d.startOf('day').valueOf() : null;
-	}
-	if (YEARLY_TYPES.has(type) && /^\d{4}$/.test(rawDate)) {
-		const d = dayjs.tz(`${rawDate}-01-01`, safeTz);
-		return d.isValid() ? d.startOf('year').valueOf() : null;
-	}
+	if (isDayKeyFormat(rawDate)) return parseDayKeyAllowingOverflow(rawDate, safeTz);
+	if (YEARLY_TYPES.has(type) && isYearKeyFormat(rawDate)) return parseYearKey(rawDate, safeTz);
 	return null;
-}
-
-/**
- * [windowStartMs, windowEndMs] と交差する UTC 暦年 (YYYY) を昇順で返す。
- * YEARLY_TYPES の fetch key 導出に使う（bitbank API は UTC 年 chunk）。
- */
-function enumerateUtcYearsIntersectingWindow(windowStartMs: number, windowEndMs: number): string[] {
-	const keys: string[] = [];
-	let y = dayjs.utc(windowStartMs).year();
-	const endY = dayjs.utc(windowEndMs).year();
-	while (y <= endY) {
-		const yearStartMs = Date.UTC(y, 0, 1);
-		const yearEndMs = Date.UTC(y + 1, 0, 1) - 1;
-		if (yearStartMs <= windowEndMs && yearEndMs >= windowStartMs) {
-			keys.push(String(y));
-		}
-		y += 1;
-	}
-	return keys;
 }
 
 /**
@@ -202,24 +178,28 @@ function enumerateUtcYearsIntersectingWindow(windowStartMs: number, windowEndMs:
  *
  * 年初に anchor を指定された場合（例: 1/10）に「フル年使える」と誤判定すると
  * 多年取得が不足し、filter 後の件数が limit を満たさない問題を防ぐ。
+ *
+ * 経過日数は **暦日数**で数える（lib/calendar.ts の diffCalendarDays）。ミリ秒差を
+ * 86400000 で割ると DST を挟む tz で 1 日ぶん少なくなり、yearsNeeded ひいては
+ * limit 上限（1000 / 5000）が境界で反転する。
+ *
+ * 起点は「rawDate の年の 1/1」で、anchor 日が属する年ではない（20251232 のように
+ * 繰り上げで年を跨いだ場合、起点は 2025-01-01 のまま）。
  */
 function estimateBarsAvailableInAnchorYear(
 	rawDate: string,
 	type: string,
 	barsPerYear: number,
-	tz: string = 'Asia/Tokyo',
+	tz: string = DEFAULT_ANCHOR_TZ,
 ): number {
 	if (!YEARLY_TYPES.has(type)) return barsPerYear;
-	if (!/^\d{8}$/.test(rawDate)) return barsPerYear;
+	if (!isDayKeyFormat(rawDate)) return barsPerYear;
 	const safeTz = normalizeAnchorTz(tz);
-	const year = rawDate.slice(0, 4);
-	const month = rawDate.slice(4, 6);
-	const day = rawDate.slice(6, 8);
-	const anchor = dayjs.tz(`${year}-${month}-${day}`, safeTz);
-	if (!anchor.isValid()) return barsPerYear;
-	const startOfYear = dayjs.tz(`${year}-01-01`, safeTz).startOf('year');
-	if (!startOfYear.isValid()) return barsPerYear;
-	const daysFromStart = anchor.diff(startOfYear, 'day') + 1;
+	const anchor = parseDayKeyAllowingOverflow(rawDate, safeTz);
+	if (anchor == null) return barsPerYear;
+	const anchorYear = parseYearKey(rawDate.slice(0, 4), safeTz);
+	if (anchorYear == null) return barsPerYear;
+	const daysFromStart = diffCalendarDays(anchorYear.startMs, anchor.startMs, safeTz) + 1;
 	return Math.max(1, Math.floor(daysFromStart * (barsPerYear / 365)));
 }
 
@@ -239,40 +219,129 @@ function classifyAllChunksFailure(results: FetchChunkResult[]): FailResult | nul
 }
 
 /**
+ * 上流が HTTP 404 を返した失敗か。
+ *
+ * bitbank /candlestick は**その期間キー自体が存在しない**とき 404 を返す
+ * ——未来・上場前のどちらも 404（docs/internal/bitbank-candle-tz.md の実測 4 / 5）。
+ * 「期間は存在するが集計がまだ」は 200 + success:0 (code: 10000) で返るので別物として扱う。
+ * 5xx・タイムアウト・ネットワークエラーは含めない。
+ */
+function isChunkNotFoundError(err: unknown): boolean {
+	if (err instanceof HttpStatusError) return err.status === 404;
+	const msg = err instanceof Error ? err.message : String(err ?? '');
+	return /\b404\b/.test(msg);
+}
+
+/**
  * 上流の「データ未生成（まだ無い）」応答か。
  * bitbank /candlestick は未来・未開始の期間に HTTP 404 または success:0 (code: 10000) を返す
  * （docs/internal/bitbank-candle-tz.md 実測）。5xx・ネットワークエラーは含めない。
  */
 function isNotYetAvailableError(err: unknown): boolean {
 	if (err instanceof UpstreamApiError) return true;
-	const msg = err instanceof Error ? err.message : String(err ?? '');
-	return /\b404\b/.test(msg);
+	return isChunkNotFoundError(err);
+}
+
+/** `partitionFailedChunks` の分類結果。3 つの配列は互いに素で、合計が失敗 chunk の総数になる。 */
+interface FailedChunkPartition {
+	/** 実失敗。過半数判定の分子であり、⚠️ 警告に出る */
+	hardFailedKeys: string[];
+	/** 進行中・未来の UTC 期間で chunk がまだ生成されていない（時間が解決する） */
+	pendingGapKeys: string[];
+	/** 上流にその期間の足が存在しない（上場前など。時間では解決しない） */
+	absentGapKeys: string[];
 }
 
 /**
- * 失敗 chunk を「実失敗 (hard)」と「進行中 UTC 期間のデータ未生成 (expectedGap)」に分ける。
+ * 失敗 chunk を「実失敗 (hard)」と 2 種類の「データが無いだけ (gap)」に分ける。
+ * gap は過半数判定の分母・分子の両方から外し、注記に落とす。
  *
- * expectedGap = key が進行中の UTC 期間以降（辞書順比較。YYYYMMDD 日 key / YYYY 年 key 両対応）
- * かつエラーが 404 / success:0 のもの。UTC 期間の開始直後はその期間の chunk がまだ生成されて
- * いないことがあり、これは上流の正常応答（データが無いだけ）なので、過半数失敗の分母分子から
- * 除外して ℹ️ 注記に落とす。過去期間の失敗やネットワーク/5xx は実失敗として扱う。
+ * - **pendingGap**: key が進行中の UTC 期間以降（辞書順比較。YYYYMMDD 日 key / YYYY 年 key 両対応）
+ *   かつエラーが 404 / success:0。UTC 期間の開始直後はその期間の chunk がまだ生成されて
+ *   いないことがあり、これは上流の正常応答。
+ * - **absentGap**: 過去の期間の **HTTP 404** で、かつ**同じリクエストの別 chunk が実データを
+ *   返している**もの。上場初年度の銘柄を要求すると、JST 1 年の窓が UTC 年 chunk 2 本に割れて
+ *   古い側が必ず上場前になり、この 404 で全体を落としていた（#84）。
+ *
+ * `absentGap` の判定基準を「他 chunk に行があること」に置いた理由:
+ * 「上場前だから 404」と「本来あるはずのデータが 404」は上流応答だけでは区別できない。
+ * 区別できない以上、**同じ pair / type が同じリクエストで実データを返せたか**を代理指標にする。
+ * 返せていれば上流は生きていて経路も正しく、隣接 chunk の 404 は「その期間に足が無い」の表明と
+ * 読むのが妥当。1 本も返っていなければ判断材料が無いので従来どおり失敗のまま扱う
+ * （全 chunk 失敗は手前の `classifyAllChunksFailure` / 空応答 fail が拾う）。
+ * success:0 を absentGap に含めないのは、実測上それが「期間は在るが集計が未了」の応答であり、
+ * 過去期間で出たら本物の異常だから（判定基準の詳細は docs/internal/bitbank-candle-tz.md）。
  */
 function partitionFailedChunks(
 	keys: string[],
 	results: FetchChunkResult[],
 	nowUtcDayKey: string,
-): { hardFailedKeys: string[]; expectedGapKeys: string[] } {
+): FailedChunkPartition {
+	// 「同じリクエストで実データを返した chunk があるか」。error 付きの chunk は rows が空なので
+	// 成功 chunk だけが真になる。
+	const hasAnyRows = results.some((r) => r?.rows?.length > 0);
 	const hardFailedKeys: string[] = [];
-	const expectedGapKeys: string[] = [];
+	const pendingGapKeys: string[] = [];
+	const absentGapKeys: string[] = [];
 	for (let i = 0; i < keys.length; i++) {
 		const err = results[i]?.error;
 		if (err == null) continue;
 		const key = keys[i];
 		const isCurrentOrFuturePeriod = key >= nowUtcDayKey.slice(0, key.length);
-		if (isCurrentOrFuturePeriod && isNotYetAvailableError(err)) expectedGapKeys.push(key);
+		if (isCurrentOrFuturePeriod && isNotYetAvailableError(err)) pendingGapKeys.push(key);
+		else if (hasAnyRows && isChunkNotFoundError(err)) absentGapKeys.push(key);
 		else hardFailedKeys.push(key);
 	}
-	return { hardFailedKeys, expectedGapKeys };
+	return { hardFailedKeys, pendingGapKeys, absentGapKeys };
+}
+
+/**
+ * 実失敗が「過半数」（＝**半数超**。ちょうど半数は含まない）に達したか。
+ *
+ * 旧実装は `>= totalChunks / 2` で発火しながらメッセージは「過半数」と言っており、
+ * 半数ちょうどで「過半数が失敗」と表示していた（#84）。文言ではなく**閾値の方を**
+ * 過半数に寄せた理由:
+ * - YEARLY_TYPES の 1 年ぶんの要求は JST/UTC のずれで**常に UTC 年 chunk 2 本**になる。
+ *   `>=` だと片方が落ちただけで必ず全体 fail になり、取得できた 1 年ぶんの足ごと捨てる——
+ *   本 issue と同じ「部分成功を握り潰す」失敗モードを閾値側にも抱えていた。
+ * - 半数の欠損は ⚠️ 警告（失敗 key と原因を列挙）で申告すれば、呼び出し側はデータと欠損の
+ *   両方を受け取れる。捨てるより情報量が多い。
+ * - 全滅は手前の `classifyAllChunksFailure` / 空応答 fail が拾うので、緩めても「何も無いのに
+ *   成功を返す」経路は生まれない。
+ *
+ * 小数を避けるため両辺を 2 倍して比較する。
+ */
+function isMajorityChunkFailure(hardFailedCount: number, totalChunks: number): boolean {
+	return hardFailedCount > 0 && hardFailedCount * 2 > totalChunks;
+}
+
+/** 部分失敗・gap の注記行を組み立てる（年経路 / 日経路で共通。単位語と注記文だけが違う）。 */
+function buildChunkWarnLines(
+	keys: string[],
+	results: FetchChunkResult[],
+	partition: FailedChunkPartition,
+	totalChunks: number,
+	labels: { unit: string; calendar: string; pendingSuffix: string },
+): string[] {
+	const { hardFailedKeys, pendingGapKeys, absentGapKeys } = partition;
+	const lines: string[] = [];
+	if (hardFailedKeys.length > 0) {
+		const detail = describeFailedChunks(keys, results, new Set(hardFailedKeys));
+		lines.push(
+			`⚠️ ${totalChunks}${labels.unit}中${hardFailedKeys.length}${labels.unit}の取得に失敗しました（${detail}）。データが不完全な可能性があります。`,
+		);
+	}
+	if (pendingGapKeys.length > 0) {
+		lines.push(
+			`ℹ️ ${labels.calendar} ${pendingGapKeys.join(', ')} は開始直後でデータ未生成のためスキップしました${labels.pendingSuffix}。`,
+		);
+	}
+	if (absentGapKeys.length > 0) {
+		lines.push(
+			`ℹ️ ${labels.calendar} ${absentGapKeys.join(', ')} は上流に足がありません（上場前などデータが存在しない期間）。取得できた期間のみで応答しています。`,
+		);
+	}
+	return lines;
 }
 
 export default async function getCandles(
@@ -296,7 +365,7 @@ export default async function getCandles(
 	const dateProvided = date != null;
 	// date 省略時の基準日は anchorTz の暦日で解釈する。サーバーのローカル tz で組むと、
 	// tz とローカルの暦日がずれる時間帯（JST 早朝の UTC サーバー等）に基準日が 1 日ずれる。
-	const effectiveDate = date ?? dayjs().tz(anchorTz).format('YYYYMMDD');
+	const effectiveDate = date ?? toDayKey(Date.now(), anchorTz);
 	const dateCheck = validateDate(effectiveDate, String(type));
 	if (!dateCheck.ok) return failFromValidation(dateCheck);
 
@@ -310,7 +379,8 @@ export default async function getCandles(
 	// 単一 fetch（YEARLY_TYPES）では API が年単位で返すため slice(-limit) のみだと
 	// 「指定日以前 limit 件」ではなく「年末側 limit 件」を返してしまう問題への対処。
 	// anchor は anchorTz の暦日終端で切る（既定 Asia/Tokyo）。
-	const anchorEndMs = dateProvided ? computeAnchorEndMs(effectiveDate, String(type), anchorTz) : null;
+	const anchorSpan = dateProvided ? computeAnchorSpan(effectiveDate, String(type), anchorTz) : null;
+	const anchorEndMs = anchorSpan?.endMs ?? null;
 	const anchorActive = anchorEndMs != null;
 
 	// anchor 計算後の早期 fail（fetch 前に明らかに無効な範囲を弾く）:
@@ -319,16 +389,15 @@ export default async function getCandles(
 	//   終端ではなく開始で判定する（終端判定だと当日を『未来』として誤拒否する）。
 	// - サービス開始前: anchor が BITBANK_SERVICE_START_MS より前 → ヒューリスティックに無効と推定
 	// 上流 404 / 空配列として返すより user 向け原因を明示する方が調査が早い。
-	if (anchorEndMs != null) {
-		const anchorStartMs = computeAnchorStartMs(effectiveDate, String(type), anchorTz);
-		if (anchorStartMs != null && anchorStartMs > Date.now()) {
-			const isoLocal = toIsoWithTz(anchorStartMs, anchorTz) ?? String(anchorStartMs);
+	if (anchorSpan != null) {
+		if (anchorSpan.startMs > Date.now()) {
+			const isoLocal = toIsoWithTz(anchorSpan.startMs, anchorTz) ?? String(anchorSpan.startMs);
 			return fail(
 				`No candle data available for date=${effectiveDate} (date is in the future, starts at ${isoLocal} ${anchorTz})`,
 				'user',
 			);
 		}
-		if (anchorEndMs < BITBANK_SERVICE_START_MS) {
+		if (anchorSpan.endMs < BITBANK_SERVICE_START_MS) {
 			return fail(`No candle data available for date=${effectiveDate} (before bitbank service start)`, 'user');
 		}
 	}
@@ -339,7 +408,7 @@ export default async function getCandles(
 	// 公式 API は YYYY 指定で 1 年分の candlestick を返す（4hour 以上の YEARLY_TYPES のみ）。
 	// 年は UTC で数える（fetch key は UTC 年 chunk。ローカル/anchorTz 年で数えると、
 	// JST 元日早朝など UTC ではまだ前年の時間帯に存在しない未来年 chunk を要求して 404 になる）。
-	const currentYear = dayjs.utc().year();
+	const currentYear = Number(toYearKey(Date.now(), FETCH_CHUNK_TZ));
 	const anchorYear = dateProvided && isYearlyType ? Number(dateCheck.value) : currentYear;
 	const isCurrentYearAnchor = anchorYear === currentYear;
 
@@ -347,10 +416,9 @@ export default async function getCandles(
 	// floor(elapsedMs / intervalMs) + 1 は「確定済み本数 + 現在形成中の足」。
 	// 日数ベース（floor(dayOfYear * barsPerYear/365)）だと 4hour/8hour/12hour で
 	// 今日 1 日分の足がすべて確定済と過大評価され、年初の小 limit で前年取得が漏れる。
-	const now = dayjs.utc();
-	const startOfYear = now.startOf('year');
+	const nowMs = Date.now();
 	const intervalMs = INTERVAL_MS[String(type)] ?? 86_400_000;
-	const elapsedThisYearMs = Math.max(0, now.valueOf() - startOfYear.valueOf());
+	const elapsedThisYearMs = Math.max(0, nowMs - startOfYearMs(nowMs, FETCH_CHUNK_TZ));
 	const estimatedBarsThisYear = Math.floor(elapsedThisYearMs / intervalMs) + 1;
 
 	// anchor 年内で「利用可能な本数」を見積もる（multi-year yearsNeeded の上振れ防止用）。
@@ -392,13 +460,13 @@ export default async function getCandles(
 	// UTC 日数のスケール: limit 上限 (multiDay=10000) と intervalMs の積で決まる。
 	// 例: tz='America/New_York' × 1min × limit=10000 → 約 7 日分 + tz ズレ 1 日 = 8 UTC 日 → OK。
 	const multiDayUtcKeys: string[] = [];
-	if (isDailyType) {
-		const ymd = dateCheck.value;
-		const y = ymd.slice(0, 4);
-		const m = ymd.slice(4, 6);
-		const d = ymd.slice(6, 8);
-		const localDayStartMs = dayjs.tz(`${y}-${m}-${d}`, anchorTz).startOf('day').valueOf();
-		const localDayEndMs = dayjs.tz(`${y}-${m}-${d}`, anchorTz).endOf('day').valueOf();
+	// tz 暦日は anchor と同じく繰り上げ許容で読む（computeAnchorSpan と同じ理由）。
+	// 解釈できない場合は key set 空 = 単一 fetch 経路へ落とす（旧実装で window が NaN になり
+	// 列挙ループが 1 度も回らなかったのと同じ結果）。
+	const localDaySpan = isDailyType ? parseDayKeyAllowingOverflow(dateCheck.value, anchorTz) : null;
+	if (localDaySpan != null) {
+		const localDayStartMs = localDaySpan.startMs;
+		const localDayEndMs = localDaySpan.endMs;
 		const intervalMsForDaily = INTERVAL_MS[String(type)] ?? 3_600_000;
 		const lookbackStartMs = localDayEndMs - (limit - 1) * intervalMsForDaily;
 		// date 省略（realtime）は「現在時刻から遡って limit 本」も window に含める。
@@ -416,12 +484,10 @@ export default async function getCandles(
 		// 過半数失敗と誤判定されて取得済みデータごと捨てられる。
 		const windowEndMs = Math.min(localDayEndMs, Date.now());
 
-		let cursor = dayjs.utc(windowStartMs).startOf('day');
-		const endCursor = dayjs.utc(windowEndMs).startOf('day');
-		while (cursor.valueOf() <= endCursor.valueOf()) {
-			multiDayUtcKeys.push(cursor.format('YYYYMMDD'));
-			cursor = cursor.add(1, 'day');
-		}
+		// windowStart <= windowEnd は常に成立する（windowStart <= localDayStart であり、
+		// localDayStart > now なら未来日として fetch 前に fail 済み、date 省略時は当日なので
+		// localDayStart <= now）。よって enumerateDayKeys の「逆転窓は空配列」規則には掛からない。
+		multiDayUtcKeys.push(...enumerateDayKeys(windowStartMs, windowEndMs, FETCH_CHUNK_TZ));
 	}
 	// needsMultiDay 判定: UTC 暦日 range が 2 日以上 or limit > barsPerDay。
 	// 後者は実質的に前者を含意するが（limit が一日分を超えるなら時間軸も一日を跨ぐ）、
@@ -432,22 +498,18 @@ export default async function getCandles(
 	// 例: tz=America/New_York, date=2025, 4hour → NY 2025-12-31 夜の足は UTC 2026 年 chunk に入る。
 	const yearlyTzWindowActive = isYearlyType && dateProvided && anchorActive;
 	const multiYearUtcKeys: string[] = [];
-	if (yearlyTzWindowActive) {
+	if (yearlyTzWindowActive && anchorSpan != null) {
 		const intervalMsYearly = INTERVAL_MS[String(type)] ?? 86_400_000;
-		const year = effectiveDate.slice(0, 4);
-		let periodStartMs: number;
-		if (/^\d{8}$/.test(effectiveDate)) {
-			const month = effectiveDate.slice(4, 6);
-			const day = effectiveDate.slice(6, 8);
-			periodStartMs = dayjs.tz(`${year}-${month}-${day}`, anchorTz).startOf('year').valueOf();
-		} else {
-			periodStartMs = dayjs.tz(`${year}-01-01`, anchorTz).startOf('year').valueOf();
-		}
-		const lookbackStartMs = (anchorEndMs as number) - (limit - 1) * intervalMsYearly;
+		// anchor が YYYYMMDD でも YYYY でも「anchor が属する tz 暦年の頭」が起点。
+		// YYYY 指定では anchorSpan.startMs 自体が年頭なので同じ式で両形式を賄える。
+		const periodStartMs = startOfYearMs(anchorSpan.startMs, anchorTz);
+		const lookbackStartMs = anchorSpan.endMs - (limit - 1) * intervalMsYearly;
 		const windowStartMs = Math.min(periodStartMs, lookbackStartMs);
 		// 未来の UTC 年 chunk は存在しない（404 確定）ため現在時刻でクランプ（multi-day と同旨）。
-		const windowEndMs = Math.min(anchorEndMs as number, Date.now());
-		multiYearUtcKeys.push(...enumerateUtcYearsIntersectingWindow(windowStartMs, windowEndMs));
+		const windowEndMs = Math.min(anchorSpan.endMs, Date.now());
+		// multi-day と同じく windowStart <= windowEnd は常に成立する
+		// （periodStart / lookbackStart はいずれも anchor 終端以下で、periodStart > now なら未来日 fail 済み）。
+		multiYearUtcKeys.push(...enumerateYearKeys(windowStartMs, windowEndMs, FETCH_CHUNK_TZ));
 	}
 	// date 未指定時は従来どおり anchorYear から過去方向に yearsNeeded 分だけ fetch。
 	const useLegacyMultiYear = isYearlyType && needsMultiYear && !yearlyTzWindowActive;
@@ -487,28 +549,25 @@ export default async function getCandles(
 				if (classified) return classified;
 			}
 
-			// 失敗を「実失敗」と「進行中 UTC 年のデータ未生成（許容）」に分け、実失敗のみで過半数判定する。
+			// 失敗を「実失敗」と「データが無いだけ（許容）」に分け、実失敗のみで過半数判定する。
+			// 上場初年度の銘柄では古い側の UTC 年 chunk が必ず上場前になり 404 が確定するので、
+			// それを実失敗に数えると取得できた年ごと捨ててしまう（#84）。
 			// 失敗メッセージには key と原因を必ず含める（「N年中M年失敗」だけでは診断不能）。
-			const nowUtcDayKey = dayjs.utc().format('YYYYMMDD');
-			const { hardFailedKeys, expectedGapKeys } = partitionFailedChunks(yearKeys, merged.results, nowUtcDayKey);
-			const totalChunks = merged.results.length - expectedGapKeys.length;
-			if (hardFailedKeys.length > 0 && hardFailedKeys.length >= totalChunks / 2) {
-				const detail = describeFailedChunks(yearKeys, merged.results, new Set(hardFailedKeys));
+			const nowUtcDayKey = toDayKey(Date.now(), FETCH_CHUNK_TZ);
+			const partition = partitionFailedChunks(yearKeys, merged.results, nowUtcDayKey);
+			const totalChunks = merged.results.length - partition.pendingGapKeys.length - partition.absentGapKeys.length;
+			if (isMajorityChunkFailure(partition.hardFailedKeys.length, totalChunks)) {
+				const detail = describeFailedChunks(yearKeys, merged.results, new Set(partition.hardFailedKeys));
 				return fail(
-					`ローソク足取得の過半数が失敗しました（${chk.pair}/${type}, ${totalChunks}年中${hardFailedKeys.length}年失敗: ${detail}）`,
+					`ローソク足取得の過半数が失敗しました（${chk.pair}/${type}, ${totalChunks}年中${partition.hardFailedKeys.length}年失敗: ${detail}）`,
 					'upstream',
 				);
 			}
-			const warnLines: string[] = [];
-			if (hardFailedKeys.length > 0) {
-				const detail = describeFailedChunks(yearKeys, merged.results, new Set(hardFailedKeys));
-				warnLines.push(
-					`⚠️ ${totalChunks}年中${hardFailedKeys.length}年の取得に失敗しました（${detail}）。データが不完全な可能性があります。`,
-				);
-			}
-			if (expectedGapKeys.length > 0) {
-				warnLines.push(`ℹ️ UTC 暦年 ${expectedGapKeys.join(', ')} は開始直後でデータ未生成のためスキップしました。`);
-			}
+			const warnLines = buildChunkWarnLines(yearKeys, merged.results, partition, totalChunks, {
+				unit: '年',
+				calendar: 'UTC 暦年',
+				pendingSuffix: '',
+			});
 			if (warnLines.length > 0) fetchWarning = warnLines.join('\n');
 
 			ohlcvs = merged.rows;
@@ -539,33 +598,27 @@ export default async function getCandles(
 				if (classified) return classified;
 			}
 
-			// 失敗を「実失敗」と「進行中 UTC 日のデータ未生成（許容）」に分け、実失敗のみで過半数判定する。
+			// 失敗を「実失敗」と「データが無いだけ（許容）」に分け、実失敗のみで過半数判定する。
 			// 進行中の UTC 日は通常 200 + 部分データを返すが、UTC 日開始直後は chunk 未生成で
 			// 404 になることがある。これを過半数失敗に数えると、取得済みの正当なデータごと捨てて
-			// しまう（JST 早朝の当日取得が全滅する障害の原因）。
+			// しまう（JST 早朝の当日取得が全滅する障害の原因）。過去日の 404 も、他 chunk が
+			// 実データを返しているなら「その日に足が無い」として同様に許容する（#84）。
 			// 失敗メッセージには key と原因を必ず含める（「N日中M日失敗」だけでは診断不能）。
-			const nowUtcDayKey = dayjs.utc().format('YYYYMMDD');
-			const { hardFailedKeys, expectedGapKeys } = partitionFailedChunks(multiDayUtcKeys, merged.results, nowUtcDayKey);
-			const totalDays = merged.results.length - expectedGapKeys.length;
-			if (hardFailedKeys.length > 0 && hardFailedKeys.length >= totalDays / 2) {
-				const detail = describeFailedChunks(multiDayUtcKeys, merged.results, new Set(hardFailedKeys));
+			const nowUtcDayKey = toDayKey(Date.now(), FETCH_CHUNK_TZ);
+			const partition = partitionFailedChunks(multiDayUtcKeys, merged.results, nowUtcDayKey);
+			const totalDays = merged.results.length - partition.pendingGapKeys.length - partition.absentGapKeys.length;
+			if (isMajorityChunkFailure(partition.hardFailedKeys.length, totalDays)) {
+				const detail = describeFailedChunks(multiDayUtcKeys, merged.results, new Set(partition.hardFailedKeys));
 				return fail(
-					`ローソク足取得の過半数が失敗しました（${chk.pair}/${type}, ${totalDays}日中${hardFailedKeys.length}日失敗: ${detail}）`,
+					`ローソク足取得の過半数が失敗しました（${chk.pair}/${type}, ${totalDays}日中${partition.hardFailedKeys.length}日失敗: ${detail}）`,
 					'upstream',
 				);
 			}
-			const warnLines: string[] = [];
-			if (hardFailedKeys.length > 0) {
-				const detail = describeFailedChunks(multiDayUtcKeys, merged.results, new Set(hardFailedKeys));
-				warnLines.push(
-					`⚠️ ${totalDays}日中${hardFailedKeys.length}日の取得に失敗しました（${detail}）。データが不完全な可能性があります。`,
-				);
-			}
-			if (expectedGapKeys.length > 0) {
-				warnLines.push(
-					`ℹ️ UTC 暦日 ${expectedGapKeys.join(', ')} は開始直後でデータ未生成のためスキップしました（当日分は形成され次第、以降の取得で揃います）。`,
-				);
-			}
+			const warnLines = buildChunkWarnLines(multiDayUtcKeys, merged.results, partition, totalDays, {
+				unit: '日',
+				calendar: 'UTC 暦日',
+				pendingSuffix: '（当日分は形成され次第、以降の取得で揃います）',
+			});
 			if (warnLines.length > 0) fetchWarning = warnLines.join('\n');
 
 			ohlcvs = merged.rows;
@@ -603,7 +656,7 @@ export default async function getCandles(
 				// 進行中の UTC 期間の success:0 は「データ未生成（UTC 期間の開始直後）」で上流障害ではない。
 				// multi-fetch 経路の expected-gap（partitionFailedChunks）と同じ扱いで user 向けに明示する
 				// （例: tz=UTC × 当日指定が UTC 日開始直後に単一 key へ潰れるケース）。
-				if (isDailyType && String(singleKey) >= dayjs.utc().format('YYYYMMDD')) {
+				if (isDailyType && String(singleKey) >= toDayKey(Date.now(), FETCH_CHUNK_TZ)) {
 					return parseAsResult<GetCandlesData, GetCandlesMeta>(
 						GetCandlesOutputSchema,
 						fail(
@@ -926,8 +979,8 @@ export const toolDef: ToolDefinition = {
 		type: '1min' | '5min' | '15min' | '30min' | '1hour' | '4hour' | '8hour' | '12hour' | '1day' | '1week' | '1month';
 		date?: string;
 		limit?: number;
-		// リテラルを手書きせず Zod スキーマから導出する。手書きにすると alias 削除時に enum から
-		// `items` を消しても型が変わらず、下の alias 分岐が黙って生き残る。
+		// リテラルを手書きせず Zod スキーマから導出する。手書きにすると PR 5 で enum から
+		// `items` を消しても型が変わらず、下の alias 分岐が黙って生き残る（§7-3 の PR 5 作業表）。
 		view?: z.infer<typeof GetCandlesInputSchema>['view'];
 		format?: z.infer<typeof GetCandlesInputSchema>['format'];
 		tz?: string;
@@ -937,7 +990,7 @@ export const toolDef: ToolDefinition = {
 		// deprecated alias `view=items` を `view=full` + `format=json` へ正規化する（§4-4）。
 		// 正規化はここ 1 箇所だけで行い、以降の分岐は新語彙（format）しか見ない。
 		// `items` は量ではなく形式の指定であり、しかも full より重い（実測 7.4 倍）ため
-		// 量の語彙に置くと必ず誤読される。
+		// 量の語彙に置くと必ず誤読される。0.4.0 で enum から削除予定。
 		const effectiveFormat: 'text' | 'json' = view === 'items' ? 'json' : (format ?? 'text');
 		if (effectiveFormat === 'json') {
 			const items = result?.data?.normalized ?? [];
@@ -949,7 +1002,7 @@ export const toolDef: ToolDefinition = {
 			const meta = result.meta as { warning?: string; provisional?: boolean } | undefined;
 			if (meta?.warning) content.push({ type: 'text', text: meta.warning });
 			if (meta?.provisional) content.push({ type: 'text', text: PROVISIONAL_BAR_NOTE });
-			// structuredContent は他ツールと同じ Result 封筒に統一する（本変更唯一の shape 破壊）。
+			// structuredContent は他ツールと同じ Result 封筒に統一する（本 PR 唯一の shape 破壊）。
 			// 旧 view=items は `{ items, meta }` を返し ok / summary / data.{raw,keyPoints,volumeStats}
 			// を落としていた。`format` は content の形式を選ぶパラメータであって
 			// structuredContent の契約を変えるパラメータではない（§3-2 規約 4）。

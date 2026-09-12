@@ -1,0 +1,14 @@
+{
+  "plugins": ["typescript", "unicorn", "oxc", "vitest"],
+  "categories": { "correctness": "error" },
+  "rules": {
+    "vitest/no-focused-tests": "error",
+    "vitest/no-disabled-tests": "warn",
+    "vitest/no-conditional-expect": "warn",
+    "vitest/valid-title": "warn",
+    "vitest/require-mock-type-parameters": "off",
+    "vitest/require-to-throw-message": "off",
+    "vitest/expect-expect": "off",
+    "vitest/valid-expect": "off"
+  }
+}

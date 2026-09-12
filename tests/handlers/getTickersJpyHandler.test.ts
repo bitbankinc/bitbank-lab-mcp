@@ -11,6 +11,7 @@ import {
 	toolDef,
 } from '../../src/handlers/getTickersJpyHandler.js';
 import getTickersJpy from '../../tools/get_tickers_jpy.js';
+import { asMcp } from '../helpers/mcp.js';
 
 const mockedGetTickersJpy = vi.mocked(getTickersJpy);
 
@@ -190,7 +191,7 @@ describe('toolDef handler', () => {
 			mockTickerData([{ pair: 'btc_jpy', last: 5_000_000, open: 5_000_000, vol: 100 }]) as never,
 		);
 		const res = await toolDef.handler({ view: 'ranked', sortBy: 'change24h', order: 'desc', limit: 5 });
-		const sc = (res as { structuredContent: Record<string, unknown> }).structuredContent;
+		const sc = asMcp<Record<string, unknown>>(res).structuredContent;
 		expect(sc.ok).toBe(true);
 		expect(sc.data).toHaveProperty('items');
 		expect(sc.data).toHaveProperty('ranked');
@@ -218,7 +219,7 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 			]) as never,
 		);
 		const res = await toolDef.handler({ view: 'ranked', sortBy: 'change24h', order: 'desc', limit: 1 });
-		const sc = (res as { structuredContent: { data: { items: Array<Record<string, unknown>> } } }).structuredContent;
+		const sc = asMcp<{ data: { items: Array<Record<string, unknown>> } }>(res).structuredContent;
 		const item = sc.data.items[0];
 		expect(item.lastN).toBeNull();
 		expect(item.volumeInJPY).toBeNull();
@@ -240,7 +241,7 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 			]) as never,
 		);
 		const res = await toolDef.handler({ view: 'items' });
-		const sc = (res as { structuredContent: { data: { items: Array<Record<string, unknown>> } } }).structuredContent;
+		const sc = asMcp<{ data: { items: Array<Record<string, unknown>> } }>(res).structuredContent;
 		const item = sc.data.items[0];
 		expect(item.volN).toBeNull();
 		expect(item.buyN).toBeNull();
@@ -264,7 +265,7 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 			]) as never,
 		);
 		const res = await toolDef.handler({ view: 'items' });
-		const sc = (res as { structuredContent: { data: { items: Array<Record<string, unknown>> } } }).structuredContent;
+		const sc = asMcp<{ data: { items: Array<Record<string, unknown>> } }>(res).structuredContent;
 		const item = sc.data.items[0];
 		expect(item.lastN).toBeNull();
 		expect(item.openN).toBeNull();
@@ -297,7 +298,7 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 			]) as never,
 		);
 		const res = await toolDef.handler({ view: 'ranked', sortBy: 'change24h', order: 'desc', limit: 2 });
-		const sc = (res as { structuredContent: { data: { ranked: Array<{ pair: string }> } } }).structuredContent;
+		const sc = asMcp<{ data: { ranked: Array<{ pair: string }> } }>(res).structuredContent;
 		expect(sc.data.ranked[0].pair).toBe('good_jpy');
 		expect(sc.data.ranked[1].pair).toBe('bad_jpy');
 	});
@@ -328,7 +329,7 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 			]) as never,
 		);
 		const res = await toolDef.handler({ view: 'ranked', sortBy: 'change24h', order: 'asc', limit: 2 });
-		const sc = (res as { structuredContent: { data: { ranked: Array<{ pair: string }> } } }).structuredContent;
+		const sc = asMcp<{ data: { ranked: Array<{ pair: string }> } }>(res).structuredContent;
 		expect(sc.data.ranked[0].pair).toBe('bad_jpy');
 		expect(sc.data.ranked[1].pair).toBe('good_jpy');
 	});
@@ -360,7 +361,7 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 			]) as never,
 		);
 		const res = await toolDef.handler({ view: 'ranked', sortBy: 'change24h', order: 'desc', limit: 5 });
-		const sc = (res as { structuredContent: Record<string, unknown> }).structuredContent;
+		const sc = asMcp<Record<string, unknown>>(res).structuredContent;
 		expect(() => GetTickersJpyHandlerOutputSchema.parse(sc)).not.toThrow();
 	});
 
@@ -391,7 +392,7 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 			]) as never,
 		);
 		const res = await toolDef.handler({ view: 'items' });
-		const sc = (res as { structuredContent: Record<string, unknown> }).structuredContent;
+		const sc = asMcp<Record<string, unknown>>(res).structuredContent;
 		expect(() => GetTickersJpyHandlerOutputSchema.parse(sc)).not.toThrow();
 	});
 
@@ -411,7 +412,7 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 			]) as never,
 		);
 		const res = await toolDef.handler({ view: 'items' });
-		const sc = (res as { structuredContent: { data: { items: Array<Record<string, unknown>> } } }).structuredContent;
+		const sc = asMcp<{ data: { items: Array<Record<string, unknown>> } }>(res).structuredContent;
 		const item = sc.data.items[0];
 		// 1e308 * 1e308 = Infinity → null に正規化されている
 		expect(item.lastN).toBe(1e308);
@@ -435,7 +436,7 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 			]) as never,
 		);
 		const res = await toolDef.handler({ view: 'ranked', sortBy: 'change24h', order: 'desc', limit: 1 });
-		const sc = (res as { structuredContent: Record<string, unknown> }).structuredContent;
+		const sc = asMcp<Record<string, unknown>>(res).structuredContent;
 		// 正規化フィールドに NaN / Infinity がないことを確認
 		const json = JSON.stringify(sc);
 		expect(json).not.toContain('NaN');

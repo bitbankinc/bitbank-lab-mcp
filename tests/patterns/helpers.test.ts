@@ -8,8 +8,6 @@ import {
 	calculatePatternScoreEx,
 	checkContainment,
 	checkConvergenceEx,
-	computeTargetReach,
-	daysPerBar,
 	deduplicatePatterns,
 	detectWedgeBreak,
 	determineWedgeType,
@@ -17,9 +15,11 @@ import {
 	finalizeConf,
 	generateWindows,
 	globalDedup,
+	PERIOD_SCORE_BAR_BUCKETS,
+	periodScoreBars,
 	periodScoreDays,
 } from '../../tools/patterns/helpers.js';
-import type { CandleData, TrendLine } from '../../tools/patterns/types.js';
+import type { CandleData, DeduplicablePattern, TrendLine } from '../../tools/patterns/types.js';
 
 // ---------------------------------------------------------------------------
 // ヘルパー
@@ -311,7 +311,7 @@ describe('calculatePatternScoreEx', () => {
 // ---------------------------------------------------------------------------
 // periodScoreDays
 // ---------------------------------------------------------------------------
-describe('periodScoreDays', () => {
+describe('periodScoreDays（暦日基準。double / H&S が使う）', () => {
 	it('ISO文字列なしは 0.7', () => {
 		expect(periodScoreDays()).toBe(0.7);
 	});
@@ -322,6 +322,54 @@ describe('periodScoreDays', () => {
 
 	it('15-30日は高スコア', () => {
 		expect(periodScoreDays('2024-01-01', '2024-01-20')).toBe(0.9);
+	});
+
+	// 30 日以上だけ 0.9 → 0.7 と下がる。**この非単調性は暦日版の仕様として固定する**
+	// （バー数版には引き継いでいない。理由は periodScoreBars の docstring）。
+	it('30日以上は 0.9 から 0.7 に下がる（非単調。引数なしと同じ中立値）', () => {
+		expect(periodScoreDays('2024-01-01', '2024-02-05')).toBe(0.7);
+		expect(periodScoreDays('2024-01-01', '2024-02-05')).toBe(periodScoreDays());
+	});
+});
+
+// ---------------------------------------------------------------------------
+// periodScoreBars（issue #199 候補 2。triple のみが使う）
+// ---------------------------------------------------------------------------
+describe('periodScoreBars（バー数基準。triple が使う）', () => {
+	it('境界は 12 / 18 / 26 バー', () => {
+		expect(PERIOD_SCORE_BAR_BUCKETS).toEqual([12, 18, 26]);
+	});
+
+	it.each([
+		[0, 0.6],
+		[11, 0.6],
+		[12, 0.7],
+		[17, 0.7],
+		[18, 0.8],
+		[25, 0.8],
+		[26, 0.9],
+		[1000, 0.9],
+	])('%i バー → %f', (bars, expected) => {
+		expect(periodScoreBars(bars)).toBe(expected);
+	});
+
+	// 暦日版と違い最長バケットで下がらない。ここが崩れると
+	// 「由来不明の段差をバー空間に持ち込まない」という #199 候補 2 の判断が黙って戻る。
+	it('単調非減少（暦日版の 0.9 → 0.7 の段差を引き継いでいない）', () => {
+		const scores = Array.from({ length: 60 }, (_, bars) => periodScoreBars(bars));
+		for (let i = 1; i < scores.length; i++) {
+			expect(scores[i]).toBeGreaterThanOrEqual(scores[i - 1]);
+		}
+		expect(Math.max(...scores)).toBe(0.9);
+	});
+
+	it('時間足に依らない（引数はバー数だけで tf を受け取らない）', () => {
+		expect(periodScoreBars.length).toBe(1);
+	});
+
+	it('非有限値は中立値 0.7', () => {
+		expect(periodScoreBars(Number.NaN)).toBe(0.7);
+		expect(periodScoreBars(Number.POSITIVE_INFINITY)).toBe(0.7);
 	});
 });
 
@@ -412,6 +460,124 @@ describe('deduplicatePatterns', () => {
 	it('空配列は空を返す', () => {
 		expect(deduplicatePatterns([])).toEqual([]);
 	});
+
+	// ── statusScore 最優先（issue #133）──
+	// range.end は形成中では常に最新足なので、status より前に比較すると
+	// 形成中が完成済みを構造的に必ず押し出す。statusScore（ranking.ts が単一ソース）を
+	// 最優先し、同 status 内でのみ「新しいほうを採る」を適用する。
+
+	it('形成中が range.end も confidence も上回っていても、完成済み（status 未設定）が勝つ', () => {
+		const completed: DeduplicablePattern = {
+			type: 'double_bottom',
+			confidence: 0.96,
+			range: { start: '2024-01-01', end: '2024-01-10' },
+		};
+		const forming: DeduplicablePattern = {
+			type: 'double_bottom',
+			confidence: 1.0,
+			status: 'forming',
+			range: { start: '2024-01-01', end: '2024-01-15' },
+		};
+		const result = deduplicatePatterns([completed, forming]);
+		expect(result).toHaveLength(1);
+		expect(result[0].status).toBeUndefined();
+		expect(result[0].confidence).toBe(0.96);
+	});
+
+	it('status=completed は status 未設定（完成済み扱い）より優先される', () => {
+		const explicit: DeduplicablePattern = {
+			type: 'triangle_ascending',
+			confidence: 0.7,
+			status: 'completed',
+			range: { start: '2024-01-01', end: '2024-01-10' },
+		};
+		const unset: DeduplicablePattern = {
+			type: 'triangle_ascending',
+			confidence: 0.9,
+			range: { start: '2024-01-01', end: '2024-01-15' },
+		};
+		const result = deduplicatePatterns([explicit, unset]);
+		expect(result).toHaveLength(1);
+		expect(result[0].status).toBe('completed');
+	});
+
+	it('invalid は range.end が新しくても完成済みに負ける', () => {
+		const completed: DeduplicablePattern = {
+			type: 'double_top',
+			confidence: 0.8,
+			range: { start: '2024-01-01', end: '2024-01-10' },
+		};
+		const invalid: DeduplicablePattern = {
+			type: 'double_top',
+			confidence: 0.9,
+			status: 'invalid',
+			range: { start: '2024-01-01', end: '2024-01-15' },
+		};
+		const result = deduplicatePatterns([completed, invalid]);
+		expect(result).toHaveLength(1);
+		expect(result[0].status).toBeUndefined();
+	});
+
+	// issue #142: 同 status 内の順序は confidence → range.end。`globalDedup` と同じ。
+	// #135 までは range.end が先で、最も新しく終わる 1 つに絞り込んだ時点で confidence が
+	// 一度も比較されなかった（= 広い窓の低品質候補が勝つ）。
+	it('同 status どうしでは confidence が高いほうが勝つ（range.end が古くても）', () => {
+		const older: DeduplicablePattern = {
+			type: 'double_top',
+			confidence: 0.9,
+			status: 'forming',
+			range: { start: '2024-01-01', end: '2024-01-10' },
+		};
+		const newer: DeduplicablePattern = {
+			type: 'double_top',
+			confidence: 0.6,
+			status: 'forming',
+			range: { start: '2024-01-02', end: '2024-01-12' },
+		};
+		const result = deduplicatePatterns([older, newer]);
+		expect(result).toHaveLength(1);
+		expect(result[0].range?.end).toBe('2024-01-10');
+		expect(result[0].confidence).toBe(0.9);
+	});
+
+	it('confidence が同点なら range.end が新しいほうが勝つ（#142 の入れ替えは同点では効かない）', () => {
+		const older: DeduplicablePattern = {
+			type: 'double_top',
+			confidence: 0.8,
+			status: 'forming',
+			range: { start: '2024-01-01', end: '2024-01-10' },
+		};
+		const newer: DeduplicablePattern = {
+			type: 'double_top',
+			confidence: 0.8,
+			status: 'forming',
+			range: { start: '2024-01-02', end: '2024-01-12' },
+		};
+		const result = deduplicatePatterns([older, newer]);
+		expect(result).toHaveLength(1);
+		expect(result[0].range?.end).toBe('2024-01-12');
+	});
+
+	// #133 / PR #135 の不変条件。#142 の入れ替えは statusScore の**下**なので、
+	// confidence をどれだけ高くしても形成中は完成済みを押し出せない。
+	it('形成中は confidence が高くても完成済みに勝てない（statusScore が最優先のまま）', () => {
+		const completed: DeduplicablePattern = {
+			type: 'double_top',
+			confidence: 0.6,
+			status: 'completed',
+			range: { start: '2024-01-01', end: '2024-01-10' },
+		};
+		const forming: DeduplicablePattern = {
+			type: 'double_top',
+			confidence: 1.0,
+			status: 'forming',
+			range: { start: '2024-01-02', end: '2024-01-12' },
+		};
+		const result = deduplicatePatterns([completed, forming]);
+		expect(result).toHaveLength(1);
+		expect(result[0].status).toBe('completed');
+		expect(result[0].confidence).toBe(0.6);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -439,10 +605,92 @@ describe('globalDedup', () => {
 	it('空配列は空を返す', () => {
 		expect(globalDedup([])).toEqual([]);
 	});
+
+	// ── statusScore 最優先（issue #133）──
+	// rankPatterns と同じ規則（statusScore → confidence → range.end）。
+	// status を見ずに confidence を先に比べると、形成中（整合度 1.00 が付きやすい）が
+	// 突破確定済みの完成済み（同 0.96）を押し出す——issue #133 の実データそのもの。
+
+	it('形成中（confidence 1.00・range.end 最新）は完成済み（status 未設定・0.96）を押し出せない', () => {
+		const completed: DeduplicablePattern = {
+			type: 'double_bottom',
+			confidence: 0.96,
+			range: { start: '2026-08-03', end: '2026-08-19' },
+		};
+		const forming: DeduplicablePattern = {
+			type: 'double_bottom',
+			confidence: 1.0,
+			status: 'forming',
+			range: { start: '2026-08-03', end: '2026-08-26' },
+		};
+		// 入力順に依存しないこと（既存が完成済みでも形成中でも同じ勝者）
+		for (const input of [
+			[completed, forming],
+			[forming, completed],
+		]) {
+			const result = globalDedup(input);
+			expect(result).toHaveLength(1);
+			expect(result[0].status).toBeUndefined();
+			expect(result[0].confidence).toBe(0.96);
+		}
+	});
+
+	it('status=completed は confidence が低くても status 未設定（完成済み扱い）に勝つ', () => {
+		const explicit: DeduplicablePattern = {
+			type: 'rising_wedge',
+			confidence: 0.6,
+			status: 'completed',
+			range: { start: '2024-01-01', end: '2024-01-10' },
+		};
+		const unset: DeduplicablePattern = {
+			type: 'rising_wedge',
+			confidence: 0.9,
+			range: { start: '2024-01-01', end: '2024-01-10' },
+		};
+		const result = globalDedup([explicit, unset]);
+		expect(result).toHaveLength(1);
+		expect(result[0].status).toBe('completed');
+	});
+
+	it('invalid は confidence が高くても完成済みに負ける', () => {
+		const completed: DeduplicablePattern = {
+			type: 'triangle_ascending',
+			confidence: 0.7,
+			status: 'completed',
+			range: { start: '2024-01-01', end: '2024-01-10' },
+		};
+		const invalid: DeduplicablePattern = {
+			type: 'triangle_descending',
+			confidence: 0.95,
+			status: 'invalid',
+			range: { start: '2024-01-01', end: '2024-01-10' },
+		};
+		const result = globalDedup([completed, invalid]);
+		expect(result).toHaveLength(1);
+		expect(result[0].status).toBe('completed');
+	});
+
+	it('同 status どうしでは従来どおり confidence → range.end の順で選ぶ', () => {
+		const lowConf: DeduplicablePattern = {
+			type: 'rising_wedge',
+			confidence: 0.6,
+			status: 'forming',
+			range: { start: '2024-01-01', end: '2024-01-15' },
+		};
+		const highConf: DeduplicablePattern = {
+			type: 'rising_wedge',
+			confidence: 0.9,
+			status: 'forming',
+			range: { start: '2024-01-01', end: '2024-01-10' },
+		};
+		const result = globalDedup([lowConf, highConf]);
+		expect(result).toHaveLength(1);
+		expect(result[0].confidence).toBe(0.9);
+	});
 });
 
 // ---------------------------------------------------------------------------
-// barsPerDay / daysPerBar
+// barsPerDay
 // ---------------------------------------------------------------------------
 describe('barsPerDay', () => {
 	it('1day は 1 を返す', () => {
@@ -463,189 +711,5 @@ describe('barsPerDay', () => {
 
 	it('未知の time frame は 1 にフォールバック', () => {
 		expect(barsPerDay('unknown' as string)).toBe(1);
-	});
-});
-
-describe('daysPerBar', () => {
-	it('barsPerDay の逆数を返す', () => {
-		expect(daysPerBar('1day')).toBe(1);
-		expect(daysPerBar('1hour')).toBeCloseTo(1 / 24, 10);
-		expect(daysPerBar('1week')).toBe(7);
-		expect(daysPerBar('1month')).toBe(30);
-	});
-
-	it('formationBars × daysPerBar で日数に換算できる', () => {
-		// 1hour × 48 bars = 2 days
-		expect(48 * daysPerBar('1hour')).toBeCloseTo(2, 10);
-		// 1week × 4 bars = 28 days
-		expect(4 * daysPerBar('1week')).toBe(28);
-		// 1month × 3 bars = 90 days
-		expect(3 * daysPerBar('1month')).toBe(90);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// computeTargetReach — ブレイク後の target 到達判定（high/low ベース）
-// ---------------------------------------------------------------------------
-describe('computeTargetReach', () => {
-	// candle factory: high / low を明示指定可能
-	function c(high: number, low: number, close: number, iso?: string): CandleData {
-		return { open: close, high, low, close, isoTime: iso ?? `2026-01-01T00:00:00.000Z` };
-	}
-
-	// direction='down' ─────────────────────────────────────
-
-	it('direction=down: 最安 low が target を割り込む → reached=true, pct>=100', () => {
-		// breakoutPrice=100, target=80, idx=2 で low=70 (<= target) → 到達
-		const candles = [
-			c(105, 95, 100, 'iso-0'),
-			c(105, 90, 100, 'iso-1'),
-			c(95, 70, 90, 'iso-2'),
-			c(100, 85, 95, 'iso-3'),
-		];
-		const r = computeTargetReach(candles, 0, 100, 80, 'down');
-		expect(r).toBeDefined();
-		expect(r?.targetReached).toBe(true);
-		expect(r?.targetReachedPct).toBeGreaterThanOrEqual(100);
-		expect(r?.targetReachedPrice).toBe(70);
-		expect(r?.targetReachedDate).toBe('iso-2');
-	});
-
-	it('direction=down: 一度到達後に close が戻っても最安 low ベースで到達扱い', () => {
-		// breakoutPrice=100, target=80, idx=1 で low=75（到達） / idx=3 で close=100 へ戻し
-		const candles = [
-			c(102, 99, 100, 'iso-0'),
-			c(95, 75, 90, 'iso-1'),
-			c(110, 92, 105, 'iso-2'),
-			c(115, 99, 110, 'iso-3'),
-		];
-		const r = computeTargetReach(candles, 0, 100, 80, 'down');
-		expect(r?.targetReached).toBe(true);
-		expect(r?.targetReachedPrice).toBe(75);
-		expect(r?.targetReachedDate).toBe('iso-1');
-	});
-
-	it('direction=down: ブレイク close が既に target を下回る（オーバーシュート）→ reached=true & pct>=100', () => {
-		// breakoutPrice=70, target=80 → 既に到達済み
-		const candles = [c(72, 65, 70, 'iso-0'), c(75, 60, 70, 'iso-1')];
-		const r = computeTargetReach(candles, 0, 70, 80, 'down');
-		expect(r?.targetReached).toBe(true);
-		expect(r?.targetReachedPct).toBeGreaterThanOrEqual(100);
-		expect(r?.targetReachedPct).toBeGreaterThanOrEqual(0);
-	});
-
-	it('direction=down: low が target に届かない → reached=false, pct<100', () => {
-		// breakoutPrice=100, target=50, 最安 low=90 → moveDistance=10, distance=50, pct=20
-		const candles = [c(102, 100, 100, 'iso-0'), c(101, 90, 99, 'iso-1')];
-		const r = computeTargetReach(candles, 0, 100, 50, 'down');
-		expect(r?.targetReached).toBe(false);
-		expect(r?.targetReachedPct).toBe(20);
-		expect(r?.targetReachedPrice).toBe(90);
-	});
-
-	// direction='up' ───────────────────────────────────────
-
-	it('direction=up: 最高 high が target を超える → reached=true, pct>=100', () => {
-		// breakoutPrice=100, target=120, idx=2 で high=130 (>= target) → 到達
-		const candles = [c(102, 98, 100, 'iso-0'), c(110, 100, 108, 'iso-1'), c(130, 115, 125, 'iso-2')];
-		const r = computeTargetReach(candles, 0, 100, 120, 'up');
-		expect(r?.targetReached).toBe(true);
-		expect(r?.targetReachedPct).toBeGreaterThanOrEqual(100);
-		expect(r?.targetReachedPrice).toBe(130);
-		expect(r?.targetReachedDate).toBe('iso-2');
-	});
-
-	it('direction=up: 一度到達後に close が戻っても最高 high ベースで到達扱い', () => {
-		// breakoutPrice=100, target=120, idx=1 で high=125（到達） / idx=2 で close=100 へ戻し
-		const candles = [c(101, 99, 100, 'iso-0'), c(125, 100, 122, 'iso-1'), c(105, 95, 100, 'iso-2')];
-		const r = computeTargetReach(candles, 0, 100, 120, 'up');
-		expect(r?.targetReached).toBe(true);
-		expect(r?.targetReachedPrice).toBe(125);
-		expect(r?.targetReachedDate).toBe('iso-1');
-	});
-
-	it('direction=up: ブレイク close が既に target を超える（オーバーシュート）→ reached=true & pct>=100', () => {
-		// breakoutPrice=130, target=120 → 既に到達済み
-		const candles = [c(135, 125, 130, 'iso-0'), c(140, 128, 135, 'iso-1')];
-		const r = computeTargetReach(candles, 0, 130, 120, 'up');
-		expect(r?.targetReached).toBe(true);
-		expect(r?.targetReachedPct).toBeGreaterThanOrEqual(100);
-		expect(r?.targetReachedPct).toBeGreaterThanOrEqual(0);
-	});
-
-	it('direction=up: high が target に届かない → reached=false, pct<100', () => {
-		// breakoutPrice=100, target=150, 最高 high=110 → moveDistance=10, distance=50, pct=20
-		const candles = [c(105, 98, 100, 'iso-0'), c(110, 100, 108, 'iso-1')];
-		const r = computeTargetReach(candles, 0, 100, 150, 'up');
-		expect(r?.targetReached).toBe(false);
-		expect(r?.targetReachedPct).toBe(20);
-		expect(r?.targetReachedPrice).toBe(110);
-	});
-
-	// 0 距離 ───────────────────────────────────────────────
-
-	it('0 距離（breakoutPrice == target）→ reached=true, pct=100, price=breakoutPrice', () => {
-		const candles = [c(102, 98, 100, 'iso-0'), c(105, 95, 100, 'iso-1')];
-		const r = computeTargetReach(candles, 0, 100, 100, 'down');
-		expect(r?.targetReached).toBe(true);
-		expect(r?.targetReachedPct).toBe(100);
-		expect(r?.targetReachedPrice).toBe(100);
-		expect(r?.targetReachedDate).toBe('iso-0');
-	});
-
-	it('0 距離（direction=up）→ reached=true, pct=100, price=breakoutPrice', () => {
-		const candles = [c(102, 98, 100, 'iso-0'), c(105, 95, 100, 'iso-1')];
-		const r = computeTargetReach(candles, 0, 100, 100, 'up');
-		expect(r?.targetReached).toBe(true);
-		expect(r?.targetReachedPct).toBe(100);
-		expect(r?.targetReachedPrice).toBe(100);
-		expect(r?.targetReachedDate).toBe('iso-0');
-	});
-
-	// 入力不正 ─────────────────────────────────────────────
-
-	it('breakoutPrice が NaN → undefined を返す', () => {
-		const candles = [c(102, 98, 100, 'iso-0')];
-		expect(computeTargetReach(candles, 0, Number.NaN, 80, 'down')).toBeUndefined();
-	});
-
-	it('target が NaN → undefined を返す', () => {
-		const candles = [c(102, 98, 100, 'iso-0')];
-		expect(computeTargetReach(candles, 0, 100, Number.NaN, 'down')).toBeUndefined();
-	});
-
-	it('breakoutIdx が candles.length 以上 → undefined を返す', () => {
-		const candles = [c(102, 98, 100, 'iso-0')];
-		expect(computeTargetReach(candles, 5, 100, 80, 'down')).toBeUndefined();
-	});
-
-	it('breakoutIdx が負 → Math.max(0, ...) で 0 から走査', () => {
-		const candles = [c(95, 70, 90, 'iso-0'), c(100, 80, 95, 'iso-1')];
-		const r = computeTargetReach(candles, -1, 100, 80, 'down');
-		expect(r?.targetReached).toBe(true);
-		expect(r?.targetReachedPrice).toBe(70);
-	});
-
-	// 丸めの非対称性（reached=false なら 100 に丸めない） ───
-
-	it('reached=false で raw pct が 99.x → 99 にキャップ（100 にせり上がらない）', () => {
-		// breakoutPrice=100, target=0, extremeLow=0.4
-		// targetReached = 0.4 <= 0 → false
-		// rawPct = (100 - 0.4) / 100 * 100 = 99.6
-		// 旧: Math.round(99.6)=100（reached=false なのに pct=100）
-		// 新: Math.min(99, Math.floor(99.6))=99
-		const candles = [c(101, 0.4, 100, 'iso-0')];
-		const r = computeTargetReach(candles, 0, 100, 0, 'down');
-		expect(r?.targetReached).toBe(false);
-		expect(r?.targetReachedPct).toBe(99);
-	});
-
-	it('reached=true なら通常通り round（オーバーシュート/到達の区別を維持）', () => {
-		// breakoutPrice=100, target=80, extremeLow=80（ちょうど到達）
-		// rawPct = 20/20 * 100 = 100 → reached=true & pct=100
-		const candles = [c(95, 80, 90, 'iso-0')];
-		const r = computeTargetReach(candles, 0, 100, 80, 'down');
-		expect(r?.targetReached).toBe(true);
-		expect(r?.targetReachedPct).toBe(100);
 	});
 });

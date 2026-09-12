@@ -2,18 +2,35 @@ import type { z } from 'zod';
 import { dayjs, toDisplayTime, toIsoTime, toIsoWithTz } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
+import { isArchiveExpectedPublished } from '../lib/tx-archive.js';
 import {
-	completedUtcDayKeysInRange,
-	currentUtcDayKey,
-	isArchiveExpectedPublished,
-	recentCompletedUtcDayKeys,
-} from '../lib/tx-archive.js';
+	applyTxLimit,
+	buildAggregateCoverageNote,
+	buildTxCoverageWarning,
+	buildTxTruncationWarning,
+	computeTxCoverage,
+	fetchLatestTxs,
+	fetchSupplementTxs,
+	fetchTxTimeRange,
+	formatTxFailures,
+	hasCoverageShortfall,
+	isGapRange,
+	resolveTxTimeRange,
+	sortTxsAsc,
+	type Tx,
+	type TxFetcher,
+	type TxLimitApplication,
+	type TxTimeRangeResolved,
+} from '../lib/tx-fetch.js';
 import { createMeta, ensurePair, validateLimit } from '../lib/validate.js';
-import { GetFlowMetricsInputSchema, GetFlowMetricsOutputSchema } from '../src/schemas.js';
+import {
+	GetFlowMetricsInputSchema,
+	GetFlowMetricsOutputSchema,
+	MAX_TX_COUNT_LIMIT,
+	MAX_TX_RANGE_DAYS,
+} from '../src/schemas.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
 import getTransactions from './get_transactions.js';
-
-type Tx = { price: number; amount: number; side: 'buy' | 'sell'; timestampMs: number; isoTime: string };
 
 export interface FlowMetricsBucket {
 	timestampMs: number;
@@ -26,15 +43,62 @@ export interface FlowMetricsBucket {
 	cvd: number;
 	zscore: number | null;
 	spike: 'notice' | 'warning' | 'strong' | null;
+	/**
+	 * このバケットの区間に取得できたデータがあるか。
+	 * `false` は「約定ゼロ」ではなく「取得できていない（欠損区間）」を意味する。
+	 * ツール出力では常にセットされる。表示層の入力型としては省略を許し、
+	 * 未指定はデータありとして扱う（判定は必ず `=== false` で行うこと）。
+	 */
+	hasData?: boolean;
+}
+
+/** バケットの表示時刻ラベル */
+function bucketTimeLabel(b: FlowMetricsBucket): string {
+	return b.displayTime || b.isoTimeJST || b.isoTime || '?';
+}
+
+/**
+ * compact 表示用の行を組み立てる。連続する欠損バケットは 1 行の区間表記に畳む。
+ *
+ * 「非ゼロのみ」で単純フィルタすると欠損区間が応答から**黙って消える**ため、
+ * 欠損は必ず区間として残す（消すと「閑散だった」と誤読される）。
+ */
+export function renderCompactBucketLines(
+	buckets: FlowMetricsBucket[],
+	fmt: (b: FlowMetricsBucket, index: number) => string,
+): { lines: string[]; shown: number; gapBuckets: number } {
+	const lines: string[] = [];
+	let shown = 0;
+	let gapBuckets = 0;
+	let i = 0;
+	while (i < buckets.length) {
+		if (buckets[i].hasData === false) {
+			const start = i;
+			while (i < buckets.length && buckets[i].hasData === false) i++;
+			gapBuckets += i - start;
+			lines.push(
+				`⋯ 欠損 ${bucketTimeLabel(buckets[start])}〜${bucketTimeLabel(buckets[i - 1])}（${i - start}バケット, データなし）`,
+			);
+			continue;
+		}
+		const b = buckets[i];
+		if (b.buyVolume > 0 || b.sellVolume > 0) {
+			lines.push(fmt(b, shown));
+			shown++;
+		}
+		i++;
+	}
+	return { lines, shown, gapBuckets };
 }
 
 /**
  * `GetFlowMetricsInputSchema.view` の受理値（新語彙 + deprecated alias）。
  *
- * **リテラルを手書きせず Zod スキーマから導出する。** 手書きにすると、alias 削除時に enum から
+ * **リテラルを手書きせず Zod スキーマから導出する。** 手書きにすると、PR 5 で enum から
  * alias（`compact` / `buckets`）を消しても型は変わらず、`normalizeFlowMetricsView` の
  * alias 分岐が**コンパイルを通ったまま生き残る**。導出しておけば enum を閉じた瞬間に
- * 「型に重なりが無い比較」として該当分岐が全て型エラーになり、消し忘れを機械的に潰せる。
+ * 「型に重なりが無い比較」として該当分岐が全て型エラーになり、消し忘れを機械的に潰せる
+ * （§7-3 の PR 5 作業表が「enum を先に閉じる」と書いているのはこの順序を使うため）。
  */
 export type FlowMetricsView = NonNullable<z.infer<typeof GetFlowMetricsInputSchema>['view']>;
 
@@ -47,9 +111,10 @@ export type FlowMetricsCanonicalView = 'summary' | 'detailed' | 'full';
  * - `compact` → `view=full` + `nonZeroOnly=true`（絞り込みは量の軸ではないので別パラメータへ切り出した）
  * - `buckets` → `view=detailed`（「直近 N 件」は階梯の中段そのもの）
  *
- * **正規化はハンドラ入口の 1 箇所だけで行い**、以降の分岐は新語彙しか見ない——alias を各分岐に
- * 散らすと削除時に取りこぼす。旧値と一緒に `nonZeroOnly` を明示された場合は、写像が決める値を
- * 優先する（`compact` は定義上「非ゼロのみ」であり、`compact` + `nonZeroOnly=false` は自己矛盾のため）。
+ * alias は削除目標 0.4.0 まで受理し続ける。**正規化はハンドラ入口の 1 箇所だけで行い**、
+ * 以降の分岐は新語彙しか見ない——alias を各分岐に散らすと削除時に取りこぼす。
+ * 旧値と一緒に `nonZeroOnly` を明示された場合は、写像が決める値を優先する
+ * （`compact` は定義上「非ゼロのみ」であり、`compact` + `nonZeroOnly=false` は自己矛盾のため）。
  */
 export function normalizeFlowMetricsView(
 	view: FlowMetricsView | undefined,
@@ -63,23 +128,23 @@ export function normalizeFlowMetricsView(
 /**
  * `nonZeroOnly=true` のバケット行ブロック（見出し + 行）を組み立てる。
  *
- * `full` の見出しは旧 `compact` と**同一文言**（`Non-zero X/Y buckets:`）で、絞り込みも
- * 旧 `compact` と同じ素の非ゼロフィルタ（`buyVolume > 0 || sellVolume > 0`）にしてある。
- * これにより旧 `compact` 経由のバケット行が 1 バイトも変わらない（§4-4）。
- * `detailed` + `nonZeroOnly=true`（旧 enum では表現できなかった組み合わせ）だけは、
- * 母数が「直近 N 件」であることが読み取れるよう別の見出しにする。
+ * **必ず `renderCompactBucketLines` を通す。** 「非ゼロだけにフィルタしてから 1 行ずつ出す」
+ * 素朴な実装では欠損の連続区間が区間 1 行に畳まれず N 行に展開され、旧 `compact` と一致しない。
+ * `full` の見出しは旧 `compact` と同一文言（`Non-zero X/Y buckets…`）にして、
+ * 旧値経由のバケット行が 1 バイトも変わらないようにしている（§4-4）。
  */
 function renderNonZeroSection(
 	buckets: FlowMetricsBucket[],
-	fmt: (b: FlowMetricsBucket) => string,
+	fmt: (b: FlowMetricsBucket, index: number) => string,
 	view: FlowMetricsCanonicalView,
 ): string {
-	const nonZero = buckets.filter((b) => b.buyVolume > 0 || b.sellVolume > 0);
+	const { lines, shown, gapBuckets } = renderCompactBucketLines(buckets, fmt);
+	const gapNote = gapBuckets > 0 ? ` (+${gapBuckets} no-data buckets shown as ranges)` : '';
 	const heading =
 		view === 'detailed'
-			? `Recent ${buckets.length} buckets, non-zero ${nonZero.length}`
-			: `Non-zero ${nonZero.length}/${buckets.length} buckets`;
-	return `${heading}:\n${nonZero.map(fmt).join('\n')}`;
+			? `Recent ${buckets.length} buckets, non-zero ${shown}${gapNote}`
+			: `Non-zero ${shown}/${buckets.length} buckets${gapNote}`;
+	return `${heading}:\n${lines.join('\n')}`;
 }
 
 export interface BuildFlowMetricsTextInput {
@@ -124,72 +189,50 @@ export function buildFlowMetricsText(input: BuildFlowMetricsTextInput): string {
 		return baseSummary + warningLine + aggregatesLine + footer;
 	}
 
-	const displayBuckets =
-		bucketsMode === 'compact' ? buckets.filter((b) => b.buyVolume > 0 || b.sellVolume > 0) : buckets;
-	const bucketLines = displayBuckets.map((b, i) => {
-		const t = b.displayTime || b.isoTimeJST || b.isoTime || '?';
+	const fmtBucket = (b: FlowMetricsBucket, i: number) => {
+		const t = bucketTimeLabel(b);
+		// 欠損バケットを通常行と同じ形（buy:0 sell:0）で出すと「約定ゼロ」と誤読される
+		if (b.hasData === false) return `[${i}] ${t} データなし（欠損区間）`;
 		const sp = b.spike ? ` spike:${b.spike}` : '';
 		return `[${i}] ${t} buy:${b.buyVolume} sell:${b.sellVolume} cvd:${b.cvd} z:${b.zscore ?? 'n/a'}${sp}`;
-	});
-	const label =
-		bucketsMode === 'compact'
-			? `\n\n📋 非ゼロ${displayBuckets.length}/${buckets.length}件のバケット (${bucketMs}ms間隔):\n`
-			: `\n\n📋 全${displayBuckets.length}件のバケット (${bucketMs}ms間隔):\n`;
+	};
+
+	let bucketLines: string[];
+	let label: string;
+	if (bucketsMode === 'compact') {
+		const { lines, shown, gapBuckets } = renderCompactBucketLines(buckets, fmtBucket);
+		bucketLines = lines;
+		const gapNote = gapBuckets > 0 ? `（欠損${gapBuckets}件は区間表記）` : '';
+		label = `\n\n📋 非ゼロ${shown}/${buckets.length}件のバケット${gapNote} (${bucketMs}ms間隔):\n`;
+	} else {
+		bucketLines = buckets.map(fmtBucket);
+		label = `\n\n📋 全${buckets.length}件のバケット (${bucketMs}ms間隔):\n`;
+	}
 	return baseSummary + warningLine + aggregatesLine + label + bucketLines.join('\n') + footer;
 }
 
-type FetchFailure = { label: string; errorType: string; message: string };
+/** get_transactions の応答件数上限（public ツールの limit 上限と同値）。 */
+const PUBLIC_TX_LIMIT = 1000;
 
-type TxResultLike = {
-	ok?: boolean;
-	data?: { normalized?: Tx[] };
-	summary?: string;
-	meta?: { errorType?: string };
-} | null;
+/** 1 UTC 暦日の分数。date 指定時の要求スコープ（カバレッジ率の分母）。 */
+const UTC_DAY_MINUTES = 24 * 60;
+
+/** getTransactions の Result 型（date 指定パスで直接読むため） */
+type TxResult = Awaited<ReturnType<typeof getTransactions>>;
 
 /**
- * 複数の getTransactions 結果をマージし重複を除去する（失敗詳細も返す）。
+ * 内部集計用の約定フェッチャ。
  *
- * 重複除去キー: `timestampMs:price:amount:side`
- *   - bitbank の `/transactions` (latest) と `/transactions/{date}` で同じ約定の
- *     `transaction_id` が一致しないケースがあるため、`transaction_id` は使用しない。
- *   - 同一ミリ秒・同一価格・同一数量・同一サイドの約定は実用上同一とみなす（誤差は
- *     CVD 等の集計値に影響しない範囲）。
- *
- * マージ後の `txs` はソート前である。呼び出し側で `sort((a, b) => a.timestampMs - b.timestampMs)`
- * を適用すること（加工契約: 全ての取得パスで昇順 sort を保証する）。
+ * `get_transactions` の応答上限（1000 件）は MCP 応答のサイズ制限であってフェッチ制限では
+ * ないため、集計用途では外す（`unlimited`）。本ツールの出力は時間バケット集計なので
+ * 全件を集計してもトークンは増えない一方、キャップしたままだと 1 UTC 日
+ * （BTC/JPY で実測 5,609〜8,040 件）の末尾 4〜5 時間分しか CVD / アグレッサー比に
+ * 入らなかった。public ツール `get_transactions` 側の応答上限は変更していない。
  */
-function mergeTxResults(
-	results: unknown[],
-	labels?: string[],
-): { txs: Tx[]; totalCount: number; failures: FetchFailure[] } {
-	const seen = new Set<string>();
-	const merged: Tx[] = [];
-	const failures: FetchFailure[] = [];
-	for (let i = 0; i < results.length; i++) {
-		const r = results[i] as TxResultLike;
-		if (r?.ok && Array.isArray(r.data?.normalized)) {
-			for (const tx of r.data.normalized as Tx[]) {
-				const key = `${tx.timestampMs}:${tx.price}:${tx.amount}:${tx.side}`;
-				if (!seen.has(key)) {
-					seen.add(key);
-					merged.push(tx);
-				}
-			}
-		} else {
-			failures.push({
-				label: labels?.[i] ?? `#${i}`,
-				errorType: r?.meta?.errorType ?? 'unknown',
-				message: r?.summary ?? 'unknown error',
-			});
-		}
-	}
-	return { txs: merged, totalCount: results.length, failures };
-}
-
-/** 失敗詳細をフォーマットする（"20260420(network: HTTP 503 ...)" 形式） */
-function formatFailures(failures: FetchFailure[]): string {
-	return failures.map((f) => `${f.label}(${f.errorType}: ${f.message})`).join(', ');
+function internalTxFetcher(pair: string): TxFetcher {
+	// limit は unlimited 指定時に無視されるが、万一オプションが外れても旧挙動
+	// （応答上限 1000 件）へ縮退するよう public 上限を渡しておく。
+	return (date) => getTransactions(pair, PUBLIC_TX_LIMIT, date, undefined, { unlimited: true });
 }
 
 export default async function getFlowMetrics(
@@ -199,6 +242,7 @@ export default async function getFlowMetrics(
 	bucketMs: number = 60_000,
 	tz: string = 'Asia/Tokyo',
 	hours?: number,
+	range?: { since?: string; until?: string },
 ) {
 	const chk = ensurePair(pair);
 	if (!chk.ok) return failFromValidation(chk, GetFlowMetricsOutputSchema);
@@ -206,64 +250,61 @@ export default async function getFlowMetrics(
 	try {
 		let txs: Tx[];
 		let fetchWarning: string | undefined;
+		/**
+		 * limit による切り捨ての実績。**件数ベース取得（区間指定なし）でのみ立つ。**
+		 * meta.totalAvailable / meta.truncated と warning で申告する。
+		 */
+		let limitApplication: TxLimitApplication | undefined;
+		/**
+		 * 要求した時間窓（分）。カバレッジ率の分母になる。
+		 * - hours 指定: hours×60 分
+		 * - since/until 指定: (until - since) / 60000 分
+		 * - date 指定: 当該 UTC 暦日 = 1440 分（全件を集計するので通常はほぼ 100%。下回るのは
+		 *   アーカイブ側に欠損がある場合）
+		 * - 件数ベース（date/hours/since なし）: 時間窓の要求が無いので undefined
+		 */
+		let requestedMin: number | undefined;
+		/** 時間範囲ベース取得の解決結果（meta 申告用に保持） */
+		let resolvedRange: TxTimeRangeResolved | undefined;
+		const txFetcher = internalTxFetcher(chk.pair);
+		const since = range?.since;
+		const until = range?.until;
 
-		if (hours != null && hours > 0) {
-			// === 時間範囲ベースの取得 ===
-			const nowMs = Date.now();
-			const sinceMs = nowMs - hours * 3600_000;
-
-			// bitbank の /transactions/{YYYYMMDD} は UTC 暦日アーカイブで、当該 UTC 日が完了する
-			// まで 404 を返す（実測: docs/internal/bitbank-tx-archive-tz.md）。進行中の UTC 日は
-			// 要求しても必ず 404 なので列挙から除外し、その区間は /transactions (latest) で補完する。
-			// （旧実装は JST 暦日で列挙しており、JST 早朝＝UTC 日付更新前に進行中の UTC 日を
-			// 要求して 404 → 全滅していた。）
-			const currentUtcKey = currentUtcDayKey(nowMs);
-			const dates = completedUtcDayKeysInRange(sinceMs, nowMs);
-
-			// 日付ベース取得（authoritative: 時間範囲をカバー）と latest（supplement: 直近数分の補完）を区別。
-			// 当日分は日付指定だと直近数分が欠ける場合があるため latest も併用する。
-			const dateResults = await Promise.all(dates.map((ds) => getTransactions(chk.pair, 1000, ds)));
-			const latestResult = await getTransactions(chk.pair, 1000);
-
-			// 失敗した date 取得を一度だけリトライ（fetchJsonWithRateLimit の内部リトライより長い間隔）
-			const retryIdx: number[] = [];
-			for (let i = 0; i < dateResults.length; i++) {
-				const r = dateResults[i] as TxResultLike;
-				if (!r?.ok) retryIdx.push(i);
-			}
-			if (retryIdx.length > 0) {
-				await new Promise((resolve) => setTimeout(resolve, 500));
-				const retried = await Promise.all(retryIdx.map((i) => getTransactions(chk.pair, 1000, dates[i])));
-				for (let j = 0; j < retryIdx.length; j++) {
-					const r = retried[j] as TxResultLike;
-					if (r?.ok) dateResults[retryIdx[j]] = retried[j];
-				}
-			}
-
-			const dateMerge = mergeTxResults(dateResults, dates);
-			const latestMerge = mergeTxResults([latestResult], ['latest']);
+		if (since != null || until != null || (hours != null && hours > 0)) {
+			// === 時間範囲ベースの取得（hours = 相対窓 / since・until = 絶対区間）===
+			// 完了済み UTC 日アーカイブの列挙 + latest 補完 + dedup マージは lib/tx-fetch.ts に集約。
+			// 失敗ハンドリング（全滅 fail / 部分失敗 warning）の方針は本ツール側で判断する。
+			const resolved = resolveTxTimeRange({ since, until, hours, date });
+			if (!resolved.ok) return failFromValidation(resolved, GetFlowMetricsOutputSchema);
+			resolvedRange = resolved;
+			requestedMin = resolved.requestedMinutes;
+			const fetched = await fetchTxTimeRange(txFetcher, resolved, {
+				nowMs: resolved.nowMs,
+				retryFailedDates: { delayMs: 500 },
+			});
+			const { currentUtcDay, dates, dateMerge, latestMerge } = fetched;
 
 			// 完了済み UTC 日アーカイブ（authoritative）が全滅した場合は fail。
 			// 進行中の UTC 日は fetch 対象外（アーカイブ未公開）なので、この失敗は実失敗のみ。
 			// 「全滅」は失敗件数 == 要求件数で厳密に判定する（txs.length===0 をプロキシにすると、
 			// 約定 0 件の日 + 一部失敗の組合せを全滅と誤分類する）。
-			const historicalAllFailed = dates.length > 0 && dateMerge.failures.length === dates.length;
+			const historicalAllFailed = dates.length > 0 && dateMerge.failedCount === dates.length;
 
 			if (historicalAllFailed) {
 				return GetFlowMetricsOutputSchema.parse(
 					fail(
-						`日付ベースの取得が全て失敗しました（${dateMerge.failures.length}件: ${formatFailures(dateMerge.failures)}）`,
+						`日付ベースの取得が全て失敗しました（${dateMerge.failedCount}件: ${formatTxFailures(dateMerge.failures)}）`,
 						'upstream',
 					),
 				);
 			}
 
-			// 時間窓が進行中の UTC 日内に収まる（アーカイブ要求なし）場合、latest が唯一のソース。
+			// 要求区間が進行中の UTC 日内に収まる（アーカイブ要求なし）場合、latest が唯一のソース。
 			// その latest も失敗したら取得手段なし。
-			if (dates.length === 0 && latestMerge.txs.length === 0 && latestMerge.failures.length > 0) {
+			if (dates.length === 0 && latestMerge.txs.length === 0 && latestMerge.failedCount > 0) {
 				return GetFlowMetricsOutputSchema.parse(
 					fail(
-						`取得手段がありません: 時間窓が進行中の UTC 日 (${currentUtcKey}) 内のためアーカイブは未公開で、latest 取得も失敗しました（${formatFailures(latestMerge.failures)}）`,
+						`取得手段がありません: 時間窓が進行中の UTC 日 (${currentUtcDay}) 内のためアーカイブは未公開で、latest 取得も失敗しました（${formatTxFailures(latestMerge.failures)}）`,
 						'upstream',
 					),
 				);
@@ -271,116 +312,122 @@ export default async function getFlowMetrics(
 
 			// 部分失敗・カバレッジ制約は警告で明示（latest 失敗は直近数分の欠落、一部 date 失敗は該当日のカバレッジ不足）
 			const warnMsgs: string[] = [];
-			if (dateMerge.failures.length > 0) {
+			if (dateMerge.failedCount > 0) {
 				warnMsgs.push(
-					`⚠️ 日付ベース取得で ${dateMerge.totalCount}件中 ${dateMerge.failures.length}件失敗: ${formatFailures(dateMerge.failures)}`,
+					`⚠️ 日付ベース取得で ${dateMerge.totalCount}件中 ${dateMerge.failedCount}件失敗: ${formatTxFailures(dateMerge.failures)}`,
 				);
 			}
-			// 進行中の UTC 日の区間はアーカイブが存在しないため、常に latest（直近約60件）のみでの補完になる
-			warnMsgs.push(
-				`ℹ️ 進行中の UTC 日 (${currentUtcKey}) のアーカイブは未公開のため、この区間は /transactions (latest, 直近約60件) で補完しています`,
-			);
-			if (latestMerge.failures.length > 0) {
+			// 進行中の UTC 日の区間はアーカイブが存在しないため、常に latest（直近約60件）のみでの補完になる。
+			// 要求区間が進行中の UTC 日にかからない（過去区間のみ）場合は latest を叩かないので出さない。
+			if (fetched.usedLatest) {
 				warnMsgs.push(
-					`⚠️ 最新約定の補完取得に失敗 (${formatFailures(latestMerge.failures)}) — 直近数分のデータが欠落している可能性があります`,
+					`ℹ️ 進行中の UTC 日 (${currentUtcDay}) のアーカイブは未公開のため、この区間は /transactions (latest, 直近約60件) で補完しています`,
+				);
+			}
+			if (latestMerge.failedCount > 0) {
+				warnMsgs.push(
+					`⚠️ 最新約定の補完取得に失敗 (${formatTxFailures(latestMerge.failures)}) — 直近数分のデータが欠落している可能性があります`,
 				);
 			}
 			if (warnMsgs.length > 0) fetchWarning = warnMsgs.join('\n');
 
-			// date + latest を統合して重複除去
-			const combined = new Set<string>();
-			const allTxs: Tx[] = [];
-			for (const tx of [...dateMerge.txs, ...latestMerge.txs]) {
-				const key = `${tx.timestampMs}:${tx.price}:${tx.amount}:${tx.side}`;
-				if (!combined.has(key)) {
-					combined.add(key);
-					allTxs.push(tx);
-				}
-			}
-
-			txs = allTxs
-				.filter((t) => t.timestampMs >= sinceMs && t.timestampMs <= nowMs)
-				.sort((a, b) => a.timestampMs - b.timestampMs);
-		} else {
-			// === 件数ベース取得 ===
-			const lim = validateLimit(limit, 1, 2000);
-			if (!lim.ok) return failFromValidation(lim, GetFlowMetricsOutputSchema);
-
-			if (date) {
-				// 明示的な日付指定がある場合はそのまま取得。
-				// /transactions/{YYYYMMDD} は UTC 暦日アーカイブで、当該 UTC 日が完了するまで未公開
-				// （404）。進行中・未来の UTC 日（JST の「今日」に加え、JST 早朝は「昨日」も該当）を
-				// 指定された場合は latest にフォールバックする。
-				const txRes = await getTransactions(chk.pair, Math.min(lim.value, 1000), date);
-				const archivePublished = isArchiveExpectedPublished(date);
-				if (!txRes?.ok) {
-					if (!archivePublished) {
-						const latestRes = await getTransactions(chk.pair, Math.min(lim.value, 1000));
-						if (!latestRes?.ok) {
-							return GetFlowMetricsOutputSchema.parse(
-								fail(
-									`date=${date} のアーカイブは未公開（UTC 暦日完了後に公開）で、latest 取得も失敗: ${txRes?.summary || 'unknown'} / ${latestRes?.summary || 'unknown'}`,
-									latestRes?.meta?.errorType || 'upstream',
-								),
-							);
-						}
-						fetchWarning = `⚠️ date=${date} のアーカイブは未公開（/transactions/{YYYYMMDD} は UTC 暦日の完了後に公開）のため /transactions (latest) から取得しました`;
-						// 加工契約: 全ての取得パスで昇順 sort を保証する。
-						// 上流 getTransactions も内部 sort 済みだが、契約の単一ソースをこちらに置く。
-						txs = (latestRes.data.normalized as Tx[]).slice().sort((a, b) => a.timestampMs - b.timestampMs);
-					} else {
+			txs = fetched.txs;
+		} else if (date) {
+			// === 暦日（date）ベースの取得 ===
+			// **limit は適用しない**（hours / since・until と同じ扱い）。当該 UTC 日の全件を集計する。
+			// 1 UTC 日は BTC/JPY で実測 5,609〜8,040 件あり、limit 上限 2000 を掛けると「その日の
+			// 最新側 2,000 件」＝末尾 6〜8.5 時間分しか集計に入らない。既定 limit=100 なら末尾 100 件
+			// （約 20 分）で、日付を指定した意図とはまず一致しない。区間指定パラメータの扱いを揃える。
+			//
+			// /transactions/{YYYYMMDD} は UTC 暦日アーカイブで、当該 UTC 日が完了するまで未公開
+			// （404）。進行中・未来の UTC 日（JST の「今日」に加え、JST 早朝は「昨日」も該当）を
+			// 指定された場合は latest にフォールバックする。
+			const txRes = (await txFetcher(date)) as TxResult;
+			const archivePublished = isArchiveExpectedPublished(date);
+			if (!txRes?.ok) {
+				if (!archivePublished) {
+					const latestRes = (await txFetcher()) as TxResult;
+					if (!latestRes?.ok) {
 						return GetFlowMetricsOutputSchema.parse(
-							fail(txRes?.summary || 'failed', txRes?.meta?.errorType || 'internal'),
+							fail(
+								`date=${date} のアーカイブは未公開（UTC 暦日完了後に公開）で、latest 取得も失敗: ${txRes?.summary || 'unknown'} / ${latestRes?.summary || 'unknown'}`,
+								latestRes?.meta?.errorType || 'upstream',
+							),
 						);
 					}
-				} else {
 					// 加工契約: 全ての取得パスで昇順 sort を保証する。
-					txs = (txRes.data.normalized as Tx[]).slice().sort((a, b) => a.timestampMs - b.timestampMs);
+					// 上流 getTransactions も内部 sort 済みだが、契約の単一ソースをこちらに置く。
+					//
+					// **latest フォールバックでも limit は適用しない**（= latest の全件、約60件を返す）。
+					// ここだけ limit を効かせると、同じ date 指定でもアーカイブが公開済みか否か——つまり
+					// 呼んだ時刻と上流の公開タイミング——で limit が効いたり効かなかったりする。呼び出し側
+					// からは区別できない非決定的な挙動になるため、date 指定である限り取得元によらず
+					// limit は適用しない。実害も無い: latest は約60件で既定 limit（100）を下回るため
+					// 適用しても通常は何も切れず、小さい limit を渡したときにだけ「未公開日の警告付き
+					// 結果がさらに黙って削られる」方向にしか働かない。
+					txs = sortTxsAsc(latestRes.data.normalized as Tx[]);
+					// latest フォールバックでは要求日のデータを返していないため、requestedMin
+					// （= UTC 暦日 1440 分）は設定しない。カバー率を出しても意味を成さない。
+					fetchWarning =
+						`⚠️ date=${date} のアーカイブは未公開（/transactions/{YYYYMMDD} は UTC 暦日の完了後に公開）のため ` +
+						`/transactions (latest, 直近約60件) から取得しました。要求した UTC 暦日の全件ではありません`;
+				} else {
+					return GetFlowMetricsOutputSchema.parse(
+						fail(txRes?.summary || 'failed', txRes?.meta?.errorType || 'internal'),
+					);
 				}
 			} else {
-				// 日付指定なし: latest で取得し、不足なら日付ベースで補完
-				const latestRes = await getTransactions(chk.pair, Math.min(lim.value, 1000));
-				const latestR = latestRes as { ok?: boolean; data?: { normalized?: Tx[] } };
-				const latestOk = !!latestR?.ok;
-				const latestTxs: Tx[] = latestOk && Array.isArray(latestR.data?.normalized) ? latestR.data.normalized : [];
+				// 加工契約: 全ての取得パスで昇順 sort を保証する。
+				txs = sortTxsAsc(txRes.data.normalized as Tx[]);
+				// 要求スコープは当該 UTC 暦日（1440 分）。全件を集計するのでカバー率は通常ほぼ 100%
+				// になり、下回った場合はアーカイブ側の欠損を意味する。
+				requestedMin = UTC_DAY_MINUTES;
+			}
+		} else {
+			// === 件数ベース取得（区間指定なし = 直近 N 件）===
+			// limit が効くのはこの経路だけ。上限 MAX_TX_COUNT_LIMIT の根拠は定数側のコメント参照。
+			const lim = validateLimit(limit, 1, MAX_TX_COUNT_LIMIT);
+			if (!lim.ok) return failFromValidation(lim, GetFlowMetricsOutputSchema);
 
-				if (latestTxs.length >= lim.value) {
-					// 加工契約: 全ての取得パスで昇順 sort を保証する。
-					txs = latestTxs.slice().sort((a, b) => a.timestampMs - b.timestampMs);
-				} else {
-					// latest の返却数が不足（bitbank の latest エンドポイントは約60件のみ返却）
-					// → 完了済み UTC 日アーカイブで補完する。
-					// /transactions/{YYYYMMDD} は UTC 暦日アーカイブ・当該 UTC 日完了後に公開のため、
-					// JST 基準の「昨日」で組むと JST 早朝（UTC 日付更新前）は進行中の UTC 日を
-					// 要求して必ず 404 になる（当該障害の原因）。
-					const supplementDates = recentCompletedUtcDayKeys(lim.value > 500 ? 2 : 1);
-					const supplementResults = await Promise.all(supplementDates.map((ds) => getTransactions(chk.pair, 1000, ds)));
-					const allResults = [latestRes, ...supplementResults];
-					const labels = ['latest', ...supplementDates];
-					const { txs: merged, totalCount, failures } = mergeTxResults(allResults, labels);
-					// 全て失敗した場合は network エラーとして返す
-					if (merged.length === 0 && failures.length > 0) {
-						return GetFlowMetricsOutputSchema.parse(
-							fail(`upstream fetch all failed (${formatFailures(failures)})`, 'network'),
-						);
-					}
-					// 補完は best-effort: 何かしら取得できていれば fail せず、失敗と件数不足を警告で明示する。
-					// （latest 成功 + 補完失敗を「過半数失敗」として全体 fail すると、正当に取得できた
-					// 直近データまで捨ててしまう。補完アーカイブは公開遅延等で 404 になり得る。）
-					const warnMsgs: string[] = [];
-					if (failures.length > 0) {
-						warnMsgs.push(
-							`⚠️ ${totalCount}件中 ${failures.length}件のAPI取得に失敗しました: ${formatFailures(failures)}`,
-						);
-					}
-					txs = merged.sort((a, b) => a.timestampMs - b.timestampMs).slice(-lim.value);
-					if (txs.length < lim.value) {
-						warnMsgs.push(
-							`ℹ️ 要求 ${lim.value}件に対し取得できたのは ${txs.length}件です（進行中の UTC 日のアーカイブは未公開のため取得不可）`,
-						);
-					}
-					if (warnMsgs.length > 0) fetchWarning = warnMsgs.join('\n');
+			// latest で取得し、不足なら完了済み UTC 日アーカイブで補完する
+			// （列挙・マージは lib/tx-fetch.ts。失敗ハンドリングの方針は本ツール側）。
+			const latest = await fetchLatestTxs(txFetcher);
+
+			if (latest.txs.length >= lim.value) {
+				// 加工契約: 全ての取得パスで昇順 sort を保証する。
+				limitApplication = applyTxLimit(sortTxsAsc(latest.txs), lim.value);
+				txs = limitApplication.txs;
+				fetchWarning = buildTxTruncationWarning(limitApplication, lim.value, { scope: '/transactions (latest)' });
+			} else {
+				// latest の返却数が不足（bitbank の latest エンドポイントは約60件のみ返却）
+				const { merged } = await fetchSupplementTxs(txFetcher, lim.value, latest);
+				// 全て失敗した場合は network エラーとして返す
+				if (merged.txs.length === 0 && merged.failedCount > 0) {
+					return GetFlowMetricsOutputSchema.parse(
+						fail(`upstream fetch all failed (${formatTxFailures(merged.failures)})`, 'network'),
+					);
 				}
+				// 補完は best-effort: 何かしら取得できていれば fail せず、失敗と件数不足を警告で明示する。
+				// （latest 成功 + 補完失敗を「過半数失敗」として全体 fail すると、正当に取得できた
+				// 直近データまで捨ててしまう。補完アーカイブは公開遅延等で 404 になり得る。）
+				const warnMsgs: string[] = [];
+				if (merged.failedCount > 0) {
+					warnMsgs.push(
+						`⚠️ ${merged.totalCount}件中 ${merged.failedCount}件のAPI取得に失敗しました: ${formatTxFailures(merged.failures)}`,
+					);
+				}
+				limitApplication = applyTxLimit(sortTxsAsc(merged.txs), lim.value);
+				txs = limitApplication.txs;
+				const truncationWarning = buildTxTruncationWarning(limitApplication, lim.value, {
+					scope: 'latest + 完了済み UTC 日アーカイブ',
+				});
+				if (truncationWarning) warnMsgs.push(truncationWarning);
+				if (txs.length < lim.value) {
+					warnMsgs.push(
+						`ℹ️ 要求 ${lim.value}件に対し取得できたのは ${txs.length}件です（進行中の UTC 日のアーカイブは未公開のため取得不可）`,
+					);
+				}
+				if (warnMsgs.length > 0) fetchWarning = warnMsgs.join('\n');
 			}
 		}
 		if (!Array.isArray(txs) || txs.length === 0) {
@@ -407,14 +454,24 @@ export default async function getFlowMetrics(
 			);
 		}
 
+		// 実カバー区間 / 欠損区間。バケット分割より前に求める（欠損バケットの判定に使う）。
+		const coverage = computeTxCoverage(txs);
+
 		// バケット分割
 		const t0 = txs[0].timestampMs;
-		const buckets: Array<{ ts: number; buys: number; sells: number; vBuy: number; vSell: number }> = [];
+		const buckets: Array<{
+			ts: number;
+			buys: number;
+			sells: number;
+			vBuy: number;
+			vSell: number;
+			hasData: boolean;
+		}> = [];
 		const idx = (ms: number) => Math.floor((ms - t0) / bucketMs);
 		for (const t of txs) {
 			const k = idx(t.timestampMs);
 			while (buckets.length <= k)
-				buckets.push({ ts: t0 + buckets.length * bucketMs, buys: 0, sells: 0, vBuy: 0, vSell: 0 });
+				buckets.push({ ts: t0 + buckets.length * bucketMs, buys: 0, sells: 0, vBuy: 0, vSell: 0, hasData: true });
 			if (t.side === 'buy') {
 				buckets[k].buys++;
 				buckets[k].vBuy += t.amount;
@@ -424,21 +481,21 @@ export default async function getFlowMetrics(
 			}
 		}
 
+		// 欠損区間に完全に含まれるバケットは「約定ゼロ」ではなく「データなし」。
+		// 両者を混同すると (a) ゼロ埋めが Z スコアの母集団に入って歪む、(b) 応答上
+		// 「閑散だった」と「取得できていない」が区別できない、の 2 つの誤読を生む。
+		for (const b of buckets) {
+			if (b.buys === 0 && b.sells === 0 && isGapRange(coverage, b.ts, b.ts + bucketMs)) {
+				b.hasData = false;
+			}
+		}
+
 		// CVD とスパイク
-		const outBuckets: Array<{
-			timestampMs: number;
-			isoTime: string;
-			isoTimeJST?: string;
-			displayTime?: string;
-			buyVolume: number;
-			sellVolume: number;
-			totalVolume: number;
-			cvd: number;
-			zscore: number | null;
-			spike: 'notice' | 'warning' | 'strong' | null;
-		}> = [];
+		const outBuckets: FlowMetricsBucket[] = [];
 		let cvd = 0;
-		const vols = buckets.map((b) => b.vBuy + b.vSell);
+		// 平均・分散は**データのあるバケットのみ**から求める。欠損区間のゼロ埋めを母集団に
+		// 入れると平均が押し下げられ、欠損明けの通常バケットが偽スパイクとして検出される。
+		const vols = buckets.filter((b) => b.hasData).map((b) => b.vBuy + b.vSell);
 		const mean = vols.reduce((a, b) => a + b, 0) / Math.max(1, vols.length);
 		const variance = vols.reduce((s, v) => s + (v - mean) ** 2, 0) / Math.max(1, vols.length);
 		const stdev = Math.sqrt(variance);
@@ -452,8 +509,10 @@ export default async function getFlowMetrics(
 
 		for (const b of buckets) {
 			const vol = b.vBuy + b.vSell;
+			// 欠損バケットは vBuy/vSell とも 0 なので CVD は据え置きで引き継がれる（正しい）。
 			cvd += b.vBuy - b.vSell;
-			const z = stdev > 0 ? (vol - mean) / stdev : 0;
+			// 欠損バケットに Z スコアは定義できない（観測が無い）。0 でも負値でもなく null。
+			const z = b.hasData ? (stdev > 0 ? (vol - mean) / stdev : 0) : null;
 			const ts = b.ts + bucketMs - 1;
 			outBuckets.push({
 				timestampMs: ts,
@@ -464,8 +523,9 @@ export default async function getFlowMetrics(
 				sellVolume: Number(b.vSell.toFixed(8)),
 				totalVolume: Number(vol.toFixed(8)),
 				cvd: Number(cvd.toFixed(8)),
-				zscore: Number.isFinite(z) ? Number(z.toFixed(2)) : null,
-				spike: spikeLevel(z),
+				zscore: z != null && Number.isFinite(z) ? Number(z.toFixed(2)) : null,
+				spike: z != null ? spikeLevel(z) : null,
+				hasData: b.hasData,
 			});
 		}
 
@@ -477,27 +537,41 @@ export default async function getFlowMetrics(
 		const netVolume = buyVolume - sellVolume;
 		const aggressorRatio = totalTrades > 0 ? Number((buyTrades / totalTrades).toFixed(3)) : 0;
 
-		// 実際の取得範囲を計算
+		// 実際の取得範囲を計算。
+		// 先頭〜末尾の単純差分（span）だけを申告すると、アーカイブ未公開区間などの穴を
+		// 「カバー済み」に見せてしまうため、実データがある区間の合計も併せて出す。
 		const actualStartMs = txs[0]?.timestampMs;
 		const actualEndMs = txs[txs.length - 1]?.timestampMs;
-		const actualDurationMin = actualStartMs && actualEndMs ? Math.round((actualEndMs - actualStartMs) / 60_000) : 0;
+		const actualDurationMin = coverage?.spanMinutes ?? 0;
 
-		// データ範囲の注記（直近フロー）
+		// 取得層の注記（meta.warning）: 取得失敗・アーカイブ未公開区間・カバレッジ欠損。
+		// 旧実装の「直近約N分間分です。直近フローとして扱ってください」は、変えられない制約
+		// （進行中 UTC 日は latest 約60件のみ）と、直せる制約（アーカイブ側の 1000 件切り捨て）を
+		// 同じ文言で覆い隠していた。後者はキャップ解除で解消したので、残る欠損を実測値で出す。
 		const warnings: string[] = [];
 		if (fetchWarning) warnings.push(fetchWarning);
-		// hours を指定しても当日分はアーカイブ未公開で直近約定のみになることが多い。
-		// 「N時間リクエストに対しカバー率X%」という固定窓ベースの言い回しは使わず、
-		// 取得できた実レンジを「直近フロー」として提示する（過去日にまたがる分は archive で補完済み）。
-		if (hours != null && hours > 0 && actualDurationMin > 0) {
-			const requestedMin = hours * 60;
-			const coveragePct = Math.round((actualDurationMin / requestedMin) * 100);
-			if (coveragePct < 80) {
-				warnings.push(
-					`ℹ️ 取得できた約定は直近約${actualDurationMin}分間分です。固定の時間窓に対する不足ではなく、直近フローとして扱ってください。`,
-				);
-			}
-		}
+		const coverageWarning = buildTxCoverageWarning(coverage, { requestedMinutes: requestedMin, tz });
+		if (coverageWarning) warnings.push(coverageWarning);
 		const dataWarning = warnings.length > 0 ? warnings.join('\n') : undefined;
+
+		// 計算層の注記（meta.warnings）: 集計値が欠損を含む区間、または要求窓の一部からしか
+		// 算出されていない事実。取得層（上記 dataWarning）とは別系統で出す（.claude/rules/tools.md）。
+		const coverageIncomplete =
+			coverage != null && (coverage.gaps.length > 0 || hasCoverageShortfall(coverage, requestedMin));
+		const calcWarnings: string[] =
+			coverage && coverageIncomplete
+				? [
+						buildAggregateCoverageNote(
+							coverage,
+							'集計値（totalTrades / CVD / アグレッサー比 / スパイク Z スコア）',
+							requestedMin,
+						),
+					]
+				: [];
+
+		// summary / content には 2 系統を別行で並べる（meta では別フィールド）
+		const summaryNote =
+			[...(dataWarning ? [dataWarning] : []), ...calcWarnings.map((w) => `⚠️ ${w}`)].join('\n') || undefined;
 
 		// スパイク情報を集計（spike が null でないものをフィルタ）
 		const spikes = outBuckets.filter((b) => b.spike !== null);
@@ -517,9 +591,14 @@ export default async function getFlowMetrics(
 			spikeInfo = ' | スパイクなし';
 		}
 
+		// 欠損がある場合は「スパン◯分」だけでなく実カバー分も出す（穴をカバー済みと申告しない）
+		const coverageLabel =
+			coverage && coverage.gaps.length > 0
+				? `スパン${coverage.spanMinutes}分/実カバー${coverage.coveredMinutes}分`
+				: `${actualDurationMin}分間`;
 		const rangeLabel =
 			actualStartMs && actualEndMs
-				? ` (${toDisplayTime(actualStartMs, tz) ?? '?'}〜${toDisplayTime(actualEndMs, tz) ?? '?'}, ${actualDurationMin}分間)`
+				? ` (${toDisplayTime(actualStartMs, tz) ?? '?'}〜${toDisplayTime(actualEndMs, tz) ?? '?'}, ${coverageLabel})`
 				: '';
 		const baseSummary = formatSummary({
 			pair: chk.pair,
@@ -530,14 +609,15 @@ export default async function getFlowMetrics(
 		// 本ツールは OHLC ローソク足ではなく約定（transactions）を時間バケットに集計するため、
 		// 「最新足が未確定（形成中）」という概念が存在しない（lib/provisional-bar.ts の対象外）。
 		// 最新バケットの不完全性は別系統で扱う:
-		//   - hours 指定時の直近レンジ注記（直近フロー） → dataWarning（取得層 meta.warning, ℹ️）
+		//   - カバレッジ欠損 → dataWarning（取得層 meta.warning, ℹ️）
 		//   - 取得失敗 → fetchWarning（取得層 meta.warning, ⚠️）
+		//   - 集計値が欠損区間を含む → calcWarnings（計算層 meta.warnings）
 		// これらは OHLC ローソク足の provisional 注記（最新足が形成中）とは別物。本ツールに provisional 注記は付けない。
 		// Result の summary は "summary" モード（集計値のみ、バケット行なし）。
 		// 呼び出し側 (handler) が view に応じて content テキストを差し替える。
 		const summary = buildFlowMetricsText({
 			baseSummary,
-			dataWarning,
+			dataWarning: summaryNote,
 			totalTrades,
 			buyVolume,
 			sellVolume,
@@ -578,15 +658,53 @@ export default async function getFlowMetrics(
 			metaExtra.hours = hours;
 			metaExtra.mode = 'time_range';
 		}
-		if (actualStartMs && actualEndMs) {
+		// 絶対区間指定は要求区間そのものを申告する（hours の相対窓と区別できるようにする）
+		if (resolvedRange?.mode === 'absolute') {
+			metaExtra.mode = 'absolute_range';
+			metaExtra.range = { since: resolvedRange.sinceIso, until: resolvedRange.untilIso };
+		}
+		if (coverage) {
+			const fmtRange = (ms: number) => toIsoWithTz(ms, tz) ?? toIsoTime(ms);
 			metaExtra.actualRange = {
-				start: toIsoWithTz(actualStartMs, tz) ?? toIsoTime(actualStartMs),
-				end: toIsoWithTz(actualEndMs, tz) ?? toIsoTime(actualEndMs),
-				durationMinutes: actualDurationMin,
+				start: fmtRange(coverage.startMs),
+				end: fmtRange(coverage.endMs),
+				// durationMinutes は先頭〜末尾のスパン（欠損を含む）。カバー済み時間は coveredMinutes。
+				durationMinutes: coverage.spanMinutes,
+				coveredMinutes: coverage.coveredMinutes,
+				gapMinutes: coverage.gapMinutes,
+				segments: coverage.segments.length,
+				...(requestedMin != null
+					? {
+							requestedMinutes: requestedMin,
+							coveragePct: Number(((coverage.coveredMinutes / requestedMin) * 100).toFixed(1)),
+						}
+					: {}),
+				// 欠損区間は長い順に最大 3 件だけ載せる（件数が多いと structuredContent が膨らむ）
+				...(coverage.gaps.length > 0
+					? {
+							gaps: [...coverage.gaps]
+								.sort((a, b) => b.durationMinutes - a.durationMinutes)
+								.slice(0, 3)
+								.map((g) => ({
+									start: fmtRange(g.startMs),
+									end: fmtRange(g.endMs),
+									durationMinutes: g.durationMinutes,
+								})),
+						}
+					: {}),
 			};
 		}
 		if (dataWarning) {
 			metaExtra.warning = dataWarning;
+		}
+		if (calcWarnings.length > 0) {
+			metaExtra.warnings = calcWarnings;
+		}
+		// limit による切り捨ての明示（get_transactions の totalFetched / truncated と対応）。
+		// 黙って切ると集計値・カバレッジが部分データ由来であることが応答から分からない。
+		if (limitApplication) {
+			metaExtra.totalAvailable = limitApplication.totalAvailable;
+			metaExtra.truncated = limitApplication.truncated;
 		}
 		const meta = createMeta(chk.pair, metaExtra);
 		return GetFlowMetricsOutputSchema.parse(ok(summary, data, meta));
@@ -599,8 +717,16 @@ export default async function getFlowMetrics(
 export const toolDef: ToolDefinition = {
 	name: 'get_flow_metrics',
 	description:
-		`[Flow / CVD / Buy-Sell Pressure] 資金フロー分析（flow / CVD / aggressor ratio / buy-sell pressure）。約定データからCVD・アグレッサー比・スパイクを検出。hours（推奨）で時間範囲指定、または limit で件数指定。` +
-		`\n\nデータソース制約（bitbank 側仕様）: 約定アーカイブ /transactions/{YYYYMMDD} は UTC 暦日単位で、当該 UTC 日の完了後にのみ公開される。進行中の UTC 日（JST 09:00 で切り替わる）の約定は /transactions (latest, 直近約60件) でしか取得できないため、当日区間のカバレッジは限定的（warning で明示される）。` +
+		`[Flow / CVD / Buy-Sell Pressure] 資金フロー分析（flow / CVD / aggressor ratio / buy-sell pressure）。約定データからCVD・アグレッサー比・スパイクを検出。直近フローは hours（現在時刻起点）、過去の特定区間は since/until（絶対時刻）、件数指定は limit。` +
+		`\n\n期間指定の使い分け:` +
+		`\n- **hours**: 現在時刻起点の相対窓（最大24h）。「直近N時間」の分析用。` +
+		`\n- **since / until**: オフセット付き ISO8601 の絶対時刻区間（例: since=2026-08-01T00:00:00Z, until=2026-08-02T00:00:00Z）。**過去の特定区間を全件**集計する唯一の手段。until は排他（[since, until)）で省略時は現在時刻まで。最大 ${MAX_TX_RANGE_DAYS} 日。limit は適用しない。` +
+		`\n- **date**: UTC 暦日 1 日（YYYYMMDD）。当該 UTC 日の**全件**（5,600〜8,000 件）を集計する。limit は適用しない。UTC 暦日ちょうどを指定する簡便手段なので、複数日にまたがる区間や UTC 暦日の境界に揃わない区間（例: JST の 1 日）には since/until を使うこと。` +
+		`\n- **limit**: date / hours / since・until の**いずれも指定しない件数ベース取得（直近 N 件）でのみ有効**（上限 ${MAX_TX_COUNT_LIMIT} 件 ≒ BTC/JPY で 6〜8.5 時間分）。区間指定と併用しても無視される。それより長い窓は件数ではなく hours / since・until で指定すること。` +
+		`\n- **since/until は hours とも date とも併用不可**（併用すると user エラー）。暗黙の優先順位を置くと、要求と異なる区間の集計値が無言で返るため。なお hours と date の同時指定だけは従来どおりエラーにせず hours が優先される（date は無視される）。` +
+		`\n- since/until に YYYYMMDD 形式は使えない。暦日の基準がツール間で割れている（本ツールの date は UTC 暦日、get_candles の date は tz 引数の暦日）ため、絶対時刻はオフセット必須の ISO8601 のみ受け付ける。` +
+		`\n\nデータソース制約（bitbank 側仕様）: 約定アーカイブ /transactions/{YYYYMMDD} は UTC 暦日単位で、当該 UTC 日の完了後にのみ公開される。完了済み UTC 日は**全件**（1日あたり数千件）を集計に使う。進行中の UTC 日（JST 09:00 で切り替わる）の約定は /transactions (latest, 直近約60件) でしか取得できないため、当日区間のカバレッジは限定的（warning で明示される）。` +
+		`\n\nカバレッジ申告: meta.actualRange は durationMinutes（先頭〜末尾のスパン）に加えて coveredMinutes（実データがある区間の合計）/ gapMinutes / gaps を返す。requestedMinutes（要求区間）に対する coveragePct が出るので、要求どおり取れたかは常にこの値で確認できる。欠損があれば meta.warning（取得層）と meta.warnings（計算層: 集計値がカバー区間のみ由来である旨）で明示される。完了済み UTC 日のみの区間なら coveragePct はほぼ 100%、進行中 UTC 日にかかる区間は latest 約60件ぶんまで下がる。` +
 		`\n\n加工契約:` +
 		`\n- 内部で使用する約定列は、取得パスに関わらず timestampMs 昇順にソート済み。` +
 		`\n- latest と date ベースをマージする場合、重複除去キーは \`timestampMs:price:amount:side\`（transaction_id は使用しない: 同一約定でも上流エンドポイント間で ID が一致しないケースがあるため）。`,
@@ -615,6 +741,8 @@ export const toolDef: ToolDefinition = {
 		bucketsN,
 		tz,
 		hours,
+		since,
+		until,
 	}: {
 		pair?: string;
 		limit?: number;
@@ -625,6 +753,8 @@ export const toolDef: ToolDefinition = {
 		bucketsN?: number;
 		tz?: string;
 		hours?: number;
+		since?: string;
+		until?: string;
 	}) => {
 		const res = await getFlowMetrics(
 			pair,
@@ -633,6 +763,7 @@ export const toolDef: ToolDefinition = {
 			Number(bucketMs),
 			tz,
 			hours != null ? Number(hours) : undefined,
+			{ since, until },
 		);
 		if (!res?.ok) return res;
 
@@ -641,7 +772,7 @@ export const toolDef: ToolDefinition = {
 
 		// view は content だけを変え、structuredContent は変えない
 		// （docs/internal/view-vocabulary-unification.md §3-2 規約 4）。
-		// 旧実装は summary で series.buckets をキーごと削除し、compact で非ゼロバケットに
+		// 旧実装は summary で series.buckets をキーごと削除し、compact で「非ゼロ ∪ 欠損」に
 		// フィルタしていた。動機はトークン削減だったが、LLM は structuredContent を参照しない
 		// （.claude/rules/tools.md）ため削減量はゼロで、必須フィールドを宣言する
 		// GetFlowMetricsDataSchemaOut を満たさない structuredContent だけが残っていた。
@@ -657,10 +788,13 @@ export const toolDef: ToolDefinition = {
 			return { content: [{ type: 'text', text: res.summary }], structuredContent };
 		}
 
+		// 欠損バケットを通常行と同じ形（buy=0 sell=0）で出すと「約定ゼロ」と誤読される
 		const fmt = (b: FlowMetricsBucket) =>
-			`${b.displayTime || b.isoTime}  buy=${b.buyVolume} sell=${b.sellVolume} total=${b.totalVolume} cvd=${b.cvd}${b.spike ? ` spike=${b.spike}` : ''}`;
+			b.hasData === false
+				? `${b.displayTime || b.isoTime}  データなし（欠損区間）`
+				: `${b.displayTime || b.isoTime}  buy=${b.buyVolume} sell=${b.sellVolume} total=${b.totalVolume} cvd=${b.cvd}${b.spike ? ` spike=${b.spike}` : ''}`;
 
-		// view=detailed / full は res.summary をベースにする。
+		// view=detailed / full は res.summary をベースにする（旧 compact と同じ形）。
 		// 旧実装は res.summary を捨てて短いヘッダを組み直していたため、最終約定価格・スパイク上位
 		// 3 件・4 行フッタ（含まれるもの / 含まれないもの / 補完ツール / 加工契約）が上位 view でだけ
 		// 消えていた（docs/internal/view-vocabulary-unification.md §1-3 の P3）。
@@ -668,12 +802,16 @@ export const toolDef: ToolDefinition = {
 		// 「LLM が情報を失う」に等しい。§3-2 規約 3（上位 view は下位の上位集合）に従い上位集合にする。
 		const agg = res?.data?.aggregates ?? {};
 		const actualRange = res?.meta?.actualRange;
+		// スパン（穴を含む）と実カバー時間を必ず並記する。durationMinutes だけを出すと
+		// 欠損区間をカバー済みとして申告することになる。
 		const rangeStr = actualRange
-			? ` 実取得範囲: ${actualRange.start}〜${actualRange.end}（${actualRange.durationMinutes}分間）`
+			? ` 実取得範囲: ${actualRange.start}〜${actualRange.end}（スパン${actualRange.durationMinutes}分 / 実カバー${actualRange.coveredMinutes}分${
+					actualRange.gapMinutes > 0 ? `, 欠損${actualRange.gapMinutes}分` : ''
+				}${actualRange.requestedMinutes != null ? ` / 要求${actualRange.requestedMinutes}分` : ''}）`
 			: '';
 		// バケット行の読み方（間隔・実取得範囲・Totals）をバケット本体の直前に置く。
-		// 取得層の warning 行はここでは重ねない——res.summary が同じ warning を同じ文言で
-		// 既に含んでいるため（重複は LLM のノイズになる）。
+		// 取得層 (meta.warning) / 計算層 (meta.warnings) の warning 行はここでは重ねない——
+		// res.summary が同じ 2 系統を同じ文言で既に含んでいるため（重複は LLM のノイズになる）。
 		const bucketHeader =
 			`${String(pair).toUpperCase()} Flow Metrics (bucketMs=${res?.data?.params?.bucketMs ?? bucketMs})${rangeStr}\n` +
 			`Totals: trades=${agg.totalTrades} buyVol=${agg.buyVolume} sellVol=${agg.sellVolume} net=${agg.netVolume} buy%=${(agg.aggressorRatio * 100 || 0).toFixed(1)} CVD=${agg.finalCvd}`;

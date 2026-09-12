@@ -19,6 +19,7 @@
  * - index n-1: 最新（今日、未確定の可能性）
  */
 
+import { parseDayKeyAllowingOverflow } from '../lib/calendar.js';
 import {
 	bodyBottom,
 	bodySize,
@@ -562,6 +563,15 @@ function calculateHistoryStats(
 
 // ----- ヘルパー: 日付形式の正規化 -----
 /**
+ * `as_of` / `date` 指定時に「その日までの足」を切り出すときの暦基準。
+ *
+ * UTC 固定なのは現行挙動の維持のため。`get_candles` は同じ日付キーを `tz` 引数の暦日
+ * （既定 Asia/Tokyo）として解釈しており基準がずれているが、揃えると「どの足まで含めるか」が
+ * 変わる仕様変更になるため本移行では踏み込まない。
+ */
+const AS_OF_FILTER_TZ = 'UTC';
+
+/**
  * ISO形式 ("2025-11-05") または YYYYMMDD ("20251105") を YYYYMMDD に正規化
  */
 function normalizeDateToYYYYMMDD(dateStr: string | undefined): string | undefined {
@@ -640,11 +650,13 @@ export default async function analyzeCandlePatterns(
 		// 🚨 CRITICAL: 日付指定時は、その日付以前のデータのみにフィルタリング
 		// get_candles は年単位でデータを取得するため、指定日以降のデータも含まれる
 		if (isHistoricalQuery && targetDate) {
-			// targetDate は YYYYMMDD 形式（例: "20251105"）
-			const year = targetDate.slice(0, 4);
-			const month = targetDate.slice(4, 6);
-			const day = targetDate.slice(6, 8);
-			const targetDateMs = dayjs.utc(`${year}-${month}-${day}`).endOf('day').valueOf();
+			// targetDate は YYYYMMDD 形式（例: "20251105"）。
+			// normalizeDateToYYYYMMDD は形式しか見ないため実在しない日付（20260230 等）が到達しうる。
+			// 従来の `dayjs.utc('2026-02-30')` はこれを 3/2 へ繰り上げていたので、
+			// 実在日を要求する parseDayKey ではなく繰り上げ許容版を選ぶ。
+			// 繰り上げても解釈できない値は NaN のままにして「全件が範囲外 → データ不足 fail」という
+			// 既存の分岐を保つ。
+			const targetDateMs = parseDayKeyAllowingOverflow(targetDate, AS_OF_FILTER_TZ)?.endMs ?? Number.NaN;
 
 			allCandles = allCandles.filter((c) => {
 				if (!c.isoTime) return false;

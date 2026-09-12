@@ -7,7 +7,7 @@
 
 import { dayjs } from '../../lib/datetime.js';
 import { trueRange } from '../../lib/indicators.js';
-import { EPSILON } from '../../lib/math.js';
+import { statusScore } from './ranking.js';
 import type {
 	CandleData,
 	DeduplicablePattern,
@@ -20,11 +20,19 @@ import type {
 } from './types.js';
 
 // ---------------------------------------------------------------------------
-// 時間足スケーリング — バー数 ↔ 日数の変換
+// 時間足スケーリング — 日数 → バー数の換算
 //
 // 検出器の閾値（ウィンドウサイズ・タッチギャップ・形成中ウィンドウ等）は
 // 元々日足前提のバー数で書かれていたため、他時間軸では意味がずれていた。
-// 「日数」を基準に統一し、各検出器で bars-per-day を介して換算する。
+// 現在の**プリミティブはバー数**で、日数は「その値がどこから来たか」を示す注記に過ぎない
+// （`patterns/bar-thresholds.ts` を参照）。ここが持つのは換算率だけで、
+// 逆方向（バー数 → 日数）の関数は置かない。
+//
+// **ただし「日数で判定する検出器はもう無い」わけではない。** 期間スコアだけが例外で、
+// `periodScoreDays`（暦日 diff でバケットを決める）を `double` の 4 経路と H&S の 4 経路が
+// まだ使っている。triple の 4 経路は #199 候補 2 で `periodScoreBars`（バー数基準）に移した。
+// 移したのが triple だけなのは、実測で `per` が triple でのみ実質定数だったため
+// （#199 Phase 1: `double` / H&S は 0.6〜0.9 の 4 値が出る）。
 // ---------------------------------------------------------------------------
 
 /**
@@ -64,119 +72,6 @@ export function barsPerDay(tf: string): number {
 		default:
 			return 1;
 	}
-}
-
-/**
- * 時間足ごとの「1バーあたりの日数」を返す（`barsPerDay` の逆数）。
- *
- * 形成中パターンの patternDays 計算（formationBars × daysPerBar）で
- * intraday / 1week / 1month を正しく日数換算するために使う。
- *
- * @param tf - 時間足文字列（`barsPerDay` 参照）
- * @returns 1 バーあたりの日数
- */
-export function daysPerBar(tf: string): number {
-	return 1 / barsPerDay(tf);
-}
-
-// ---------------------------------------------------------------------------
-// ブレイク後の target 到達判定（high/low ベース）
-//
-// 最終 close ベースだと、ブレイク後に一度 target を越えてから戻ったケースで
-// 未到達扱いされてしまう。実際には「ブレイク後に target を越えたか」を見たいので、
-// breakoutIdx 以降のローソク足を走査して extremum
-// （下方ブレイクなら min low / 上方ブレイクなら max high）を取り、その値で進捗率を計算する。
-//
-// 入力:
-//   - candles: 全ローソク足
-//   - breakoutIdx: ブレイク確定足のインデックス（このバー以降を走査）
-//   - breakoutPrice: ブレイク確定時の参照価格（通常は close）
-//   - target: 想定ターゲット価格
-//   - direction: 'up'  → breakoutIdx 以降の最高 high で評価
-//                'down' → breakoutIdx 以降の最安 low で評価
-//
-// 戻り値:
-//   - 0 距離（breakoutPrice == target）の場合: reached=true, pct=100, price=breakoutPrice
-//   - 到達済みなら pct を最低 100 にクランプ（オーバーシュート時の符号反転防止）
-//   - extremum が見つからない / 入力不正なら undefined
-// ---------------------------------------------------------------------------
-
-export interface TargetReachInfo {
-	targetReachedPct: number;
-	targetReached: boolean;
-	targetReachedDate?: string;
-	targetReachedPrice: number;
-}
-
-export function computeTargetReach(
-	candles: readonly CandleData[],
-	breakoutIdx: number,
-	breakoutPrice: number,
-	target: number,
-	direction: 'up' | 'down',
-): TargetReachInfo | undefined {
-	if (!Number.isFinite(breakoutPrice) || !Number.isFinite(target)) return undefined;
-	const targetDistance = Math.abs(target - breakoutPrice);
-	const startIdx = Math.max(0, breakoutIdx);
-	if (startIdx >= candles.length) return undefined;
-
-	// ブレイク時点で target と一致（距離ゼロ）= 既に到達。
-	// undefined を返すと targetReached / targetReachedPrice 等の metadata が落ちるため
-	// reached=true, pct=100 を確定で返す。
-	if (targetDistance <= EPSILON) {
-		const targetReachedDate = candles[startIdx]?.isoTime;
-		return {
-			targetReachedPct: 100,
-			targetReached: true,
-			...(targetReachedDate ? { targetReachedDate } : {}),
-			targetReachedPrice: breakoutPrice,
-		};
-	}
-
-	let extremePrice = direction === 'down' ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
-	let extremeIdx = -1;
-	for (let i = startIdx; i < candles.length; i++) {
-		const candle = candles[i];
-		if (!candle) continue;
-		if (direction === 'down') {
-			const lo = Number(candle.low ?? NaN);
-			if (!Number.isFinite(lo)) continue;
-			if (lo < extremePrice) {
-				extremePrice = lo;
-				extremeIdx = i;
-			}
-		} else {
-			const hi = Number(candle.high ?? NaN);
-			if (!Number.isFinite(hi)) continue;
-			if (hi > extremePrice) {
-				extremePrice = hi;
-				extremeIdx = i;
-			}
-		}
-	}
-	if (extremeIdx < 0 || !Number.isFinite(extremePrice)) return undefined;
-
-	const targetReached = direction === 'down' ? extremePrice <= target : extremePrice >= target;
-	// pct はブレイク価格から target 方向へどれだけ進んだかを 100% スケールで返す。
-	// 分母を Math.abs にしておくことで、ブレイク足が既に target を越えていた場合の
-	// 符号反転（reached=true なのに pct<0）を防ぐ。
-	//
-	// 丸めは reached/unreached で非対称にする:
-	//   - reached=true:  round して max(100, ..) にクランプ（オーバーシュート時の符号反転防止）
-	//   - reached=false: floor して 99 にキャップ（99.6% などが 100 に丸まって
-	//     下流の `pct >= 100` 判定を誤らせるのを防ぐ）
-	const moveDistance = direction === 'down' ? breakoutPrice - extremePrice : extremePrice - breakoutPrice;
-	const rawPct = (moveDistance / targetDistance) * 100;
-	const targetReachedPct = targetReached
-		? Math.max(100, Math.round(rawPct))
-		: Math.min(99, Math.max(0, Math.floor(rawPct)));
-	const targetReachedDate = candles[extremeIdx]?.isoTime;
-	return {
-		targetReachedPct,
-		targetReached,
-		...(targetReachedDate ? { targetReachedDate } : {}),
-		targetReachedPrice: extremePrice,
-	};
 }
 
 // ---------------------------------------------------------------------------
@@ -513,6 +408,19 @@ export function calculatePatternScoreEx(components: PatternScoreComponents, weig
 // ---------------------------------------------------------------------------
 // パターン共通スコアリング
 // ---------------------------------------------------------------------------
+/**
+ * 期間スコア（**暦日基準**）。`double` / H&S の 4 経路が使う。
+ *
+ * **triple はこの関数を使わない**（issue #199 候補 2 で {@link periodScoreBars} に移した）。
+ * 時間足を見ない暦日 diff なので、intraday では構成期間が常に同じバケットに落ちる
+ * ——#203 Phase 1 の実測で triple の 109 行が 1min〜4hour の全時間足で 0.6 に張り付いた。
+ *
+ * **`double` / H&S を移していないのは、両者ではこの軸が定数になっていないから**
+ * （#199 Phase 1 実測。940 ケース延べで `double` は 0.6/0.7/0.8/0.9 の 4 値、
+ * H&S も 4 値。H&S はネイティブ 1hour だけでも 0.8 が 19.0% 出る）。
+ * 定数でない軸を「原則に合わないから」だけで動かすと、寄与が混ざったまま
+ * confidence の分布が動く。詳細は tjackiet/bitbank-lab-mcp#199 の計測記録。
+ */
 export function periodScoreDays(startIso?: string, endIso?: string): number {
 	if (!startIso || !endIso) return 0.7;
 	const d = Math.abs(dayjs(endIso).diff(dayjs(startIso), 'day', true));
@@ -520,6 +428,57 @@ export function periodScoreDays(startIso?: string, endIso?: string): number {
 	if (d < 15) return 0.8;
 	if (d < 30) return 0.9;
 	return 0.7;
+}
+
+/** {@link periodScoreBars} のバケット境界（**バー数**。時間足に依らない）。 */
+export const PERIOD_SCORE_BAR_BUCKETS = [12, 18, 26] as const;
+
+/**
+ * 期間スコア（**バー数基準**）。現在は triple の 4 経路のみが使う（issue #199 候補 2）。
+ *
+ * ```
+ * bars < 12 → 0.6   12 <= bars < 18 → 0.7   18 <= bars < 26 → 0.8   26 <= bars → 0.9
+ * ```
+ *
+ * `bars` は主構成点の**外側 2 点の距離**（triple なら `c.idx − a.idx`）。
+ *
+ * ## 境界を実測から決めた（先例が無いため）
+ *
+ * #199 Phase 1 の実測（検出器層 1,056 ケース。受理 302 行 / 価格系列上の相異なる構造 32 件）で、
+ * triple の `c.idx − a.idx` は 8〜42 バーに収まり、相異なる構造の四分位が
+ * p25 = 12 / p50 = 18 / p75 = 23〜25 だった。境界はこの四分位に置いてある:
+ *
+ * | 境界 | 由来 |
+ * |---:|---|
+ * | 12 | p25。8〜11 バーの低い裾（相異なる構造の 15.6%）を切る。台の支持に 10 が無く、合成 fixture の教科書的トリプルはいずれも 12 以上 |
+ * | 18 | p50。合成 fixture が到達する最大スパンでもある（12 / 14 / 18 の 3 値しか出ない） |
+ * | 26 | p75 の直上。26 以降は 26 / 29 / 30 / 32 / 38 / 42 と疎な上側の裾になる |
+ *
+ * **境界は時間足に依らない**（`patterns/bar-thresholds.ts` と同じ扱い。時間足別テーブルは
+ * #198 で事故になっている）。triple の構成間隔ゲートは主構成点の 2 区間に
+ * `minBarsBetweenSwings` を課すので**スパンの構造的下限は `2 × minDist`**（2〜12 バー）で、
+ * **最下位バケット（`< 12`）に到達できないのは `1month`（下限 12）だけ**。
+ * **ゲートではなくスコアなので、仮に飽和しても検出が消えることは無い**——`bar-thresholds.ts` の
+ * 閾値（下限を割ると 0 件になる）とは影響の重さが違う。
+ *
+ * ## 暦日版にあった非単調性（`< 30日 → 0.9` の次が `0.7`）は引き継がない
+ *
+ * 最長バケットだけ点が下がる段差には根拠のコメントが無い。**`periodScoreDays` は引数が
+ * 欠けたときにも同じ 0.7 を返す**ので、末尾の 0.7 は「古すぎるパターンへの減点」ではなく
+ * 「表の外＝中立値」が裾のバケットに漏れたもの、と読むのが自然。加えてこのスコアが測るのは
+ * 構成期間の**長さ**であって**古さ**ではない（`start` が今から何日前かは見ていない）ので、
+ * そもそも「古すぎる」を表現できない。鮮度は別の機構が持っている
+ * （`globalDedup` / `rankPatterns` の `range.end` 比較、`requireCurrentInPattern` /
+ * `currentRelevanceDays`）。由来不明の段差をバー空間に移すより、単調にして意味を
+ * 「構成が長いほど substantial」の 1 つに揃えるほうが読み手を誤らせない。
+ */
+export function periodScoreBars(bars: number): number {
+	if (!Number.isFinite(bars)) return 0.7;
+	const [b1, b2, b3] = PERIOD_SCORE_BAR_BUCKETS;
+	if (bars < b1) return 0.6;
+	if (bars < b2) return 0.7;
+	if (bars < b3) return 0.8;
+	return 0.9;
 }
 
 export function finalizeConf(base: number, type: string): number {
@@ -544,6 +503,29 @@ export function finalizeConf(base: number, type: string): number {
 // ---------------------------------------------------------------------------
 // 重複パターンの排除
 // ---------------------------------------------------------------------------
+
+/**
+ * 同一タイプで期間の重なり率が 50% を超えるパターンを 1 つに統合する（各検出器内で実行）。
+ *
+ * 勝者選択は statusScore（`patterns/ranking.ts` が単一ソース。issue #133）を最優先し、
+ * 同 status 内では confidence →「`range.end` が新しいほう＝より新しい形を採る」→
+ * パターン高さの順で選ぶ。**`globalDedup` と同じ順序**（issue #142）。
+ *
+ * `range.end` は形成中パターンでは常に最新足（lastIdx）なので、status より前に比較すると
+ * 形成中が完成済み（突破確定足で終わる）を構造的に必ず押し出してしまう。これが statusScore を
+ * 最優先に置く理由（#133 / PR #135）で、**`range.end` を confidence より前に置く理由ではない。**
+ *
+ * `range.end` を confidence より先に見ると、重なる候補の中で最も新しく終わる 1 つに絞り込んだ
+ * 時点で confidence が一度も比較されない。広い窓ほど終端が新しくなりやすいので、
+ * **同じ値動きに対して最も当てはまりの悪い解釈が勝つ**（#142。BTC/JPY 日足で
+ * `rising_wedge` 0.95 が 0.82 に、外れ値除去の上限（#141）を外すと
+ * `triangle_symmetrical` 0.91 / 0.87 が 0.82 に負けていた）。
+ * confidence を先に置いても #133 の不変条件には触れない——入れ替えは statusScore の**下**なので、
+ * 形成中が完成済みを押し出す経路は通らない。
+ *
+ * @param arr - 検出順のパターン配列。`type` / `range` を欠く要素は比較せずそのまま残す
+ * @returns 重複を統合した新しい配列（入力は破壊しない）
+ */
 export function deduplicatePatterns<T extends DeduplicablePattern>(arr: T[]): T[] {
 	const result: T[] = [];
 	for (const pattern of arr) {
@@ -576,11 +558,16 @@ export function deduplicatePatterns<T extends DeduplicablePattern>(arr: T[]): T[
 			result.push(pattern);
 		} else {
 			const allCandidates = [...overlapping, pattern];
-			const maxEndTime = Math.max(...allCandidates.map((p) => Date.parse(p.range?.end ?? '')));
-			let best = allCandidates.filter((p) => Date.parse(p.range?.end ?? '') === maxEndTime);
+			const getStatusScore = (p: DeduplicablePattern) => statusScore((p as { status?: string }).status);
+			const maxStatusScore = Math.max(...allCandidates.map(getStatusScore));
+			let best = allCandidates.filter((p) => getStatusScore(p) === maxStatusScore);
 			if (best.length > 1) {
 				const maxConfidence = Math.max(...best.map((p) => Number(p.confidence ?? 0)));
 				best = best.filter((p) => Number(p.confidence ?? 0) === maxConfidence);
+			}
+			if (best.length > 1) {
+				const maxEndTime = Math.max(...best.map((p) => Date.parse(p.range?.end ?? '')));
+				best = best.filter((p) => Date.parse(p.range?.end ?? '') === maxEndTime);
 			}
 			if (best.length > 1) {
 				const getHeight = (p: DeduplicablePattern) => {
@@ -614,6 +601,20 @@ export function deduplicatePatterns<T extends DeduplicablePattern>(arr: T[]): T[
 // ---------------------------------------------------------------------------
 // グローバル重複排除（全パターン種別横断）
 // ---------------------------------------------------------------------------
+
+/**
+ * 全検出器の結果を統合した後、同一タイプ（wedge / triangle は同カテゴリ）で期間の
+ * 重なり率が 70% 以上のパターンを 1 つに統合する。
+ *
+ * 勝者選択は `rankPatterns`（`patterns/ranking.ts`）と同じ規則:
+ * statusScore（単一ソース。issue #133）→ confidence → `range.end` の新しさ。
+ * status を見ずに confidence を先に比べると、形成中（完成途中の進捗から
+ * 整合度 1.00 が付きやすい）が突破確定済みの完成済みを押し出し、
+ * `includeCompleted: true` を明示した呼び出し側が完成済みを受け取れなくなる。
+ *
+ * @param patterns - 全検出器の結果を連結した配列（検出順）
+ * @returns 重複を統合した新しい配列（入力は破壊しない）
+ */
 export function globalDedup(patterns: DeduplicablePattern[]): DeduplicablePattern[] {
 	function toMs(iso?: string): number {
 		try {
@@ -669,15 +670,21 @@ export function globalDedup(patterns: DeduplicablePattern[]): DeduplicablePatter
 			out.push(p);
 		} else {
 			const existing = out[overlapIdx];
-			const eConf = Number(existing?.confidence ?? 0);
-			const pConf = Number(p?.confidence ?? 0);
-			if (pConf > eConf) {
+			const eStatus = statusScore((existing as { status?: string }).status);
+			const pStatus = statusScore((p as { status?: string }).status);
+			if (pStatus > eStatus) {
 				out[overlapIdx] = p;
-			} else if (pConf === eConf) {
-				const eEnd = toMs(existing?.range?.end ?? existing?.range?.current);
-				const pEnd = toMs(p?.range?.end ?? p?.range?.current);
-				if (Number.isFinite(pEnd) && Number.isFinite(eEnd) && pEnd > eEnd) {
+			} else if (pStatus === eStatus) {
+				const eConf = Number(existing?.confidence ?? 0);
+				const pConf = Number(p?.confidence ?? 0);
+				if (pConf > eConf) {
 					out[overlapIdx] = p;
+				} else if (pConf === eConf) {
+					const eEnd = toMs(existing?.range?.end ?? existing?.range?.current);
+					const pEnd = toMs(p?.range?.end ?? p?.range?.current);
+					if (Number.isFinite(pEnd) && Number.isFinite(eEnd) && pEnd > eEnd) {
+						out[overlapIdx] = p;
+					}
 				}
 			}
 		}

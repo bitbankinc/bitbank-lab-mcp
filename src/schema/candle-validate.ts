@@ -10,7 +10,11 @@ export const ValidateCandleDataInputSchema = z.object({
 		.string()
 		.regex(/^\d{4}(\d{4})?$/, 'YYYYMMDD or YYYY format')
 		.optional()
-		.describe('YYYYMMDD or YYYY format. If omitted, uses latest data.'),
+		.describe(
+			'YYYYMMDD or YYYY format. If omitted, uses latest data. ' +
+				'YYYYMMDD は tz 引数（既定 Asia/Tokyo）の暦日として解釈し、その日の終端以前の足を返します（get_candles と同じ基準）。' +
+				'get_transactions / get_flow_metrics の date は UTC 暦日で基準が異なります。',
+		),
 	limit: z.number().int().min(10).max(1000).optional().default(200).describe('検証対象のローソク足本数（10〜1000）'),
 	price_sigma: z
 		.number()

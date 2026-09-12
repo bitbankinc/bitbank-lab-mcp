@@ -18,6 +18,7 @@ vi.mock('../tools/get_transactions.js', () => ({
 import getFlowMetrics, { toolDef } from '../tools/get_flow_metrics.js';
 import getTransactions from '../tools/get_transactions.js';
 import { asMockResult, assertOk } from './_assertResult.js';
+import { asMcp } from './helpers/mcp.js';
 
 type MockTx = {
 	price: number;
@@ -114,13 +115,15 @@ describe('get_flow_metrics: 加工契約 — timestampMs 昇順 sort', () => {
 		const txs = buildUnsortedTxs(10);
 		mocked.mockResolvedValueOnce(asMockResult(mockOk(txs)));
 
-		const res = (await toolDef.handler({
-			pair: 'btc_jpy',
-			limit: 10,
-			date: '20240101',
-			bucketMs: 60_000,
-			view: 'full',
-		})) as { structuredContent: { data: { series: { buckets: Array<{ timestampMs: number }> } } } };
+		const res = asMcp<{ data: { series: { buckets: Array<{ timestampMs: number }> } } }>(
+			await toolDef.handler({
+				pair: 'btc_jpy',
+				limit: 10,
+				date: '20240101',
+				bucketMs: 60_000,
+				view: 'full',
+			}),
+		);
 		const tss = res.structuredContent.data.series.buckets.map((b) => b.timestampMs);
 		expect(tss.length).toBeGreaterThan(0);
 		expect(isAscending(tss)).toBe(true);

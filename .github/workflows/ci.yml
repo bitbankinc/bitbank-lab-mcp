@@ -7,6 +7,13 @@ on:
     branches: [ main ]
 
 jobs:
+  # このジョブは typecheck だけでなく lint / format-check / banned-patterns / npm test /
+  # test:coverage をすべて実行する。**チェック名がジョブの実態を過小に表しており**、
+  # 実際にレビューで「CI でテストが走っていないのでは」と誤解された（PR #131）。
+  #
+  # `ci` 等への改名はブランチ保護の required check 名（`typecheck`）に影響し、
+  # リポジトリ設定の更新とセットでないと PR がマージ不能になるため、名前は据え置く。
+  # 改名する場合はブランチ保護の変更と同時に行うこと（#127）。
   typecheck:
     runs-on: ubuntu-latest
     steps:
@@ -39,10 +46,10 @@ jobs:
           fi
 
       - name: Lint (Oxlint)
-        run: npx oxlint src/ tools/ lib/
+        run: npx oxlint src/ tools/ lib/ tests/
 
       - name: Format check (Biome)
-        run: npx biome check --no-errors-on-unmatched src/ tools/ lib/
+        run: npx biome check --no-errors-on-unmatched src/ tools/ lib/ tests/
 
       - name: Typecheck
         run: npm run typecheck

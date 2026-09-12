@@ -50,6 +50,7 @@ vi.mock('../tools/trading_process/lib/svg_to_png.js', () => ({
 }));
 
 import { toolDef } from '../src/handlers/runBacktestHandler.js';
+import type { BacktestEngineResult } from '../tools/trading_process/lib/backtest_engine.js';
 import runBacktest from '../tools/trading_process/run_backtest.js';
 import { assertOk } from './_assertResult.js';
 
@@ -72,7 +73,7 @@ function makeValidateOk(defaultParams: Record<string, number>) {
 	});
 }
 
-function buildEngineResult() {
+function buildEngineResult(): BacktestEngineResult {
 	return {
 		input: {
 			pair: 'btc_jpy',
@@ -81,6 +82,9 @@ function buildEngineResult() {
 			strategy: { type: 'rsi', params: {} },
 			fee_bp: 12,
 			execution: 't+1_open',
+			effective_start: '2024-01-01T00:00:00.000Z',
+			effective_end: '2024-01-31T00:00:00.000Z',
+			effective_bars: 30,
 		},
 		summary: {
 			total_pnl_pct: 1.23,
@@ -162,8 +166,7 @@ describe('run_backtest', () => {
 			end_date: '2024-01-01',
 			strategy: { type: 'rsi', params: {} },
 		});
-		expect(parsed.start_date).toBe('2024-01-01');
-		expect(parsed.end_date).toBe('2024-01-01');
+		expect(parsed).toMatchObject({ start_date: '2024-01-01', end_date: '2024-01-01' });
 	});
 
 	it('toolDef.handler は inputSchema の既定値 savePng=false / includeSvg=false を尊重するべき', async () => {

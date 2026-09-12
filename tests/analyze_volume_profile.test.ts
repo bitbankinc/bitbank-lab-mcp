@@ -450,8 +450,13 @@ describe('analyze_volume_profile', () => {
 			const res = await analyzeVolumeProfile('btc_jpy', 0, 20, 5, 0.7);
 			assertOk(res);
 			// 補完 fetch は完了済み UTC 日 20260706（JST 基準の「昨日」20260707 ではない）
-			expect(mockedGetTransactions).toHaveBeenCalledWith('btc_jpy', 1000, '20260706');
-			expect(mockedGetTransactions).not.toHaveBeenCalledWith('btc_jpy', 1000, '20260707');
+			const requestedDates = mockedGetTransactions.mock.calls.map((c) => c[2]);
+			expect(requestedDates).toContain('20260706');
+			expect(requestedDates).not.toContain('20260707');
+			// 内部集計は応答上限 1000 件のキャップを外して全件取得する
+			expect(mockedGetTransactions).toHaveBeenCalledWith('btc_jpy', 1000, '20260706', undefined, {
+				unlimited: true,
+			});
 		} finally {
 			vi.useRealTimers();
 		}

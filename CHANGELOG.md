@@ -7,7 +7,174 @@
 
 ## [Unreleased]
 
----
+`detect_patterns` 系の変更は #114 を起点とする一連の作業で、下の表に時系列で載せる（番号が大きいほど新しい）。各行の判断根拠と計測の記録は fork（tjackiet/bitbank-lab-mcp）の各 issue と PR に残る。
+
+### `detect_patterns`（#114 以降）
+
+| # | issue | 変更 | 検出への影響 |
+|---|---|---|---|
+| 1 | #114 | **起点。** スキャン窓を `limit + 199` 本から直近 `limit` 本に一致させた。以降の「窓が狭い」系の問題はすべてここから派生する | 減る |
+| 2 | #117 | 窓が構造上狭すぎるとき `limit_too_small_for_timeframe` を申告 | 変わらない |
+| 3 | #119 | ツール description に検出の意味論を明記 | 変わらない |
+| 4 | #120 | 検出器ごとの最小要求バー数を単一ソース化し、到達性を機械的に固定 | 変わらない |
+| 5 | #121 | 閾値のプリミティブを日数からバー数に統一し、上限クランプを入れた | 変わる |
+| 6 | #122 | 形成中 double / H&S の手書き `daysPerBar` を廃止しバー基準に統一 | 変わる |
+| 7 | #123 | `limit` を**上げる**方向の使い分けをツール表面に明記 | 変わらない |
+| 8 | #128 | `view=debug` の可観測性（#124）と pivot の価格基準の透明化（#125 前半）、用語の陳腐化（#127 の一部） | 変わらない |
+| 9 | #131 | ダブルトップ / ボトムの構造ゲート、`status='expired'`、`include*` の独立化、実データ回帰 fixture | 変わる |
+| 10 | #132 | ダブルボトムの偽陰性を 3 つの原因ごとに解消 | 増える |
+| 11 | #135 | dedup の勝者選択を `statusScore` 最優先に揃えた | 変わる |
+| 12 | #136 | 構造的ピボット間隔の床（`= 5`）の妥当性を実測で判定し据え置きを確定 | 変わらない |
+| 13 | #137 | 三角形の分類前 candidate ラベルを umbrella 化（#129）、`limit=180` の判定と CI ジョブ名の注記（#127 の残り） | 変わらない |
+| 14 | #139 | triple / H&S にサイズ検査を横展開（#138 欠陥 2-2） | 減る |
+| 15 | #140 | triple / H&S に構造ゲートを横展開（#138 欠陥 2-1） | 減る |
+| 16 | #141 | 三角形の外れ値除去に除去率の上限を入れた | 実データで**減る**（合成 fixture は変わらない） |
+| 17 | #148 | H&S の窓生成から交互列要求を外した（#146） | 実データで**増える**（合成 fixture は変わらない） |
+| 18 | #153 | H&S の `tolerancePct` が頭の突出率としても使われ意味が反転していたのを `headProminencePct` に分離（#149） | **変わらない**（既定値のまま） |
+| 19 | #156 | 形成中 H&S / 逆 H&S の頭を窓全体の極値 1 点に決め打ちしていたのを総当たりに変えた（#154） | 合成 fixture は**変わらない** / 実データは窓を広げたときだけ**増える**（＝狭い窓で出ていたものが戻る） |
+| 20 | #159 | 形成中 H&S / 逆 H&S の成功候補を `debug.candidates` に積む（#155） | **変わらない** |
+| 21 | #161 | candidates の `status` / `breakoutDirection` を content と出力スキーマに届ける（#160） | **変わらない** |
+| 22 | #164 | 完成済みウェッジの `status` / `breakoutDirection` が候補行に出ていなかったのを修正（#162） | **変わらない** |
+| 23 | #166 | 形成中 double top / bottom・triple top / bottom の成功候補を `debug.candidates` に積む（#158。 | **変わらない** |
+| 24 | #168 | サイズ検査の 2 定数（`MIN_DEPTH_PCT` / `MIN_PATTERN_HEIGHT_PCT`）を時間足別のテーブルにした（#152） | 合成 fixture は**変わらない** / 実データは 1day 未満の時間足で**増える**（+8 / 800。 |
+| 25 | #170 | 形成中 double top / bottom のサイズ検査を完成済みと揃えた（#169） | 回帰コーパス（合成 704 + 実データ 96）は**変わらない**（0 / 800）/ 新 fixture では**減る** |
+| 26 | #142 | 検出器内 dedup の勝者選択を `globalDedup` と同じ confidence 優先に揃えた | 実データ・合成とも**変わる**（48 / 800。 |
+| 27 | #172 | `shoulders_not_near` を 2 つの conjunct ごとに分け、`HS_SHOULDER_MAX_PCT` の役割を docstring に書いた | **変わらない**（理由コード文字列と docstring のみ） |
+| 28 | #174 | #172 の docstring が relaxed 経路について誤っていたのを訂正し、relaxed の肩落ちを `debug.candidates` に積む | **変わらない**（0 / 800） |
+| 29 | #138 | triple の「同水準」判定に**高さ相対の hard gate**（`MAX_LEVEL_SPREAD_RATIO`）を足し、無音だった 3 点同水準の棄却を可観測化した | 実データで**減る**（−20 / 800。 |
+| 30 | #180 | cap で切られた `debug.candidates` / `debug.swings` の総数と省略件数を申告する（cap の値もトリム戦略も変えない） | **変わらない**（0 / 800） |
+| 31 | #182 | `swingDepth` / `tolerancePct` / `minBarsBetweenSwings` の description に**時間軸オートとスキーマ既定値の sentinel 置換**を明記した（`resolveParams` も `.default()` も触っていない） | **変わらない**（description のみ） |
+| 32 | #184 | `meta.effective_params` が**出力スキーマ未宣言で毎回 strip されていた**のを宣言し、実効パラメータ行を全 view の `content` に出した。 | **変わらない**（`meta` / `content` のみ） |
+| 33 | #187 | `MAX_VALLEY_SPREAD`（1.5%）を削除した（#178 項目 2）。 | **変わらない**（0 / 896） |
+| 34 | #186 | strict triple のネックライン水平性が**同じ式を 2 つの名前で 2 回**測っていたのを `NECKLINE_SLOPE_LIMIT` 1 本に畳んだ。 | **変わらない**（0 / 896。既定パス）/ `tolerancePct < 0.02` を明示したときだけ**緩む** |
+| 35 | #189 | relaxed / strict の provenance `patterns[]._fallback` が**出力スキーマ未宣言で毎回 strip され、一度もクライアントに届いていなかった**のを宣言した（#155 / #160 / #184 に続く 4 回目）。 | **変わらない**（検出結果は不変。消えていたフィールドが `structuredContent` に残るだけ） |
+| 36 | #191 | `view=debug` に**棄却理由の集計ブロック**を出し（LLM の手集計が実測で外れていた）、`_fallback` の provenance を `content` に届け（#189 の残り半分）、`view` description の並び順の食い違いを実装に合わせた | **変わらない**（表示層と description のみ） |
+| 37 | #193 | #191 / PR #192 が `view` description に持ち込んだ**実在しない理由コードの例 2 箇所**を実装に合わせ、集計ブロックに **reason 単独の横断合計行**を足した（横断合計で LLM が実測 2 回外していた） | **変わらない**（表示層と description のみ） |
+| 38 | #178 | double の「同水準」判定に**高さ相対の hard gate** を足した（項目 4）。 | **変わらない**（0 / 896。現行コーパスでは 1 件も発火しない**潜在ガード**） |
+| 39 | #200 | 縮小段（globalDedup / requireCurrentInPattern / ライフサイクル絞り込み）の件数内訳を `meta.reduction` と content 行に申告。 | **変わらない**（表示層のみ。`structureDiagram.svg` / `.artifact.title` を除き完全一致を回帰テストで固定） |
+| 40 | #198 | `headProminencePct`（H&S / 逆H&S の頭の最小突出率）が未指定時に `tolerancePct` の時間軸オート表を誤って流用していたのを、専用の時間軸オート表（`getHeadProminenceForTf`）に切り離した | 実データ 1hour で**増える**（+4 / 14。 |
+| 41 | #199 | triple の整合度から `symmetry`（= 1 − 最大 relDev。 | 実データで**減る**（−20 / 896。 |
+| 42 | #208 | H&S / 逆 H&S の `breakoutTarget` の**高さ**を「ブレイク足時点の（外挿した）ネックライン」から「**頭の真下のネックライン**」に戻した。 | **変わらない**（0 / 896。`confidence` も全件不変。動くのは `breakoutTarget` / `targetReached` / `targetReachedPct` 系のみ） |
+| 43 | #210 | `targetReachedPct` の 3 つの欠陥（到達側に上限が無い / 分母が潰れる / 走査が系列末尾まで無制限）を同時に直した。 | **変わらない**（1,456 行を全フィールド突き合わせて target **進捗**系以外は 0 行。 |
+| 44 | #204 | H&S / 逆 H&S の整合度から `tolMargin` を捨て（`symmetry` と**同じ `relDev(左肩, 右肩)` 由来**で実質 2 軸だった）、`headProminence` / `timeSymmetry` / `retracement` / `breakoutQuality` を足して 6 軸平均にした。 | type 別の件数はほぼ不変 |
+| 45 | #206 | `MIN_CONFIDENCE` から**どの検出器も読んでいなかった 4 エントリ**（`double_top` / `double_bottom` / `head_and_shoulders` / `inverse_head_and_shoulders`）を削除した。 | **変わらない**（940 ケース全件で `data.patterns` が完全一致） |
+| 46 | #199 候補 2 | triple の期間スコア `duration` を**暦日基準から バー数基準**に移した（`periodScoreBars`）。 | **変わらない**（940 ケース全件で件数・構造キーとも一致。 |
+| 47 | #218 Phase 2 | `triple_*` と H&S 系が**主構成点を 2 点以上共有**していたら triple を落とす型間排他を入れた。 | **減る**（940 ケースで `triple_bottom` −25 / 1,968 → 1,943。 |
+| 48 | #216 Phase 2 | `triple_*` / `double_*` の**主構成点がすべてネックラインの正しい側にある**ことを要求する構造ゲートを入れた。 | **減る**（940 ケースで −60 / 1,943 → 1,883。 |
+| 49 | #224 症状 2 | target 進捗を出さなかった**全経路**に理由コードを付けた。 | **変わらない**（940 ケース全件で `data.patterns` が完全一致。 |
+| 51 | #228 | triple の**完成済み 4 経路**（strict / relaxed × top / bottom）に `computeTargetReach` を配線した。 | **判定は変わらない**（940 ケースで `detectTriples()` の 200 パターンが target 進捗系 5 キーを除いてバイト単位で完全一致。 |
+| 50 | #224 症状 3 | `triple_*` の `pivots` に**ネックライン定義点 v1 / v2 を含めた**（完成済み 4 経路は 3 → 5 点、形成中 2 経路は 2 → 4 点。 | **判定は変わらない**（940 ケース全件で件数・`confidence` / `status` / `neckline` / `breakoutTarget` / `aftermath` / … |
+| 52 | #227 Phase 2 | relaxed フォールバックの `headProminence` 軸を、**緩めた側のゲート**（`headProminencePct × factors.head`）ではなく **strict のゲート**で採点するようにした。 | **件数は変わらない**（1,248 ケースで延べ 4,070 → 4,070。 |
+| 53 | #242 PR 1/2 | `double_*` の**完成済み 4 経路**に「最終構成点（山2 / 谷2）とネックライン突破バーの**間**に同種のピボットがあれば `invalid`」という経路検証を足した。 | 実データ C / D で**減る**（1,088 ケースで `double_top` 延べ −16（C・1 構造）/ −24（D・2 構造）。 |
+| 54 | #242 PR 2/2 | 同じ経路検証を `triple_*` / H&S 系の**完成済み 4 経路ずつ**へ配線し、あわせて double にしかなかった**谷（山）ゾーン再進入チェック**（`detectTroughZoneReentry`）を triple / H&S へ横展開した（#131 → #138 の構造ゲート横展開から漏れていた分の回収） | 実データ C / D で**減る**（どちらの窓でも `head_and_shoulders` 延べ −56 / `triple_top` −12。 |
+| 55 | #244 Phase 2 | H&S / 逆 H&S の**肩の同水準判定**を時間足別にした（`getHsShoulderMaxPctForTf`。 | `1day` 未満で**減る**（1,344 ケースで `inverse_head_and_shoulders` **構造単位で −23**。 |
+| 56 | #261 | `validateMainPointsNecklineSide`（#216 Phase 2）を**形成中**の triple / double 4 経路へ配線した。 | 実データ 1hour で**減る**（12,104 ケースで accepted な形成中 triple が延べ 7,581 → 5,818 / 実体 48 → 43）。 |
+| 57 | #263 | 形成中 triple の**単調性ゲートを両向き**にした（`triple_top` の切り下がり / `triple_bottom` の切り上がりが素通りしていた）。 | 実データ 1hour で**わずかに減る**（12,104 ケースで accepted な形成中 triple が延べ 5,818 → 5,763 / 実体 43 のまま）。 |
+| 58 | #178 項目 1 | 形成中 triple への高さ相対ゲートは案 C（不採用）で決着。文書化のみ | **変わらない**（docstring / docs / 内部メモのみ。 |
+| 59 | #262 Phase 1 | 形成中 double の「形成中」の定義が top / bottom で違う件の計測。コード変更なし | **変わらない**（計測スクリプトと内部メモのみ。 |
+| 60 | #262 Phase 2 | double の「構造完成・ブレイク待ち」を `near_completion` で出すようにし、誤ラベルだった `tryFormingDoubleBottom` を削除した | 既定（`includeForming: false`）は 544 ケース全件で完全一致 |
+| 61 | #268 Phase 1 | 形成中 `double_top` の左の山の探索を「パターン長」基準に変える ablation の計測。コード変更なし | **変わらない**（計測スクリプトと内部メモのみ） |
+| 62 | #268 案 C | `tryFormingDoubleTop` を削除し、double は `forming` を持たないパターンにした | 既定（`includeForming: false`）は変わらない |
+| 63 | #252 | `wedge_*` に `pivots`（構成点）を出すようにした | **判定は変わらない**（実データ 1hour の回帰 fixture 10 件を全フィールド突き合わせて、**差分は `wedge_*` 4 件に `pivots` が増えたぶんだけ**。 |
+| 64 | #245 Phase 1 | 「ヒゲだけの山2（谷2）」が accepted に混ざるかの計測。コード変更なし | **変わらない**（計測スクリプトと内部メモのみ。 |
+| 65 | #245 案 B | double の `content` に「山2 / 谷2 の位置」行を常に出すようにした（表示層のみ） | **変わらない**（`structuredContent` / `data.patterns` が 1 バイトも動かない。 |
+| 66 | #277 | 窓の終端 `swingDepth` 本の余白でゲートが発火しないことを仕様として明文化した。docs / docstring / テストのみで検出器は 1 行も変えていない | **変わらない**（`tools/` / `src/` の変更は `swing.ts` の JSDoc と `swingDepth` の description 1 文だけ） |
+| 67 | #274 Phase 1 | `wedge_*` の `pivots` 点数を案 A 相当の絞り方ごとに計測。コード変更なし（`preparePivots` の `export` 追加のみ） | **変わらない**（計測スクリプトと内部メモのみ。 |
+| 68 | #281 | `wedge_*` の `pivots` から | **判定は変わらない**（実データ 1hour の回帰 fixture 10 件を全フィールド突き合わせて**バイト単位で完全一致**——本 fixture の `wedge_*` 4 件はブレイク足より 3 〜 13 … |
+| 69 | #28 | （`detect_patterns` 系ではない。読む順の連番だけ引き継ぐ） | **対象外**（`detect_patterns` は 1 行も触っていない） |
+| 70 | #27 | （`detect_patterns` 系ではない。読む順の連番だけ引き継ぐ） | **対象外**（`detect_patterns` は 1 行も触っていない） |
+| 71 | #29 | （`detect_patterns` 系ではない。読む順の連番だけ引き継ぐ） | **対象外**（`detect_patterns` は 1 行も触っていない） |
+| 72 | #286 | `content` の状態行を `status` × 理由コードの表引きにした（表示層のみ） | **変わらない**（`tools/` / `src/schema/` は無変更。 |
+| 73 | #288 Phase 1 | ターゲット到達の走査窓（`TARGET_REACH_MAX_BARS` = 60）の境界を実データで計測。コード変更なし | **変わらない**（計測スクリプトと内部メモのみ。 |
+| 74 | #288 Phase 2 | ターゲット進捗の表示を「事実の記述」に改め、`content` から 100% 超の百分率を消した（`TARGET_REACH_MAX_BARS` = 60 と `targetReachedPct` の計算は据え置き） | **判定は変わらない**（実データ 1hour の回帰 fixture 10 件を全キー突き合わせて、**既存キーで値が変わったもの 0 / 消えたキー 0**。 |
+| 75 | #291 | 継続系（`triangle_ascending` / `triangle_descending` / pennant / flag）の `status: 'invalid'` に `invalidReason: 'breakout_against_expectation'` を足した（additive） | **変わらない**（採否・`status`・`outcome` は無変更。 |
+| 76 | 整理 | 計測メモ（`docs/internal/*.md` 29 本）と計測スクリプト（`scripts/measure_*.ts` 15 本）をリポジトリから外した | **変わらない**（検出器のコード変更は `detect_wedges.ts` の計測専用 `export` 2 つを非公開に戻しただけ） |
+
+### Added
+
+- `detect_patterns` の `status` に `expired`、整合度にサブスコア。
+- `detect_patterns` の pivot に判定価格を併記した。
+- 検出器ごとの最小要求バー数を単一ソース化し、到達性を機械的に固定した
+- `detect_patterns` が時間足に対して `limit` が小さすぎる窓を申告する
+- `analyze_my_portfolio` が販売所取引の不可視性を検出・申告する
+- `analyze_my_portfolio` に売り切り銘柄の実現損益の銘柄別内訳を露出
+- `analyze_my_portfolio` に数量不変条件の判定入力を露出
+- `analyze_my_portfolio` に原価へ算入できなかった入庫の件数を露出
+- `analyze_my_portfolio` の信用コスト項を `_cost` サフィックスへリネーム
+- `analyze_my_portfolio` の資産推移に入出金フローマーカー
+- `analyze_my_portfolio` の数量不変条件: 復元数量 vs 実残高の突き合わせ
+- `lib/calendar.ts`: 暦日プリミティブの集約
+- since / until による絶対時刻区間指定
+- `get_flow_metrics` / `analyze_volume_profile` にカバレッジ申告を追加
+- `getTransactions` に内部呼び出し用オプション `{ unlimited: true }` を追加
+- `lib/tx-fetch.ts`
+- `get_transactions` に切り捨て（truncation）メタデータを追加
+
+### Changed
+
+- `detect_patterns` の `view=debug` の配線 4 件。
+- `detect_patterns` の三角形の分類前 candidate ラベルを umbrella 化した。
+- #127 の残り: プロンプトの `limit` 判定と CI ジョブ名の注記。
+- 構造的ピボット間隔の床（`STRUCTURAL_PIVOT_GAP_FLOOR_BARS = 5`）の妥当性を実測で判定し、据え置きを確定した。
+- `detect_patterns` のダブルトップ / ボトムに構造ゲートを入れた。
+- `detect_patterns` の `debug` 可観測性と価格基準を透明化した。
+- `detect_patterns` の `limit` に「上げる」方向の使い分けを明記
+- **挙動変更**: `detect_doubles` / `detect_hs` の手書き `daysPerBar` を廃止し、バー基準に統一した
+- **挙動変更**: パターン閾値のプリミティブを日数からバー数に統一し、上限クランプを入れた
+- `detect_patterns` の description に検出の意味論を明記
+- `analyze_my_portfolio` の期間損益の入庫件数を `_all_time` で全履歴と明示
+- **挙動変更**: `analyze_my_portfolio` が入庫日価格を取得できない銘柄の実現損益を出さない
+- **挙動変更**: `analyze_my_portfolio` の暗号資産入庫を取得原価に算入する
+- **挙動変更**: `analyze_my_portfolio` の暗号資産入出庫を「入出庫日の価格」で評価する
+- **挙動変更**: `analyze_my_portfolio` の入出金履歴取得を `include_pnl` に紐づけた
+- **挙動変更**: `get_flow_metrics` の `date` 指定で `limit` を適用しない
+- `date` パラメータの暦基準を明記
+- カバレッジのギャップ閾値
+- `get_transactions` の `minAmount` / `maxAmount` / `minPrice` / `maxPrice` フィルタを `limit` 適用前に移動
+
+### Fixed
+
+- 形成中 H&S / 逆 H&S の頭が「窓全体の極値」1 点に決め打ちされ、`limit` を上げると検出が消えていた。
+- `detect_hs` の `tolerancePct` が頭の判定でだけ意味が反転していたのを `headProminencePct` に分離。
+- `detect_hs` の**窓生成**から交互列要求を外した。
+- `detect_patterns` の dedup が status を見ず、形成中が完成済みを押し出していた。
+- `detect_patterns` のダブルボトム偽陰性を潰した。
+- 回帰テストを実データで固定した。#126
+- 用語の陳腐化。#127 の一部
+- **挙動変更**: `detect_patterns` のスキャン窓を直近 `limit` 本に一致させた
+- **挙動変更**: `get_candles` が上場前 chunk の 404 に巻き込まれなくなった
+- 要求窓に対するカバレッジ不足の申告
+- limit による切り捨ての申告
+- 欠損バケットの扱い
+- `get_flow_metrics` / `analyze_volume_profile` の集計が全件ベースになった（内部取得の 1000 件キャップ解除）
+- `get_flow_metrics` の `meta.actualRange.durationMinutes` が欠損区間をカバー済みとして申告していた問題を修正
+- `hours` 指定時の「ℹ️ 取得できた約定は直近約N分間分です。…直近フローとして扱ってください」注記を削除
+- `get_transactions` の「補完ツール: get_flow_metrics」の記述が誤誘導になっていた問題を修正
+- `analyze_market_signal` が上流 `get_flow_metrics` の `meta.warnings`（計算層）を落としていた問題を修正
+- `get_flow_metrics` / `analyze_volume_profile` の件数ベース取得で `limit` を全パスで明示適用
+- `analyze_volume_profile` の価格レンジ算出を `Math.min(...prices)` からループに変更
+
+### Removed
+
+- 計測メモ・計測スクリプトをリポジトリから外した。
+
+### Security
+
+- `vitest` / `@vitest/coverage-v8` を 4.1.9 → 4.1.11 に揃えて上げた。
+- `sharp` を 0.35.2 → 0.35.4 に上げた。
+- `fast-uri` を 3.1.5 → 3.1.6 に上げた。
+
+### Schema (breaking)
+
+- `GetTransactionsDataSchemaOut` から `raw` を削除。
+- `AnalyzeVolumeProfileDataSchemaOut` の `params.timeRange` に `coveredMin` / `gapMin` / `segments` を**必須**で追加（`requestedMin` は optional）。
+- `GetFlowMetricsMetaSchemaOut` / `AnalyzeVolumeProfileMetaSchemaOut` に `totalAvailable`（number, optional）/ `truncated`（boolean, optional）を追加。
+- `FlowBucketSchema` に `hasData`（boolean）を**必須**で追加。
+- `GetFlowMetricsMetaSchemaOut.actualRange` を `TxCoverageRangeSchema` に差し替え（`coveredMinutes` / `gapMinutes` / `segments` が必須、`requestedMinutes` / `coveragePct` / `gaps` が …
+
+### Docs
+
+- CHANGELOG の `[Unreleased]` を要約形式に圧縮した（6,388 行 → 約 250 行）。`detect_patterns` の索引表は 1 セル 1 文に、それ以外のエントリは見出し 1 行に畳んだ。issue ごとの判断根拠と計測の全文は fork（tjackiet/bitbank-lab-mcp）の issue・PR・git 履歴（圧縮前の `main`）に残る
 
 ## [0.4.0] - 2026-08-21
 

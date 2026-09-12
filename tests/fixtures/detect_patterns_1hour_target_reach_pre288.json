@@ -1,0 +1,86 @@
+[
+	{
+		"type": "inverse_head_and_shoulders",
+		"breakoutBarIndex": 280,
+		"breakoutDirection": "up",
+		"targetProgressOmittedReason": "degenerate_target_distance"
+	},
+	{
+		"type": "inverse_head_and_shoulders",
+		"breakoutBarIndex": 118,
+		"breakoutDirection": "up",
+		"targetProgressOmittedReason": "degenerate_target_distance"
+	},
+	{
+		"type": "rising_wedge",
+		"breakoutBarIndex": 282,
+		"breakoutDirection": "up",
+		"targetReachedPct": 101,
+		"targetReached": true,
+		"targetReachedDate": "2026-08-25T02:00:00.000Z",
+		"targetReachedPrice": 12933047
+	},
+	{
+		"type": "falling_wedge",
+		"breakoutBarIndex": 339,
+		"breakoutDirection": "up",
+		"targetReachedPct": 61,
+		"targetReached": false,
+		"targetReachedDate": "2026-08-27T15:00:00.000Z",
+		"targetReachedPrice": 12873620
+	},
+	{
+		"type": "rising_wedge",
+		"breakoutBarIndex": 152,
+		"breakoutDirection": "down",
+		"targetReachedPct": 26,
+		"targetReached": false,
+		"targetReachedDate": "2026-08-19T06:00:00.000Z",
+		"targetReachedPrice": 10234089
+	},
+	{
+		"type": "falling_wedge",
+		"breakoutBarIndex": 115,
+		"breakoutDirection": "up",
+		"targetReachedPct": 999,
+		"targetReached": true,
+		"targetReachedDate": "2026-08-20T01:00:00.000Z",
+		"targetReachedPrice": 11063169
+	},
+	{
+		"type": "triangle_ascending",
+		"breakoutBarIndex": 115,
+		"breakoutDirection": "up",
+		"targetReachedPct": 530,
+		"targetReached": true,
+		"targetReachedDate": "2026-08-20T01:00:00.000Z",
+		"targetReachedPrice": 11063169
+	},
+	{
+		"type": "triangle_ascending",
+		"breakoutBarIndex": 348,
+		"breakoutDirection": "up",
+		"targetReachedPct": 115,
+		"targetReached": true,
+		"targetReachedDate": "2026-08-27T15:00:00.000Z",
+		"targetReachedPrice": 12873620
+	},
+	{
+		"type": "triangle_ascending",
+		"breakoutBarIndex": 180,
+		"breakoutDirection": "up",
+		"targetReachedPct": 382,
+		"targetReached": true,
+		"targetReachedDate": "2026-08-21T08:00:00.000Z",
+		"targetReachedPrice": 12600000
+	},
+	{
+		"type": "triangle_ascending",
+		"breakoutBarIndex": 295,
+		"breakoutDirection": "up",
+		"targetReachedPct": 18,
+		"targetReached": false,
+		"targetReachedDate": "2026-08-25T07:00:00.000Z",
+		"targetReachedPrice": 12900000
+	}
+]

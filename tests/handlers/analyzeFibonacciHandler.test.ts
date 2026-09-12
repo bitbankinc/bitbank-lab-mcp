@@ -6,6 +6,7 @@ vi.mock('../../tools/analyze_fibonacci.js', () => ({
 
 import { toolDef } from '../../src/handlers/analyzeFibonacciHandler.js';
 import analyzeFibonacci from '../../tools/analyze_fibonacci.js';
+import { asMcp } from '../helpers/mcp.js';
 
 const mockedAnalyzeFibonacci = vi.mocked(analyzeFibonacci);
 
@@ -83,7 +84,7 @@ describe('analyzeFibonacciHandler', () => {
 	it('structuredContent に ok:true と type=fibonacci が含まれる', async () => {
 		mockedAnalyzeFibonacci.mockResolvedValueOnce(makeOkResult() as never);
 		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day' });
-		const sc = (res as { structuredContent: Record<string, unknown> }).structuredContent;
+		const sc = asMcp<Record<string, unknown>>(res).structuredContent;
 		expect(sc.ok).toBe(true);
 		expect(sc.type).toBe('fibonacci');
 	});
@@ -91,7 +92,7 @@ describe('analyzeFibonacciHandler', () => {
 	it('structuredContent に data フィールドが含まれる', async () => {
 		mockedAnalyzeFibonacci.mockResolvedValueOnce(makeOkResult() as never);
 		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day' });
-		const sc = (res as { structuredContent: { data: Record<string, unknown> } }).structuredContent;
+		const sc = asMcp<{ data: Record<string, unknown> }>(res).structuredContent;
 		expect(sc.data).toHaveProperty('pair');
 		expect(sc.data).toHaveProperty('levels');
 		expect(sc.data).toHaveProperty('extensions');
@@ -102,7 +103,7 @@ describe('analyzeFibonacciHandler', () => {
 	it('structuredContent の data.levels が配列', async () => {
 		mockedAnalyzeFibonacci.mockResolvedValueOnce(makeOkResult() as never);
 		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day' });
-		const sc = (res as { structuredContent: { data: { levels: unknown[] } } }).structuredContent;
+		const sc = asMcp<{ data: { levels: unknown[] } }>(res).structuredContent;
 		expect(Array.isArray(sc.data.levels)).toBe(true);
 		expect(sc.data.levels).toHaveLength(2);
 	});
@@ -110,7 +111,7 @@ describe('analyzeFibonacciHandler', () => {
 	it('structuredContent の data.extensions が配列', async () => {
 		mockedAnalyzeFibonacci.mockResolvedValueOnce(makeOkResult() as never);
 		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day' });
-		const sc = (res as { structuredContent: { data: { extensions: unknown[] } } }).structuredContent;
+		const sc = asMcp<{ data: { extensions: unknown[] } }>(res).structuredContent;
 		expect(Array.isArray(sc.data.extensions)).toBe(true);
 		expect(sc.data.extensions).toHaveLength(1);
 	});
@@ -118,14 +119,14 @@ describe('analyzeFibonacciHandler', () => {
 	it('downtrend の場合も structuredContent に trend が含まれる', async () => {
 		mockedAnalyzeFibonacci.mockResolvedValueOnce(makeOkResult({ trend: 'down' }) as never);
 		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day' });
-		const sc = (res as { structuredContent: { data: { trend: string } } }).structuredContent;
+		const sc = asMcp<{ data: { trend: string } }>(res).structuredContent;
 		expect(sc.data.trend).toBe('down');
 	});
 
 	it('summary が structuredContent に含まれる', async () => {
 		mockedAnalyzeFibonacci.mockResolvedValueOnce(makeOkResult() as never);
 		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day' });
-		const sc = (res as { structuredContent: { summary: string } }).structuredContent;
+		const sc = asMcp<{ summary: string }>(res).structuredContent;
 		expect(typeof sc.summary).toBe('string');
 		expect(sc.summary.length).toBeGreaterThan(0);
 	});
@@ -141,7 +142,7 @@ describe('analyzeFibonacciHandler', () => {
 		const text = (res as { content: Array<{ text: string }> }).content[0].text;
 		expect(text.startsWith('⚠️ 3日中1日の取得に失敗')).toBe(true);
 
-		const sc = (res as { structuredContent: { meta: Record<string, unknown>; summary: string } }).structuredContent;
+		const sc = asMcp<{ meta: Record<string, unknown>; summary: string }>(res).structuredContent;
 		expect(sc.meta.warning).toBe('⚠️ 3日中1日の取得に失敗');
 		expect(sc.summary.startsWith('⚠️ 3日中1日の取得に失敗')).toBe(true);
 	});
