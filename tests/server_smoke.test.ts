@@ -1,5 +1,12 @@
+import { createRequire } from 'node:module';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ToolDefinition } from '../src/tool-definition.js';
+
+// serverInfo.version はリテラルではなく package.json と突き合わせる。
+// リテラルで固定すると、実装側のハードコードと一緒に drift しても検知できない。
+const { version: packageVersion } = createRequire(import.meta.url)('../package.json') as {
+	version: string;
+};
 
 // ── Mock 用ローカル型 ──────────────────────────────────────────
 interface FakeToolEntry {
@@ -218,7 +225,7 @@ describe('server.ts smoke', () => {
 
 		const server = await importServer();
 
-		expect(server.info).toEqual({ name: 'bitbank-mcp', version: '0.4.2' });
+		expect(server.info).toEqual({ name: 'bitbank-mcp', version: packageVersion });
 		expect(server.tools.map((tool) => tool.name)).toEqual(['smoke_tool', 'second_tool']);
 		expect(server.prompts.map((prompt) => prompt.name)).toEqual(['smoke_prompt']);
 		// MRTR requestState の HMAC / 期限検証フックが ServerOptions に接続されている
