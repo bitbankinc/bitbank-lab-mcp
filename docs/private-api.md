@@ -160,12 +160,16 @@ MCP 仕様（SEP-1624 の整理）では `CallToolResult.content` と `structure
 `confirmation_token` は本来「ユーザーの最終確認を経たことの証拠」であり、LLM が独断で引用して `create_order` を呼べる文字列にしてはならない。実装は次の階層で扱う（設計判断の背景は `docs/adr/0007-hitl-confirmation-token-delivery.md` を参照）:
 
 1. **第一選択（elicitation / MRTR を扱えるホスト）** — MRTR（SEP-2322）スタイルで実装。round 1 で `preview_order` が `input_required`（confirm 要求 + 署名付き `requestState`）を返し、クライアントがユーザー確認を取って元の呼び出しを再試行（round 2）すると、`requestState` の検証（action / 引数 digest / one-time nonce。加えて SDK bind による呼び出し元セッションまたは認証 principal + 元の MCP method。`src/private/request-state.ts`）を経て同一ハンドラ内で `create_order` を呼び出して完結。**トークンはサーバープロセス内に閉じ、LLM/クライアントには返らない**（`requestState` は署名のみで暗号化されないため token を載せない）。2025 系クライアントには SDK v2 の legacy shim が `input_required` を従来の `elicitation/create` push に自動変換するため、elicitation 対応版はどちらの世代でもこの経路。
+   
+   **この経路に入るのは、elicitation の capability で form モードを宣言したホストに限る。** 2026-07-28（SEP-2322）では capability が対応モードの宣言（`{ form: {}, url: {} }`）になっており、本サーバーの確認フローは form 形式しか使わないため、判定は「`elicitation` があるか」ではなく「form モードを扱えるか」で行う（`declaresFormElicitation()`）。空オブジェクト `{}`（2025 系の宣言形）は後方互換のため form 対応とみなすが、**空でない宣言はモード宣言として扱い、`form` を宣言していなければ非対応**とする。`{ url: {} }` のように **url モードだけを宣言したホスト**、`{ voice: {} }` のように form 以外のモードだけを宣言したホスト、`form` の値が仕様の形（オブジェクト）でないホストは、いずれも非対応扱いで経路 2 以降へ倒れる。
 2. **MCP Apps ホスト向けオプトイン経路（elicitation 非対応 + `BITBANK_MCP_APPS_EXECUTE=1`）** — `confirmation_token` / `expires_at` を**ツール結果の `_meta` にのみ**載せて iframe へ配送し、確認カードのボタンからの `create_order` / `cancel_order` / `cancel_orders` を通す。**`content` / `structuredContent` には載せない**（`stripConfirmationTokenFields` は多層防御として維持）。有効化には次の 2 つが**両方**必要:
    - 環境変数 `BITBANK_MCP_APPS_EXECUTE=1`（既定 off。`isAppUiExecuteEnabled()`）
    - クライアントが `extensions["io.modelcontextprotocol/ui"].mimeTypes` に `text/html;profile=mcp-app` を宣言していること（キーの存在だけでは不可。`clientSupportsAppUi()`）
 
    サーバーは iframe 起源と LLM 起源の `tools/call` を区別できないため、**トークン所持そのものが認可の実体**になる。この設計は「ホストが `_meta` をモデルコンテキストに入れない」という**観測された挙動**への依存であり、仕様上の保証ではない。だから既定 off。詳細と計測値は ADR-0007。
    `_meta` に載るのは **elicitation 非対応と判定した経路だけ**なので、elicitation 対応ホストには一切載らない（優先順位は逆転しない）。
+
+   ツール結果通知（`ui/notifications/tool-result`）を配信しないホストでは、iframe が接続成立後に `get_ui_snapshot` を呼んで確認カードを自力で復元する（pull 型 hydration）。この復元は**上限付きリトライ**（初回 2.5 秒待機 → 2 秒 → 4 秒の計 3 回）で行い、**すべて失敗したら「復元できませんでした。内容はチャット本文で確認できます」と明示する**（「復元中」の案内のまま固まらせない）。制御は `src/mcp-apps-hydration.ts` に一本化してあり、iframe のアンマウント時には実行中の取得も含めて停止する。
 3. **フォールバック（どちらの経路も使えないホスト）** — `content` / `structuredContent` / `_meta` のいずれにも `confirmation_token` / `expires_at` を返さない。プレビュー内容だけを返し、「このホストでは取引実行に対応していない」旨を `content[0].text` に明記する。LLM が `create_order` / `cancel_order` / `cancel_orders` を直接呼んでも、MCP ハンドラが `direct_execute_forbidden` で拒否する（加えて token 検証でも拒否される）。
 
 なお `content[0].text` には常に以下を載せる（LLM のハルシネーション防止）:
@@ -181,10 +185,6 @@ MCP 仕様（SEP-1624 の整理）では `CallToolResult.content` と `structure
 かつて elicitation 非対応だが SEP-1865 iframe を持つホスト向けに、token を **`structuredContent` へ**載せるオプトインを用意していた。`structuredContent` をモデルコンテキストに入れるホスト（VS Code、OpenAI Apps SDK 慣習のホスト全般）では LLM が token を直接読めるため、token 漏洩 = HITL バイパスが成立する。**2026-08-10 以降このモードは無効**（環境変数を設定しても無視され、token は常に strip される）。
 
 **2026-08-13 に再導入した MCP Apps 実行経路（`BITBANK_MCP_APPS_EXECUTE=1`）は別物**である。載せ先が `structuredContent` ではなく `_meta` に限定され、クライアントの MCP Apps UI 宣言（MIME 型込み）も要求する。`isHostApprovalTrusted()` は常に `false` を返すまま据え置きで、新経路の判定には一切関与しない。詳細は ADR-0007。
-
-ただし**この UI 宣言はクライアントの自己申告であり、サーバーは真偽を検証できない**。確認カードを描画しないクライアントでも、宣言さえすればトークンを取得して execute できる。ゲートは露出面のスコープ制御であって認可制御ではなく、認可の実体はトークン所持のみである（SEP-1865 の `tools/call` に origin marker が無いため、サーバーから「人間が操作したこと」を検証する手段が存在しない）。
-
-重大度は API キーの配置に依存する。キーをクライアント側の env に置く構成では、偽装できる主体は既にキーを保持しているため追加の権限昇格にならない。**サーバー側の `.env` に置く構成では昇格になる**ため、この構成での有効化は推奨しない。HTTP トランスポート化時には後者が常に当てはまる。詳細は ADR-0007「capability 宣言は認可制御ではない」。
 
 #### トークンが漏れた場合の被害範囲
 
@@ -261,6 +261,8 @@ MCP 仕様（SEP-1624 の整理）では `CallToolResult.content` と `structure
 | `preview_order` | `create_order` | 注文の発注（現物・信用） |
 | `preview_cancel_order` | `cancel_order` | 注文キャンセル（単一） |
 | `preview_cancel_orders` | `cancel_orders` | 注文キャンセル（一括、最大30件） |
+
+`preview_cancel_order` は注文詳細を取得できた場合、**終端状態（全量約定 `FULLY_FILLED` / キャンセル済み `CANCELED_*` / 拒否 `REJECTED`）の注文を確認トークン発行前に拒否します。** 押しても bitbank 側で必ず失敗する確認ボタンを出さないためです。判定は拒否リスト方式で、`INACTIVE`（逆指値のトリガー前）と `TRIGGERED`（トリガー発動済み）は正当にキャンセル可能なため通します。注文詳細が取得できなかった場合（ネットワーク不調・3ヶ月超過の照会不可等）はプレビューを通します。
 
 ### 対応注文タイプ
 

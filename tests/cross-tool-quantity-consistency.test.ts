@@ -23,6 +23,17 @@ import { asMockResult, assertOk } from './_assertResult.js';
 type OhlcvRow = [string, string, string, string, string, string];
 type TxRow = { transaction_id: number; price: string; amount: string; side: 'buy' | 'sell'; executed_at: number };
 
+/**
+ * normalized 足から volume を取り出す。CandleSchema 上 volume は optional なので、
+ * 欠損を 0 に畳まず明示的に失敗させる（畳むと数量整合の主張が黙って緩む）。
+ */
+function candleVolumes(candles: readonly { volume?: number }[]): number[] {
+	return candles.map((c, i) => {
+		if (c.volume === undefined) throw new Error(`normalized[${i}].volume が欠損している`);
+		return c.volume;
+	});
+}
+
 /** 1 本の Response を返す共通 JSON モック。複数回 fetch に同一スナップショットで応答する。 */
 function mockJson(payload: unknown) {
 	return vi.spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -111,7 +122,7 @@ describe('(1) volume 整合: get_candles(OHLCV[4]) ↔ get_flow_metrics(Σ amoun
 		const fm = await getFlowMetrics('btc_jpy', 5, undefined, MIN);
 		assertOk(fm);
 
-		const candleVols = gc.data.normalized.map((c: { volume: number }) => c.volume);
+		const candleVols = candleVolumes(gc.data.normalized);
 		expect(candleVols).toEqual(expectedPerBar);
 
 		const buckets = fm.data.series.buckets;
@@ -143,7 +154,7 @@ describe('(1) volume 整合: get_candles(OHLCV[4]) ↔ get_flow_metrics(Σ amoun
 		const fm = await getFlowMetrics('btc_jpy', 5, undefined, 30_000);
 		assertOk(fm);
 
-		const candleVols = gc.data.normalized.map((c: { volume: number }) => c.volume);
+		const candleVols = candleVolumes(gc.data.normalized);
 		const buckets = fm.data.series.buckets;
 
 		// バケット数がローソク足数と一致しない（足幅に揃っていない）。

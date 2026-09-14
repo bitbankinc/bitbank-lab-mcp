@@ -520,7 +520,12 @@ describe('server.ts smoke', () => {
 	it('ハンドラには ctx と内部 Server を合流させた extra が渡る', async () => {
 		const { z } = await import('zod');
 
-		const spyHandler = vi.fn(async () => ({ summary: 'ok', ok: true }));
+		// 引数を型付けしておかないと mock.calls[0] が空タプル [] に推論され、
+		// [1] の取り出しが TS2493 / TS2352 になる。
+		const spyHandler = vi.fn(async (_input: Record<string, unknown>, _extra?: Record<string, unknown>) => ({
+			summary: 'ok',
+			ok: true,
+		}));
 		runtime.toolDefs = [
 			{
 				name: 'ctx_tool',

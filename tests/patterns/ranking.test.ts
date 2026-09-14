@@ -5,7 +5,7 @@
  * 優先度: status='completed' → confirmation='neckline_breakout' → confidence高 → 直近性
  */
 import { describe, expect, it } from 'vitest';
-import { rankPatterns } from '../../tools/patterns/ranking.js';
+import { rankPatterns, statusScore } from '../../tools/patterns/ranking.js';
 import type { DeduplicablePattern } from '../../tools/patterns/types.js';
 
 interface TestPattern extends DeduplicablePattern {
@@ -24,6 +24,20 @@ function makePattern(overrides: Partial<TestPattern>): TestPattern {
 		...overrides,
 	};
 }
+
+// statusScore は rankPatterns と dedup（patterns/helpers.ts の deduplicatePatterns /
+// globalDedup）が共有する status 優先度の単一ソース（issue #133）。
+// 序列を変えるとソートと dedup の両方が同時に動くため、スケールをここで固定する。
+describe('statusScore', () => {
+	it('completed > status 未設定（完成済み扱い） > forming / near_completion > invalid / expired', () => {
+		expect(statusScore('completed')).toBe(3);
+		expect(statusScore(undefined)).toBe(2);
+		expect(statusScore('forming')).toBe(1);
+		expect(statusScore('near_completion')).toBe(1);
+		expect(statusScore('invalid')).toBe(0);
+		expect(statusScore('expired')).toBe(0);
+	});
+});
 
 describe('rankPatterns', () => {
 	it('completed が forming より上位に来る', () => {

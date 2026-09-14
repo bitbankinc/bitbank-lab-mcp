@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PrepareDepthDataOutputSchema } from '../src/schemas.js';
+import { PrepareDepthDataInputSchema, PrepareDepthDataOutputSchema } from '../src/schemas.js';
 import prepareDepthData, { toolDef } from '../tools/prepare_depth_data.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
+import { asMcp } from './helpers/mcp.js';
 
 vi.mock('../lib/get-depth.js', () => ({ default: vi.fn() }));
 
@@ -59,7 +60,9 @@ describe('prepare_depth_data', () => {
 	});
 
 	it('inputSchema: デフォルト値が適用される', () => {
-		const parsed = toolDef.inputSchema.parse({});
+		// toolDef.inputSchema は ToolDefinition 上 ZodTypeAny に広がり parse が unknown を返すため、
+		// デフォルト値の検証は同一スキーマ（toolDef が参照している実体）を直接 parse して行う。
+		const parsed = PrepareDepthDataInputSchema.parse({});
 		expect(parsed.pair).toBe('btc_jpy');
 		expect(parsed.levels).toBe(200);
 		expect(parsed.bandPct).toBe(0.01);
@@ -485,10 +488,7 @@ describe('prepare_depth_data', () => {
 
 	it('handler: content テキストに summary と JSON データを含む', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
-		const res = (await toolDef.handler({ pair: 'btc_jpy' })) as {
-			content: Array<{ text: string }>;
-			structuredContent: { ok: boolean };
-		};
+		const res = asMcp<{ ok: boolean }>(await toolDef.handler({ pair: 'btc_jpy' }));
 		expect(res.content).toBeDefined();
 		expect(res.content[0].text).toContain('btc_jpy depth data');
 		expect(res.content[0].text).toContain('"bids"');
@@ -517,10 +517,9 @@ describe('prepare_depth_data', () => {
 				}),
 			),
 		);
-		const res = (await toolDef.handler({ pair: 'btc_jpy' })) as {
-			content: Array<{ text: string }>;
-			structuredContent: { ok: boolean; meta: { droppedRows?: { bids: number; asks: number }; warning?: string } };
-		};
+		const res = asMcp<{ ok: boolean; meta: { droppedRows?: { bids: number; asks: number }; warning?: string } }>(
+			await toolDef.handler({ pair: 'btc_jpy' }),
+		);
 		// content テキスト（LLM が読める部分）に drop 件数の警告が出る
 		expect(res.content[0].text).toContain('⚠️');
 		expect(res.content[0].text).toContain('1件');

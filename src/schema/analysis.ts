@@ -4,7 +4,10 @@ import {
 	BasePairInputSchema,
 	CandleTypeEnum,
 	FailResultSchema,
+	MAX_TX_COUNT_LIMIT,
 	TrendLabelEnum,
+	TX_RANGE_SINCE_SCHEMA,
+	TX_RANGE_UNTIL_SCHEMA,
 	toolResultSchema,
 	VIEW_CONTRACT_NOTE,
 } from './base.js';
@@ -205,7 +208,10 @@ export const AnalyzeMarketSignalMetaSchemaOut = BaseMetaSchema.extend({
 	flowLimit: z.number().int(),
 	/** 取得層の不完全性（上流 get_flow_metrics / get_volatility_metrics / analyze_indicators の meta.warning を集約）。 */
 	warning: z.string().optional(),
-	/** 計算層の不完全性（analyze_indicators の meta.warnings を継承。SMA_200 データ不足 等）。 */
+	/**
+	 * 計算層の不完全性（上流の meta.warnings を `[flow] / [indicators]` prefix 付きで継承。
+	 * 集計値が約定のカバー区間のみ由来、SMA_200 データ不足 等）。
+	 */
 	warnings: z.array(z.string()).optional(),
 });
 export const AnalyzeMarketSignalOutputSchema = toolResultSchema(
@@ -866,8 +872,22 @@ export const AnalyzeVolumeProfileInputSchema = BasePairInputSchema.extend({
 		.max(24)
 		.optional()
 		.default(4)
-		.describe('直近N時間分の約定を取得（デフォルト4h）。limit より優先'),
-	limit: z.number().int().min(50).max(2000).optional().default(500).describe('取得する約定件数。hours 指定時は無視'),
+		.describe(
+			'直近N時間分の約定を取得（デフォルト4h）。**現在時刻起点**の相対窓。limit より優先。since/until とは併用不可（併用時は user エラー）',
+		),
+	since: TX_RANGE_SINCE_SCHEMA,
+	until: TX_RANGE_UNTIL_SCHEMA,
+	limit: z
+		.number()
+		.int()
+		.min(50)
+		.max(MAX_TX_COUNT_LIMIT)
+		.optional()
+		.default(500)
+		.describe(
+			'取得する約定件数。**hours / since・until のいずれも指定しない件数ベース取得（＝直近 N 件）でのみ有効**で、区間指定時は無視されます（区間の全件を集計）。' +
+				`上限 ${MAX_TX_COUNT_LIMIT} 件は BTC/JPY で 6〜8.5 時間分に相当します。それより長い窓は件数ではなく hours / since・until で指定してください`,
+		),
 	bins: z.number().int().min(5).max(100).optional().default(20).describe('Volume Profile の価格帯分割数'),
 	valueAreaPct: z
 		.number()
@@ -937,7 +957,21 @@ export const AnalyzeVolumeProfileDataSchemaOut = z.object({
 		totalTrades: z.number().int(),
 		totalVolume: z.number(),
 		priceRange: z.object({ high: z.number(), low: z.number() }),
-		timeRange: z.object({ start: z.string(), end: z.string(), durationMin: z.number() }),
+		timeRange: z.object({
+			start: z.string(),
+			end: z.string(),
+			durationMin: z.number().describe('先頭〜末尾のスパン（欠損区間を含む）'),
+			coveredMin: z.number().describe('実際に約定が存在する区間の合計'),
+			gapMin: z.number().describe('durationMin - coveredMin'),
+			segments: z.number().int().describe('連続して約定があった区間の数'),
+			requestedMin: z
+				.number()
+				.optional()
+				.describe(
+					'要求した時間窓（**分**）。hours 指定時は hours×60（例: hours=4 → 240）、since/until 指定時は (until - since) / 60000' +
+						'（例: since=2026-08-01T00:00:00Z, until=2026-08-02T00:00:00Z → 1440）。件数ベース取得では省略',
+				),
+		}),
 		bins: z.number().int(),
 		valueAreaPct: z.number(),
 	}),
@@ -945,6 +979,32 @@ export const AnalyzeVolumeProfileDataSchemaOut = z.object({
 
 export const AnalyzeVolumeProfileMetaSchemaOut = BaseMetaSchema.extend({
 	count: z.number().int(),
+	mode: z
+		.enum(['absolute_range'])
+		.optional()
+		.describe('absolute_range: since・until による絶対時刻区間で取得した場合のみ'),
+	range: z
+		.object({ since: z.string(), until: z.string() })
+		.optional()
+		.describe(
+			'要求した絶対時刻区間（UTC ISO8601）。until は排他（[since, until)）で、省略指定時は解決に使った現在時刻が入る。' +
+				'mode=absolute_range のときのみ',
+		),
+	totalAvailable: z
+		.number()
+		.int()
+		.optional()
+		.describe(
+			'limit 適用前に取得できていた約定件数（件数ベース取得時のみ。hours 指定時は limit を適用しないため省略）',
+		),
+	truncated: z
+		.boolean()
+		.optional()
+		.describe('limit により切り捨てが発生したか。true のとき集計値・timeRange は切り捨て後の区間のみが対象'),
+	/** 取得層の不完全性（部分失敗・アーカイブ未公開・カバレッジ欠損・limit 切り捨て） */
+	warning: z.string().optional(),
+	/** 計算層の不完全性（集計値が欠損を含む区間から算出されている 等） */
+	warnings: z.array(z.string()).optional(),
 });
 
 export const AnalyzeVolumeProfileOutputSchema = toolResultSchema(

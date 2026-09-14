@@ -81,11 +81,25 @@ describe('buildFlowMetricsText', () => {
 	it('dataWarning がある場合はテキストに含まれる', () => {
 		const text = buildFlowMetricsText(
 			makeInput({
-				dataWarning:
-					'ℹ️ 取得できた約定は直近約30分間分です。固定の時間窓に対する不足ではなく、直近フローとして扱ってください。',
+				dataWarning: 'ℹ️ カバレッジ: 要求 1440分のうち実データがあるのは 834分（58%）です。欠損 606分（1区間）',
 			}),
 		);
-		expect(text).toContain('直近約30分間分');
+		expect(text).toContain('要求 1440分');
+		expect(text).toContain('欠損 606分');
+	});
+
+	it('取得層 / 計算層の 2 系統を渡すと別行で並ぶ', () => {
+		const text = buildFlowMetricsText(
+			makeInput({
+				dataWarning:
+					'ℹ️ カバレッジ: 要求 1440分のうち実データがあるのは 834分（58%）です。欠損 606分（1区間）\n⚠️ 集計値は実データのある 834分のみから算出しています',
+			}),
+		);
+		const lines = text.split('\n');
+		const fetchIdx = lines.findIndex((l) => l.startsWith('ℹ️ カバレッジ'));
+		const calcIdx = lines.findIndex((l) => l.startsWith('⚠️ 集計値'));
+		expect(fetchIdx).toBeGreaterThanOrEqual(0);
+		expect(calcIdx).toBe(fetchIdx + 1);
 	});
 
 	it('dataWarning が undefined の場合は警告行なし', () => {

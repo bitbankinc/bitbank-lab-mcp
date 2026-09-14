@@ -220,6 +220,64 @@ export async function fetchPairsSpec(opts: FetchPairsSpecOptions = {}): Promise<
 	}
 }
 
+// ── 価格の丸め ──
+
+/**
+ * 価格をペアの `price_digits` 桁で丸める。
+ *
+ * 表示層が価格を無条件に整数化すると低価格ペアが壊れる（XLM 26.686 → 27 で誤差 1.4%）ため、
+ * ペアごとの最小値刻み（10^-price_digits）に合わせて丸めるためのヘルパー。
+ *
+ * - `value` が `undefined` / 非有限なら `undefined`（呼び出し側の欠損経路をそのまま通す）
+ * - **`spec` が無いときは丸めずに生値を返す。** `/spot/pairs` の取得失敗や未知ペアで
+ *   整数丸めにフォールバックしてはならない（低価格ペアを壊すバグの再導入になる）
+ * - `extraDigits` は板の刻みに縛られない値（平均取得単価など）に桁の余裕を持たせるための加算
+ * - 半刻みは +∞ 方向に倒す（`Math.round` と同じ）。2 進の乗算誤差で半刻みを取りこぼさない
+ *
+ * @example
+ *  roundToPriceDigits(26.686000000000003, xlmSpec)                     // 26.686 (price_digits=3)
+ *  roundToPriceDigits(15015015.015, btcSpec)                           // 15015015 (price_digits=0)
+ *  roundToPriceDigits(26.686000000000003, undefined)                   // 26.686000000000003（素通し）
+ *  roundToPriceDigits(15015015.015, btcSpec, { extraDigits: 2 })       // 15015015.02
+ */
+export function roundToPriceDigits(
+	value: number | undefined,
+	spec: PairSpec | undefined,
+	opts: { extraDigits?: number } = {},
+): number | undefined {
+	if (value == null || !Number.isFinite(value)) return undefined;
+	if (spec == null) return value;
+	const digits = spec.price_digits + (opts.extraDigits ?? 0);
+	if (!Number.isFinite(digits) || digits < 0) return value;
+	const rounded = roundAtDecimalDigits(value, digits);
+	// 巨大値が Infinity に飛んだ場合は丸めを諦めて生値を返す。
+	return Number.isFinite(rounded) ? rounded : value;
+}
+
+/**
+ * 10 進 `digits` 桁で丸める。半刻みは `Math.round` と同じく +∞ 方向。
+ *
+ * 素朴な `Math.round(value * 10 ** digits) / 10 ** digits` は 2 進の乗算誤差で
+ * ちょうど半刻みの値を取りこぼす（`1.005 * 100 === 100.49999999999999` なので
+ * `Math.round` が 100 に落ち、1.01 ではなく 1 が返る）。
+ * `Number` の 10 進文字列パースを経由して指数だけをずらせば、この乗算を挟まずに
+ * 桁をシフトできる（`"1.005e2"` → `100.5`）。
+ *
+ * 半刻みを +∞ 方向に倒すのは意図的で、円建て金額の `Math.round` と揃えるため
+ * （`-1.005` は `-1.01` ではなく `-1`）。
+ */
+function roundAtDecimalDigits(value: number, digits: number): number {
+	const shifted = Number(`${value}e${digits}`);
+	if (Number.isFinite(shifted)) {
+		const back = Number(`${Math.round(shifted)}e${-digits}`);
+		if (Number.isFinite(back)) return back;
+	}
+	// 値そのものや丸め結果が指数表記に化けると上の文字列が "1e-7e4" のように
+	// 不正になり Number が NaN を返す。その場合だけ素朴な乗算に落とす。
+	const factor = 10 ** digits;
+	return Math.round(value * factor) / factor;
+}
+
 // ── 注文事前バリデーション ──
 
 export interface OrderConstraintsInput {

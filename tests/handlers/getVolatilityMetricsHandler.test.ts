@@ -18,6 +18,7 @@ import {
 	type VolViewInput,
 } from '../../src/handlers/getVolatilityMetricsHandler.js';
 import getVolatilityMetrics from '../../tools/get_volatility_metrics.js';
+import { asMcp } from '../helpers/mcp.js';
 
 const mockedGetVolatilityMetrics = vi.mocked(getVolatilityMetrics);
 
@@ -201,7 +202,7 @@ describe('toolDef handler - タグ導出', () => {
 			}) as never,
 		);
 		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 100, view: 'summary' });
-		const sc = (res as { structuredContent: { data: { tags: string[] } } }).structuredContent;
+		const sc = asMcp<{ data: { tags: string[] } }>(res).structuredContent;
 		expect(sc.data.tags).toContain('expanding_vol');
 	});
 
@@ -215,21 +216,21 @@ describe('toolDef handler - タグ導出', () => {
 			}) as never,
 		);
 		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 100, view: 'summary' });
-		const sc = (res as { structuredContent: { data: { tags: string[] } } }).structuredContent;
+		const sc = asMcp<{ data: { tags: string[] } }>(res).structuredContent;
 		expect(sc.data.tags).toContain('contracting_vol');
 	});
 
 	it('rvAnnForTags > 0.5 → high_vol タグが追加される', async () => {
 		mockedGetVolatilityMetrics.mockResolvedValueOnce(mockVolRes({ rvStdAnn: 0.6 }) as never);
 		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 100, view: 'summary' });
-		const sc = (res as { structuredContent: { data: { tags: string[] } } }).structuredContent;
+		const sc = asMcp<{ data: { tags: string[] } }>(res).structuredContent;
 		expect(sc.data.tags).toContain('high_vol');
 	});
 
 	it('rvAnnForTags < 0.2 → low_vol タグが追加される', async () => {
 		mockedGetVolatilityMetrics.mockResolvedValueOnce(mockVolRes({ rvStdAnn: 0.1 }) as never);
 		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 100, view: 'summary' });
-		const sc = (res as { structuredContent: { data: { tags: string[] } } }).structuredContent;
+		const sc = asMcp<{ data: { tags: string[] } }>(res).structuredContent;
 		expect(sc.data.tags).toContain('low_vol');
 	});
 
@@ -238,7 +239,7 @@ describe('toolDef handler - タグ導出', () => {
 		// rv_std_ann = 0.03 * 19.1 ≈ 0.573 > 0.5 → high_vol
 		mockedGetVolatilityMetrics.mockResolvedValueOnce(mockVolRes({ rvStd: 0.03, rvStdAnn: undefined }) as never);
 		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 100, annualize: false, view: 'summary' });
-		const sc = (res as { structuredContent: { data: { tags: string[] } } }).structuredContent;
+		const sc = asMcp<{ data: { tags: string[] } }>(res).structuredContent;
 		expect(sc.data.tags).toContain('high_vol');
 	});
 });

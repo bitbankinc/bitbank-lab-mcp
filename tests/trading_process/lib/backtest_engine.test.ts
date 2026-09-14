@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	type BacktestEngineInput,
 	calculateSummary,
 	executeTradesFromSignals,
 	runBacktestEngine,
@@ -18,6 +19,26 @@ function makeCandles(count: number, basePrice: number = 100): Candle[] {
 		low: basePrice + i - 5,
 		close: basePrice + i + 1,
 	}));
+}
+
+/**
+ * `runBacktestEngine` へ渡す入力を組み立てる。
+ * `effective_*` は取得範囲のメタ情報で、エンジンは計算に使わず結果へエコーするだけなので
+ * 常に candles と整合させる。
+ */
+function makeEngineInput(candles: Candle[], overrides: Partial<BacktestEngineInput> = {}): BacktestEngineInput {
+	return {
+		pair: 'btc_jpy',
+		timeframe: '1D',
+		period: '1M',
+		strategy: { type: 'sma_cross', params: {} },
+		fee_bp: 0,
+		execution: 't+1_open',
+		effective_start: candles[0].time,
+		effective_end: candles[candles.length - 1].time,
+		effective_bars: candles.length,
+		...overrides,
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -428,17 +449,7 @@ describe('calculateSummary - evaluation metadata', () => {
 			}),
 		};
 		const params = { ...mockStrategy.defaultParams };
-		const input = {
-			pair: 'btc_jpy',
-			timeframe: '1D',
-			period: '1M',
-			strategy: { type: 'sma_cross' as const, params: {} },
-			fee_bp: 0,
-			execution: 't+1_open' as const,
-			effective_start: candles[0].time,
-			effective_end: candles[candles.length - 1].time,
-			effective_bars: candles.length,
-		};
+		const input = makeEngineInput(candles);
 		const result = runBacktestEngine(candles, mockStrategy, input);
 		expect(result.summary.warmup_bars).toBe(mockStrategy.computeRequiredBars(params));
 	});
@@ -484,14 +495,7 @@ describe('runBacktestEngine', () => {
 				normalizedParams: { short: 3, long: 5, ...params },
 			}),
 		};
-		const input = {
-			pair: 'btc_jpy',
-			timeframe: '1D',
-			period: '1M',
-			strategy: { type: 'sma_cross' as const, params: {} },
-			fee_bp: 0,
-			execution: 't+1_open' as const,
-		};
+		const input = makeEngineInput(candles);
 		const result = runBacktestEngine(candles, mockStrategy, input);
 		expect(result.trades.length).toBeGreaterThanOrEqual(1);
 		expect(result.equity_curve).toHaveLength(20);
@@ -592,14 +596,7 @@ describe('runBacktestEngine - warmup boundary', () => {
 				normalizedParams: { short: 3, long: 5, ...params },
 			}),
 		};
-		const input = {
-			pair: 'btc_jpy',
-			timeframe: '1D',
-			period: '1M',
-			strategy: { type: 'sma_cross' as const, params: {} },
-			fee_bp: 0,
-			execution: 't+1_open' as const,
-		};
+		const input = makeEngineInput(candles);
 		const result = runBacktestEngine(candles, mockStrategy, input);
 		expect(result.summary.trade_count).toBe(1);
 		expect(result.summary.warmup_bars).toBe(5);
@@ -631,14 +628,7 @@ describe('runBacktestEngine - warmup boundary', () => {
 				normalizedParams: { short: 3, long: 5, ...params },
 			}),
 		};
-		const input = {
-			pair: 'btc_jpy',
-			timeframe: '1D',
-			period: '1M',
-			strategy: { type: 'sma_cross' as const, params: {} },
-			fee_bp: 0,
-			execution: 't+1_open' as const,
-		};
+		const input = makeEngineInput(candles);
 		const result = runBacktestEngine(candles, mockStrategy, input);
 		expect(result.trades).toHaveLength(1);
 	});
@@ -680,14 +670,7 @@ describe('runBacktestEngine - open position carry forward', () => {
 				normalizedParams: { ...params },
 			}),
 		};
-		const input = {
-			pair: 'btc_jpy',
-			timeframe: '1D',
-			period: '1M',
-			strategy: { type: 'sma_cross' as const, params: {} },
-			fee_bp: 0,
-			execution: 't+1_open' as const,
-		};
+		const input = makeEngineInput(candles);
 		const result = runBacktestEngine(candles, mockStrategy, input);
 		// 未決済ポジションは trades に含まれない（契約維持）
 		expect(result.trades).toHaveLength(0);
@@ -726,14 +709,7 @@ describe('runBacktestEngine - open position carry forward', () => {
 				normalizedParams: { ...params },
 			}),
 		};
-		const input = {
-			pair: 'btc_jpy',
-			timeframe: '1D',
-			period: '1M',
-			strategy: { type: 'sma_cross' as const, params: {} },
-			fee_bp: 0,
-			execution: 't+1_open' as const,
-		};
+		const input = makeEngineInput(candles);
 		const result = runBacktestEngine(candles, mockStrategy, input);
 		// (2.0 - 1.5) / 2.0 * 100 = 25%
 		expect(result.summary.max_drawdown_pct).toBeCloseTo(25, 1);
@@ -899,14 +875,7 @@ describe('runBacktestEngine - open position entry fee', () => {
 		// warmup=2 → i=2 で buy → entry at candles[3].open。全バー価格 100 で不変。
 		const candles = makeFlatCandles(8, 100);
 		const strategy = makeBuyOnceStrategy(2, candles.length, 2);
-		const input = {
-			pair: 'btc_jpy',
-			timeframe: '1D',
-			period: '1M',
-			strategy: { type: 'sma_cross' as const, params: {} },
-			fee_bp: 100, // 片道 1%
-			execution: 't+1_open' as const,
-		};
+		const input = makeEngineInput(candles, { fee_bp: 100 }); // 片道 1%
 		const result = runBacktestEngine(candles, strategy, input);
 		expect(result.summary.trade_count).toBe(0);
 		expect(result.equity_curve[result.equity_curve.length - 1].equity_pct).toBeCloseTo(-1, 4);
@@ -916,14 +885,7 @@ describe('runBacktestEngine - open position entry fee', () => {
 	it('fee_bp=0、entry=close=同値の未決済は従来通り fee 影響なし', () => {
 		const candles = makeFlatCandles(8, 100);
 		const strategy = makeBuyOnceStrategy(2, candles.length, 2);
-		const input = {
-			pair: 'btc_jpy',
-			timeframe: '1D',
-			period: '1M',
-			strategy: { type: 'sma_cross' as const, params: {} },
-			fee_bp: 0,
-			execution: 't+1_open' as const,
-		};
+		const input = makeEngineInput(candles);
 		const result = runBacktestEngine(candles, strategy, input);
 		expect(result.summary.trade_count).toBe(0);
 		expect(result.equity_curve[result.equity_curve.length - 1].equity_pct).toBeCloseTo(0, 4);
@@ -944,14 +906,7 @@ describe('runBacktestEngine - open position entry fee', () => {
 			{ time: 't7', open: 190, high: 210, low: 180, close: 200 },
 		];
 		const strategy = makeBuyOnceStrategy(2, candles.length, 2);
-		const input = {
-			pair: 'btc_jpy',
-			timeframe: '1D',
-			period: '1M',
-			strategy: { type: 'sma_cross' as const, params: {} },
-			fee_bp: 100,
-			execution: 't+1_open' as const,
-		};
+		const input = makeEngineInput(candles, { fee_bp: 100 });
 		const result = runBacktestEngine(candles, strategy, input);
 		expect(result.summary.trade_count).toBe(0);
 		expect(result.equity_curve[result.equity_curve.length - 1].equity_pct).toBeCloseTo(98, 1);

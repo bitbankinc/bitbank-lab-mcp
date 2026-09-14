@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
+import type { Candle } from '../src/schemas.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
 
 vi.mock('../tools/analyze_indicators.js', async (importOriginal) => {
@@ -18,7 +19,9 @@ import analyzeIndicators from '../tools/analyze_indicators.js';
 import analyzeStochSnapshot, { toolDef } from '../tools/analyze_stoch_snapshot.js';
 import getCandles from '../tools/get_candles.js';
 
-function makeFlatCandles(count: number, close = 100) {
+// 型は CandleSchema 由来にする。provisional 判定は最新足の timestamp を読むため、
+// リテラル推論のままだと最新足に timestamp を後付けするテストが型エラーになる。
+function makeFlatCandles(count: number, close = 100): Candle[] {
 	return Array.from({ length: count }, (_, i) => ({
 		open: close,
 		high: close,
@@ -39,7 +42,7 @@ function buildIndicatorsOk(
 	}>,
 ) {
 	const closes = overrides?.closes ?? Array.from({ length: 40 }, (_, i) => 100 + i);
-	const candles = closes.map((close, i) => ({
+	const candles: Pick<Candle, 'close' | 'isoTime' | 'timestamp'>[] = closes.map((close, i) => ({
 		close,
 		isoTime: `2024-02-${String((i % 28) + 1).padStart(2, '0')}T00:00:00.000Z`,
 	}));

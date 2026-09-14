@@ -5,8 +5,14 @@
  * ok / fail 分岐を検証する。
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
-import { appResourceRegistry } from '../src/resources/app-resources.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CONFIRMATION_META_KEY } from '../src/mcp-apps-meta.js';
+import { clientSupportsElicitation, isAppUiExecuteAllowed } from '../src/private/elicitation.js';
+import {
+	APP_RESOURCE_MIME_TYPE,
+	appResourceRegistry,
+	MCP_APPS_UI_EXTENSION_ID,
+} from '../src/resources/app-resources.js';
 import { GetUiSnapshotInputSchema, UI_SNAPSHOT_RESOURCE_URIS } from '../src/schema/ui.js';
 import { _resetUiSnapshots, storeUiSnapshot } from '../src/ui-snapshot-cache.js';
 import { toolDef } from '../tools/get_ui_snapshot.js';
@@ -15,6 +21,7 @@ const URI = 'ui://order/confirm.html';
 
 afterEach(() => {
 	_resetUiSnapshots();
+	vi.unstubAllEnvs();
 });
 
 describe('GetUiSnapshotInputSchema', () => {
@@ -111,5 +118,34 @@ describe('handler', () => {
 			structuredContent: Record<string, unknown>;
 		};
 		expect(orderResult.structuredContent).toBe(orderSnap);
+	});
+
+	// #27: url モードだけを宣言したホストは form 形式の elicitation を処理できず、preview 側は
+	// fallback（＝`_meta` にトークンを載せる経路）へ倒れる。snapshot 側の
+	// `isAppUiExecuteAllowed && !clientSupportsElicitation` も同じ述語なので、ここで判定が
+	// ずれない（＝url のみホストでも `_meta` を返す）ことを固定する。
+	it('url モードのみを宣言したホストで snapshot 側の判定が preview 側と一致する（#27）', async () => {
+		vi.stubEnv('BITBANK_MCP_APPS_EXECUTE', '1');
+		const meta = { [CONFIRMATION_META_KEY]: { confirmation_token: 'tok-url-only', expires_at: Date.now() + 60_000 } };
+		storeUiSnapshot(URI, { ok: true, summary: 'preview summary' }, {}, meta, Date.now() + 60_000);
+
+		const extra = {
+			mcpReq: {
+				envelope: {
+					clientCapabilities: {
+						elicitation: { url: {} },
+						extensions: { [MCP_APPS_UI_EXTENSION_ID]: { mimeTypes: [APP_RESOURCE_MIME_TYPE] } },
+					},
+				},
+			},
+		};
+
+		// preview 側の判定: form 非対応なので fallback（= `_meta` 配送）経路
+		expect(clientSupportsElicitation(extra)).toBe(false);
+		expect(isAppUiExecuteAllowed(extra)).toBe(true);
+
+		// snapshot 側の判定: 同じ述語を使っているので `_meta` を返す
+		const result = (await toolDef.handler({ resource_uri: URI }, extra)) as { _meta?: Record<string, unknown> };
+		expect(result._meta).toEqual(meta);
 	});
 });

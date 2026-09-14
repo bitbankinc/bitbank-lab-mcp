@@ -358,7 +358,7 @@ describe('toolDef handler', () => {
 	it('structuredContent に ok:true が含まれる', async () => {
 		mockedAnalyzeMarketSignal.mockResolvedValueOnce(makeOkResult() as never);
 		const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day' });
-		const sc = (res as { structuredContent: { ok: boolean } }).structuredContent;
+		const sc = (res as { structuredContent: Record<string, unknown> }).structuredContent;
 		expect(sc.ok).toBe(true);
 	});
 

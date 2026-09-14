@@ -9,30 +9,37 @@ vi.mock('../tools/analyze_indicators.js', () => ({
 import analyzeIndicators from '../tools/analyze_indicators.js';
 import detectPatterns from '../tools/detect_patterns.js';
 
-type Candle = {
-	isoTime: string;
-	open: number;
-	high: number;
-	low: number;
-	close: number;
-	volume: number;
-};
+import {
+	buildAsymmetricNecklineHSCandles,
+	buildAsymmetricNecklineIHSCandles,
+	buildBullFlagFailureCandles,
+	buildBullPennantFailureCandles,
+	buildBullPennantSuccessCandles,
+	buildCompletedDoubleTopCandles,
+	buildCompletedFallingWedgeCandles,
+	buildCompletedHeadAndShouldersCandles,
+	buildCompletedTripleTopCandles,
+	buildDescendingTriangleInvalidBreakoutCandles,
+	buildDowntrendThenFakeHSCandles,
+	buildFormingAscendingTriangleCandles,
+	buildFormingDoubleBottomCandles,
+	buildFormingInverseHeadAndShouldersCandles,
+	buildFormingRisingWedgeCandles,
+	buildFormingSymmetricalTriangleCandles,
+	buildFormingTripleBottomCandles,
+	buildRectangleRangeCandles,
+	buildRisingChannelCandles,
+	buildUnequalPeaksDoubleTopCandles,
+	buildUnequalValleysDoubleBottomCandles,
+	buildUptrendThenFakeDoubleBottomCandles,
+	type Candle,
+	FORMING_DOUBLE_BOTTOM_BARS,
+	makeCandle,
+	makeIso,
+	UPTREND_FAKE_DOUBLE_BOTTOM_BARS,
+} from './fixtures/synthetic_pattern_candles.js';
 
-function makeIso(dayOffset: number, year = 2026) {
-	return new Date(Date.UTC(year, 0, 1 + dayOffset, 0, 0, 0)).toISOString();
-}
-
-function makeCandle(dayOffset: number, close: number, year = 2026): Candle {
-	return {
-		isoTime: makeIso(dayOffset, year),
-		open: close,
-		high: close + 3,
-		low: close - 3,
-		close,
-		volume: 100,
-	};
-}
-
+/** `analyze_indicators` の成功レスポンスの最小形（`detect_patterns` はここから `chart.candles` だけを読む）。 */
 function indicatorsOk(candles: Candle[]) {
 	return {
 		ok: true,
@@ -43,292 +50,6 @@ function indicatorsOk(candles: Candle[]) {
 			},
 		},
 	};
-}
-
-function buildCompletedDoubleTopCandles(year = 2026): Candle[] {
-	const closes = [
-		100, 102, 105, 110, 118, 130, 126, 122, 118, 114, 112, 110, 114, 118, 122, 126, 128, 129, 123, 116, 104, 100, 95,
-		100, 99, 98,
-	];
-
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-function buildFormingDoubleBottomCandles(year = 2026): Candle[] {
-	const closes = [108, 104, 99, 92, 80, 84, 88, 92, 96, 99, 101, 98, 94, 89, 85, 82, 81, 84, 88, 91, 94, 95, 96, 95];
-
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-function buildDescendingTriangleInvalidBreakoutCandles(year = 2026): Candle[] {
-	const closes = [
-		120, 130, 124, 116, 100, 112, 125, 118, 101, 110, 120, 114, 100, 108, 115, 110, 101, 107, 128, 132, 130, 128, 126,
-		124,
-	];
-
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-function buildRectangleRangeCandles(year = 2026): Candle[] {
-	const closes = [
-		105, 110, 104, 109, 101, 108, 102, 110, 101, 109, 100, 108, 102, 109, 101, 110, 100, 109, 101, 108, 102, 109, 101,
-		110,
-	];
-
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-function buildRisingChannelCandles(year = 2026): Candle[] {
-	const closes = [
-		100, 108, 104, 112, 108, 116, 112, 120, 116, 124, 120, 128, 124, 132, 128, 136, 132, 140, 136, 144, 140, 148, 144,
-		152, 148, 156, 152, 160, 156, 164,
-	];
-
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-function buildBullFlagFailureCandles(year = 2026): Candle[] {
-	const closes = [100, 108, 116, 124, 132, 140, 136, 138, 134, 136, 132, 134, 130, 132, 128, 130, 120, 118, 116, 114];
-
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-function buildBullPennantSuccessCandles(year = 2026): Candle[] {
-	const closes = [
-		100, 110, 122, 136, 150, 165, 158, 162, 154, 160, 155, 159, 156, 158, 157, 157.8, 157.2, 158.1, 157.4, 170, 172,
-		174,
-	];
-
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-function buildBullPennantFailureCandles(year = 2026): Candle[] {
-	const closes = [
-		100, 110, 122, 136, 150, 165, 158, 162, 154, 160, 155, 159, 156, 158, 157, 157.8, 157.2, 158.1, 157.4, 148, 146,
-		144,
-	];
-
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-// --- Triple Top: 3 peaks near 130, 2 valleys near 112, then neckline break ---
-function buildCompletedTripleTopCandles(year = 2026): Candle[] {
-	const closes = [
-		100, 105, 112, 120, 128, 130, 126, 120, 115, 112, 116, 122, 128, 130, 131, 126, 120, 115, 113, 117, 122, 128, 130,
-		131, 126, 118, 110, 104, 98, 94,
-	];
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-// --- Triple Bottom (forming): 3 valleys near 80, with enough bars after 3rd valley ---
-function buildFormingTripleBottomCandles(year = 2026): Candle[] {
-	const closes = [
-		108, 104, 98, 92, 84, 80, 84, 90, 95, 98, 94, 88, 84, 81, 80, 84, 90, 95, 97, 93, 88, 84, 81, 80, 84, 88, 92, 96,
-	];
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-// --- Head & Shoulders (completed): L-shoulder 125, head 140, R-shoulder 126, neckline ~110-112, break ---
-function buildCompletedHeadAndShouldersCandles(year = 2026): Candle[] {
-	const closes = [
-		100, 108, 116, 122, 125, 120, 116, 112, 110, 114, 120, 128, 136, 140, 136, 128, 120, 114, 112, 116, 120, 124, 126,
-		122, 116, 108, 102, 96,
-	];
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-// --- Inverse Head & Shoulders (forming): L-shoulder 80, head 64, R-shoulder forming near 80 ---
-function buildFormingInverseHeadAndShouldersCandles(year = 2026): Candle[] {
-	const closes = [
-		108, 100, 92, 84, 80, 84, 90, 96, 100, 96, 88, 78, 68, 64, 70, 80, 90, 98, 100, 96, 90, 84, 80, 84, 88, 92,
-	];
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-// --- Rising Wedge (forming): both slopes up, lower steeper ---
-// Peaks at idx 5,12,19,26,33 → highs 133,137,141,145,149 (slope ~0.571/bar)
-// Valleys at idx 0,7,14,21,28 → lows 97,105,113,121,129 (slope ~1.143/bar, steeper)
-function buildFormingRisingWedgeCandles(year = 2026): Candle[] {
-	const closes = [
-		100, 106, 112, 118, 124, 130, 119, 108, 113, 118, 124, 129, 134, 125, 116, 120, 125, 129, 134, 138, 131, 124, 128,
-		131, 135, 138, 142, 137, 132, 135, 138, 140, 143, 146, 143,
-	];
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-// --- Falling Wedge (completed with upward breakout) ---
-// Mirror of rising wedge, inverted: both slopes down, upper steeper in abs value
-function buildCompletedFallingWedgeCandles(year = 2026): Candle[] {
-	const closes = [
-		146, 140, 134, 128, 122, 116, 127, 138, 133, 128, 122, 117, 112, 121, 130, 126, 121, 117, 112, 108, 115, 122, 118,
-		115, 111, 108, 104, 109, 114, 111, 108, 106, 103, 100, 103, 110, 118,
-	];
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-// --- Ascending Triangle (forming): flat upper resistance ~130, rising lower support ---
-// Peaks: all near close=127 → high=130; Valleys: rising from low=97 upward
-// No impulsive pole before window (gradual entry) to avoid pennant reclassification
-function buildFormingAscendingTriangleCandles(year = 2026): Candle[] {
-	const closes = [
-		115, 118, 121, 124, 127, 124, 118, 112, 116, 120, 124, 127, 123, 117, 114, 118, 122, 126, 127, 124, 120, 117, 120,
-		123, 126, 127, 125, 122, 120, 123, 126, 127, 126,
-	];
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-// --- Symmetrical Triangle (forming): upper falling, lower rising, converging ---
-// Peaks: descending from ~140 to ~126; Valleys: ascending from ~100 to ~118
-function buildFormingSymmetricalTriangleCandles(year = 2026): Candle[] {
-	const closes = [
-		120, 126, 132, 137, 130, 122, 116, 110, 104, 100, 106, 114, 120, 128, 134, 128, 120, 115, 108, 104, 110, 118, 124,
-		130, 126, 120, 116, 112, 108, 114, 120, 126, 124, 120, 117, 114,
-	];
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-// --- IHS with asymmetric neckline (PR #2 ケース2 相当) ---
-// 左肩・右肩は同水準（valley 80）、頭は十分下（valley 64）、
-// ネックラインを構成する2つのピーク（山1≒100, 山2≒108）が約7%非対称
-// → HS_NECKLINE_MAX_PCT=0.05 で hard reject されるべき
-// 5ピボット以上の間隔（minBarsBetweenSwings=4@1day）を確保するため間延びさせる
-function buildAsymmetricNecklineIHSCandles(year = 2026): Candle[] {
-	const closes = [
-		// pre-trend: downtrend (idx 0-7)
-		130, 125, 120, 115, 110, 105, 100, 90,
-		// 左肩 valley ≒ 80 (idx 8)
-		80,
-		// 山1 peak ≒ 100 (idx 13)
-		86, 90, 94, 98, 100,
-		// 頭 valley ≒ 64 (idx 18)
-		90, 78, 70, 66, 64,
-		// 山2 peak ≒ 108 (idx 23, 山1 から +8%)
-		74, 86, 96, 104, 108,
-		// 右肩 valley ≒ 80 (idx 28)
-		96, 90, 86, 82, 80,
-		// 続伸 (idx 29+)
-		90, 96, 100,
-	];
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-// --- H&S with asymmetric neckline (PR #2 H&S 側ミラー) ---
-// 左肩・右肩は同水準（peak 120）、頭は十分上（peak 140）、
-// ネックラインを構成する2つの谷（valley1≒100, valley2≒108）が約8%非対称
-function buildAsymmetricNecklineHSCandles(year = 2026): Candle[] {
-	const closes = [
-		// pre-trend: uptrend (idx 0-7)
-		70, 75, 80, 85, 90, 95, 100, 110,
-		// 左肩 peak ≒ 120 (idx 8)
-		120,
-		// 谷1 valley ≒ 100 (idx 13)
-		114, 110, 106, 102, 100,
-		// 頭 peak ≒ 140 (idx 18)
-		108, 118, 128, 134, 140,
-		// 谷2 valley ≒ 108 (idx 23, 谷1 から +8%)
-		126, 120, 116, 112, 108,
-		// 右肩 peak ≒ 120 (idx 28)
-		112, 114, 116, 118, 120,
-		// 下落
-		110, 100, 92,
-	];
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-// --- Double top with structurally unequal peaks (PR #2 double hard cap) ---
-// peak1≒100, valley≒80, peak2≒105 → 5% 差。tolerancePct=0.06 では near() を通るが
-// DOUBLE_LEVEL_MAX_PCT=0.03 の hard cap で弾かれるべき
-function buildUnequalPeaksDoubleTopCandles(year = 2026): Candle[] {
-	const closes = [
-		// 上昇 (idx 0-5)
-		70, 76, 82, 88, 94, 100,
-		// peak1 (idx 5) → valley (idx 11)
-		96, 92, 88, 84, 81, 80,
-		// 上昇して peak2 ≒ 105 (idx 17)
-		86, 92, 96, 100, 103, 105,
-		// 下落して valley 後 (idx 23) で4本目のピボットを形成
-		100, 92, 86, 82, 80, 82,
-		// 反発（4ピボット確保のための尾部）
-		88, 94,
-	];
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-// --- 上昇トレンド継続中の偽 double_bottom (PR #3 prior_trend hard reject) ---
-// idx 0-29 で 100→245 の clean な上昇トレンド（毎バー +5）、その後 idx 30-44 で
-// 形成中ダブルボトムらしき形（左谷 232, ミッドピーク 246, 右谷 231, 直近 248）を作る。
-// 左谷 idx=30 における lookback window [20..30] は monotonic に近い上昇のため
-// priorReturn ≈ +0.16, efficiency ≈ 0.71 → 'up' 分類で down_or_sideways と矛盾し
-// hard reject されるべき。
-function buildUptrendThenFakeDoubleBottomCandles(year = 2026): Candle[] {
-	const closes = [
-		// idx 0-9: 上昇トレンド 100 → 145 (毎バー +5)
-		100, 105, 110, 115, 120, 125, 130, 135, 140, 145,
-		// idx 10-19: 上昇継続 150 → 195
-		150, 155, 160, 165, 170, 175, 180, 185, 190, 195,
-		// idx 20-29: 上昇継続 200 → 245
-		200, 205, 210, 215, 220, 225, 230, 235, 240, 245,
-		// idx 30: 左谷 232 まで小さく押し目
-		232,
-		// idx 31-35: ミッドピーク 246 へ戻り
-		236, 239, 241, 243, 245,
-		// idx 36: ミッドピーク
-		246,
-		// idx 37-41: 右谷 231 まで押し目
-		243, 240, 237, 234, 231,
-		// idx 42-44: 直近の戻り
-		237, 243, 248,
-	];
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-// --- 下降トレンド継続中の偽 head_and_shoulders (PR #3 prior_trend hard reject) ---
-// idx 0-25 で 300→100 の clean な下降トレンド（毎バー -8）、その後 idx 26-45 で
-// H-L-H-L-H（左肩 110 / 谷1 92 / 頭 130 / 谷2 92 / 右肩 110）を形成。
-// 左肩 idx=29 における lookback window [19..29] は概ね monotonic な下降のため
-// priorReturn ≈ -0.26, efficiency ≈ 0.79 → 'down' 分類で up_or_sideways と矛盾し
-// hard reject されるべき。
-function buildDowntrendThenFakeHSCandles(year = 2026): Candle[] {
-	const closes = [
-		// idx 0-9: 下降トレンド 300 → 228 (毎バー -8)
-		300, 292, 284, 276, 268, 260, 252, 244, 236, 228,
-		// idx 10-19: 下降継続 220 → 148
-		220, 212, 204, 196, 188, 180, 172, 164, 156, 148,
-		// idx 20-25: 下降継続 140 → 100
-		140, 132, 124, 116, 108, 100,
-		// idx 26-29: 左肩 110 へ rally
-		103, 106, 108, 110,
-		// idx 30-33: 谷1 92 へ pullback
-		106, 100, 96, 92,
-		// idx 34-37: 頭 130 へ rally
-		102, 115, 125, 130,
-		// idx 38-41: 谷2 92 へ pullback
-		118, 105, 96, 92,
-		// idx 42-45: 右肩 110 へ rally
-		100, 105, 108, 110,
-		// idx 46-48: 続落
-		106, 100, 96,
-	];
-	return closes.map((close, index) => makeCandle(index, close, year));
-}
-
-// --- Double bottom with structurally unequal valleys (PR #2 double hard cap) ---
-// valley1≒100, peak≒120, valley2≒95 → 5% 差。tolerancePct=0.06 では near() を通るが
-// DOUBLE_LEVEL_MAX_PCT=0.03 の hard cap で弾かれるべき
-function buildUnequalValleysDoubleBottomCandles(year = 2026): Candle[] {
-	const closes = [
-		// 下落 (idx 0-5)
-		130, 124, 118, 112, 106, 100,
-		// valley1 (idx 5) → peak (idx 11)
-		104, 108, 112, 116, 119, 120,
-		// 下落して valley2 ≒ 95 (idx 17)
-		116, 110, 105, 100, 97, 95,
-		// 上昇して peak 後 (idx 23) で4本目のピボットを形成
-		100, 108, 114, 118, 120, 118,
-		// 反落（4ピボット確保のための尾部）
-		112, 106,
-	];
-	return closes.map((close, index) => makeCandle(index, close, year));
 }
 
 describe('detect_patterns fixtures', () => {
@@ -362,7 +83,7 @@ describe('detect_patterns fixtures', () => {
 				breakoutConfirmed: true,
 			},
 		});
-		expect(res.data.overlays!.ranges).toEqual([
+		expect(res.data.overlays?.ranges).toEqual([
 			{
 				start: makeIso(5),
 				end: makeIso(20),
@@ -372,10 +93,17 @@ describe('detect_patterns fixtures', () => {
 		expect(res.meta.count).toBe(1);
 	});
 
-	it('synthetic fixture から forming の double_bottom を completed なしで返せる', async () => {
+	/**
+	 * **`status` の期待値を `forming` から `near_completion` に変えた（issue #262）。**
+	 * この synthetic fixture は「確定 2 谷 + 中間の山が揃い、ネックライン突破を待っている」形で、
+	 * 旧 `tryFormingDoubleBottom` がそれを `forming` と呼んでいた。完成済み経路の
+	 * `near_completion` に付け替えたのが #262。`completionPct` は完成度スコアごと消えた
+	 * （triple / H&S の `near_completion` も持たない）。**`range.end` も最新足から谷2 になった**。
+	 */
+	it('synthetic fixture から near_completion の double_bottom を completed なしで返せる', async () => {
 		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildFormingDoubleBottomCandles())));
 
-		const res = await detectPatterns('btc_jpy', '1day', 24, {
+		const res = await detectPatterns('btc_jpy', '1day', FORMING_DOUBLE_BOTTOM_BARS, {
 			patterns: ['double_bottom'],
 			swingDepth: 2,
 			tolerancePct: 0.03,
@@ -387,14 +115,16 @@ describe('detect_patterns fixtures', () => {
 		expect(res.data.patterns).toHaveLength(1);
 		expect(res.data.patterns[0]).toMatchObject({
 			type: 'double_bottom',
-			status: 'forming',
+			status: 'near_completion',
 			timeframe: '1day',
 			timeframeLabel: '日足',
 			trendlineLabel: 'ネックライン',
-			completionPct: expect.any(Number),
 			targetMethod: 'neckline_projection',
+			targetProgressOmittedReason: 'not_broken_out',
 		});
-		expect(res.data.patterns[0].range.end).toBe(makeIso(23));
+		expect(res.data.patterns[0].completionPct).toBeUndefined();
+		// `range.end` は第2構成点（谷2）。`structureRange` と一致する（`detect_triples` と同じ）。
+		expect(res.data.patterns[0].range.end).toBe(res.data.patterns[0].structureRange?.end);
 		expect(res.meta.count).toBe(1);
 	});
 
@@ -412,7 +142,7 @@ describe('detect_patterns fixtures', () => {
 
 		assertOk(res);
 		expect(res.data.patterns).toEqual([]);
-		expect(res.data.overlays!.ranges).toEqual([]);
+		expect(res.data.overlays?.ranges).toEqual([]);
 		expect(res.meta.count).toBe(0);
 	});
 
@@ -934,9 +664,10 @@ describe('detect_patterns fixtures', () => {
 			expect(dt[0].confidence).toBeGreaterThanOrEqual(0.6);
 		});
 
+		// `status` の期待値が `near_completion` に変わった理由は上の同 fixture のテストを参照（#262）。
 		it('既存 forming double_bottom fixture は引き続き検出され、confidence は維持される', async () => {
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildFormingDoubleBottomCandles())));
-			const res = await detectPatterns('btc_jpy', '1day', 24, {
+			const res = await detectPatterns('btc_jpy', '1day', FORMING_DOUBLE_BOTTOM_BARS, {
 				patterns: ['double_bottom'],
 				swingDepth: 2,
 				tolerancePct: 0.03,
@@ -946,7 +677,7 @@ describe('detect_patterns fixtures', () => {
 			assertOk(res);
 			const db = res.data.patterns.filter((p: { type: string }) => p.type === 'double_bottom');
 			expect(db).toHaveLength(1);
-			expect(db[0].status).toBe('forming');
+			expect(db[0].status).toBe('near_completion');
 			expect(db[0].confidence).toBeGreaterThanOrEqual(0.4);
 		});
 
@@ -990,7 +721,7 @@ describe('detect_patterns fixtures', () => {
 				asMockResult(indicatorsOk(buildUptrendThenFakeDoubleBottomCandles())),
 			);
 
-			const res = await detectPatterns('btc_jpy', '1day', 45, {
+			const res = await detectPatterns('btc_jpy', '1day', UPTREND_FAKE_DOUBLE_BOTTOM_BARS, {
 				patterns: ['double_bottom'],
 				swingDepth: 2,
 				tolerancePct: 0.04,
@@ -1072,7 +803,7 @@ describe('detect_patterns fixtures', () => {
 		it('double_bottom でも pattern 開始がデータ先頭付近の場合、insufficient_data を debug に残す', async () => {
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildFormingDoubleBottomCandles())));
 
-			const res = await detectPatterns('btc_jpy', '1day', 24, {
+			const res = await detectPatterns('btc_jpy', '1day', FORMING_DOUBLE_BOTTOM_BARS, {
 				patterns: ['double_bottom'],
 				swingDepth: 2,
 				tolerancePct: 0.03,
@@ -1348,7 +1079,7 @@ describe('detect_patterns fixtures', () => {
 			expect(res.summary).toContain('2026-10-22');
 		});
 
-		it('検出対象期間（detectionPeriodText）も tz で整形される', async () => {
+		it('検出パターン分布期間も tz で整形される', async () => {
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildDoubleTopAt2330Z())));
 
 			const res = await detectPatterns('btc_jpy', '1day', 26, {
@@ -1361,7 +1092,7 @@ describe('detect_patterns fixtures', () => {
 			});
 
 			assertOk(res);
-			expect(res.summary).toContain('検出対象期間: 2026-10-07 ~ 2026-10-22');
+			expect(res.summary).toContain('検出パターン分布期間: 2026-10-07 ~ 2026-10-22');
 
 			// UTC のとき
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildDoubleTopAt2330Z())));
@@ -1375,7 +1106,238 @@ describe('detect_patterns fixtures', () => {
 			});
 
 			assertOk(resUtc);
-			expect(resUtc.summary).toContain('検出対象期間: 2026-10-06 ~ 2026-10-21');
+			expect(resUtc.summary).toContain('検出パターン分布期間: 2026-10-06 ~ 2026-10-21');
+		});
+	});
+
+	// スキャン窓 = 表示窓（直近 limit 本）。
+	//
+	// analyze_indicators は指標の warmup 分を先頭に足した配列を返し、その本数を
+	// chart.meta.pastBuffer で伝える（render_chart_svg も `slice(pastBuffer)` で切る）。
+	// 本ツールはこれを無視して全件走査しており、`limit=200` の要求に 399 本を走査して
+	// ヘッダの `{limit}本から` が虚偽表示になっていた。
+	describe('スキャン窓の pastBuffer 切り出し', () => {
+		/** warmup 本を先頭に付けた chart を返す（本番 analyze_indicators と同じ形）。 */
+		function indicatorsOkWithBuffer(warmup: Candle[], window: Candle[]) {
+			return {
+				ok: true,
+				summary: 'ok',
+				data: {
+					chart: {
+						candles: [...warmup, ...window],
+						meta: { pastBuffer: warmup.length, shift: 26 },
+					},
+				},
+			};
+		}
+
+		/** 平坦な warmup 足（パターンを作らないので検出結果に影響しないことが確認できる）。 */
+		function flatCandles(count: number, startOffset: number): Candle[] {
+			return Array.from({ length: count }, (_, i) => makeCandle(startOffset + i, 100));
+		}
+
+		it('pastBuffer 分を捨て、meta.scan が表示窓だけを指す', async () => {
+			const window = buildCompletedDoubleTopCandles();
+			const warmup = flatCandles(30, -30);
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOkWithBuffer(warmup, window)));
+
+			const res = await detectPatterns('btc_jpy', '1day', window.length, {
+				patterns: ['double_top'],
+				swingDepth: 2,
+				tolerancePct: 0.02,
+			});
+
+			assertOk(res);
+			// warmup 30 本は走査対象外。scan は表示窓の先頭足から始まる。
+			expect(res.meta.scan).toEqual({
+				start: window[0].isoTime,
+				end: window[window.length - 1].isoTime,
+				bars: window.length,
+			});
+			expect(res.summary).toContain(`（${window.length}本）`);
+		});
+
+		it('pastBuffer が無いときは全件を走査する（上流の形が変わっても落とさない）', async () => {
+			const window = buildCompletedDoubleTopCandles();
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(window)));
+
+			const res = await detectPatterns('btc_jpy', '1day', window.length, {
+				patterns: ['double_top'],
+				swingDepth: 2,
+				tolerancePct: 0.02,
+			});
+
+			assertOk(res);
+			expect(res.meta.scan?.bars).toBe(window.length);
+			expect(res.meta.scan?.start).toBe(window[0].isoTime);
+		});
+
+		it('warmup 側にあるパターンは検出されない（窓の外は見ない）', async () => {
+			// warmup 側に double_top を、表示窓側は平坦にする。
+			const warmupPattern = buildCompletedDoubleTopCandles();
+			const flatWindow = flatCandles(26, 100);
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOkWithBuffer(warmupPattern, flatWindow)));
+
+			const res = await detectPatterns('btc_jpy', '1day', flatWindow.length, {
+				patterns: ['double_top'],
+				swingDepth: 2,
+				tolerancePct: 0.02,
+			});
+
+			assertOk(res);
+			expect(res.data.patterns).toEqual([]);
+		});
+
+		// インデックス契約: 出力の idx はスキャン窓基準（warmup を含む chart.candles の添字ではない）。
+		// slice で意味が変わった箇所なので、実際の足に解決できることを固定する。
+		it('pivots[].idx / breakoutBarIndex はスキャン窓基準で、該当足に解決できる', async () => {
+			const window = buildCompletedDoubleTopCandles();
+			const warmup = flatCandles(30, -30);
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOkWithBuffer(warmup, window)));
+
+			const res = await detectPatterns('btc_jpy', '1day', window.length, {
+				patterns: ['double_top'],
+				swingDepth: 2,
+				tolerancePct: 0.02,
+			});
+
+			assertOk(res);
+			const pattern = res.data.patterns[0];
+			expect(pattern).toBeDefined();
+
+			const pivots = pattern.pivots ?? [];
+			expect(pivots.length).toBeGreaterThan(0);
+			for (const pivot of pivots) {
+				// window（= スキャン窓）の添字として有効な範囲に収まる
+				expect(pivot.idx).toBeGreaterThanOrEqual(0);
+				expect(pivot.idx).toBeLessThan(window.length);
+				// 価格がその足の高安に含まれる = 正しい足を指している
+				const bar = window[pivot.idx];
+				expect(pivot.price).toBeGreaterThanOrEqual(bar.low);
+				expect(pivot.price).toBeLessThanOrEqual(bar.high);
+			}
+
+			// range の端は pivot が指す足の日時と整合する（ISO 側との突き合わせ）
+			expect(pattern.range.start).toBe(window[pivots[0].idx].isoTime);
+
+			// breakoutBarIndex も同じ基準。bounds だけでなく、指す足が confirmation.date と
+			// 一致することまで見る——bounds だけだと窓内に収まる誤りを見逃す。
+			const breakoutBarIndex = pattern.breakoutBarIndex;
+			expect(breakoutBarIndex).toBeDefined();
+			expect(breakoutBarIndex).toBeGreaterThanOrEqual(0);
+			expect(breakoutBarIndex).toBeLessThan(window.length);
+
+			// confirmation.idx も出力に現れるインデックス。breakoutBarIndex と同じ足を指す。
+			const confirmation = pattern.confirmation;
+			expect(confirmation?.type).toBe('neckline_breakout');
+			if (confirmation?.type !== 'neckline_breakout') throw new Error('unreachable');
+			expect(confirmation.idx).toBe(breakoutBarIndex);
+			expect(window[confirmation.idx].isoTime).toBe(confirmation.date);
+
+			// warmup を含む配列の添字ではない: そちらに解決すると平坦足（100）に当たってしまう
+			const all = [...warmup, ...window];
+			expect(all[pivots[0].idx].isoTime).not.toBe(pattern.range.start);
+			expect(all[confirmation.idx].isoTime).not.toBe(confirmation.date);
+		});
+
+		it('pastBuffer を無視した場合と結果が変わる（回帰の検出力を担保する）', async () => {
+			const window = buildCompletedDoubleTopCandles();
+			const warmupPattern = buildCompletedDoubleTopCandles(2025);
+
+			// slice あり: 表示窓の 1 件だけ
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOkWithBuffer(warmupPattern, window)));
+			const sliced = await detectPatterns('btc_jpy', '1day', window.length, {
+				patterns: ['double_top'],
+				swingDepth: 2,
+				tolerancePct: 0.02,
+			});
+
+			// slice なし（pastBuffer を伝えない）: warmup 側のパターンも拾ってしまう
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk([...warmupPattern, ...window])));
+			const unsliced = await detectPatterns('btc_jpy', '1day', window.length, {
+				patterns: ['double_top'],
+				swingDepth: 2,
+				tolerancePct: 0.02,
+			});
+
+			assertOk(sliced);
+			assertOk(unsliced);
+			expect(sliced.meta.scan?.bars).toBe(window.length);
+			expect(unsliced.meta.scan?.bars).toBe(warmupPattern.length + window.length);
+			expect(sliced.data.patterns.length).toBeLessThan(unsliced.data.patterns.length);
+		});
+	});
+	// スキャン窓 = 直近 limit 本になった結果、limit をスキーマ下限（20）付近まで小さくすると
+	// swingDepth 分が前後から落ちてピボット候補が残らず「構造上ゼロ件」の窓が作れるようになった。
+	// candles.length < 20 のガードは「ちょうど 20」で通ってしまうので、警告で申告する。
+	describe('スキャン窓不足の警告', () => {
+		/** 平坦でない適当な足を count 本作る（本数だけが論点なので形は問わない）。 */
+		function noisyCandles(count: number): Candle[] {
+			return Array.from({ length: count }, (_, i) => makeCandle(i, 100 + (i % 5) * 2));
+		}
+
+		it('日足 limit=20 では limit_too_small_for_timeframe を data.warnings に載せる', async () => {
+			const candles = noisyCandles(20);
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
+
+			const res = await detectPatterns('btc_jpy', '1day', 20);
+
+			assertOk(res);
+			const warning = res.data.warnings?.find((w) => w.type === 'limit_too_small_for_timeframe');
+			expect(warning).toBeDefined();
+			expect(warning?.suggestedParams).toEqual({ limit: 23 });
+			// data.warnings は LLM から見えないので summary にも同じ内容が出ていること。
+			expect(res.summary.startsWith('⚠️ ')).toBe(true);
+			expect(res.summary).toContain('limit≥23');
+		});
+
+		it('日足 limit=23 では警告を出さない（off-by-one）', async () => {
+			const candles = noisyCandles(23);
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
+
+			const res = await detectPatterns('btc_jpy', '1day', 23);
+
+			assertOk(res);
+			expect(res.data.warnings?.some((w) => w.type === 'limit_too_small_for_timeframe')).toBe(false);
+			expect(res.summary.startsWith('⚠️ ')).toBe(false);
+		});
+
+		it('pastBuffer 切り出し後の本数で判定する（warmup は窓に数えない）', async () => {
+			// chart.candles は 50 本あるが、表示窓は 20 本しかない。
+			const window = noisyCandles(20);
+			const warmup = Array.from({ length: 30 }, (_, i) => makeCandle(-30 + i, 100));
+			mockedAnalyzeIndicators.mockResolvedValueOnce(
+				asMockResult({
+					ok: true,
+					summary: 'ok',
+					data: { chart: { candles: [...warmup, ...window], meta: { pastBuffer: warmup.length } } },
+				}),
+			);
+
+			const res = await detectPatterns('btc_jpy', '1day', 20);
+
+			assertOk(res);
+			expect(res.meta.scan?.bars).toBe(20);
+			expect(res.data.warnings?.some((w) => w.type === 'limit_too_small_for_timeframe')).toBe(true);
+		});
+
+		it('上流 warning と併記され、上流が先に出る', async () => {
+			const candles = noisyCandles(20);
+			mockedAnalyzeIndicators.mockResolvedValueOnce(
+				asMockResult({
+					ok: true,
+					summary: 'ok',
+					data: { chart: { candles } },
+					meta: { warning: 'partial fetch' },
+				}),
+			);
+
+			const res = await detectPatterns('btc_jpy', '1day', 20);
+
+			assertOk(res);
+			const lines = res.summary.split('\n');
+			expect(lines[0]).toBe('⚠️ partial fetch');
+			expect(lines[1]).toContain('limit≥23');
 		});
 	});
 });

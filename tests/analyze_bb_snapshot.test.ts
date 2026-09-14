@@ -1260,24 +1260,22 @@ describe('analyze_bb_snapshot', () => {
 	// ── Signals: percentile < 20 (breakout) / > 80 (high vol) ────────────
 
 	it('year-aware mock: percentile > 80 → high volatility phase signal', async () => {
-		// bandWidth が過去比で高い状態 → percentile > 80 → high volatility phase signal
+		// percentile は「直近 30 本の bandWidthPct のうち最新値を下回る本数」で決まる。
+		// 途中で 1 度だけ振幅が段差状に増える系列だと、最終時点では 30 本すべてが
+		// 高ボラ側に入り切って bandWidth が横ばいになるため percentile は 80 に届かない。
+		// 振幅を単調増加させ、最新バーの bandWidth が窓内で最大になるようにする。
 		const base = 10_000_000;
-		// 前半は低 bw、後半は高 bw にして最終時点での percentile を高くする
 		const { year2026, year2025 } = make2026And2025Rows((i) => {
-			if (i < 61) return base + (i % 2 ? 50_000 : -50_000); // 低 bw
-			return base + (i % 2 ? 500_000 : -500_000); // 高 bw
+			const amplitude = 20_000 + i * 8_000; // 振幅を単調増加 → 20 期間 σ も単調増加
+			return base + (i % 2 ? amplitude : -amplitude);
 		}, base);
 		mockFetchByYear(year2026, year2025);
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'default');
 		assertOk(res);
-		const hasHighVol = res.data.signals.some((s: string) => s.includes('high volatility phase'));
-		const hasCompressed = res.data.signals.some((s: string) => s.includes('compressed'));
-		// どちらか一方のパーセンタイルシグナルが付く
-		expect(hasHighVol || hasCompressed || res.data.signals.length > 0).toBe(true);
-		if (hasHighVol) {
-			expect(res.data.signals.some((s: string) => s.includes('percentile'))).toBe(true);
-		}
+		expect(res.data.context.bandWidthPct_percentile).toBeGreaterThan(80);
+		expect(res.data.signals.some((s: string) => s.includes('high volatility phase'))).toBe(true);
+		expect(res.data.signals.some((s: string) => s.includes('percentile'))).toBe(true);
 	});
 
 	it('year-aware mock: percentile < 20 → breakout setup signal', async () => {

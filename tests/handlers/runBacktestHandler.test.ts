@@ -6,6 +6,7 @@ vi.mock('../../tools/trading_process/index.js', () => ({
 
 import { toolDef } from '../../src/handlers/runBacktestHandler.js';
 import { runBacktest } from '../../tools/trading_process/index.js';
+import { asMcp } from '../helpers/mcp.js';
 
 const mockedRunBacktest = vi.mocked(runBacktest);
 
@@ -108,7 +109,7 @@ describe('runBacktestHandler', () => {
 			timeframe: '1D',
 			period: '3M',
 		});
-		const sc = (res as { structuredContent: Record<string, unknown> }).structuredContent;
+		const sc = asMcp<Record<string, unknown>>(res).structuredContent;
 		const hint = sc.artifactHint as Record<string, unknown>;
 		expect(hint?.renderHint).toBe('ARTIFACT_REQUIRED');
 		expect(hint?.displayType).toBe('image/svg+xml');
@@ -122,7 +123,7 @@ describe('runBacktestHandler', () => {
 			timeframe: '1D',
 			period: '3M',
 		});
-		const sc = (res as { structuredContent: Record<string, unknown> }).structuredContent;
+		const sc = asMcp<Record<string, unknown>>(res).structuredContent;
 		expect(sc.artifactHint).toBeUndefined();
 	});
 
@@ -134,7 +135,7 @@ describe('runBacktestHandler', () => {
 			timeframe: '1D',
 			period: '3M',
 		});
-		const sc = (res as { structuredContent: { data: { trade_count: number } } }).structuredContent;
+		const sc = asMcp<{ data: { trade_count: number } }>(res).structuredContent;
 		expect(sc.data.trade_count).toBe(10);
 	});
 });

@@ -598,4 +598,73 @@ describe('detect_patterns handler', () => {
 		const text = (res as { content: Array<{ text: string }> }).content[0].text;
 		expect(text).toMatch(/非常に低い|除外候補/);
 	});
+	// data.warnings は structuredContent 側にしか無く LLM からは見えないため、
+	// スキャン窓不足の警告は content[0].text にも出す必要がある。
+	describe('スキャン窓不足の警告（data.warnings → content）', () => {
+		const scanWarning = {
+			type: 'limit_too_small_for_timeframe',
+			message: 'limit が日足（1day）に対して小さすぎます: limit≥23 にしてください。',
+			suggestedParams: { limit: 23 },
+		};
+
+		function resultWithScanWarning() {
+			return okResult({
+				data: { patterns: [], overlays: { ranges: [] }, warnings: [scanWarning], statistics: {} },
+			});
+		}
+
+		it.each(['summary', 'detailed', 'full', 'debug'] as const)('%s view の content 先頭に出る', async (view) => {
+			mockedDetectPatterns.mockResolvedValueOnce(asMockResult(resultWithScanWarning()));
+
+			const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 20, view });
+
+			const text = (res as { content: Array<{ text: string }> }).content[0].text;
+			expect(text.startsWith(`⚠️ ${scanWarning.message}`)).toBe(true);
+		});
+
+		it('上流 warning がある場合は上流が先、スキャン窓が後', async () => {
+			mockedDetectPatterns.mockResolvedValueOnce(
+				asMockResult(
+					okResult({
+						data: { patterns: [], overlays: { ranges: [] }, warnings: [scanWarning], statistics: {} },
+						meta: {
+							pair: 'btc_jpy',
+							type: '1day',
+							count: 0,
+							visualization_hints: { preferred_style: 'line', highlight_patterns: [] },
+							debug: { swings: [], candidates: [] },
+							warning: 'partial fetch',
+						},
+					}),
+				),
+			);
+
+			const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 20, view: 'detailed' });
+
+			const lines = (res as { content: Array<{ text: string }> }).content[0].text.split('\n');
+			expect(lines[0]).toBe('⚠️ partial fetch');
+			expect(lines[1]).toBe(`⚠️ ${scanWarning.message}`);
+		});
+
+		it('low_detection_count は content に出さない（従来どおり structuredContent のみ）', async () => {
+			mockedDetectPatterns.mockResolvedValueOnce(
+				asMockResult(
+					okResult({
+						data: {
+							patterns: [],
+							overlays: { ranges: [] },
+							warnings: [{ type: 'low_detection_count', message: '検出数が少ないです' }],
+							statistics: {},
+						},
+					}),
+				),
+			);
+
+			const res = await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 90, view: 'detailed' });
+
+			const text = (res as { content: Array<{ text: string }> }).content[0].text;
+			expect(text.includes('⚠️')).toBe(false);
+			expect(text.includes('検出数が少ないです')).toBe(false);
+		});
+	});
 });

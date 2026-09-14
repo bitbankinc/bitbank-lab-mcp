@@ -7,6 +7,9 @@ import {
 	deprecatedViewNote,
 	FailResultSchema,
 	FORMAT_PARAM_NOTE,
+	MAX_TX_COUNT_LIMIT,
+	TX_RANGE_SINCE_SCHEMA,
+	TX_RANGE_UNTIL_SCHEMA,
 	toolResultSchema,
 	VIEW_CONTRACT_NOTE,
 } from './base.js';
@@ -231,7 +234,8 @@ export const GetCandlesInputSchema = z.object({
 			'type により形式が異なる:\n' +
 				'- 1min/5min/15min/30min/1hour → YYYYMMDD（例: 20251022）\n' +
 				'- 4hour/8hour/12hour/1day/1week/1month → YYYY（例: 2025）\n' +
-				'date=YYYYMMDD は tz（既定 Asia/Tokyo）の暦日として解釈します。指定日の終端（23:59:59.999 in tz）以前の limit 本を返します。' +
+				'date=YYYYMMDD は tz（既定 Asia/Tokyo）の暦日として解釈します（get_transactions / get_flow_metrics の date は UTC 暦日で基準が異なります）。' +
+				'指定日の終端（23:59:59.999 in tz）以前の limit 本を返します。' +
 				'limit は日数ではなくローソク足本数です。例: 1hour, date=20251002, limit=24 は指定 tz の 10/2 24 本（00:00〜23:00）。\n' +
 				'省略時は最新。\n' +
 				'（互換: 年足系で YYYYMMDD を渡した場合は先頭4桁を年として使用）',
@@ -279,25 +283,52 @@ export const TransactionItemSchema = z.object({
 	isoTime: z.string(),
 });
 
-export const GetTransactionsDataSchemaOut = z.object({ raw: z.unknown(), normalized: z.array(TransactionItemSchema) });
+// raw（生レスポンス全量）は非搭載: date 指定時に全 UTC 日分（約 8,000 件超）が structuredContent に
+// 毎回同梱され limit の意義を無効化していたため削除（消費者ゼロ確認済み）。
+export const GetTransactionsDataSchemaOut = z.object({ normalized: z.array(TransactionItemSchema) });
+
+/** meta.actualRange / meta.fetchedRange の時刻範囲（Asia/Tokyo 表記） */
+export const TransactionRangeSchema = z.object({ start: z.string(), end: z.string() });
+
 export const GetTransactionsMetaSchemaOut = BaseMetaSchema.extend({
 	count: z.number().int(),
 	source: z.enum(['latest', 'by_date']),
+	totalFetched: z.number().int().describe('上流から取得し normalize に成功した全件数（不正行 drop 除外後）'),
+	matched: z.number().int().describe('フィルタ適用後の件数（フィルタ未指定時は totalFetched と同値）'),
+	returned: z.number().int().describe('limit 適用後の返却件数（count と同値）'),
+	truncated: z.boolean().describe('matched > returned（limit による切り捨てが発生したか）'),
+	actualRange: TransactionRangeSchema.extend({ durationMinutes: z.number().int() })
+		.optional()
+		.describe('返却した約定の実カバー範囲（Asia/Tokyo。0 件時は省略）'),
+	fetchedRange: TransactionRangeSchema.optional().describe('取得できた全約定の時刻範囲（Asia/Tokyo。0 件時は省略）'),
 	warning: z.string().optional(),
 });
 export const GetTransactionsOutputSchema = toolResultSchema(GetTransactionsDataSchemaOut, GetTransactionsMetaSchemaOut);
 
 export const GetTransactionsInputSchema = BasePairInputSchema.extend({
-	limit: z.number().int().min(1).max(1000).optional().default(100),
+	limit: z
+		.number()
+		.int()
+		.min(1)
+		.max(1000)
+		.optional()
+		.default(100)
+		.describe(
+			'返却件数の上限。フィルタ適用後の件数に対して効き、超過分は最新側を残して切り捨て（meta.truncated / warning で明示）',
+		),
 	date: z
 		.string()
 		.regex(/^\d{8}$/)
 		.optional()
-		.describe('YYYYMMDD; omit for latest'),
-	minAmount: z.number().positive().optional(),
-	maxAmount: z.number().positive().optional(),
-	minPrice: z.number().positive().optional(),
-	maxPrice: z.number().positive().optional(),
+		.describe(
+			'YYYYMMDD。**UTC 暦日**として解釈します（bitbank の約定アーカイブ /transactions/{YYYYMMDD} が UTC 暦日単位のため）。' +
+				'get_candles / validate_candle_data の date が tz 引数の暦日（既定 Asia/Tokyo）である点と基準が異なります。' +
+				'当該 UTC 日の完了後（JST 09:00 以降）に公開されるため、進行中の UTC 日を指定すると 404。省略時は latest（直近約60件）。',
+		),
+	minAmount: z.number().positive().optional().describe('約定数量の下限（limit 適用前にフィルタ）'),
+	maxAmount: z.number().positive().optional().describe('約定数量の上限（limit 適用前にフィルタ）'),
+	minPrice: z.number().positive().optional().describe('約定価格の下限（limit 適用前にフィルタ）'),
+	maxPrice: z.number().positive().optional().describe('約定価格の上限（limit 適用前にフィルタ）'),
 	view: z
 		.enum(['full', 'summary', 'items'])
 		.optional()
@@ -344,8 +375,15 @@ export const FlowBucketSchema = z.object({
 	sellVolume: z.number(),
 	totalVolume: z.number(),
 	cvd: z.number(),
+	/** 欠損バケット（hasData=false）では null。観測が無い区間に Z スコアは定義できない */
 	zscore: z.number().nullable().optional(),
 	spike: z.enum(['notice', 'warning', 'strong']).nullable().optional(),
+	hasData: z
+		.boolean()
+		.describe(
+			'この区間に取得できたデータがあるか。false は「約定ゼロ」ではなく「取得できていない（欠損区間）」を意味する。' +
+				'false のバケットは Z スコア・スパイクの母集団から除外される',
+		),
 });
 
 export const GetFlowMetricsDataSchemaOut = z.object({
@@ -364,6 +402,39 @@ export const GetFlowMetricsDataSchemaOut = z.object({
 	series: z.object({ buckets: z.array(FlowBucketSchema) }),
 });
 
+/**
+ * 約定の実カバー範囲。
+ *
+ * `durationMinutes`（先頭〜末尾のスパン）だけでは、アーカイブ未公開区間などの穴を
+ * 「カバー済み」として申告してしまう。実データがある区間の合計（`coveredMinutes`）と
+ * 欠損（`gapMinutes` / `gaps`）を必ず併記する。
+ */
+export const TxCoverageRangeSchema = z.object({
+	start: z.string(),
+	end: z.string(),
+	durationMinutes: z.number().int().describe('先頭〜末尾のスパン（欠損区間を含む）'),
+	coveredMinutes: z.number().int().describe('実際に約定が存在する区間の合計'),
+	gapMinutes: z.number().int().describe('durationMinutes - coveredMinutes'),
+	segments: z.number().int().describe('連続して約定があった区間の数'),
+	requestedMinutes: z
+		.number()
+		.int()
+		.optional()
+		.describe(
+			'要求した時間窓（**分**）。hours 指定時は hours×60（例: hours=8 → 480）、since/until 指定時は (until - since) / 60000' +
+				'（例: since=2026-08-01T00:00:00Z, until=2026-08-02T00:00:00Z → 1440）、date 指定（アーカイブ取得成功時）は当該 UTC 暦日の 1440。' +
+				'時間窓の要求が無いケース（件数ベース取得 / date 指定でアーカイブ未公開のため latest にフォールバックした場合）は省略',
+		),
+	coveragePct: z
+		.number()
+		.optional()
+		.describe('coveredMinutes / requestedMinutes（%）。requestedMinutes がある場合のみ'),
+	gaps: z
+		.array(z.object({ start: z.string(), end: z.string(), durationMinutes: z.number().int() }))
+		.optional()
+		.describe('欠損区間（長い順に最大 3 件）'),
+});
+
 export const GetFlowMetricsMetaSchemaOut = BaseMetaSchema.extend({
 	count: z.number().int(),
 	bucketMs: z.number().int(),
@@ -371,15 +442,33 @@ export const GetFlowMetricsMetaSchemaOut = BaseMetaSchema.extend({
 	timezoneOffset: z.string().optional(),
 	serverTime: z.string().optional(),
 	hours: z.number().optional(),
-	mode: z.enum(['time_range']).optional(),
-	actualRange: z
-		.object({
-			start: z.string(),
-			end: z.string(),
-			durationMinutes: z.number().int(),
-		})
-		.optional(),
+	mode: z
+		.enum(['time_range', 'absolute_range'])
+		.optional()
+		.describe('time_range: hours による現在時刻起点の相対窓 / absolute_range: since・until による絶対時刻区間'),
+	range: z
+		.object({ since: z.string(), until: z.string() })
+		.optional()
+		.describe(
+			'要求した絶対時刻区間（UTC ISO8601）。until は排他（[since, until)）で、省略指定時は解決に使った現在時刻が入る。' +
+				'mode=absolute_range のときのみ',
+		),
+	actualRange: TxCoverageRangeSchema.optional(),
+	totalAvailable: z
+		.number()
+		.int()
+		.optional()
+		.describe(
+			'limit 適用前に取得できていた約定件数（件数ベース取得時のみ。hours 指定時は limit を適用しないため省略）',
+		),
+	truncated: z
+		.boolean()
+		.optional()
+		.describe('limit により切り捨てが発生したか。true のとき集計値・actualRange は切り捨て後の区間のみが対象'),
+	/** 取得層の不完全性（部分失敗・アーカイブ未公開・カバレッジ欠損・limit 切り捨て） */
 	warning: z.string().optional(),
+	/** 計算層の不完全性（集計値が欠損を含む区間から算出されている 等） */
+	warnings: z.array(z.string()).optional(),
 });
 
 export const GetFlowMetricsOutputSchema = toolResultSchema(GetFlowMetricsDataSchemaOut, GetFlowMetricsMetaSchemaOut);
@@ -389,23 +478,38 @@ export const GetFlowMetricsInputSchema = BasePairInputSchema.extend({
 		.number()
 		.int()
 		.min(1)
-		.max(2000)
+		.max(MAX_TX_COUNT_LIMIT)
 		.optional()
 		.default(100)
-		.describe('取得する約定件数（バケット数ではない）。hours 指定時は無視されます'),
+		.describe(
+			'取得する約定件数（バケット数ではない）。**date / hours / since・until のいずれも指定しない件数ベース取得（＝直近 N 件）でのみ有効**です。' +
+				'区間指定パラメータを渡した場合は無視されます（いずれも区間の全件を集計）。' +
+				`上限 ${MAX_TX_COUNT_LIMIT} 件は BTC/JPY で 6〜8.5 時間分に相当します。それより長い窓は件数ではなく hours / since・until で指定してください`,
+		),
 	hours: z
 		.number()
 		.min(0.1)
 		.max(24)
 		.optional()
 		.describe(
-			'指定した時間数分の約定を取得して分析（例: 8 → 直近8時間）。limit より優先。複数日にまたがる場合も自動で取得します',
+			'指定した時間数分の約定を取得して分析（例: 8 → 直近8時間）。**現在時刻起点**の相対窓。limit より優先。' +
+				'複数日にまたがる場合も自動で取得します。since/until・date とは併用不可（併用時は user エラー）',
 		),
+	since: TX_RANGE_SINCE_SCHEMA,
+	until: TX_RANGE_UNTIL_SCHEMA,
 	date: z
 		.string()
 		.regex(/^\d{8}$/)
 		.optional()
-		.describe('YYYYMMDD; omit for latest'),
+		.describe(
+			'YYYYMMDD。**UTC 暦日**として解釈します（上流の約定アーカイブ /transactions/{YYYYMMDD} が UTC 暦日単位のため）。' +
+				'get_candles / validate_candle_data の date が tz 引数の暦日（既定 Asia/Tokyo）である点と基準が異なります。' +
+				'当該 UTC 暦日の**全件**（BTC/JPY で 5,600〜8,000 件）を集計します。limit は適用しません。' +
+				'UTC 暦日 1 日ちょうどを指定する簡便手段なので、複数日にまたがる区間や UTC 暦日の境界に揃わない区間' +
+				'（例: JST の 1 日）には since/until を使ってください（例: since=2026-08-01T00:00:00Z, until=2026-08-02T00:00:00Z）。' +
+				'進行中の UTC 日を指定した場合は latest（直近約60件。要求日の全件ではない）にフォールバックし warning を出します。省略時は latest。' +
+				'since/until とは併用不可（併用時は user エラー）。',
+		),
 	bucketMs: z
 		.number()
 		.int()
@@ -433,7 +537,8 @@ export const GetFlowMetricsInputSchema = BasePairInputSchema.extend({
 		.default(false)
 		.describe(
 			'true にすると content のバケット行を非ゼロ（buy または sell > 0）のみに絞ります。量ではなく絞り込みの軸なので view とは独立に指定できます。' +
-				'約定が 1 件も無かった区間のバケットは出来高 0 なので content から落ちます（structuredContent には残るので、区間の連続性はそちらで確認できます）。' +
+				'欠損バケット（hasData=false）は落とさず、連続区間を `⋯ 欠損 A〜B（Nバケット, データなし）` の 1 行に畳んで残します' +
+				'（黙って消すと「閑散だった」と誤読されるため）。' +
 				'structuredContent は変わりません（全バケットのまま）。view=summary との併用は no-op（バケット行が無いため。エラーにはしません）。',
 		),
 	bucketsN: z

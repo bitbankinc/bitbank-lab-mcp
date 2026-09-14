@@ -7,6 +7,7 @@ import {
 	PatternFilterEnum,
 	PatternTypeEnum,
 } from '../../src/schema/patterns.js';
+import { TARGET_REACH_MAX_BARS } from '../../tools/patterns/target-reach.js';
 
 describe('PatternTypeEnum', () => {
 	it('出力 type は方向付きの確定パターンのみを受け入れる', () => {
@@ -194,6 +195,40 @@ describe('DetectedPatternSchema', () => {
 		expect(result.precedingTrend?.direction).toBe('insufficient_data');
 	});
 
+	// #189: 宣言が無かったため `parse()` が黙って落としていたフィールド。
+	// parity テスト（`tests/detect_patterns_meta_schema_parity.test.ts`）は
+	// **ツールを 1 回走らせて出たキー**で見ているので、フィクスチャが relaxed 経路を
+	// 踏まなくなると検証ごと消える。スキーマ単体でも生存を固定しておく。
+	it('_fallback（relaxed 経路の provenance）を受け入れ、parse 後も残す', () => {
+		const result = DetectedPatternSchema.parse({
+			type: 'triple_top',
+			confidence: 0.76,
+			range: { start: '2024-01-01', end: '2024-01-30' },
+			_fallback: 'relaxed_triple_x1.25',
+		});
+		expect(result._fallback).toBe('relaxed_triple_x1.25');
+	});
+
+	it('_fallback は省略できる（= strict 経路で拾えた）', () => {
+		const result = DetectedPatternSchema.parse({
+			type: 'triple_top',
+			confidence: 0.8,
+			range: { start: '2024-01-01', end: '2024-01-30' },
+		});
+		expect(result._fallback).toBeUndefined();
+	});
+
+	it('_fallback が文字列でない場合は拒否する', () => {
+		expect(() =>
+			DetectedPatternSchema.parse({
+				type: 'triple_top',
+				confidence: 0.8,
+				range: { start: '2024-01-01', end: '2024-01-30' },
+				_fallback: 1.25,
+			}),
+		).toThrow();
+	});
+
 	it('confirmation.type が未知の値は拒否する', () => {
 		expect(() =>
 			DetectedPatternSchema.parse({
@@ -222,6 +257,82 @@ describe('CandlePatternTypeEnum', () => {
 		for (const p of patterns) {
 			expect(CandlePatternTypeEnum.parse(p)).toBe(p);
 		}
+	});
+});
+
+/**
+ * ターゲット到達系フィールドの**範囲宣言**（issue #288 Phase 2）。
+ *
+ * docstring が「常に 1 以上」「0〜TARGET_REACH_MAX_BARS」と言っているのに Zod が任意の整数を
+ * 通す状態は、宣言と振る舞いがずれたまま気づけない形なので、境界をここで固定する。
+ */
+describe('DetectedPatternSchema: ターゲット到達系の範囲（#288 Phase 2）', () => {
+	const base = {
+		type: 'triangle_ascending' as const,
+		confidence: 0.8,
+		range: { start: '2024-01-01', end: '2024-01-30' },
+	};
+
+	it.each([0, 1, TARGET_REACH_MAX_BARS])('targetFirstReachBars=%i は受け入れる', (bars) => {
+		expect(DetectedPatternSchema.parse({ ...base, targetFirstReachBars: bars }).targetFirstReachBars).toBe(bars);
+	});
+
+	it.each([-1, TARGET_REACH_MAX_BARS + 1])('targetFirstReachBars=%i は拒否する', (bars) => {
+		expect(() => DetectedPatternSchema.parse({ ...base, targetFirstReachBars: bars })).toThrow();
+	});
+
+	it.each([0, TARGET_REACH_MAX_BARS])('targetScanBars=%i は受け入れる', (bars) => {
+		expect(DetectedPatternSchema.parse({ ...base, targetScanBars: bars }).targetScanBars).toBe(bars);
+	});
+
+	it.each([-1, TARGET_REACH_MAX_BARS + 1])('targetScanBars=%i は拒否する', (bars) => {
+		expect(() => DetectedPatternSchema.parse({ ...base, targetScanBars: bars })).toThrow();
+	});
+
+	const confounder = (over: Record<string, unknown> = {}) => ({
+		type: 'rising_wedge',
+		direction: 'down',
+		barsAfterBreakout: 5,
+		...over,
+	});
+
+	it('交絡は種別・方向・本数が揃っていれば受け入れる', () => {
+		const parsed = DetectedPatternSchema.parse({
+			...base,
+			targetOtherBreakoutBeforeReach: [confounder()],
+			targetOppositeBreakoutInWindow: [confounder({ type: 'triangle_descending', barsAfterBreakout: 1 })],
+		});
+		expect(parsed.targetOtherBreakoutBeforeReach).toHaveLength(1);
+		expect(parsed.targetOppositeBreakoutInWindow?.[0]?.barsAfterBreakout).toBe(1);
+	});
+
+	// `toBreakoutRef` が種別を読み取れなかったときの防御分岐。**列挙に混ぜず literal で足してある**
+	// ので、「列挙外の種別」と「種別が読めなかった」が区別できる。
+	it("種別が読めなかったことの申告 'unknown' は受け入れる", () => {
+		const parsed = DetectedPatternSchema.parse({
+			...base,
+			targetOtherBreakoutBeforeReach: [confounder({ type: 'unknown' })],
+		});
+		expect(parsed.targetOtherBreakoutBeforeReach?.[0]?.type).toBe('unknown');
+	});
+
+	it('列挙にも unknown にも無い種別は拒否する', () => {
+		expect(() =>
+			DetectedPatternSchema.parse({
+				...base,
+				targetOtherBreakoutBeforeReach: [confounder({ type: 'cup_and_handle' })],
+			}),
+		).toThrow();
+	});
+
+	// **0 本後は「自分と同じ足」**で、交絡の定義（開区間 / 右端のみ閉じる）では起きない。
+	it.each([0, -1])('barsAfterBreakout=%i は拒否する（常に 1 以上）', (bars) => {
+		expect(() =>
+			DetectedPatternSchema.parse({
+				...base,
+				targetOtherBreakoutBeforeReach: [confounder({ barsAfterBreakout: bars })],
+			}),
+		).toThrow();
 	});
 });
 

@@ -155,14 +155,11 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 		vi.restoreAllMocks();
 	});
 
-	it('get_flow_metrics: summary / detailed / full（+ deprecated alias）で同一', async () => {
-		const entries = await collectByView(
-			['summary', 'detailed', 'full', 'compact', 'buckets'] as const,
-			async (view) => {
-				mockTransactions();
-				return flowMetricsTool.handler({ pair: 'btc_jpy', limit: 3, date: '20240101', bucketMs: 60_000, view });
-			},
-		);
+	it('get_flow_metrics: summary / compact / buckets / full で同一', async () => {
+		const entries = await collectByView(['summary', 'compact', 'buckets', 'full'] as const, async (view) => {
+			mockTransactions();
+			return flowMetricsTool.handler({ pair: 'btc_jpy', limit: 3, date: '20240101', bucketMs: 60_000, view });
+		});
 		expectSameStructuredContent(entries);
 		// 回帰の本体: 旧実装は summary で series.buckets をキーごと削除していた。
 		for (const [view, structured] of entries) {
@@ -172,8 +169,8 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 		}
 	});
 
-	it('get_transactions: full（+ deprecated alias の summary / items）で同一', async () => {
-		const entries = await collectByView(['full', 'summary', 'items'] as const, async (view) => {
+	it('get_transactions: summary / items で同一', async () => {
+		const entries = await collectByView(['summary', 'items'] as const, async (view) => {
 			mockTransactions();
 			return transactionsTool.handler({ pair: 'btc_jpy', limit: 3, date: '20240101', view });
 		});
@@ -199,11 +196,10 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 	});
 
 	/**
-	 * get_candles は語彙統一前は唯一の逸脱だった——`view=items` が structuredContent を
+	 * get_candles は PR 1 時点で唯一の逸脱だった——`view=items` が structuredContent を
 	 * `{ items, meta }` に差し替え、Result 封筒（ok / summary / data.{raw,keyPoints,volumeStats}）を
-	 * 落としていた。`items` を `view=full` + `format=json` へ置き換えるのと同時に直したので
-	 * （外部クライアントが受ける破壊を 1 回に集約するため。§5-0 分割の原則 2）、
-	 * 他ツールと同じ deep-equal で検証する。
+	 * 落としていた。`items` を `view=full` + `format=json` へ置き換える PR 3 で同時に直したので
+	 * （破壊を 1 回に集約するため。§5-0 分割の原則 2）、他ツールと同じ deep-equal で検証する。
 	 *
 	 * `format` は content の**形式**を選ぶパラメータであって structuredContent の契約を
 	 * 変えるパラメータではない（§3-2 規約 4 は view についての規約だが、根拠——LLM は
@@ -264,6 +260,14 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 				pair: 'btc_jpy',
 				type: '1day',
 				count: 1,
+				// #184 で出力スキーマに宣言した実効パラメータ。**view で削られないこと**が規約 2 の対象で、
+				// 宣言前は parse で strip されて structuredContent に一度も現れていなかった（欠陥 D）。
+				effective_params: {
+					swingDepth: { value: 6, source: 'auto' },
+					minBarsBetweenSwings: { value: 4, source: 'auto' },
+					tolerancePct: { value: 0.04, source: 'auto' },
+					headProminencePct: { value: 0.04, source: 'auto' },
+				},
 				visualization_hints: { preferred_style: 'line', highlight_patterns: [] },
 				debug: {
 					swings: [{ kind: 'H', idx: 3, price: 100, isoTime: '2026-01-05T00:00:00.000Z' }],

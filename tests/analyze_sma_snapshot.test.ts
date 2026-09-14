@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
+import type { Candle } from '../src/schemas.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
 
 vi.mock('../tools/analyze_indicators.js', () => ({
@@ -15,14 +16,17 @@ function makeSeries(start: number, step: number, len: number) {
 
 function buildIndicatorsOk() {
 	const len = 40;
+	// 型は CandleSchema 由来にする。provisional 判定は normalized.at(-1).timestamp を読むため、
+	// リテラル推論のままだと最新足に timestamp を後付けするテストが型エラーになる。
+	const normalized: Pick<Candle, 'close' | 'isoTime' | 'timestamp'>[] = Array.from({ length: len }, (_, i) => ({
+		close: i === len - 1 ? 140 : 120,
+		isoTime: `2024-01-${String((i % 30) + 1).padStart(2, '0')}T00:00:00.000Z`,
+	}));
 	return {
 		ok: true as const,
 		summary: 'ok',
 		data: {
-			normalized: Array.from({ length: len }, (_, i) => ({
-				close: i === len - 1 ? 140 : 120,
-				isoTime: `2024-01-${String((i % 30) + 1).padStart(2, '0')}T00:00:00.000Z`,
-			})),
+			normalized,
 			indicators: {
 				SMA_5: 130,
 				SMA_20: 120,

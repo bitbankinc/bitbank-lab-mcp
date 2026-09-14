@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { getHsShoulderMaxPctForTf, getSizeThresholdsForTf } from '../../tools/patterns/config.js';
 import type { DetectContext } from '../../tools/patterns/types.js';
 import { pushCand } from '../../tools/patterns/types.js';
 
@@ -15,11 +16,14 @@ function makeCtx(candles: Array<{ isoTime?: string }>): DetectContext {
 		allPeaks: [],
 		allValleys: [],
 		tolerancePct: 0.04,
+		headProminencePct: 0.04,
 		minDist: 5,
 		want: new Set(),
 		includeForming: false,
 		debugCandidates: [],
 		type: '1day',
+		sizeThresholds: getSizeThresholdsForTf('1day'),
+		hsShoulderMaxPct: getHsShoulderMaxPctForTf('1day'),
 		swingDepth: 6,
 		near: () => false,
 		pct: () => 0,

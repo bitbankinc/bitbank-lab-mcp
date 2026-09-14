@@ -83,8 +83,12 @@ function buildSuccess(length: number, metaExtras: Record<string, unknown> = {}) 
 }
 
 /** ICHIMOKU 用に spanA/spanB のうち末尾 partialNullCount 本を null にして雲不足を再現する */
-function buildIchimokuWithPartialCloud(length: number, partialNullCount: number) {
-	const base = buildSuccess(length);
+function buildIchimokuWithPartialCloud(
+	length: number,
+	partialNullCount: number,
+	metaExtras: Record<string, unknown> = {},
+) {
+	const base = buildSuccess(length, metaExtras);
 	const spanA = base.data.chart.indicators.ICHI_spanA as Array<number | null>;
 	const spanB = base.data.chart.indicators.ICHI_spanB as Array<number | null>;
 	for (let i = length - partialNullCount; i < length; i++) {
@@ -512,8 +516,7 @@ describe('render_chart_svg', () => {
 	});
 
 	it('上流 warnings と renderWarnings は別フィールドとして同時に保持される', async () => {
-		const mocked = buildIchimokuWithPartialCloud(90, 55);
-		mocked.meta = { ...mocked.meta, warnings: ['SMA_200: データ不足'] };
+		const mocked = buildIchimokuWithPartialCloud(90, 55, { warnings: ['SMA_200: データ不足'] });
 		mockedAnalyze.mockResolvedValueOnce(asMockResult(mocked));
 		const res = await renderChartSvg({ pair: 'btc_jpy', type: '1day', limit: 60, indicators: ['ICHIMOKU'] });
 		assertOk(res);

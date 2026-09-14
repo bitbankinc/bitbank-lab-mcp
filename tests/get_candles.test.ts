@@ -5,10 +5,22 @@ import getCandles, { toolDef } from '../tools/get_candles.js';
 import { assertFail, assertOk } from './_assertResult.js';
 import { candlesError } from './fixtures/bitbank-api.js';
 
+/**
+ * normalized から timestamp 列を取り出す。
+ * `CandleSchema.timestamp` はスキーマ上 optional だが get_candles は全経路で必ず埋めるため、
+ * 欠損は契約違反としてここで落とす（`c.timestamp!` で握りつぶさない）。
+ */
+function timestampsOf(candles: readonly { timestamp?: number }[]): number[] {
+	return candles.map((c, i) => {
+		if (c.timestamp === undefined) throw new Error(`normalized[${i}] に timestamp がありません`);
+		return c.timestamp;
+	});
+}
+
 describe('GetCandlesInputSchema (limit 上限契約)', () => {
 	it('limit=10000 は schema レベルで通る（multi-day 経路の実上限と整合）', () => {
 		const parsed = GetCandlesInputSchema.parse({ pair: 'btc_jpy', type: '1min', limit: 10000 });
-		expect((parsed as { limit: number }).limit).toBe(10000);
+		expect(parsed.limit).toBe(10000);
 	});
 
 	it('limit=10001 は schema レベルで弾かれる', () => {
@@ -22,7 +34,7 @@ describe('GetCandlesInputSchema (limit 上限契約)', () => {
 		expect(GetCandlesInputSchema.safeParse({ pair: 'btc_jpy', type: '1day', limit: 1 }).success).toBe(true);
 		// 省略時は default(200) が適用される
 		const parsed = GetCandlesInputSchema.parse({ pair: 'btc_jpy', type: '1day' });
-		expect((parsed as { limit: number }).limit).toBe(200);
+		expect(parsed.limit).toBe(200);
 	});
 
 	it('limit=0 / limit=-1 / 小数は引き続き弾かれる', () => {
@@ -502,6 +514,54 @@ describe('getCandles', () => {
 			// multi-day branch は YYYYMMDD 形式のまま既存挙動
 			expect(calledUrls.some((u) => u.endsWith('/btc_jpy/candlestick/1hour/20240115'))).toBe(true);
 		});
+
+		// anchor 年内の利用可能本数の見積りは「1/1 から anchor 日までの**暦日数**」（= 暦日差 + 1）で決まる。
+		// DST を挟む tz では ms 差の単純割り算だと 1 日ぶん少なく出る:
+		// NY 2025-01-01 00:00 EST → 06-16 00:00 EDT は暦日差 166 日（= 経過 167 日ぶん）だが、
+		// 春の DST 開始で 1 時間短いため ms 差は 165 日 23 時間 → 割り算では経過 166 日ぶんに落ちる。
+		//
+		// この見積り (barsInAnchorYear) は yearsNeeded → needsMultiYear を経て **limit 上限**を
+		// 切り替える（multiYear=5000 / default=1000）。date 指定時は fetch key が UTC 年 window 側から
+		// 決まるため、見積りが観測できるのはこの limit 上限だけ（meta.multiYear は出力スキーマに
+		// 無く parse で落ちる）。境界 limit を挟んで ok / user エラーが反転することで
+		// barsInAnchorYear === floor(167 * 2190/365) === 1002 を一意に固定する。
+		describe('anchor 年の本数見積りは DST を跨いでも暦日数で数える', () => {
+			const buildYearMock = () =>
+				vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+					const m = String(url).match(/\/4hour\/(\d{4})$/);
+					const year = m ? Number(m[1]) : 2025;
+					const baseTs = Date.UTC(year, 0, 1);
+					const ohlcv = Array.from({ length: 2190 }, (_, i) => [
+						'100',
+						'110',
+						'90',
+						'105',
+						'1.0',
+						String(baseTs + i * 4 * 3_600_000),
+					]);
+					return {
+						ok: true,
+						status: 200,
+						statusText: 'OK',
+						json: async () => ({ success: 1, data: { candlestick: [{ ohlcv }] } }),
+					} as Response;
+				});
+
+			it('4hour + date=20250616 + tz=America/New_York + limit=1002: 1002 本で足りる → yearsNeeded=1 → limit 上限 1000 超過で user エラー', async () => {
+				buildYearMock();
+				const res = await getCandles('btc_jpy', '4hour', '20250616', 1002, 'America/New_York');
+				// ms 差ベース（166 日 → 996 本）だと 996 < 1002 で yearsNeeded=2 → 上限 5000 になり ok が返ってしまう
+				assertFail(res);
+				expect(res.meta?.errorType).toBe('user');
+				expect(res.summary).toContain('limit');
+			});
+
+			it('4hour + date=20250616 + tz=America/New_York + limit=1003: 1 本足りず yearsNeeded=2 → 上限 5000 で通る', async () => {
+				buildYearMock();
+				const res = await getCandles('btc_jpy', '4hour', '20250616', 1003, 'America/New_York');
+				assertOk(res);
+			});
+		});
 	});
 
 	it('複数日取得が必要な場合はバッチ取得するべき', async () => {
@@ -619,10 +679,10 @@ describe('getCandles', () => {
 
 		// dedupe により ts=ts の行は 1 件のみ
 		expect(res.data.normalized).toHaveLength(2);
-		const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+		const tsList = timestampsOf(res.data.normalized);
 		expect(tsList.filter((t: number) => t === ts)).toHaveLength(1);
 		// 残ったのは非プレースホルダ行
-		const kept = res.data.normalized.find((c: { timestamp: number }) => c.timestamp === ts);
+		const kept = res.data.normalized.find((c) => c.timestamp === ts);
 		expect(kept?.open).toBe(100);
 		expect(kept?.volume).toBe(1.5);
 	});
@@ -1151,7 +1211,7 @@ describe('getCandles', () => {
 			assertOk(res);
 
 			expect(res.data.normalized).toHaveLength(3);
-			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			const tsList = timestampsOf(res.data.normalized);
 			expect(tsList).toEqual([dayMs('2025-09-30'), dayMs('2025-10-01'), dayMs('2025-10-02')]);
 			// 10/3, 10/4 は含まれない
 			expect(tsList).not.toContain(dayMs('2025-10-03'));
@@ -1181,7 +1241,7 @@ describe('getCandles', () => {
 			assertOk(res);
 			expect(res.data.normalized).toHaveLength(3);
 			// 末尾 3 本: 10/2, 10/3, 10/4
-			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			const tsList = timestampsOf(res.data.normalized);
 			expect(tsList).toEqual([dayMs('2025-10-02'), dayMs('2025-10-03'), dayMs('2025-10-04')]);
 		});
 
@@ -1213,7 +1273,7 @@ describe('getCandles', () => {
 			const res = await getCandles('btc_jpy', '1hour', '20251002', 5);
 			assertOk(res);
 
-			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			const tsList = timestampsOf(res.data.normalized);
 			// すべて JST 10/2 終端（= UTC 10/2 14:59:59.999）以前であること
 			const jstEndOfDayMs = dayMs('2025-10-02') + 15 * 3600000 - 1; // JST 10/2 23:59:59.999
 			for (const ts of tsList) expect(ts).toBeLessThanOrEqual(jstEndOfDayMs);
@@ -1376,7 +1436,7 @@ describe('getCandles', () => {
 			assertOk(res);
 
 			expect(res.data.normalized).toHaveLength(24);
-			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			const tsList = timestampsOf(res.data.normalized);
 			// 最古 = JST 10/2 0:00 = UTC 10/1 15:00
 			expect(tsList[0]).toBe(hourMs('2025-10-01', 15));
 			// 最新 = JST 10/2 23:00 = UTC 10/2 14:00
@@ -1415,7 +1475,7 @@ describe('getCandles', () => {
 			assertOk(res);
 
 			expect(res.data.normalized).toHaveLength(24);
-			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			const tsList = timestampsOf(res.data.normalized);
 			// tz=UTC の暦日 anchor: UTC 10/2 0:00..23:00 ぴったり
 			expect(tsList[0]).toBe(hourMs('2025-10-02', 0));
 			expect(tsList.at(-1)).toBe(hourMs('2025-10-02', 23));
@@ -1470,7 +1530,7 @@ describe('getCandles', () => {
 
 			const res = await getCandles('btc_jpy', '1hour', '20251002', 24, '');
 			assertOk(res);
-			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			const tsList = timestampsOf(res.data.normalized);
 			// JST anchor の結果 (= 上の Asia/Tokyo ケースと同じ)
 			expect(tsList[0]).toBe(hourMs('2025-10-01', 15));
 			expect(tsList.at(-1)).toBe(hourMs('2025-10-02', 14));
@@ -1503,7 +1563,7 @@ describe('getCandles', () => {
 
 			const res = await getCandles('btc_jpy', '1hour', '20251002', 24, 'Invalid/Zone');
 			assertOk(res);
-			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			const tsList = timestampsOf(res.data.normalized);
 			// Asia/Tokyo フォールバックの結果
 			expect(tsList[0]).toBe(hourMs('2025-10-01', 15));
 			expect(tsList.at(-1)).toBe(hourMs('2025-10-02', 14));
@@ -1565,7 +1625,7 @@ describe('getCandles', () => {
 			const res = await getCandles('btc_jpy', '1day', '2025', 1000, 'Asia/Tokyo');
 			assertOk(res);
 			// 翌年 1/1 の足は除外、365 本のみ
-			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			const tsList = timestampsOf(res.data.normalized);
 			expect(tsList.find((ts: number) => ts >= Date.UTC(2026, 0, 1))).toBeUndefined();
 			// 末尾は UTC 2025-12-31 00:00（= JST 12/31 09:00）
 			expect(tsList.at(-1)).toBe(Date.UTC(2025, 11, 31));
@@ -1620,7 +1680,7 @@ describe('getCandles', () => {
 
 			// normalized 24 本が NY 10/2 0:00..23:00 = UTC 10/2 04:00..10/3 03:00 に収まる。
 			expect(res.data.normalized).toHaveLength(24);
-			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			const tsList = timestampsOf(res.data.normalized);
 			expect(tsList[0]).toBe(hourMs('2025-10-02', 4));
 			expect(tsList.at(-1)).toBe(hourMs('2025-10-03', 3));
 		});
@@ -1636,7 +1696,7 @@ describe('getCandles', () => {
 			expect(calledUrls.some((u) => u.endsWith('/1hour/20251003'))).toBe(true);
 
 			expect(res.data.normalized).toHaveLength(24);
-			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			const tsList = timestampsOf(res.data.normalized);
 			expect(tsList[0]).toBe(hourMs('2025-10-02', 7));
 			expect(tsList.at(-1)).toBe(hourMs('2025-10-03', 6));
 		});
@@ -1667,7 +1727,7 @@ describe('getCandles', () => {
 			expect(calledUrls.some((u) => u.endsWith('/1hour/20251003'))).toBe(false);
 
 			expect(res.data.normalized).toHaveLength(24);
-			const tsList = res.data.normalized.map((c: { timestamp: number }) => c.timestamp);
+			const tsList = timestampsOf(res.data.normalized);
 			expect(tsList[0]).toBe(hourMs('2025-10-02', 0));
 			expect(tsList.at(-1)).toBe(hourMs('2025-10-02', 23));
 		});
@@ -1729,6 +1789,30 @@ describe('getCandles', () => {
 			const res = await getCandles('btc_jpy', '1hour', '20251102', 24, 'America/New_York');
 			assertOk(res);
 			expect(res.data.normalized.length).toBeGreaterThan(0);
+		});
+
+		// 実在しない暦日 (20260230 等) の扱い。validateDate は形式 (/^\d{8}$/) しか見ず、
+		// GetCandlesInputSchema も date を z.string() で受けるため、この入力は実装まで到達する。
+		// 現行は dayjs.tz の繰り上げ解釈（2026-02-30 → 2026-03-02）で anchor / window を組む。
+		// 実在日として弾く方向へ倒すと「anchor 無効 → 最新側 limit 本」に化けて silent に結果が変わるため、
+		// 現行の繰り上げ挙動を回帰として固定する。
+		it('実在しない date (20260230) は繰り上げ解釈 (2026-03-02) の tz 暦日 window で fetch する', async () => {
+			buildPerUtcDayMock();
+			const res = await getCandles('btc_jpy', '1hour', '20260230', 24, 'Asia/Tokyo');
+			assertOk(res);
+
+			// JST 3/2 = UTC 3/1 15:00 〜 UTC 3/2 14:59 → 両 UTC 日を fetch する
+			const calledUrls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0]));
+			expect(calledUrls.some((u) => u.endsWith('/1hour/20260301'))).toBe(true);
+			expect(calledUrls.some((u) => u.endsWith('/1hour/20260302'))).toBe(true);
+			// 2 月側 (繰り上げ前の暦日) は要求しない
+			expect(calledUrls.some((u) => u.endsWith('/1hour/20260228'))).toBe(false);
+
+			// anchor も繰り上げ後の JST 3/2 終端で切られる
+			expect(res.data.normalized).toHaveLength(24);
+			const tsList = timestampsOf(res.data.normalized);
+			expect(tsList[0]).toBe(hourMs('2026-03-01', 15));
+			expect(tsList.at(-1)).toBe(hourMs('2026-03-02', 14));
 		});
 	});
 
@@ -2054,20 +2138,39 @@ describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () =>
 		expect(res.meta.warning).toContain('20260708');
 	});
 
-	it('過去 UTC 日 chunk の実失敗（404）は過半数 fail し、メッセージに日付と原因を含む', async () => {
+	// #84 以前はここが「過半数 fail」だった。上場前の期間は必ず 404 になるため、
+	// 他 chunk が実データを返していれば「その期間に足が無い」として許容する（下の #84 ブロック参照）。
+	it('過去 UTC 日 chunk の 404 は、他 chunk にデータがあれば注記に落として成功させる', async () => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(dayjs.utc('2026-07-08T00:05:00Z').valueOf());
-		// date=20240115 (JST) → UTC keys [20240114, 20240115]。過去日 20240114 が HTTP 404 → 実失敗。
+		// date=20240115 (JST) → UTC keys [20240114, 20240115]。過去日 20240114 が HTTP 404。
 		mockPerUtcDay((key) =>
 			key === '20240114' ? { status: 404, body: notFoundBody } : { status: 200, body: okBody(key) },
 		);
 
 		const res = await getCandles('btc_jpy', '1hour', '20240115', 24);
-		assertFail(res);
-		expect(res.summary).toContain('過半数が失敗');
-		expect(res.summary).toContain('btc_jpy/1hour');
-		expect(res.summary).toContain('20240114');
-		expect(res.summary).toContain('404');
+		assertOk(res);
+		expect(res.data.normalized.length).toBeGreaterThan(0);
+		expect(res.meta.warning).toContain('ℹ️');
+		expect(res.meta.warning).toContain('20240114');
+		expect(res.meta.warning).toContain('上場前');
+		// 実失敗ではないので ⚠️ 側には出さない
+		expect(res.meta.warning).not.toContain('⚠️');
+	});
+
+	it('過去 UTC 日 chunk の実失敗（5xx）は 2 日中 1 日なら ⚠️ 警告付きで成功する（閾値は半数超）', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(dayjs.utc('2026-07-08T00:05:00Z').valueOf());
+		// date=20240115 (JST) → UTC keys [20240114, 20240115]。過去日 20240114 が 5xx → 実失敗。
+		// 旧実装（>= totalChunks / 2）はここで全体 fail し、取得できた 20240115 ごと捨てていた。
+		mockPerUtcDay((key) => (key === '20240114' ? { status: 503, body: {} } : { status: 200, body: okBody(key) }));
+
+		const res = await getCandles('btc_jpy', '1hour', '20240115', 24);
+		assertOk(res);
+		expect(res.data.normalized.length).toBeGreaterThan(0);
+		expect(res.meta.warning).toContain('⚠️');
+		expect(res.meta.warning).toContain('20240114');
+		expect(res.meta.warning).toContain('503');
 	});
 
 	// tz=UTC は tz 暦日 = UTC 暦日のため window が 1 UTC 日に潰れやすく、
@@ -2114,5 +2217,155 @@ describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () =>
 		expect(res.meta?.errorType).toBe('user');
 		expect(res.summary).toContain('データ未生成');
 		expect(res.summary).toContain('20260708');
+	});
+});
+
+// ── 上場前 chunk の 404 に巻き込まれない（#84） ──
+// JST 1 年ぶんの窓は UTC 年 chunk 2 本に割れるため、上場初年度の銘柄では古い側が必ず上場前になる。
+// bitbank /candlestick は存在しない期間キーに 404 を返す（docs/internal/bitbank-candle-tz.md 実測 4/5）ので、
+// これは確率的な失敗ではなく**構造的な確定失敗**——旧実装では該当銘柄がその年を永久に取得できなかった。
+
+describe('上場前 chunk の 404 に巻き込まれない（#84）', () => {
+	const originalFetch = globalThis.fetch;
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	/** UTC 年キーごとに応答を返すモック。valid な年は 1 年ぶんの日足を返す。 */
+	const mockPerUtcYear = (respond: (yearKey: string) => { status: number; body: unknown }) =>
+		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
+			const m = String(url).match(/\/1day\/(\d{4})$/);
+			const { status, body } = respond(m ? m[1] : '');
+			return {
+				ok: status >= 200 && status < 300,
+				status,
+				statusText: status === 404 ? 'Not Found' : status === 503 ? 'Service Unavailable' : 'OK',
+				headers: { get: () => null },
+				json: async () => body,
+			} as unknown as Response;
+		});
+
+	const yearBars = (yearKey: string) => {
+		const baseTs = Date.UTC(Number(yearKey), 0, 1);
+		return Array.from({ length: 365 }, (_, i) => ['100', '110', '90', '105', '1.0', String(baseTs + i * 86400000)]);
+	};
+	const okBody = (yearKey: string) => ({ success: 1, data: { candlestick: [{ ohlcv: yearBars(yearKey) }] } });
+	/** 上場前・未来の期間キー: HTTP 404 + code 10000（実測） */
+	const notFound = { status: 404, body: { success: 0, data: { code: 10000 } } };
+	/** 期間は在るが集計が未了: 200 + success:0（実測）。過去期間で出たら実失敗として扱う */
+	const upstreamZero = { status: 200, body: { success: 0, data: { code: 10000 } } };
+
+	const yearCalls = (yearKey: string) =>
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) => String(c[0]).endsWith(`/1day/${yearKey}`))
+			.length;
+
+	// 本 issue の核。実測は flr_jpy / date=2023 だが、上場初年度の銘柄すべてに共通する構造。
+	it('2 chunk のうち古い側が上場前 404・新しい側にデータあり → 成功してデータが返る', async () => {
+		// date=2020 + limit=400 → UTC 年 keys [2019, 2020]
+		mockPerUtcYear((key) => (key === '2019' ? notFound : { status: 200, body: okBody(key) }));
+
+		const res = await getCandles('btc_jpy', '1day', '2020', 400);
+		assertOk(res);
+		expect(res.data.normalized.length).toBeGreaterThan(0);
+		// 取得できた 2020 年の足が返っていること（404 の巻き添えで捨てられていない）
+		expect(timestampsOf(res.data.normalized).every((ts) => ts >= Date.UTC(2020, 0, 1))).toBe(true);
+		// 実失敗ではないので ⚠️ ではなく ℹ️ で申告する
+		expect(res.meta.warning).toContain('ℹ️');
+		expect(res.meta.warning).toContain('2019');
+		expect(res.meta.warning).toContain('上場前');
+		expect(res.meta.warning).not.toContain('⚠️');
+	});
+
+	it('全 chunk が 404 なら従来どおり失敗する（データが 1 本も無く判断材料が無い）', async () => {
+		mockPerUtcYear(() => notFound);
+
+		const res = await getCandles('btc_jpy', '1day', '2020', 400);
+		assertFail(res);
+		expect(res.summary).toContain('404');
+	});
+
+	it('上場前 404 はリトライしない（同じ期間キーを 1 回しか叩かない）', async () => {
+		mockPerUtcYear((key) => (key === '2019' ? notFound : { status: 200, body: okBody(key) }));
+
+		const res = await getCandles('btc_jpy', '1day', '2020', 400);
+		assertOk(res);
+		// 何度叩いても 404 なので初回のみ。旧実装は DEFAULT_RETRIES ぶん 3 回撃っていた
+		expect(yearCalls('2019')).toBe(1);
+		expect(yearCalls('2020')).toBe(1);
+	});
+
+	it('5xx は従来どおりリトライする（一時的な失敗は再試行で解消しうる）', async () => {
+		mockPerUtcYear((key) => (key === '2019' ? { status: 503, body: {} } : { status: 200, body: okBody(key) }));
+
+		const res = await getCandles('btc_jpy', '1day', '2020', 400);
+		assertOk(res);
+		// 初回 + DEFAULT_RETRIES(2) 回
+		expect(yearCalls('2019')).toBe(3);
+		// 実失敗なので ⚠️ 側に出る（2 年中 1 年 = 半数ちょうど → fail しない）
+		expect(res.meta.warning).toContain('⚠️');
+		expect(res.meta.warning).toContain('2年中1年');
+	});
+
+	it('過去 chunk の success:0 は上場前扱いにしない（実失敗として ⚠️ に出る）', async () => {
+		// 200 + success:0 は「期間は在るが集計が未了」の応答。過去期間で出たら本物の異常。
+		mockPerUtcYear((key) => (key === '2019' ? upstreamZero : { status: 200, body: okBody(key) }));
+
+		const res = await getCandles('btc_jpy', '1day', '2020', 400);
+		assertOk(res);
+		expect(res.meta.warning).toContain('⚠️');
+		expect(res.meta.warning).toContain('2年中1年');
+		expect(res.meta.warning).not.toContain('上場前');
+	});
+
+	it('上場前 404 は過半数判定の分母から外れる（実失敗だけで判定する）', async () => {
+		// date=2020 + limit=800 → UTC 年 keys [2018, 2019, 2020]
+		// 2018 が上場前 404（分母から除外）→ 分母 2 / 実失敗 1（2019 の 5xx）→ 半数ちょうどなので fail しない
+		mockPerUtcYear((key) => {
+			if (key === '2018') return notFound;
+			if (key === '2019') return { status: 503, body: {} };
+			return { status: 200, body: okBody(key) };
+		});
+
+		const res = await getCandles('btc_jpy', '1day', '2020', 800);
+		assertOk(res);
+		expect(res.meta.warning).toContain('2年中1年');
+		expect(res.meta.warning).toContain('上場前');
+	});
+
+	/**
+	 * 閾値は「半数以上」ではなく**半数超**（過半数）。メッセージの文言に閾値の方を寄せた。
+	 * `>=` のままだと、常に 2 chunk になる 1 年ぶんの要求が片方の失敗で必ず全滅する。
+	 */
+	describe('過半数の閾値（3 chunk = date 2020 + limit 800）', () => {
+		it('3 年中 1 年の実失敗 → ⚠️ 警告付きで成功する', async () => {
+			mockPerUtcYear((key) => (key === '2018' ? upstreamZero : { status: 200, body: okBody(key) }));
+
+			const res = await getCandles('btc_jpy', '1day', '2020', 800);
+			assertOk(res);
+			expect(res.meta.warning).toContain('⚠️');
+			expect(res.meta.warning).toContain('3年中1年');
+		});
+
+		it('3 年中 2 年の実失敗 → 過半数 fail', async () => {
+			mockPerUtcYear((key) => (key === '2020' ? { status: 200, body: okBody(key) } : upstreamZero));
+
+			const res = await getCandles('btc_jpy', '1day', '2020', 800);
+			assertFail(res);
+			expect(res.summary).toContain('過半数が失敗');
+			expect(res.summary).toContain('3年中2年失敗');
+			expect(res.meta?.errorType).toBe('upstream');
+		});
+
+		it('3 年中 3 年の実失敗 → 全 chunk 失敗として upstream fail', async () => {
+			mockPerUtcYear(() => upstreamZero);
+
+			const res = await getCandles('btc_jpy', '1day', '2020', 800);
+			assertFail(res);
+			expect(res.meta?.errorType).toBe('upstream');
+			expect(res.summary).toContain('code: 10000');
+		});
 	});
 });

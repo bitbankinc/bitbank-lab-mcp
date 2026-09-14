@@ -36,6 +36,27 @@ export function toIsoMs(ms: number | null): string | null {
 }
 
 /**
+ * tz 文字列を「実際に整形に使える IANA タイムゾーン」へ正規化する。
+ *
+ * 空文字・未指定に加えて、**IANA 名として解決できない値**（'Tokyo' / 'Not/AZone' 等）も
+ * `Asia/Tokyo` に畳む。`formatDateInTz` / `toIsoWithTz` は解決できない tz に対して
+ * `null` を返すだけなので、呼び出し側がそのまま使うと「表示行が丸ごと消える」
+ * 「日付が空文字になる」という形で情報が黙って落ちる。表示前にここを通すこと。
+ *
+ * 判定は固定 epoch（0）で行うので現在時刻に依存しない。
+ *
+ * @returns 解決できた tz、できなければ 'Asia/Tokyo'
+ */
+export function resolveTz(tz: string | undefined | null, fallback: string = 'Asia/Tokyo'): string {
+	if (typeof tz !== 'string' || tz.length === 0) return fallback;
+	try {
+		return dayjs(0).tz(tz).isValid() ? tz : fallback;
+	} catch {
+		return fallback;
+	}
+}
+
+/**
  * タイムスタンプをタイムゾーン付きISO風形式に変換
  * @param ts ミリ秒タイムスタンプ
  * @param tz タイムゾーン（例: 'Asia/Tokyo', 'UTC'）
@@ -159,6 +180,47 @@ export function parseIso8601(value: string): dayjs.Dayjs | null {
 		}
 	}
 	return null;
+}
+
+/**
+ * 日足未満（intraday）の時間足。
+ * 暦日だけで表示すると足の位置が特定できず「直近◯時間がスキャンされていない」という
+ * 誤読を招く（issue #200 の誤読の直接原因）ため、これらは時刻まで表示する。
+ *
+ * issue #233: 元は `tools/patterns/period.ts` にあったが、`lib/pattern-diagrams.ts`
+ * （構造図）からも必要になったため `lib/` へ移した。`lib/` → `tools/` の逆方向依存を
+ * 作らないための移動で、時間足の分類という土台的な判定は `lib/` 側が定位置。
+ * `tools/patterns/period.ts` は互換のため re-export している。
+ */
+const INTRADAY_TYPES = new Set(['1min', '5min', '15min', '30min', '1hour', '4hour', '8hour', '12hour']);
+
+/** 時間足が日足未満（= 表示に時刻まで含めるべき）か。 */
+export function isIntradayType(type: string): boolean {
+	return INTRADAY_TYPES.has(type);
+}
+
+/**
+ * UTC ISO 文字列を、時間足に応じて暦日 `YYYY-MM-DD`（日足以上）または分単位
+ * `YYYY-MM-DD HH:mm`（intraday）へ整形する（issue #200 要件 F-1 の共通実装）。
+ *
+ * **暦日に潰すと intraday では 24 本が同じラベルになり、どの足かを特定できない。**
+ * `detect_patterns` の `content` はブレイク足・構成点・ターゲット初到達といった
+ * 「どの足か」が意味を持つ行を出すので、時間足を見て粒度を切り替える必要がある。
+ *
+ * `src/handlers/detectPatternsViewsHandler.ts` の `toDateOrTime` と
+ * `tools/detect_patterns.ts` の `res.summary` が**別々に同じ判定を持っていて片方だけ
+ * 暦日に潰れていた**（#288 Phase 2 のレビュー指摘）ので、判定をここに 1 本化した。
+ *
+ * 値が空 / parse 失敗 / 不正 tz のときは `null` を返す。**フォールバックは呼び出し側が決める**
+ * （`'n/a'` を出す側と、元の ISO をそのまま出す側がある）。
+ */
+export function formatDateOrTimeInTz(iso: string | number | undefined | null, tz: string, type: string): string | null {
+	if (iso == null || iso === '') return null;
+	const ms = typeof iso === 'number' ? iso : Date.parse(iso);
+	if (!Number.isFinite(ms)) return null;
+	if (!isIntradayType(type)) return formatDateInTz(ms, tz);
+	const withTz = toIsoWithTz(ms, resolveTz(tz)); // 'YYYY-MM-DDTHH:mm:ss'
+	return withTz ? `${withTz.slice(0, 10)} ${withTz.slice(11, 16)}` : null;
 }
 
 /**

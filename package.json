@@ -41,9 +41,9 @@
     "ci:typecheck": "npm run gen:types && tsc --noEmit -p tsconfig.json",
     "build": "npm run ci:typecheck",
     "gen:types": "tsx scripts/gen_types.ts",
-    "lint": "oxlint src/ tools/ lib/",
-    "lint:fix": "oxlint --fix src/ tools/ lib/",
-    "format": "biome format --write src/ tools/ lib/",
+    "lint": "oxlint src/ tools/ lib/ tests/",
+    "lint:fix": "oxlint --fix src/ tools/ lib/ tests/",
+    "format": "biome format --write src/ tools/ lib/ tests/",
     "postinstall": "mkdir -p assets && cp node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js assets/lightweight-charts.standalone.js || true",
     "prepack": "npm run gen:types && npm run postinstall",
     "build:ui:cancel": "vite build --config ui/cancel-confirm/vite.config.ts"
@@ -79,14 +79,15 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
-    "@vitest/coverage-v8": "^4.1.2",
+    "@vitest/coverage-v8": "^4.1.11",
     "lefthook": "^2.1.4",
+    "nanoid": "^3.3.18",
     "oxlint": "^1.55.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "typescript": "^6.0.3",
     "vite": "^8.0.10",
     "vite-plugin-singlefile": "^2.3.3",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.11"
   }
 }

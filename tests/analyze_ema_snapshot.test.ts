@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
+import type { Candle } from '../src/schemas.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
 
 vi.mock('../tools/analyze_indicators.js', async (importOriginal) => {
@@ -18,20 +19,26 @@ import analyzeEmaSnapshot, { buildEmaSnapshotText, toolDef } from '../tools/anal
 import analyzeIndicators from '../tools/analyze_indicators.js';
 import getCandles from '../tools/get_candles.js';
 
+/** normalized 足のフィクスチャ型。timestamp は CandleSchema 上 optional。 */
+type NormalizedFixtureBar = Pick<Candle, 'close' | 'isoTime' | 'timestamp'>;
+
 function makeSeries(start: number, step: number, len: number) {
 	return Array.from({ length: len }, (_, i) => Number((start + step * i).toFixed(4)));
 }
 
 function buildIndicatorsOk() {
 	const len = 40;
+	// 型は CandleSchema 由来にする。provisional 判定は normalized.at(-1).timestamp を読むため、
+	// リテラル推論のままだと最新足に timestamp を後付けするテストが型エラーになる。
+	const normalized: NormalizedFixtureBar[] = Array.from({ length: len }, (_, i) => ({
+		close: i === len - 1 ? 150 : 130,
+		isoTime: `2024-02-${String((i % 28) + 1).padStart(2, '0')}T00:00:00.000Z`,
+	}));
 	return {
 		ok: true as const,
 		summary: 'ok',
 		data: {
-			normalized: Array.from({ length: len }, (_, i) => ({
-				close: i === len - 1 ? 150 : 130,
-				isoTime: `2024-02-${String((i % 28) + 1).padStart(2, '0')}T00:00:00.000Z`,
-			})),
+			normalized,
 			indicators: {
 				EMA_12: 140,
 				EMA_26: 130,
@@ -58,14 +65,15 @@ function buildCandlesOk(closes?: number[]) {
 	const len = 40;
 	const defaultCloses = Array.from({ length: len }, (_, i) => 130 + i * 0.5);
 	const actualCloses = closes ?? defaultCloses;
+	const normalized: NormalizedFixtureBar[] = Array.from({ length: actualCloses.length }, (_, i) => ({
+		close: actualCloses[i],
+		isoTime: `2024-02-${String((i % 28) + 1).padStart(2, '0')}T00:00:00.000Z`,
+	}));
 	return {
 		ok: true as const,
 		summary: 'ok',
 		data: {
-			normalized: Array.from({ length: actualCloses.length }, (_, i) => ({
-				close: actualCloses[i],
-				isoTime: `2024-02-${String((i % 28) + 1).padStart(2, '0')}T00:00:00.000Z`,
-			})),
+			normalized,
 		},
 		meta: { pair: 'btc_jpy', type: '1day', count: actualCloses.length },
 	};

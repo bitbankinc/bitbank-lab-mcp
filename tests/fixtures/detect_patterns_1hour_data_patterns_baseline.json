@@ -1,0 +1,2271 @@
+[
+	{
+		"type": "inverse_head_and_shoulders",
+		"confidence": 0.77,
+		"timeframe": "1hour",
+		"timeframeLabel": "1時間足",
+		"range": {
+			"start": "2026-08-22T10:00:00.000Z",
+			"end": "2026-08-24T12:00:00.000Z"
+		},
+		"structureRange": {
+			"start": "2026-08-22T10:00:00.000Z",
+			"end": "2026-08-24T04:00:00.000Z"
+		},
+		"confirmation": {
+			"type": "neckline_breakout",
+			"date": "2026-08-24T12:00:00.000Z",
+			"idx": 280,
+			"price": 12584574
+		},
+		"precedingTrend": {
+			"start": "2026-08-21T13:00:00.000Z",
+			"end": "2026-08-22T10:00:00.000Z",
+			"direction": "sideways",
+			"returnPct": -0.36,
+			"lookbackBars": 21
+		},
+		"pivots": [
+			{
+				"idx": 230,
+				"price": 12215999,
+				"kind": "L",
+				"extremePrice": 12132786
+			},
+			{
+				"idx": 232,
+				"price": 12282275,
+				"kind": "H",
+				"extremePrice": 12288043
+			},
+			{
+				"idx": 249,
+				"price": 12075755,
+				"kind": "L",
+				"extremePrice": 12001038
+			},
+			{
+				"idx": 265,
+				"price": 12357128,
+				"kind": "H",
+				"extremePrice": 12396586
+			},
+			{
+				"idx": 272,
+				"price": 12213097,
+				"kind": "L",
+				"extremePrice": 12183882
+			}
+		],
+		"neckline": [
+			{
+				"x": 232,
+				"y": 12282275
+			},
+			{
+				"x": 265,
+				"y": 12357128
+			}
+		],
+		"structureDiagram": {
+			"svg": "<svg width=\"600\" height=\"300\" xmlns=\"http://www.w3.org/2000/svg\">\n  <rect width=\"600\" height=\"300\" fill=\"#f8f9fa\"/>\n  <!-- Neckline (peaks average) -->\n  <line x1=\"50\" y1=\"80\" x2=\"550\" y2=\"80\" stroke=\"#666\" stroke-width=\"2\" stroke-dasharray=\"5,5\"/>\n  <text x=\"300\" y=\"95\" text-anchor=\"middle\" fill=\"#555\" font-size=\"12\">ネックライン: 12,319,702円</text>\n  <!-- Structural polyline: L1 -> H1 -> L(head) -> H2 -> L3 -->\n  <polyline points=\"100,180 200,80 300,240 400,80 500,180\" fill=\"none\" stroke=\"#ccc\" stroke-width=\"2\"/>\n  <!-- Trend guide lines (left/right) -->\n  <line x1=\"50\" y1=\"40\" x2=\"100\" y2=\"180\" stroke=\"#ccc\" stroke-width=\"2\" stroke-dasharray=\"\"/>\n  <line x1=\"500\" y1=\"180\" x2=\"550\" y2=\"40\" stroke=\"#ccc\" stroke-width=\"2\" stroke-dasharray=\"\"/>\n  <!-- Pivot markers -->\n  <circle cx=\"100\" cy=\"180\" r=\"6\" fill=\"#3b82f6\"/>\n  <text x=\"100\" y=\"205\" text-anchor=\"middle\" fill=\"#333\" font-size=\"14\">左肩: 8/22 19:00</text>\n  <circle cx=\"200\" cy=\"80\" r=\"6\" fill=\"#3b82f6\"/>\n  <text x=\"200\" y=\"65\" text-anchor=\"middle\" fill=\"#333\" font-size=\"14\">山1: 8/22 21:00</text>\n  <circle cx=\"300\" cy=\"240\" r=\"6\" fill=\"#3b82f6\"/>\n  <text x=\"300\" y=\"265\" text-anchor=\"middle\" fill=\"#333\" font-size=\"14\">谷: 8/23 14:00</text>\n  <circle cx=\"400\" cy=\"80\" r=\"6\" fill=\"#3b82f6\"/>\n  <text x=\"400\" y=\"65\" text-anchor=\"middle\" fill=\"#333\" font-size=\"14\">山2: 8/24 06:00</text>\n  <circle cx=\"500\" cy=\"180\" r=\"6\" fill=\"#3b82f6\"/>\n  <text x=\"500\" y=\"205\" text-anchor=\"middle\" fill=\"#333\" font-size=\"14\">右肩: 8/24 13:00</text>\n  <text x=\"300\" y=\"20\" text-anchor=\"middle\" fill=\"#111\" font-size=\"14\">逆ヘッドアンドショルダー (8/22 19:00-8/24 21:00)</text>\n</svg>",
+			"artifact": {
+				"identifier": "inverse_head_and_shoulders-diagram-2026-08-22",
+				"title": "逆ヘッドアンドショルダー構造図 (8/22 19:00-8/24 21:00)"
+			}
+		},
+		"status": "completed",
+		"scoreComponents": {
+			"symmetry": 0.9998,
+			"headProminence": 0.2619,
+			"timeSymmetry": 0.8261,
+			"retracement": 0.5802,
+			"breakoutQuality": 0.928,
+			"duration": 0.6
+		},
+		"structureGate": {
+			"retracementRatio": 0.4031,
+			"priorExtremeIdx": 223,
+			"priorExtremePrice": 12517988,
+			"necklineCrossIdx": 207
+		},
+		"breakoutDate": "2026-08-24T12:00:00.000Z",
+		"breakoutBarIndex": 280,
+		"breakoutDirection": "up",
+		"outcome": "success",
+		"breakoutTarget": 12602209,
+		"targetMethod": "neckline_projection",
+		"targetProgressOmittedReason": "degenerate_target_distance",
+		"trendlineLabel": "ネックライン",
+		"aftermath": {
+			"breakoutDate": "2026-08-24T14:00:00.000Z",
+			"breakoutConfirmed": true,
+			"priceMove": {
+				"days3": {
+					"return": -0.02,
+					"high": 12732391,
+					"low": 12390012
+				},
+				"days7": {
+					"return": -0.38,
+					"high": 12732391,
+					"low": 12390012
+				},
+				"days14": {
+					"return": 2.12,
+					"high": 12933047,
+					"low": 12390012
+				}
+			},
+			"targetReached": true,
+			"theoreticalTarget": 12638501,
+			"outcome": "成功（理論目標価格到達）",
+			"daysToTarget": 1
+		}
+	},
+	{
+		"type": "inverse_head_and_shoulders",
+		"confidence": 0.73,
+		"timeframe": "1hour",
+		"timeframeLabel": "1時間足",
+		"range": {
+			"start": "2026-08-12T23:00:00.000Z",
+			"end": "2026-08-17T18:00:00.000Z"
+		},
+		"structureRange": {
+			"start": "2026-08-12T23:00:00.000Z",
+			"end": "2026-08-17T09:00:00.000Z"
+		},
+		"confirmation": {
+			"type": "neckline_breakout",
+			"date": "2026-08-17T18:00:00.000Z",
+			"idx": 118,
+			"price": 10278277
+		},
+		"precedingTrend": {
+			"start": "2026-08-12T20:00:00.000Z",
+			"end": "2026-08-12T23:00:00.000Z",
+			"direction": "insufficient_data",
+			"returnPct": -0.27,
+			"lookbackBars": 30
+		},
+		"pivots": [
+			{
+				"idx": 3,
+				"price": 10112502,
+				"kind": "L",
+				"extremePrice": 10103165
+			},
+			{
+				"idx": 9,
+				"price": 10173012,
+				"kind": "H",
+				"extremePrice": 10188490
+			},
+			{
+				"idx": 42,
+				"price": 9965270,
+				"kind": "L",
+				"extremePrice": 9955830
+			},
+			{
+				"idx": 106,
+				"price": 10116030,
+				"kind": "H",
+				"extremePrice": 10128000
+			},
+			{
+				"idx": 109,
+				"price": 10079659,
+				"kind": "L",
+				"extremePrice": 10073402
+			}
+		],
+		"neckline": [
+			{
+				"x": 9,
+				"y": 10173012
+			},
+			{
+				"x": 106,
+				"y": 10116030
+			}
+		],
+		"structureDiagram": {
+			"svg": "<svg width=\"600\" height=\"300\" xmlns=\"http://www.w3.org/2000/svg\">\n  <rect width=\"600\" height=\"300\" fill=\"#f8f9fa\"/>\n  <!-- Neckline (peaks average) -->\n  <line x1=\"50\" y1=\"80\" x2=\"550\" y2=\"80\" stroke=\"#666\" stroke-width=\"2\" stroke-dasharray=\"5,5\"/>\n  <text x=\"300\" y=\"95\" text-anchor=\"middle\" fill=\"#555\" font-size=\"12\">ネックライン: 10,144,521円</text>\n  <!-- Structural polyline: L1 -> H1 -> L(head) -> H2 -> L3 -->\n  <polyline points=\"100,180 200,80 300,240 400,80 500,180\" fill=\"none\" stroke=\"#ccc\" stroke-width=\"2\"/>\n  <!-- Trend guide lines (left/right) -->\n  <line x1=\"50\" y1=\"40\" x2=\"100\" y2=\"180\" stroke=\"#ccc\" stroke-width=\"2\" stroke-dasharray=\"\"/>\n  <line x1=\"500\" y1=\"180\" x2=\"550\" y2=\"40\" stroke=\"#ccc\" stroke-width=\"2\" stroke-dasharray=\"\"/>\n  <!-- Pivot markers -->\n  <circle cx=\"100\" cy=\"180\" r=\"6\" fill=\"#3b82f6\"/>\n  <text x=\"100\" y=\"205\" text-anchor=\"middle\" fill=\"#333\" font-size=\"14\">左肩: 8/13 08:00</text>\n  <circle cx=\"200\" cy=\"80\" r=\"6\" fill=\"#3b82f6\"/>\n  <text x=\"200\" y=\"65\" text-anchor=\"middle\" fill=\"#333\" font-size=\"14\">山1: 8/13 14:00</text>\n  <circle cx=\"300\" cy=\"240\" r=\"6\" fill=\"#3b82f6\"/>\n  <text x=\"300\" y=\"265\" text-anchor=\"middle\" fill=\"#333\" font-size=\"14\">谷: 8/14 23:00</text>\n  <circle cx=\"400\" cy=\"80\" r=\"6\" fill=\"#3b82f6\"/>\n  <text x=\"400\" y=\"65\" text-anchor=\"middle\" fill=\"#333\" font-size=\"14\">山2: 8/17 15:00</text>\n  <circle cx=\"500\" cy=\"180\" r=\"6\" fill=\"#3b82f6\"/>\n  <text x=\"500\" y=\"205\" text-anchor=\"middle\" fill=\"#333\" font-size=\"14\">右肩: 8/17 18:00</text>\n  <text x=\"300\" y=\"20\" text-anchor=\"middle\" fill=\"#111\" font-size=\"14\">逆ヘッドアンドショルダー (8/13 08:00-8/18 03:00)</text>\n</svg>",
+			"artifact": {
+				"identifier": "inverse_head_and_shoulders-diagram-2026-08-12",
+				"title": "逆ヘッドアンドショルダー構造図 (8/13 08:00-8/18 03:00)"
+			}
+		},
+		"status": "completed",
+		"scoreComponents": {
+			"symmetry": 0.9968,
+			"headProminence": 0.2686,
+			"timeSymmetry": 0.5821,
+			"breakoutQuality": 0.8614,
+			"duration": 0.6
+		},
+		"breakoutDate": "2026-08-17T18:00:00.000Z",
+		"breakoutBarIndex": 118,
+		"breakoutDirection": "up",
+		"outcome": "success",
+		"breakoutTarget": 10304386,
+		"targetMethod": "neckline_projection",
+		"targetProgressOmittedReason": "degenerate_target_distance",
+		"trendlineLabel": "ネックライン",
+		"aftermath": {
+			"breakoutDate": "2026-08-17T23:00:00.000Z",
+			"breakoutConfirmed": true,
+			"priceMove": {
+				"days3": {
+					"return": -0.18,
+					"high": 10278277,
+					"low": 10245085
+				},
+				"days7": {
+					"return": -0.45,
+					"high": 10279898,
+					"low": 10230785
+				},
+				"days14": {
+					"return": -0.16,
+					"high": 10300000,
+					"low": 10215505
+				}
+			},
+			"targetReached": true,
+			"theoreticalTarget": 10266790,
+			"outcome": "成功（理論目標価格到達）",
+			"daysToTarget": 1
+		}
+	},
+	{
+		"type": "rising_wedge",
+		"confidence": 0.95,
+		"timeframe": "1hour",
+		"timeframeLabel": "1時間足",
+		"range": {
+			"start": "2026-08-23T01:00:00.000Z",
+			"end": "2026-08-24T14:00:00.000Z"
+		},
+		"pivots": [
+			{
+				"idx": 245,
+				"price": 12280000,
+				"kind": "H",
+				"extremePrice": 12280000
+			},
+			{
+				"idx": 246,
+				"price": 12258237,
+				"kind": "H",
+				"extremePrice": 12258237
+			},
+			{
+				"idx": 247,
+				"price": 12244999,
+				"kind": "H",
+				"extremePrice": 12244999
+			},
+			{
+				"idx": 248,
+				"price": 12234433,
+				"kind": "H",
+				"extremePrice": 12234433
+			},
+			{
+				"idx": 249,
+				"price": 12001038,
+				"kind": "L",
+				"extremePrice": 12001038
+			},
+			{
+				"idx": 250,
+				"price": 12039760,
+				"kind": "L",
+				"extremePrice": 12039760
+			},
+			{
+				"idx": 251,
+				"price": 12048820,
+				"kind": "L",
+				"extremePrice": 12048820
+			},
+			{
+				"idx": 252,
+				"price": 12055000,
+				"kind": "L",
+				"extremePrice": 12055000
+			},
+			{
+				"idx": 253,
+				"price": 12124878,
+				"kind": "L",
+				"extremePrice": 12124878
+			},
+			{
+				"idx": 255,
+				"price": 12285362,
+				"kind": "H",
+				"extremePrice": 12285362
+			},
+			{
+				"idx": 256,
+				"price": 12280001,
+				"kind": "H",
+				"extremePrice": 12280001
+			},
+			{
+				"idx": 257,
+				"price": 12337768,
+				"kind": "H",
+				"extremePrice": 12337768
+			},
+			{
+				"idx": 258,
+				"price": 12323751,
+				"kind": "H",
+				"extremePrice": 12323751
+			},
+			{
+				"idx": 260,
+				"price": 12281963,
+				"kind": "H",
+				"extremePrice": 12281963
+			},
+			{
+				"idx": 261,
+				"price": 12284147,
+				"kind": "H",
+				"extremePrice": 12284147
+			},
+			{
+				"idx": 262,
+				"price": 12284807,
+				"kind": "H",
+				"extremePrice": 12284807
+			},
+			{
+				"idx": 263,
+				"price": 12290876,
+				"kind": "H",
+				"extremePrice": 12290876
+			},
+			{
+				"idx": 265,
+				"price": 12396586,
+				"kind": "H",
+				"extremePrice": 12396586
+			},
+			{
+				"idx": 266,
+				"price": 12376016,
+				"kind": "H",
+				"extremePrice": 12376016
+			},
+			{
+				"idx": 267,
+				"price": 12365909,
+				"kind": "H",
+				"extremePrice": 12365909
+			},
+			{
+				"idx": 268,
+				"price": 12350891,
+				"kind": "H",
+				"extremePrice": 12350891
+			},
+			{
+				"idx": 268,
+				"price": 12255153,
+				"kind": "L",
+				"extremePrice": 12255153
+			},
+			{
+				"idx": 269,
+				"price": 12338261,
+				"kind": "H",
+				"extremePrice": 12338261
+			},
+			{
+				"idx": 269,
+				"price": 12221273,
+				"kind": "L",
+				"extremePrice": 12221273
+			},
+			{
+				"idx": 270,
+				"price": 12319863,
+				"kind": "H",
+				"extremePrice": 12319863
+			},
+			{
+				"idx": 270,
+				"price": 12213789,
+				"kind": "L",
+				"extremePrice": 12213789
+			},
+			{
+				"idx": 271,
+				"price": 12233129,
+				"kind": "L",
+				"extremePrice": 12233129
+			},
+			{
+				"idx": 272,
+				"price": 12183882,
+				"kind": "L",
+				"extremePrice": 12183882
+			},
+			{
+				"idx": 273,
+				"price": 12211143,
+				"kind": "L",
+				"extremePrice": 12211143
+			},
+			{
+				"idx": 274,
+				"price": 12256655,
+				"kind": "L",
+				"extremePrice": 12256655
+			},
+			{
+				"idx": 275,
+				"price": 12374997,
+				"kind": "H",
+				"extremePrice": 12374997
+			},
+			{
+				"idx": 275,
+				"price": 12307793,
+				"kind": "L",
+				"extremePrice": 12307793
+			},
+			{
+				"idx": 276,
+				"price": 12252345,
+				"kind": "L",
+				"extremePrice": 12252345
+			},
+			{
+				"idx": 277,
+				"price": 12271449,
+				"kind": "L",
+				"extremePrice": 12271449
+			},
+			{
+				"idx": 278,
+				"price": 12421475,
+				"kind": "H",
+				"extremePrice": 12421475
+			},
+			{
+				"idx": 278,
+				"price": 12338109,
+				"kind": "L",
+				"extremePrice": 12338109
+			},
+			{
+				"idx": 279,
+				"price": 12337349,
+				"kind": "L",
+				"extremePrice": 12337349
+			}
+		],
+		"status": "completed",
+		"daysToApex": 20,
+		"breakoutDate": "2026-08-24T14:00:00.000Z",
+		"breakoutBarIndex": 282,
+		"breakoutDirection": "up",
+		"outcome": "failure",
+		"breakoutTarget": 12930667,
+		"targetMethod": "pattern_height",
+		"targetReachedPct": 101,
+		"targetReached": true,
+		"targetReachedDate": "2026-08-25T02:00:00.000Z",
+		"targetReachedPrice": 12933047,
+		"targetFirstReachBars": 12,
+		"targetFirstReachDate": "2026-08-25T02:00:00.000Z",
+		"targetScanBars": 60,
+		"targetScanComplete": true
+	},
+	{
+		"type": "falling_wedge",
+		"confidence": 0.9430358402206946,
+		"timeframe": "1hour",
+		"timeframeLabel": "1時間足",
+		"range": {
+			"start": "2026-08-24T19:00:00.000Z",
+			"end": "2026-08-26T23:00:00.000Z"
+		},
+		"pivots": [
+			{
+				"idx": 287,
+				"price": 12515305,
+				"kind": "L",
+				"extremePrice": 12515305
+			},
+			{
+				"idx": 288,
+				"price": 12505833,
+				"kind": "L",
+				"extremePrice": 12505833
+			},
+			{
+				"idx": 289,
+				"price": 12544105,
+				"kind": "L",
+				"extremePrice": 12544105
+			},
+			{
+				"idx": 290,
+				"price": 12528970,
+				"kind": "L",
+				"extremePrice": 12528970
+			},
+			{
+				"idx": 291,
+				"price": 12519594,
+				"kind": "L",
+				"extremePrice": 12519594
+			},
+			{
+				"idx": 292,
+				"price": 12527919,
+				"kind": "L",
+				"extremePrice": 12527919
+			},
+			{
+				"idx": 294,
+				"price": 12933047,
+				"kind": "H",
+				"extremePrice": 12933047
+			},
+			{
+				"idx": 295,
+				"price": 12894611,
+				"kind": "H",
+				"extremePrice": 12894611
+			},
+			{
+				"idx": 296,
+				"price": 12847047,
+				"kind": "H",
+				"extremePrice": 12847047
+			},
+			{
+				"idx": 297,
+				"price": 12889997,
+				"kind": "H",
+				"extremePrice": 12889997
+			},
+			{
+				"idx": 298,
+				"price": 12894353,
+				"kind": "H",
+				"extremePrice": 12894353
+			},
+			{
+				"idx": 299,
+				"price": 12900000,
+				"kind": "H",
+				"extremePrice": 12900000
+			},
+			{
+				"idx": 300,
+				"price": 12807368,
+				"kind": "H",
+				"extremePrice": 12807368
+			},
+			{
+				"idx": 305,
+				"price": 12455326,
+				"kind": "L",
+				"extremePrice": 12455326
+			},
+			{
+				"idx": 312,
+				"price": 12458188,
+				"kind": "L",
+				"extremePrice": 12458188
+			},
+			{
+				"idx": 313,
+				"price": 12420000,
+				"kind": "L",
+				"extremePrice": 12420000
+			},
+			{
+				"idx": 318,
+				"price": 12596952,
+				"kind": "H",
+				"extremePrice": 12596952
+			},
+			{
+				"idx": 319,
+				"price": 12590000,
+				"kind": "H",
+				"extremePrice": 12590000
+			},
+			{
+				"idx": 320,
+				"price": 12596940,
+				"kind": "H",
+				"extremePrice": 12596940
+			},
+			{
+				"idx": 321,
+				"price": 12582967,
+				"kind": "H",
+				"extremePrice": 12582967
+			},
+			{
+				"idx": 322,
+				"price": 12597021,
+				"kind": "H",
+				"extremePrice": 12597021
+			},
+			{
+				"idx": 323,
+				"price": 12581122,
+				"kind": "H",
+				"extremePrice": 12581122
+			},
+			{
+				"idx": 324,
+				"price": 12587443,
+				"kind": "H",
+				"extremePrice": 12587443
+			},
+			{
+				"idx": 325,
+				"price": 12551000,
+				"kind": "H",
+				"extremePrice": 12551000
+			},
+			{
+				"idx": 326,
+				"price": 12546440,
+				"kind": "H",
+				"extremePrice": 12546440
+			},
+			{
+				"idx": 327,
+				"price": 12541928,
+				"kind": "H",
+				"extremePrice": 12541928
+			},
+			{
+				"idx": 328,
+				"price": 12514030,
+				"kind": "H",
+				"extremePrice": 12514030
+			},
+			{
+				"idx": 329,
+				"price": 12518619,
+				"kind": "H",
+				"extremePrice": 12518619
+			},
+			{
+				"idx": 330,
+				"price": 12528316,
+				"kind": "H",
+				"extremePrice": 12528316
+			},
+			{
+				"idx": 331,
+				"price": 12461537,
+				"kind": "H",
+				"extremePrice": 12461537
+			},
+			{
+				"idx": 332,
+				"price": 12468235,
+				"kind": "H",
+				"extremePrice": 12468235
+			}
+		],
+		"status": "completed",
+		"daysToApex": 30,
+		"breakoutDate": "2026-08-26T23:00:00.000Z",
+		"breakoutBarIndex": 339,
+		"breakoutDirection": "up",
+		"outcome": "success",
+		"breakoutTarget": 13050465,
+		"targetMethod": "pattern_height",
+		"targetReachedPct": 61,
+		"targetReached": false,
+		"targetReachedDate": "2026-08-27T15:00:00.000Z",
+		"targetReachedPrice": 12873620,
+		"targetScanBars": 25,
+		"targetScanComplete": false
+	},
+	{
+		"type": "rising_wedge",
+		"confidence": 0.9247319045058331,
+		"timeframe": "1hour",
+		"timeframeLabel": "1時間足",
+		"range": {
+			"start": "2026-08-16T15:00:00.000Z",
+			"end": "2026-08-19T04:00:00.000Z"
+		},
+		"pivots": [
+			{
+				"idx": 91,
+				"price": 10053523,
+				"kind": "H",
+				"extremePrice": 10053523
+			},
+			{
+				"idx": 92,
+				"price": 10089899,
+				"kind": "H",
+				"extremePrice": 10089899
+			},
+			{
+				"idx": 93,
+				"price": 10073544,
+				"kind": "H",
+				"extremePrice": 10073544
+			},
+			{
+				"idx": 94,
+				"price": 10059093,
+				"kind": "H",
+				"extremePrice": 10059093
+			},
+			{
+				"idx": 95,
+				"price": 10066840,
+				"kind": "H",
+				"extremePrice": 10066840
+			},
+			{
+				"idx": 96,
+				"price": 10059792,
+				"kind": "H",
+				"extremePrice": 10059792
+			},
+			{
+				"idx": 97,
+				"price": 10011036,
+				"kind": "L",
+				"extremePrice": 10011036
+			},
+			{
+				"idx": 98,
+				"price": 9998855,
+				"kind": "L",
+				"extremePrice": 9998855
+			},
+			{
+				"idx": 99,
+				"price": 10008395,
+				"kind": "L",
+				"extremePrice": 10008395
+			},
+			{
+				"idx": 100,
+				"price": 9984837,
+				"kind": "L",
+				"extremePrice": 9984837
+			},
+			{
+				"idx": 101,
+				"price": 10008192,
+				"kind": "L",
+				"extremePrice": 10008192
+			},
+			{
+				"idx": 102,
+				"price": 10089897,
+				"kind": "H",
+				"extremePrice": 10089897
+			},
+			{
+				"idx": 102,
+				"price": 10023257,
+				"kind": "L",
+				"extremePrice": 10023257
+			},
+			{
+				"idx": 103,
+				"price": 10098000,
+				"kind": "H",
+				"extremePrice": 10098000
+			},
+			{
+				"idx": 103,
+				"price": 10077562,
+				"kind": "L",
+				"extremePrice": 10077562
+			},
+			{
+				"idx": 104,
+				"price": 10109481,
+				"kind": "H",
+				"extremePrice": 10109481
+			},
+			{
+				"idx": 104,
+				"price": 10090001,
+				"kind": "L",
+				"extremePrice": 10090001
+			},
+			{
+				"idx": 105,
+				"price": 10118935,
+				"kind": "H",
+				"extremePrice": 10118935
+			},
+			{
+				"idx": 105,
+				"price": 10100000,
+				"kind": "L",
+				"extremePrice": 10100000
+			},
+			{
+				"idx": 106,
+				"price": 10128000,
+				"kind": "H",
+				"extremePrice": 10128000
+			},
+			{
+				"idx": 106,
+				"price": 10103560,
+				"kind": "L",
+				"extremePrice": 10103560
+			},
+			{
+				"idx": 107,
+				"price": 10120013,
+				"kind": "H",
+				"extremePrice": 10120013
+			},
+			{
+				"idx": 107,
+				"price": 10098197,
+				"kind": "L",
+				"extremePrice": 10098197
+			},
+			{
+				"idx": 108,
+				"price": 10080000,
+				"kind": "L",
+				"extremePrice": 10080000
+			},
+			{
+				"idx": 109,
+				"price": 10073402,
+				"kind": "L",
+				"extremePrice": 10073402
+			},
+			{
+				"idx": 110,
+				"price": 10078438,
+				"kind": "L",
+				"extremePrice": 10078438
+			},
+			{
+				"idx": 111,
+				"price": 10149290,
+				"kind": "H",
+				"extremePrice": 10149290
+			},
+			{
+				"idx": 111,
+				"price": 10128000,
+				"kind": "L",
+				"extremePrice": 10128000
+			},
+			{
+				"idx": 112,
+				"price": 10122105,
+				"kind": "L",
+				"extremePrice": 10122105
+			},
+			{
+				"idx": 113,
+				"price": 10112000,
+				"kind": "L",
+				"extremePrice": 10112000
+			},
+			{
+				"idx": 114,
+				"price": 10126744,
+				"kind": "L",
+				"extremePrice": 10126744
+			},
+			{
+				"idx": 115,
+				"price": 10239999,
+				"kind": "H",
+				"extremePrice": 10239999
+			},
+			{
+				"idx": 115,
+				"price": 10168475,
+				"kind": "L",
+				"extremePrice": 10168475
+			},
+			{
+				"idx": 116,
+				"price": 10230455,
+				"kind": "H",
+				"extremePrice": 10230455
+			},
+			{
+				"idx": 117,
+				"price": 10260000,
+				"kind": "H",
+				"extremePrice": 10260000
+			},
+			{
+				"idx": 117,
+				"price": 10200900,
+				"kind": "L",
+				"extremePrice": 10200900
+			},
+			{
+				"idx": 118,
+				"price": 10295000,
+				"kind": "H",
+				"extremePrice": 10295000
+			},
+			{
+				"idx": 119,
+				"price": 10278277,
+				"kind": "H",
+				"extremePrice": 10278277
+			},
+			{
+				"idx": 120,
+				"price": 10265050,
+				"kind": "H",
+				"extremePrice": 10265050
+			},
+			{
+				"idx": 121,
+				"price": 10266867,
+				"kind": "H",
+				"extremePrice": 10266867
+			},
+			{
+				"idx": 122,
+				"price": 10264272,
+				"kind": "H",
+				"extremePrice": 10264272
+			},
+			{
+				"idx": 123,
+				"price": 10278279,
+				"kind": "H",
+				"extremePrice": 10278279
+			},
+			{
+				"idx": 123,
+				"price": 10245570,
+				"kind": "L",
+				"extremePrice": 10245570
+			},
+			{
+				"idx": 124,
+				"price": 10279898,
+				"kind": "H",
+				"extremePrice": 10279898
+			},
+			{
+				"idx": 125,
+				"price": 10264729,
+				"kind": "H",
+				"extremePrice": 10264729
+			},
+			{
+				"idx": 125,
+				"price": 10230785,
+				"kind": "L",
+				"extremePrice": 10230785
+			},
+			{
+				"idx": 126,
+				"price": 10215505,
+				"kind": "L",
+				"extremePrice": 10215505
+			},
+			{
+				"idx": 127,
+				"price": 10217033,
+				"kind": "L",
+				"extremePrice": 10217033
+			},
+			{
+				"idx": 128,
+				"price": 10299424,
+				"kind": "H",
+				"extremePrice": 10299424
+			},
+			{
+				"idx": 128,
+				"price": 10229636,
+				"kind": "L",
+				"extremePrice": 10229636
+			},
+			{
+				"idx": 129,
+				"price": 10300000,
+				"kind": "H",
+				"extremePrice": 10300000
+			},
+			{
+				"idx": 129,
+				"price": 10249798,
+				"kind": "L",
+				"extremePrice": 10249798
+			},
+			{
+				"idx": 130,
+				"price": 10297672,
+				"kind": "H",
+				"extremePrice": 10297672
+			},
+			{
+				"idx": 130,
+				"price": 10254000,
+				"kind": "L",
+				"extremePrice": 10254000
+			},
+			{
+				"idx": 131,
+				"price": 10252049,
+				"kind": "L",
+				"extremePrice": 10252049
+			},
+			{
+				"idx": 132,
+				"price": 10240092,
+				"kind": "L",
+				"extremePrice": 10240092
+			},
+			{
+				"idx": 133,
+				"price": 10240000,
+				"kind": "L",
+				"extremePrice": 10240000
+			},
+			{
+				"idx": 134,
+				"price": 10237190,
+				"kind": "L",
+				"extremePrice": 10237190
+			},
+			{
+				"idx": 135,
+				"price": 10247756,
+				"kind": "L",
+				"extremePrice": 10247756
+			},
+			{
+				"idx": 136,
+				"price": 10256119,
+				"kind": "L",
+				"extremePrice": 10256119
+			},
+			{
+				"idx": 138,
+				"price": 10366213,
+				"kind": "H",
+				"extremePrice": 10366213
+			},
+			{
+				"idx": 139,
+				"price": 10349129,
+				"kind": "H",
+				"extremePrice": 10349129
+			},
+			{
+				"idx": 139,
+				"price": 10319236,
+				"kind": "L",
+				"extremePrice": 10319236
+			},
+			{
+				"idx": 140,
+				"price": 10350102,
+				"kind": "H",
+				"extremePrice": 10350102
+			},
+			{
+				"idx": 140,
+				"price": 10329817,
+				"kind": "L",
+				"extremePrice": 10329817
+			},
+			{
+				"idx": 141,
+				"price": 10322842,
+				"kind": "L",
+				"extremePrice": 10322842
+			},
+			{
+				"idx": 142,
+				"price": 10322842,
+				"kind": "L",
+				"extremePrice": 10322842
+			},
+			{
+				"idx": 143,
+				"price": 10325436,
+				"kind": "L",
+				"extremePrice": 10325436
+			}
+		],
+		"status": "completed",
+		"daysToApex": 75,
+		"breakoutDate": "2026-08-19T04:00:00.000Z",
+		"breakoutBarIndex": 152,
+		"breakoutDirection": "down",
+		"outcome": "success",
+		"breakoutTarget": 10149705,
+		"targetMethod": "pattern_height",
+		"targetReachedPct": 26,
+		"targetReached": false,
+		"targetReachedDate": "2026-08-19T06:00:00.000Z",
+		"targetReachedPrice": 10234089,
+		"targetScanBars": 60,
+		"targetScanComplete": true,
+		"targetOppositeBreakoutInWindow": [
+			{
+				"type": "triangle_ascending",
+				"direction": "up",
+				"barsAfterBreakout": 28
+			}
+		]
+	},
+	{
+		"type": "falling_wedge",
+		"confidence": 0.8371058364791872,
+		"timeframe": "1hour",
+		"timeframeLabel": "1時間足",
+		"range": {
+			"start": "2026-08-14T21:00:00.000Z",
+			"end": "2026-08-17T15:00:00.000Z"
+		},
+		"pivots": [
+			{
+				"idx": 49,
+				"price": 10029113,
+				"kind": "H",
+				"extremePrice": 10029113
+			},
+			{
+				"idx": 49,
+				"price": 10022800,
+				"kind": "L",
+				"extremePrice": 10022800
+			},
+			{
+				"idx": 50,
+				"price": 10026882,
+				"kind": "H",
+				"extremePrice": 10026882
+			},
+			{
+				"idx": 50,
+				"price": 10012733,
+				"kind": "L",
+				"extremePrice": 10012733
+			},
+			{
+				"idx": 51,
+				"price": 10048242,
+				"kind": "H",
+				"extremePrice": 10048242
+			},
+			{
+				"idx": 51,
+				"price": 10019635,
+				"kind": "L",
+				"extremePrice": 10019635
+			},
+			{
+				"idx": 52,
+				"price": 10046752,
+				"kind": "H",
+				"extremePrice": 10046752
+			},
+			{
+				"idx": 52,
+				"price": 10038604,
+				"kind": "L",
+				"extremePrice": 10038604
+			},
+			{
+				"idx": 53,
+				"price": 10045829,
+				"kind": "H",
+				"extremePrice": 10045829
+			},
+			{
+				"idx": 53,
+				"price": 10039615,
+				"kind": "L",
+				"extremePrice": 10039615
+			},
+			{
+				"idx": 54,
+				"price": 10100000,
+				"kind": "H",
+				"extremePrice": 10100000
+			},
+			{
+				"idx": 54,
+				"price": 10043656,
+				"kind": "L",
+				"extremePrice": 10043656
+			},
+			{
+				"idx": 55,
+				"price": 10071509,
+				"kind": "H",
+				"extremePrice": 10071509
+			},
+			{
+				"idx": 55,
+				"price": 10045697,
+				"kind": "L",
+				"extremePrice": 10045697
+			},
+			{
+				"idx": 56,
+				"price": 10061272,
+				"kind": "H",
+				"extremePrice": 10061272
+			},
+			{
+				"idx": 56,
+				"price": 10048156,
+				"kind": "L",
+				"extremePrice": 10048156
+			},
+			{
+				"idx": 57,
+				"price": 10058606,
+				"kind": "H",
+				"extremePrice": 10058606
+			},
+			{
+				"idx": 57,
+				"price": 10030179,
+				"kind": "L",
+				"extremePrice": 10030179
+			},
+			{
+				"idx": 58,
+				"price": 10048047,
+				"kind": "H",
+				"extremePrice": 10048047
+			},
+			{
+				"idx": 58,
+				"price": 10044206,
+				"kind": "L",
+				"extremePrice": 10044206
+			},
+			{
+				"idx": 59,
+				"price": 10051744,
+				"kind": "H",
+				"extremePrice": 10051744
+			},
+			{
+				"idx": 59,
+				"price": 10045001,
+				"kind": "L",
+				"extremePrice": 10045001
+			},
+			{
+				"idx": 60,
+				"price": 10048000,
+				"kind": "H",
+				"extremePrice": 10048000
+			},
+			{
+				"idx": 60,
+				"price": 10027781,
+				"kind": "L",
+				"extremePrice": 10027781
+			},
+			{
+				"idx": 61,
+				"price": 10036289,
+				"kind": "H",
+				"extremePrice": 10036289
+			},
+			{
+				"idx": 61,
+				"price": 10026037,
+				"kind": "L",
+				"extremePrice": 10026037
+			},
+			{
+				"idx": 62,
+				"price": 10037185,
+				"kind": "H",
+				"extremePrice": 10037185
+			},
+			{
+				"idx": 62,
+				"price": 10036890,
+				"kind": "L",
+				"extremePrice": 10036890
+			},
+			{
+				"idx": 63,
+				"price": 10039779,
+				"kind": "H",
+				"extremePrice": 10039779
+			},
+			{
+				"idx": 63,
+				"price": 10037184,
+				"kind": "L",
+				"extremePrice": 10037184
+			},
+			{
+				"idx": 64,
+				"price": 10047764,
+				"kind": "H",
+				"extremePrice": 10047764
+			},
+			{
+				"idx": 64,
+				"price": 10035697,
+				"kind": "L",
+				"extremePrice": 10035697
+			},
+			{
+				"idx": 65,
+				"price": 10052801,
+				"kind": "H",
+				"extremePrice": 10052801
+			},
+			{
+				"idx": 65,
+				"price": 10046090,
+				"kind": "L",
+				"extremePrice": 10046090
+			},
+			{
+				"idx": 66,
+				"price": 10048939,
+				"kind": "H",
+				"extremePrice": 10048939
+			},
+			{
+				"idx": 66,
+				"price": 10043700,
+				"kind": "L",
+				"extremePrice": 10043700
+			},
+			{
+				"idx": 67,
+				"price": 10051619,
+				"kind": "H",
+				"extremePrice": 10051619
+			},
+			{
+				"idx": 67,
+				"price": 10045476,
+				"kind": "L",
+				"extremePrice": 10045476
+			},
+			{
+				"idx": 68,
+				"price": 10054243,
+				"kind": "H",
+				"extremePrice": 10054243
+			},
+			{
+				"idx": 68,
+				"price": 10051618,
+				"kind": "L",
+				"extremePrice": 10051618
+			},
+			{
+				"idx": 69,
+				"price": 10054164,
+				"kind": "H",
+				"extremePrice": 10054164
+			},
+			{
+				"idx": 69,
+				"price": 10054001,
+				"kind": "L",
+				"extremePrice": 10054001
+			},
+			{
+				"idx": 70,
+				"price": 10054001,
+				"kind": "H",
+				"extremePrice": 10054001
+			},
+			{
+				"idx": 70,
+				"price": 10051619,
+				"kind": "L",
+				"extremePrice": 10051619
+			},
+			{
+				"idx": 71,
+				"price": 10052330,
+				"kind": "H",
+				"extremePrice": 10052330
+			},
+			{
+				"idx": 71,
+				"price": 10051619,
+				"kind": "L",
+				"extremePrice": 10051619
+			},
+			{
+				"idx": 72,
+				"price": 10054000,
+				"kind": "H",
+				"extremePrice": 10054000
+			},
+			{
+				"idx": 72,
+				"price": 10051622,
+				"kind": "L",
+				"extremePrice": 10051622
+			},
+			{
+				"idx": 73,
+				"price": 10056019,
+				"kind": "H",
+				"extremePrice": 10056019
+			},
+			{
+				"idx": 73,
+				"price": 10053052,
+				"kind": "L",
+				"extremePrice": 10053052
+			},
+			{
+				"idx": 74,
+				"price": 10059552,
+				"kind": "H",
+				"extremePrice": 10059552
+			},
+			{
+				"idx": 74,
+				"price": 10055874,
+				"kind": "L",
+				"extremePrice": 10055874
+			},
+			{
+				"idx": 75,
+				"price": 10056156,
+				"kind": "H",
+				"extremePrice": 10056156
+			},
+			{
+				"idx": 75,
+				"price": 10055874,
+				"kind": "L",
+				"extremePrice": 10055874
+			},
+			{
+				"idx": 76,
+				"price": 10055875,
+				"kind": "H",
+				"extremePrice": 10055875
+			},
+			{
+				"idx": 76,
+				"price": 10055874,
+				"kind": "L",
+				"extremePrice": 10055874
+			},
+			{
+				"idx": 77,
+				"price": 10055875,
+				"kind": "H",
+				"extremePrice": 10055875
+			},
+			{
+				"idx": 77,
+				"price": 10042086,
+				"kind": "L",
+				"extremePrice": 10042086
+			},
+			{
+				"idx": 78,
+				"price": 10056300,
+				"kind": "H",
+				"extremePrice": 10056300
+			},
+			{
+				"idx": 78,
+				"price": 10050743,
+				"kind": "L",
+				"extremePrice": 10050743
+			},
+			{
+				"idx": 79,
+				"price": 10055636,
+				"kind": "H",
+				"extremePrice": 10055636
+			},
+			{
+				"idx": 79,
+				"price": 10054316,
+				"kind": "L",
+				"extremePrice": 10054316
+			},
+			{
+				"idx": 80,
+				"price": 10057178,
+				"kind": "H",
+				"extremePrice": 10057178
+			},
+			{
+				"idx": 80,
+				"price": 10054147,
+				"kind": "L",
+				"extremePrice": 10054147
+			},
+			{
+				"idx": 81,
+				"price": 10054147,
+				"kind": "H",
+				"extremePrice": 10054147
+			},
+			{
+				"idx": 81,
+				"price": 10050382,
+				"kind": "L",
+				"extremePrice": 10050382
+			},
+			{
+				"idx": 82,
+				"price": 10050383,
+				"kind": "H",
+				"extremePrice": 10050383
+			},
+			{
+				"idx": 82,
+				"price": 10048000,
+				"kind": "L",
+				"extremePrice": 10048000
+			},
+			{
+				"idx": 83,
+				"price": 10048701,
+				"kind": "H",
+				"extremePrice": 10048701
+			},
+			{
+				"idx": 83,
+				"price": 10044484,
+				"kind": "L",
+				"extremePrice": 10044484
+			},
+			{
+				"idx": 84,
+				"price": 10048643,
+				"kind": "H",
+				"extremePrice": 10048643
+			},
+			{
+				"idx": 84,
+				"price": 10046296,
+				"kind": "L",
+				"extremePrice": 10046296
+			},
+			{
+				"idx": 85,
+				"price": 10047978,
+				"kind": "H",
+				"extremePrice": 10047978
+			},
+			{
+				"idx": 85,
+				"price": 10036644,
+				"kind": "L",
+				"extremePrice": 10036644
+			},
+			{
+				"idx": 86,
+				"price": 10036376,
+				"kind": "H",
+				"extremePrice": 10036376
+			},
+			{
+				"idx": 86,
+				"price": 10030564,
+				"kind": "L",
+				"extremePrice": 10030564
+			},
+			{
+				"idx": 87,
+				"price": 10034207,
+				"kind": "H",
+				"extremePrice": 10034207
+			},
+			{
+				"idx": 87,
+				"price": 10033203,
+				"kind": "L",
+				"extremePrice": 10033203
+			},
+			{
+				"idx": 88,
+				"price": 10036479,
+				"kind": "H",
+				"extremePrice": 10036479
+			},
+			{
+				"idx": 88,
+				"price": 10033324,
+				"kind": "L",
+				"extremePrice": 10033324
+			},
+			{
+				"idx": 89,
+				"price": 10043109,
+				"kind": "H",
+				"extremePrice": 10043109
+			},
+			{
+				"idx": 89,
+				"price": 10035998,
+				"kind": "L",
+				"extremePrice": 10035998
+			},
+			{
+				"idx": 90,
+				"price": 10046583,
+				"kind": "H",
+				"extremePrice": 10046583
+			},
+			{
+				"idx": 90,
+				"price": 10042114,
+				"kind": "L",
+				"extremePrice": 10042114
+			},
+			{
+				"idx": 91,
+				"price": 10053523,
+				"kind": "H",
+				"extremePrice": 10053523
+			},
+			{
+				"idx": 91,
+				"price": 10046607,
+				"kind": "L",
+				"extremePrice": 10046607
+			},
+			{
+				"idx": 92,
+				"price": 10089899,
+				"kind": "H",
+				"extremePrice": 10089899
+			},
+			{
+				"idx": 92,
+				"price": 10052081,
+				"kind": "L",
+				"extremePrice": 10052081
+			},
+			{
+				"idx": 93,
+				"price": 10073544,
+				"kind": "H",
+				"extremePrice": 10073544
+			},
+			{
+				"idx": 93,
+				"price": 10052847,
+				"kind": "L",
+				"extremePrice": 10052847
+			},
+			{
+				"idx": 94,
+				"price": 10059093,
+				"kind": "H",
+				"extremePrice": 10059093
+			},
+			{
+				"idx": 94,
+				"price": 10056226,
+				"kind": "L",
+				"extremePrice": 10056226
+			},
+			{
+				"idx": 95,
+				"price": 10066840,
+				"kind": "H",
+				"extremePrice": 10066840
+			},
+			{
+				"idx": 95,
+				"price": 10058807,
+				"kind": "L",
+				"extremePrice": 10058807
+			},
+			{
+				"idx": 96,
+				"price": 10059792,
+				"kind": "H",
+				"extremePrice": 10059792
+			},
+			{
+				"idx": 96,
+				"price": 10046423,
+				"kind": "L",
+				"extremePrice": 10046423
+			},
+			{
+				"idx": 97,
+				"price": 10050450,
+				"kind": "H",
+				"extremePrice": 10050450
+			},
+			{
+				"idx": 97,
+				"price": 10011036,
+				"kind": "L",
+				"extremePrice": 10011036
+			},
+			{
+				"idx": 98,
+				"price": 10034179,
+				"kind": "H",
+				"extremePrice": 10034179
+			},
+			{
+				"idx": 98,
+				"price": 9998855,
+				"kind": "L",
+				"extremePrice": 9998855
+			},
+			{
+				"idx": 99,
+				"price": 10023577,
+				"kind": "H",
+				"extremePrice": 10023577
+			},
+			{
+				"idx": 99,
+				"price": 10008395,
+				"kind": "L",
+				"extremePrice": 10008395
+			},
+			{
+				"idx": 100,
+				"price": 10017831,
+				"kind": "H",
+				"extremePrice": 10017831
+			},
+			{
+				"idx": 100,
+				"price": 9984837,
+				"kind": "L",
+				"extremePrice": 9984837
+			},
+			{
+				"idx": 101,
+				"price": 10056582,
+				"kind": "H",
+				"extremePrice": 10056582
+			},
+			{
+				"idx": 101,
+				"price": 10008192,
+				"kind": "L",
+				"extremePrice": 10008192
+			},
+			{
+				"idx": 102,
+				"price": 10023257,
+				"kind": "L",
+				"extremePrice": 10023257
+			}
+		],
+		"status": "completed",
+		"daysToApex": 70,
+		"breakoutDate": "2026-08-17T15:00:00.000Z",
+		"breakoutBarIndex": 115,
+		"breakoutDirection": "up",
+		"outcome": "success",
+		"breakoutTarget": 10283427,
+		"targetMethod": "pattern_height",
+		"targetReachedPct": 999,
+		"targetReached": true,
+		"targetReachedDate": "2026-08-20T01:00:00.000Z",
+		"targetReachedPrice": 11063169,
+		"targetFirstReachBars": 3,
+		"targetFirstReachDate": "2026-08-17T18:00:00.000Z",
+		"targetScanBars": 60,
+		"targetScanComplete": true
+	},
+	{
+		"type": "triangle_ascending",
+		"confidence": 0.83,
+		"timeframe": "1hour",
+		"timeframeLabel": "1時間足",
+		"range": {
+			"start": "2026-08-16T12:00:00.000Z",
+			"end": "2026-08-17T15:00:00.000Z"
+		},
+		"pivots": [
+			{
+				"idx": 92,
+				"price": 10089899,
+				"kind": "H",
+				"extremePrice": 10089899
+			},
+			{
+				"idx": 95,
+				"price": 10066840,
+				"kind": "H",
+				"extremePrice": 10066840
+			},
+			{
+				"idx": 98,
+				"price": 9998855,
+				"kind": "L",
+				"extremePrice": 9998855
+			},
+			{
+				"idx": 100,
+				"price": 9984837,
+				"kind": "L",
+				"extremePrice": 9984837
+			},
+			{
+				"idx": 106,
+				"price": 10128000,
+				"kind": "H",
+				"extremePrice": 10128000
+			},
+			{
+				"idx": 109,
+				"price": 10073402,
+				"kind": "L",
+				"extremePrice": 10073402
+			},
+			{
+				"idx": 111,
+				"price": 10149290,
+				"kind": "H",
+				"extremePrice": 10149290
+			},
+			{
+				"idx": 113,
+				"price": 10112000,
+				"kind": "L",
+				"extremePrice": 10112000
+			}
+		],
+		"neckline": [
+			{
+				"x": 88,
+				"y": 10058937.01
+			},
+			{
+				"x": 114,
+				"y": 10158077.49
+			}
+		],
+		"status": "completed",
+		"breakoutBarIndex": 115,
+		"breakoutDirection": "up",
+		"outcome": "success",
+		"breakoutTarget": 10387692,
+		"targetMethod": "pattern_height",
+		"targetReachedPct": 530,
+		"targetReached": true,
+		"targetReachedDate": "2026-08-20T01:00:00.000Z",
+		"targetReachedPrice": 11063169,
+		"targetFirstReachBars": 47,
+		"targetFirstReachDate": "2026-08-19T14:00:00.000Z",
+		"targetScanBars": 60,
+		"targetScanComplete": true,
+		"targetOtherBreakoutBeforeReach": [
+			{
+				"type": "inverse_head_and_shoulders",
+				"direction": "up",
+				"barsAfterBreakout": 3
+			},
+			{
+				"type": "rising_wedge",
+				"direction": "down",
+				"barsAfterBreakout": 37
+			}
+		],
+		"trendlineLabel": "上限トレンドライン（レジスタンス）",
+		"aftermath": {
+			"breakoutDate": "2026-08-18T14:00:00.000Z",
+			"breakoutConfirmed": true,
+			"priceMove": {
+				"days3": {
+					"return": 0.47,
+					"high": 10295000,
+					"low": 10200900
+				},
+				"days7": {
+					"return": 0.14,
+					"high": 10295000,
+					"low": 10200900
+				},
+				"days14": {
+					"return": 0.23,
+					"high": 10300000,
+					"low": 10200900
+				}
+			},
+			"targetReached": false,
+			"theoreticalTarget": 10331318,
+			"outcome": "失敗（ブレイクアウト後、値動き僅少: +0.5%）",
+			"daysToTarget": null
+		}
+	},
+	{
+		"type": "triangle_ascending",
+		"confidence": 0.82,
+		"timeframe": "1hour",
+		"timeframeLabel": "1時間足",
+		"range": {
+			"start": "2026-08-26T12:00:00.000Z",
+			"end": "2026-08-27T08:00:00.000Z"
+		},
+		"pivots": [
+			{
+				"idx": 330,
+				"price": 12528316,
+				"kind": "H",
+				"extremePrice": 12528316
+			},
+			{
+				"idx": 331,
+				"price": 12386373,
+				"kind": "L",
+				"extremePrice": 12386373
+			},
+			{
+				"idx": 334,
+				"price": 12530000,
+				"kind": "H",
+				"extremePrice": 12530000
+			},
+			{
+				"idx": 336,
+				"price": 12477968,
+				"kind": "L",
+				"extremePrice": 12477968
+			},
+			{
+				"idx": 339,
+				"price": 12608851,
+				"kind": "H",
+				"extremePrice": 12608851
+			},
+			{
+				"idx": 341,
+				"price": 12521259,
+				"kind": "L",
+				"extremePrice": 12521259
+			},
+			{
+				"idx": 343,
+				"price": 12545098,
+				"kind": "L",
+				"extremePrice": 12545098
+			},
+			{
+				"idx": 344,
+				"price": 12603386,
+				"kind": "H",
+				"extremePrice": 12603386
+			},
+			{
+				"idx": 345,
+				"price": 12546170,
+				"kind": "L",
+				"extremePrice": 12546170
+			}
+		],
+		"neckline": [
+			{
+				"x": 328,
+				"y": 12510687.78
+			},
+			{
+				"x": 345,
+				"y": 12621334.41
+			}
+		],
+		"status": "completed",
+		"breakoutBarIndex": 348,
+		"breakoutDirection": "up",
+		"outcome": "success",
+		"breakoutTarget": 12852098,
+		"targetMethod": "pattern_height",
+		"targetReachedPct": 115,
+		"targetReached": true,
+		"targetReachedDate": "2026-08-27T15:00:00.000Z",
+		"targetReachedPrice": 12873620,
+		"targetFirstReachBars": 7,
+		"targetFirstReachDate": "2026-08-27T15:00:00.000Z",
+		"targetScanBars": 16,
+		"targetScanComplete": false,
+		"trendlineLabel": "上限トレンドライン（レジスタンス）",
+		"aftermath": {
+			"breakoutDate": "2026-08-27T17:00:00.000Z",
+			"breakoutConfirmed": true,
+			"priceMove": {
+				"days3": {
+					"return": -0.31,
+					"high": 12821873,
+					"low": 12638578
+				},
+				"days7": {
+					"return": 0.72,
+					"high": 12873620,
+					"low": 12585081
+				},
+				"days14": {
+					"return": 0.65,
+					"high": 12873620,
+					"low": 12585081
+				}
+			},
+			"targetReached": true,
+			"theoreticalTarget": 12856296,
+			"outcome": "成功（理論目標価格到達）",
+			"daysToTarget": 7
+		}
+	},
+	{
+		"type": "triangle_ascending",
+		"confidence": 0.81,
+		"timeframe": "1hour",
+		"timeframeLabel": "1時間足",
+		"range": {
+			"start": "2026-08-19T16:00:00.000Z",
+			"end": "2026-08-20T08:00:00.000Z"
+		},
+		"pivots": [
+			{
+				"idx": 165,
+				"price": 10734235,
+				"kind": "L",
+				"extremePrice": 10734235
+			},
+			{
+				"idx": 167,
+				"price": 10761955,
+				"kind": "L",
+				"extremePrice": 10761955
+			},
+			{
+				"idx": 169,
+				"price": 11058550,
+				"kind": "H",
+				"extremePrice": 11058550
+			},
+			{
+				"idx": 170,
+				"price": 10883193,
+				"kind": "L",
+				"extremePrice": 10883193
+			},
+			{
+				"idx": 173,
+				"price": 11063169,
+				"kind": "H",
+				"extremePrice": 11063169
+			},
+			{
+				"idx": 175,
+				"price": 10905104,
+				"kind": "L",
+				"extremePrice": 10905104
+			},
+			{
+				"idx": 178,
+				"price": 10990264,
+				"kind": "L",
+				"extremePrice": 10990264
+			}
+		],
+		"neckline": [
+			{
+				"x": 164,
+				"y": 11052776.25
+			},
+			{
+				"x": 181,
+				"y": 11072407
+			}
+		],
+		"status": "completed",
+		"breakoutBarIndex": 180,
+		"breakoutDirection": "up",
+		"outcome": "success",
+		"breakoutTarget": 11671022,
+		"targetMethod": "pattern_height",
+		"targetReachedPct": 382,
+		"targetReached": true,
+		"targetReachedDate": "2026-08-21T08:00:00.000Z",
+		"targetReachedPrice": 12600000,
+		"targetFirstReachBars": 16,
+		"targetFirstReachDate": "2026-08-21T00:00:00.000Z",
+		"targetScanBars": 60,
+		"targetScanComplete": true,
+		"trendlineLabel": "上限トレンドライン（レジスタンス）",
+		"aftermath": {
+			"breakoutDate": "2026-08-20T09:00:00.000Z",
+			"breakoutConfirmed": true,
+			"priceMove": {
+				"days3": {
+					"return": 0.55,
+					"high": 11500000,
+					"low": 11319701
+				},
+				"days7": {
+					"return": 1.4,
+					"high": 11546258,
+					"low": 11280000
+				},
+				"days14": {
+					"return": 1.84,
+					"high": 11619898,
+					"low": 11280000
+				}
+			},
+			"targetReached": true,
+			"theoreticalTarget": 11408270,
+			"outcome": "成功（理論目標価格到達）",
+			"daysToTarget": 2
+		}
+	},
+	{
+		"type": "triangle_ascending",
+		"confidence": 0.8,
+		"timeframe": "1hour",
+		"timeframeLabel": "1時間足",
+		"range": {
+			"start": "2026-08-24T10:00:00.000Z",
+			"end": "2026-08-25T03:00:00.000Z"
+		},
+		"pivots": [
+			{
+				"idx": 279,
+				"price": 12337349,
+				"kind": "L",
+				"extremePrice": 12337349
+			},
+			{
+				"idx": 281,
+				"price": 12390012,
+				"kind": "L",
+				"extremePrice": 12390012
+			},
+			{
+				"idx": 283,
+				"price": 12732391,
+				"kind": "H",
+				"extremePrice": 12732391
+			},
+			{
+				"idx": 285,
+				"price": 12491660,
+				"kind": "L",
+				"extremePrice": 12491660
+			},
+			{
+				"idx": 287,
+				"price": 12592698,
+				"kind": "H",
+				"extremePrice": 12592698
+			},
+			{
+				"idx": 288,
+				"price": 12505833,
+				"kind": "L",
+				"extremePrice": 12505833
+			},
+			{
+				"idx": 289,
+				"price": 12570000,
+				"kind": "H",
+				"extremePrice": 12570000
+			},
+			{
+				"idx": 291,
+				"price": 12519594,
+				"kind": "L",
+				"extremePrice": 12519594
+			},
+			{
+				"idx": 294,
+				"price": 12933047,
+				"kind": "H",
+				"extremePrice": 12933047
+			}
+		],
+		"neckline": [
+			{
+				"x": 278,
+				"y": 12752712
+			},
+			{
+				"x": 295,
+				"y": 12752712
+			}
+		],
+		"status": "completed",
+		"breakoutBarIndex": 295,
+		"breakoutDirection": "up",
+		"outcome": "success",
+		"breakoutTarget": 13232918,
+		"targetMethod": "pattern_height",
+		"targetReachedPct": 18,
+		"targetReached": false,
+		"targetReachedDate": "2026-08-25T07:00:00.000Z",
+		"targetReachedPrice": 12900000,
+		"targetScanBars": 60,
+		"targetScanComplete": true,
+		"trendlineLabel": "上限トレンドライン（レジスタンス）",
+		"aftermath": {
+			"breakoutConfirmed": false,
+			"priceMove": {
+				"days3": {
+					"return": 0.24,
+					"high": 12894353,
+					"low": 12782304
+				},
+				"days7": {
+					"return": -1.4,
+					"high": 12900000,
+					"low": 12584462
+				},
+				"days14": {
+					"return": -1.55,
+					"high": 12900000,
+					"low": 12455326
+				}
+			},
+			"targetReached": false,
+			"theoreticalTarget": 13168075,
+			"outcome": "ネックライン未突破（パターン不発）",
+			"daysToTarget": null
+		}
+	}
+]

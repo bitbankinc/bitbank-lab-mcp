@@ -7,6 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { assertFail } from '../_assertResult.js';
 import { mockBitbankSuccess, mockSpotPairsResponse } from '../fixtures/private-api.js';
 import { mrtrRound2Ctx } from './_mrtr-helpers.js';
 
@@ -355,7 +356,7 @@ describe('HITL: elicitation accept 時だけ execute される', () => {
 			confirmation_token: token,
 			token_expires_at: expiresAt,
 		});
-		expect(result.ok).toBe(false);
+		assertFail(result);
 		expect(result.meta.errorType).toBe('token_expired');
 		expect(countOrderApiCalls()).toBe(0);
 	});

@@ -32,7 +32,7 @@ describe('validateCandleData', () => {
 	});
 
 	it('不正なペアは user エラーを返す', async () => {
-		const res = await validateCandleData('invalid_xxx');
+		const res = await validateCandleData('invalid_xxx', '1day', undefined);
 		assertFail(res);
 		expect(res.meta?.errorType).toBe('user');
 	});

@@ -28,6 +28,7 @@ import {
 import { paginateTrades } from '../../../src/handlers/portfolio/fetch.js';
 import type { RawTrade } from '../../../src/handlers/portfolio/types.js';
 import { BitbankPrivateClient } from '../../../src/private/client.js';
+import { currentPriceOnly } from '../../_flowPricing.js';
 import { mockBitbankSuccess } from '../../fixtures/private-api.js';
 
 const ORIGINAL_TICKERS_JPY_URL = process.env.TICKERS_JPY_URL;
@@ -259,7 +260,8 @@ describe('取得境界での pair 正規化 — ticker 価格マップ', () => {
 				isComplete: true,
 			},
 			0,
-			prices,
+			// 本ファイルの対象は pair → asset キーの正規化なので、価格解決は現在価格 1 経路に固定する。
+			currentPriceOnly(prices),
 		);
 
 		expect(flow.net_flow_jpy).toBe(Math.round(0.1 * 15_500_000));

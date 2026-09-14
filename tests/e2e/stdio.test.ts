@@ -10,6 +10,7 @@
  * 収集し、connect 失敗時にエラーメッセージへ畳み込む。
  */
 import { existsSync } from 'node:fs';
+import { Readable } from 'node:stream';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -56,7 +57,11 @@ function captureStderr(transport: StdioClientTransport): () => string {
 	const chunks: string[] = [];
 	const stream = transport.stderr;
 	if (stream) {
-		stream.setEncoding?.('utf8');
+		// SDK の型は Stream（setEncoding を持たない基底クラス）。実体は Readable なので
+		// instanceof で絞り込んでから設定する。絞り込めなくても下の Buffer 分岐で吸収できる。
+		if (stream instanceof Readable) {
+			stream.setEncoding('utf8');
+		}
 		stream.on('data', (chunk: string | Buffer) => {
 			chunks.push(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
 		});
