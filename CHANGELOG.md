@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-14
+
 `detect_patterns` 系の変更は #114 を起点とする一連の作業で、下の表に時系列で載せる（番号が大きいほど新しい）。各行の判断根拠と計測の記録は fork（tjackiet/bitbank-lab-mcp）の各 issue と PR に残る。
 
 ### `detect_patterns`（#114 以降）
