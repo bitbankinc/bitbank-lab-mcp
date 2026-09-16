@@ -22,7 +22,6 @@ const hasJq = (() => {
 		return false;
 	}
 })();
-const itWithJq = it.skipIf(!hasJq);
 
 describe('checklist-verify.sh', () => {
 	let tmpDir: string;
@@ -85,7 +84,7 @@ describe('checklist-verify.sh', () => {
 		expect(existsSync(checklistPath)).toBe(false);
 	});
 
-	itWithJq('file_exists: ファイルが存在しなければ FAIL', () => {
+	it.skipIf(!hasJq)('file_exists: ファイルが存在しなければ FAIL', () => {
 		const { stdout } = run('file_exists nonexistent.txt');
 		const ctx = extractContext(stdout);
 		expect(ctx).toContain('FAIL');
@@ -99,7 +98,7 @@ describe('checklist-verify.sh', () => {
 		expect(stdout.trim()).toBe('');
 	});
 
-	itWithJq('file_not_empty: 空ファイルなら FAIL', () => {
+	it.skipIf(!hasJq)('file_not_empty: 空ファイルなら FAIL', () => {
 		writeFileSync(join(tmpDir, 'empty.txt'), '');
 		const { stdout } = run('file_not_empty empty.txt');
 		const ctx = extractContext(stdout);
@@ -113,7 +112,7 @@ describe('checklist-verify.sh', () => {
 		expect(stdout.trim()).toBe('');
 	});
 
-	itWithJq('grep_in: パターンが見つからなければ FAIL', () => {
+	it.skipIf(!hasJq)('grep_in: パターンが見つからなければ FAIL', () => {
 		writeFileSync(join(tmpDir, 'src.ts'), 'export const foo = {};');
 		const { stdout } = run('grep_in toolDef src.ts');
 		const ctx = extractContext(stdout);
@@ -127,7 +126,7 @@ describe('checklist-verify.sh', () => {
 		expect(stdout.trim()).toBe('');
 	});
 
-	itWithJq('grep_not_in: パターンがあれば FAIL', () => {
+	it.skipIf(!hasJq)('grep_not_in: パターンがあれば FAIL', () => {
 		writeFileSync(join(tmpDir, 'dirty.ts'), '// TODO: fix this');
 		const { stdout } = run('grep_not_in TODO dirty.ts');
 		const ctx = extractContext(stdout);
@@ -140,7 +139,7 @@ describe('checklist-verify.sh', () => {
 		expect(stdout.trim()).toBe('');
 	});
 
-	itWithJq('cmd: コマンドが失敗すれば FAIL', () => {
+	it.skipIf(!hasJq)('cmd: コマンドが失敗すれば FAIL', () => {
 		const { stdout } = run('cmd false');
 		const ctx = extractContext(stdout);
 		expect(ctx).toContain('FAIL');
@@ -158,7 +157,7 @@ file_exists exists.txt
 	});
 
 	// ── 不明なチェックタイプ ──
-	itWithJq('不明なチェックタイプはエラーとして報告する', () => {
+	it.skipIf(!hasJq)('不明なチェックタイプはエラーとして報告する', () => {
 		const { stdout } = run('unknown_check foo');
 		const ctx = extractContext(stdout);
 		expect(ctx).toContain('不明なチェックタイプ');
@@ -166,7 +165,7 @@ file_exists exists.txt
 	});
 
 	// ── 複数チェック ──
-	itWithJq('複数チェックで一部失敗した場合、失敗のみ報告する', () => {
+	it.skipIf(!hasJq)('複数チェックで一部失敗した場合、失敗のみ報告する', () => {
 		writeFileSync(join(tmpDir, 'a.txt'), 'content');
 		const { stdout } = run(`file_exists a.txt
 file_exists missing.txt
