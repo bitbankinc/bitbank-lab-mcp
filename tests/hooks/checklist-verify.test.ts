@@ -4,7 +4,7 @@
  * 一時ディレクトリにチェックリストを配置し、
  * シェルスクリプトの各チェックタイプが正しく動作するかを検証する。
  */
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,7 +16,7 @@ const SCRIPT = join(import.meta.dirname, '../../.claude/hooks/checklist-verify.s
 // jq が無い環境（Windows の Git Bash 標準構成 等）では失敗レポート系テストを skip する。
 const hasJq = (() => {
 	try {
-		execSync('bash -c "command -v jq"', { stdio: 'pipe', timeout: 10_000 });
+		execFileSync('bash', ['-c', 'command -v jq'], { stdio: 'pipe', timeout: 10_000 });
 		return true;
 	} catch {
 		return false;
@@ -50,7 +50,7 @@ describe('checklist-verify.sh', () => {
 	function run(checklist: string): { stdout: string; exitCode: number } {
 		writeFileSync(checklistPath, checklist, 'utf8');
 		try {
-			const stdout = execSync(`bash "${SCRIPT}"`, {
+			const stdout = execFileSync('bash', [SCRIPT], {
 				cwd: tmpDir,
 				env: { ...process.env, PATH: process.env.PATH },
 				encoding: 'utf8',
@@ -77,7 +77,7 @@ describe('checklist-verify.sh', () => {
 	// ── チェックリストが存在しない場合 ──
 	it('チェックリストが無ければ何も出力せず終了する', () => {
 		// checklistPath を作成しない
-		const stdout = execSync(`bash "${SCRIPT}"`, {
+		const stdout = execFileSync('bash', [SCRIPT], {
 			cwd: tmpDir,
 			encoding: 'utf8',
 		});
