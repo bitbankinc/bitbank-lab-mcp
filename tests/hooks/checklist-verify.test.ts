@@ -23,6 +23,15 @@ const hasJq = (() => {
 	}
 })();
 
+// jq が CI ランナーから消えると、上の hasJq がそのまま false になり
+// jq 依存テストが黙って skip される（= 検証が消えたことに誰も気づかない）。
+// CI では jq を前提条件として明示的に検証し、欠けていればここで落とす。
+describe('テスト環境の前提', () => {
+	it.skipIf(!process.env.CI)('CI では jq が利用可能（jq 依存テストのサイレント skip 防止）', () => {
+		expect(hasJq).toBe(true);
+	});
+});
+
 describe('checklist-verify.sh', () => {
 	let tmpDir: string;
 	let checklistPath: string;
@@ -184,7 +193,10 @@ cmd false`);
 		expect(existsSync(checklistPath)).toBe(false);
 	});
 
-	it('失敗があるとチェックリストは残る', () => {
+	// jq が無いと 95 行目の jq でスクリプトが set -euo pipefail により異常終了し、
+	// 「チェックが失敗したから残った」ではなく「異常終了して rm に到達しなかったから
+	// 残った」を見ることになる。通ってしまうが検証の意味が変わるため他の失敗系と揃える。
+	it.skipIf(!hasJq)('失敗があるとチェックリストは残る', () => {
 		run('file_exists nonexistent.txt');
 		expect(existsSync(checklistPath)).toBe(true);
 	});
