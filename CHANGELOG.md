@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows 上で `npm test` が 15 件失敗していたテスト側の POSIX 前提を解消した（@aobathree さんの #25 が原型）。あわせて jq ゲートの漏れと CI でのサイレント skip を塞ぎ、`checklist-verify` テストの bash 起動を `execFileSync` に統一した。
+
 ## [0.5.0] - 2026-09-14
 
 `detect_patterns` 系の変更は #114 を起点とする一連の作業で、下の表に時系列で載せる（番号が大きいほど新しい）。各行の判断根拠と計測の記録は fork（tjackiet/bitbank-lab-mcp）の各 issue と PR に残る。

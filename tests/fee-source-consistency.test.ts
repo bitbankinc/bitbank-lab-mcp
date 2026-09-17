@@ -12,7 +12,7 @@
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_TAKER_FALLBACK, estimateOrderFee, resolveFeeRate } from '../lib/fees.js';
@@ -60,7 +60,8 @@ describe('手数料ソース横断 — enforcement 回帰防止（grep ベース
 
 		for (const d of SCAN_DIRS) {
 			for (const file of collectTsFiles(join(REPO_ROOT, d))) {
-				const rel = relative(REPO_ROOT, file);
+				// Windows の区切り文字（\）でも比較できるようスラッシュに正規化する
+				const rel = relative(REPO_ROOT, file).split(sep).join('/');
 				// 例外: lib/fees.ts 本体・tests/ 配下
 				if (rel === 'lib/fees.ts' || rel.startsWith('tests/') || rel.includes('/tests/')) continue;
 
