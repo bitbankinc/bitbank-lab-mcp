@@ -54,7 +54,7 @@ description: 発注・キャンセルを守る2ステップ確認（HITL）と�
 {% endhint %}
 
 {% hint style="info" %}
-確認トークンは「ユーザーの最終確認を経たことの証拠」です。旧 `BITBANK_TRUST_HOST_APPROVAL`（iframe に token を `structuredContent` で載せる妥協モード）はセキュリティ上撤去済みで、設定しても無視されます。ホスト環境による挙動の違いと設計の詳細は GitHub の [docs/private-api.md](https://github.com/bitbankinc/bitbank-lab-mcp/blob/main/docs/private-api.md) と [ADR-0007](https://github.com/bitbankinc/bitbank-lab-mcp/blob/main/docs/adr/0007-hitl-confirmation-token-delivery.md) を参照してください。
+確認トークンは「ユーザーの最終確認を経たことの証拠」です。ホスト環境による挙動の違いと設計の詳細は GitHub の [docs/private-api.md](https://github.com/bitbankinc/bitbank-lab-mcp/blob/main/docs/private-api.md) と [ADR-0007](https://github.com/bitbankinc/bitbank-lab-mcp/blob/main/docs/adr/0007-hitl-confirmation-token-delivery.md) を参照してください。
 {% endhint %}
 
 ## 発注前の事前バリデーション

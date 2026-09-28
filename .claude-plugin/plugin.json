@@ -6,8 +6,8 @@
     "name": "tjackiet",
     "url": "https://github.com/tjackiet"
   },
-  "homepage": "https://github.com/tjackiet/bitbank-lab-mcp",
-  "repository": "https://github.com/tjackiet/bitbank-lab-mcp",
+  "homepage": "https://github.com/bitbankinc/bitbank-lab-mcp",
+  "repository": "https://github.com/bitbankinc/bitbank-lab-mcp",
   "license": "MIT",
   "keywords": [
     "bitbank",

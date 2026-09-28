@@ -10,6 +10,12 @@
 ### Fixed
 
 - Windows 上で `npm test` が 15 件失敗していたテスト側の POSIX 前提を解消した（@aobathree さんの #25 が原型）。あわせて jq ゲートの漏れと CI でのサイレント skip を塞ぎ、`checklist-verify` テストの bash 起動を `execFileSync` に統一した。
+- `.claude-plugin/marketplace.json` の plugin `source` を fork 固定の `{ "source": "github", "repo": "tjackiet/bitbank-lab-mcp" }` から相対パス `"./"` に変更。`bitbankinc/bitbank-lab-mcp` を marketplace として登録した場合も、plugin が fork ではなく登録元リポジトリ自身から解決されるようになった。あわせて同エントリと Claude Code / Cursor / Codex 向け plugin manifest の `homepage` / `repository`（Codex は `interface.websiteURL` も）を、README と npm（`package.json`）が案内する `bitbankinc/bitbank-lab-mcp` に揃えた。
+- `tests/patterns/no-forming-double-268.test.ts` の実データ B のトリップワイヤを組み合わせごとの `it` に分割し、遅い CI ランナーでグローバルの `testTimeout`（10 秒）を超えて落ちることがあった問題を解消した。
+
+### Docs
+
+- README / gitbook（クイックスタート・セットアップ・取引の安全設計）: Claude Desktop 向けの「取引注文・注文キャンセル実行」の設定例に `BITBANK_MCP_APPS_EXECUTE=1` を追加し、参照のみの設定例と区別できるようにした。確認トークンが `_meta` に載る条件（オプトインがあり、かつクライアントが elicitation 非対応で MCP Apps UI を宣言している場合）と、その場合の安全性がホストの挙動に依存することを明記した。撤去済みの `BITBANK_TRUST_HOST_APPROVAL` への言及を削除し、セットアップのオプション環境変数の表を `BITBANK_MCP_APPS_EXECUTE` に差し替えた。
 
 ## [0.5.0] - 2026-09-14
 

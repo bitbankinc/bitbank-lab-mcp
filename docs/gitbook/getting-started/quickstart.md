@@ -80,7 +80,9 @@ bitbank-lab-mcp を **Claude Desktop** に登録し、AI に市場データを�
 
 &#x20;**C. 取引注文・注文キャンセル実行（要 APIキー）:**
 
-B に加えて、elicitation / MRTR 対応ホスト上での発注・注文キャンセルまで実行。実行前に必ず確認ステップ（preview → ユーザー明示 accept）が入ります。
+B に加えて、発注・注文キャンセルまで実行。実行前に必ず確認ステップ（preview → ユーザーの明示確認）が入ります。
+
+Claude Desktop では確認カードのボタンから実行するため、B の設定に **`BITBANK_MCP_APPS_EXECUTE=1` を追加**してオプトインします（**既定は無効**）。設定する前に [取引の安全設計](../private-api/safety.md) の「`BITBANK_MCP_APPS_EXECUTE=1` を設定する前に」を確認してください。
 
 ```json
 {
@@ -90,7 +92,8 @@ B に加えて、elicitation / MRTR 対応ホスト上での発注・注文キ�
       "args": ["-y", "bitbank-lab-mcp"],
       "env": {
         "BITBANK_API_KEY": "your_api_key",
-        "BITBANK_API_SECRET": "your_api_secret"
+        "BITBANK_API_SECRET": "your_api_secret",
+        "BITBANK_MCP_APPS_EXECUTE": "1"
       }
     }
   }
@@ -127,7 +130,7 @@ B に加えて、elicitation / MRTR 対応ホスト上での発注・注文キ�
 
 ## （任意）API キーを設定して Private API を使う
 
-自分の資産確認・取引履歴の参照や、AI からの発注・キャンセルを使う場合は、`env` ブロックに bitbank の API キーを追加します。必要な環境変数は `BITBANK_API_KEY` と `BITBANK_API_SECRET` の **2 つだけ**で、両方が設定されていると Private ツールが自動で有効になります。キーの発行手順と権限の選び方は [Private API（取引機能）](../private-api/setup.md) を参照してください。
+自分の資産確認・取引履歴の参照や、AI からの発注・キャンセルを使う場合は、`env` ブロックに bitbank の API キーを追加します。Private ツールの有効化に必要な環境変数は `BITBANK_API_KEY` と `BITBANK_API_SECRET` の **2 つ**で、両方が設定されていると自動で有効になります。Claude Desktop で発注・キャンセルまで実行する場合は、さらに `BITBANK_MCP_APPS_EXECUTE=1` を追加します（下の「取引あり」タブ）。キーの発行手順と権限の選び方は [Private API（取引機能）](../private-api/setup.md) を参照してください。
 
 {% tabs %}
 {% tab title="参照のみ（資産・履歴の確認）" %}
@@ -150,7 +153,7 @@ bitbank 側で **「参照」権限のみ**のキーを発行して設定しま�
 {% endtab %}
 
 {% tab title="取引あり（発注・キャンセル）" %}
-bitbank 側で **「参照」+「取引」権限**のキーを発行します。発注・取消は elicitation / MRTR 対応ホスト上でのユーザー明示確認でのみ実行されます。
+bitbank 側で **「参照」+「取引」権限**のキーを発行します。Claude Desktop では確認カードのボタンから実行するため、`BITBANK_MCP_APPS_EXECUTE=1` を追加してオプトインします（**既定は無効**）。
 
 ```json
 {
@@ -160,7 +163,8 @@ bitbank 側で **「参照」+「取引」権限**のキーを発行します。
       "args": ["-y", "bitbank-lab-mcp"],
       "env": {
         "BITBANK_API_KEY": "your_api_key",
-        "BITBANK_API_SECRET": "your_api_secret"
+        "BITBANK_API_SECRET": "your_api_secret",
+        "BITBANK_MCP_APPS_EXECUTE": "1"
       }
     }
   }
@@ -168,7 +172,8 @@ bitbank 側で **「参照」+「取引」権限**のキーを発行します。
 ```
 
 {% hint style="warning" %}
-* 発注は preview → elicitation/MRTR でのユーザー明示 accept → 実行の流れです。確認トークンはクライアントに返らないため、LLM が preview から直接 execute することはできません。旧 `BITBANK_TRUST_HOST_APPROVAL` は無効です。詳細は [取引の安全設計](../private-api/safety.md) を参照してください。
+* 発注は preview → ユーザーの明示確認 → 実行の流れです。確認トークンは `content` / `structuredContent` には載りません。`BITBANK_MCP_APPS_EXECUTE=1` を設定し、かつクライアントが elicitation 非対応で MCP Apps UI を宣言している場合（Claude Desktop 等）に限り、確認カードに渡すためツール結果の `_meta` に載ります。この場合の安全性は「ホストが `_meta` を AI に渡さない」ことに依存し、仕様上の保証はありません。
+* `BITBANK_MCP_APPS_EXECUTE=1` を設定する前に、[取引の安全設計](../private-api/safety.md) の注意事項を必ず確認してください。
 * **「出金」権限は絶対に有効化しないでください**（本サーバーは出金系ツールを実装していないため不要です）。
 {% endhint %}
 {% endtab %}
