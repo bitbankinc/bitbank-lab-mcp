@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Claude Code / claude.ai 向け plugin の本体を `plugins/bitbank-lab-mcp/`（`.claude-plugin/plugin.json` と `skills/`）に移し、`.claude-plugin/marketplace.json` の `source` を `./plugins/bitbank-lab-mcp` に変更した。`source: "./"` ではリポジトリ直下の npm 用 `bin/bitbank-lab-mcp.js` が plugin に含まれ、claude.ai の組織同期（Claude Desktop / claude.ai への配布）が `marketplace_sync_bin_directory_not_allowed` で拒否していた。`.claude/skills/` の symlink と README / docs の参照先も新しい場所に合わせ、置き場所を `tests/plugin-marketplace-layout.test.ts` で固定した。
+
 ## [0.5.1] - 2026-09-28
 
 ### Fixed

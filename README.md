@@ -285,15 +285,15 @@ Cursor と同じ JSON 形式で登録できます。クライアント固有の�
 
 ### 3. （オプション）Plugin として install（同梱 Skill を使う）
 
-通常の利用はセクション 1〜2 の登録だけで完結します。Plugin install は、**Claude Code などの AI コーディングツールで、MCP サーバーに加えて同梱 Skill（`skills/` 配下）も使いたい方向け**のオプションです。
+通常の利用はセクション 1〜2 の登録だけで完結します。Plugin install は、**Claude Code などの AI コーディングツールで、MCP サーバーに加えて同梱 Skill（`plugins/bitbank-lab-mcp/skills/` 配下）も使いたい方向け**のオプションです。
 
 - Plugin として install すると、MCP ツールと同時に同梱 Skill（例: `investment-onboarding`）が有効化されます。今後 Skill を追加した場合も、plugin のアップデートでまとめて届きます。
-- Skill を自作してワークフローをカスタマイズしたい方は、[`skills/INDEX.md`](skills/INDEX.md) の構成が参考になります。
+- Skill を自作してワークフローをカスタマイズしたい方は、[`plugins/bitbank-lab-mcp/skills/INDEX.md`](plugins/bitbank-lab-mcp/skills/INDEX.md) の構成が参考になります。
 - **Claude Desktop は plugin / Skill の読み込みに未対応**です。Claude Desktop で使う場合は[セクション 1](#1-claude-desktop-に登録推奨) の方法で登録してください（MCP ツールの機能は同じで、Skill が使えるかどうかだけの違いです）。
 
 | クライアント | manifest | API キーの渡し方 |
 |---|---|---|
-| Claude Code | `.claude-plugin/plugin.json` | ✅ **GUI で入力**: `/plugin install` 直後に `userConfig` UI が表示され、OS キーチェーンに保管 |
+| Claude Code | `plugins/bitbank-lab-mcp/.claude-plugin/plugin.json` | ✅ **GUI で入力**: `/plugin install` 直後に `userConfig` UI が表示され、OS キーチェーンに保管 |
 | Antigravity CLI（旧 Gemini CLI） | `gemini-extension.json` | ✅ **対話 prompt**: `settings` 配列で対話的に入力、`.env` に保管 |
 | Cursor | `.cursor-plugin/plugin.json` | ⚙️ **シェル環境変数のみ**: `BITBANK_API_KEY` / `BITBANK_API_SECRET` を環境変数に設定（Cursor は plugin 経由の prompt 未対応） |
 | Codex | `.codex-plugin/plugin.json` | ⚙️ **シェル環境変数のみ**: `BITBANK_API_KEY` / `BITBANK_API_SECRET` を環境変数に設定 |
