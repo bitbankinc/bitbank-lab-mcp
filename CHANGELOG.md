@@ -7,8 +7,11 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-28
+
 ### Fixed
 
+- plugin manifest（`.claude-plugin/plugin.json` / `.cursor-plugin/plugin.json` / `.codex-plugin/plugin.json` / `gemini-extension.json`）の `version` が 0.1.1 のまま据え置かれていた。Claude Code は `plugin.json` の `version` でインストール済み plugin の更新を判定するため、0.4.0 / 0.5.0 の plugin 側の変更（skill 等）が既存の利用者に届いていなかった。0.5.1 に揃え、以後はリリースごとにタグと揃える（手順は `docs/ops.md`、ずれは `tests/plugin-manifest-version.test.ts` が検出する）。MCP サーバー本体は `npx -y bitbank-lab-mcp` で起動時に最新版を取得するため影響を受けていない。
 - Windows 上で `npm test` が 15 件失敗していたテスト側の POSIX 前提を解消した（@aobathree さんの #25 が原型）。あわせて jq ゲートの漏れと CI でのサイレント skip を塞ぎ、`checklist-verify` テストの bash 起動を `execFileSync` に統一した。
 - `.claude-plugin/marketplace.json` の plugin `source` を fork 固定の `{ "source": "github", "repo": "tjackiet/bitbank-lab-mcp" }` から相対パス `"./"` に変更。`bitbankinc/bitbank-lab-mcp` を marketplace として登録した場合も、plugin が fork ではなく登録元リポジトリ自身から解決されるようになった。あわせて同エントリと Claude Code / Cursor / Codex 向け plugin manifest の `homepage` / `repository`（Codex は `interface.websiteURL` も）を、README と npm（`package.json`）が案内する `bitbankinc/bitbank-lab-mcp` に揃えた。
 - `tests/patterns/no-forming-double-268.test.ts` の実データ B のトリップワイヤを組み合わせごとの `it` に分割し、遅い CI ランナーでグローバルの `testTimeout`（10 秒）を超えて落ちることがあった問題を解消した。
