@@ -191,12 +191,17 @@ describe('double に status: forming は存在しない（issue #268 案 C の�
 		}
 	});
 
-	it('凍結済み実データ B（btc_jpy_1hour_2026_08）× 時間足 3 × swingDepth 4 で 1 件も出ない', async () => {
+	// 12 通りを 1 つの `it` に詰めると、遅い CI ランナーでグローバルの `testTimeout`（10 秒）を
+	// 超えることがある（手元のスイート全体で約 3 秒）。組み合わせごとに `it` を分けて 1 件あたりの
+	// 所要時間を小さく保つ。検査の中身（12 通りすべてで 0 件）は分割前と同じ。
+	describe('凍結済み実データ B（btc_jpy_1hour_2026_08）× 時間足 3 × swingDepth 4 で 1 件も出ない', () => {
 		const candles = buildBtcJpy1hour202608Candles() as unknown as Candle[];
 		for (const tf of ['1day', '4hour', '1hour']) {
 			for (const swingDepth of [undefined, 2, 3, 6]) {
-				const hits = formingDoubles(await run(candles, tf, swingDepth));
-				expect(hits, `実データ B / ${tf} / sd=${swingDepth ?? 'auto'}`).toEqual([]);
+				it(`${tf} / sd=${swingDepth ?? 'auto'}`, async () => {
+					const hits = formingDoubles(await run(candles, tf, swingDepth));
+					expect(hits, `実データ B / ${tf} / sd=${swingDepth ?? 'auto'}`).toEqual([]);
+				});
 			}
 		}
 	});

@@ -17,6 +17,17 @@ git tag v0.5.0 && git push origin v0.5.0
 > リポジトリ上の値は `0.0.0-dev` のプレースホルダで、公開バージョンとは一致しません。
 > 手で更新すると「変更なし」エラーでリリースが失敗します。
 
+> **plugin manifest の `version` は、タグを打つ前のリリース PR で手で更新すること。**
+> `package.json` と違ってワークフローは書き換えないため、上げ忘れるとリポジトリの値のまま残ります。
+>
+> - 対象: `.claude-plugin/plugin.json` / `.cursor-plugin/plugin.json` / `.codex-plugin/plugin.json` / `gemini-extension.json`
+> - 値: タグから `v` を除いたもの（`v0.5.1` なら `0.5.1`）。CHANGELOG で切ったバージョンと同じにする
+> - 理由: Claude Code は `plugin.json` の `version` でインストール済み plugin の更新を判定する。
+>   据え置くと、新しいコミットを push しても既存の利用者はキャッシュのまま更新されない
+>   （0.1.1 のまま 0.4.0 / 0.5.0 を出して実際に起きた）
+> - `.claude-plugin/marketplace.json` の plugin エントリには `version` を書かない（`plugin.json` と二重になると食い違いの元になる）
+> - ずれは `tests/plugin-manifest-version.test.ts` が検出する（4 つの manifest が一致し、CHANGELOG の最新リリースと同じであること）
+
 | ステップ | 内容 |
 |---|---|
 | 1. CI gate | lint / typecheck / test をタグ時点のコードで再実行 |

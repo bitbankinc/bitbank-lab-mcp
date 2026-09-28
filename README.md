@@ -115,7 +115,9 @@ nvm/volta などのバージョン管理ツールをお使いの方には特に�
 
 **C. 取引注文・注文キャンセル実行（要 API キー）:**
 
-B に加えて、対応ホスト上での発注・注文キャンセルまで実行。実行前に必ず確認ステップ（preview → ユーザーの明示確認）が入ります。
+B に加えて、発注・注文キャンセルまで実行。実行前に必ず確認ステップ（preview → ユーザーの明示確認）が入ります。
+
+Claude Desktop では確認カードのボタンから実行するため、B の設定に **`BITBANK_MCP_APPS_EXECUTE=1` を追加**してオプトインします（**既定は無効**。設定する前に下の「⚠️ `BITBANK_MCP_APPS_EXECUTE=1` を設定する前に読んでください」を確認してください）。
 
 ```json
 {
@@ -125,7 +127,8 @@ B に加えて、対応ホスト上での発注・注文キャンセルまで実
       "args": ["-y", "bitbank-lab-mcp"],
       "env": {
         "BITBANK_API_KEY": "your_api_key",
-        "BITBANK_API_SECRET": "your_api_secret"
+        "BITBANK_API_SECRET": "your_api_secret",
+        "BITBANK_MCP_APPS_EXECUTE": "1"
       }
     }
   }
@@ -136,7 +139,7 @@ B に加えて、対応ホスト上での発注・注文キャンセルまで実
 >
 > ※ **「出金」権限は有効化しないことを強く推奨します**。本サーバーは出金系ツール未実装のため不要です。
 
-発注・取消の実行には**ユーザーの明示確認が必須**です。確認トークンは `content` / `structuredContent` に載らないため、LLM が preview 応答から直接 execute することはできません。旧 `BITBANK_TRUST_HOST_APPROVAL` オプトイン（iframe に token を `structuredContent` で載せる妥協モード）はセキュリティ上撤去済みで、設定しても無視されます。
+発注・取消の実行には**ユーザーの明示確認が必須**です。確認トークンは `content` / `structuredContent` には載りません。`BITBANK_MCP_APPS_EXECUTE=1` を設定し、かつクライアントが elicitation 非対応で MCP Apps UI を宣言している場合（Claude Desktop 等）に限り、確認カードに渡すためツール結果の `_meta` に載ります。この場合の安全性は「ホストが `_meta` を LLM に渡さない」ことに依存し、仕様上の保証はありません（下の「⚠️ `BITBANK_MCP_APPS_EXECUTE=1` を設定する前に読んでください」）。
 
 確認の経路はクライアントによって変わります。
 
@@ -266,7 +269,7 @@ Claude Desktop の UI に表示される名前は `claude_desktop_config.json` �
 }
 ```
 
-API キーが不要な場合は `env` ブロックごと削除して OK。セクション 1 の A〜C と同様に、取引実行まで使う場合は確認フローに対応したクライアントが必要です（旧 `BITBANK_TRUST_HOST_APPROVAL` は不要・無効です）。
+API キーが不要な場合は `env` ブロックごと削除して OK。セクション 1 の A〜C と同様に、取引実行まで使う場合は確認フローに対応したクライアントが必要です。
 
 #### Claude Code（CLI から登録する場合）
 

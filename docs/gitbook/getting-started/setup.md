@@ -30,5 +30,5 @@ description: AIクライアント別の詳細なセットアップ手順への�
 | 変数 | 既定 | 用途 |
 | --- | --- | --- |
 | `LOG_LEVEL` | `info` | `debug` を指定すると詳細ログを出力。トラブル調査時に使用。 |
-| `BITBANK_TRUST_HOST_APPROVAL` | unset（無視） | **撤去済み。** 設定しても効果なし。旧 iframe に token を載せる妥協モードはセキュリティ上無効化した。取引実行は elicitation / MRTR のみ。詳細は [取引の安全設計](../private-api/safety.md)。 |
 | `BITBANK_API_KEY` / `BITBANK_API_SECRET` | unset | Private ツールを有効化する API キー。両方そろって初めて有効になる。 |
+| `BITBANK_MCP_APPS_EXECUTE` | unset（無効） | `1` を指定すると、MCP Apps UI 対応ホスト（Claude Desktop 等）で確認カードのボタンからの発注・取消を有効化する。**既定は無効。** 設定する前に [取引の安全設計](../private-api/safety.md) の注意事項を確認すること。 |
