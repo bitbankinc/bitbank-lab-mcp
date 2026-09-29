@@ -8,7 +8,8 @@
  * 据え置くと新しいコミットを push してもキャッシュのままになる）。
  *
  * 見ること:
- *   1. すべての manifest（`.<client>-plugin/plugin.json` と `gemini-extension.json`）の `version` が一致している
+ *   1. すべての manifest（marketplace が参照する Claude Code の plugin の `.claude-plugin/plugin.json`、
+ *      直下の `.<client>-plugin/plugin.json`、`gemini-extension.json`）の `version` が一致している
  *   2. それが CHANGELOG で最後に切ったリリース（`[Unreleased]` の次の見出し）と同じ
  *   3. `.claude-plugin/marketplace.json` の plugin エントリに `version` が無い
  *      （`plugin.json` と二重に書くと `plugin.json` が黙って優先され、食い違いの元になる）
@@ -23,12 +24,24 @@ import { describe, expect, it } from 'vitest';
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+function readJson(relPath: string): Record<string, unknown> {
+	return JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, relPath), 'utf8')) as Record<string, unknown>;
+}
+
 /**
- * plugin manifest の一覧。**名前で選ばない**——`.<client>-plugin/plugin.json` を機械的に集めるので、
- * 新しいクライアント向けの manifest を足したらこの検査も自動でそれを見る。
- * Gemini CLI だけは置き場所の規約が違う（リポジトリ直下の `gemini-extension.json`）ので足す。
+ * plugin manifest の一覧。**名前で選ばない**——次を機械的に集めるので、plugin や
+ * クライアント向けの manifest を足したらこの検査も自動でそれを見る。
+ *   - Claude Code: marketplace が相対パスで参照する plugin の `<source>/.claude-plugin/plugin.json`
+ *     （plugin 本体はサブディレクトリにある。`tests/plugin-marketplace-layout.test.ts`）
+ *   - Cursor / Codex: リポジトリ直下の `.<client>-plugin/plugin.json`
+ *   - Gemini CLI: 置き場所の規約が違う（リポジトリ直下の `gemini-extension.json`）
  */
 const PLUGIN_MANIFESTS: string[] = [
+	...(readJson('.claude-plugin/marketplace.json').plugins as Array<{ source?: unknown }>)
+		.map((entry) => entry.source)
+		.filter((source): source is string => typeof source === 'string' && source.startsWith('./'))
+		.map((source) => path.posix.join(source, '.claude-plugin/plugin.json'))
+		.filter((p) => fs.existsSync(path.join(PACKAGE_ROOT, p))),
 	...fs
 		.readdirSync(PACKAGE_ROOT, { withFileTypes: true })
 		.filter((d) => d.isDirectory() && /^\.[a-z]+-plugin$/.test(d.name))
@@ -36,10 +49,6 @@ const PLUGIN_MANIFESTS: string[] = [
 		.filter((p) => fs.existsSync(path.join(PACKAGE_ROOT, p))),
 	'gemini-extension.json',
 ];
-
-function readJson(relPath: string): Record<string, unknown> {
-	return JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, relPath), 'utf8')) as Record<string, unknown>;
-}
 
 /** CHANGELOG で最後に切ったリリースのバージョン（`## [x.y.z] - YYYY-MM-DD` の最初の 1 つ）。 */
 function latestReleasedVersion(): string | undefined {

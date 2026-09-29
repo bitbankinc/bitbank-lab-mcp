@@ -1,7 +1,7 @@
 {
   "name": "bitbank-lab-mcp",
   "displayName": "bitbank lab MCP",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Experimental MCP server for bitbank — botters lab community edition. Market data, technical analysis, charting, and Private API trading tools.",
   "author": {
     "name": "tjackiet"

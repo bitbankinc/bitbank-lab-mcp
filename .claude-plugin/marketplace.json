@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "bitbank-lab-mcp",
-      "source": "./",
+      "source": "./plugins/bitbank-lab-mcp",
       "description": "Experimental MCP server for bitbank — botters lab community edition. Market data, technical analysis, charting, and Private API trading tools.",
       "homepage": "https://github.com/bitbankinc/bitbank-lab-mcp",
       "repository": "https://github.com/bitbankinc/bitbank-lab-mcp",

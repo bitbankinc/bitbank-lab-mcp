@@ -22,6 +22,8 @@ npm run typecheck           # tsc --noEmit
 - スキーマ変更は `src/schema/` 配下の Zod 定義を単一ソースとする（`src/schemas.ts` は re-export）
 - 全ツールは `Result<T, M>` パターン（`ok()` / `fail()`）で返す
 - `lib/` に共通ユーティリティがある処理は、外部ライブラリの直接利用や自前実装をせず `lib/` を使う
+- Claude Code / claude.ai 向け plugin の本体は `plugins/bitbank-lab-mcp/`（`.claude-plugin/plugin.json` と `skills/`）。Skill はここに置き、`.claude/skills/` からは symlink で参照する。
+  marketplace の `source` をリポジトリ直下にしない（npm 用の `bin/` が plugin に入り、claude.ai の組織同期が拒否する）。ガードは `tests/plugin-marketplace-layout.test.ts`。
 - 対応ペアは JPY 建てのみ（表示層が円前提）。非 JPY 建て対応は別途、表示層の quote 通貨移行が前提（`lib/validate.ts` の `ALLOWED_PAIRS`、ガードは `tests/lib/validate.test.ts`）。
 - **stdio 以外のトランスポート（HTTP 等）を `src/server.ts` に足す変更は、同じ PR で
   `confirmation_token` の session / principal 束縛を実装しない限り入れない**（ADR-0007 判断事項 B）。
