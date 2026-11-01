@@ -1,21 +1,7 @@
 import { EPSILON } from '../../lib/math.js';
 import { generatePatternDiagram, type PatternDiagramData } from '../../lib/pattern-diagrams.js';
 import { patternBarRange } from './bar-thresholds.js';
-import {
-	calcAlternationScoreEx,
-	calcApex,
-	calcATR,
-	calcDurationScoreEx,
-	calcInsideRatioEx,
-	calculatePatternScoreEx,
-	checkContainment,
-	checkConvergenceEx,
-	deduplicatePatterns,
-	detectWedgeBreak,
-	determineWedgeType,
-	evaluateTouchesEx,
-	generateWindows,
-} from './helpers.js';
+import { calcATR, deduplicatePatterns } from './helpers.js';
 import { smoothCandleExtremes } from './smoothing.js';
 import type { Pivot } from './swing.js';
 import { computeTargetReach, omittedTargetReach, type TargetReachResult, targetReachFields } from './target-reach.js';
@@ -28,6 +14,19 @@ import type {
 	TouchPoint,
 	TouchResult,
 } from './types.js';
+import {
+	calcAlternationScoreEx,
+	calcApex,
+	calcDurationScoreEx,
+	calcInsideRatioEx,
+	calculatePatternScoreEx,
+	checkContainment,
+	checkConvergenceEx,
+	detectWedgeBreak,
+	determineWedgeType,
+	evaluateTouchesEx,
+	generateWindows,
+} from './wedge-helpers.js';
 
 const SG_WINDOW_MAX = 11;
 const MIN_SG_PIVOTS = 6;
