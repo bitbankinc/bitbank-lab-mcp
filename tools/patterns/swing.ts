@@ -68,3 +68,23 @@ export function filterPeaks(pivots: Pivot[]): Pivot[] {
 export function filterValleys(pivots: Pivot[]): Pivot[] {
 	return pivots.filter((p) => p.kind === 'L');
 }
+
+export function detectRelaxedSwings(candles: ReadonlyArray<Pick<Candle, 'high' | 'low'>>): {
+	peaks: Array<{ idx: number; price: number }>;
+	valleys: Array<{ idx: number; price: number }>;
+} {
+	const peaks: Array<{ idx: number; price: number }> = [];
+	const valleys: Array<{ idx: number; price: number }> = [];
+	for (let i = 1; i < candles.length - 1; i++) {
+		const c = candles[i];
+		const prev = candles[i - 1];
+		const next = candles[i + 1];
+		if (c.high > prev.high && c.high > next.high) {
+			peaks.push({ idx: i, price: c.high });
+		}
+		if (c.low < prev.low && c.low < next.low) {
+			valleys.push({ idx: i, price: c.low });
+		}
+	}
+	return { peaks, valleys };
+}

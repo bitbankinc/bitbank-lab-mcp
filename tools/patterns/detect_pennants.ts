@@ -1,7 +1,8 @@
 import { cappedBarsForDays } from './bar-thresholds.js';
 import { barsPerDay, calcATR, deduplicatePatterns, finalizeConf } from './helpers.js';
-import { clamp01 } from './regression.js';
+import { clamp01, robustFit } from './regression.js';
 import { BREAKOUT_AGAINST_EXPECTATION } from './structural.js';
+import { detectRelaxedSwings } from './swing.js';
 import { computeTargetReach, omittedTargetReach, type TargetReachResult, targetReachFields } from './target-reach.js';
 import type { CandleData, DetectContext, DetectResult, PatternEntry } from './types.js';
 
@@ -98,45 +99,6 @@ function computeSpreadStats(upper: ValueAt, lower: ValueAt, startIdx: number, en
 	const stability = clamp01(1 - cv);
 	const convergenceRatio = spreadEnd / spreadStart;
 	return { spreadAvg: mean, spreadStability: stability, spreadStart, spreadEnd, convergenceRatio };
-}
-
-interface SwingPt {
-	idx: number;
-	price: number;
-}
-interface RegLine {
-	slope: number;
-	intercept: number;
-	r2: number;
-	valueAt: (x: number) => number;
-}
-type LrWithR2Fn = (pts: Array<{ x: number; y: number }>) => RegLine;
-
-function robustFit(
-	pts: readonly SwingPt[],
-	lrWithR2: LrWithR2Fn,
-	minR2: number,
-	minPoints: number,
-): { line: RegLine; filtered: SwingPt[] } {
-	let current = [...pts];
-	let line = lrWithR2(current.map((p) => ({ x: p.idx, y: p.price })));
-	const maxRemovals = Math.max(0, pts.length - minPoints);
-	for (let r = 0; r < maxRemovals && line.r2 < minR2; r++) {
-		let worstIdx = 0;
-		let worstResidual = 0;
-		for (let j = 0; j < current.length; j++) {
-			const residual = Math.abs(current[j].price - line.valueAt(current[j].idx));
-			if (residual > worstResidual) {
-				worstResidual = residual;
-				worstIdx = j;
-			}
-		}
-		const next = current.filter((_, j) => j !== worstIdx);
-		if (next.length < minPoints) break;
-		current = next;
-		line = lrWithR2(current.map((p) => ({ x: p.idx, y: p.price })));
-	}
-	return { line, filtered: current };
 }
 
 interface BestPole {
@@ -319,19 +281,7 @@ export function detectPennantsFlags(ctx: DetectContext): DetectResult {
 
 	const params = getFlagParams(type);
 
-	const relaxedPeaks: Array<{ idx: number; price: number }> = [];
-	const relaxedValleys: Array<{ idx: number; price: number }> = [];
-	for (let i = 1; i < candles.length - 1; i++) {
-		const c = candles[i];
-		const prev = candles[i - 1];
-		const next = candles[i + 1];
-		if (c.high > prev.high && c.high > next.high) {
-			relaxedPeaks.push({ idx: i, price: c.high });
-		}
-		if (c.low < prev.low && c.low < next.low) {
-			relaxedValleys.push({ idx: i, price: c.low });
-		}
-	}
+	const { peaks: relaxedPeaks, valleys: relaxedValleys } = detectRelaxedSwings(candles);
 
 	const outerStep = params.poleMaxBars > 100 ? 2 : 1;
 
@@ -398,8 +348,8 @@ export function detectPennantsFlags(ctx: DetectContext): DetectResult {
 
 		// pole 直後の調整足が外れ値になりやすく、単純な回帰では R² が落ちて検出を逃すので robust fit にする。
 		const minR2 = 0.5;
-		const { line: upperLine, filtered: filteredHighs } = robustFit(consHighs, lrWithR2, minR2, minPointsForFit);
-		const { line: lowerLine, filtered: filteredLows } = robustFit(consLows, lrWithR2, minR2, minPointsForFit);
+		const { line: upperLine, filtered: filteredHighs } = robustFit(consHighs, minPointsForFit, lrWithR2, minR2);
+		const { line: lowerLine, filtered: filteredLows } = robustFit(consLows, minPointsForFit, lrWithR2, minR2);
 
 		if (upperLine.r2 < minR2 || lowerLine.r2 < minR2) {
 			debugCandidates.push({

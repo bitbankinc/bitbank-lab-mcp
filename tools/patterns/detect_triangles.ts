@@ -1,7 +1,8 @@
 import { patternBarsCap, structuralFloorBars } from './bar-thresholds.js';
 import { barsPerDay, calcATR, deduplicatePatterns, finalizeConf } from './helpers.js';
-import { clamp01 } from './regression.js';
+import { clamp01, robustFit } from './regression.js';
 import { BREAKOUT_AGAINST_EXPECTATION } from './structural.js';
+import { detectRelaxedSwings } from './swing.js';
 import { computeTargetReach, omittedTargetReach, type TargetReachResult, targetReachFields } from './target-reach.js';
 import type { CandDebugEntry, DetectContext, DetectResult, PatternEntry } from './types.js';
 
@@ -30,41 +31,7 @@ export function getTriangleParams(tf: string) {
 
 type RegLine = { slope: number; intercept: number; r2: number; valueAt: (x: number) => number };
 type SwingPoint = { idx: number; price: number };
-type LrWithR2Fn = (pts: Array<{ x: number; y: number }>) => RegLine;
 type TriangleType = 'triangle_ascending' | 'triangle_descending' | 'triangle_symmetrical';
-
-function findWorstResidualIdx(current: readonly SwingPoint[], line: Pick<RegLine, 'valueAt'>): number {
-	let worstIdx = 0;
-	let worstResidual = 0;
-	for (let j = 0; j < current.length; j++) {
-		const residual = Math.abs(current[j].price - line.valueAt(current[j].idx));
-		if (residual > worstResidual) {
-			worstResidual = residual;
-			worstIdx = j;
-		}
-	}
-	return worstIdx;
-}
-
-// R² が閾値を超えるまで点を捨てるので、捨てた割合の上限は呼び出し側で課す。3 点まで捨てれば R² は自動的に高くなる（#141）。
-// 除去率は上下のラインで別々に見る。合算すると、当てはまりの良いラインが破綻したラインを覆い隠す。
-function robustFit(
-	pts: SwingPoint[],
-	minPoints: number,
-	lrWithR2: LrWithR2Fn,
-	minR2: number,
-): { line: RegLine; filtered: SwingPoint[] } {
-	let current = [...pts];
-	let line = lrWithR2(current.map((p) => ({ x: p.idx, y: p.price })));
-	const maxRemovals = Math.max(0, pts.length - minPoints);
-	for (let r = 0; r < maxRemovals && line.r2 < minR2; r++) {
-		const worstIdx = findWorstResidualIdx(current, line);
-		current = current.filter((_, j) => j !== worstIdx);
-		if (current.length < minPoints) break;
-		line = lrWithR2(current.map((p) => ({ x: p.idx, y: p.price })));
-	}
-	return { line, filtered: current };
-}
 
 // ちょうど上限（6 点中 3 点など）は通す。実測で良質な候補が 50% に達しており、厳密な過半数にすると巻き添えにする。
 function exceedsRemovalCap(total: number, kept: number, maxRate: number): boolean {
@@ -356,19 +323,7 @@ export function detectTriangles(ctx: DetectContext): DetectResult {
 
 	const params = getTriangleParams(type);
 
-	const relaxedPeaks: Array<{ idx: number; price: number }> = [];
-	const relaxedValleys: Array<{ idx: number; price: number }> = [];
-	for (let i = 1; i < candles.length - 1; i++) {
-		const c = candles[i],
-			prev = candles[i - 1],
-			next = candles[i + 1];
-		if (c.high > prev.high && c.high > next.high) {
-			relaxedPeaks.push({ idx: i, price: c.high });
-		}
-		if (c.low < prev.low && c.low < next.low) {
-			relaxedValleys.push({ idx: i, price: c.low });
-		}
-	}
+	const { peaks: relaxedPeaks, valleys: relaxedValleys } = detectRelaxedSwings(candles);
 
 	const effectiveMax = Math.min(lastIdx - 5, params.maxWindowBars);
 	const windowSizes: number[] = [];
@@ -397,6 +352,7 @@ export function detectTriangles(ctx: DetectContext): DetectResult {
 			let { line: lowerLine, filtered: filteredValleys } = robustFit(valleys, minPtsForFit, lrWithR2, params.minR2);
 
 			// tryFlatFallback より前に置く。fallback が見るのは除去後に残った点だけなので、同じ問題を引き継ぐ。
+			// 除去率は上下のラインで別々に見る。合算すると、当てはまりの良いラインが破綻したラインを覆い隠す。
 			const upperExceeds = exceedsRemovalCap(peaks.length, filteredPeaks.length, params.maxOutlierRemovalRate);
 			const lowerExceeds = exceedsRemovalCap(valleys.length, filteredValleys.length, params.maxOutlierRemovalRate);
 			if (upperExceeds || lowerExceeds) {
