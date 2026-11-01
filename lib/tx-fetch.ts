@@ -27,6 +27,24 @@ export type TxSourceResult = {
 /** lib から tools/ を import しないための注入点。受け口は unknown にして本モジュール内で TxSourceResult に読み替える。 */
 export type TxFetcher = (date?: string) => Promise<unknown>;
 
+/** get_transactions の応答件数上限（public ツールの limit 上限と同値）。 */
+const PUBLIC_TX_LIMIT = 1000;
+
+// get_transactions の 1000 件上限は MCP 応答のサイズ制限なので、集計用途では外す（キャップすると 1 UTC 日の末尾側しか集計に入らない）。
+export function unlimitedTxFetcher(
+	getTransactions: (
+		pair: string,
+		limit: number,
+		date: string | undefined,
+		filters: undefined,
+		options: { unlimited: boolean },
+	) => Promise<unknown>,
+	pair: string,
+): TxFetcher {
+	// unlimited 指定時に limit は無視されるが、オプションが外れても応答上限へ縮退するよう public 上限を渡す。
+	return (date) => getTransactions(pair, PUBLIC_TX_LIMIT, date, undefined, { unlimited: true });
+}
+
 export type TxFetchFailure = { label: string; errorType: string; message: string };
 
 export type TxMerge = {

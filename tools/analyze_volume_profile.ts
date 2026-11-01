@@ -18,9 +18,9 @@ import {
 	resolveTxTimeRange,
 	sortTxsAsc,
 	type Tx,
-	type TxFetcher,
 	type TxLimitApplication,
 	type TxTimeRangeResolved,
+	unlimitedTxFetcher,
 } from '../lib/tx-fetch.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import {
@@ -33,21 +33,12 @@ import {
 import type { ToolDefinition } from '../src/tool-definition.js';
 import getTransactions from './get_transactions.js';
 
-/** get_transactions の応答件数上限（public ツールの limit 上限と同値）。 */
-const PUBLIC_TX_LIMIT = 1000;
-
 type FetchResult =
 	| { ok: true; txs: Tx[]; fetchWarning?: string; limitApplication?: TxLimitApplication }
 	| { ok: false; errorType: string; summary: string };
 
-// get_transactions の 1000 件上限は MCP 応答のサイズ制限なので、集計用途では外す（キャップすると 1 UTC 日の末尾側しか集計に入らない）。
-function internalTxFetcher(pair: string): TxFetcher {
-	// unlimited 指定時に limit は無視されるが、オプションが外れても応答上限へ縮退するよう public 上限を渡す。
-	return (date) => getTransactions(pair, PUBLIC_TX_LIMIT, date, undefined, { unlimited: true });
-}
-
 async function fetchTransactions(pair: string, resolved?: TxTimeRangeResolved, limit?: number): Promise<FetchResult> {
-	const txFetcher = internalTxFetcher(pair);
+	const txFetcher = unlimitedTxFetcher(getTransactions, pair);
 
 	if (resolved) {
 		const range = await fetchTxTimeRange(txFetcher, resolved, { nowMs: resolved.nowMs });
