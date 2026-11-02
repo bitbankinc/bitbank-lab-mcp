@@ -373,43 +373,19 @@ describe('create_order — 非 PrivateApiError の generic catch', () => {
 
 // 拒否理由が type 由来であることを issues.path で確かめる（success===false だけだと他フィールドの欠落でも通ってしまう）。
 describe('create_order — 未対応の注文タイプ（take_profit / stop_loss / losscut）', () => {
-	it('take_profit は CreateOrderInputSchema で拒否される', async () => {
+	it.each([
+		['take_profit', { trigger_price: '16000000' }],
+		['stop_loss', { trigger_price: '13000000' }],
+		// losscut はシステム発動のみのタイプ
+		['losscut', {}],
+	] as const)('%s は CreateOrderInputSchema で拒否される', async (type, extra) => {
 		const { CreateOrderInputSchema } = await import('../../src/private/schemas.js');
 		const result = CreateOrderInputSchema.safeParse({
 			pair: 'btc_jpy',
 			amount: '0.01',
 			side: 'sell',
-			type: 'take_profit',
-			trigger_price: '16000000',
-			confirmation_token: 'dummy',
-			token_expires_at: Date.now() + 60_000,
-		});
-		expect(result.success).toBe(false);
-		expect(result.error?.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-	});
-
-	it('stop_loss は CreateOrderInputSchema で拒否される', async () => {
-		const { CreateOrderInputSchema } = await import('../../src/private/schemas.js');
-		const result = CreateOrderInputSchema.safeParse({
-			pair: 'btc_jpy',
-			amount: '0.01',
-			side: 'sell',
-			type: 'stop_loss',
-			trigger_price: '13000000',
-			confirmation_token: 'dummy',
-			token_expires_at: Date.now() + 60_000,
-		});
-		expect(result.success).toBe(false);
-		expect(result.error?.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-	});
-
-	it('losscut は CreateOrderInputSchema で拒否される（システム発動のみのタイプ）', async () => {
-		const { CreateOrderInputSchema } = await import('../../src/private/schemas.js');
-		const result = CreateOrderInputSchema.safeParse({
-			pair: 'btc_jpy',
-			amount: '0.01',
-			side: 'sell',
-			type: 'losscut',
+			type,
+			...extra,
 			confirmation_token: 'dummy',
 			token_expires_at: Date.now() + 60_000,
 		});

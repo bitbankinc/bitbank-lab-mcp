@@ -9,6 +9,7 @@ import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { ensurePair } from '../lib/validate.js';
 import type { FailResult, OkResult, Pair } from '../src/schemas.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
+import { buildDepthPaths } from './chart/depth-paths.js';
 
 type RenderData = { svg?: string; filePath?: string; summary?: Record<string, unknown> };
 type RenderMeta = {
@@ -75,28 +76,7 @@ export default async function renderDepthSvg(
 			return `¥${v.toLocaleString('ja-JP')}`;
 		};
 
-		const toStepPath = (steps: Array<[number, number]>) => {
-			if (!steps.length) return '';
-			const pts = steps.map(([p, q]) => `${x(p)},${y(q)}`);
-			return `M ${pts.join(' L ')}`;
-		};
-		const bidPath = toStepPath(bidSteps);
-		const askPath = toStepPath(askSteps);
-
-		const toFillPath = (steps: Array<[number, number]>, side: 'bid' | 'ask') => {
-			if (!steps.length) return '';
-			const head = steps[0];
-			const tail = steps[steps.length - 1];
-			const baseY = y(0);
-			const poly = ['M', `${x(head[0])},${baseY}`, 'L']
-				.concat(steps.map(([p, q]) => `${x(p)},${y(q)}`))
-				.concat(['L', `${x(tail[0])},${baseY}`, 'Z'])
-				.join(' ');
-			const fill = side === 'bid' ? 'rgba(16,185,129,0.12)' : 'rgba(249,115,22,0.12)';
-			return `<path d="${poly}" fill="${fill}" stroke="none"/>`;
-		};
-		const bidFill = toFillPath(bidSteps, 'bid');
-		const askFill = toFillPath(askSteps, 'ask');
+		const { bidPath, askPath, bidFill, askFill } = buildDepthPaths(bidSteps, askSteps, x, y);
 
 		const bestBid = Number(bidsSorted[0]?.[0] ?? 0);
 		const bestAsk = Number(asksSorted[0]?.[0] ?? 0);

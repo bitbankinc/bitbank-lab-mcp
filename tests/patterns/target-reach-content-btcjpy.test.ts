@@ -2,10 +2,10 @@
 // 期待値は `data.patterns` のベースライン（`tests/fixtures/detect_patterns_1hour_data_patterns_baseline.json`）と同じ呼び出しから出る。
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { asMockResult, assertOk } from '../_assertResult.js';
+import { detectPatternsContent } from '../helpers/detect-patterns.js';
 
 vi.mock('../../tools/analyze_indicators.js', () => ({ default: vi.fn() }));
 
-import { toolDef as detectPatternsTool } from '../../src/handlers/detectPatternsHandler.js';
 import analyzeIndicators from '../../tools/analyze_indicators.js';
 import detectPatterns from '../../tools/detect_patterns.js';
 import { buildBtcJpy1hour202608Candles } from '../fixtures/btc_jpy_1hour_2026_08.js';
@@ -14,18 +14,8 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-async function liveContent(view: string): Promise<string> {
-	const candles = buildBtcJpy1hour202608Candles();
-	vi.mocked(analyzeIndicators).mockResolvedValueOnce(
-		asMockResult({ ok: true, summary: 'ok', data: { chart: { candles } } }),
-	);
-	const res = (await detectPatternsTool.handler({ pair: 'btc_jpy', type: '1hour', limit: candles.length, view })) as {
-		content?: Array<{ text?: string }>;
-	};
-	const text = res?.content?.[0]?.text;
-	// `?? ''` で畳まない。空文字に落とすと `not.toContain` 側が「ハンドラが content を返さなかった」ときにも通ってしまう。
-	if (typeof text !== 'string') throw new Error(`view=${view} の content[0].text が取れない`);
-	return text;
+function liveContent(view: string): Promise<string> {
+	return detectPatternsContent(buildBtcJpy1hour202608Candles(), { view });
 }
 
 /** `   - ターゲット: …` 行だけを取り出す（`ターゲット価格:` 行とは別）。 */

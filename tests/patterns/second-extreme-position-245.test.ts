@@ -1,11 +1,9 @@
 // この形を accepted で見るには `swingDepth: 6` が要る（既定の深さ 3 では経路ゲートが `peak_after_last_pivot` を立てる）。
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { asMockResult } from '../_assertResult.js';
+import { detectPatternsContent } from '../helpers/detect-patterns.js';
 
 vi.mock('../../tools/analyze_indicators.js', () => ({ default: vi.fn() }));
 
-import { toolDef as detectPatternsTool } from '../../src/handlers/detectPatternsHandler.js';
-import analyzeIndicators from '../../tools/analyze_indicators.js';
 import {
 	BTC_JPY_1HOUR_2026_09_05_ISSUE_WINDOW,
 	buildBtcJpy1hour20260905Candles,
@@ -16,23 +14,9 @@ afterEach(() => {
 });
 
 /** 山1（idx 41、高値 12,807,555）/ 谷（idx 46、終値 12,617,594・安値 12,588,132）/ 山2（idx 50、終値 12,639,245・高値 12,800,000）で、heightAbs = 219,423、closeGap = 21,651 / 219,423 → +9.9%、wickShare = 160,755 / 219,423 → 73.3%。 */
-async function liveWindowContent(view: string, opts: Record<string, unknown> = { swingDepth: 6 }): Promise<string> {
+function liveWindowContent(view: string, opts: Record<string, unknown> = { swingDepth: 6 }): Promise<string> {
 	const { start, end } = BTC_JPY_1HOUR_2026_09_05_ISSUE_WINDOW;
-	const candles = buildBtcJpy1hour20260905Candles().slice(start, end);
-	vi.mocked(analyzeIndicators).mockResolvedValueOnce(
-		asMockResult({ ok: true, summary: 'ok', data: { chart: { candles } } }),
-	);
-	const res = (await detectPatternsTool.handler({
-		pair: 'btc_jpy',
-		type: '1hour',
-		limit: candles.length,
-		view,
-		...opts,
-	})) as { content?: Array<{ text?: string }> };
-	const text = res?.content?.[0]?.text;
-	// `?? ''` で畳まない。空文字に落とすと `not.toContain` 側のケースが「ハンドラが content を返さなかった」ときにも通ってしまう。
-	if (typeof text !== 'string') throw new Error(`view=${view} の content[0].text が取れない`);
-	return text;
+	return detectPatternsContent(buildBtcJpy1hour20260905Candles().slice(start, end), { view, ...opts });
 }
 
 describe('#245 の発端の形（実データ D の limit=72 窓 / swingDepth: 6）', () => {

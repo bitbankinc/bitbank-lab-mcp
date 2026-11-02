@@ -44,6 +44,7 @@ import type {
 	RawWithdrawal,
 } from '../../../src/handlers/portfolio/types.js';
 import { currentPriceOnly, withDailyPrices } from '../../_flowPricing.js';
+import { jstMs } from '../../helpers/time.js';
 
 function makeTrade(overrides: Partial<RawTrade> = {}): RawTrade {
 	return {
@@ -3298,10 +3299,6 @@ describe('buildPeriodPerformance', () => {
 // 当日損益の起点（JST 暦日 0:00）は `fetchCandlePriceData` の日次価格マップのキーおよび資産推移の日次点の打ち止めと同じ暦日境界でなければならない（UTC 暦日で計算すると JST 09:00 を境に起点が 1 日ずれ、JST 深夜の当日損益が前日ぶんを含む）。
 describe('getJstPeriodBoundaries: JST 暦日境界', () => {
 	/** JST の壁時計時刻を epoch ms に変換する（JST は DST を持たないので UTC+9 固定）。 */
-	function jstMs(y: number, m: number, d: number, h = 0, min = 0, s = 0, ms = 0): number {
-		return Date.UTC(y, m - 1, d, h - 9, min, s, ms);
-	}
-
 	function boundariesAt(nowMs: number) {
 		vi.setSystemTime(nowMs);
 		return getJstPeriodBoundaries();
@@ -3387,10 +3384,6 @@ describe('getJstPeriodBoundaries: JST 暦日境界', () => {
 
 // 月次資産推移は入出金があった期間でも単一の連続線として出て「ずっと同額を保有していた」と誤読されるので、フロー発生点をデータとして返す（グラフ化されると注記行は消える前提）。
 describe('buildEquitySeries — 入出金フローマーカー', () => {
-	function jstMs(y: number, m: number, d: number, h = 0, min = 0): number {
-		return Date.UTC(y, m - 1, d, h - 9, min);
-	}
-
 	function dailyPoints(y: number, m: number, fromDay: number, toDay: number) {
 		const dates = [];
 		for (let d = fromDay; d <= toDay; d++) dates.push(dayjs(jstMs(y, m, d)).tz(PORTFOLIO_CALENDAR_TZ));
