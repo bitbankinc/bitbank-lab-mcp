@@ -4,6 +4,7 @@ import { toolDef } from '../src/handlers/analyzeIndicatorsHandler.js';
 import { GetIndicatorsInputSchema } from '../src/schemas.js';
 import analyzeIndicators, { clearIndicatorCache, computeOBV, ema } from '../tools/analyze_indicators.js';
 import { assertFail, assertOk } from './_assertResult.js';
+import { requireDefined } from './helpers/assert.js';
 
 type OhlcvRow = [string, string, string, string, string, string];
 
@@ -604,10 +605,8 @@ describe('analyze_indicators', () => {
 			expect(res.meta.warning).toBeDefined();
 			expect(typeof res.meta.warning).toBe('string');
 			expect(res.meta.warning).toContain('失敗');
-			if (res.meta.warnings) {
-				for (const w of res.meta.warnings) {
-					expect(w).not.toContain('失敗');
-				}
+			for (const w of res.meta.warnings ?? []) {
+				expect(w).not.toContain('失敗');
 			}
 		});
 
@@ -800,9 +799,8 @@ describe('padSeriesLengths: createChartData 経由で検証', () => {
 
 		const seriesKeys = ['SMA_25', 'SMA_75', 'EMA_12', 'BB_upper', 'RSI_14_series'];
 		for (const key of seriesKeys) {
-			if (Array.isArray(indicators[key])) {
-				expect((indicators[key] as unknown[]).length).toBe(candlesLen);
-			}
+			expect(Array.isArray(indicators[key]), key).toBe(true);
+			expect((indicators[key] as unknown[]).length).toBe(candlesLen);
 		}
 	});
 
@@ -823,9 +821,8 @@ describe('padSeriesLengths: createChartData 経由で検証', () => {
 		const candlesLen = res.data.chart.candles.length;
 		const indicators = res.data.chart.indicators as Record<string, unknown>;
 
-		if (Array.isArray(indicators.SMA_25)) {
-			expect((indicators.SMA_25 as unknown[]).length).toBe(candlesLen);
-		}
+		expect(Array.isArray(indicators.SMA_25)).toBe(true);
+		expect((indicators.SMA_25 as unknown[]).length).toBe(candlesLen);
 	});
 
 	// 戻り値の全系列の長さが normalized (chart.candles) と一致すること（padSeriesLengths が対象外とする macd_series も normalized から直接生成される）。落とすと描画層で index ずれが起きる。
@@ -882,16 +879,16 @@ describe('padSeriesLengths: createChartData 経由で検証', () => {
 			expect((indicators[key] as unknown[]).length).toBe(candlesLen);
 		}
 
-		const macdSeries = indicators.macd_series as { line: unknown[]; signal: unknown[]; hist: unknown[] } | undefined;
-		expect(macdSeries).toBeDefined();
-		if (macdSeries) {
-			expect(Array.isArray(macdSeries.line)).toBe(true);
-			expect(Array.isArray(macdSeries.signal)).toBe(true);
-			expect(Array.isArray(macdSeries.hist)).toBe(true);
-			expect(macdSeries.line.length).toBe(candlesLen);
-			expect(macdSeries.signal.length).toBe(candlesLen);
-			expect(macdSeries.hist.length).toBe(candlesLen);
-		}
+		const macdSeries = requireDefined(
+			indicators.macd_series as { line: unknown[]; signal: unknown[]; hist: unknown[] } | undefined,
+			'indicators.macd_series',
+		);
+		expect(Array.isArray(macdSeries.line)).toBe(true);
+		expect(Array.isArray(macdSeries.signal)).toBe(true);
+		expect(Array.isArray(macdSeries.hist)).toBe(true);
+		expect(macdSeries.line.length).toBe(candlesLen);
+		expect(macdSeries.signal.length).toBe(candlesLen);
+		expect(macdSeries.hist.length).toBe(candlesLen);
 	});
 });
 

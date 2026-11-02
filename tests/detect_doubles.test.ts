@@ -5,6 +5,7 @@ import { detectDoubles } from '../tools/patterns/detect_doubles.js';
 import { linearRegressionWithR2 } from '../tools/patterns/regression.js';
 import type { Pivot } from '../tools/patterns/swing.js';
 import type { CandleData, DetectContext } from '../tools/patterns/types.js';
+import { requireDefined } from './helpers/assert.js';
 
 function iso(daysAgo: number): string {
 	return dayjs().subtract(daysAgo, 'day').startOf('day').toISOString();
@@ -219,12 +220,12 @@ describe('detectDoubles', () => {
 		const { candles, pivots } = buildDoubleTop({ peak1: 200, valley: 170, peak2: 200 });
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectDoubles(ctx);
-		const dt = result.patterns.find((p) => p.type === 'double_top');
-
-		if (dt) {
-			// avgPeak=200, neckline=170, target = 170 - (200-170) = 140
-			expect(dt.breakoutTarget).toBe(140);
-		}
+		const dt = requireDefined(
+			result.patterns.find((p) => p.type === 'double_top'),
+			'double_top',
+		);
+		// avgPeak=200, neckline=170, target = 170 - (200-170) = 140
+		expect(dt.breakoutTarget).toBe(140);
 	});
 
 	it('ネックライン未下抜け → ダブルトップ不検出（debugCandidates に no_breakout）', () => {
@@ -293,12 +294,12 @@ describe('detectDoubles', () => {
 		const { candles, pivots } = buildDoubleBottom({ valley1: 100, peak: 130, valley2: 100 });
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectDoubles(ctx);
-		const db = result.patterns.find((p) => p.type === 'double_bottom');
-
-		if (db) {
-			// avgValley=100, neckline=130, target = 130 + (130-100) = 160
-			expect(db.breakoutTarget).toBe(160);
-		}
+		const db = requireDefined(
+			result.patterns.find((p) => p.type === 'double_bottom'),
+			'double_bottom',
+		);
+		// avgValley=100, neckline=130, target = 130 + (130-100) = 160
+		expect(db.breakoutTarget).toBe(160);
 	});
 
 	it('ネックライン未上抜け → ダブルボトム不検出', () => {
@@ -526,11 +527,10 @@ describe('detectDoubles', () => {
 		const nearCompletion = result.patterns.filter((p) => p.type === 'double_bottom' && p.status === 'near_completion');
 		expect(nearCompletion.length).toBeGreaterThanOrEqual(1);
 		expect(result.patterns.filter((p) => p.type === 'double_bottom' && p.status === 'forming')).toHaveLength(0);
-		if (nearCompletion.length > 0) {
-			expect(nearCompletion[0].breakoutTarget).toBeDefined();
-			expect(nearCompletion[0].targetMethod).toBe('neckline_projection');
-			expect(nearCompletion[0].targetProgressOmittedReason).toBe('not_broken_out');
-		}
+		expect(nearCompletion.length).toBeGreaterThan(0);
+		expect(nearCompletion[0].breakoutTarget).toBeDefined();
+		expect(nearCompletion[0].targetMethod).toBe('neckline_projection');
+		expect(nearCompletion[0].targetProgressOmittedReason).toBe('not_broken_out');
 	});
 
 	it('completed double_top: structureRange=peak1〜peak2, confirmation=breakoutIdx, precedingTrend あり', () => {
@@ -549,12 +549,12 @@ describe('detectDoubles', () => {
 
 		// confirmation: ネックライン下抜け（idx=25 が最初の breakout）
 		expect(dt.confirmation).toBeDefined();
-		expect(dt.confirmation?.type).toBe('neckline_breakout');
-		if (dt.confirmation?.type === 'neckline_breakout') {
-			expect(dt.confirmation.idx).toBe(dt.breakoutBarIndex);
-			expect(dt.confirmation.date).toBe(candles[dt.breakoutBarIndex as number].isoTime);
-			expect(dt.confirmation.price).toBe(Number(candles[dt.breakoutBarIndex as number].close));
-		}
+		expect(dt.confirmation).toMatchObject({
+			type: 'neckline_breakout',
+			idx: dt.breakoutBarIndex,
+			date: candles[dt.breakoutBarIndex as number].isoTime,
+			price: Number(candles[dt.breakoutBarIndex as number].close),
+		});
 
 		// precedingTrend: end は peak1（startIdx=0）の isoTime
 		expect(dt.precedingTrend).toBeDefined();
@@ -576,11 +576,11 @@ describe('detectDoubles', () => {
 		expect(db.structureRange?.start).toBe(candles[0].isoTime);
 		expect(db.structureRange?.end).toBe(candles[20].isoTime);
 
-		expect(db.confirmation?.type).toBe('neckline_breakout');
-		if (db.confirmation?.type === 'neckline_breakout') {
-			expect(db.confirmation.idx).toBe(db.breakoutBarIndex);
-			expect(db.confirmation.date).toBe(candles[db.breakoutBarIndex as number].isoTime);
-		}
+		expect(db.confirmation).toMatchObject({
+			type: 'neckline_breakout',
+			idx: db.breakoutBarIndex,
+			date: candles[db.breakoutBarIndex as number].isoTime,
+		});
 
 		expect(db.precedingTrend).toBeDefined();
 		expect(db.precedingTrend?.end).toBe(candles[0].isoTime);

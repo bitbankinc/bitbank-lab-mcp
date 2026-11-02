@@ -153,11 +153,7 @@ describe('detectPennantsFlags — scanStart 修正の境界テスト（PR3）', 
 			expect(typeof p.targetReached).toBe('boolean');
 			expect(typeof p.targetReachedPct).toBe('number');
 			expect(typeof p.targetReachedPrice).toBe('number');
-			if (p.targetReached === true) {
-				expect(p.targetReachedPct).toBeGreaterThanOrEqual(100);
-			} else {
-				expect(p.targetReachedPct).toBeLessThan(100);
-			}
+			expect((p.targetReachedPct as number) >= 100).toBe(p.targetReached);
 		}
 	});
 

@@ -56,10 +56,9 @@ describe('detectSwingPoints', () => {
 		];
 		const pivots = detectSwingPoints(candles, { swingDepth: 1 });
 		const peaks = pivots.filter((p) => p.kind === 'H');
-		if (peaks.length > 0) {
-			// price は close 値（125）であって high（130）ではない
-			expect(peaks[0].price).toBe(125);
-		}
+		expect(peaks.length).toBeGreaterThan(0);
+		// price は close 値（125）であって high（130）ではない
+		expect(peaks[0].price).toBe(125);
 	});
 });
 

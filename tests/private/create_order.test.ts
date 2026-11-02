@@ -385,9 +385,7 @@ describe('create_order — 未対応の注文タイプ（take_profit / stop_loss
 			token_expires_at: Date.now() + 60_000,
 		});
 		expect(result.success).toBe(false);
-		if (!result.success) {
-			expect(result.error.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-		}
+		expect(result.error?.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
 	});
 
 	it('stop_loss は CreateOrderInputSchema で拒否される', async () => {
@@ -402,9 +400,7 @@ describe('create_order — 未対応の注文タイプ（take_profit / stop_loss
 			token_expires_at: Date.now() + 60_000,
 		});
 		expect(result.success).toBe(false);
-		if (!result.success) {
-			expect(result.error.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-		}
+		expect(result.error?.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
 	});
 
 	it('losscut は CreateOrderInputSchema で拒否される（システム発動のみのタイプ）', async () => {
@@ -418,9 +414,7 @@ describe('create_order — 未対応の注文タイプ（take_profit / stop_loss
 			token_expires_at: Date.now() + 60_000,
 		});
 		expect(result.success).toBe(false);
-		if (!result.success) {
-			expect(result.error.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-		}
+		expect(result.error?.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
 	});
 });
 

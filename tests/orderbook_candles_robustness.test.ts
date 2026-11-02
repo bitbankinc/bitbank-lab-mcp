@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { allToolDefs } from '../src/tool-registry.js';
 import getOrderbook from '../tools/get_orderbook.js';
-import { asMockResult } from './_assertResult.js';
+import { asMockResult, assertOk } from './_assertResult.js';
 
 function findNonFinite(value: unknown, path = '$'): string[] {
 	const found: string[] = [];
@@ -62,22 +62,29 @@ describe('F1 取得層: get_orderbook の不正レベル sanitize', () => {
 		it(`mode=${mode}: drop して ok、NaN 非流出、warning/droppedRows を surface`, async () => {
 			mockJson(partlyBad);
 			const res = await getOrderbook({ pair: 'btc_jpy', mode });
-			expect(res.ok).toBe(true);
-			if (!res.ok) return;
+			assertOk(res);
 			expect(findNonFinite({ data: res.data })).toEqual([]);
 			expect((res.meta as { warning?: string }).warning).toMatch(/不正な板レベルを除外/);
 			expect((res.meta as { droppedRows?: { bids: number } }).droppedRows?.bids).toBe(1);
 			expect(res.summary).toMatch(/不正な板レベルを除外/);
-			if (mode === 'raw') {
-				expect(JSON.stringify(res.data)).not.toContain('abc');
-				expect(res.summary).not.toContain('NaN');
-			}
-			if (mode === 'pressure') {
-				const bands = (res.data as { bands: Array<{ baseMid: number | null }> }).bands;
-				expect(bands[0].baseMid).not.toBeNull();
-			}
 		});
 	}
+
+	it('mode=raw: 不正な値を data と summary に出さない', async () => {
+		mockJson(partlyBad);
+		const res = await getOrderbook({ pair: 'btc_jpy', mode: 'raw' });
+		assertOk(res);
+		expect(JSON.stringify(res.data)).not.toContain('abc');
+		expect(res.summary).not.toContain('NaN');
+	});
+
+	it('mode=pressure: 不正な行を除いても基準の中値が求まる', async () => {
+		mockJson(partlyBad);
+		const res = await getOrderbook({ pair: 'btc_jpy', mode: 'pressure' });
+		assertOk(res);
+		const bands = (res.data as { bands: Array<{ baseMid: number | null }> }).bands;
+		expect(bands[0].baseMid).not.toBeNull();
+	});
 
 	it('片側が drop で全滅 → upstream fail（network 誤分類にしない）', async () => {
 		mockJson({

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BitbankPrivateClient, PrivateApiError } from '../../src/private/client.js';
 import { createMockFetcher, jsonResponse, mockBitbankError, mockBitbankSuccess } from '../fixtures/private-api.js';
+import { rejectionOf } from '../helpers/assert.js';
 
 // auth.ts が環境変数を参照するため設定
 beforeEach(() => {
@@ -74,141 +75,101 @@ describe('BitbankPrivateClient', () => {
 			const fetcher = createMockFetcher([jsonResponse(mockBitbankError(code), 400)]);
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 0, timeoutMs: 1000 });
 
-			try {
-				await client.get('/v1/user/assets');
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				const e = err as PrivateApiError;
-				expect(e.errorType).toBe(expectedType);
-				expect(e.message).toContain(expectedMessagePart);
-			}
+			const err = await rejectionOf(client.get('/v1/user/assets'));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			const e = err as PrivateApiError;
+			expect(e.errorType).toBe(expectedType);
+			expect(e.message).toContain(expectedMessagePart);
 		});
 
 		it('エラーコード 10009 → rate_limit_error', async () => {
 			const fetcher = createMockFetcher([jsonResponse(mockBitbankError(10009))]);
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 0, timeoutMs: 1000 });
 
-			try {
-				await client.get('/v1/user/assets');
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				expect((err as PrivateApiError).errorType).toBe('rate_limit_error');
-			}
+			const err = await rejectionOf(client.get('/v1/user/assets'));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			expect((err as PrivateApiError).errorType).toBe('rate_limit_error');
 		});
 
 		it('エラーコード 10007 → upstream_error (メンテナンス)', async () => {
 			const fetcher = createMockFetcher([jsonResponse(mockBitbankError(10007))]);
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 0, timeoutMs: 1000 });
 
-			try {
-				await client.get('/v1/user/assets');
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				const e = err as PrivateApiError;
-				expect(e.errorType).toBe('upstream_error');
-				expect(e.message).toContain('メンテナンス');
-			}
+			const err = await rejectionOf(client.get('/v1/user/assets'));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			const e = err as PrivateApiError;
+			expect(e.errorType).toBe('upstream_error');
+			expect(e.message).toContain('メンテナンス');
 		});
 
 		it('エラーコード 10008 → upstream_error (過負荷)', async () => {
 			const fetcher = createMockFetcher([jsonResponse(mockBitbankError(10008))]);
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 0, timeoutMs: 1000 });
 
-			try {
-				await client.get('/v1/user/assets');
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				const e = err as PrivateApiError;
-				expect(e.errorType).toBe('upstream_error');
-				expect(e.message).toContain('過負荷');
-			}
+			const err = await rejectionOf(client.get('/v1/user/assets'));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			const e = err as PrivateApiError;
+			expect(e.errorType).toBe('upstream_error');
+			expect(e.message).toContain('過負荷');
 		});
 
 		it('HTTP 401 (エラーコードなし) → authentication_error', async () => {
 			const fetcher = createMockFetcher([new Response('Unauthorized', { status: 401 })]);
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 0, timeoutMs: 1000 });
 
-			try {
-				await client.get('/v1/user/assets');
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				expect((err as PrivateApiError).errorType).toBe('authentication_error');
-			}
+			const err = await rejectionOf(client.get('/v1/user/assets'));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			expect((err as PrivateApiError).errorType).toBe('authentication_error');
 		});
 
 		it('HTTP 403 (エラーコードなし) → authentication_error', async () => {
 			const fetcher = createMockFetcher([new Response('Forbidden', { status: 403 })]);
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 0, timeoutMs: 1000 });
 
-			try {
-				await client.get('/v1/user/assets');
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				expect((err as PrivateApiError).errorType).toBe('authentication_error');
-			}
+			const err = await rejectionOf(client.get('/v1/user/assets'));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			expect((err as PrivateApiError).errorType).toBe('authentication_error');
 		});
 
 		it('エラーコード 50009 → not_found (注文・データなし)', async () => {
 			const fetcher = createMockFetcher([jsonResponse(mockBitbankError(50009), 400)]);
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 0, timeoutMs: 1000 });
 
-			try {
-				await client.get('/v1/user/spot/order');
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				const e = err as PrivateApiError;
-				expect(e.errorType).toBe('not_found');
-				expect(e.message).toContain('見つかりません');
-				expect(e.bitbankCode).toBe(50009);
-			}
+			const err = await rejectionOf(client.get('/v1/user/spot/order'));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			const e = err as PrivateApiError;
+			expect(e.errorType).toBe('not_found');
+			expect(e.message).toContain('見つかりません');
+			expect(e.bitbankCode).toBe(50009);
 		});
 
 		it('エラーコード 40000番台 → validation_error (パラメータ不正)', async () => {
 			const fetcher = createMockFetcher([jsonResponse(mockBitbankError(40024), 400)]);
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 0, timeoutMs: 1000 });
 
-			try {
-				await client.get('/v1/user/assets');
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				const e = err as PrivateApiError;
-				expect(e.errorType).toBe('validation_error');
-				expect(e.bitbankCode).toBe(40024);
-			}
+			const err = await rejectionOf(client.get('/v1/user/assets'));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			const e = err as PrivateApiError;
+			expect(e.errorType).toBe('validation_error');
+			expect(e.bitbankCode).toBe(40024);
 		});
 
 		it('エラーコード 60001 (残高不足) → upstream_error (スコープ外: 現状維持)', async () => {
 			const fetcher = createMockFetcher([jsonResponse(mockBitbankError(60001), 400)]);
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 0, timeoutMs: 1000 });
 
-			try {
-				await client.get('/v1/user/assets');
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				expect((err as PrivateApiError).errorType).toBe('upstream_error');
-			}
+			const err = await rejectionOf(client.get('/v1/user/assets'));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			expect((err as PrivateApiError).errorType).toBe('upstream_error');
 		});
 
 		it('不明なエラーコード → upstream_error', async () => {
 			const fetcher = createMockFetcher([jsonResponse(mockBitbankError(99999), 400)]);
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 0, timeoutMs: 1000 });
 
-			try {
-				await client.get('/v1/user/assets');
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				expect((err as PrivateApiError).errorType).toBe('upstream_error');
-			}
+			const err = await rejectionOf(client.get('/v1/user/assets'));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			expect((err as PrivateApiError).errorType).toBe('upstream_error');
 		});
 	});
 
@@ -256,26 +217,18 @@ describe('BitbankPrivateClient', () => {
 			]);
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 1, timeoutMs: 5000 });
 
-			try {
-				await client.get('/v1/user/assets');
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				expect((err as PrivateApiError).errorType).toBe('rate_limit_error');
-			}
+			const err = await rejectionOf(client.get('/v1/user/assets'));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			expect((err as PrivateApiError).errorType).toBe('rate_limit_error');
 		});
 
 		it('maxRetries 超過で 5xx を throw する', async () => {
 			const fetcher = createMockFetcher([new Response('', { status: 500 }), new Response('', { status: 502 })]);
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 1, timeoutMs: 5000 });
 
-			try {
-				await client.get('/v1/user/assets');
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				expect((err as PrivateApiError).errorType).toBe('upstream_error');
-			}
+			const err = await rejectionOf(client.get('/v1/user/assets'));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			expect((err as PrivateApiError).errorType).toBe('upstream_error');
 		});
 
 		describe('429 Retry-After ヘッダーのパース', () => {
@@ -347,16 +300,12 @@ describe('BitbankPrivateClient', () => {
 				);
 				const client = new BitbankPrivateClient({ maxRetries: 0, timeoutMs: 5000 });
 
-				try {
-					await client.get('/v1/user/assets');
-					expect.fail('should throw');
-				} catch (err) {
-					expect(err).toBeInstanceOf(PrivateApiError);
-					const e = err as PrivateApiError;
-					expect(e.errorType).toBe('rate_limit_error');
-					expect(e.message).toContain('しばらく待ってから再試行');
-					expect(e.message).not.toContain('GMT');
-				}
+				const err = await rejectionOf(client.get('/v1/user/assets'));
+				expect(err).toBeInstanceOf(PrivateApiError);
+				const e = err as PrivateApiError;
+				expect(e.errorType).toBe('rate_limit_error');
+				expect(e.message).toContain('しばらく待ってから再試行');
+				expect(e.message).not.toContain('GMT');
 			});
 		});
 
@@ -385,13 +334,9 @@ describe('BitbankPrivateClient', () => {
 			]);
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 2, timeoutMs: 5000 });
 
-			try {
-				await client.post('/v1/user/spot/order', { pair: 'btc_jpy' });
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				expect((err as PrivateApiError).errorType).toBe('upstream_error');
-			}
+			const err = await rejectionOf(client.post('/v1/user/spot/order', { pair: 'btc_jpy' }));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			expect((err as PrivateApiError).errorType).toBe('upstream_error');
 			expect(fetcher.calls).toHaveLength(1);
 		});
 
@@ -412,13 +357,9 @@ describe('BitbankPrivateClient', () => {
 			}) as unknown as typeof fetch;
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 2, timeoutMs: 50 });
 
-			try {
-				await client.post('/v1/user/spot/order', { pair: 'btc_jpy' });
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				expect((err as PrivateApiError).message).toContain('タイムアウト');
-			}
+			const err = await rejectionOf(client.post('/v1/user/spot/order', { pair: 'btc_jpy' }));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			expect((err as PrivateApiError).message).toContain('タイムアウト');
 			expect(callCount).toBe(1);
 		});
 
@@ -430,13 +371,9 @@ describe('BitbankPrivateClient', () => {
 			}) as unknown as typeof fetch;
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 2, timeoutMs: 5000 });
 
-			try {
-				await client.post('/v1/user/spot/order', { pair: 'btc_jpy' });
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				expect((err as PrivateApiError).errorType).toBe('upstream_error');
-			}
+			const err = await rejectionOf(client.post('/v1/user/spot/order', { pair: 'btc_jpy' }));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			expect((err as PrivateApiError).errorType).toBe('upstream_error');
 			expect(callCount).toBe(1);
 		});
 
@@ -444,13 +381,9 @@ describe('BitbankPrivateClient', () => {
 			const fetcher = createMockFetcher([new Response('', { status: 429, headers: { 'Retry-After': '0' } })]);
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 2, timeoutMs: 5000 });
 
-			try {
-				await client.post('/v1/user/spot/order', { pair: 'btc_jpy' });
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				expect((err as PrivateApiError).errorType).toBe('rate_limit_error');
-			}
+			const err = await rejectionOf(client.post('/v1/user/spot/order', { pair: 'btc_jpy' }));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			expect((err as PrivateApiError).errorType).toBe('rate_limit_error');
 			expect(fetcher.calls).toHaveLength(1);
 		});
 
@@ -484,14 +417,10 @@ describe('BitbankPrivateClient', () => {
 			}) as unknown as typeof fetch;
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 0, timeoutMs: 50 });
 
-			try {
-				await client.get('/v1/user/assets');
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				expect((err as PrivateApiError).errorType).toBe('upstream_error');
-				expect((err as PrivateApiError).message).toContain('タイムアウト');
-			}
+			const err = await rejectionOf(client.get('/v1/user/assets'));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			expect((err as PrivateApiError).errorType).toBe('upstream_error');
+			expect((err as PrivateApiError).message).toContain('タイムアウト');
 		});
 	});
 
@@ -500,26 +429,18 @@ describe('BitbankPrivateClient', () => {
 			const fetcher = createMockFetcher([jsonResponse(mockBitbankError(30000))]);
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 0, timeoutMs: 1000 });
 
-			try {
-				await client.get('/v1/user/assets');
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-			}
+			const err = await rejectionOf(client.get('/v1/user/assets'));
+			expect(err).toBeInstanceOf(PrivateApiError);
 		});
 
 		it('JSON パース失敗でエラーを投げる', async () => {
 			const fetcher = createMockFetcher([new Response('not json', { status: 200 })]);
 			const client = new BitbankPrivateClient({ fetcher, maxRetries: 0, timeoutMs: 1000 });
 
-			try {
-				await client.get('/v1/user/assets');
-				expect.fail('should throw');
-			} catch (err) {
-				expect(err).toBeInstanceOf(PrivateApiError);
-				expect((err as PrivateApiError).errorType).toBe('upstream_error');
-				expect((err as PrivateApiError).message).toContain('JSON パース');
-			}
+			const err = await rejectionOf(client.get('/v1/user/assets'));
+			expect(err).toBeInstanceOf(PrivateApiError);
+			expect((err as PrivateApiError).errorType).toBe('upstream_error');
+			expect((err as PrivateApiError).message).toContain('JSON パース');
 		});
 	});
 });

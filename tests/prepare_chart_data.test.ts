@@ -160,10 +160,8 @@ describe('prepare_chart_data', () => {
 		assertOk(res);
 		const sma = res.data.series?.SMA_20;
 		expect(sma).toBeDefined();
-		for (const v of sma ?? []) {
-			if (v !== null) {
-				expect(Number.isInteger(v)).toBe(true);
-			}
+		for (const v of (sma ?? []).filter((v) => v !== null)) {
+			expect(Number.isInteger(v)).toBe(true);
 		}
 	});
 

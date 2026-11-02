@@ -44,18 +44,42 @@ function expectSameStructuredContent(entries: Array<[string, Record<string, unkn
 	}
 }
 
-/** 配列・スカラーは値として deep-equal を要求し、プレーンオブジェクトのみ再帰的に緩める（削る・書き換えるのは禁止、足すのは許容）。 */
-function expectSuperset(actual: unknown, expected: unknown, path = 'structuredContent'): void {
-	if (isPlainObject(expected)) {
-		expect(isPlainObject(actual), `${path} がオブジェクトでなくなっている`).toBe(true);
-		const target = actual as Record<string, unknown>;
-		for (const [key, value] of Object.entries(expected)) {
-			expect(Object.hasOwn(target, key), `${path}.${key} が view で消えている（削るのは禁止）`).toBe(true);
-			expectSuperset(target[key], value, `${path}.${key}`);
-		}
+type SupersetLeaf = { actual: unknown; expected: unknown; path: string };
+
+// 構造の欠落は missing に、値として比べる葉は leaves に集め、expect は expectSuperset で 1 か所にまとめて呼ぶ。
+function collectSuperset(
+	actual: unknown,
+	expected: unknown,
+	path: string,
+	missing: string[],
+	leaves: SupersetLeaf[],
+): void {
+	if (!isPlainObject(expected)) {
+		leaves.push({ actual, expected, path });
 		return;
 	}
-	expect(actual, `${path} の値が view で書き換わっている`).toEqual(expected);
+	if (!isPlainObject(actual)) {
+		missing.push(`${path} がオブジェクトでなくなっている`);
+		return;
+	}
+	for (const [key, value] of Object.entries(expected)) {
+		if (!Object.hasOwn(actual, key)) {
+			missing.push(`${path}.${key} が view で消えている（削るのは禁止）`);
+			continue;
+		}
+		collectSuperset(actual[key], value, `${path}.${key}`, missing, leaves);
+	}
+}
+
+/** 配列・スカラーは値として deep-equal を要求し、プレーンオブジェクトのみ再帰的に緩める（削る・書き換えるのは禁止、足すのは許容）。 */
+function expectSuperset(actual: unknown, expected: unknown, path = 'structuredContent'): void {
+	const missing: string[] = [];
+	const leaves: SupersetLeaf[] = [];
+	collectSuperset(actual, expected, path, missing, leaves);
+	expect(missing, missing.join('\n')).toEqual([]);
+	for (const leaf of leaves) {
+		expect(leaf.actual, `${leaf.path} の値が view で書き換わっている`).toEqual(leaf.expected);
+	}
 }
 
 function addedPaths(actual: unknown, expected: unknown, path = ''): string[] {

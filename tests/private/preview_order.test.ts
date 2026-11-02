@@ -199,9 +199,7 @@ describe('preview_order', () => {
 				trigger_price: '16000000',
 			});
 			expect(result.success).toBe(false);
-			if (!result.success) {
-				expect(result.error.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-			}
+			expect(result.error?.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
 		});
 
 		it('stop_loss は PreviewOrderInputSchema で拒否される', async () => {
@@ -214,9 +212,7 @@ describe('preview_order', () => {
 				trigger_price: '13000000',
 			});
 			expect(result.success).toBe(false);
-			if (!result.success) {
-				expect(result.error.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-			}
+			expect(result.error?.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
 		});
 
 		it('losscut は PreviewOrderInputSchema で拒否される', async () => {
@@ -228,9 +224,7 @@ describe('preview_order', () => {
 				type: 'losscut',
 			});
 			expect(result.success).toBe(false);
-			if (!result.success) {
-				expect(result.error.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-			}
+			expect(result.error?.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
 		});
 	});
 

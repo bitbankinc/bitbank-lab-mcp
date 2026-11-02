@@ -970,9 +970,7 @@ describe('getCandles', () => {
 			expect(res.ok).toBe(false);
 			expect(res.meta?.errorType).toBe('upstream');
 			// fail を透過しているので content に 0件 JSON 配列を入れない
-			if (res.content?.[0]?.text) {
-				expect(res.content[0].text).not.toBe('[]');
-			}
+			expect(res.content?.[0]?.text).not.toBe('[]');
 		});
 
 		it('success:0 + view=full のとき fail を透過する', async () => {

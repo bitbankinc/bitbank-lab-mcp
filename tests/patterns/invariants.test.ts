@@ -302,17 +302,16 @@ describe('patterns invariants — 横断契約', () => {
 				const res = await detectPatterns('btc_jpy', '1day', fx.candles.length, fx.opts);
 				assertOk(res);
 				const lastIdx = fx.candles.length - 1;
-				for (const p of res.data.patterns) {
-					if (typeof p.breakoutBarIndex === 'number') {
-						expect(p.breakoutBarIndex, `${fx.name}: breakoutBarIndex>=0`).toBeGreaterThanOrEqual(0);
-						expect(p.breakoutBarIndex, `${fx.name}: breakoutBarIndex<=lastIdx`).toBeLessThanOrEqual(lastIdx);
-					}
-					if (Array.isArray(p.pivots)) {
-						for (const pv of p.pivots) {
-							expect(pv.idx, `${fx.name}: pivot idx>=0`).toBeGreaterThanOrEqual(0);
-							expect(pv.idx, `${fx.name}: pivot idx<=lastIdx`).toBeLessThanOrEqual(lastIdx);
-						}
-					}
+				const breakoutIdxs = res.data.patterns
+					.map((p) => p.breakoutBarIndex)
+					.filter((idx): idx is number => typeof idx === 'number');
+				for (const idx of breakoutIdxs) {
+					expect(idx, `${fx.name}: breakoutBarIndex>=0`).toBeGreaterThanOrEqual(0);
+					expect(idx, `${fx.name}: breakoutBarIndex<=lastIdx`).toBeLessThanOrEqual(lastIdx);
+				}
+				for (const pv of res.data.patterns.flatMap((p) => (Array.isArray(p.pivots) ? p.pivots : []))) {
+					expect(pv.idx, `${fx.name}: pivot idx>=0`).toBeGreaterThanOrEqual(0);
+					expect(pv.idx, `${fx.name}: pivot idx<=lastIdx`).toBeLessThanOrEqual(lastIdx);
 				}
 			}
 		});
@@ -472,12 +471,10 @@ describe('patterns invariants — 横断契約', () => {
 				mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(fx.candles)));
 				const res = await detectPatterns('btc_jpy', '1day', fx.candles.length, fx.opts);
 				assertOk(res);
-				for (const p of res.data.patterns) {
-					if (p.status !== undefined) {
-						expect(ALLOWED_STATUS_SET.has(p.status as AllowedStatus)).toBe(true);
-					}
-					totalDetected++;
+				for (const status of res.data.patterns.map((p) => p.status).filter((s) => s !== undefined)) {
+					expect(ALLOWED_STATUS_SET.has(status as AllowedStatus)).toBe(true);
 				}
+				totalDetected += res.data.patterns.length;
 			}
 			expect(totalDetected).toBeGreaterThan(0);
 		});

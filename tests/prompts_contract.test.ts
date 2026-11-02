@@ -29,14 +29,9 @@ describe('prompts contract', () => {
 
 	it('Private API 無効時はポートフォリオ Prompt が含まれない', () => {
 		const names = prompts.map((p) => p.name);
-		if (isPrivateApiEnabled()) {
-			for (const name of privatePromptNames) {
-				expect(names).toContain(name);
-			}
-		} else {
-			for (const name of privatePromptNames) {
-				expect(names).not.toContain(name);
-			}
+		const enabled = isPrivateApiEnabled();
+		for (const name of privatePromptNames) {
+			expect(names.includes(name), name).toBe(enabled);
 		}
 	});
 

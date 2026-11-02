@@ -162,10 +162,7 @@ describe('DetectedPatternSchema', () => {
 			},
 		});
 		expect(result.structureRange?.end).toBe('2025-09-26');
-		expect(result.confirmation?.type).toBe('neckline_breakout');
-		if (result.confirmation?.type === 'neckline_breakout') {
-			expect(result.confirmation.idx).toBe(31);
-		}
+		expect(result.confirmation).toMatchObject({ type: 'neckline_breakout', idx: 31 });
 		expect(result.precedingTrend?.direction).toBe('down');
 	});
 

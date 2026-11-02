@@ -354,11 +354,10 @@ describe('get_orderbook', () => {
 		const zones = d(res).overlays.depth_zones;
 		expect(Array.isArray(zones)).toBe(true);
 		// richDepthPayload has outlier sizes (0.5, 0.8) that should create wall zones
-		if (zones.length > 0) {
-			expect(zones[0]).toHaveProperty('low');
-			expect(zones[0]).toHaveProperty('high');
-			expect(zones[0]).toHaveProperty('label');
-		}
+		expect(zones.length).toBeGreaterThan(0);
+		expect(zones[0]).toHaveProperty('low');
+		expect(zones[0]).toHaveProperty('high');
+		expect(zones[0]).toHaveProperty('label');
 	});
 
 	it('raw: bids/asks が空でも crash しない', async () => {

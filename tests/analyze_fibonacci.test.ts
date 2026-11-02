@@ -229,14 +229,14 @@ describe('analyze_fibonacci', () => {
 		const res = await analyzeFibonacci({ pair: 'btc_jpy', mode: 'retracement', lookbackDays: 90 });
 		assertOk(res);
 
-		if (res.data.levelStats && res.data.levelStats.length > 0) {
-			const stat = res.data.levelStats[0];
-			expect(stat.ratio).toBeDefined();
-			expect(stat.samplesCount).toBeGreaterThanOrEqual(0);
-			expect(stat.bounceRate).toBeGreaterThanOrEqual(0);
-			expect(stat.bounceRate).toBeLessThanOrEqual(1);
-			expect(stat.confidence).toMatch(/^(high|medium|low)$/);
-		}
+		const levelStats = requireDefined(res.data.levelStats, 'res.data.levelStats');
+		expect(levelStats.length).toBeGreaterThan(0);
+		const stat = levelStats[0];
+		expect(stat.ratio).toBeDefined();
+		expect(stat.samplesCount).toBeGreaterThanOrEqual(0);
+		expect(stat.bounceRate).toBeGreaterThanOrEqual(0);
+		expect(stat.bounceRate).toBeLessThanOrEqual(1);
+		expect(stat.confidence).toMatch(/^(high|medium|low)$/);
 	});
 
 	it('historyLookbackDays > lookbackDays で追加のローソク足を取得', async () => {
