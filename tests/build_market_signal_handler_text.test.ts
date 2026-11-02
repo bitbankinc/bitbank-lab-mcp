@@ -3,6 +3,7 @@ import {
 	type BuildMarketSignalHandlerTextInput,
 	buildMarketSignalHandlerText,
 } from '../src/handlers/analyzeMarketSignalHandler.js';
+import { requireDefined } from './helpers/assert.js';
 
 function makeInput(overrides?: Partial<BuildMarketSignalHandlerTextInput>): BuildMarketSignalHandlerTextInput {
 	return {
@@ -106,7 +107,7 @@ describe('buildMarketSignalHandlerText', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
 				sma: {
-					...makeInput().sma!,
+					...requireDefined(makeInput().sma, 'makeInput().sma'),
 					arrangement: 'bearish',
 					current: 4_400_000,
 					values: { sma25: 4_500_000, sma75: 4_600_000, sma200: 4_700_000 },
@@ -120,7 +121,7 @@ describe('buildMarketSignalHandlerText', () => {
 	it('SMA配置: mixed → 方向感が弱い', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
-				sma: { ...makeInput().sma!, arrangement: 'mixed' },
+				sma: { ...requireDefined(makeInput().sma, 'makeInput().sma'), arrangement: 'mixed' },
 			}),
 		);
 		expect(text).toContain('混在');
@@ -180,7 +181,7 @@ describe('buildMarketSignalHandlerText', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
 				sma: {
-					...makeInput().sma!,
+					...requireDefined(makeInput().sma, 'makeInput().sma'),
 					deviations: { vs25: -1.5, vs75: -3.0, vs200: -8.0 },
 				},
 			}),
@@ -193,7 +194,7 @@ describe('buildMarketSignalHandlerText', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
 				sma: {
-					...makeInput().sma!,
+					...requireDefined(makeInput().sma, 'makeInput().sma'),
 					recentCross: { type: 'golden_cross', pair: '25/75', barsAgo: 5 },
 				},
 			}),
@@ -207,7 +208,7 @@ describe('buildMarketSignalHandlerText', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
 				sma: {
-					...makeInput().sma!,
+					...requireDefined(makeInput().sma, 'makeInput().sma'),
 					recentCross: { type: 'death_cross', pair: '25/75', barsAgo: 2 },
 				},
 			}),
@@ -220,7 +221,7 @@ describe('buildMarketSignalHandlerText', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
 				sma: {
-					...makeInput().sma!,
+					...requireDefined(makeInput().sma, 'makeInput().sma'),
 					recentCross: { type: 'golden_cross', pair: '50/100', barsAgo: 3 },
 				},
 			}),
@@ -233,7 +234,7 @@ describe('buildMarketSignalHandlerText', () => {
 			makeInput({
 				type: '4hour',
 				sma: {
-					...makeInput().sma!,
+					...requireDefined(makeInput().sma, 'makeInput().sma'),
 					recentCross: { type: 'golden_cross', pair: '25/75', barsAgo: 10 },
 				},
 			}),
@@ -275,7 +276,7 @@ describe('buildMarketSignalHandlerText', () => {
 	it('一目均衡表: 雲の下', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
-				sma: { ...makeInput().sma!, current: 4_500_000 },
+				sma: { ...requireDefined(makeInput().sma, 'makeInput().sma'), current: 4_500_000 },
 				supplementary: { rsi: 55, ichimokuSpanA: 4_700_000, ichimokuSpanB: 4_600_000, macdHist: null },
 			}),
 		);
@@ -285,7 +286,7 @@ describe('buildMarketSignalHandlerText', () => {
 	it('一目均衡表: 雲の中', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
-				sma: { ...makeInput().sma!, current: 4_650_000 },
+				sma: { ...requireDefined(makeInput().sma, 'makeInput().sma'), current: 4_650_000 },
 				supplementary: { rsi: null, ichimokuSpanA: 4_700_000, ichimokuSpanB: 4_600_000, macdHist: null },
 			}),
 		);

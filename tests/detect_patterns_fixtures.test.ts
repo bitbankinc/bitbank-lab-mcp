@@ -884,11 +884,9 @@ describe('detect_patterns fixtures', () => {
 			expect(res.meta.warnings).toEqual(['SMA_200: データ不足', 'Ichimoku: データ不足']);
 			expect(res.meta.warning).toBeUndefined();
 			// data.warnings（本ツール独自の検出系警告、{ type, message, suggestedParams } の形）と meta.warnings（上流計算層、string[]）は別フィールド
-			if (Array.isArray(res.data.warnings)) {
-				for (const w of res.data.warnings) {
-					// data.warnings は独自スキーマで、上流の string そのままが混入していないこと
-					expect(typeof w).toBe('object');
-				}
+			for (const w of Array.isArray(res.data.warnings) ? res.data.warnings : []) {
+				// data.warnings は独自スキーマで、上流の string そのままが混入していないこと
+				expect(typeof w).toBe('object');
 			}
 			expect(res.summary.split('\n')[0]).toMatch(/^⚠️/);
 			expect(res.summary).toContain('⚠️ SMA_200: データ不足');

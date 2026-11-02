@@ -604,12 +604,13 @@ describe('macd', () => {
 		expect(result.signal[49]).toBeCloseTo(0.257, 3);
 
 		// 恒等式: hist[i] = line[i] - signal[i]（line/signal が共に有限な全 index で成立）
-		for (let i = 0; i < 50; i++) {
-			if (Number.isFinite(result.line[i]) && Number.isFinite(result.signal[i])) {
-				expect(result.hist[i]).toBeCloseTo(result.line[i] - result.signal[i], 10);
-			} else {
-				expect(result.hist[i]).toBeNaN();
-			}
+		const indices = Array.from({ length: 50 }, (_, i) => i);
+		const bothFinite = (i: number) => Number.isFinite(result.line[i]) && Number.isFinite(result.signal[i]);
+		for (const i of indices.filter(bothFinite)) {
+			expect(result.hist[i]).toBeCloseTo(result.line[i] - result.signal[i], 10);
+		}
+		for (const i of indices.filter((i) => !bothFinite(i))) {
+			expect(result.hist[i]).toBeNaN();
 		}
 	});
 

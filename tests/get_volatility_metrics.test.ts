@@ -114,10 +114,10 @@ describe('get_volatility_metrics', () => {
 			mockFetchWithOhlcv(rows);
 			const res = await getVolatilityMetrics('btc_jpy', '1day', 30);
 			assertOk(res);
-			for (const r of res.data.rolling) {
-				if (r.rv_std_ann != null) {
-					expect(r.rv_std_ann).toBeCloseTo(r.rv_std * Math.sqrt(365), 6);
-				}
+			const annualized = res.data.rolling.filter((r) => r.rv_std_ann != null);
+			expect(annualized.length).toBeGreaterThan(0);
+			for (const r of annualized) {
+				expect(r.rv_std_ann).toBeCloseTo(r.rv_std * Math.sqrt(365), 6);
 			}
 		});
 	});
@@ -152,10 +152,10 @@ describe('get_volatility_metrics', () => {
 			assertOk(res);
 			const ann = Math.sqrt(365);
 			expect(res.data.aggregates.rv_std_ann).toBeCloseTo(res.data.aggregates.rv_std * ann, 6);
-			for (const r of res.data.rolling) {
-				if (r.rv_std_ann != null) {
-					expect(r.rv_std_ann).toBeCloseTo(r.rv_std * ann, 6);
-				}
+			const annualized = res.data.rolling.filter((r) => r.rv_std_ann != null);
+			expect(annualized.length).toBeGreaterThan(0);
+			for (const r of annualized) {
+				expect(r.rv_std_ann).toBeCloseTo(r.rv_std * ann, 6);
 			}
 		});
 	});

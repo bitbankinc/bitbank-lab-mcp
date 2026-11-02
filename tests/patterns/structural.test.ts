@@ -14,6 +14,7 @@ import {
 	validateHorizontalNeckline,
 	validatePriorTrend,
 } from '../../tools/patterns/structural.js';
+import { requireDefined } from '../helpers/assert.js';
 
 describe('定数', () => {
 	it('構造上限値の定義', () => {
@@ -323,8 +324,8 @@ describe('validatePriorTrend', () => {
 			expect(result.priorReturn).toBeCloseTo(-0.08, 10);
 			expect(result.classification).toBe('down');
 			expect(result.ok).toBe(true);
-			expect(result.efficiency!).toBeGreaterThanOrEqual(PRIOR_TREND_MIN_EFFICIENCY);
-			expect(result.r2!).toBeGreaterThanOrEqual(PRIOR_TREND_MIN_R2);
+			expect(requireDefined(result.efficiency, 'result.efficiency')).toBeGreaterThanOrEqual(PRIOR_TREND_MIN_EFFICIENCY);
+			expect(requireDefined(result.r2, 'result.r2')).toBeGreaterThanOrEqual(PRIOR_TREND_MIN_R2);
 		});
 
 		it('なだらかな上昇トレンドは up（efficiency と r2 が共に高い）', () => {
@@ -351,8 +352,8 @@ describe('validatePriorTrend', () => {
 			expect(result.priorReturn).toBeCloseTo(0.08, 10);
 			expect(result.classification).toBe('up');
 			expect(result.ok).toBe(true);
-			expect(result.efficiency!).toBeGreaterThanOrEqual(PRIOR_TREND_MIN_EFFICIENCY);
-			expect(result.r2!).toBeGreaterThanOrEqual(PRIOR_TREND_MIN_R2);
+			expect(requireDefined(result.efficiency, 'result.efficiency')).toBeGreaterThanOrEqual(PRIOR_TREND_MIN_EFFICIENCY);
+			expect(requireDefined(result.r2, 'result.r2')).toBeGreaterThanOrEqual(PRIOR_TREND_MIN_R2);
 		});
 
 		it('大きな下降はノイズが多少あっても down', () => {
@@ -379,7 +380,7 @@ describe('validatePriorTrend', () => {
 			expect(result.priorReturn).toBeCloseTo(-0.15, 10);
 			expect(result.classification).toBe('down');
 			expect(result.ok).toBe(true);
-			expect(result.efficiency!).toBeGreaterThanOrEqual(PRIOR_TREND_MIN_EFFICIENCY);
+			expect(requireDefined(result.efficiency, 'result.efficiency')).toBeGreaterThanOrEqual(PRIOR_TREND_MIN_EFFICIENCY);
 		});
 
 		it('r2 だけが閾値以上の場合も up/down に分類される', () => {
@@ -405,7 +406,7 @@ describe('validatePriorTrend', () => {
 			const result = validatePriorTrend(makeCandles(closes), 15, 5, 'down_or_sideways');
 			expect(result.priorReturn).toBeCloseTo(-0.1, 10);
 			expect(result.classification).toBe('down');
-			expect(result.r2!).toBeGreaterThanOrEqual(PRIOR_TREND_MIN_R2);
+			expect(requireDefined(result.r2, 'result.r2')).toBeGreaterThanOrEqual(PRIOR_TREND_MIN_R2);
 		});
 
 		it('rangePct / efficiency / r2 は補助指標として戻り値に含まれる', () => {
@@ -414,9 +415,9 @@ describe('validatePriorTrend', () => {
 			expect(typeof result.rangePct).toBe('number');
 			expect(typeof result.efficiency).toBe('number');
 			expect(typeof result.r2).toBe('number');
-			expect(Number.isFinite(result.rangePct!)).toBe(true);
-			expect(Number.isFinite(result.efficiency!)).toBe(true);
-			expect(Number.isFinite(result.r2!)).toBe(true);
+			expect(Number.isFinite(requireDefined(result.rangePct, 'result.rangePct'))).toBe(true);
+			expect(Number.isFinite(requireDefined(result.efficiency, 'result.efficiency'))).toBe(true);
+			expect(Number.isFinite(requireDefined(result.r2, 'result.r2'))).toBe(true);
 		});
 
 		it('|priorReturn| <= sideways 範囲なら efficiency/r2 を計算せず sideways', () => {

@@ -52,7 +52,7 @@ vi.mock('../tools/trading_process/lib/svg_to_png.js', () => ({
 import { toolDef } from '../src/handlers/runBacktestHandler.js';
 import type { BacktestEngineResult } from '../tools/trading_process/lib/backtest_engine.js';
 import runBacktest from '../tools/trading_process/run_backtest.js';
-import { assertOk } from './_assertResult.js';
+import { assertFail, assertOk } from './_assertResult.js';
 
 function buildCandles(count: number) {
 	return Array.from({ length: count }, (_, i) => ({
@@ -450,11 +450,9 @@ describe('run_backtest', () => {
 			includeSvg: false,
 		});
 
-		expect(res.ok).toBe(false);
-		if (res.ok === false) {
-			expect(res.error).toContain('outputDir');
-			expect(res.error).toContain('/etc/cron.d');
-		}
+		assertFail(res);
+		expect(res.error).toContain('outputDir');
+		expect(res.error).toContain('/etc/cron.d');
 		expect(mocks.fetchCandlesForBacktest).not.toHaveBeenCalled();
 		expect(mocks.svgToPng).not.toHaveBeenCalled();
 	});
@@ -535,10 +533,8 @@ describe('run_backtest', () => {
 			includeSvg: false,
 		});
 
-		expect(res.ok).toBe(false);
-		if (res.ok === false) {
-			expect(res.error).toMatch(/Invalid strategy params/);
-		}
+		assertFail(res);
+		expect(res.error).toMatch(/Invalid strategy params/);
 		expect(mocks.fetchCandlesForBacktest).not.toHaveBeenCalled();
 		expect(mocks.runBacktestEngine).not.toHaveBeenCalled();
 	});
@@ -564,13 +560,11 @@ describe('run_backtest', () => {
 			includeSvg: false,
 		});
 
-		expect(res.ok).toBe(false);
-		if (res.ok === false) {
-			expect(res.error).toContain('sma_cross');
-			expect(res.error).toContain('short must be less than long');
-			expect(res.error).toContain('rsi_filter_max must be 0-100');
-			expect(res.error).toContain(';');
-		}
+		assertFail(res);
+		expect(res.error).toContain('sma_cross');
+		expect(res.error).toContain('short must be less than long');
+		expect(res.error).toContain('rsi_filter_max must be 0-100');
+		expect(res.error).toContain(';');
 	});
 
 	it('validate.normalizedParams が以降の処理（computeRequiredBars / engine input）に渡る', async () => {

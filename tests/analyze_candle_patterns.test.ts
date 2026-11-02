@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
+import { requireDefined } from './helpers/assert.js';
 
 vi.mock('../tools/get_candles.js', () => ({
 	default: vi.fn(),
@@ -177,9 +178,8 @@ describe('analyze_candle_patterns', () => {
 		});
 		assertOk(res);
 		const dojis = res.data.recent_patterns.filter((p: { pattern: string }) => p.pattern === 'doji');
-		if (dojis.length > 0) {
-			expect(dojis[0].direction).toBe('bullish');
-		}
+		expect(dojis.length).toBeGreaterThan(0);
+		expect(dojis[0].direction).toBe('bullish');
 	});
 
 	it('陽線包み線 (bullish_engulfing) を検出', async () => {
@@ -442,9 +442,8 @@ describe('analyze_candle_patterns', () => {
 			history_lookback_days: 30,
 		});
 		assertOk(res);
-		if (res.data.recent_patterns.length > 0) {
-			expect(res.data.recent_patterns[0].local_context.volatility_level).toBeDefined();
-		}
+		expect(res.data.recent_patterns.length).toBeGreaterThan(0);
+		expect(res.data.recent_patterns[0].local_context.volatility_level).toBeDefined();
 	});
 
 	it('十分なサンプルがあれば history_stats を算出', async () => {
@@ -469,10 +468,10 @@ describe('analyze_candle_patterns', () => {
 		});
 		assertOk(res);
 		const dojis = res.data.recent_patterns.filter((p: { pattern: string }) => p.pattern === 'doji');
-		if (dojis.length > 0 && dojis[0].history_stats) {
-			expect(dojis[0].history_stats.occurrences).toBeGreaterThanOrEqual(5);
-			expect(dojis[0].history_stats.horizons).toBeDefined();
-		}
+		expect(dojis.length).toBeGreaterThan(0);
+		const stats = requireDefined(dojis[0].history_stats, 'dojis[0].history_stats');
+		expect(stats.occurrences).toBeGreaterThanOrEqual(5);
+		expect(stats.horizons).toBeDefined();
 	});
 
 	it('サンプル不足なら history_stats は null', async () => {
@@ -489,9 +488,8 @@ describe('analyze_candle_patterns', () => {
 		});
 		assertOk(res);
 		const dojis = res.data.recent_patterns.filter((p: { pattern: string }) => p.pattern === 'doji');
-		if (dojis.length > 0) {
-			expect(dojis[0].history_stats).toBeNull();
-		}
+		expect(dojis.length).toBeGreaterThan(0);
+		expect(dojis[0].history_stats).toBeNull();
 	});
 
 	it('as_of 指定時の history_stats は未来データを含めない', async () => {
@@ -581,9 +579,8 @@ describe('analyze_candle_patterns', () => {
 		});
 		assertOk(res);
 		const partials = res.data.recent_patterns.filter((p: { uses_partial_candle: boolean }) => p.uses_partial_candle);
-		if (partials.length > 0) {
-			expect(partials[0].status).toBe('forming');
-		}
+		expect(partials.length).toBeGreaterThan(0);
+		expect(partials[0].status).toBe('forming');
 	});
 
 	it('as_of に ISO 形式を指定可能', async () => {
@@ -634,9 +631,8 @@ describe('analyze_candle_patterns', () => {
 		});
 		assertOk(res);
 		const text = res.content?.map((c: { text: string }) => c.text).join('') ?? '';
-		if (res.data.recent_patterns.length > 0) {
-			expect(text).toContain('十字線');
-		}
+		expect(res.data.recent_patterns.length).toBeGreaterThan(0);
+		expect(text).toContain('十字線');
 	});
 
 	it('検出なしの場合も content を返す', async () => {

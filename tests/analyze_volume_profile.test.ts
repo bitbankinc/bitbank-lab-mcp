@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
+import { requireDefined } from './helpers/assert.js';
 
 vi.mock('../tools/get_transactions.js', () => ({
 	default: vi.fn(),
@@ -392,7 +393,11 @@ describe('analyze_volume_profile', () => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(Date.UTC(2026, 6, 8, 1, 0, 0));
 		try {
-			const goodTxs = buildTxs(Array.from({ length: 5 }, (_, i) => 100 + i));
+			const windowStartMs = Date.UTC(2026, 6, 7, 23, 0, 0);
+			const goodTxs = buildTxs(Array.from({ length: 5 }, (_, i) => 100 + i)).map((t, i) => {
+				const timestampMs = windowStartMs + i * 60_000;
+				return { ...t, timestampMs, isoTime: dayjs(timestampMs).toISOString() };
+			});
 			mockedGetTransactions
 				.mockResolvedValueOnce(asMockResult(mockTxResult(goodTxs))) // 20260707
 				.mockResolvedValueOnce(asMockResult(mockFailResult('upstream', 'failed'))); // latest
@@ -454,24 +459,29 @@ describe('analyze_volume_profile', () => {
 	});
 
 	it('hours > 0: 部分失敗で fetchWarning あり', async () => {
-		// hours=25 → 少なくとも2日分のdate + latest = 3回以上 → 1回のみ失敗 → fetchWarning
-		const nowMs = Date.now();
-		const txs = Array.from({ length: 20 }, (_, i) => ({
-			price: 100 + i,
-			amount: 1,
-			side: i % 2 === 0 ? ('buy' as const) : ('sell' as const),
-			timestampMs: nowMs - i * 60_000,
-			isoTime: dayjs(nowMs - i * 60_000).toISOString(),
-		}));
-		// 1回目のみ失敗、残りはすべて成功 (mockResolvedValue はキューが空の場合のフォールバック)
-		mockedGetTransactions
-			.mockResolvedValueOnce(asMockResult(mockFailResult('network', 'fail'))) // 1回目失敗
-			.mockResolvedValue(asMockResult(mockTxResult(txs))); // 残りはすべて成功
+		// 00:30 UTC なら hours=25 の窓に完了済み UTC 日が 2 日入り、latest と合わせて 3 回の取得になる（1 回の失敗は過半数に届かない）。
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(Date.UTC(2026, 6, 8, 0, 30, 0));
+		try {
+			const nowMs = Date.now();
+			const txs = Array.from({ length: 20 }, (_, i) => ({
+				price: 100 + i,
+				amount: 1,
+				side: i % 2 === 0 ? ('buy' as const) : ('sell' as const),
+				timestampMs: nowMs - i * 60_000,
+				isoTime: dayjs(nowMs - i * 60_000).toISOString(),
+			}));
+			// 1回目のみ失敗、残りはすべて成功 (mockResolvedValue はキューが空の場合のフォールバック)
+			mockedGetTransactions
+				.mockResolvedValueOnce(asMockResult(mockFailResult('network', 'fail'))) // 1回目失敗
+				.mockResolvedValue(asMockResult(mockTxResult(txs))); // 残りはすべて成功
 
-		const res = await analyzeVolumeProfile('btc_jpy', 25, 500, 5, 0.7);
-		expect(res).toBeDefined();
-		if (res.ok) {
+			const res = await analyzeVolumeProfile('btc_jpy', 25, 500, 5, 0.7);
+			assertOk(res);
+			expect(mockedGetTransactions).toHaveBeenCalledTimes(3);
 			expect(res.summary).toContain('⚠️');
+		} finally {
+			vi.useRealTimers();
 		}
 	});
 
@@ -576,24 +586,31 @@ describe('analyze_volume_profile', () => {
 	});
 
 	it('hours > 0: fetchWarning が summary と meta に含まれる', async () => {
-		// 1回目のみ失敗、残りはすべて成功 → failedCount=1 < totalCount/2 → fetchWarning
-		const nowMs = Date.now();
-		const recentTxs = Array.from({ length: 20 }, (_, i) => ({
-			price: 100 + i,
-			amount: 1,
-			side: i % 2 === 0 ? ('buy' as const) : ('sell' as const),
-			timestampMs: nowMs - i * 1_000,
-			isoTime: dayjs(nowMs - i * 1_000).toISOString(),
-		}));
+		// 00:30 UTC なら取得は 3 回で、1 回目だけの失敗は過半数に届かず警告になる。
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(Date.UTC(2026, 6, 8, 0, 30, 0));
+		try {
+			const nowMs = Date.now();
+			const recentTxs = Array.from({ length: 20 }, (_, i) => ({
+				price: 100 + i,
+				amount: 1,
+				side: i % 2 === 0 ? ('buy' as const) : ('sell' as const),
+				timestampMs: nowMs - i * 1_000,
+				isoTime: dayjs(nowMs - i * 1_000).toISOString(),
+			}));
 
-		mockedGetTransactions
-			.mockResolvedValueOnce(asMockResult(mockFailResult('network', 'fail'))) // 1回目失敗
-			.mockResolvedValue(asMockResult(mockTxResult(recentTxs))); // 残りはすべて成功
+			mockedGetTransactions
+				.mockResolvedValueOnce(asMockResult(mockFailResult('network', 'fail'))) // 1回目失敗
+				.mockResolvedValue(asMockResult(mockTxResult(recentTxs))); // 残りはすべて成功
 
-		const res = await analyzeVolumeProfile('btc_jpy', 25, 500, 5, 0.7);
-		expect(res).toBeDefined();
-		if (res.ok) {
-			expect(res.summary).toContain('⚠️');
+			const res = await analyzeVolumeProfile('btc_jpy', 25, 500, 5, 0.7);
+			assertOk(res);
+			expect(mockedGetTransactions).toHaveBeenCalledTimes(3);
+			const warning = requireDefined(res.meta.warning, 'res.meta.warning');
+			expect(warning).toContain('⚠️');
+			expect(res.summary).toContain(warning);
+		} finally {
+			vi.useRealTimers();
 		}
 	});
 });

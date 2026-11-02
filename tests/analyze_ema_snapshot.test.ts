@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
 import type { Candle } from '../src/schemas.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
+import { requireDefined } from './helpers/assert.js';
 
 vi.mock('../tools/analyze_indicators.js', async (importOriginal) => {
 	const actual = await importOriginal<typeof import('../tools/analyze_indicators.js')>();
@@ -354,7 +355,7 @@ describe('analyze_ema_snapshot', () => {
 			const res = await analyzeEmaSnapshot('btc_jpy', '1day', 220, [12, 26, 50, 200]);
 
 			assertOk(res);
-			expect(res.data.summary!.position).toBe('above_all');
+			expect(requireDefined(res.data.summary, 'res.data.summary').position).toBe('above_all');
 		});
 
 		it('close < all EMAs → below_all', async () => {
@@ -366,7 +367,7 @@ describe('analyze_ema_snapshot', () => {
 			const res = await analyzeEmaSnapshot('btc_jpy', '1day', 220, [12, 26, 50, 200]);
 
 			assertOk(res);
-			expect(res.data.summary!.position).toBe('below_all');
+			expect(requireDefined(res.data.summary, 'res.data.summary').position).toBe('below_all');
 		});
 
 		it('close between EMAs → between', async () => {
@@ -378,7 +379,7 @@ describe('analyze_ema_snapshot', () => {
 			const res = await analyzeEmaSnapshot('btc_jpy', '1day', 220, [12, 26, 50, 200]);
 
 			assertOk(res);
-			expect(res.data.summary!.position).toBe('between');
+			expect(requireDefined(res.data.summary, 'res.data.summary').position).toBe('between');
 		});
 	});
 

@@ -182,10 +182,9 @@ describe('detectWedges', () => {
 		const result = detectWedges(ctx);
 
 		const rw = result.patterns.filter((p) => p.type === 'rising_wedge');
-		if (rw.length > 0) {
-			const statuses = ['forming', 'near_completion', 'completed'];
-			expect(statuses).toContain(rw[0]?.status);
-		}
+		expect(rw.length).toBeGreaterThan(0);
+		const statuses = ['forming', 'near_completion', 'completed'];
+		expect(statuses).toContain(rw[0]?.status);
 	});
 
 	it('Falling Wedge 形状のデータ → falling_wedge が検出される（4d forming）', () => {
@@ -207,9 +206,8 @@ describe('detectWedges', () => {
 		const result = detectWedges(ctx);
 
 		const fw = result.patterns.filter((p) => p.type === 'falling_wedge');
-		if (fw.length > 0 && fw[0]?.daysToApex !== undefined) {
-			expect(fw[0].daysToApex).toBeGreaterThan(0);
-		}
+		expect(fw.length).toBeGreaterThan(0);
+		expect(fw[0].daysToApex).toBeGreaterThan(0);
 	});
 
 	// 標準の buildFallingWedgeCandles は breakout を起こさない near_completion で終わるため、末尾に強い上抜けバーを付加した専用フィクスチャを使う。
@@ -378,9 +376,8 @@ describe('detectWedges', () => {
 		const result = detectWedges(ctx);
 
 		const fromFormingPath = result.patterns.filter((p) => (p as { _method?: string })._method === 'forming_relaxed');
-		if (fromFormingPath.length > 0) {
-			expect(fromFormingPath[0]?.type).toMatch(/wedge/);
-		}
+		expect(fromFormingPath.length).toBeGreaterThan(0);
+		expect(fromFormingPath[0]?.type).toMatch(/wedge/);
 	});
 
 	it('Falling Wedge の apex が近い場合 near_completion または completed になる', () => {
@@ -391,10 +388,9 @@ describe('detectWedges', () => {
 		const result = detectWedges(ctx);
 
 		const fw = result.patterns.filter((p) => p.type === 'falling_wedge');
-		if (fw.length > 0) {
-			const validStatuses = ['near_completion', 'completed', 'forming'];
-			expect(validStatuses).toContain(fw[0]?.status);
-		}
+		expect(fw.length).toBeGreaterThan(0);
+		const validStatuses = ['near_completion', 'completed', 'forming'];
+		expect(validStatuses).toContain(fw[0]?.status);
 	});
 
 	it('includeForming=false のとき forming / near_completion 状態のパターンは返らない', () => {

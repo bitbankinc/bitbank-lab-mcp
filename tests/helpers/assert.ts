@@ -10,3 +10,13 @@ export function requireDefined<T>(value: T, label: string): NonNullable<T> {
 	assertDefined(value, label);
 	return value;
 }
+
+// expect を catch の中に書くと条件付きの expect になるので、拒否された値を取り出して外で確かめる。
+export async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+	try {
+		await promise;
+	} catch (err) {
+		return err;
+	}
+	throw new Error('expected the promise to reject, but it resolved');
+}

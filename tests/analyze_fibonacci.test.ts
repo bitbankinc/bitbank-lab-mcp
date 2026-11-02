@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
+import { requireDefined } from './helpers/assert.js';
 
 vi.mock('../tools/get_candles.js', () => ({
 	default: vi.fn(),
@@ -209,8 +210,8 @@ describe('analyze_fibonacci', () => {
 		expect(res.data.position.belowLevel).not.toBeNull();
 		expect(res.data.position.aboveLevel).not.toBeNull();
 		expect(res.data.position.nearestLevel).not.toBeNull();
-		expect(res.data.position.belowLevel!.price).toBeLessThanOrEqual(192);
-		expect(res.data.position.aboveLevel!.price).toBeGreaterThan(192);
+		expect(requireDefined(res.data.position.belowLevel, 'res.data.position.belowLevel').price).toBeLessThanOrEqual(192);
+		expect(requireDefined(res.data.position.aboveLevel, 'res.data.position.aboveLevel').price).toBeGreaterThan(192);
 	});
 
 	it('extension-only で position が extensions から計算される', async () => {
@@ -228,14 +229,14 @@ describe('analyze_fibonacci', () => {
 		const res = await analyzeFibonacci({ pair: 'btc_jpy', mode: 'retracement', lookbackDays: 90 });
 		assertOk(res);
 
-		if (res.data.levelStats && res.data.levelStats.length > 0) {
-			const stat = res.data.levelStats[0];
-			expect(stat.ratio).toBeDefined();
-			expect(stat.samplesCount).toBeGreaterThanOrEqual(0);
-			expect(stat.bounceRate).toBeGreaterThanOrEqual(0);
-			expect(stat.bounceRate).toBeLessThanOrEqual(1);
-			expect(stat.confidence).toMatch(/^(high|medium|low)$/);
-		}
+		const levelStats = requireDefined(res.data.levelStats, 'res.data.levelStats');
+		expect(levelStats.length).toBeGreaterThan(0);
+		const stat = levelStats[0];
+		expect(stat.ratio).toBeDefined();
+		expect(stat.samplesCount).toBeGreaterThanOrEqual(0);
+		expect(stat.bounceRate).toBeGreaterThanOrEqual(0);
+		expect(stat.bounceRate).toBeLessThanOrEqual(1);
+		expect(stat.confidence).toMatch(/^(high|medium|low)$/);
 	});
 
 	it('historyLookbackDays > lookbackDays で追加のローソク足を取得', async () => {
@@ -332,7 +333,7 @@ describe('analyze_fibonacci', () => {
 
 		// range が小さいため水準が全て近くなりタッチが多い可能性があるので、content の形式だけを検証する
 		expect(res.content).toBeDefined();
-		expect(res.content!.length).toBeGreaterThan(0);
+		expect(requireDefined(res.content, 'res.content').length).toBeGreaterThan(0);
 	});
 
 	it('summary にトレンドと水準情報を含む', async () => {

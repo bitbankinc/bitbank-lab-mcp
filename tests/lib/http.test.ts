@@ -384,37 +384,35 @@ describe('HTTP ステータス由来のリトライ判定（#84）', () => {
 		});
 	});
 
-	for (const [label, fn] of [
+	describe.each([
 		['fetchJson', fetchJson],
 		['fetchJsonWithRateLimit', fetchJsonWithRateLimit],
-	] as Array<[string, (url: string, o?: { retries?: number }) => Promise<unknown>]>) {
-		describe(label, () => {
-			it('404 は 1 回で諦める（リトライしない）', async () => {
-				const fetchMock = vi
-					.fn()
-					.mockResolvedValue({ ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null } });
-				globalThis.fetch = fetchMock as unknown as typeof fetch;
+	] as Array<[string, (url: string, o?: { retries?: number }) => Promise<unknown>]>)('%s', (_label, fn) => {
+		it('404 は 1 回で諦める（リトライしない）', async () => {
+			const fetchMock = vi
+				.fn()
+				.mockResolvedValue({ ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null } });
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-				await expect(fn('https://example.com/api', { retries: 2 })).rejects.toThrow('HTTP 404');
-				expect(fetchMock).toHaveBeenCalledTimes(1);
-			});
-
-			it('5xx は従来どおり初回 + retries 回まで試す', async () => {
-				vi.useFakeTimers();
-				const fetchMock = vi.fn().mockResolvedValue({
-					ok: false,
-					status: 503,
-					statusText: 'Service Unavailable',
-					headers: { get: () => null },
-				});
-				globalThis.fetch = fetchMock as unknown as typeof fetch;
-
-				const pending = fn('https://example.com/api', { retries: 2 });
-				const assertion = expect(pending).rejects.toThrow('HTTP 503');
-				await vi.runAllTimersAsync();
-				await assertion;
-				expect(fetchMock).toHaveBeenCalledTimes(3);
-			});
+			await expect(fn('https://example.com/api', { retries: 2 })).rejects.toThrow('HTTP 404');
+			expect(fetchMock).toHaveBeenCalledTimes(1);
 		});
-	}
+
+		it('5xx は従来どおり初回 + retries 回まで試す', async () => {
+			vi.useFakeTimers();
+			const fetchMock = vi.fn().mockResolvedValue({
+				ok: false,
+				status: 503,
+				statusText: 'Service Unavailable',
+				headers: { get: () => null },
+			});
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			const pending = fn('https://example.com/api', { retries: 2 });
+			const assertion = expect(pending).rejects.toThrow('HTTP 503');
+			await vi.runAllTimersAsync();
+			await assertion;
+			expect(fetchMock).toHaveBeenCalledTimes(3);
+		});
+	});
 });

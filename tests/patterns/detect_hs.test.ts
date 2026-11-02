@@ -1069,10 +1069,7 @@ describe('detectHeadAndShoulders', () => {
 
 		expect(hs.range?.end).toBe(candles[breakoutBarIndex]?.isoTime);
 		expect(hs.structureRange?.end).toBe(candles[60].isoTime);
-		if (hs.confirmation?.type === 'neckline_breakout') {
-			expect(hs.confirmation.date).toBe(hs.range?.end);
-			expect(hs.confirmation.idx).toBe(breakoutBarIndex);
-		}
+		expect(hs.confirmation).toMatchObject({ type: 'neckline_breakout', date: hs.range?.end, idx: breakoutBarIndex });
 	});
 
 	it('H&S: 右肩後にターゲット到達 → targetReachedPct >= 100 + targetReached=true', () => {

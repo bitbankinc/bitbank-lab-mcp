@@ -245,7 +245,7 @@ function evaluateMergedChunks(
 		if (classified) return classified;
 	}
 
-	// 進行中の UTC 期間は開始直後に chunk 未生成で 404 になるので、過半数失敗に数えない（JST 早朝の当日取得が全滅した原因）。
+	// 進行中の UTC 期間は開始直後に chunk 未生成で 404 になるので、過半数失敗に数えない（数えると JST 早朝の当日取得が全滅する）。
 	const nowUtcDayKey = toDayKey(Date.now(), FETCH_CHUNK_TZ);
 	const partition = partitionFailedChunks(keys, merged.results, nowUtcDayKey);
 	const totalChunks = merged.results.length - partition.pendingGapKeys.length - partition.absentGapKeys.length;

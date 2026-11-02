@@ -143,14 +143,14 @@ describe('detectTriangles — whipsaw boundary tests', () => {
 		expect(hasBreakoutPattern || hasFormingPattern).toBe(true);
 	});
 
-	it('直近足が下限トレンドラインと一致 → whipsaw は発動しない（strict >）', () => {
-		// lowerLine は 80 + 0.3*i で上昇し、i=44 での値は 93.2 付近。
+	it('直近足が下限トレンドライン以下 → whipsaw は発動しない（strict >）', () => {
+		// lowerLine は 80 + 0.3*i で上昇し、直近足（i=41）での値は 92.3 付近。
 		const base = buildSymTriangleBase(40);
 
 		// 下方ブレイクアウト: close が lower - ATR*0.3 を下回る
 		base.push(mkCandle(20, 75, 78, 72, 73));
-		// 後続足の close を lower line 延長値（~93.2）以下にする → latestClose > lLatest が false → whipsaw 不発
-		base.push(mkCandle(19, 92, 94, 90, 93));
+		// 後続足の close を lower line 延長値（~92.3）より下にする → latestClose > lLatest が false → whipsaw 不発
+		base.push(mkCandle(19, 90, 91, 88, 89));
 
 		const ctx = buildCtx({
 			candles: base,
@@ -166,9 +166,8 @@ describe('detectTriangles — whipsaw boundary tests', () => {
 		);
 		expect(formingOrCompleted.length).toBeGreaterThanOrEqual(1);
 		const downBreakouts = syms.filter((p) => p.breakoutDirection === 'down');
-		if (downBreakouts.length > 0) {
-			expect(downBreakouts[0]?.breakoutBarIndex).toBeDefined();
-		}
+		expect(downBreakouts.length).toBeGreaterThan(0);
+		expect(downBreakouts[0]?.breakoutBarIndex).toBeDefined();
 	});
 
 	it('whipsaw + includeForming=false → forming パターンがスキップされる', () => {

@@ -14,6 +14,7 @@ import {
 	validateDate,
 	validateLimit,
 } from '../../lib/validate.js';
+import { assertFail } from '../_assertResult.js';
 
 describe('normalizePair', () => {
 	it('正規形式はそのまま返す', () => {
@@ -52,13 +53,13 @@ describe('ensurePair', () => {
 	});
 	it('不正形式で ok: false を返す', () => {
 		const res = ensurePair('invalid');
-		expect(res.ok).toBe(false);
-		if (!res.ok) expect(res.error.type).toBe('user');
+		assertFail(res);
+		expect(res.error.type).toBe('user');
 	});
 	it('存在しないペアで ok: false を返す', () => {
 		const res = ensurePair('zzz_jpy');
-		expect(res.ok).toBe(false);
-		if (!res.ok) expect(res.error.message).toContain('未対応');
+		assertFail(res);
+		expect(res.error.message).toContain('未対応');
 	});
 	it('null で ok: false を返す', () => {
 		const res = ensurePair(null);
@@ -156,11 +157,9 @@ describe('ensureAllowedOutputDir', () => {
 
 	it('許可 root 外の絶対パスは拒否される', () => {
 		const res = ensureAllowedOutputDir('/etc/cron.d');
-		expect(res.ok).toBe(false);
-		if (!res.ok) {
-			expect(res.error.type).toBe('user');
-			expect(res.error.message).toContain('/etc/cron.d');
-		}
+		assertFail(res);
+		expect(res.error.type).toBe('user');
+		expect(res.error.message).toContain('/etc/cron.d');
 	});
 
 	it('.. によるトラバーサルは resolve 後のパスで拒否される', () => {

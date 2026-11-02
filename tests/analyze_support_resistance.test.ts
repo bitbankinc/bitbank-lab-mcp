@@ -229,9 +229,9 @@ describe('analyze_support_resistance', () => {
 		assertOk(resBoosted);
 
 		// 大出来高で strength が上がる（content テキストで確認）
-		if (resBoosted.data.supports.length > 0 && resBase.data.supports.length > 0) {
-			expect(resBoosted.data.supports[0].strength).toBeGreaterThanOrEqual(resBase.data.supports[0].strength);
-		}
+		expect(resBase.data.supports.length).toBeGreaterThan(0);
+		expect(resBoosted.data.supports.length).toBeGreaterThan(0);
+		expect(resBoosted.data.supports[0].strength).toBeGreaterThanOrEqual(resBase.data.supports[0].strength);
 		const text = resBoosted.content?.[0]?.text ?? '';
 		expect(text).toContain('出来高');
 	});
@@ -251,9 +251,8 @@ describe('analyze_support_resistance', () => {
 		const res = await analyzeSupportResistance('btc_jpy', { lookbackDays: 90, tolerance: 0.015 });
 		assertOk(res);
 
-		if (res.data.supports.length > 0) {
-			expect(res.data.supports[0].strength).toBe(3);
-		}
+		expect(res.data.supports.length).toBeGreaterThan(0);
+		expect(res.data.supports[0].strength).toBe(3);
 	});
 
 	it('直近7日以内にブレイクしたサポートは除外', async () => {
@@ -364,9 +363,8 @@ describe('analyze_support_resistance', () => {
 
 		const text = res.content?.[0]?.text ?? '';
 		// ロールリバーサルが検出されれば content に言及がある
-		if (res.data.resistances.length > 0) {
-			expect(text).toContain('レジスタンス');
-		}
+		expect(res.data.resistances.length).toBeGreaterThan(0);
+		expect(text).toContain('レジスタンス');
 	});
 
 	it('突破されたレジスタンス → サポート転換を検出', async () => {
@@ -392,9 +390,8 @@ describe('analyze_support_resistance', () => {
 		assertOk(res);
 
 		const text = res.content?.[0]?.text ?? '';
-		if (res.data.supports.length > 0) {
-			expect(text).toContain('サポート');
-		}
+		expect(res.data.supports.length).toBeGreaterThan(0);
+		expect(text).toContain('サポート');
 	});
 
 	it('プルバック確認済みのロールリバーサルは strength >= 2', async () => {
@@ -426,10 +423,9 @@ describe('analyze_support_resistance', () => {
 		assertOk(res);
 
 		// プルバック確認済みなら strength >= 2 のレジスタンスがある
-		if (res.data.resistances.length > 0) {
-			const text = res.content?.[0]?.text ?? '';
-			expect(text).toContain('レジスタンス');
-		}
+		expect(res.data.resistances.length).toBeGreaterThan(0);
+		const text = res.content?.[0]?.text ?? '';
+		expect(text).toContain('レジスタンス');
 	});
 
 	it('サポートは現在価格に近い順にソートされる', async () => {
@@ -446,12 +442,11 @@ describe('analyze_support_resistance', () => {
 		const res = await analyzeSupportResistance('btc_jpy', { lookbackDays: 90, topN: 5, tolerance: 0.015 });
 		assertOk(res);
 
-		if (res.data.supports.length >= 2) {
-			// 近い方（90付近）が先に来る
-			expect(Math.abs(res.data.supports[0].pctFromCurrent)).toBeLessThanOrEqual(
-				Math.abs(res.data.supports[1].pctFromCurrent) + 0.5,
-			);
-		}
+		expect(res.data.supports.length).toBeGreaterThanOrEqual(2);
+		// 近い方（90付近）が先に来る
+		expect(Math.abs(res.data.supports[0].pctFromCurrent)).toBeLessThanOrEqual(
+			Math.abs(res.data.supports[1].pctFromCurrent) + 0.5,
+		);
 	});
 
 	it('data に currentPrice / analysisDate / detectionCriteria を含む', async () => {

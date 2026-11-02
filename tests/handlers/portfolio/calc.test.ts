@@ -2000,9 +2000,11 @@ describe('入出庫日価格での JPY 換算', () => {
 				new Map([['eth', 400_000]]),
 			);
 
+			// 換算 0 件は内訳ごと落とす（'mixed' の 0/0 のような無意味な組み合わせを作らない）
+			expect(summarizeFlowValuation([], pricing)).toBeUndefined();
+
 			// (dated 件数, fallback 件数) の全組み合わせを網羅する
 			const cases: Array<{ input: typeof targets; dated: number; fallback: number }> = [
-				{ input: [], dated: 0, fallback: 0 },
 				{ input: [dated], dated: 1, fallback: 0 },
 				{ input: [fallback], dated: 0, fallback: 1 },
 				{ input: [dated, fallback], dated: 1, fallback: 1 },
@@ -2011,11 +2013,6 @@ describe('入出庫日価格での JPY 換算', () => {
 
 			for (const c of cases) {
 				const result = summarizeFlowValuation(c.input, pricing);
-				if (c.dated === 0 && c.fallback === 0) {
-					// 換算 0 件は内訳ごと落とす（'mixed' の 0/0 のような無意味な組み合わせを作らない）
-					expect(result).toBeUndefined();
-					continue;
-				}
 				expect(result).toBeDefined();
 				expect(result?.deposit_date_price_count).toBe(c.dated);
 				expect(result?.current_price_fallback_count).toBe(c.fallback);
@@ -2023,10 +2020,6 @@ describe('入出庫日価格での JPY 換算', () => {
 				expect(Number.isInteger(result?.current_price_fallback_count)).toBe(true);
 				const expected = c.fallback === 0 ? 'deposit_date_price' : c.dated === 0 ? 'current_price_fallback' : 'mixed';
 				expect(result?.basis).toBe(expected);
-				if (result?.basis === 'mixed') {
-					expect(c.dated).toBeGreaterThan(0);
-					expect(c.fallback).toBeGreaterThan(0);
-				}
 			}
 		});
 	});

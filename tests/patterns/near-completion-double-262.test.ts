@@ -179,12 +179,10 @@ describe('未ブレイクの double は near_completion（issue #262）', () => 
 			['near_completion (top)', () => doubleTop([[9, 91]]), 'double_top'],
 			['expired (top)', () => doubleTop([[22, 91]]), 'double_top'],
 		];
-		for (const [label, candles, want] of cases) {
-			it(label, async () => {
-				const found = await detect(candles(), want, { includeForming: false });
-				expect(found).toHaveLength(0);
-			});
-		}
+		it.each(cases)('%s', async (_label, candles, want) => {
+			const found = await detect(candles(), want, { includeForming: false });
+			expect(found).toHaveLength(0);
+		});
 
 		it('ブレイク済みの形は includeForming: false でも出る（絞り込みが completed を巻き込まない）', async () => {
 			const found = await detect(doubleBottom([[9, 118]]), 'double_bottom', { includeForming: false });

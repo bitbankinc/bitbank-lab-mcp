@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertFail, assertOk } from '../_assertResult.js';
 import { mockBitbankSuccess, mockSpotPairsResponse } from '../fixtures/private-api.js';
+import { requireDefined } from '../helpers/assert.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -198,9 +199,7 @@ describe('preview_order', () => {
 				trigger_price: '16000000',
 			});
 			expect(result.success).toBe(false);
-			if (!result.success) {
-				expect(result.error.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-			}
+			expect(result.error?.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
 		});
 
 		it('stop_loss は PreviewOrderInputSchema で拒否される', async () => {
@@ -213,9 +212,7 @@ describe('preview_order', () => {
 				trigger_price: '13000000',
 			});
 			expect(result.success).toBe(false);
-			if (!result.success) {
-				expect(result.error.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-			}
+			expect(result.error?.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
 		});
 
 		it('losscut は PreviewOrderInputSchema で拒否される', async () => {
@@ -227,9 +224,7 @@ describe('preview_order', () => {
 				type: 'losscut',
 			});
 			expect(result.success).toBe(false);
-			if (!result.success) {
-				expect(result.error.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-			}
+			expect(result.error?.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
 		});
 	});
 
@@ -246,8 +241,10 @@ describe('preview_order', () => {
 
 			assertOk(result);
 			expect(result.data.confirmation_token).toBeTypeOf('string');
-			expect(result.data.confirmation_token!.length).toBeGreaterThan(0);
-			expect(result.data.expires_at!).toBeGreaterThan(Date.now());
+			expect(requireDefined(result.data.confirmation_token, 'result.data.confirmation_token').length).toBeGreaterThan(
+				0,
+			);
+			expect(requireDefined(result.data.expires_at, 'result.data.expires_at')).toBeGreaterThan(Date.now());
 		});
 
 		it('market 注文プレビューが成功する', async () => {
@@ -368,8 +365,8 @@ describe('preview_order', () => {
 			const { default: createOrder } = await import('../../tools/private/create_order.js');
 			const created = await createOrder({
 				...orderArgs,
-				confirmation_token: preview.data.confirmation_token!,
-				token_expires_at: preview.data.expires_at!,
+				confirmation_token: requireDefined(preview.data.confirmation_token, 'preview.data.confirmation_token'),
+				token_expires_at: requireDefined(preview.data.expires_at, 'preview.data.expires_at'),
 			});
 
 			assertOk(created);
@@ -565,7 +562,9 @@ describe('preview_order', () => {
 
 			assertOk(result);
 			expect(result.data.confirmation_token).toBeTypeOf('string');
-			expect(result.data.confirmation_token!.length).toBeGreaterThan(0);
+			expect(requireDefined(result.data.confirmation_token, 'result.data.confirmation_token').length).toBeGreaterThan(
+				0,
+			);
 		});
 	});
 
