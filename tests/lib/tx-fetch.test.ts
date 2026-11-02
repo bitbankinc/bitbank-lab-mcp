@@ -20,6 +20,7 @@ import {
 	type Tx,
 	type TxTimeRangeResolved,
 	txDedupKey,
+	unlimitedTxFetcher,
 } from '../../lib/tx-fetch.js';
 import { ISO8601_WITH_OFFSET_PATTERN, MAX_TX_RANGE_DAYS } from '../../src/schema/base.js';
 
@@ -501,6 +502,21 @@ describe('fetchTxTimeRange', () => {
 		const res = await fetchTxTimeRange(fetcher, { sinceMs: untilMs - 3600_000, untilMs }, { nowMs: NOW });
 
 		expect(res.txs.map((t) => t.timestampMs)).toEqual([untilMs]);
+	});
+});
+
+describe('unlimitedTxFetcher', () => {
+	it('集計用に応答上限 1000 件を外して get_transactions を呼ぶ（日付はそのまま渡す）', async () => {
+		const getTransactions = vi.fn(async () => ({ ok: true }));
+		const fetcher = unlimitedTxFetcher(getTransactions, 'btc_jpy');
+
+		await fetcher('20260706');
+		await fetcher();
+
+		expect(getTransactions.mock.calls).toEqual([
+			['btc_jpy', 1000, '20260706', undefined, { unlimited: true }],
+			['btc_jpy', 1000, undefined, undefined, { unlimited: true }],
+		]);
 	});
 });
 

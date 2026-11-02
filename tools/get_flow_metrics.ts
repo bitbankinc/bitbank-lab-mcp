@@ -18,9 +18,9 @@ import {
 	resolveTxTimeRange,
 	sortTxsAsc,
 	type Tx,
-	type TxFetcher,
 	type TxLimitApplication,
 	type TxTimeRangeResolved,
+	unlimitedTxFetcher,
 } from '../lib/tx-fetch.js';
 import { createMeta, ensurePair, validateLimit } from '../lib/validate.js';
 import {
@@ -173,18 +173,9 @@ export function buildFlowMetricsText(input: BuildFlowMetricsTextInput): string {
 	return baseSummary + warningLine + aggregatesLine + label + bucketLines.join('\n') + footer;
 }
 
-/** get_transactions の応答件数上限（public ツールの limit 上限と同値）。 */
-const PUBLIC_TX_LIMIT = 1000;
-
 const UTC_DAY_MINUTES = 24 * 60;
 
 type TxResult = Awaited<ReturnType<typeof getTransactions>>;
-
-// get_transactions の 1000 件上限は MCP 応答のサイズ制限なので、集計用途では外す（キャップすると 1 UTC 日の末尾側しか集計に入らない）。
-function internalTxFetcher(pair: string): TxFetcher {
-	// unlimited 指定時に limit は無視されるが、オプションが外れても応答上限へ縮退するよう public 上限を渡す。
-	return (date) => getTransactions(pair, PUBLIC_TX_LIMIT, date, undefined, { unlimited: true });
-}
 
 export default async function getFlowMetrics(
 	pair: string = 'btc_jpy',
@@ -204,7 +195,7 @@ export default async function getFlowMetrics(
 		let limitApplication: TxLimitApplication | undefined;
 		let requestedMin: number | undefined;
 		let resolvedRange: TxTimeRangeResolved | undefined;
-		const txFetcher = internalTxFetcher(chk.pair);
+		const txFetcher = unlimitedTxFetcher(getTransactions, chk.pair);
 		const since = range?.since;
 		const until = range?.until;
 

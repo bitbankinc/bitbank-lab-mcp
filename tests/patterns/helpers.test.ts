@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
 	barsPerDay,
+	deduplicatePatterns,
+	finalizeConf,
+	globalDedup,
+	PERIOD_SCORE_BAR_BUCKETS,
+	periodScoreBars,
+	periodScoreDays,
+} from '../../tools/patterns/helpers.js';
+import type { CandleData, DeduplicablePattern, TrendLine } from '../../tools/patterns/types.js';
+import {
 	calcAlternationScoreEx,
 	calcApex,
 	calcDurationScoreEx,
@@ -8,18 +17,11 @@ import {
 	calculatePatternScoreEx,
 	checkContainment,
 	checkConvergenceEx,
-	deduplicatePatterns,
 	detectWedgeBreak,
 	determineWedgeType,
 	evaluateTouchesEx,
-	finalizeConf,
 	generateWindows,
-	globalDedup,
-	PERIOD_SCORE_BAR_BUCKETS,
-	periodScoreBars,
-	periodScoreDays,
-} from '../../tools/patterns/helpers.js';
-import type { CandleData, DeduplicablePattern, TrendLine } from '../../tools/patterns/types.js';
+} from '../../tools/patterns/wedge-helpers.js';
 
 function makeTrendLine(slope: number, intercept: number): TrendLine {
 	return { slope, intercept, valueAt: (x: number) => slope * x + intercept };

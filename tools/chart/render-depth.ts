@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { buildCumulativeSteps } from '../../lib/depth-analysis.js';
 import { formatPair } from '../../lib/formatter.js';
 import getDepth from '../../lib/get-depth.js';
 import { fail, ok } from '../../lib/result.js';
@@ -27,24 +28,14 @@ export async function renderDepthChart(
 		const maxAsk = Number(asks[asks.length - 1]?.[0] ?? asks[0]?.[0] ?? 0);
 		const xMinP = Math.min(minBid, Number(bids[0]?.[0] ?? minBid));
 		const xMaxP = Math.max(maxAsk, Number(asks[0]?.[0] ?? maxAsk));
-		const bidsSorted = [...bids]
-			.map(([p, s]) => [Number(p), Number(s)] as [number, number])
-			.sort((a, b) => b[0] - a[0]);
-		const asksSorted = [...asks]
-			.map(([p, s]) => [Number(p), Number(s)] as [number, number])
-			.sort((a, b) => a[0] - b[0]);
-		let cum = 0;
-		const bidSteps: Array<[number, number]> = [];
-		for (const [p, s] of bidsSorted) {
-			cum += s;
-			bidSteps.push([p, cum]);
-		}
-		cum = 0;
-		const askSteps: Array<[number, number]> = [];
-		for (const [p, s] of asksSorted) {
-			cum += s;
-			askSteps.push([p, cum]);
-		}
+		const bidSteps = buildCumulativeSteps(
+			bids.map(([p, s]) => [Number(p), Number(s)] as [number, number]),
+			'bid',
+		);
+		const askSteps = buildCumulativeSteps(
+			asks.map(([p, s]) => [Number(p), Number(s)] as [number, number]),
+			'ask',
+		);
 		const maxQty = Math.max(bidSteps.at(-1)?.[1] || 0, askSteps.at(-1)?.[1] || 0) || 1;
 
 		const w = 860,

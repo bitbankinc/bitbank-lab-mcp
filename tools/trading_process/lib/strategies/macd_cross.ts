@@ -3,6 +3,7 @@
 import { macd as sharedMacd } from '../../../../lib/indicators.js';
 import type { Candle } from '../../types.js';
 import { calculateSMA } from '../sma.js';
+import { describeEntryFilters, entryFilterStartIdx, isEntryBlockedBySmaRsi } from './filters.js';
 import { calculateRSI } from './rsi.js';
 import type { Overlay, ParamValidationResult, Signal, Strategy } from './types.js';
 
@@ -60,29 +61,16 @@ export function validateParams(params: Record<string, number>): ParamValidationR
 	};
 }
 
-function describeFilters(params: Record<string, number>): string {
-	const parts: string[] = [];
-	if (params.sma_filter_period > 0) {
-		parts.push(`SMA${params.sma_filter_period} trend filter`);
-	}
-	if (params.zero_line_filter === 1) {
-		parts.push('zero-line: above only');
-	} else if (params.zero_line_filter === -1) {
-		parts.push('zero-line: below only');
-	}
-	if (params.rsi_filter_period > 0 && params.rsi_filter_max < 100) {
-		parts.push(`RSI(${params.rsi_filter_period})<${params.rsi_filter_max}`);
-	}
-	return parts.length > 0 ? ` [${parts.join(', ')}]` : '';
+function zeroLineFilterParts(params: Record<string, number>): string[] {
+	if (params.zero_line_filter === 1) return ['zero-line: above only'];
+	if (params.zero_line_filter === -1) return ['zero-line: below only'];
+	return [];
 }
 
 // signal 線は index >= slow + signal - 2 で有効で、クロス判定に prev / curr が要るので最低 slow + signal 本。
 function computeRequiredBarsImpl(params: Record<string, number>): number {
 	const p = { ...DEFAULT_PARAMS, ...params };
-	const base = p.slow + p.signal;
-	const smaF = p.sma_filter_period > 0 ? p.sma_filter_period - 1 : 0;
-	const rsiF = p.rsi_filter_period > 0 ? p.rsi_filter_period + 1 : 0;
-	return Math.max(base, smaF, rsiF);
+	return Math.max(p.slow + p.signal, entryFilterStartIdx(p));
 }
 
 export const macdCrossStrategy: Strategy = {
@@ -103,10 +91,7 @@ export const macdCrossStrategy: Strategy = {
 		const rsi = p.rsi_filter_period > 0 ? calculateRSI(closes, p.rsi_filter_period) : null;
 
 		const signals: Signal[] = [];
-		const baseStartIdx = slow + signalPeriod - 1;
-		const smaFilterStart = sma ? p.sma_filter_period - 1 : 0;
-		const rsiFilterStart = rsi ? p.rsi_filter_period + 1 : 0;
-		const startIdx = Math.max(baseStartIdx, smaFilterStart, rsiFilterStart);
+		const startIdx = Math.max(slow + signalPeriod - 1, entryFilterStartIdx(p));
 
 		for (let i = 0; i < candles.length; i++) {
 			if (i < startIdx) {
@@ -125,32 +110,12 @@ export const macdCrossStrategy: Strategy = {
 			}
 
 			if (prevMACD <= prevSignal && currMACD > currSignal) {
-				// フィルター適用（買いシグナルのみにフィルターを適用）
-				const filterReasons: string[] = [];
-				let filtered = false;
-
-				if (sma && !Number.isNaN(sma[i]) && closes[i] < sma[i]) {
-					filtered = true;
-					filterReasons.push(`price(${closes[i].toFixed(0)}) < SMA${p.sma_filter_period}(${sma[i].toFixed(0)})`);
-				}
-
-				if (p.zero_line_filter === 1 && currMACD < 0) {
-					filtered = true;
-					filterReasons.push(`MACD(${currMACD.toFixed(0)}) below zero`);
-				} else if (p.zero_line_filter === -1 && currMACD > 0) {
-					filtered = true;
-					filterReasons.push(`MACD(${currMACD.toFixed(0)}) above zero`);
-				}
-
-				if (rsi && !Number.isNaN(rsi[i]) && rsi[i] >= p.rsi_filter_max) {
-					filtered = true;
-					filterReasons.push(`RSI(${rsi[i].toFixed(1)}) >= ${p.rsi_filter_max}`);
-				}
-
-				if (filtered) {
+				const blockedByZeroLine =
+					(p.zero_line_filter === 1 && currMACD < 0) || (p.zero_line_filter === -1 && currMACD > 0);
+				if (isEntryBlockedBySmaRsi(i, closes, sma, rsi, p.rsi_filter_max) || blockedByZeroLine) {
 					signals.push({ time: candles[i].time, action: 'hold' });
 				} else {
-					const filterDesc = describeFilters(p);
+					const filterDesc = describeEntryFilters(p, zeroLineFilterParts(p));
 					signals.push({
 						time: candles[i].time,
 						action: 'buy',

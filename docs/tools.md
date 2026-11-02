@@ -559,7 +559,7 @@ total = spot_realized_pnl + margin_realized_pnl − margin_interest_cost − mar
   `triangle_*` のみ、ブレイク側の線）であって構成点の平均ではない。
 - **`price` は高安**（`extremePrice` と同値）。下の「`pivots[].price` は終値、`extremePrice` が判定値」を参照。
 - **点数は窓の長さとタッチの多さに比例する。** `wedge_*` は 0.5% 以内をタッチとみなす
-  （`helpers.ts` の `evaluateTouchesEx`）ので、収束が進んで上下の幅が 0.5% を切った区間では
+  （`wedge-helpers.ts` の `evaluateTouchesEx`）ので、収束が進んで上下の幅が 0.5% を切った区間では
   ほぼ全バーが構成点になる（BTC/JPY 1hour の実測で 31〜107 点）。**件数を「形の良さ」の
   代理指標に使わないこと**——整合度は `confidence` を見る。
 - **ブレイク足以降は線を問わず除外する**（#281）。`evaluateTouchesEx` は「線を割った / 抜けた」を
