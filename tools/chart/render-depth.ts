@@ -5,6 +5,7 @@ import { formatPair } from '../../lib/formatter.js';
 import getDepth from '../../lib/get-depth.js';
 import { fail, ok } from '../../lib/result.js';
 import type { Pair, Result } from '../../src/schemas.js';
+import { buildDepthPaths } from './depth-paths.js';
 
 type RenderData = { svg?: string; filePath?: string; legend?: Record<string, string> };
 type RenderMeta = {
@@ -47,28 +48,7 @@ export async function renderDepthChart(
 			Number((padding.left + ((price - xMinP) * plotW) / Math.max(1, xMaxP - xMinP)).toFixed(effectivePrecision));
 		const y = (qty: number) => Number((h - padding.bottom - (qty * plotH) / maxQty).toFixed(effectivePrecision));
 
-		const toStepPath = (steps: Array<[number, number]>) => {
-			if (!steps.length) return '';
-			const pts = steps.map(([p, q]) => `${x(p)},${y(q)}`);
-			return `M ${pts.join(' L ')}`;
-		};
-		const bidPath = toStepPath(bidSteps);
-		const askPath = toStepPath(askSteps);
-
-		const toFillPath = (steps: Array<[number, number]>, side: 'bid' | 'ask') => {
-			if (!steps.length) return '';
-			const head = steps[0];
-			const tail = steps[steps.length - 1];
-			const baseY = y(0);
-			const poly = ['M', `${x(head[0])},${baseY}`, 'L']
-				.concat(steps.map(([p, q]) => `${x(p)},${y(q)}`))
-				.concat(['L', `${x(tail[0])},${baseY}`, 'Z'])
-				.join(' ');
-			const fill = side === 'bid' ? 'rgba(16,185,129,0.12)' : 'rgba(249,115,22,0.12)';
-			return `<path d="${poly}" fill="${fill}" stroke="none"/>`;
-		};
-		const bidFill = toFillPath(bidSteps, 'bid');
-		const askFill = toFillPath(askSteps, 'ask');
+		const { bidPath, askPath, bidFill, askFill } = buildDepthPaths(bidSteps, askSteps, x, y);
 
 		const mid = (Number(bids[0]?.[0] ?? 0) + Number(asks[0]?.[0] ?? 0)) / 2;
 		const yAxis = `
