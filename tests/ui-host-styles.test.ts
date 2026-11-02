@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const ext = vi.hoisted(() => ({ applyHostStyleVariables: vi.fn(), applyHostFonts: vi.fn() }));
 vi.mock('@modelcontextprotocol/ext-apps', () => ext);
@@ -14,10 +14,31 @@ const FULL_PALETTE = {
 	'--color-border-primary': '#333333',
 };
 
+// node には document が無いので、html 要素の inline style（length / item / removeProperty）だけを模す。
+function stubDocumentStyle(initial: Record<string, string>): Map<string, string> {
+	const props = new Map(Object.entries(initial));
+	const style = {
+		get length() {
+			return props.size;
+		},
+		item: (i: number) => [...props.keys()][i] ?? '',
+		removeProperty: (name: string) => {
+			props.delete(name);
+			return '';
+		},
+	};
+	vi.stubGlobal('document', { documentElement: { style } });
+	return props;
+}
+
 describe('確認 UI のホストのスタイルの適用', () => {
 	beforeEach(() => {
 		ext.applyHostStyleVariables.mockClear();
 		ext.applyHostFonts.mockClear();
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
 	});
 
 	it('styles.variables を変数として、styles.css.fonts をフォントとして当てる', () => {
@@ -29,6 +50,7 @@ describe('確認 UI のホストのスタイルの適用', () => {
 	});
 
 	it('配色が一部しか無いときは色を当てず、色以外の変数だけを当てる', () => {
+		stubDocumentStyle({});
 		// 暗い背景と白い文字だけで、カードの背景（secondary）が無い。当てるとカードが白地に白文字になる。
 		applyHostStyles({
 			styles: {
@@ -43,8 +65,21 @@ describe('確認 UI のホストのスタイルの適用', () => {
 	});
 
 	it('配色が一部しか無く、色以外の変数も無いときは何も当てない', () => {
+		stubDocumentStyle({});
 		applyHostStyles({ styles: { variables: { '--color-text-primary': '#ffffff' } } });
 		expect(ext.applyHostStyleVariables).not.toHaveBeenCalled();
+	});
+
+	it('前にそろった配色を当てたあと、一部だけの配色が来たら前の色を外してフォールバックに戻す', () => {
+		const props = stubDocumentStyle({ ...FULL_PALETTE, '--font-sans': 'serif', 'color-scheme': 'dark' });
+		applyHostStyles({ styles: { variables: { '--color-background-primary': '#ffffff' } } });
+		expect([...props.keys()]).toEqual(['--font-sans', 'color-scheme']);
+	});
+
+	it('styles.variables を含まない更新では、前に当てた色を外さない', () => {
+		const props = stubDocumentStyle({ ...FULL_PALETTE });
+		applyHostStyles({ styles: { css: { fonts: '@font-face { font-family: "X"; src: local("Arial"); }' } } });
+		expect([...props.keys()]).toEqual(Object.keys(FULL_PALETTE));
 	});
 
 	it.each([
