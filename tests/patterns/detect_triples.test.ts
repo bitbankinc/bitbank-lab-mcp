@@ -1084,8 +1084,41 @@ describe('detectTriples', () => {
 		expect(rejected).toBeDefined();
 	});
 
+	it('forming triple_bottom: 水準とネックラインの両方で落ちる候補は、triple_top と同じく水準の理由で記録する', () => {
+		// 谷 100 / 96 / 現在足 102 は水準のばらつき（約 5.9%）が上限 4.8% を超え、山 110 / 130 はネックラインも水平でない。判定順は triple_top と同じで水準が先。
+		const total = 51;
+		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 105, 115, 95, 105));
+		candles[0] = mkCandle(total, 100, 102, 99, 101);
+		candles[10] = mkCandle(total - 10, 109, 110, 108, 109);
+		candles[20] = mkCandle(total - 20, 97, 98, 96, 97);
+		candles[32] = mkCandle(total - 32, 129, 130, 128, 129);
+		for (let i = 45; i < total; i++) {
+			candles[i] = mkCandle(total - i, 102, 103, 101, 102);
+		}
+		const allValleys: Pivot[] = [
+			{ idx: 0, price: 100, kind: 'L', extremePrice: 100 },
+			{ idx: 20, price: 96, kind: 'L', extremePrice: 96 },
+		];
+		const allPeaks: Pivot[] = [
+			{ idx: 10, price: 110, kind: 'H', extremePrice: 110 },
+			{ idx: 32, price: 130, kind: 'H', extremePrice: 130 },
+		];
+
+		const ctx = buildCtx({
+			candles,
+			pivots: [...allPeaks, ...allValleys],
+			allPeaks,
+			allValleys,
+			includeForming: true,
+		});
+		detectTriples(ctx);
+
+		const reasons = ctx.debugCandidates.filter((d) => d.type === 'triple_bottom' && !d.accepted).map((d) => d.reason);
+		expect(reasons).toEqual(['forming_valleys_not_level']);
+	});
+
 	it('forming triple_bottom: 山の乖離が大きいと forming_neckline_not_horizontal で reject', () => {
-		// 3 谷は水平だが、ネックライン構成 peak が 110 と 130 で乖離 → spread=(130-110)/130 ≈ 15.4% > necklineSpreadLimit=4% → reject。
+		// 3 谷（100 / 100 / 現在足 101）は水平だが、ネックライン構成 peak が 110 と 130 で乖離 → spread=(130-110)/130 ≈ 15.4% > necklineSpreadLimit=4% → reject。
 		const total = 51;
 		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 105, 115, 95, 105));
 		candles[0] = mkCandle(total, 100, 102, 99, 101);
@@ -1093,7 +1126,7 @@ describe('detectTriples', () => {
 		candles[20] = mkCandle(total - 20, 100, 102, 99, 101);
 		candles[32] = mkCandle(total - 32, 129, 130, 128, 129);
 		for (let i = 45; i < total; i++) {
-			candles[i] = mkCandle(total - i, 114, 116, 113, 115);
+			candles[i] = mkCandle(total - i, 101, 102, 100, 101);
 		}
 
 		const allValleys: Pivot[] = [
@@ -1130,7 +1163,7 @@ describe('detectTriples', () => {
 		candles[10] = mkCandle(total - 10, 119, 120, 118, 119);
 		candles[20] = mkCandle(total - 20, 100, 102, 100, 101);
 		for (let i = 45; i < total; i++) {
-			candles[i] = mkCandle(total - i, 114, 116, 113, 115);
+			candles[i] = mkCandle(total - i, 100, 101, 99, 100);
 		}
 
 		const allValleys: Pivot[] = [
