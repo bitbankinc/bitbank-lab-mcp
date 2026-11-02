@@ -346,12 +346,15 @@ describe('detectWedges', () => {
 
 	// aftermath は回帰ベース（4b）パスでのみ付与されるので、aftermath.targetReached と top-level targetReached の整合性は現行フィクスチャでは直接 assert できない。
 
-	it('検出試行後 debugCandidates に情報が記録される', () => {
+	it('検出試行後 debugCandidates に採用と棄却（理由付き）の両方が記録される', () => {
 		const candles = buildRisingWedgeCandles(80);
 		const pivots: Pivot[] = [];
 		const ctx = buildCtx({ candles, pivots, includeForming: true });
 		detectWedges(ctx);
-		expect(ctx.debugCandidates.length).toBeGreaterThanOrEqual(0);
+		expect(ctx.debugCandidates.some((c) => c.accepted)).toBe(true);
+		expect(ctx.debugCandidates.some((c) => !c.accepted && typeof c.reason === 'string' && c.reason.length > 0)).toBe(
+			true,
+		);
 	});
 
 	it('deduplicatePatterns を経て同一タイプ・同一レンジの重複は除去される', () => {

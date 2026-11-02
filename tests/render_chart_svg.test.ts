@@ -265,7 +265,8 @@ describe('render_chart_svg', () => {
 			},
 		});
 		assertOk(res);
-		expect(res.data.svg).toContain('<svg');
+		expect(res.data.svg).toContain('fill="rgba(180,180,40,0.18)"');
+		expect(res.data.svg).toContain('>範囲テスト</text>');
 	});
 
 	it('overlays.depth_zones で価格帯を描画', async () => {

@@ -356,16 +356,27 @@ describe('analyze_volume_profile', () => {
 	});
 
 	it('hours > 0: 正常系 (単日)', async () => {
-		const txs = buildTxs(Array.from({ length: 20 }, (_, i) => 100 + i));
-		// hours=1 → 今日分 + latest の2回の fetch
-		mockedGetTransactions
-			.mockResolvedValueOnce(asMockResult(mockTxResult(txs))) // date fetch
-			.mockResolvedValueOnce(asMockResult(mockTxResult(txs))); // latest fetch
+		// 窓（11:00〜12:00 UTC）が進行中の UTC 日に収まるので、取得は latest の 1 回だけになる。
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(Date.UTC(2026, 6, 8, 12, 0, 0));
+		try {
+			const windowStartMs = Date.UTC(2026, 6, 8, 11, 0, 0);
+			const txs = buildTxs(Array.from({ length: 23 }, (_, i) => 100 + i)).map((t, i) => {
+				const timestampMs = windowStartMs + (i - 3) * 60_000;
+				return { ...t, timestampMs, isoTime: dayjs(timestampMs).toISOString() };
+			});
+			mockedGetTransactions.mockResolvedValueOnce(asMockResult(mockTxResult(txs)));
 
-		const res = await analyzeVolumeProfile('btc_jpy', 1, 500, 5, 0.7);
-		// txs は2024年1月1日のタイムスタンプなので hours フィルタで除外される可能性があり、ok/fail 両方の可能性があるので、クラッシュしないことだけを確認する
-		expect(res).toBeDefined();
-		expect(typeof res.ok).toBe('boolean');
+			const res = await analyzeVolumeProfile('btc_jpy', 1, 500, 5, 0.7);
+			assertOk(res);
+			expect(mockedGetTransactions).toHaveBeenCalledTimes(1);
+			expect(mockedGetTransactions).toHaveBeenCalledWith('btc_jpy', 1000, undefined, undefined, { unlimited: true });
+			// 窓より前の 3 件は落ちる
+			expect(res.data.params.totalTrades).toBe(20);
+			expect(res.data.params.timeRange.requestedMin).toBe(60);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('hours > 0: 全 fetch 失敗 → extractUpstreamError を返す', async () => {
@@ -376,16 +387,24 @@ describe('analyze_volume_profile', () => {
 		expect(res.meta?.errorType).toBe('network');
 	});
 
-	it('hours > 0: failedCount >= totalCount/2 → upstream エラー', async () => {
-		const goodTxs = buildTxs(Array.from({ length: 5 }, (_, i) => 100 + i));
-		// 2回呼ばれる: 1回目成功, 2回目失敗 → failedCount=1, totalCount=2 → 1>=1 → upstream
-		mockedGetTransactions
-			.mockResolvedValueOnce(asMockResult(mockTxResult(goodTxs)))
-			.mockResolvedValueOnce(asMockResult(mockFailResult('upstream', 'failed')));
+	it('hours > 0: 取得 2 件中 1 件の失敗（ちょうど半数）→ upstream エラー', async () => {
+		// 完了済み UTC 日 20260707 + latest の 2 fetch になるよう固定時刻で実行する。
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(Date.UTC(2026, 6, 8, 1, 0, 0));
+		try {
+			const goodTxs = buildTxs(Array.from({ length: 5 }, (_, i) => 100 + i));
+			mockedGetTransactions
+				.mockResolvedValueOnce(asMockResult(mockTxResult(goodTxs))) // 20260707
+				.mockResolvedValueOnce(asMockResult(mockFailResult('upstream', 'failed'))); // latest
 
-		const res = await analyzeVolumeProfile('btc_jpy', 1, 500, 5, 0.7);
-		// mergedTxs.length===0 の場合のみ extractUpstreamError が走り、mergedTxs>0 なら upstream エラー分岐に入らないこともあるので、クラッシュしないことだけを確認する
-		expect(res).toBeDefined();
+			const res = await analyzeVolumeProfile('btc_jpy', 2, 500, 5, 0.7);
+			assertFail(res);
+			expect(mockedGetTransactions.mock.calls.map((c) => c[2])).toEqual(['20260707', undefined]);
+			expect(res.meta?.errorType).toBe('upstream');
+			expect(res.summary).toContain('2件中1件失敗');
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('hours > 0: 過半数失敗 (mergedTxs > 0) → upstream エラー', async () => {
