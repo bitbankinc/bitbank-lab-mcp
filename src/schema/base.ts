@@ -25,6 +25,15 @@ export const RateLimitSchema = z
 	})
 	.optional();
 
+/** 取得層の不完全性（partial fetch など）。計算層の `warnings` と混ぜず、別フィールドで出す（.claude/rules/tools.md）。 */
+export const warningField = { warning: z.string().optional() };
+
+/** 計算層の不完全性（指標のバー数不足など）。 */
+export const warningsField = { warnings: z.array(z.string()).optional() };
+
+/** 最新足が未確定（形成中）なら true（lib/provisional-bar.ts）。 */
+export const provisionalField = { provisional: z.boolean().optional() };
+
 export const BaseMetaSchema = z.object({
 	pair: z.string(),
 	fetchedAt: z.string(),

@@ -13,6 +13,8 @@ import {
 	FailResultSchema,
 	toolResultSchema,
 	VIEW_CONTRACT_NOTE,
+	warningField,
+	warningsField,
 } from './base.js';
 
 /** 'flag' / 'pennant' / 'triangle' のような umbrella alias は出力 type に含めない。 */
@@ -1020,8 +1022,8 @@ export const DetectPatternsOutputSchema = z.union([
 				})
 				.optional(),
 			reduction: ReductionSchema,
-			warning: z.string().optional(),
-			warnings: z.array(z.string()).optional(),
+			...warningField,
+			...warningsField,
 		}),
 	}),
 	FailResultSchema,
@@ -1133,7 +1135,7 @@ export const AnalyzeCandlePatternsMetaSchemaOut = BaseMetaSchema.extend({
 	patterns_checked: z.array(CandlePatternTypeEnum),
 	history_lookback_days: z.number().int(),
 	history_horizons: z.array(z.number().int()),
-	warning: z.string().optional(),
+	...warningField,
 });
 
 export const AnalyzeCandlePatternsOutputSchema = z.union([

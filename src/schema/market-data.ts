@@ -9,10 +9,13 @@ import {
 	FailResultSchema,
 	FORMAT_PARAM_NOTE,
 	MAX_TX_COUNT_LIMIT,
+	provisionalField,
 	TX_RANGE_SINCE_SCHEMA,
 	TX_RANGE_UNTIL_SCHEMA,
 	toolResultSchema,
 	VIEW_CONTRACT_NOTE,
+	warningField,
+	warningsField,
 } from './base.js';
 
 export const TickerNormalizedSchema = z.object({
@@ -156,7 +159,7 @@ export const GetOrderbookMetaSchemaOut = BaseMetaSchema.extend({
 	mode: z.enum(['summary', 'pressure', 'statistics', 'raw']),
 	topN: z.number(),
 	droppedRows: z.object({ bids: z.number(), asks: z.number() }).optional(),
-	warning: z.string().optional(),
+	...warningField,
 });
 export const GetOrderbookOutputSchema = toolResultSchema(GetOrderbookDataSchemaOut, GetOrderbookMetaSchemaOut);
 
@@ -200,8 +203,8 @@ export const GetCandlesDataSchemaOut = z.object({
 export const GetCandlesMetaSchemaOut = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number(),
-	warning: z.string().optional(),
-	provisional: z.boolean().optional(),
+	...warningField,
+	...provisionalField,
 });
 export const GetCandlesOutputSchema = toolResultSchema(GetCandlesDataSchemaOut, GetCandlesMetaSchemaOut);
 
@@ -280,7 +283,7 @@ export const GetTransactionsMetaSchemaOut = BaseMetaSchema.extend({
 		.optional()
 		.describe('返却した約定の実カバー範囲（Asia/Tokyo。0 件時は省略）'),
 	fetchedRange: TransactionRangeSchema.optional().describe('取得できた全約定の時刻範囲（Asia/Tokyo。0 件時は省略）'),
-	warning: z.string().optional(),
+	...warningField,
 });
 export const GetTransactionsOutputSchema = toolResultSchema(GetTransactionsDataSchemaOut, GetTransactionsMetaSchemaOut);
 
@@ -436,8 +439,8 @@ export const GetFlowMetricsMetaSchemaOut = BaseMetaSchema.extend({
 		.boolean()
 		.optional()
 		.describe('limit により切り捨てが発生したか。true のとき集計値・actualRange は切り捨て後の区間のみが対象'),
-	warning: z.string().optional(),
-	warnings: z.array(z.string()).optional(),
+	...warningField,
+	...warningsField,
 });
 
 export const GetFlowMetricsOutputSchema = toolResultSchema(GetFlowMetricsDataSchemaOut, GetFlowMetricsMetaSchemaOut);
