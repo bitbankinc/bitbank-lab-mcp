@@ -165,832 +165,303 @@ function tripleCompletionFields(opts: {
 	};
 }
 
-function findStrictTripleTop(ctx: DetectContext): DeduplicablePattern[] {
-	const { candles, pivots, allValleys, tolerancePct, minDist } = ctx;
+interface TripleSide {
+	type: 'triple_top' | 'triple_bottom';
+	mainKind: Pivot['kind'];
+	neckKind: Pivot['kind'];
+	mainRole: 'peak' | 'valley';
+	neckRole: 'valley' | 'peak';
+	notLevelReason: 'three_peaks_not_level' | 'three_valleys_not_level';
+	notEqualRelaxedReason: 'peaks_not_equal_relaxed' | 'valleys_not_equal_relaxed';
+	neckMissingReason: 'valleys_missing' | 'peaks_missing';
+	formingNotLevelReason: 'forming_peaks_not_level' | 'forming_valleys_not_level';
+	breakoutDirection: 'below' | 'above';
+	targetDirection: 'down' | 'up';
+}
+
+const TRIPLE_SIDES: Record<ReversalSide, TripleSide> = {
+	top: {
+		type: 'triple_top',
+		mainKind: 'H',
+		neckKind: 'L',
+		mainRole: 'peak',
+		neckRole: 'valley',
+		notLevelReason: 'three_peaks_not_level',
+		notEqualRelaxedReason: 'peaks_not_equal_relaxed',
+		neckMissingReason: 'valleys_missing',
+		formingNotLevelReason: 'forming_peaks_not_level',
+		breakoutDirection: 'below',
+		targetDirection: 'down',
+	},
+	bottom: {
+		type: 'triple_bottom',
+		mainKind: 'L',
+		neckKind: 'H',
+		mainRole: 'valley',
+		neckRole: 'peak',
+		notLevelReason: 'three_valleys_not_level',
+		notEqualRelaxedReason: 'valleys_not_equal_relaxed',
+		neckMissingReason: 'peaks_missing',
+		formingNotLevelReason: 'forming_valleys_not_level',
+		breakoutDirection: 'above',
+		targetDirection: 'up',
+	},
+};
+
+// 区間内のネックライン候補のうち、top は最安値、bottom は最高値を採る。
+function necklinePoint(ctx: DetectContext, side: ReversalSide, fromIdx: number, toIdx: number): Pivot | null {
+	const pool = side === 'top' ? ctx.allValleys : ctx.allPeaks;
+	const cands = pool.filter((p) => p.idx > fromIdx && p.idx < toIdx);
+	if (cands.length === 0) return null;
+	return cands.reduce((m, p) => ((side === 'top' ? p.price < m.price : p.price > m.price) ? p : m));
+}
+
+function evaluateCompletedTriple(
+	ctx: DetectContext,
+	side: ReversalSide,
+	a: Pivot,
+	b: Pivot,
+	c: Pivot,
+	relaxedFactor: number | null,
+): DeduplicablePattern | null {
+	const { candles, pivots, tolerancePct } = ctx;
+	const spec = TRIPLE_SIDES[side];
+	const { type } = spec;
 	const pcand: Pcand = (arg) => pushCand(ctx, arg);
-	const patterns: DeduplicablePattern[] = [];
-	const highsOnly = pivots.filter((p) => p.kind === 'H');
-	if (highsOnly.length < 3) return patterns;
+	const relaxed = relaxedFactor !== null;
+	const suffix = relaxed ? '_relaxed' : '';
+	const tol = relaxed ? tolerancePct * relaxedFactor : tolerancePct;
+	const mainPts = () => [
+		{ role: `${spec.mainRole}1`, idx: a.idx, price: a.price },
+		{ role: `${spec.mainRole}2`, idx: b.idx, price: b.price },
+		{ role: `${spec.mainRole}3`, idx: c.idx, price: c.price },
+	];
 
-	for (let i = 0; i <= highsOnly.length - 3; i++) {
-		const a = highsOnly[i],
-			b = highsOnly[i + 1],
-			c = highsOnly[i + 2];
-		if (b.idx - a.idx < minDist || c.idx - b.idx < minDist) continue;
+	// ネックラインの点を同水準判定より先に探すのは、strict の棄却エントリにパターン高さを載せるため。
+	const n1 = necklinePoint(ctx, side, a.idx, b.idx);
+	const n2 = necklinePoint(ctx, side, b.idx, c.idx);
 
-		// 谷を同水準判定より先に探すのは、棄却エントリにパターン高さを載せるため。棄却の順は変えていない。
-		const v1cands = allValleys.filter((v: { idx: number }) => v.idx > a.idx && v.idx < b.idx);
-		const v2cands = allValleys.filter((v: { idx: number }) => v.idx > b.idx && v.idx < c.idx);
-		const v1 = v1cands.length ? v1cands.reduce((m, v) => (v.price < m.price ? v : m)) : null;
-		const v2 = v2cands.length ? v2cands.reduce((m, v) => (v.price < m.price ? v : m)) : null;
-
-		const nearAll =
-			near(a.price, b.price, tolerancePct) &&
-			near(b.price, c.price, tolerancePct) &&
-			near(a.price, c.price, tolerancePct);
-		if (!nearAll) {
+	if (relaxed) {
+		const nearTriple = (x: number, y: number) => Math.abs(x - y) / Math.max(1, Math.max(x, y)) <= tol;
+		if (!(nearTriple(a.price, b.price) && nearTriple(b.price, c.price))) {
 			pcand({
-				type: 'triple_top',
+				type,
 				accepted: false,
-				reason: 'three_peaks_not_level',
+				reason: spec.notEqualRelaxedReason,
 				idxs: [a.idx, b.idx, c.idx],
-				details: levelSpreadDetails([a, b, c], [a, v1, b, v2, c], tolerancePct),
+				pts: mainPts(),
 			});
-			continue;
+			return null;
 		}
-		const start = candles[a.idx].isoTime;
-		const structureEnd = candles[c.idx].isoTime;
-		if (!(start && structureEnd)) continue;
-
-		if (!(v1 && v2)) {
-			pcand({ type: 'triple_top', accepted: false, reason: 'valleys_missing', idxs: [a.idx, b.idx, c.idx] });
-			continue;
-		}
-		const necklineSlope = Math.abs(v1.price - v2.price) / Math.max(1, Math.max(v1.price, v2.price));
-		if (necklineSlope > NECKLINE_SLOPE_LIMIT) {
-			pcand({
-				type: 'triple_top',
-				accepted: false,
-				reason: 'neckline_slope_excess',
-				idxs: [a.idx, b.idx, c.idx],
-			});
-			continue;
-		}
-		const priorTrend = validateTriplePriorTrend(ctx, 'triple_top', [a.idx, b.idx, c.idx]);
-		if (!priorTrend) continue;
-		if (rejectCompletedStairStep('triple_top', a, b, c, pcand)) continue;
-
-		const sizeReason = validatePatternSize('top', [a, v1, b, v2, c], ctx.sizeThresholds);
-		if (sizeReason) {
-			pcand({ type: 'triple_top', accepted: false, reason: sizeReason, idxs: [a.idx, b.idx, c.idx] });
-			continue;
-		}
-
-		const nlAvg = (v1.price + v2.price) / 2;
-
-		const gate = applyReversalGate({
-			candles,
-			pivots,
-			side: 'top',
-			first: a,
-			mid: v1,
-			necklinePrice: nlAvg,
-			type: 'triple_top',
-			indices: [a.idx, b.idx, c.idx],
-			debugCandidates: ctx.debugCandidates,
+	} else if (!(near(a.price, b.price, tol) && near(b.price, c.price, tol) && near(a.price, c.price, tol))) {
+		pcand({
+			type,
+			accepted: false,
+			reason: spec.notLevelReason,
+			idxs: [a.idx, b.idx, c.idx],
+			details: levelSpreadDetails([a, b, c], [a, n1, b, n2, c], tol),
 		});
-		if (!gate) continue;
+		return null;
+	}
+	const start = candles[a.idx].isoTime;
+	const structureEnd = candles[c.idx].isoTime;
+	if (!(start && structureEnd)) return null;
 
-		const topSpread = levelSpreadMetrics([a, b, c], [a, v1, b, v2, c]);
-		const topSpreadReason = validateLevelSpread('top', topSpread);
-		if (topSpreadReason) {
-			pcand({
-				type: 'triple_top',
-				accepted: false,
-				reason: topSpreadReason,
-				idxs: [a.idx, b.idx, c.idx],
-				details: levelSpreadDetailsFrom(topSpread, tolerancePct),
-			});
-			continue;
-		}
+	if (!(n1 && n2)) {
+		pcand({ type, accepted: false, reason: `${spec.neckMissingReason}${suffix}`, idxs: [a.idx, b.idx, c.idx] });
+		return null;
+	}
+	const necklineSlope = Math.abs(n1.price - n2.price) / Math.max(1, Math.max(n1.price, n2.price));
+	if (necklineSlope > NECKLINE_SLOPE_LIMIT) {
+		pcand({ type, accepted: false, reason: `neckline_slope_excess${suffix}`, idxs: [a.idx, b.idx, c.idx] });
+		return null;
+	}
+	const priorTrend = validateTriplePriorTrend(ctx, type, [a.idx, b.idx, c.idx]);
+	if (!priorTrend) return null;
+	if (rejectCompletedStairStep(type, a, b, c, pcand)) return null;
 
-		// 誤側に来るのは最後の点だけではないので、中間点も含めた 3 点すべてを検査する（#216）。
-		const strictTopSide = validateMainPointsNecklineSide('top', [a, b, c], nlAvg);
-		if (strictTopSide.reason) {
-			pcand({
-				type: 'triple_top',
-				accepted: false,
-				reason: strictTopSide.reason,
-				idxs: [a.idx, b.idx, c.idx],
-				details: necklineSideDetailsFrom(nlAvg, strictTopSide.offenders),
-			});
-			continue;
-		}
-
-		const structureGate = buildStructureGate(gate);
-
-		const breakoutIdx = findBreakoutIdx(candles, c.idx, nlAvg, 'below');
-		const isCompleted = breakoutIdx >= 0;
-		const rangeEnd = isCompleted ? candles[breakoutIdx]?.isoTime : structureEnd;
-		if (!rangeEnd) continue;
-		const breakoutPrice = isCompleted ? Number(candles[breakoutIdx]?.close ?? NaN) : NaN;
-
-		// 整合度はブレイク検出の後で算出する。breakoutQuality 軸がブレイク足の終値を要るため（#199）。
-		const per = periodScoreBars(c.idx - a.idx);
-		const { components: scoreComponents, base } = buildTripleScore({
-			points: [a.price, b.price, c.price],
-			levelTolerancePct: tolerancePct,
-			necklinePrice: nlAvg,
-			breakoutClose: breakoutPrice,
-			side: 'top',
-			retracementRatio: gate.retracementRatio,
-			durationScore: per,
-		});
-		const confidence = finalizeConf(base, 'triple_top');
-		if (confidence < (MIN_CONFIDENCE.triple_top ?? 0)) {
-			pcand({
-				type: 'triple_top',
-				accepted: false,
-				reason: 'confidence_below_min',
-				idxs: [a.idx, b.idx, c.idx],
-				details: { confidence, threshold: MIN_CONFIDENCE.triple_top ?? 0, ...scoreComponents },
-			});
-			continue;
-		}
-
-		const postGate = isCompleted
-			? applyPostBreakoutGates({
-					candles,
-					pivots,
-					side: 'top',
-					first: a,
-					mid: v1,
-					last: c,
-					breakoutIdx,
-					type: 'triple_top',
-					indices: [a.idx, b.idx, c.idx],
-					debugCandidates: ctx.debugCandidates,
-				})
-			: null;
-
-		const neckline = [
-			{ x: a.idx, y: nlAvg },
-			{ x: isCompleted ? breakoutIdx : c.idx, y: nlAvg },
-		];
-		const diagram: PatternDiagramData = generatePatternDiagram(
-			'triple_top',
-			[
-				{ ...a, date: candles[a.idx]?.isoTime },
-				{ ...v1, date: candles[v1.idx]?.isoTime },
-				{ ...b, date: candles[b.idx]?.isoTime },
-				{ ...v2, date: candles[v2.idx]?.isoTime },
-				{ ...c, date: candles[c.idx]?.isoTime },
-			],
-			{ price: nlAvg },
-			{ start, end: rangeEnd },
-			{ tz: ctx.tz, type: ctx.type },
-		);
-		const ttAvgPeak = (a.price + b.price + c.price) / 3;
-		const ttTarget = Math.round(nlAvg - (ttAvgPeak - nlAvg));
-		const completionFields = tripleCompletionFields({
-			isCompleted,
-			candles,
-			breakoutIdx,
-			breakoutPrice,
-			rangeEnd,
-			target: ttTarget,
-			direction: 'down',
-			patternHeight: ttAvgPeak - nlAvg,
-		});
-
-		patterns.push({
-			type: 'triple_top',
-			confidence,
-			scoreComponents,
-			range: { start, end: rangeEnd },
-			structureRange: { start, end: structureEnd },
-			...completionFields,
-			// completionFields より後ろに置く。#242 のゲートに当たると status を invalid で上書きするため。
-			...postGate,
-			// 主構成点は位置ではなく kind で取る規約（mainPointIdxs() と同じ）。間の 2 点はネックラインの定義点。
-			pivots: [a, v1, b, v2, c],
-			neckline,
-			...(structureGate ? { structureGate } : {}),
-			...(priorTrend.precedingTrend ? { precedingTrend: priorTrend.precedingTrend } : {}),
-			trendlineLabel: 'ネックライン',
-			breakoutTarget: ttTarget,
-			targetMethod: 'neckline_projection' as const,
-			...(diagram ? { structureDiagram: diagram } : {}),
-		});
-		// postGate に当たった候補は棄却として記録済みなので、成功としては積まない。
-		if (!postGate)
-			pcand({
-				type: 'triple_top',
-				accepted: true,
-				idxs: isCompleted ? [a.idx, b.idx, c.idx, breakoutIdx] : [a.idx, b.idx, c.idx],
-				pts: [
-					{ role: 'peak1', idx: a.idx, price: a.price },
-					{ role: 'peak2', idx: b.idx, price: b.price },
-					{ role: 'peak3', idx: c.idx, price: c.price },
-					...(isCompleted ? [{ role: 'breakout', idx: breakoutIdx, price: breakoutPrice }] : []),
-				],
-			});
+	const sizeReason = validatePatternSize(side, [a, n1, b, n2, c], ctx.sizeThresholds);
+	if (sizeReason) {
+		pcand({ type, accepted: false, reason: sizeReason, idxs: [a.idx, b.idx, c.idx] });
+		return null;
 	}
 
+	const nlAvg = (n1.price + n2.price) / 2;
+
+	const gate = applyReversalGate({
+		candles,
+		pivots,
+		side,
+		first: a,
+		mid: n1,
+		necklinePrice: nlAvg,
+		type,
+		indices: [a.idx, b.idx, c.idx],
+		debugCandidates: ctx.debugCandidates,
+	});
+	if (!gate) return null;
+
+	// relaxed にも掛ける。strict が 0 件だと relaxed が同じ 3 点を拾い直すので、strict だけでは素通りする。
+	const spread = levelSpreadMetrics([a, b, c], [a, n1, b, n2, c]);
+	const spreadReason = validateLevelSpread(side, spread);
+	if (spreadReason) {
+		pcand({
+			type,
+			accepted: false,
+			reason: spreadReason,
+			idxs: [a.idx, b.idx, c.idx],
+			details: levelSpreadDetailsFrom(spread, tol),
+		});
+		return null;
+	}
+
+	// 誤側に来るのは最後の点だけではないので、中間点も含めた 3 点すべてを検査する（#216）。
+	const sideCheck = validateMainPointsNecklineSide(side, [a, b, c], nlAvg);
+	if (sideCheck.reason) {
+		pcand({
+			type,
+			accepted: false,
+			reason: sideCheck.reason,
+			idxs: [a.idx, b.idx, c.idx],
+			details: necklineSideDetailsFrom(nlAvg, sideCheck.offenders),
+		});
+		return null;
+	}
+
+	const structureGate = buildStructureGate(gate);
+
+	const breakoutIdx = findBreakoutIdx(candles, c.idx, nlAvg, spec.breakoutDirection);
+	const isCompleted = breakoutIdx >= 0;
+	const rangeEnd = isCompleted ? candles[breakoutIdx]?.isoTime : structureEnd;
+	if (!rangeEnd) return null;
+	const breakoutPrice = isCompleted ? Number(candles[breakoutIdx]?.close ?? NaN) : NaN;
+
+	// 整合度はブレイク検出の後で算出する。breakoutQuality 軸がブレイク足の終値を要るため（#199）。
+	// relaxed の levelMargin は判定に使った幅で正規化する。strict の幅で測ると、緩めた判定に strict の物差しを当てることになる。
+	const per = periodScoreBars(c.idx - a.idx);
+	const { components: scoreComponents, base } = buildTripleScore({
+		points: [a.price, b.price, c.price],
+		levelTolerancePct: tol,
+		necklinePrice: nlAvg,
+		breakoutClose: breakoutPrice,
+		side,
+		retracementRatio: gate.retracementRatio,
+		durationScore: per,
+	});
+	const confidence = finalizeConf(relaxed ? base * RELAXED_CONFIDENCE_PENALTY : base, type);
+	if (confidence < (MIN_CONFIDENCE[type] ?? 0)) {
+		pcand({
+			type,
+			accepted: false,
+			reason: `confidence_below_min${suffix}`,
+			idxs: [a.idx, b.idx, c.idx],
+			details: { confidence, threshold: MIN_CONFIDENCE[type] ?? 0, ...scoreComponents },
+		});
+		return null;
+	}
+
+	const postGate = isCompleted
+		? applyPostBreakoutGates({
+				candles,
+				pivots,
+				side,
+				first: a,
+				mid: n1,
+				last: c,
+				breakoutIdx,
+				type,
+				indices: [a.idx, b.idx, c.idx],
+				debugCandidates: ctx.debugCandidates,
+			})
+		: null;
+
+	const neckline = [
+		{ x: a.idx, y: nlAvg },
+		{ x: isCompleted ? breakoutIdx : c.idx, y: nlAvg },
+	];
+	const diagram: PatternDiagramData = generatePatternDiagram(
+		type,
+		[
+			{ ...a, date: candles[a.idx]?.isoTime },
+			{ ...n1, date: candles[n1.idx]?.isoTime },
+			{ ...b, date: candles[b.idx]?.isoTime },
+			{ ...n2, date: candles[n2.idx]?.isoTime },
+			{ ...c, date: candles[c.idx]?.isoTime },
+		],
+		{ price: nlAvg },
+		{ start, end: rangeEnd },
+		{ tz: ctx.tz, type: ctx.type },
+	);
+	const avgMain = (a.price + b.price + c.price) / 3;
+	const patternHeight = side === 'top' ? avgMain - nlAvg : nlAvg - avgMain;
+	const target = Math.round(side === 'top' ? nlAvg - patternHeight : nlAvg + patternHeight);
+	const completionFields = tripleCompletionFields({
+		isCompleted,
+		candles,
+		breakoutIdx,
+		breakoutPrice,
+		rangeEnd,
+		target,
+		direction: spec.targetDirection,
+		patternHeight,
+	});
+
+	const entry: DeduplicablePattern = {
+		type,
+		confidence,
+		scoreComponents,
+		range: { start, end: rangeEnd },
+		structureRange: { start, end: structureEnd },
+		...completionFields,
+		// completionFields より後ろに置く。#242 のゲートに当たると status を invalid で上書きするため。
+		...postGate,
+		// 主構成点は位置ではなく kind で取る規約（mainPointIdxs() と同じ）。間の 2 点はネックラインの定義点。
+		pivots: [a, n1, b, n2, c],
+		neckline,
+		...(structureGate ? { structureGate } : {}),
+		...(priorTrend.precedingTrend ? { precedingTrend: priorTrend.precedingTrend } : {}),
+		trendlineLabel: 'ネックライン',
+		breakoutTarget: target,
+		targetMethod: 'neckline_projection' as const,
+		...(diagram ? { structureDiagram: diagram } : {}),
+		...(relaxed ? { _fallback: `relaxed_triple_x${relaxedFactor}` } : {}),
+	};
+	// postGate に当たった候補は棄却として記録済みなので、成功としては積まない。relaxed は採用の候補を積まない。
+	if (!relaxed && !postGate)
+		pcand({
+			type,
+			accepted: true,
+			idxs: isCompleted ? [a.idx, b.idx, c.idx, breakoutIdx] : [a.idx, b.idx, c.idx],
+			pts: [...mainPts(), ...(isCompleted ? [{ role: 'breakout', idx: breakoutIdx, price: breakoutPrice }] : [])],
+		});
+	return entry;
+}
+
+function findStrictTriples(ctx: DetectContext, side: ReversalSide): DeduplicablePattern[] {
+	const mains = ctx.pivots.filter((p) => p.kind === TRIPLE_SIDES[side].mainKind);
+	const patterns: DeduplicablePattern[] = [];
+	for (let i = 0; i <= mains.length - 3; i++) {
+		const a = mains[i];
+		const b = mains[i + 1];
+		const c = mains[i + 2];
+		if (b.idx - a.idx < ctx.minDist || c.idx - b.idx < ctx.minDist) continue;
+		const entry = evaluateCompletedTriple(ctx, side, a, b, c, null);
+		if (entry) patterns.push(entry);
+	}
 	return patterns;
 }
 
-function findStrictTripleBottom(ctx: DetectContext): DeduplicablePattern[] {
-	const { candles, pivots, allPeaks, tolerancePct, minDist } = ctx;
-	const pcand: Pcand = (arg) => pushCand(ctx, arg);
-	const patterns: DeduplicablePattern[] = [];
-	const lowsOnly = pivots.filter((p) => p.kind === 'L');
-	if (lowsOnly.length < 3) return patterns;
-
-	for (let i = 0; i <= lowsOnly.length - 3; i++) {
-		const a = lowsOnly[i],
-			b = lowsOnly[i + 1],
-			c = lowsOnly[i + 2];
-		if (b.idx - a.idx < minDist || c.idx - b.idx < minDist) continue;
-
-		const p1cands = allPeaks.filter((v: { idx: number }) => v.idx > a.idx && v.idx < b.idx);
-		const p2cands = allPeaks.filter((v: { idx: number }) => v.idx > b.idx && v.idx < c.idx);
-		const p1 = p1cands.length ? p1cands.reduce((m, v) => (v.price > m.price ? v : m)) : null;
-		const p2 = p2cands.length ? p2cands.reduce((m, v) => (v.price > m.price ? v : m)) : null;
-
-		const nearAll =
-			near(a.price, b.price, tolerancePct) &&
-			near(b.price, c.price, tolerancePct) &&
-			near(a.price, c.price, tolerancePct);
-		if (!nearAll) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: 'three_valleys_not_level',
-				idxs: [a.idx, b.idx, c.idx],
-				details: levelSpreadDetails([a, b, c], [a, p1, b, p2, c], tolerancePct),
-			});
-			continue;
-		}
-		const start = candles[a.idx].isoTime;
-		const structureEnd = candles[c.idx].isoTime;
-		if (!(start && structureEnd)) continue;
-
-		if (!(p1 && p2)) {
-			pcand({ type: 'triple_bottom', accepted: false, reason: 'peaks_missing', idxs: [a.idx, b.idx, c.idx] });
-			continue;
-		}
-		const necklineSlope = Math.abs(p1.price - p2.price) / Math.max(1, Math.max(p1.price, p2.price));
-		if (necklineSlope > NECKLINE_SLOPE_LIMIT) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: 'neckline_slope_excess',
-				idxs: [a.idx, b.idx, c.idx],
-			});
-			continue;
-		}
-		const priorTrend = validateTriplePriorTrend(ctx, 'triple_bottom', [a.idx, b.idx, c.idx]);
-		if (!priorTrend) continue;
-		if (rejectCompletedStairStep('triple_bottom', a, b, c, pcand)) continue;
-
-		const sizeReason = validatePatternSize('bottom', [a, p1, b, p2, c], ctx.sizeThresholds);
-		if (sizeReason) {
-			pcand({ type: 'triple_bottom', accepted: false, reason: sizeReason, idxs: [a.idx, b.idx, c.idx] });
-			continue;
-		}
-
-		const nlAvg = (p1.price + p2.price) / 2;
-
-		const gate = applyReversalGate({
-			candles,
-			pivots,
-			side: 'bottom',
-			first: a,
-			mid: p1,
-			necklinePrice: nlAvg,
-			type: 'triple_bottom',
-			indices: [a.idx, b.idx, c.idx],
-			debugCandidates: ctx.debugCandidates,
-		});
-		if (!gate) continue;
-
-		const bottomSpread = levelSpreadMetrics([a, b, c], [a, p1, b, p2, c]);
-		const bottomSpreadReason = validateLevelSpread('bottom', bottomSpread);
-		if (bottomSpreadReason) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: bottomSpreadReason,
-				idxs: [a.idx, b.idx, c.idx],
-				details: levelSpreadDetailsFrom(bottomSpread, tolerancePct),
-			});
-			continue;
-		}
-
-		const strictBottomSide = validateMainPointsNecklineSide('bottom', [a, b, c], nlAvg);
-		if (strictBottomSide.reason) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: strictBottomSide.reason,
-				idxs: [a.idx, b.idx, c.idx],
-				details: necklineSideDetailsFrom(nlAvg, strictBottomSide.offenders),
-			});
-			continue;
-		}
-
-		const structureGate = buildStructureGate(gate);
-
-		const breakoutIdx = findBreakoutIdx(candles, c.idx, nlAvg, 'above');
-		const isCompleted = breakoutIdx >= 0;
-		const rangeEnd = isCompleted ? candles[breakoutIdx]?.isoTime : structureEnd;
-		if (!rangeEnd) continue;
-		const breakoutPrice = isCompleted ? Number(candles[breakoutIdx]?.close ?? NaN) : NaN;
-
-		const per = periodScoreBars(c.idx - a.idx);
-		const { components: scoreComponents, base } = buildTripleScore({
-			points: [a.price, b.price, c.price],
-			levelTolerancePct: tolerancePct,
-			necklinePrice: nlAvg,
-			breakoutClose: breakoutPrice,
-			side: 'bottom',
-			retracementRatio: gate.retracementRatio,
-			durationScore: per,
-		});
-		const confidence = finalizeConf(base, 'triple_bottom');
-		if (confidence < (MIN_CONFIDENCE.triple_bottom ?? 0)) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: 'confidence_below_min',
-				idxs: [a.idx, b.idx, c.idx],
-				details: { confidence, threshold: MIN_CONFIDENCE.triple_bottom ?? 0, ...scoreComponents },
-			});
-			continue;
-		}
-
-		const postGate = isCompleted
-			? applyPostBreakoutGates({
-					candles,
-					pivots,
-					side: 'bottom',
-					first: a,
-					mid: p1,
-					last: c,
-					breakoutIdx,
-					type: 'triple_bottom',
-					indices: [a.idx, b.idx, c.idx],
-					debugCandidates: ctx.debugCandidates,
-				})
-			: null;
-
-		const neckline = [
-			{ x: a.idx, y: nlAvg },
-			{ x: isCompleted ? breakoutIdx : c.idx, y: nlAvg },
-		];
-		const diagram: PatternDiagramData = generatePatternDiagram(
-			'triple_bottom',
-			[
-				{ ...a, date: candles[a.idx]?.isoTime },
-				{ ...p1, date: candles[p1.idx]?.isoTime },
-				{ ...b, date: candles[b.idx]?.isoTime },
-				{ ...p2, date: candles[p2.idx]?.isoTime },
-				{ ...c, date: candles[c.idx]?.isoTime },
-			],
-			{ price: nlAvg },
-			{ start, end: rangeEnd },
-			{ tz: ctx.tz, type: ctx.type },
-		);
-		const tbAvgValley = (a.price + b.price + c.price) / 3;
-		const tbTarget = Math.round(nlAvg + (nlAvg - tbAvgValley));
-		const completionFields = tripleCompletionFields({
-			isCompleted,
-			candles,
-			breakoutIdx,
-			breakoutPrice,
-			rangeEnd,
-			target: tbTarget,
-			direction: 'up',
-			patternHeight: nlAvg - tbAvgValley,
-		});
-
-		patterns.push({
-			type: 'triple_bottom',
-			confidence,
-			scoreComponents,
-			range: { start, end: rangeEnd },
-			structureRange: { start, end: structureEnd },
-			...completionFields,
-			...postGate,
-			pivots: [a, p1, b, p2, c],
-			neckline,
-			...(structureGate ? { structureGate } : {}),
-			...(priorTrend.precedingTrend ? { precedingTrend: priorTrend.precedingTrend } : {}),
-			trendlineLabel: 'ネックライン',
-			breakoutTarget: tbTarget,
-			targetMethod: 'neckline_projection' as const,
-			...(diagram ? { structureDiagram: diagram } : {}),
-		});
-		if (!postGate)
-			pcand({
-				type: 'triple_bottom',
-				accepted: true,
-				idxs: isCompleted ? [a.idx, b.idx, c.idx, breakoutIdx] : [a.idx, b.idx, c.idx],
-				pts: [
-					{ role: 'valley1', idx: a.idx, price: a.price },
-					{ role: 'valley2', idx: b.idx, price: b.price },
-					{ role: 'valley3', idx: c.idx, price: c.price },
-					...(isCompleted ? [{ role: 'breakout', idx: breakoutIdx, price: breakoutPrice }] : []),
-				],
-			});
-	}
-
-	return patterns;
-}
-
-function findRelaxedTripleTop(ctx: DetectContext, factor: number): DeduplicablePattern | null {
-	const { candles, pivots, allValleys, tolerancePct, minDist } = ctx;
-	const pcand: Pcand = (arg) => pushCand(ctx, arg);
-	const tolTriple = tolerancePct * factor;
-	const nearTriple = (x: number, y: number) => Math.abs(x - y) / Math.max(1, Math.max(x, y)) <= tolTriple;
-	const highsOnly = pivots.filter((p) => p.kind === 'H');
-
+function findRelaxedTriple(ctx: DetectContext, side: ReversalSide, factor: number): DeduplicablePattern | null {
+	const mains = ctx.pivots.filter((p) => p.kind === TRIPLE_SIDES[side].mainKind);
 	// invalid で打ち切ると、後ろにある成立した候補まで失われるので退避して走査を続ける（#242）。
 	let terminalFallback: DeduplicablePattern | null = null;
-
-	for (let i = 0; i <= highsOnly.length - 3; i++) {
-		const a = highsOnly[i],
-			b = highsOnly[i + 1],
-			c = highsOnly[i + 2];
-		if (b.idx - a.idx < minDist || c.idx - b.idx < minDist) continue;
-		if (!(nearTriple(a.price, b.price) && nearTriple(b.price, c.price))) {
-			pcand({
-				type: 'triple_top',
-				accepted: false,
-				reason: 'peaks_not_equal_relaxed',
-				idxs: [a.idx, b.idx, c.idx],
-				pts: [
-					{ role: 'peak1', idx: a.idx, price: a.price },
-					{ role: 'peak2', idx: b.idx, price: b.price },
-					{ role: 'peak3', idx: c.idx, price: c.price },
-				],
-			});
-			continue;
-		}
-		const start = candles[a.idx].isoTime,
-			structureEnd = candles[c.idx].isoTime;
-		if (!start || !structureEnd) continue;
-		const v1cands = allValleys.filter((v: { idx: number }) => v.idx > a.idx && v.idx < b.idx);
-		const v2cands = allValleys.filter((v: { idx: number }) => v.idx > b.idx && v.idx < c.idx);
-		const v1 = v1cands.length ? v1cands.reduce((m, v) => (v.price < m.price ? v : m)) : null;
-		const v2 = v2cands.length ? v2cands.reduce((m, v) => (v.price < m.price ? v : m)) : null;
-		if (!(v1 && v2)) {
-			pcand({
-				type: 'triple_top',
-				accepted: false,
-				reason: 'valleys_missing_relaxed',
-				idxs: [a.idx, b.idx, c.idx],
-			});
-			continue;
-		}
-		const necklineSlope = Math.abs(v1.price - v2.price) / Math.max(1, Math.max(v1.price, v2.price));
-		if (necklineSlope > NECKLINE_SLOPE_LIMIT) {
-			pcand({
-				type: 'triple_top',
-				accepted: false,
-				reason: 'neckline_slope_excess_relaxed',
-				idxs: [a.idx, b.idx, c.idx],
-			});
-			continue;
-		}
-		const priorTrend = validateTriplePriorTrend(ctx, 'triple_top', [a.idx, b.idx, c.idx]);
-		if (!priorTrend) continue;
-		if (rejectCompletedStairStep('triple_top', a, b, c, pcand)) continue;
-		const sizeReason = validatePatternSize('top', [a, v1, b, v2, c], ctx.sizeThresholds);
-		if (sizeReason) {
-			pcand({ type: 'triple_top', accepted: false, reason: sizeReason, idxs: [a.idx, b.idx, c.idx] });
-			continue;
-		}
-
-		const nlAvg = (v1.price + v2.price) / 2;
-
-		const gate = applyReversalGate({
-			candles,
-			pivots,
-			side: 'top',
-			first: a,
-			mid: v1,
-			necklinePrice: nlAvg,
-			type: 'triple_top',
-			indices: [a.idx, b.idx, c.idx],
-			debugCandidates: ctx.debugCandidates,
-		});
-		if (!gate) continue;
-
-		// strict と同じ検査を relaxed にも掛ける。strict が 0 件だと relaxed が同じ 3 山を拾い直すので、strict だけでは素通りする。
-		const relaxedTopSpread = levelSpreadMetrics([a, b, c], [a, v1, b, v2, c]);
-		const relaxedTopSpreadReason = validateLevelSpread('top', relaxedTopSpread);
-		if (relaxedTopSpreadReason) {
-			pcand({
-				type: 'triple_top',
-				accepted: false,
-				reason: relaxedTopSpreadReason,
-				idxs: [a.idx, b.idx, c.idx],
-				details: levelSpreadDetailsFrom(relaxedTopSpread, tolTriple),
-			});
-			continue;
-		}
-
-		const relaxedTopSide = validateMainPointsNecklineSide('top', [a, b, c], nlAvg);
-		if (relaxedTopSide.reason) {
-			pcand({
-				type: 'triple_top',
-				accepted: false,
-				reason: relaxedTopSide.reason,
-				idxs: [a.idx, b.idx, c.idx],
-				details: necklineSideDetailsFrom(nlAvg, relaxedTopSide.offenders),
-			});
-			continue;
-		}
-
-		const structureGate = buildStructureGate(gate);
-
-		const breakoutIdx = findBreakoutIdx(candles, c.idx, nlAvg, 'below');
-		const isCompleted = breakoutIdx >= 0;
-		const rangeEnd = isCompleted ? candles[breakoutIdx]?.isoTime : structureEnd;
-		if (!rangeEnd) continue;
-		const breakoutPrice = isCompleted ? Number(candles[breakoutIdx]?.close ?? NaN) : NaN;
-
-		// levelMargin は判定に使った tolTriple で正規化する。strict の幅で測ると、緩めた判定に strict の物差しを当てることになる。
-		const per = periodScoreBars(c.idx - a.idx);
-		const { components: scoreComponents, base } = buildTripleScore({
-			points: [a.price, b.price, c.price],
-			levelTolerancePct: tolTriple,
-			necklinePrice: nlAvg,
-			breakoutClose: breakoutPrice,
-			side: 'top',
-			retracementRatio: gate.retracementRatio,
-			durationScore: per,
-		});
-		const confidence = finalizeConf(base * RELAXED_CONFIDENCE_PENALTY, 'triple_top');
-		if (confidence < (MIN_CONFIDENCE.triple_top ?? 0)) {
-			pcand({
-				type: 'triple_top',
-				accepted: false,
-				reason: 'confidence_below_min_relaxed',
-				idxs: [a.idx, b.idx, c.idx],
-				details: { confidence, threshold: MIN_CONFIDENCE.triple_top ?? 0, ...scoreComponents },
-			});
-			continue; // 後続候補で confidence が足りるものを探す
-		}
-
-		const postGate = isCompleted
-			? applyPostBreakoutGates({
-					candles,
-					pivots,
-					side: 'top',
-					first: a,
-					mid: v1,
-					last: c,
-					breakoutIdx,
-					type: 'triple_top',
-					indices: [a.idx, b.idx, c.idx],
-					debugCandidates: ctx.debugCandidates,
-				})
-			: null;
-
-		const neckline = [
-			{ x: a.idx, y: nlAvg },
-			{ x: isCompleted ? breakoutIdx : c.idx, y: nlAvg },
-		];
-		const diagram: PatternDiagramData = generatePatternDiagram(
-			'triple_top',
-			[
-				{ ...a, date: candles[a.idx]?.isoTime },
-				{ ...v1, date: candles[v1.idx]?.isoTime },
-				{ ...b, date: candles[b.idx]?.isoTime },
-				{ ...v2, date: candles[v2.idx]?.isoTime },
-				{ ...c, date: candles[c.idx]?.isoTime },
-			],
-			{ price: nlAvg },
-			{ start, end: rangeEnd },
-			{ tz: ctx.tz, type: ctx.type },
-		);
-		const ttRelAvgPeak = (a.price + b.price + c.price) / 3;
-		const ttRelTarget = Math.round(nlAvg - (ttRelAvgPeak - nlAvg));
-		const completionFields = tripleCompletionFields({
-			isCompleted,
-			candles,
-			breakoutIdx,
-			breakoutPrice,
-			rangeEnd,
-			target: ttRelTarget,
-			direction: 'down',
-			patternHeight: ttRelAvgPeak - nlAvg,
-		});
-		const entry: DeduplicablePattern = {
-			type: 'triple_top',
-			confidence,
-			scoreComponents,
-			range: { start, end: rangeEnd },
-			structureRange: { start, end: structureEnd },
-			...completionFields,
-			...postGate,
-			pivots: [a, v1, b, v2, c],
-			neckline,
-			...(structureGate ? { structureGate } : {}),
-			...(priorTrend.precedingTrend ? { precedingTrend: priorTrend.precedingTrend } : {}),
-			trendlineLabel: 'ネックライン',
-			breakoutTarget: ttRelTarget,
-			targetMethod: 'neckline_projection' as const,
-			...(diagram ? { structureDiagram: diagram } : {}),
-			_fallback: `relaxed_triple_x${factor}`,
-		};
-		if (entry.status === 'invalid') {
-			terminalFallback ??= entry;
-			continue;
-		}
-		return entry;
-	}
-	return terminalFallback;
-}
-
-function findRelaxedTripleBottom(ctx: DetectContext, factor: number): DeduplicablePattern | null {
-	const { candles, pivots, allPeaks, tolerancePct, minDist } = ctx;
-	const pcand: Pcand = (arg) => pushCand(ctx, arg);
-	const tolTriple = tolerancePct * factor;
-	const nearTriple = (x: number, y: number) => Math.abs(x - y) / Math.max(1, Math.max(x, y)) <= tolTriple;
-	const lowsOnly = pivots.filter((p) => p.kind === 'L');
-
-	let terminalFallback: DeduplicablePattern | null = null;
-
-	for (let i = 0; i <= lowsOnly.length - 3; i++) {
-		const a = lowsOnly[i],
-			b = lowsOnly[i + 1],
-			c = lowsOnly[i + 2];
-		if (b.idx - a.idx < minDist || c.idx - b.idx < minDist) continue;
-		if (!(nearTriple(a.price, b.price) && nearTriple(b.price, c.price))) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: 'valleys_not_equal_relaxed',
-				idxs: [a.idx, b.idx, c.idx],
-				pts: [
-					{ role: 'valley1', idx: a.idx, price: a.price },
-					{ role: 'valley2', idx: b.idx, price: b.price },
-					{ role: 'valley3', idx: c.idx, price: c.price },
-				],
-			});
-			continue;
-		}
-		const start = candles[a.idx].isoTime,
-			structureEnd = candles[c.idx].isoTime;
-		if (!start || !structureEnd) continue;
-		const p1cands = allPeaks.filter((v: { idx: number }) => v.idx > a.idx && v.idx < b.idx);
-		const p2cands = allPeaks.filter((v: { idx: number }) => v.idx > b.idx && v.idx < c.idx);
-		const p1 = p1cands.length ? p1cands.reduce((m, v) => (v.price > m.price ? v : m)) : null;
-		const p2 = p2cands.length ? p2cands.reduce((m, v) => (v.price > m.price ? v : m)) : null;
-		if (!(p1 && p2)) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: 'peaks_missing_relaxed',
-				idxs: [a.idx, b.idx, c.idx],
-			});
-			continue;
-		}
-		const necklineSlope = Math.abs(p1.price - p2.price) / Math.max(1, Math.max(p1.price, p2.price));
-		if (necklineSlope > NECKLINE_SLOPE_LIMIT) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: 'neckline_slope_excess_relaxed',
-				idxs: [a.idx, b.idx, c.idx],
-			});
-			continue;
-		}
-		const priorTrend = validateTriplePriorTrend(ctx, 'triple_bottom', [a.idx, b.idx, c.idx]);
-		if (!priorTrend) continue;
-		if (rejectCompletedStairStep('triple_bottom', a, b, c, pcand)) continue;
-		const sizeReason = validatePatternSize('bottom', [a, p1, b, p2, c], ctx.sizeThresholds);
-		if (sizeReason) {
-			pcand({ type: 'triple_bottom', accepted: false, reason: sizeReason, idxs: [a.idx, b.idx, c.idx] });
-			continue;
-		}
-
-		const nlAvg = (p1.price + p2.price) / 2;
-
-		const gate = applyReversalGate({
-			candles,
-			pivots,
-			side: 'bottom',
-			first: a,
-			mid: p1,
-			necklinePrice: nlAvg,
-			type: 'triple_bottom',
-			indices: [a.idx, b.idx, c.idx],
-			debugCandidates: ctx.debugCandidates,
-		});
-		if (!gate) continue;
-
-		const relaxedBottomSpread = levelSpreadMetrics([a, b, c], [a, p1, b, p2, c]);
-		const relaxedBottomSpreadReason = validateLevelSpread('bottom', relaxedBottomSpread);
-		if (relaxedBottomSpreadReason) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: relaxedBottomSpreadReason,
-				idxs: [a.idx, b.idx, c.idx],
-				details: levelSpreadDetailsFrom(relaxedBottomSpread, tolTriple),
-			});
-			continue;
-		}
-
-		const relaxedBottomSide = validateMainPointsNecklineSide('bottom', [a, b, c], nlAvg);
-		if (relaxedBottomSide.reason) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: relaxedBottomSide.reason,
-				idxs: [a.idx, b.idx, c.idx],
-				details: necklineSideDetailsFrom(nlAvg, relaxedBottomSide.offenders),
-			});
-			continue;
-		}
-
-		const structureGate = buildStructureGate(gate);
-
-		const breakoutIdx = findBreakoutIdx(candles, c.idx, nlAvg, 'above');
-		const isCompleted = breakoutIdx >= 0;
-		const rangeEnd = isCompleted ? candles[breakoutIdx]?.isoTime : structureEnd;
-		if (!rangeEnd) continue;
-		const breakoutPrice = isCompleted ? Number(candles[breakoutIdx]?.close ?? NaN) : NaN;
-
-		const per = periodScoreBars(c.idx - a.idx);
-		const { components: scoreComponents, base } = buildTripleScore({
-			points: [a.price, b.price, c.price],
-			levelTolerancePct: tolTriple,
-			necklinePrice: nlAvg,
-			breakoutClose: breakoutPrice,
-			side: 'bottom',
-			retracementRatio: gate.retracementRatio,
-			durationScore: per,
-		});
-		const confidence = finalizeConf(base * RELAXED_CONFIDENCE_PENALTY, 'triple_bottom');
-		if (confidence < (MIN_CONFIDENCE.triple_bottom ?? 0)) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: 'confidence_below_min_relaxed',
-				idxs: [a.idx, b.idx, c.idx],
-				details: { confidence, threshold: MIN_CONFIDENCE.triple_bottom ?? 0, ...scoreComponents },
-			});
-			continue; // 後続候補で confidence が足りるものを探す
-		}
-
-		const postGate = isCompleted
-			? applyPostBreakoutGates({
-					candles,
-					pivots,
-					side: 'bottom',
-					first: a,
-					mid: p1,
-					last: c,
-					breakoutIdx,
-					type: 'triple_bottom',
-					indices: [a.idx, b.idx, c.idx],
-					debugCandidates: ctx.debugCandidates,
-				})
-			: null;
-
-		const neckline = [
-			{ x: a.idx, y: nlAvg },
-			{ x: isCompleted ? breakoutIdx : c.idx, y: nlAvg },
-		];
-		const diagram: PatternDiagramData = generatePatternDiagram(
-			'triple_bottom',
-			[
-				{ ...a, date: candles[a.idx]?.isoTime },
-				{ ...p1, date: candles[p1.idx]?.isoTime },
-				{ ...b, date: candles[b.idx]?.isoTime },
-				{ ...p2, date: candles[p2.idx]?.isoTime },
-				{ ...c, date: candles[c.idx]?.isoTime },
-			],
-			{ price: nlAvg },
-			{ start, end: rangeEnd },
-			{ tz: ctx.tz, type: ctx.type },
-		);
-		const tbRelAvgValley = (a.price + b.price + c.price) / 3;
-		const tbRelTarget = Math.round(nlAvg + (nlAvg - tbRelAvgValley));
-		const completionFields = tripleCompletionFields({
-			isCompleted,
-			candles,
-			breakoutIdx,
-			breakoutPrice,
-			rangeEnd,
-			target: tbRelTarget,
-			direction: 'up',
-			patternHeight: nlAvg - tbRelAvgValley,
-		});
-		const entry: DeduplicablePattern = {
-			type: 'triple_bottom',
-			confidence,
-			scoreComponents,
-			range: { start, end: rangeEnd },
-			structureRange: { start, end: structureEnd },
-			...completionFields,
-			...postGate,
-			pivots: [a, p1, b, p2, c],
-			neckline,
-			...(structureGate ? { structureGate } : {}),
-			...(priorTrend.precedingTrend ? { precedingTrend: priorTrend.precedingTrend } : {}),
-			trendlineLabel: 'ネックライン',
-			breakoutTarget: tbRelTarget,
-			targetMethod: 'neckline_projection' as const,
-			...(diagram ? { structureDiagram: diagram } : {}),
-			_fallback: `relaxed_triple_x${factor}`,
-		};
+	for (let i = 0; i <= mains.length - 3; i++) {
+		const a = mains[i];
+		const b = mains[i + 1];
+		const c = mains[i + 2];
+		if (b.idx - a.idx < ctx.minDist || c.idx - b.idx < ctx.minDist) continue;
+		const entry = evaluateCompletedTriple(ctx, side, a, b, c, factor);
+		if (!entry) continue;
 		if (entry.status === 'invalid') {
 			terminalFallback ??= entry;
 			continue;
@@ -1080,8 +551,11 @@ function rejectCompletedStairStep(
 }
 
 // 棄却理由は構成点が揃った後でだけ積む。揃う前の continue はペアの数だけ起き、debug の上限を食い潰すため（#155）。
-function tryFormingTripleTop(ctx: DetectContext): DeduplicablePattern | null {
-	const { candles, pivots, allPeaks, allValleys, tolerancePct, minDist } = ctx;
+function tryFormingTriple(ctx: DetectContext, side: ReversalSide): DeduplicablePattern | null {
+	const { candles, pivots, tolerancePct, minDist } = ctx;
+	const spec = TRIPLE_SIDES[side];
+	const { type } = spec;
+	const top = side === 'top';
 	const pcand: Pcand = (arg) => pushCand(ctx, arg);
 	const lastIdx = candles.length - 1;
 	const currentPrice = Number(candles[lastIdx]?.close ?? NaN);
@@ -1091,150 +565,122 @@ function tryFormingTripleTop(ctx: DetectContext): DeduplicablePattern | null {
 	const levelSpreadLimit = tripleTolerancePct * FORMING_LEVEL_SPREAD_FACTOR;
 	const necklineSpreadLimit = tolerancePct * FORMING_NECKLINE_SPREAD_FACTOR;
 
-	if (allPeaks.length < 2) return null;
-	const confirmedPeaks = allPeaks.filter((p: { idx: number }) => p.idx < lastIdx - 2);
+	const mains = top ? ctx.allPeaks : ctx.allValleys;
+	if (mains.length < 2) return null;
+	const confirmedMains = mains.filter((p) => p.idx < lastIdx - 2);
 
-	for (let i = confirmedPeaks.length - 1; i >= 1; i--) {
-		const peak2 = confirmedPeaks[i];
-		const peak1 = confirmedPeaks[i - 1];
-		if (peak2.idx - peak1.idx < minDist) continue;
+	for (let i = confirmedMains.length - 1; i >= 1; i--) {
+		const main2 = confirmedMains[i];
+		const main1 = confirmedMains[i - 1];
+		if (main2.idx - main1.idx < minDist) continue;
 
-		const peakDiff = Math.abs(peak1.price - peak2.price) / Math.max(1, Math.max(peak1.price, peak2.price));
-		if (peakDiff > tripleTolerancePct) continue;
+		const mainDiff = Math.abs(main1.price - main2.price) / Math.max(1, Math.max(main1.price, main2.price));
+		if (mainDiff > tripleTolerancePct) continue;
 
-		const avgPeakPrice = (peak1.price + peak2.price) / 2;
-		const currentDiff = Math.abs(currentPrice - avgPeakPrice) / Math.max(1, avgPeakPrice);
-		if (currentDiff > tripleTolerancePct || currentPrice < avgPeakPrice * 0.95) continue;
+		const avgMain = (main1.price + main2.price) / 2;
+		const currentDiff = Math.abs(currentPrice - avgMain) / Math.max(1, avgMain);
+		const pastLevel = top ? currentPrice < avgMain * 0.95 : currentPrice > avgMain * 1.05;
+		if (currentDiff > tripleTolerancePct || pastLevel) continue;
 
-		if (rejectFormingStairStep('triple_top', peak1, peak2, currentPrice, lastIdx, pcand)) continue;
+		if (rejectFormingStairStep(type, main1, main2, currentPrice, lastIdx, pcand)) continue;
+
+		const idxs = [main1.idx, main2.idx, lastIdx];
+		const levelPts = () => [
+			{ role: `${spec.mainRole}1`, idx: main1.idx, price: main1.price },
+			{ role: `${spec.mainRole}2`, idx: main2.idx, price: main2.price },
+			{ role: 'current', idx: lastIdx, price: currentPrice },
+		];
 
 		// 2 点ずつの判定だけでは非単調な配置（100 → 95 → 100 など）で累積したばらつきを捉えられないので、3 点の max-min でも見る。
-		const levelMax = Math.max(peak1.price, peak2.price, currentPrice);
-		const levelMin = Math.min(peak1.price, peak2.price, currentPrice);
+		const levelMax = Math.max(main1.price, main2.price, currentPrice);
+		const levelMin = Math.min(main1.price, main2.price, currentPrice);
 		const levelSpread = (levelMax - levelMin) / Math.max(1, levelMax);
 		if (levelSpread > levelSpreadLimit) {
-			pcand({
-				type: 'triple_top',
-				accepted: false,
-				reason: 'forming_peaks_not_level',
-				idxs: [peak1.idx, peak2.idx, lastIdx],
-				pts: [
-					{ role: 'peak1', idx: peak1.idx, price: peak1.price },
-					{ role: 'peak2', idx: peak2.idx, price: peak2.price },
-					{ role: 'current', idx: lastIdx, price: currentPrice },
-				],
-			});
+			pcand({ type, accepted: false, reason: spec.formingNotLevelReason, idxs: [...idxs], pts: levelPts() });
 			continue;
 		}
 
-		const formationBars = Math.max(0, lastIdx - peak1.idx);
+		const formationBars = Math.max(0, lastIdx - main1.idx);
 		if (formationBars < formingBars.minBars || formationBars > formingBars.maxBars) {
-			pcand({
-				type: 'triple_top',
-				accepted: false,
-				reason: 'forming_bars_out_of_range',
-				idxs: [peak1.idx, peak2.idx, lastIdx],
-				pts: [
-					{ role: 'peak1', idx: peak1.idx, price: peak1.price },
-					{ role: 'peak2', idx: peak2.idx, price: peak2.price },
-					{ role: 'current', idx: lastIdx, price: currentPrice },
-				],
-			});
+			pcand({ type, accepted: false, reason: 'forming_bars_out_of_range', idxs: [...idxs], pts: levelPts() });
 			continue;
 		}
-		const priorTrend = validateTriplePriorTrend(ctx, 'triple_top', [peak1.idx, peak2.idx, lastIdx]);
+		const priorTrend = validateTriplePriorTrend(ctx, type, [main1.idx, main2.idx, lastIdx]);
 		if (!priorTrend) continue;
 
-		// 谷は区間ごとに要求する。合計数だけ見ると、2 谷とも peak1-peak2 間にある H-L-L-H が通ってしまう。
-		const v1Cands = allValleys.filter((v: { idx: number }) => v.idx > peak1.idx && v.idx < peak2.idx);
-		const v2Cands = allValleys.filter((v: { idx: number }) => v.idx > peak2.idx && v.idx < lastIdx);
-		if (v1Cands.length === 0 || v2Cands.length === 0) {
-			pcand({
-				type: 'triple_top',
-				accepted: false,
-				reason: 'forming_neckline_points_insufficient',
-				idxs: [peak1.idx, peak2.idx, lastIdx],
-			});
-			continue;
-		}
-		// strict triple_top と同じ方針で、各区間の最安値を採用する。
-		const v1 = v1Cands.reduce((m, v) => (v.price < m.price ? v : m));
-		const v2 = v2Cands.reduce((m, v) => (v.price < m.price ? v : m));
-
-		const valleyMax = Math.max(v1.price, v2.price);
-		const valleyMin = Math.min(v1.price, v2.price);
-		const valleySpread = (valleyMax - valleyMin) / Math.max(1, valleyMax);
-		if (valleySpread > necklineSpreadLimit) {
-			pcand({
-				type: 'triple_top',
-				accepted: false,
-				reason: 'forming_neckline_not_horizontal',
-				idxs: [peak1.idx, peak2.idx, lastIdx],
-			});
+		// ネックラインの点は区間ごとに要求する。合計数だけ見ると、2 点とも main1-main2 間にある H-L-L-H が通ってしまう。
+		const n1 = necklinePoint(ctx, side, main1.idx, main2.idx);
+		const n2 = necklinePoint(ctx, side, main2.idx, lastIdx);
+		if (!n1 || !n2) {
+			pcand({ type, accepted: false, reason: 'forming_neckline_points_insufficient', idxs: [...idxs] });
 			continue;
 		}
 
-		const avgValley = (v1.price + v2.price) / 2;
+		const neckMax = Math.max(n1.price, n2.price);
+		const neckMin = Math.min(n1.price, n2.price);
+		const neckSpread = (neckMax - neckMin) / Math.max(1, neckMax);
+		if (neckSpread > necklineSpreadLimit) {
+			pcand({ type, accepted: false, reason: 'forming_neckline_not_horizontal', idxs: [...idxs] });
+			continue;
+		}
 
-		const progress = (avgPeakPrice - currentPrice) / Math.max(1e-12, avgPeakPrice - avgValley);
+		const avgNeck = (n1.price + n2.price) / 2;
+		const height = top ? avgMain - avgNeck : avgNeck - avgMain;
+		const progress = (top ? avgMain - currentPrice : currentPrice - avgMain) / Math.max(1e-12, height);
 		const completion = Math.min(1, 0.66 + Math.min(1, progress) * 0.34);
-		const rawConfidence = Math.round((1 - peakDiff / tripleTolerancePct) * 0.8 * 100) / 100;
+		const rawConfidence = Math.round((1 - mainDiff / tripleTolerancePct) * 0.8 * 100) / 100;
 		const confidence = Math.min(rawConfidence, FORMING_MAX_CONFIDENCE);
+
+		const structurePts = () => [
+			{ role: `${spec.mainRole}1`, idx: main1.idx, price: main1.price },
+			{ role: `${spec.neckRole}1`, idx: n1.idx, price: n1.price },
+			{ role: `${spec.mainRole}2`, idx: main2.idx, price: main2.price },
+			{ role: `${spec.neckRole}2`, idx: n2.idx, price: n2.price },
+			{ role: 'current', idx: lastIdx, price: currentPrice },
+		];
 
 		if (completion < FORMING_MIN_COMPLETION || confidence < FORMING_MIN_CONFIDENCE) {
 			pcand({
-				type: 'triple_top',
+				type,
 				accepted: false,
 				reason: completion < FORMING_MIN_COMPLETION ? 'forming_completion_below_min' : 'forming_confidence_below_min',
-				idxs: [peak1.idx, peak2.idx, lastIdx],
-				pts: [
-					{ role: 'peak1', idx: peak1.idx, price: peak1.price },
-					{ role: 'valley1', idx: v1.idx, price: v1.price },
-					{ role: 'peak2', idx: peak2.idx, price: peak2.price },
-					{ role: 'valley2', idx: v2.idx, price: v2.price },
-					{ role: 'current', idx: lastIdx, price: currentPrice },
-				],
+				idxs: [...idxs],
+				pts: structurePts(),
 			});
 			continue;
 		}
 
 		const sizeReason = validatePatternSize(
-			'top',
-			[peak1, v1, peak2, v2, { extremePrice: currentPrice }],
+			side,
+			[main1, n1, main2, n2, { extremePrice: currentPrice }],
 			ctx.sizeThresholds,
 		);
 		if (sizeReason) {
-			pcand({ type: 'triple_top', accepted: false, reason: sizeReason, idxs: [peak1.idx, peak2.idx, lastIdx] });
+			pcand({ type, accepted: false, reason: sizeReason, idxs: [...idxs] });
 			continue;
 		}
 
 		const gate = applyReversalGate({
 			candles,
 			pivots,
-			side: 'top',
-			first: peak1,
-			mid: v1,
-			necklinePrice: avgValley,
-			type: 'triple_top',
-			indices: [peak1.idx, peak2.idx, lastIdx],
+			side,
+			first: main1,
+			mid: n1,
+			necklinePrice: avgNeck,
+			type,
+			indices: [main1.idx, main2.idx, lastIdx],
 			debugCandidates: ctx.debugCandidates,
 		});
 		if (!gate) continue;
 
 		if (
 			rejectFormingNecklineSide(
-				'top',
-				'triple_top',
-				[peak1, peak2, { idx: lastIdx, price: currentPrice }],
-				avgValley,
-				[peak1.idx, peak2.idx, lastIdx],
-				[
-					{ role: 'peak1', idx: peak1.idx, price: peak1.price },
-					{ role: 'valley1', idx: v1.idx, price: v1.price },
-					{ role: 'peak2', idx: peak2.idx, price: peak2.price },
-					{ role: 'valley2', idx: v2.idx, price: v2.price },
-					{ role: 'current', idx: lastIdx, price: currentPrice },
-				],
+				side,
+				type,
+				[main1, main2, { idx: lastIdx, price: currentPrice }],
+				avgNeck,
+				[...idxs],
+				structurePts(),
 				pcand,
 			)
 		) {
@@ -1244,255 +690,36 @@ function tryFormingTripleTop(ctx: DetectContext): DeduplicablePattern | null {
 		const structureGate = buildStructureGate(gate);
 
 		const neckline = [
-			{ x: peak1.idx, y: avgValley },
-			{ x: lastIdx, y: avgValley },
+			{ x: main1.idx, y: avgNeck },
+			{ x: lastIdx, y: avgNeck },
 		];
 
-		const formTtTarget = Math.round(avgValley - ((peak1.price + peak2.price) / 2 - avgValley));
+		const target = Math.round(top ? avgNeck - height : avgNeck + height);
 
-		// idxs は棄却エントリと同じ 3 点にそろえ、ネックラインの 2 谷は pts にだけ載せる。
-		pcand({
-			type: 'triple_top',
-			accepted: true,
-			status: 'forming',
-			idxs: [peak1.idx, peak2.idx, lastIdx],
-			pts: [
-				{ role: 'peak1', idx: peak1.idx, price: peak1.price },
-				{ role: 'valley1', idx: v1.idx, price: v1.price },
-				{ role: 'peak2', idx: peak2.idx, price: peak2.price },
-				{ role: 'valley2', idx: v2.idx, price: v2.price },
-				{ role: 'current', idx: lastIdx, price: currentPrice },
-			],
-		});
+		// idxs は棄却エントリと同じ 3 点にそろえ、ネックラインの 2 点は pts にだけ載せる。
+		pcand({ type, accepted: true, status: 'forming', idxs: [...idxs], pts: structurePts() });
 
 		return {
-			type: 'triple_top',
+			type,
 			confidence,
-			range: { start: isoAt(peak1.idx), end: isoAt(lastIdx) },
+			range: { start: isoAt(main1.idx), end: isoAt(lastIdx) },
 			status: 'forming',
-			// 3 山目は現在価格の暫定値なので pivots に含めない。
+			// 3 点目は現在価格の暫定値なので pivots に含めない。
 			pivots: [
-				{ idx: peak1.idx, price: peak1.price, kind: 'H' as const, extremePrice: peak1.extremePrice },
-				{ idx: v1.idx, price: v1.price, kind: 'L' as const, extremePrice: v1.extremePrice },
-				{ idx: peak2.idx, price: peak2.price, kind: 'H' as const, extremePrice: peak2.extremePrice },
-				{ idx: v2.idx, price: v2.price, kind: 'L' as const, extremePrice: v2.extremePrice },
+				{ idx: main1.idx, price: main1.price, kind: spec.mainKind, extremePrice: main1.extremePrice },
+				{ idx: n1.idx, price: n1.price, kind: spec.neckKind, extremePrice: n1.extremePrice },
+				{ idx: main2.idx, price: main2.price, kind: spec.mainKind, extremePrice: main2.extremePrice },
+				{ idx: n2.idx, price: n2.price, kind: spec.neckKind, extremePrice: n2.extremePrice },
 			],
 			neckline,
 			...(structureGate ? { structureGate } : {}),
 			...(priorTrend.precedingTrend ? { precedingTrend: priorTrend.precedingTrend } : {}),
 			trendlineLabel: 'ネックライン',
-			breakoutTarget: formTtTarget,
+			breakoutTarget: target,
 			targetMethod: 'neckline_projection' as const,
 			...targetReachFields(omittedTargetReach('not_broken_out')),
 			completionPct: Math.round(completion * 100),
-			_method: 'forming_triple_top',
-		};
-	}
-	return null;
-}
-
-function tryFormingTripleBottom(ctx: DetectContext): DeduplicablePattern | null {
-	const { candles, pivots, allPeaks, allValleys, tolerancePct, minDist } = ctx;
-	const pcand: Pcand = (arg) => pushCand(ctx, arg);
-	const lastIdx = candles.length - 1;
-	const currentPrice = Number(candles[lastIdx]?.close ?? NaN);
-	const isoAt = (i: number) => candles[i]?.isoTime || '';
-	const formingBars = getTripleFormingBarParams(ctx.type);
-	const tripleTolerancePct = tolerancePct * FORMING_TOLERANCE_MULTIPLIER;
-	const levelSpreadLimit = tripleTolerancePct * FORMING_LEVEL_SPREAD_FACTOR;
-	const necklineSpreadLimit = tolerancePct * FORMING_NECKLINE_SPREAD_FACTOR;
-
-	if (allValleys.length < 2) return null;
-	const confirmedValleys = allValleys.filter((v: { idx: number }) => v.idx < lastIdx - 2);
-
-	for (let i = confirmedValleys.length - 1; i >= 1; i--) {
-		const valley2 = confirmedValleys[i];
-		const valley1 = confirmedValleys[i - 1];
-		if (valley2.idx - valley1.idx < minDist) continue;
-
-		const valleyDiff = Math.abs(valley1.price - valley2.price) / Math.max(1, Math.max(valley1.price, valley2.price));
-		if (valleyDiff > tripleTolerancePct) continue;
-
-		const avgValleyPrice = (valley1.price + valley2.price) / 2;
-
-		const currentDiff = Math.abs(currentPrice - avgValleyPrice) / Math.max(1, avgValleyPrice);
-		if (currentDiff > tripleTolerancePct || currentPrice > avgValleyPrice * 1.05) continue;
-
-		if (rejectFormingStairStep('triple_bottom', valley1, valley2, currentPrice, lastIdx, pcand)) continue;
-
-		const levelMax = Math.max(valley1.price, valley2.price, currentPrice);
-		const levelMin = Math.min(valley1.price, valley2.price, currentPrice);
-		const levelSpread = (levelMax - levelMin) / Math.max(1, levelMax);
-		if (levelSpread > levelSpreadLimit) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: 'forming_valleys_not_level',
-				idxs: [valley1.idx, valley2.idx, lastIdx],
-				pts: [
-					{ role: 'valley1', idx: valley1.idx, price: valley1.price },
-					{ role: 'valley2', idx: valley2.idx, price: valley2.price },
-					{ role: 'current', idx: lastIdx, price: currentPrice },
-				],
-			});
-			continue;
-		}
-
-		const formationBars = Math.max(0, lastIdx - valley1.idx);
-		if (formationBars < formingBars.minBars || formationBars > formingBars.maxBars) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: 'forming_bars_out_of_range',
-				idxs: [valley1.idx, valley2.idx, lastIdx],
-				pts: [
-					{ role: 'valley1', idx: valley1.idx, price: valley1.price },
-					{ role: 'valley2', idx: valley2.idx, price: valley2.price },
-					{ role: 'current', idx: lastIdx, price: currentPrice },
-				],
-			});
-			continue;
-		}
-		const priorTrend = validateTriplePriorTrend(ctx, 'triple_bottom', [valley1.idx, valley2.idx, lastIdx]);
-		if (!priorTrend) continue;
-
-		const p1Cands = allPeaks.filter((p: { idx: number }) => p.idx > valley1.idx && p.idx < valley2.idx);
-		const p2Cands = allPeaks.filter((p: { idx: number }) => p.idx > valley2.idx && p.idx < lastIdx);
-		if (p1Cands.length === 0 || p2Cands.length === 0) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: 'forming_neckline_points_insufficient',
-				idxs: [valley1.idx, valley2.idx, lastIdx],
-			});
-			continue;
-		}
-		const pTop1 = p1Cands.reduce((m, p) => (p.price > m.price ? p : m));
-		const pTop2 = p2Cands.reduce((m, p) => (p.price > m.price ? p : m));
-
-		const peakMaxN = Math.max(pTop1.price, pTop2.price);
-		const peakMinN = Math.min(pTop1.price, pTop2.price);
-		const peakSpread = (peakMaxN - peakMinN) / Math.max(1, peakMaxN);
-		if (peakSpread > necklineSpreadLimit) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: 'forming_neckline_not_horizontal',
-				idxs: [valley1.idx, valley2.idx, lastIdx],
-			});
-			continue;
-		}
-
-		const avgPeakPrice = (pTop1.price + pTop2.price) / 2;
-
-		const progress = (currentPrice - avgValleyPrice) / Math.max(1e-12, avgPeakPrice - avgValleyPrice);
-		const completion = Math.min(1, 0.66 + Math.min(1, progress) * 0.34);
-		const rawConfidence = Math.round((1 - valleyDiff / tripleTolerancePct) * 0.8 * 100) / 100;
-		const confidence = Math.min(rawConfidence, FORMING_MAX_CONFIDENCE);
-
-		if (completion < FORMING_MIN_COMPLETION || confidence < FORMING_MIN_CONFIDENCE) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: completion < FORMING_MIN_COMPLETION ? 'forming_completion_below_min' : 'forming_confidence_below_min',
-				idxs: [valley1.idx, valley2.idx, lastIdx],
-				pts: [
-					{ role: 'valley1', idx: valley1.idx, price: valley1.price },
-					{ role: 'peak1', idx: pTop1.idx, price: pTop1.price },
-					{ role: 'valley2', idx: valley2.idx, price: valley2.price },
-					{ role: 'peak2', idx: pTop2.idx, price: pTop2.price },
-					{ role: 'current', idx: lastIdx, price: currentPrice },
-				],
-			});
-			continue;
-		}
-
-		const sizeReason = validatePatternSize(
-			'bottom',
-			[valley1, pTop1, valley2, pTop2, { extremePrice: currentPrice }],
-			ctx.sizeThresholds,
-		);
-		if (sizeReason) {
-			pcand({ type: 'triple_bottom', accepted: false, reason: sizeReason, idxs: [valley1.idx, valley2.idx, lastIdx] });
-			continue;
-		}
-
-		const gate = applyReversalGate({
-			candles,
-			pivots,
-			side: 'bottom',
-			first: valley1,
-			mid: pTop1,
-			necklinePrice: avgPeakPrice,
-			type: 'triple_bottom',
-			indices: [valley1.idx, valley2.idx, lastIdx],
-			debugCandidates: ctx.debugCandidates,
-		});
-		if (!gate) continue;
-
-		if (
-			rejectFormingNecklineSide(
-				'bottom',
-				'triple_bottom',
-				[valley1, valley2, { idx: lastIdx, price: currentPrice }],
-				avgPeakPrice,
-				[valley1.idx, valley2.idx, lastIdx],
-				[
-					{ role: 'valley1', idx: valley1.idx, price: valley1.price },
-					{ role: 'peak1', idx: pTop1.idx, price: pTop1.price },
-					{ role: 'valley2', idx: valley2.idx, price: valley2.price },
-					{ role: 'peak2', idx: pTop2.idx, price: pTop2.price },
-					{ role: 'current', idx: lastIdx, price: currentPrice },
-				],
-				pcand,
-			)
-		) {
-			continue;
-		}
-
-		const structureGate = buildStructureGate(gate);
-
-		const neckline = [
-			{ x: valley1.idx, y: avgPeakPrice },
-			{ x: lastIdx, y: avgPeakPrice },
-		];
-
-		const formTbTarget = Math.round(avgPeakPrice + (avgPeakPrice - avgValleyPrice));
-
-		pcand({
-			type: 'triple_bottom',
-			accepted: true,
-			status: 'forming',
-			idxs: [valley1.idx, valley2.idx, lastIdx],
-			pts: [
-				{ role: 'valley1', idx: valley1.idx, price: valley1.price },
-				{ role: 'peak1', idx: pTop1.idx, price: pTop1.price },
-				{ role: 'valley2', idx: valley2.idx, price: valley2.price },
-				{ role: 'peak2', idx: pTop2.idx, price: pTop2.price },
-				{ role: 'current', idx: lastIdx, price: currentPrice },
-			],
-		});
-
-		return {
-			type: 'triple_bottom',
-			confidence,
-			range: { start: isoAt(valley1.idx), end: isoAt(lastIdx) },
-			status: 'forming',
-			pivots: [
-				{ idx: valley1.idx, price: valley1.price, kind: 'L' as const, extremePrice: valley1.extremePrice },
-				{ idx: pTop1.idx, price: pTop1.price, kind: 'H' as const, extremePrice: pTop1.extremePrice },
-				{ idx: valley2.idx, price: valley2.price, kind: 'L' as const, extremePrice: valley2.extremePrice },
-				{ idx: pTop2.idx, price: pTop2.price, kind: 'H' as const, extremePrice: pTop2.extremePrice },
-			],
-			neckline,
-			...(structureGate ? { structureGate } : {}),
-			...(priorTrend.precedingTrend ? { precedingTrend: priorTrend.precedingTrend } : {}),
-			trendlineLabel: 'ネックライン',
-			breakoutTarget: formTbTarget,
-			targetMethod: 'neckline_projection' as const,
-			...targetReachFields(omittedTargetReach('not_broken_out')),
-			completionPct: Math.round(completion * 100),
-			_method: 'forming_triple_bottom',
+			_method: `forming_${type}`,
 		};
 	}
 	return null;
@@ -1501,33 +728,19 @@ function tryFormingTripleBottom(ctx: DetectContext): DeduplicablePattern | null 
 export function detectTriples(ctx: DetectContext): DetectResult {
 	const { want, includeForming } = ctx;
 	const patterns: DeduplicablePattern[] = [];
+	const sides = (['top', 'bottom'] as const).filter((side) => want.size === 0 || want.has(TRIPLE_SIDES[side].type));
 
-	const wantTripleTop = want.size === 0 || want.has('triple_top');
-	const wantTripleBottom = want.size === 0 || want.has('triple_bottom');
-
-	if (wantTripleTop || wantTripleBottom) {
-		if (wantTripleTop) patterns.push(...findStrictTripleTop(ctx));
-		if (wantTripleBottom) patterns.push(...findStrictTripleBottom(ctx));
-
-		for (const f of RELAXED_TOLERANCE_FACTORS) {
-			if (wantTripleTop && !patterns.some((p) => p.type === 'triple_top')) {
-				const relaxed = findRelaxedTripleTop(ctx, f);
-				if (relaxed) patterns.push(relaxed);
-			}
-			if (wantTripleBottom && !patterns.some((p) => p.type === 'triple_bottom')) {
-				const relaxed = findRelaxedTripleBottom(ctx, f);
-				if (relaxed) patterns.push(relaxed);
-			}
+	for (const side of sides) patterns.push(...findStrictTriples(ctx, side));
+	for (const f of RELAXED_TOLERANCE_FACTORS) {
+		for (const side of sides) {
+			if (patterns.some((p) => p.type === TRIPLE_SIDES[side].type)) continue;
+			const relaxed = findRelaxedTriple(ctx, side, f);
+			if (relaxed) patterns.push(relaxed);
 		}
 	}
-
-	if (includeForming && (wantTripleTop || wantTripleBottom)) {
-		if (wantTripleTop) {
-			const forming = tryFormingTripleTop(ctx);
-			if (forming) patterns.push(forming);
-		}
-		if (wantTripleBottom) {
-			const forming = tryFormingTripleBottom(ctx);
+	if (includeForming) {
+		for (const side of sides) {
+			const forming = tryFormingTriple(ctx, side);
 			if (forming) patterns.push(forming);
 		}
 	}
