@@ -86,7 +86,7 @@ describe('validatePatternSize', () => {
 	});
 
 	it('3 点なら double の検査と同じ形に縮退する', () => {
-		// 高さ 4%（>= 3%）だが押しが 4%（< 5%）。double の validateTopSize と同じ判定。
+		// 高さ 4%（>= 3%）だが押しが 4%（< 5%）。double の validateDoubleSize と同じ判定。
 		expect(validatePatternSize('top', [pv(100), pv(96), pv(100)], DAY)).toBe('valley_too_shallow');
 		expect(validatePatternSize('top', [pv(100), pv(90), pv(100)], DAY)).toBeNull();
 	});

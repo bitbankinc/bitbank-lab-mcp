@@ -243,7 +243,7 @@ describe('issue #126 構造ゲート — BTC/JPY 日足 実データ回帰', () 
 			expect(mid.idx - first.idx).toBe(7);
 			expect(getDefaultParamsForTf('1day').minBarsBetweenSwings).toBe(4);
 
-			// 2. サイズ検査（validateTopSize / validateBottomSize）の価格基準。終値基準だと閾値割れ、高安基準なら通る。
+			// 2. サイズ検査（validateDoubleSize）の価格基準。終値基準だと閾値割れ、高安基準なら通る。
 			const heightPctClose = Math.abs(first.price - mid.price) / Math.max(first.price, mid.price);
 			const peakHeightPctClose = (mid.price - (first.price + second.price) / 2) / ((first.price + second.price) / 2);
 			expect(heightPctClose).toBeLessThan(0.03); // MIN_PATTERN_HEIGHT_PCT
