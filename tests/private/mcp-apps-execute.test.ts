@@ -121,6 +121,12 @@ function countOrderApiCalls(): number {
 	}).length;
 }
 
+/** 取引系 API（/v1/user/spot/ 配下。取消を含む）の呼び出し回数。拒否の経路では照会も含めて 1 回も呼ばない。 */
+function countSpotApiCalls(): number {
+	const fetchMock = globalThis.fetch as unknown as { mock: { calls: Array<[unknown]> } };
+	return fetchMock.mock.calls.filter((c) => String(c[0]).includes('/v1/user/spot/')).length;
+}
+
 beforeEach(() => {
 	process.env = { ...originalEnv };
 	process.env.BITBANK_API_KEY = 'test_key';
@@ -362,7 +368,7 @@ describe('不変条件 6: トークン無しの直接呼び出しは direct_exec
 			};
 			expect(result.ok).toBe(false);
 			expect(result.meta?.errorType).toBe('direct_execute_forbidden');
-			expect(countOrderApiCalls()).toBe(0);
+			expect(countSpotApiCalls()).toBe(0);
 		});
 
 		it(`${c.name}: ゲート on でもトークン無しなら拒否され API を呼ばない`, async () => {
@@ -374,7 +380,7 @@ describe('不変条件 6: トークン無しの直接呼び出しは direct_exec
 			};
 			expect(result.ok).toBe(false);
 			expect(result.meta?.errorType).toBe('direct_execute_forbidden');
-			expect(countOrderApiCalls()).toBe(0);
+			expect(countSpotApiCalls()).toBe(0);
 		});
 	}
 
@@ -524,7 +530,7 @@ describe('execute ハンドラのゲートの配線（3 ツール共通）', () 
 			)) as { ok: boolean; meta?: { errorType?: string } };
 			expect(result.ok).toBe(false);
 			expect(result.meta?.errorType).toBe('direct_execute_forbidden');
-			expect(countOrderApiCalls()).toBe(0);
+			expect(countSpotApiCalls()).toBe(0);
 		});
 
 		it(`${c.name}: preview のトークンで実行でき、呼び出し元セッションの確認カードだけを消す`, async () => {
