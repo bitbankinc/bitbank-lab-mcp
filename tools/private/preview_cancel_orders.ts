@@ -1,7 +1,7 @@
 import { formatPair } from '../../lib/formatter.js';
-import { fail, ok, toStructured } from '../../lib/result.js';
+import { ok } from '../../lib/result.js';
 import { generateToken } from '../../src/private/confirmation.js';
-import { withElicitedConfirmation } from '../../src/private/elicitation.js';
+import { confirmPreview } from '../../src/private/preview-confirmation.js';
 import { PreviewCancelOrdersInputSchema, PreviewCancelOrdersOutputSchema } from '../../src/private/schemas.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 import cancelOrders from './cancel_orders.js';
@@ -51,54 +51,23 @@ export const toolDef: ToolDefinition = {
 		const result = previewCancelOrders(typedArgs);
 		if (!result.ok) return result;
 
-		// スキーマ上 optional だが preview 成功時は必ず生成される。万一無ければ、トークン無しで execute 経路へ進ませないよう fail-closed にする。
-		const { confirmation_token, expires_at } = result.data;
-		if (!confirmation_token || expires_at == null) {
-			return PreviewCancelOrdersOutputSchema.parse(fail('確認トークンを生成できませんでした', 'internal'));
-		}
-
-		// elicitation 非対応かつ MCP Apps 実行経路も無効なホスト向け。トークンの存在は仄めかさない。
-		const fallbackText = [
-			result.summary,
-			'',
-			'※ このホストでは取引実行に対応していません。',
-			'  実際に一括キャンセルするには、elicitation/MRTR 対応クライアントで同じ操作を行うか、bitbank アプリ/ウェブで該当注文をキャンセルしてください。',
-		].join('\n');
-
-		const appUiFallbackText = [
-			result.summary,
-			'',
-			'※ 上部の確認カードで内容を確認し、「一括キャンセルを確定する」ボタンを押すと取消が実行されます。',
-			'  ボタンを押さない限り実行されません。確認は 60 秒で期限切れになるため、その場合は preview_cancel_orders をやり直してください。',
-		].join('\n');
-
-		return withElicitedConfirmation({
+		return confirmPreview({
 			extra,
 			action: 'cancel_orders',
-			bindArgs: typedArgs as unknown as Record<string, unknown>,
-			summary: result.summary,
-			confirmTitle: `これら ${typedArgs.order_ids.length} 件の注文を一括キャンセルする`,
-			onConfirmed: () =>
-				cancelOrders(
-					{
-						...typedArgs,
-						confirmation_token,
-						token_expires_at: expires_at,
-					},
-					'elicitation',
-					{ sessionId: (extra as { sessionId?: string } | undefined)?.sessionId },
-				),
-			onDeclinedText: 'ユーザーが一括キャンセル操作を取り消しました（elicitation）',
-			declinedStructured: toStructured(result),
-			fallback: {
-				content: [{ type: 'text', text: fallbackText }],
-				structuredContent: toStructured(result),
+			args: typedArgs,
+			result,
+			outputSchema: PreviewCancelOrdersOutputSchema,
+			texts: {
+				confirmTitle: `これら ${typedArgs.order_ids.length} 件の注文を一括キャンセルする`,
+				declinedText: 'ユーザーが一括キャンセル操作を取り消しました（elicitation）',
+				unsupportedHostGuide:
+					'  実際に一括キャンセルするには、elicitation/MRTR 対応クライアントで同じ操作を行うか、bitbank アプリ/ウェブで該当注文をキャンセルしてください。',
+				appUiGuide: [
+					'※ 上部の確認カードで内容を確認し、「一括キャンセルを確定する」ボタンを押すと取消が実行されます。',
+					'  ボタンを押さない限り実行されません。確認は 60 秒で期限切れになるため、その場合は preview_cancel_orders をやり直してください。',
+				],
 			},
-			metaConfirmation: {
-				confirmation_token,
-				expires_at,
-			},
-			appUiFallbackText,
+			execute: cancelOrders,
 		});
 	},
 };
