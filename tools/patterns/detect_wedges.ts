@@ -15,6 +15,7 @@ import type {
 	TouchResult,
 } from './types.js';
 import {
+	type ApexResult,
 	calcAlternationScoreEx,
 	calcApex,
 	calcDurationScoreEx,
@@ -361,19 +362,22 @@ function downsamplePoints(pts: Array<{ idx: number; kind: 'H' | 'L' }>, maxPoint
 }
 
 // aftermath を持つのはこのパスだけで、出力から回帰ベースか形成中かを判別する手がかりになっている。
+interface RegressionCandidate {
+	wedgeType: 'rising_wedge' | 'falling_wedge';
+	upper: RegLine;
+	lower: RegLine;
+	startIdx: number;
+	endIdx: number;
+	v: RegressionValidation;
+	useSmoothed: boolean;
+}
+
 function buildRegressionEntry(
-	candles: CandleData[],
-	wedgeType: 'rising_wedge' | 'falling_wedge',
-	upper: RegLine,
-	lower: RegLine,
-	startIdx: number,
-	endIdx: number,
-	v: RegressionValidation,
-	useSmoothed: boolean,
-	debugCandidates: CandDebugEntry[],
-	tz: string | undefined,
-	type: string,
+	ctx: Pick<DetectContext, 'candles' | 'debugCandidates' | 'tz' | 'type'>,
+	candidate: RegressionCandidate,
 ): DeduplicablePattern | null {
+	const { candles, debugCandidates, tz, type } = ctx;
+	const { wedgeType, upper, lower, startIdx, endIdx, v, useSmoothed } = candidate;
 	const start = candles[startIdx]?.isoTime;
 	const theoreticalEnd = candles[endIdx]?.isoTime;
 	if (!start || !theoreticalEnd) return null;
@@ -696,19 +700,15 @@ function detectRegressionWedges(
 			debugCandidates,
 		);
 		if (!v) continue;
-		const entry = buildRegressionEntry(
-			candles,
+		const entry = buildRegressionEntry(ctx, {
 			wedgeType,
 			upper,
 			lower,
-			w.startIdx,
-			w.endIdx,
+			startIdx: w.startIdx,
+			endIdx: w.endIdx,
 			v,
 			useSmoothed,
-			debugCandidates,
-			ctx.tz,
-			ctx.type,
-		);
+		});
 		if (entry) patterns.push(entry);
 	}
 
@@ -809,6 +809,344 @@ function findLowerTrendlineF(
 	return bestLine;
 }
 
+type FormingPoint = { idx: number; price: number };
+
+function findFormingPivots(
+	candles: readonly CandleData[],
+	smoothHigh: readonly number[],
+	smoothLow: readonly number[],
+): { peaks: FormingPoint[]; valleys: FormingPoint[] } {
+	const peaks: FormingPoint[] = [];
+	const valleys: FormingPoint[] = [];
+	for (let idx = 1; idx < candles.length - 1; idx++) {
+		const isPeak = smoothHigh[idx] > smoothHigh[idx - 1] && smoothHigh[idx] > smoothHigh[idx + 1];
+		const isValley = smoothLow[idx] < smoothLow[idx - 1] && smoothLow[idx] < smoothLow[idx + 1];
+		if (isPeak) peaks.push({ idx, price: candles[idx].close });
+		if (isValley) valleys.push({ idx, price: candles[idx].close });
+	}
+	return { peaks, valleys };
+}
+
+// 窓の並び順で採否が変わる（似た形は先に採用された窓だけが残る）。
+function buildFormingWindows(
+	barParams: WedgeBarParams,
+	candleCount: number,
+): Array<{ startIdx: number; endIdx: number }> {
+	const windows: Array<{ startIdx: number; endIdx: number }> = [];
+	for (let size = barParams.formingWindowMin; size <= barParams.formingWindowMax; size += barParams.windowStep) {
+		for (let startIdx = 0; startIdx + size < candleCount; startIdx += barParams.windowStep) {
+			windows.push({ startIdx, endIdx: startIdx + size });
+		}
+	}
+	const lastIdx = candleCount - 1;
+	for (let size = barParams.formingWindowMin; size <= barParams.formingWindowMax; size += barParams.windowStep) {
+		const s = Math.max(0, lastIdx - size);
+		windows.push({ startIdx: s, endIdx: lastIdx });
+	}
+	return windows;
+}
+
+// debug を持たない棄却は、debug に積まずに次の窓へ進む。
+type FormingCheck<T> = { ok: true; value: T } | { ok: false; debug?: CandDebugEntry };
+
+interface FormingShape {
+	wedgeType: 'falling_wedge' | 'rising_wedge';
+	absU: number;
+	absL: number;
+	convRatio: number;
+	fApex: ApexResult;
+	fContainment: ReturnType<typeof checkContainment>;
+}
+
+function checkFormingShape(
+	candles: CandleData[],
+	upperLine: FormingLine,
+	lowerLine: FormingLine,
+	startIdx: number,
+	endIdx: number,
+	allow: { falling: boolean; rising: boolean },
+): FormingCheck<FormingShape> {
+	const bothDown = upperLine.slope < 0 && lowerLine.slope < 0;
+	const bothUp = upperLine.slope > 0 && lowerLine.slope > 0;
+	if (!bothDown && !bothUp) {
+		return {
+			ok: false,
+			debug: {
+				type: upperLine.slope < 0 ? 'falling_wedge' : 'rising_wedge',
+				accepted: false,
+				reason: 'slopes_not_same_direction',
+				indices: [startIdx, endIdx],
+				details: { slopeU: upperLine.slope, slopeL: lowerLine.slope },
+			},
+		};
+	}
+
+	const absU = Math.abs(upperLine.slope),
+		absL = Math.abs(lowerLine.slope);
+	const weakerRatio = Math.min(absU, absL) / Math.max(absU, absL);
+	if (weakerRatio < MIN_WEAKER_SLOPE_RATIO) {
+		return {
+			ok: false,
+			debug: {
+				type: bothDown ? 'falling_wedge' : 'rising_wedge',
+				accepted: false,
+				reason: 'weaker_slope_ratio_low',
+				indices: [startIdx, endIdx],
+				details: { weakerRatio },
+			},
+		};
+	}
+
+	const wedgeType: 'falling_wedge' | 'rising_wedge' = bothDown ? 'falling_wedge' : 'rising_wedge';
+	if ((wedgeType === 'falling_wedge' && !allow.falling) || (wedgeType === 'rising_wedge' && !allow.rising)) {
+		return { ok: false };
+	}
+
+	const gapStart = upperLine.valueAt(startIdx) - lowerLine.valueAt(startIdx);
+	const gapEnd = upperLine.valueAt(endIdx) - lowerLine.valueAt(endIdx);
+	if (gapStart <= 0 || gapEnd <= 0 || gapEnd >= gapStart) {
+		return {
+			ok: false,
+			debug: {
+				type: wedgeType,
+				accepted: false,
+				reason: 'no_convergence',
+				indices: [startIdx, endIdx],
+				details: { gapStart, gapEnd },
+			},
+		};
+	}
+	const convRatio = gapEnd / gapStart;
+	if (convRatio >= FORMING_MAX_CONV_RATIO) {
+		return {
+			ok: false,
+			debug: {
+				type: wedgeType,
+				accepted: false,
+				reason: 'conv_ratio_too_high',
+				indices: [startIdx, endIdx],
+				details: { convRatio },
+			},
+		};
+	}
+
+	const fApex = calcApex(
+		{ slope: upperLine.slope, intercept: upperLine.intercept, valueAt: upperLine.valueAt },
+		{ slope: lowerLine.slope, intercept: lowerLine.intercept, valueAt: lowerLine.valueAt },
+		endIdx,
+	);
+	if (!fApex.isValid) {
+		return {
+			ok: false,
+			debug: {
+				type: wedgeType,
+				accepted: false,
+				reason: 'apex_invalid',
+				indices: [startIdx, endIdx],
+				details: { apex: fApex },
+			},
+		};
+	}
+
+	const fContainment = checkContainment(candles, upperLine, lowerLine, startIdx, endIdx, 0.005);
+	if (fContainment.closeInsideRatio < FORMING_MIN_CONTAINMENT) {
+		return {
+			ok: false,
+			debug: {
+				type: wedgeType,
+				accepted: false,
+				reason: 'containment_low',
+				indices: [startIdx, endIdx],
+				details: { containment: fContainment.closeInsideRatio },
+			},
+		};
+	}
+
+	return { ok: true, value: { wedgeType, absU, absL, convRatio, fApex, fContainment } };
+}
+
+interface FormingTouches {
+	validUpper: TouchPoint[];
+	validLower: TouchPoint[];
+	cleanTouches: TouchResult;
+	fAlternation: number;
+}
+
+function checkFormingTouches(
+	candles: CandleData[],
+	upperLine: FormingLine,
+	lowerLine: FormingLine,
+	startIdx: number,
+	endIdx: number,
+	wedgeType: 'falling_wedge' | 'rising_wedge',
+): FormingCheck<FormingTouches> {
+	// 線を引いた 2 点だけでは任意のジグザグを wedge にできるので、出力するタッチ点の数・広がり・交互性も採否に使う。
+	const fTouches = evaluateTouchesEx(candles, upperLine, lowerLine, startIdx, endIdx);
+	const validUpper = fTouches.upperTouches.filter((t) => !t.isBreak);
+	const validLower = fTouches.lowerTouches.filter((t) => !t.isBreak);
+	const totalTouches = validUpper.length + validLower.length;
+	if (
+		validUpper.length < FORMING_MIN_TOUCHES_PER_LINE ||
+		validLower.length < FORMING_MIN_TOUCHES_PER_LINE ||
+		totalTouches < FORMING_MIN_TOTAL_TOUCHES
+	) {
+		return {
+			ok: false,
+			debug: {
+				type: wedgeType,
+				accepted: false,
+				reason: 'insufficient_touches',
+				indices: [startIdx, endIdx],
+				details: {
+					upperTouches: validUpper.length,
+					lowerTouches: validLower.length,
+					totalTouches,
+					minPerLine: FORMING_MIN_TOUCHES_PER_LINE,
+					minTotal: FORMING_MIN_TOTAL_TOUCHES,
+				},
+			},
+		};
+	}
+
+	const patternBars = Math.max(1, endIdx - startIdx);
+	const spanRatio = (touches: readonly TouchPoint[]) => {
+		const indices = touches.map((t) => t.index);
+		return (Math.max(...indices) - Math.min(...indices)) / patternBars;
+	};
+	const upperSpanRatio = spanRatio(validUpper);
+	const lowerSpanRatio = spanRatio(validLower);
+	if (upperSpanRatio < FORMING_MIN_TOUCH_SPAN_RATIO || lowerSpanRatio < FORMING_MIN_TOUCH_SPAN_RATIO) {
+		return {
+			ok: false,
+			debug: {
+				type: wedgeType,
+				accepted: false,
+				reason: 'touch_span_too_short',
+				indices: [startIdx, endIdx],
+				details: {
+					upperSpanRatio: Number(upperSpanRatio.toFixed(3)),
+					lowerSpanRatio: Number(lowerSpanRatio.toFixed(3)),
+					minRequired: FORMING_MIN_TOUCH_SPAN_RATIO,
+				},
+			},
+		};
+	}
+
+	const cleanTouches: TouchResult = {
+		upperTouches: validUpper,
+		lowerTouches: validLower,
+		upperQuality: validUpper.length,
+		lowerQuality: validLower.length,
+		score: Math.min(1, totalTouches / 8),
+	};
+	const fAlternation = calcAlternationScoreEx(cleanTouches);
+	if (fAlternation < MIN_ALTERNATION) {
+		return {
+			ok: false,
+			debug: {
+				type: wedgeType,
+				accepted: false,
+				reason: 'insufficient_alternation',
+				indices: [startIdx, endIdx],
+				details: { alternation: Number(fAlternation.toFixed(3)), minRequired: MIN_ALTERNATION },
+			},
+		};
+	}
+	const fTouchBalance = Math.min(validUpper.length, validLower.length) / Math.max(validUpper.length, validLower.length);
+	if (fTouchBalance < MIN_TOUCH_BALANCE) {
+		return {
+			ok: false,
+			debug: {
+				type: wedgeType,
+				accepted: false,
+				reason: 'unbalanced_touches',
+				indices: [startIdx, endIdx],
+				details: { balance: Number(fTouchBalance.toFixed(3)), minRequired: MIN_TOUCH_BALANCE },
+			},
+		};
+	}
+
+	return { ok: true, value: { validUpper, validLower, cleanTouches, fAlternation } };
+}
+
+function findFormingBreakout(
+	candles: readonly CandleData[],
+	upperLine: FormingLine,
+	lowerLine: FormingLine,
+	endIdx: number,
+	breakoutScanEnd: number,
+): { breakoutIdx: number; breakoutDirection: 'up' | 'down' | null } {
+	// ラインの推定に使った endIdx の次の足からだけ探す。形成窓の内側を遡ると未来参照になる。
+	let breakoutIdx = -1;
+	let breakoutDirection: 'up' | 'down' | null = null;
+	for (let i = endIdx + 1; i <= breakoutScanEnd; i++) {
+		const close = Number(candles[i]?.close);
+		const uVal = upperLine.valueAt(i);
+		const lVal = lowerLine.valueAt(i);
+
+		if (close > uVal * (1 + FORMING_BREAKOUT_FACTOR)) {
+			breakoutIdx = i;
+			breakoutDirection = 'up';
+			break;
+		}
+		if (close < lVal * (1 - FORMING_BREAKOUT_FACTOR)) {
+			breakoutIdx = i;
+			breakoutDirection = 'down';
+			break;
+		}
+	}
+
+	return { breakoutIdx, breakoutDirection };
+}
+
+function formingTarget(
+	candles: readonly CandleData[],
+	upperLine: FormingLine,
+	lowerLine: FormingLine,
+	startIdx: number,
+	wedgeType: 'falling_wedge' | 'rising_wedge',
+	breakoutIdx: number,
+	breakoutDirection: 'up' | 'down' | null,
+): { fBreakoutTarget: number | undefined; fTargetReach: TargetReachResult } {
+	const fPatternHeight = Math.abs(upperLine.valueAt(startIdx) - lowerLine.valueAt(startIdx));
+	let fBreakoutTarget: number | undefined;
+	let fTargetReach: TargetReachResult = omittedTargetReach('not_broken_out');
+	const expectedBreakoutDirection = wedgeType === 'falling_wedge' ? 'up' : 'down';
+	const isExpectedBreakout = breakoutDirection === expectedBreakoutDirection;
+	if (breakoutDirection && breakoutIdx !== -1 && isExpectedBreakout) {
+		const bp = Number(candles[breakoutIdx]?.close);
+		if (Number.isFinite(bp)) {
+			fBreakoutTarget = breakoutDirection === 'up' ? bp + fPatternHeight : bp - fPatternHeight;
+			fBreakoutTarget = Math.round(fBreakoutTarget);
+			fTargetReach = computeTargetReach(candles, breakoutIdx, bp, fBreakoutTarget, breakoutDirection, fPatternHeight);
+		} else {
+			fTargetReach = omittedTargetReach('invalid_breakout_price');
+		}
+	} else if (breakoutDirection && breakoutIdx !== -1) {
+		// 期待と逆向きの突破は wedge の否定なので、目標値を反対側へ機械的に投影しない。
+		fTargetReach = omittedTargetReach('breakout_against_expectation');
+	}
+
+	return { fBreakoutTarget, fTargetReach };
+}
+
+function overlapsExistingWedge(
+	patterns: readonly DeduplicablePattern[],
+	wedgeType: 'falling_wedge' | 'rising_wedge',
+	start: string,
+	end: string,
+): boolean {
+	return patterns.some((p) => {
+		if (p.type !== wedgeType) return false;
+		const pStart = Date.parse(p.range?.start || '');
+		const pEnd = Date.parse(p.range?.end || '');
+		const thisStart = Date.parse(start);
+		const thisEnd = Date.parse(end);
+		if (!Number.isFinite(pStart) || !Number.isFinite(thisStart)) return false;
+		return Math.abs(pStart - thisStart) < 5 * 86400000 && Math.abs(pEnd - thisEnd) < 5 * 86400000;
+	});
+}
+
 // ブレイクを確認できた候補は completed になるので、includeForming: false でも出力に残る（既定で出る wedge_* はほぼこれ）。
 function detectFormingWedges(
 	pivotData: PivotData,
@@ -824,26 +1162,10 @@ function detectFormingWedges(
 	const fAllowFalling = want.size === 0 || want.has('falling_wedge');
 	const fAllowRising = want.size === 0 || want.has('rising_wedge');
 
-	const relaxedPeaks: Array<{ idx: number; price: number }> = [];
-	const relaxedValleys: Array<{ idx: number; price: number }> = [];
-	for (let idx = 1; idx < candles.length - 1; idx++) {
-		const isPeak = smoothHigh[idx] > smoothHigh[idx - 1] && smoothHigh[idx] > smoothHigh[idx + 1];
-		const isValley = smoothLow[idx] < smoothLow[idx - 1] && smoothLow[idx] < smoothLow[idx + 1];
-		if (isPeak) relaxedPeaks.push({ idx, price: candles[idx].close });
-		if (isValley) relaxedValleys.push({ idx, price: candles[idx].close });
-	}
+	const { peaks: relaxedPeaks, valleys: relaxedValleys } = findFormingPivots(candles, smoothHigh, smoothLow);
 
-	const fWindows: Array<{ startIdx: number; endIdx: number }> = [];
-	for (let size = barParams.formingWindowMin; size <= barParams.formingWindowMax; size += barParams.windowStep) {
-		for (let startIdx = 0; startIdx + size < candles.length; startIdx += barParams.windowStep) {
-			fWindows.push({ startIdx, endIdx: startIdx + size });
-		}
-	}
+	const fWindows = buildFormingWindows(barParams, candles.length);
 	const lastIdx = candles.length - 1;
-	for (let size = barParams.formingWindowMin; size <= barParams.formingWindowMax; size += barParams.windowStep) {
-		const s = Math.max(0, lastIdx - size);
-		fWindows.push({ startIdx: s, endIdx: lastIdx });
-	}
 
 	const allPatterns = [...existingPatterns];
 
@@ -865,187 +1187,30 @@ function detectFormingWedges(
 		const lowerLine = findLowerTrendlineF(lowsForWindow, startIdx, endIdx, tolerance);
 		if (!upperLine || !lowerLine) continue;
 
-		const bothDown = upperLine.slope < 0 && lowerLine.slope < 0;
-		const bothUp = upperLine.slope > 0 && lowerLine.slope > 0;
-		if (!bothDown && !bothUp) {
-			formingWedgeDebug.push({
-				type: upperLine.slope < 0 ? 'falling_wedge' : 'rising_wedge',
-				accepted: false,
-				reason: 'slopes_not_same_direction',
-				indices: [startIdx, endIdx],
-				details: { slopeU: upperLine.slope, slopeL: lowerLine.slope },
-			});
+		const shape = checkFormingShape(candles, upperLine, lowerLine, startIdx, endIdx, {
+			falling: fAllowFalling,
+			rising: fAllowRising,
+		});
+		if (!shape.ok) {
+			if (shape.debug) formingWedgeDebug.push(shape.debug);
 			continue;
 		}
+		const { wedgeType, absU, absL, convRatio, fApex, fContainment } = shape.value;
 
-		const absU = Math.abs(upperLine.slope),
-			absL = Math.abs(lowerLine.slope);
-		const weakerRatio = Math.min(absU, absL) / Math.max(absU, absL);
-		if (weakerRatio < MIN_WEAKER_SLOPE_RATIO) {
-			formingWedgeDebug.push({
-				type: bothDown ? 'falling_wedge' : 'rising_wedge',
-				accepted: false,
-				reason: 'weaker_slope_ratio_low',
-				indices: [startIdx, endIdx],
-				details: { weakerRatio },
-			});
+		const touches = checkFormingTouches(candles, upperLine, lowerLine, startIdx, endIdx, wedgeType);
+		if (!touches.ok) {
+			if (touches.debug) formingWedgeDebug.push(touches.debug);
 			continue;
 		}
+		const { validUpper, validLower, cleanTouches, fAlternation } = touches.value;
 
-		const wedgeType: 'falling_wedge' | 'rising_wedge' = bothDown ? 'falling_wedge' : 'rising_wedge';
-		if ((wedgeType === 'falling_wedge' && !fAllowFalling) || (wedgeType === 'rising_wedge' && !fAllowRising)) continue;
-
-		const gapStart = upperLine.valueAt(startIdx) - lowerLine.valueAt(startIdx);
-		const gapEnd = upperLine.valueAt(endIdx) - lowerLine.valueAt(endIdx);
-		if (gapStart <= 0 || gapEnd <= 0 || gapEnd >= gapStart) {
-			formingWedgeDebug.push({
-				type: wedgeType,
-				accepted: false,
-				reason: 'no_convergence',
-				indices: [startIdx, endIdx],
-				details: { gapStart, gapEnd },
-			});
-			continue;
-		}
-		const convRatio = gapEnd / gapStart;
-		if (convRatio >= FORMING_MAX_CONV_RATIO) {
-			formingWedgeDebug.push({
-				type: wedgeType,
-				accepted: false,
-				reason: 'conv_ratio_too_high',
-				indices: [startIdx, endIdx],
-				details: { convRatio },
-			});
-			continue;
-		}
-
-		const fApex = calcApex(
-			{ slope: upperLine.slope, intercept: upperLine.intercept, valueAt: upperLine.valueAt },
-			{ slope: lowerLine.slope, intercept: lowerLine.intercept, valueAt: lowerLine.valueAt },
+		const { breakoutIdx, breakoutDirection } = findFormingBreakout(
+			candles,
+			upperLine,
+			lowerLine,
 			endIdx,
+			Math.min(lastIdx, fApex.apexIdx - 1),
 		);
-		if (!fApex.isValid) {
-			formingWedgeDebug.push({
-				type: wedgeType,
-				accepted: false,
-				reason: 'apex_invalid',
-				indices: [startIdx, endIdx],
-				details: { apex: fApex },
-			});
-			continue;
-		}
-
-		const fContainment = checkContainment(candles, upperLine, lowerLine, startIdx, endIdx, 0.005);
-		if (fContainment.closeInsideRatio < FORMING_MIN_CONTAINMENT) {
-			formingWedgeDebug.push({
-				type: wedgeType,
-				accepted: false,
-				reason: 'containment_low',
-				indices: [startIdx, endIdx],
-				details: { containment: fContainment.closeInsideRatio },
-			});
-			continue;
-		}
-
-		// 線を引いた 2 点だけでは任意のジグザグを wedge にできるので、出力するタッチ点の数・広がり・交互性も採否に使う。
-		const fTouches = evaluateTouchesEx(candles, upperLine, lowerLine, startIdx, endIdx);
-		const validUpper = fTouches.upperTouches.filter((t) => !t.isBreak);
-		const validLower = fTouches.lowerTouches.filter((t) => !t.isBreak);
-		const totalTouches = validUpper.length + validLower.length;
-		if (
-			validUpper.length < FORMING_MIN_TOUCHES_PER_LINE ||
-			validLower.length < FORMING_MIN_TOUCHES_PER_LINE ||
-			totalTouches < FORMING_MIN_TOTAL_TOUCHES
-		) {
-			formingWedgeDebug.push({
-				type: wedgeType,
-				accepted: false,
-				reason: 'insufficient_touches',
-				indices: [startIdx, endIdx],
-				details: {
-					upperTouches: validUpper.length,
-					lowerTouches: validLower.length,
-					totalTouches,
-					minPerLine: FORMING_MIN_TOUCHES_PER_LINE,
-					minTotal: FORMING_MIN_TOTAL_TOUCHES,
-				},
-			});
-			continue;
-		}
-
-		const patternBars = Math.max(1, endIdx - startIdx);
-		const spanRatio = (touches: readonly TouchPoint[]) => {
-			const indices = touches.map((t) => t.index);
-			return (Math.max(...indices) - Math.min(...indices)) / patternBars;
-		};
-		const upperSpanRatio = spanRatio(validUpper);
-		const lowerSpanRatio = spanRatio(validLower);
-		if (upperSpanRatio < FORMING_MIN_TOUCH_SPAN_RATIO || lowerSpanRatio < FORMING_MIN_TOUCH_SPAN_RATIO) {
-			formingWedgeDebug.push({
-				type: wedgeType,
-				accepted: false,
-				reason: 'touch_span_too_short',
-				indices: [startIdx, endIdx],
-				details: {
-					upperSpanRatio: Number(upperSpanRatio.toFixed(3)),
-					lowerSpanRatio: Number(lowerSpanRatio.toFixed(3)),
-					minRequired: FORMING_MIN_TOUCH_SPAN_RATIO,
-				},
-			});
-			continue;
-		}
-
-		const cleanTouches: TouchResult = {
-			upperTouches: validUpper,
-			lowerTouches: validLower,
-			upperQuality: validUpper.length,
-			lowerQuality: validLower.length,
-			score: Math.min(1, totalTouches / 8),
-		};
-		const fAlternation = calcAlternationScoreEx(cleanTouches);
-		if (fAlternation < MIN_ALTERNATION) {
-			formingWedgeDebug.push({
-				type: wedgeType,
-				accepted: false,
-				reason: 'insufficient_alternation',
-				indices: [startIdx, endIdx],
-				details: { alternation: Number(fAlternation.toFixed(3)), minRequired: MIN_ALTERNATION },
-			});
-			continue;
-		}
-		const fTouchBalance =
-			Math.min(validUpper.length, validLower.length) / Math.max(validUpper.length, validLower.length);
-		if (fTouchBalance < MIN_TOUCH_BALANCE) {
-			formingWedgeDebug.push({
-				type: wedgeType,
-				accepted: false,
-				reason: 'unbalanced_touches',
-				indices: [startIdx, endIdx],
-				details: { balance: Number(fTouchBalance.toFixed(3)), minRequired: MIN_TOUCH_BALANCE },
-			});
-			continue;
-		}
-
-		// ラインの推定に使った endIdx の次の足からだけ探す。形成窓の内側を遡ると未来参照になる。
-		let breakoutIdx = -1;
-		let breakoutDirection: 'up' | 'down' | null = null;
-		const breakoutScanEnd = Math.min(lastIdx, fApex.apexIdx - 1);
-		for (let i = endIdx + 1; i <= breakoutScanEnd; i++) {
-			const close = Number(candles[i]?.close);
-			const uVal = upperLine.valueAt(i);
-			const lVal = lowerLine.valueAt(i);
-
-			if (close > uVal * (1 + FORMING_BREAKOUT_FACTOR)) {
-				breakoutIdx = i;
-				breakoutDirection = 'up';
-				break;
-			}
-			if (close < lVal * (1 - FORMING_BREAKOUT_FACTOR)) {
-				breakoutIdx = i;
-				breakoutDirection = 'down';
-				break;
-			}
-		}
 
 		const isForming = breakoutIdx === -1;
 		const actualEndIdx = isForming ? endIdx : breakoutIdx;
@@ -1053,16 +1218,7 @@ function detectFormingWedges(
 		const end = candles[actualEndIdx]?.isoTime;
 		if (!start || !end) continue;
 
-		const alreadyExists = allPatterns.some((p) => {
-			if (p.type !== wedgeType) return false;
-			const pStart = Date.parse(p.range?.start || '');
-			const pEnd = Date.parse(p.range?.end || '');
-			const thisStart = Date.parse(start);
-			const thisEnd = Date.parse(end);
-			if (!Number.isFinite(pStart) || !Number.isFinite(thisStart)) return false;
-			return Math.abs(pStart - thisStart) < 5 * 86400000 && Math.abs(pEnd - thisEnd) < 5 * 86400000;
-		});
-		if (alreadyExists) continue;
+		if (overlapsExistingWedge(allPatterns, wedgeType, start, end)) continue;
 
 		const convergenceScore = 1 - convRatio;
 		const slopeScore = Math.min(absU, absL) / Math.max(absU, absL);
@@ -1103,24 +1259,15 @@ function detectFormingWedges(
 
 		const breakoutDate = breakoutIdx !== -1 ? candles[breakoutIdx]?.isoTime : undefined;
 
-		const fPatternHeight = Math.abs(upperLine.valueAt(startIdx) - lowerLine.valueAt(startIdx));
-		let fBreakoutTarget: number | undefined;
-		let fTargetReach: TargetReachResult = omittedTargetReach('not_broken_out');
-		const expectedBreakoutDirection = wedgeType === 'falling_wedge' ? 'up' : 'down';
-		const isExpectedBreakout = breakoutDirection === expectedBreakoutDirection;
-		if (breakoutDirection && breakoutIdx !== -1 && isExpectedBreakout) {
-			const bp = Number(candles[breakoutIdx]?.close);
-			if (Number.isFinite(bp)) {
-				fBreakoutTarget = breakoutDirection === 'up' ? bp + fPatternHeight : bp - fPatternHeight;
-				fBreakoutTarget = Math.round(fBreakoutTarget);
-				fTargetReach = computeTargetReach(candles, breakoutIdx, bp, fBreakoutTarget, breakoutDirection, fPatternHeight);
-			} else {
-				fTargetReach = omittedTargetReach('invalid_breakout_price');
-			}
-		} else if (breakoutDirection && breakoutIdx !== -1) {
-			// 期待と逆向きの突破は wedge の否定なので、目標値を反対側へ機械的に投影しない。
-			fTargetReach = omittedTargetReach('breakout_against_expectation');
-		}
+		const { fBreakoutTarget, fTargetReach } = formingTarget(
+			candles,
+			upperLine,
+			lowerLine,
+			startIdx,
+			wedgeType,
+			breakoutIdx,
+			breakoutDirection,
+		);
 
 		// ブレイクは形成区間の次の足から探すので、breakIdx を渡さなくてもブレイク足は混入しない。
 		const fPivots = buildTouchPivots(candles, cleanTouches, null);
