@@ -355,6 +355,560 @@ function buildEquitySeriesLines(headingBase: string, series: EquityPoint[]): str
 	return lines;
 }
 
+function buildFetchStatusLines(input: {
+	marginFetchFailed: boolean;
+	marginStatusFetchFailed: boolean;
+	marginPositionsFetchFailed: boolean;
+	marginStatus: MarginAccountInfo['status'];
+	tradesTruncated: boolean;
+	marginTradesTruncated: boolean;
+}): string[] {
+	const {
+		marginFetchFailed,
+		marginStatusFetchFailed,
+		marginPositionsFetchFailed,
+		marginStatus,
+		tradesTruncated,
+		marginTradesTruncated,
+	} = input;
+	const lines: string[] = [];
+	// 信用 fetch 失敗時は truncated と内容が重複するので、信用側の truncated 警告は抑止する。
+	if (marginFetchFailed) {
+		lines.push('⚠️ 信用約定の取得に失敗。信用 PnL は実態を反映しない可能性');
+	}
+	if (marginStatusFetchFailed) {
+		lines.push('⚠️ 信用口座状態の取得に失敗。建玉・追証状態は反映されていません');
+	}
+	if (marginPositionsFetchFailed) {
+		lines.push('⚠️ 信用建玉の取得に失敗。建玉情報は反映されていません');
+	}
+	if (marginStatus && marginStatus.status !== 'NORMAL') {
+		const warningLine = MARGIN_STATUS_WARNINGS[marginStatus.status];
+		if (warningLine) lines.push(warningLine);
+	}
+	const showMarginTruncated = marginTradesTruncated && !marginFetchFailed;
+	if (tradesTruncated || showMarginTruncated) {
+		const subjects = [tradesTruncated && '現物', showMarginTruncated && '信用'].filter(Boolean).join(' / ');
+		lines.push(`※ 約定履歴（${subjects}）が上限に達したため一部のみ取得。損益計算が不正確な可能性があります`);
+	}
+	return lines;
+}
+
+function buildPerformanceSectionLines(input: {
+	dailyPerformance: PeriodPerformance | undefined;
+	yearlyPerformance: PeriodPerformance | undefined;
+	monthlyPerformance: PeriodPerformance | undefined;
+	flowUnavailableReason: PortfolioFlowUnavailableReason | undefined;
+	monthlyEquitySeries: EquityPoint[] | undefined;
+	yearlyEquitySeries: EquityPoint[] | undefined;
+	equitySeriesQuality: 'complete' | 'partial_fallback' | 'fallback_only' | 'jpy_only' | undefined;
+	equitySeriesFallbackAssets: readonly string[];
+}): string[] {
+	const {
+		dailyPerformance,
+		yearlyPerformance,
+		monthlyPerformance,
+		flowUnavailableReason,
+		monthlyEquitySeries,
+		yearlyEquitySeries,
+		equitySeriesQuality,
+		equitySeriesFallbackAssets,
+	} = input;
+	const lines: string[] = [];
+	if (dailyPerformance) lines.push(...buildPerformanceLines('前日比', dailyPerformance));
+	if (yearlyPerformance) lines.push(...buildPerformanceLines('年初比', yearlyPerformance));
+	if (monthlyPerformance) lines.push(...buildPerformanceLines('月初比', monthlyPerformance));
+	if (yearlyPerformance || monthlyPerformance) {
+		lines.push(`期間基準: JST`);
+		lines.push(
+			'※ 期初評価額は約定・入出金を逆算して復元、期初始値で評価。暗号資産入出庫は入出庫日（入庫: confirmed_at / 出庫: requested_at）の始値で JPY 換算',
+		);
+		lines.push('※ 出金元本は外部フローとして除外、出金手数料はコストとして performance に含む');
+		// 上の 2 行が復元前提を語っているので、前提が満たせていないことをその直後に置く。
+		if (flowUnavailableReason != null) {
+			lines.push(
+				`※ ただし今回は${FLOW_UNAVAILABLE_CAUSE[flowUnavailableReason]}ため入出金を巻き戻せていません。期初評価額・資産推移シリーズは入出金があった期間で実態と乖離します`,
+			);
+		}
+	}
+	if (monthlyEquitySeries && monthlyEquitySeries.length > 0) {
+		if (equitySeriesQuality === 'jpy_only') {
+			lines.push('※ 資産推移シリーズ: JPY のみ保有のため、価格変動は反映されません（入出金・約定の影響のみ）');
+		} else if (equitySeriesQuality === 'fallback_only') {
+			lines.push(
+				'※ 資産推移シリーズ: 暗号資産の歴史的価格データが取得できなかったため、現在価格で全期間を代替（progression は holdings 変動のみ反映）',
+			);
+		} else if (equitySeriesQuality === 'partial_fallback') {
+			const missing = equitySeriesFallbackAssets.map((a) => a.toUpperCase()).join(', ');
+			lines.push(`※ 資産推移シリーズ: ${missing} の歴史的価格データが取得できなかったため、現在価格で代替`);
+		}
+		lines.push(
+			...buildEquitySeriesLines(
+				`月次資産推移（日次, ${monthlyEquitySeries.length}点）— グラフ「月次推移」タブ専用。年次タブでは使わない`,
+				monthlyEquitySeries,
+			),
+		);
+	}
+	if (yearlyEquitySeries && yearlyEquitySeries.length > 0) {
+		lines.push(
+			...buildEquitySeriesLines(
+				`年次資産推移（月次, ${yearlyEquitySeries.length}点）— グラフ「年次推移」タブ専用。月次タブでは使わない`,
+				yearlyEquitySeries,
+			),
+		);
+	}
+	return lines;
+}
+
+function periodDWLine(label: '年初来' | '月初来', d: PeriodDWSummary): string {
+	const parts = [
+		`${label}入出金: JPY入金 ${formatPriceJPY(d.jpy_deposited)} / JPY出金 ${formatPriceJPY(d.jpy_withdrawn)} / 純入出金 ${formatPriceJPY(d.net_jpy)}`,
+	];
+	if (d.crypto_deposit_count > 0)
+		parts.push(
+			`暗号資産入庫 ${d.crypto_deposit_count}件${d.crypto_deposit_estimated_jpy ? `（概算 ${formatPriceJPY(d.crypto_deposit_estimated_jpy)}）` : ''}`,
+		);
+	if (d.crypto_withdrawal_count > 0)
+		parts.push(
+			`暗号資産出庫 ${d.crypto_withdrawal_count}件${d.crypto_withdrawal_estimated_jpy ? `（概算 ${formatPriceJPY(d.crypto_withdrawal_estimated_jpy)}）` : ''}`,
+		);
+	return parts.join(' / ');
+}
+
+function buildDWStatusLines(input: {
+	depositWithdrawalStatus: ReturnType<typeof resolveDepositWithdrawalStatus>;
+	dwAllFailed: boolean | undefined;
+	dwFetchedForPnl: boolean;
+	flowUnavailableReason: PortfolioFlowUnavailableReason | undefined;
+}): string[] {
+	const { depositWithdrawalStatus, dwAllFailed, dwFetchedForPnl, flowUnavailableReason } = input;
+	const lines: string[] = [];
+	if (depositWithdrawalStatus === 'available') {
+		lines.push(`入出金分析状態: available`);
+		lines.push(`分析基準: deposit_withdrawal`);
+	} else if (depositWithdrawalStatus === 'fallback') {
+		lines.push(`入出金分析状態: fallback`);
+		lines.push(`分析基準: trade_only`);
+		if (dwAllFailed) {
+			lines.push('※ 入出金APIの取得に全て失敗したため、約定ベースの分析のみです');
+		} else {
+			lines.push('※ API取得失敗またはpartial failureのため、約定ベースの分析にフォールバックしています');
+		}
+	} else if (depositWithdrawalStatus === 'no_history') {
+		lines.push(`入出金分析状態: no_history`);
+		lines.push(`分析基準: trade_only`);
+		lines.push('※ 入出金履歴が0件のため、入出金ベース分析なし。約定ベースの分析のみです');
+	} else {
+		lines.push(`入出金分析状態: not_requested`);
+		lines.push(`分析基準: trade_only`);
+		// 「反映した値です」と断言するのは原価を出しているときだけ。原価を抑止しているときは「算出不能」行と矛盾するので中立の文言に落とす。
+		lines.push(
+			dwFetchedForPnl && flowUnavailableReason == null
+				? '※ 入出金分析セクションは未リクエスト（include_deposit_withdrawal=false）。ただし損益計算には入出金履歴を取得して使用しているため、取得原価・評価損益・純入出金は入出金を反映した値です'
+				: '※ 入出金分析は未リクエスト。約定ベースの分析のみです',
+		);
+	}
+	return lines;
+}
+
+function buildAccountReturnLines(dwSummary: DepositWithdrawalSummary): string[] {
+	const lines: string[] = [];
+	// crypto_*_count は総件数で、estimated_jpy に載っているのは価格を解決できた件数だけなので、内訳の件数の和から逆算する。
+	const valuedCounts = (breakdown: FlowValuationBreakdown | undefined) =>
+		(breakdown?.deposit_date_price_count ?? 0) + (breakdown?.current_price_fallback_count ?? 0);
+	const valuedDepositCount = valuedCounts(dwSummary.crypto_deposit_valuation);
+	const valuedWithdrawalCount = valuedCounts(dwSummary.crypto_withdrawal_valuation);
+	const unvaluedDepositCount = (dwSummary.crypto_deposit_count ?? 0) - valuedDepositCount;
+	const unvaluedWithdrawalCount = (dwSummary.crypto_withdrawal_count ?? 0) - valuedWithdrawalCount;
+
+	if (dwSummary.account_return_jpy != null) {
+		const sign = dwSummary.account_return_jpy >= 0 ? '+' : '';
+		const approxLabel = dwSummary.is_complete ? '' : '（概算）';
+		lines.push(
+			`口座全体リターン${approxLabel}: ${sign}${formatPriceJPY(dwSummary.account_return_jpy)} (${formatPercent(dwSummary.account_return_pct, { sign: true })})`,
+		);
+		lines.push(`  JPY入金合計: ${formatPriceJPY(dwSummary.total_jpy_deposited)}`);
+		if (dwSummary.total_jpy_withdrawn > 0) {
+			lines.push(`  JPY出金合計: ${formatPriceJPY(dwSummary.total_jpy_withdrawn)}`);
+		}
+		const netJpyDeposit = dwSummary.total_jpy_deposited - dwSummary.total_jpy_withdrawn;
+		lines.push(`  JPY純入金: ${formatPriceJPY(Math.round(netJpyDeposit))}`);
+		if (dwSummary.crypto_deposit_estimated_jpy) {
+			lines.push(
+				`  暗号資産入庫の評価: ${formatPriceJPY(dwSummary.crypto_deposit_estimated_jpy)}（${valuedDepositCount}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_deposit_valuation?.basis ?? 'current_price_fallback']}）`,
+			);
+		}
+		if (dwSummary.crypto_withdrawal_estimated_jpy) {
+			lines.push(
+				`  暗号資産出庫の評価: -${formatPriceJPY(dwSummary.crypto_withdrawal_estimated_jpy)}（${valuedWithdrawalCount}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_withdrawal_valuation?.basis ?? 'current_price_fallback']}）`,
+			);
+		}
+		// 内訳の式は実際に載っている項だけを並べる（0 円の項を書くと読み手が総額を追えない）。
+		const netInvestedTerms = [
+			dwSummary.crypto_deposit_estimated_jpy ? '+ 暗号資産入庫の評価額' : '',
+			dwSummary.crypto_withdrawal_estimated_jpy ? '- 暗号資産出庫の評価額' : '',
+		].filter(Boolean);
+		lines.push(
+			`  純投入額: ${formatPriceJPY(dwSummary.net_jpy_invested)}${netInvestedTerms.length > 0 ? `（JPY純入金 ${netInvestedTerms.join(' ')}）` : ''}`,
+		);
+		if (!dwSummary.is_complete) {
+			lines.push('  ※ 入出金履歴が多く全件取得できなかったため、概算値です');
+		}
+		if (unvaluedDepositCount > 0) {
+			lines.push(`  ※ 暗号資産入庫 ${unvaluedDepositCount}件の価格が取得できず評価額に含まれていません`);
+		}
+		const depositFallbackCount = dwSummary.crypto_deposit_valuation?.current_price_fallback_count ?? 0;
+		if (depositFallbackCount > 0) {
+			lines.push(
+				`  ※ うち ${depositFallbackCount}件は入庫日の価格を取得できず現在価格で仮評価（この分だけ相場変動で評価額が動きます）`,
+			);
+		}
+		if (unvaluedWithdrawalCount > 0) {
+			lines.push(`  ※ 暗号資産出庫 ${unvaluedWithdrawalCount}件は評価額を算出できず純投入額に反映されていません`);
+		}
+		const withdrawalFallbackCount = dwSummary.crypto_withdrawal_valuation?.current_price_fallback_count ?? 0;
+		if (withdrawalFallbackCount > 0) {
+			lines.push(
+				`  ※ うち ${withdrawalFallbackCount}件は出庫日の価格を取得できず現在価格で仮評価（この分だけ相場変動で評価額が動きます）`,
+			);
+		}
+		if (valuedWithdrawalCount > 0) {
+			lines.push(
+				`  ※ 暗号資産出庫 ${valuedWithdrawalCount}件は JPY 出金と同じ「元本の回収」として純投入額から差し引いています（外部ウォレットへ移して保有を続けている場合でも、口座外の値動きは測定対象外です）`,
+			);
+		}
+	} else if (dwSummary.net_jpy_invested <= 0) {
+		// 黙ってブロックごと消すと「計算されたのに表示されていない」と読まれるので、出せない理由を 1 行で出す。
+		const withdrawalCause =
+			valuedWithdrawalCount > 0 ? `暗号資産出庫 ${valuedWithdrawalCount}件を元本の回収として差し引いた結果、` : '';
+		lines.push(
+			`口座全体リターン: 算出不可（${withdrawalCause}純投入額が ${formatPriceJPY(dwSummary.net_jpy_invested)} と 0 以下になりました。引き出しが投入を上回る口座ではリターン率を定義できません）`,
+		);
+	}
+	return lines;
+}
+
+function buildAccountPnlLines(input: {
+	accountPnl: AccountPnl;
+	totalRealizedPnlUnavailableReason: PortfolioUnresolvedDepositReason | undefined;
+	heldRealizedPnl: number;
+	closedPositionRealizedPnl: number | undefined;
+	closedPositionAssetCount: number | undefined;
+	hasPeriodAccountPnl: boolean;
+}): string[] {
+	const {
+		accountPnl,
+		totalRealizedPnlUnavailableReason,
+		heldRealizedPnl,
+		closedPositionRealizedPnl,
+		closedPositionAssetCount,
+		hasPeriodAccountPnl,
+	} = input;
+	const lines: string[] = [];
+	// 全履歴と年初来 / 月初来が併存するので、ラベルにスコープを書く（text だけでは判別できない。#53）。
+	const spotRealized = accountPnl.spot_realized_pnl;
+	const hasMargin =
+		accountPnl.margin_realized_pnl !== 0 || accountPnl.margin_interest_cost !== 0 || accountPnl.margin_fee_cost !== 0;
+	// data 側はコスト = 正値なので、表示は total への寄与として - を前置する（#72）。
+	const marginPart = `Margin: ${accountPnl.margin_realized_pnl >= 0 ? '+' : ''}${formatPriceJPY(accountPnl.margin_realized_pnl)} / Interest cost: -${formatPriceJPY(accountPnl.margin_interest_cost)} / Fee cost: -${formatPriceJPY(accountPnl.margin_fee_cost)}`;
+	if (spotRealized == null && totalRealizedPnlUnavailableReason != null) {
+		// 抑止した銘柄を除いた部分和を見出しに載せない。数字を出した時点で口座の実現損益として読まれる（#80）。
+		lines.push(
+			`Realized PnL (Spot, 全履歴・売り切り銘柄含む): 算出不能（${UNRESOLVED_DEPOSIT_NOTE[totalRealizedPnlUnavailableReason]}）`,
+		);
+		lines.push(
+			hasMargin
+				? `Account PnL (全履歴): 算出不能（現物の実現損益が確定しないため。信用のみの内訳: ${marginPart}）`
+				: 'Account PnL (全履歴): 算出不能（現物の実現損益が確定しないため）',
+		);
+	} else {
+		const spotSign = (spotRealized ?? 0) >= 0 ? '+' : '';
+		lines.push(`Realized PnL (Spot, 全履歴・売り切り銘柄含む): ${spotSign}${formatPriceJPY(spotRealized ?? 0)}`);
+		if (closedPositionRealizedPnl != null) {
+			const heldSign = heldRealizedPnl >= 0 ? '+' : '';
+			const closedPart =
+				closedPositionAssetCount != null && closedPositionAssetCount > 0
+					? `売り切り銘柄 ${closedPositionAssetCount}銘柄 ${closedPositionRealizedPnl >= 0 ? '+' : ''}${formatPriceJPY(closedPositionRealizedPnl)}`
+					: '売り切り銘柄なし（0円）';
+			lines.push(
+				`  内訳: 現在保有銘柄（holdings[].realized_pnl の合計）${heldSign}${formatPriceJPY(heldRealizedPnl)} / ${closedPart}`,
+			);
+		}
+		const total = accountPnl.total ?? 0;
+		const totalSign = total >= 0 ? '+' : '';
+		if (hasMargin) {
+			lines.push(
+				`Account PnL (全履歴): ${totalSign}${formatPriceJPY(total)} (Spot: ${spotSign}${formatPriceJPY(spotRealized ?? 0)} / ${marginPart})`,
+			);
+		} else {
+			lines.push(`Account PnL (全履歴): ${totalSign}${formatPriceJPY(total)}`);
+		}
+	}
+	// 年初来 / 月初来は data 側にしか出ないので、全履歴の値と取り違えられないよう所在を示す。
+	if (hasPeriodAccountPnl) {
+		lines.push(
+			'※ 上の Realized PnL / Account PnL は全履歴（口座開設来）の集計です。年初来 / 月初来は yearly_account_pnl / monthly_account_pnl（現物単独は yearly_realized_pnl / monthly_realized_pnl）を参照してください',
+		);
+	}
+	return lines;
+}
+
+function buildCostNoteLines(input: {
+	flowUnavailableReason: PortfolioFlowUnavailableReason | undefined;
+	totalUnrealizedPnl: number | undefined;
+	totalUnrealizedPnlPct: number | undefined;
+	qtyMismatchAssets: ReadonlyArray<{ asset: string; reason: PortfolioQtyMismatchReason }>;
+	depositOnlyDetected: readonly string[];
+	unpricedDepositLabel: string;
+	suppressedRealizedLabel: string;
+	qtyClampLabel: string;
+}): string[] {
+	const {
+		flowUnavailableReason,
+		totalUnrealizedPnl,
+		totalUnrealizedPnlPct,
+		qtyMismatchAssets,
+		depositOnlyDetected,
+		unpricedDepositLabel,
+		suppressedRealizedLabel,
+		qtyClampLabel,
+	} = input;
+	const lines: string[] = [];
+	if (flowUnavailableReason != null) {
+		// 壊れた原価から出した率が見出しに載ると、LLM がそれを口座の成績として読む。
+		lines.push(`評価損益: 算出不能（${FLOW_UNAVAILABLE_NOTE[flowUnavailableReason]}）`);
+	} else {
+		if (totalUnrealizedPnl != null) {
+			const sign = totalUnrealizedPnl >= 0 ? '+' : '';
+			lines.push(
+				`合計評価損益（全履歴の約定ベース）: ${sign}${formatPriceJPY(totalUnrealizedPnl)} (${formatPercent(totalUnrealizedPnlPct, { sign: true })})`,
+			);
+		}
+		lines.push(
+			'※ 評価損益は全履歴の約定・暗号資産入出庫から移動平均法で算出した取得原価ベース。暗号資産入庫は入庫日（confirmed_at）の始値で取得したとみなして原価に算入（真の取得原価ではなく入庫時点の相場という仮定）。入庫日の価格を取得できなかった入庫は原価に算入しないため、その分だけ取得原価は過小になります（復元数量が実残高と乖離した銘柄は取得原価を出しません）',
+		);
+	}
+	if (qtyMismatchAssets.length > 0) {
+		lines.push(
+			`※ ${qtyMismatchAssets.map((m) => m.asset.toUpperCase()).join(', ')} は復元数量が実残高と乖離しているため合計評価損益に含めていません`,
+		);
+	}
+	if (depositOnlyDetected.length > 0) {
+		lines.push(
+			`※ ${depositOnlyDetected.map((a) => a.toUpperCase()).join(', ')} は入庫記録はあるものの約定履歴にも現在残高にも現れません（closed_positions を参照）`,
+		);
+	}
+	if (unpricedDepositLabel !== '') {
+		lines.push(
+			`※ ${unpricedDepositLabel} は入庫日の始値を解決できなかった入庫（カッコ内は件数）を取得原価に算入していないため、取得原価・評価損益・実現損益がその分だけ不完全です。合計からは除外せず含めています`,
+		);
+	}
+	if (suppressedRealizedLabel !== '') {
+		lines.push(
+			`※ ${suppressedRealizedLabel} は入庫日を含む年足を取得できなかった入庫（カッコ内は件数）があるため、取得原価・評価損益・実現損益を出していません（合計評価損益からは除外しています）。合計実現損益・口座全体 PnL も、抑止した銘柄を除いた部分和は出さず算出不能にしています`,
+		);
+	}
+	if (qtyClampLabel !== '') {
+		lines.push(
+			`※ ${qtyClampLabel} は履歴から復元した保有を超える売却（カッコ内は発火件数）があり、超過分を原価ゼロで按分しています。その分だけ実現損益は過大側、取得原価は過小側です`,
+		);
+	}
+	return lines;
+}
+
+function buildHoldingsPerformanceLines(
+	holdingsPerformance: ReadonlyArray<{
+		asset: string;
+		jpy_value?: number | null;
+		monthly_change_pct?: number | null;
+		yearly_change_pct?: number | null;
+	}>,
+): string[] {
+	const lines: string[] = [];
+	lines.push('保有銘柄のパフォーマンス:');
+	for (const hp of holdingsPerformance) {
+		const assetUpper = hp.asset.toUpperCase();
+		const parts = [`${assetUpper}`];
+		if (hp.jpy_value != null) parts.push(formatPriceJPY(hp.jpy_value));
+		if (hp.monthly_change_pct != null)
+			parts.push(`月次騰落率: ${formatPercent(hp.monthly_change_pct, { sign: true })}`);
+		if (hp.yearly_change_pct != null) parts.push(`年次騰落率: ${formatPercent(hp.yearly_change_pct, { sign: true })}`);
+		lines.push(`  ${parts.join(' / ')}`);
+	}
+	return lines;
+}
+
+function buildTechnicalLines(technical: readonly TechnicalSummary[]): string[] {
+	const lines: string[] = [];
+	lines.push('');
+	lines.push('テクニカル分析:');
+	for (const t of technical) {
+		const parts = [formatPair(t.pair)];
+		if (t.trend) parts.push(`トレンド: ${t.trend}`);
+		if (t.rsi_14 != null) parts.push(`RSI: ${t.rsi_14}`);
+		if (t.sma_deviation_pct != null) parts.push(`SMA乖離: ${formatPercent(t.sma_deviation_pct, { sign: true })}`);
+		if (t.signal) parts.push(`総合判定: ${t.signal}`);
+		lines.push(`  ${parts.join(' / ')}`);
+	}
+	return lines;
+}
+
+interface CalcWarningsInput {
+	dailyPerformance: PeriodPerformance | undefined;
+	monthlyPerformance: PeriodPerformance | undefined;
+	yearlyPerformance: PeriodPerformance | undefined;
+	flowUnavailableReason: PortfolioFlowUnavailableReason | undefined;
+	qtyMismatchAssets: ReadonlyArray<{ asset: string; reason: PortfolioQtyMismatchReason }>;
+	depositOnlyDetected: readonly string[];
+	tradesTruncated: boolean;
+	unpricedDepositLabel: string;
+	qtyClampLabel: string;
+	cryptoHoldingCount: number;
+	changePctSuppressed: ReadonlyArray<{
+		label: string;
+		reason: PortfolioChangePctUnavailableReason;
+		direction: ChangeJpyDirection;
+	}>;
+	flowValuationFallbackCount: number;
+	chunkTruncated: { deposits: number; withdrawals: number };
+	chunkFailed: { deposits: number; withdrawals: number };
+	suppressedLabelOf: (reason?: PortfolioUnresolvedDepositReason) => string;
+}
+
+function buildCalcWarnings(input: CalcWarningsInput): string[] {
+	const {
+		dailyPerformance,
+		monthlyPerformance,
+		yearlyPerformance,
+		flowUnavailableReason,
+		qtyMismatchAssets,
+		depositOnlyDetected,
+		tradesTruncated,
+		unpricedDepositLabel,
+		qtyClampLabel,
+		cryptoHoldingCount,
+		changePctSuppressed,
+		flowValuationFallbackCount,
+		chunkTruncated,
+		chunkFailed,
+		suppressedLabelOf,
+	} = input;
+	const netFlowUnpricedAssets = [
+		...new Set([
+			...(dailyPerformance?.unpriced_flow_assets ?? []),
+			...(monthlyPerformance?.unpriced_flow_assets ?? []),
+			...(yearlyPerformance?.unpriced_flow_assets ?? []),
+		]),
+	].sort();
+	const startBoundaryUnpricedAssets = [
+		...new Set([
+			...(dailyPerformance?.unpriced_start_assets ?? []),
+			...(monthlyPerformance?.unpriced_start_assets ?? []),
+			...(yearlyPerformance?.unpriced_start_assets ?? []),
+		]),
+	].sort();
+	const currentUnpricedAssets = [
+		...new Set([
+			...(dailyPerformance?.unpriced_current_assets ?? []),
+			...(monthlyPerformance?.unpriced_current_assets ?? []),
+			...(yearlyPerformance?.unpriced_current_assets ?? []),
+		]),
+	].sort();
+	const calcWarnings: string[] = [];
+	// summary 本文の「算出不能」行は JSON より後ろに埋もれることがあるので、content 先頭にも出す。
+	if (flowUnavailableReason != null) {
+		calcWarnings.push(
+			`評価損益・取得原価は算出していません（${FLOW_UNAVAILABLE_NOTE[flowUnavailableReason]}）。期間パフォーマンスの純入出金も未計測です`,
+		);
+	}
+	if (qtyMismatchAssets.length > 0) {
+		calcWarnings.push(
+			`${qtyMismatchAssets.map((m) => `${m.asset.toUpperCase()}（${QTY_MISMATCH_CAUSE[m.reason]}）`).join(', ')} は約定・出庫から復元した保有数量が実残高と一致しないため、取得原価・評価損益を算出せず合計評価損益からも除外しています`,
+		);
+	}
+	// 約定履歴が打ち切られている実行で「販売所取引の可能性」と言い切らないよう、文言を tradesTruncated で分ける。
+	if (depositOnlyDetected.length > 0) {
+		calcWarnings.push(
+			tradesTruncated
+				? `${depositOnlyDetected.map((a) => a.toUpperCase()).join(', ')} は入出金履歴に暗号資産の入庫記録があるものの、約定履歴にも現在残高にも現れません。約定履歴の取得が件数上限で打ち切られているため取引所約定を見落としている可能性があり、該当銘柄の実現損益はこの結果に含まれていません（closed_positions に realized_pnl_unavailable_reason=history_truncated 付きで申告しています）`
+				: `${depositOnlyDetected.map((a) => a.toUpperCase()).join(', ')} は入出金履歴に暗号資産の入庫記録があるものの、約定履歴にも現在残高にも現れません。販売所取引など bitbank API に現れない取引で全量を処分した可能性があり（断定はできません）、該当銘柄の実現損益はこの結果に含まれていません（closed_positions に realized_pnl_unavailable_reason=untracked_trade_suspected 付きで申告しています）`,
+		);
+	}
+	if (unpricedDepositLabel !== '') {
+		calcWarnings.push(
+			`${unpricedDepositLabel} は入庫日の始値を解決できなかった暗号資産入庫（カッコ内は件数）を取得原価にも復元数量にも算入せずに cost_basis / avg_buy_price / unrealized_pnl / realized_pnl を算出しています。未算入ぶんを売却済みなら原価ゼロで売ったことになり実現損益は過大、保有継続なら取得原価が過小です。数量乖離が許容誤差に収まっているため cost_basis_reliable=true のまま確定値が出ますが、原価は不完全です（件数は holdings[].unpriced_deposit_count。該当銘柄は total_cost_basis / total_unrealized_pnl / total_realized_pnl から除外せず含めています）`,
+		);
+	}
+	// 原価をゼロ扱いにするのは実現損益として妥当なので抑止せず、算出条件として申告だけする（#89）。
+	if (qtyClampLabel !== '') {
+		calcWarnings.push(
+			`${qtyClampLabel} は約定・入出庫から復元した保有を超える売却があり（カッコ内は発火件数）、超過分を原価ゼロで按分して realized_pnl を算出しています（その分だけ過大側、取得原価は過小側）。**これ自体が取得漏れの症状**——API に現れない取得（販売所での買いなど）があると復元保有が不足し、その状態の売却がここに出ます。吸収された数量は holdings[].qty_clamp_absorbed_qty、乖離そのものは reconstructed_qty と amount の差で読むこと（数量側はクランプしていないので、乖離は吸収されずに残ります）`,
+		);
+	}
+	if (netFlowUnpricedAssets.length > 0) {
+		calcWarnings.push(
+			`${netFlowUnpricedAssets.map((a) => a.toUpperCase()).join(', ')} は入出庫日価格・現在価格のいずれも取得できず、期間中の入出庫を純入出金に計上できませんでした（未計上が入庫なら純入出金は過小・入出金調整後増減は過大、出庫なら逆向きにずれます）`,
+		);
+	}
+	if (startBoundaryUnpricedAssets.length > 0) {
+		calcWarnings.push(
+			`${startBoundaryUnpricedAssets.map((a) => a.toUpperCase()).join(', ')} は期初の始値を解決できず期初評価額に含めていません（当日足が未取得の時間帯では数十分後に解消しうる）。期初評価額は過小で、該当期間の増減額（change_jpy / adjusted_change_jpy）も同じ欠損の影響を受けます（ずれの向きが確定する期間には change_jpy_overstated=true が付きます）`,
+		);
+	}
+	// 全銘柄が並ぶのは ticker 取得そのものの失敗なので、全滅かどうかを文言で切り分ける（#109）。
+	if (currentUnpricedAssets.length > 0) {
+		const allCryptoUnpriced = cryptoHoldingCount > 0 && currentUnpricedAssets.length === cryptoHoldingCount;
+		calcWarnings.push(
+			`${currentUnpricedAssets.map((a) => a.toUpperCase()).join(', ')} は現在価格を解決できず現在評価額（current_value_jpy）に含めていません。現在評価額は過小で、増減額（change_jpy / adjusted_change_jpy）も同じ額だけ過小です（ずれの向きが確定する期間には change_jpy_understated=true が付きます）。同じ銘柄は合計評価損益（total_unrealized_pnl）・合計取得原価（total_cost_basis）からも除外しています${allCryptoUnpriced ? '。**保有する暗号資産が全て脱落しています ＝ ticker 取得そのものが失敗しており、現在評価額は JPY 残高だけに縮退しています。**増減額は口座の損失ではなく価格取得の失敗を表す数なので、損失として読まないでください（時間をおいて再実行してください）' : ''}`,
+		);
+	}
+	// 同じ理由でも向きが確定する期間としない期間が混ざりうるので、向きでも分けて行を出す。
+	for (const reason of Object.keys(CHANGE_PCT_UNAVAILABLE_NOTE) as PortfolioChangePctUnavailableReason[]) {
+		for (const direction of CHANGE_JPY_DIRECTIONS) {
+			const labels = changePctSuppressed
+				.filter((e) => e.reason === reason && e.direction === direction)
+				.map((e) => e.label);
+			if (labels.length === 0) continue;
+			calcWarnings.push(
+				`${labels.join(' / ')}の増減率（change_pct / adjusted_change_pct）は出していません（${CHANGE_PCT_UNAVAILABLE_NOTE[reason]}）。${changeJpyGuidanceWarning(reason, direction)}。率が無いのは「ゼロ %」の意味ではありません`,
+			);
+		}
+	}
+	if (flowValuationFallbackCount > 0) {
+		calcWarnings.push(
+			`暗号資産入出庫 ${flowValuationFallbackCount}件は入出庫日（入庫: confirmed_at / 出庫: requested_at）の価格を取得できず現在価格で仮評価しています。この分の評価額は相場変動で動きます（取得原価には算入しないため、該当する入庫で復元数量が実残高と乖離した銘柄は cost_basis_unavailable_reason=has_crypto_deposits になり、乖離が許容誤差以内に収まった銘柄は取得原価がその分だけ過小のまま出ます）`,
+		);
+	}
+	// フォールバック件数からは再実行で直るかが読めないので、上限・取得失敗の分は別枠で出す（#76）。
+	// 件数だけでは値が出ているのか抑止されたのか読めないので、抑止した銘柄名を同じ行に載せる（#80）。
+	const depositShortfallWarning = (count: number, reason: PortfolioUnresolvedDepositReason): string => {
+		const label = suppressedLabelOf(reason);
+		const head = `暗号資産入庫 ${count}件は${UNRESOLVED_DEPOSIT_NOTE[reason]}`;
+		if (label === '') {
+			return `${head}。該当銘柄は保有・約定のいずれにも現れないため、抑止した出力はありません`;
+		}
+		return `${head}。${label}（カッコ内は件数）は取得原価・平均取得単価・評価損益・実現損益を確定値として出さず cost_basis_unavailable_reason=${reason} で抑止しています。合計実現損益（total_realized_pnl / account_pnl.spot_realized_pnl）と、抑止した銘柄が売却している期間の期間実現損益も、残りを足した部分和は出さず undefined です`;
+	};
+	if (chunkTruncated.deposits > 0) {
+		calcWarnings.push(depositShortfallWarning(chunkTruncated.deposits, 'deposit_price_chunk_truncated'));
+	}
+	if (chunkFailed.deposits > 0) {
+		calcWarnings.push(depositShortfallWarning(chunkFailed.deposits, 'deposit_price_fetch_failed'));
+	}
+	if (chunkTruncated.withdrawals > 0) {
+		calcWarnings.push(
+			`暗号資産出庫 ${chunkTruncated.withdrawals}件は出庫日を含む年足の追加取得が上限（${MAX_WITHDRAWAL_FLOW_PRICE_YEAR_CHUNKS}組）に達したため取りに行けず、現在価格で仮評価しています（純投入額の減算に使う表示専用の値で、取得原価には影響しません）`,
+		);
+	}
+	if (chunkFailed.withdrawals > 0) {
+		calcWarnings.push(
+			`暗号資産出庫 ${chunkFailed.withdrawals}件は出庫日を含む年足の取得に失敗したため現在価格で仮評価しています（純投入額の減算に使う表示専用の値で、取得原価には影響しません）`,
+		);
+	}
+
+	return calcWarnings;
+}
+
 export default async function analyzeMyPortfolioHandler(args: {
 	include_technical?: boolean;
 	include_pnl?: boolean;
@@ -1058,26 +1612,16 @@ export default async function analyzeMyPortfolioHandler(args: {
 
 		const lines: string[] = [];
 
-		// 信用 fetch 失敗時は truncated と内容が重複するので、信用側の truncated 警告は抑止する。
-		if (marginFetchFailed) {
-			lines.push('⚠️ 信用約定の取得に失敗。信用 PnL は実態を反映しない可能性');
-		}
-		if (marginStatusFetchFailed) {
-			lines.push('⚠️ 信用口座状態の取得に失敗。建玉・追証状態は反映されていません');
-		}
-		if (marginPositionsFetchFailed) {
-			lines.push('⚠️ 信用建玉の取得に失敗。建玉情報は反映されていません');
-		}
-		const marginStatus = marginAccountInfo.status;
-		if (marginStatus && marginStatus.status !== 'NORMAL') {
-			const warningLine = MARGIN_STATUS_WARNINGS[marginStatus.status];
-			if (warningLine) lines.push(warningLine);
-		}
-		const showMarginTruncated = marginTradesTruncated && !marginFetchFailed;
-		if (tradesTruncated || showMarginTruncated) {
-			const subjects = [tradesTruncated && '現物', showMarginTruncated && '信用'].filter(Boolean).join(' / ');
-			lines.push(`※ 約定履歴（${subjects}）が上限に達したため一部のみ取得。損益計算が不正確な可能性があります`);
-		}
+		lines.push(
+			...buildFetchStatusLines({
+				marginFetchFailed,
+				marginStatusFetchFailed,
+				marginPositionsFetchFailed,
+				marginStatus: marginAccountInfo.status,
+				tradesTruncated,
+				marginTradesTruncated,
+			}),
+		);
 
 		lines.push(`ポートフォリオ分析: 暗号資産 ${cryptoHoldings.length}銘柄${jpyHolding ? ' + JPY' : ''}`);
 		lines.push(`取得時刻: ${timestamp}`);
@@ -1087,178 +1631,32 @@ export default async function analyzeMyPortfolioHandler(args: {
 			);
 		}
 
-		if (dailyPerformance) lines.push(...buildPerformanceLines('前日比', dailyPerformance));
-		if (yearlyPerformance) lines.push(...buildPerformanceLines('年初比', yearlyPerformance));
-		if (monthlyPerformance) lines.push(...buildPerformanceLines('月初比', monthlyPerformance));
-		if (yearlyPerformance || monthlyPerformance) {
-			lines.push(`期間基準: JST`);
-			lines.push(
-				'※ 期初評価額は約定・入出金を逆算して復元、期初始値で評価。暗号資産入出庫は入出庫日（入庫: confirmed_at / 出庫: requested_at）の始値で JPY 換算',
-			);
-			lines.push('※ 出金元本は外部フローとして除外、出金手数料はコストとして performance に含む');
-			// 上の 2 行が復元前提を語っているので、前提が満たせていないことをその直後に置く。
-			if (flowUnavailableReason != null) {
-				lines.push(
-					`※ ただし今回は${FLOW_UNAVAILABLE_CAUSE[flowUnavailableReason]}ため入出金を巻き戻せていません。期初評価額・資産推移シリーズは入出金があった期間で実態と乖離します`,
-				);
-			}
-		}
-		if (monthlyEquitySeries && monthlyEquitySeries.length > 0) {
-			if (equitySeriesQuality === 'jpy_only') {
-				lines.push('※ 資産推移シリーズ: JPY のみ保有のため、価格変動は反映されません（入出金・約定の影響のみ）');
-			} else if (equitySeriesQuality === 'fallback_only') {
-				lines.push(
-					'※ 資産推移シリーズ: 暗号資産の歴史的価格データが取得できなかったため、現在価格で全期間を代替（progression は holdings 変動のみ反映）',
-				);
-			} else if (equitySeriesQuality === 'partial_fallback') {
-				const missing = equitySeriesFallbackAssets.map((a) => a.toUpperCase()).join(', ');
-				lines.push(`※ 資産推移シリーズ: ${missing} の歴史的価格データが取得できなかったため、現在価格で代替`);
-			}
-			lines.push(
-				...buildEquitySeriesLines(
-					`月次資産推移（日次, ${monthlyEquitySeries.length}点）— グラフ「月次推移」タブ専用。年次タブでは使わない`,
-					monthlyEquitySeries,
-				),
-			);
-		}
-		if (yearlyEquitySeries && yearlyEquitySeries.length > 0) {
-			lines.push(
-				...buildEquitySeriesLines(
-					`年次資産推移（月次, ${yearlyEquitySeries.length}点）— グラフ「年次推移」タブ専用。月次タブでは使わない`,
-					yearlyEquitySeries,
-				),
-			);
-		}
+		lines.push(
+			...buildPerformanceSectionLines({
+				dailyPerformance,
+				yearlyPerformance,
+				monthlyPerformance,
+				flowUnavailableReason,
+				monthlyEquitySeries,
+				yearlyEquitySeries,
+				equitySeriesQuality,
+				equitySeriesFallbackAssets,
+			}),
+		);
 
-		if (yearlyDWSummary) {
-			const y = yearlyDWSummary;
-			const parts = [
-				`年初来入出金: JPY入金 ${formatPriceJPY(y.jpy_deposited)} / JPY出金 ${formatPriceJPY(y.jpy_withdrawn)} / 純入出金 ${formatPriceJPY(y.net_jpy)}`,
-			];
-			if (y.crypto_deposit_count > 0)
-				parts.push(
-					`暗号資産入庫 ${y.crypto_deposit_count}件${y.crypto_deposit_estimated_jpy ? `（概算 ${formatPriceJPY(y.crypto_deposit_estimated_jpy)}）` : ''}`,
-				);
-			if (y.crypto_withdrawal_count > 0)
-				parts.push(
-					`暗号資産出庫 ${y.crypto_withdrawal_count}件${y.crypto_withdrawal_estimated_jpy ? `（概算 ${formatPriceJPY(y.crypto_withdrawal_estimated_jpy)}）` : ''}`,
-				);
-			lines.push(parts.join(' / '));
-		}
-		if (monthlyDWSummary) {
-			const m = monthlyDWSummary;
-			const parts = [
-				`月初来入出金: JPY入金 ${formatPriceJPY(m.jpy_deposited)} / JPY出金 ${formatPriceJPY(m.jpy_withdrawn)} / 純入出金 ${formatPriceJPY(m.net_jpy)}`,
-			];
-			if (m.crypto_deposit_count > 0)
-				parts.push(
-					`暗号資産入庫 ${m.crypto_deposit_count}件${m.crypto_deposit_estimated_jpy ? `（概算 ${formatPriceJPY(m.crypto_deposit_estimated_jpy)}）` : ''}`,
-				);
-			if (m.crypto_withdrawal_count > 0)
-				parts.push(
-					`暗号資産出庫 ${m.crypto_withdrawal_count}件${m.crypto_withdrawal_estimated_jpy ? `（概算 ${formatPriceJPY(m.crypto_withdrawal_estimated_jpy)}）` : ''}`,
-				);
-			lines.push(parts.join(' / '));
-		}
+		if (yearlyDWSummary) lines.push(periodDWLine('年初来', yearlyDWSummary));
+		if (monthlyDWSummary) lines.push(periodDWLine('月初来', monthlyDWSummary));
 
-		if (depositWithdrawalStatus === 'available') {
-			lines.push(`入出金分析状態: available`);
-			lines.push(`分析基準: deposit_withdrawal`);
-		} else if (depositWithdrawalStatus === 'fallback') {
-			lines.push(`入出金分析状態: fallback`);
-			lines.push(`分析基準: trade_only`);
-			if (dwData?.allFailed) {
-				lines.push('※ 入出金APIの取得に全て失敗したため、約定ベースの分析のみです');
-			} else {
-				lines.push('※ API取得失敗またはpartial failureのため、約定ベースの分析にフォールバックしています');
-			}
-		} else if (depositWithdrawalStatus === 'no_history') {
-			lines.push(`入出金分析状態: no_history`);
-			lines.push(`分析基準: trade_only`);
-			lines.push('※ 入出金履歴が0件のため、入出金ベース分析なし。約定ベースの分析のみです');
-		} else {
-			lines.push(`入出金分析状態: not_requested`);
-			lines.push(`分析基準: trade_only`);
-			// 「反映した値です」と断言するのは原価を出しているときだけ。原価を抑止しているときは「算出不能」行と矛盾するので中立の文言に落とす。
-			lines.push(
-				dwFetchedForPnl && flowUnavailableReason == null
-					? '※ 入出金分析セクションは未リクエスト（include_deposit_withdrawal=false）。ただし損益計算には入出金履歴を取得して使用しているため、取得原価・評価損益・純入出金は入出金を反映した値です'
-					: '※ 入出金分析は未リクエスト。約定ベースの分析のみです',
-			);
-		}
+		lines.push(
+			...buildDWStatusLines({
+				depositWithdrawalStatus,
+				dwAllFailed: dwData?.allFailed,
+				dwFetchedForPnl,
+				flowUnavailableReason,
+			}),
+		);
 
-		// crypto_*_count は総件数で、estimated_jpy に載っているのは価格を解決できた件数だけなので、内訳の件数の和から逆算する。
-		const valuedCounts = (breakdown: FlowValuationBreakdown | undefined) =>
-			(breakdown?.deposit_date_price_count ?? 0) + (breakdown?.current_price_fallback_count ?? 0);
-		const valuedDepositCount = valuedCounts(dwSummary?.crypto_deposit_valuation);
-		const valuedWithdrawalCount = valuedCounts(dwSummary?.crypto_withdrawal_valuation);
-		const unvaluedDepositCount = (dwSummary?.crypto_deposit_count ?? 0) - valuedDepositCount;
-		const unvaluedWithdrawalCount = (dwSummary?.crypto_withdrawal_count ?? 0) - valuedWithdrawalCount;
-
-		if (dwSummary && dwSummary.account_return_jpy != null) {
-			const sign = dwSummary.account_return_jpy >= 0 ? '+' : '';
-			const approxLabel = dwSummary.is_complete ? '' : '（概算）';
-			lines.push(
-				`口座全体リターン${approxLabel}: ${sign}${formatPriceJPY(dwSummary.account_return_jpy)} (${formatPercent(dwSummary.account_return_pct, { sign: true })})`,
-			);
-			lines.push(`  JPY入金合計: ${formatPriceJPY(dwSummary.total_jpy_deposited)}`);
-			if (dwSummary.total_jpy_withdrawn > 0) {
-				lines.push(`  JPY出金合計: ${formatPriceJPY(dwSummary.total_jpy_withdrawn)}`);
-			}
-			const netJpyDeposit = dwSummary.total_jpy_deposited - dwSummary.total_jpy_withdrawn;
-			lines.push(`  JPY純入金: ${formatPriceJPY(Math.round(netJpyDeposit))}`);
-			if (dwSummary.crypto_deposit_estimated_jpy) {
-				lines.push(
-					`  暗号資産入庫の評価: ${formatPriceJPY(dwSummary.crypto_deposit_estimated_jpy)}（${valuedDepositCount}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_deposit_valuation?.basis ?? 'current_price_fallback']}）`,
-				);
-			}
-			if (dwSummary.crypto_withdrawal_estimated_jpy) {
-				lines.push(
-					`  暗号資産出庫の評価: -${formatPriceJPY(dwSummary.crypto_withdrawal_estimated_jpy)}（${valuedWithdrawalCount}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_withdrawal_valuation?.basis ?? 'current_price_fallback']}）`,
-				);
-			}
-			// 内訳の式は実際に載っている項だけを並べる（0 円の項を書くと読み手が総額を追えない）。
-			const netInvestedTerms = [
-				dwSummary.crypto_deposit_estimated_jpy ? '+ 暗号資産入庫の評価額' : '',
-				dwSummary.crypto_withdrawal_estimated_jpy ? '- 暗号資産出庫の評価額' : '',
-			].filter(Boolean);
-			lines.push(
-				`  純投入額: ${formatPriceJPY(dwSummary.net_jpy_invested)}${netInvestedTerms.length > 0 ? `（JPY純入金 ${netInvestedTerms.join(' ')}）` : ''}`,
-			);
-			if (!dwSummary.is_complete) {
-				lines.push('  ※ 入出金履歴が多く全件取得できなかったため、概算値です');
-			}
-			if (unvaluedDepositCount > 0) {
-				lines.push(`  ※ 暗号資産入庫 ${unvaluedDepositCount}件の価格が取得できず評価額に含まれていません`);
-			}
-			const depositFallbackCount = dwSummary.crypto_deposit_valuation?.current_price_fallback_count ?? 0;
-			if (depositFallbackCount > 0) {
-				lines.push(
-					`  ※ うち ${depositFallbackCount}件は入庫日の価格を取得できず現在価格で仮評価（この分だけ相場変動で評価額が動きます）`,
-				);
-			}
-			if (unvaluedWithdrawalCount > 0) {
-				lines.push(`  ※ 暗号資産出庫 ${unvaluedWithdrawalCount}件は評価額を算出できず純投入額に反映されていません`);
-			}
-			const withdrawalFallbackCount = dwSummary.crypto_withdrawal_valuation?.current_price_fallback_count ?? 0;
-			if (withdrawalFallbackCount > 0) {
-				lines.push(
-					`  ※ うち ${withdrawalFallbackCount}件は出庫日の価格を取得できず現在価格で仮評価（この分だけ相場変動で評価額が動きます）`,
-				);
-			}
-			if (valuedWithdrawalCount > 0) {
-				lines.push(
-					`  ※ 暗号資産出庫 ${valuedWithdrawalCount}件は JPY 出金と同じ「元本の回収」として純投入額から差し引いています（外部ウォレットへ移して保有を続けている場合でも、口座外の値動きは測定対象外です）`,
-				);
-			}
-		} else if (dwSummary && dwSummary.net_jpy_invested <= 0) {
-			// 黙ってブロックごと消すと「計算されたのに表示されていない」と読まれるので、出せない理由を 1 行で出す。
-			const withdrawalCause =
-				valuedWithdrawalCount > 0 ? `暗号資産出庫 ${valuedWithdrawalCount}件を元本の回収として差し引いた結果、` : '';
-			lines.push(
-				`口座全体リターン: 算出不可（${withdrawalCause}純投入額が ${formatPriceJPY(dwSummary.net_jpy_invested)} と 0 以下になりました。引き出しが投入を上回る口座ではリターン率を定義できません）`,
-			);
-		}
+		if (dwSummary) lines.push(...buildAccountReturnLines(dwSummary));
 
 		if (dwWarnings.length > 0) {
 			for (const w of dwWarnings) {
@@ -1272,109 +1670,35 @@ export default async function analyzeMyPortfolioHandler(args: {
 			lines.push('');
 		}
 
-		// 全履歴と年初来 / 月初来が併存するので、ラベルにスコープを書く（text だけでは判別できない。#53）。
 		if (accountPnl != null) {
-			const spotRealized = accountPnl.spot_realized_pnl;
-			const hasMargin =
-				accountPnl.margin_realized_pnl !== 0 ||
-				accountPnl.margin_interest_cost !== 0 ||
-				accountPnl.margin_fee_cost !== 0;
-			// data 側はコスト = 正値なので、表示は total への寄与として - を前置する（#72）。
-			const marginPart = `Margin: ${accountPnl.margin_realized_pnl >= 0 ? '+' : ''}${formatPriceJPY(accountPnl.margin_realized_pnl)} / Interest cost: -${formatPriceJPY(accountPnl.margin_interest_cost)} / Fee cost: -${formatPriceJPY(accountPnl.margin_fee_cost)}`;
-			if (spotRealized == null && totalRealizedPnlUnavailableReason != null) {
-				// 抑止した銘柄を除いた部分和を見出しに載せない。数字を出した時点で口座の実現損益として読まれる（#80）。
-				lines.push(
-					`Realized PnL (Spot, 全履歴・売り切り銘柄含む): 算出不能（${UNRESOLVED_DEPOSIT_NOTE[totalRealizedPnlUnavailableReason]}）`,
-				);
-				lines.push(
-					hasMargin
-						? `Account PnL (全履歴): 算出不能（現物の実現損益が確定しないため。信用のみの内訳: ${marginPart}）`
-						: 'Account PnL (全履歴): 算出不能（現物の実現損益が確定しないため）',
-				);
-			} else {
-				const spotSign = (spotRealized ?? 0) >= 0 ? '+' : '';
-				lines.push(`Realized PnL (Spot, 全履歴・売り切り銘柄含む): ${spotSign}${formatPriceJPY(spotRealized ?? 0)}`);
-				if (closedPositionRealizedPnl != null) {
-					const heldSign = heldRealizedPnl >= 0 ? '+' : '';
-					const closedPart =
-						closedPositionAssetCount != null && closedPositionAssetCount > 0
-							? `売り切り銘柄 ${closedPositionAssetCount}銘柄 ${closedPositionRealizedPnl >= 0 ? '+' : ''}${formatPriceJPY(closedPositionRealizedPnl)}`
-							: '売り切り銘柄なし（0円）';
-					lines.push(
-						`  内訳: 現在保有銘柄（holdings[].realized_pnl の合計）${heldSign}${formatPriceJPY(heldRealizedPnl)} / ${closedPart}`,
-					);
-				}
-				const total = accountPnl.total ?? 0;
-				const totalSign = total >= 0 ? '+' : '';
-				if (hasMargin) {
-					lines.push(
-						`Account PnL (全履歴): ${totalSign}${formatPriceJPY(total)} (Spot: ${spotSign}${formatPriceJPY(spotRealized ?? 0)} / ${marginPart})`,
-					);
-				} else {
-					lines.push(`Account PnL (全履歴): ${totalSign}${formatPriceJPY(total)}`);
-				}
-			}
-			// 年初来 / 月初来は data 側にしか出ないので、全履歴の値と取り違えられないよう所在を示す。
-			if (yearlyAccountPnl != null || monthlyAccountPnl != null) {
-				lines.push(
-					'※ 上の Realized PnL / Account PnL は全履歴（口座開設来）の集計です。年初来 / 月初来は yearly_account_pnl / monthly_account_pnl（現物単独は yearly_realized_pnl / monthly_realized_pnl）を参照してください',
-				);
-			}
+			lines.push(
+				...buildAccountPnlLines({
+					accountPnl,
+					totalRealizedPnlUnavailableReason,
+					heldRealizedPnl,
+					closedPositionRealizedPnl,
+					closedPositionAssetCount,
+					hasPeriodAccountPnl: yearlyAccountPnl != null || monthlyAccountPnl != null,
+				}),
+			);
 		}
 
-		if (flowUnavailableReason != null) {
-			// 壊れた原価から出した率が見出しに載ると、LLM がそれを口座の成績として読む。
-			lines.push(`評価損益: 算出不能（${FLOW_UNAVAILABLE_NOTE[flowUnavailableReason]}）`);
-		} else {
-			if (totalUnrealizedPnl != null) {
-				const sign = totalUnrealizedPnl >= 0 ? '+' : '';
-				lines.push(
-					`合計評価損益（全履歴の約定ベース）: ${sign}${formatPriceJPY(totalUnrealizedPnl)} (${formatPercent(totalUnrealizedPnlPct, { sign: true })})`,
-				);
-			}
-			lines.push(
-				'※ 評価損益は全履歴の約定・暗号資産入出庫から移動平均法で算出した取得原価ベース。暗号資産入庫は入庫日（confirmed_at）の始値で取得したとみなして原価に算入（真の取得原価ではなく入庫時点の相場という仮定）。入庫日の価格を取得できなかった入庫は原価に算入しないため、その分だけ取得原価は過小になります（復元数量が実残高と乖離した銘柄は取得原価を出しません）',
-			);
-		}
-		if (qtyMismatchAssets.length > 0) {
-			lines.push(
-				`※ ${qtyMismatchAssets.map((m) => m.asset.toUpperCase()).join(', ')} は復元数量が実残高と乖離しているため合計評価損益に含めていません`,
-			);
-		}
-		if (depositOnlyDetected.length > 0) {
-			lines.push(
-				`※ ${depositOnlyDetected.map((a) => a.toUpperCase()).join(', ')} は入庫記録はあるものの約定履歴にも現在残高にも現れません（closed_positions を参照）`,
-			);
-		}
-		if (unpricedDepositLabel !== '') {
-			lines.push(
-				`※ ${unpricedDepositLabel} は入庫日の始値を解決できなかった入庫（カッコ内は件数）を取得原価に算入していないため、取得原価・評価損益・実現損益がその分だけ不完全です。合計からは除外せず含めています`,
-			);
-		}
-		if (suppressedRealizedLabel !== '') {
-			lines.push(
-				`※ ${suppressedRealizedLabel} は入庫日を含む年足を取得できなかった入庫（カッコ内は件数）があるため、取得原価・評価損益・実現損益を出していません（合計評価損益からは除外しています）。合計実現損益・口座全体 PnL も、抑止した銘柄を除いた部分和は出さず算出不能にしています`,
-			);
-		}
-		if (qtyClampLabel !== '') {
-			lines.push(
-				`※ ${qtyClampLabel} は履歴から復元した保有を超える売却（カッコ内は発火件数）があり、超過分を原価ゼロで按分しています。その分だけ実現損益は過大側、取得原価は過小側です`,
-			);
-		}
+		lines.push(
+			...buildCostNoteLines({
+				flowUnavailableReason,
+				totalUnrealizedPnl,
+				totalUnrealizedPnlPct,
+				qtyMismatchAssets,
+				depositOnlyDetected,
+				unpricedDepositLabel,
+				suppressedRealizedLabel,
+				qtyClampLabel,
+			}),
+		);
 		lines.push('');
 
 		if (holdingsPerformance && holdingsPerformance.length > 0) {
-			lines.push('保有銘柄のパフォーマンス:');
-			for (const hp of holdingsPerformance) {
-				const assetUpper = hp.asset.toUpperCase();
-				const parts = [`${assetUpper}`];
-				if (hp.jpy_value != null) parts.push(formatPriceJPY(hp.jpy_value));
-				if (hp.monthly_change_pct != null)
-					parts.push(`月次騰落率: ${formatPercent(hp.monthly_change_pct, { sign: true })}`);
-				if (hp.yearly_change_pct != null)
-					parts.push(`年次騰落率: ${formatPercent(hp.yearly_change_pct, { sign: true })}`);
-				lines.push(`  ${parts.join(' / ')}`);
-			}
+			lines.push(...buildHoldingsPerformanceLines(holdingsPerformance));
 		}
 
 		if (hasMissingPrices) {
@@ -1382,40 +1706,8 @@ export default async function analyzeMyPortfolioHandler(args: {
 			lines.push(`注意: ${missingPriceAssets.join(', ')} の現在価格が取得できなかったため、評価損益から除外しています`);
 		}
 
-		if (technical && technical.length > 0) {
-			lines.push('');
-			lines.push('テクニカル分析:');
-			for (const t of technical) {
-				const parts = [formatPair(t.pair)];
-				if (t.trend) parts.push(`トレンド: ${t.trend}`);
-				if (t.rsi_14 != null) parts.push(`RSI: ${t.rsi_14}`);
-				if (t.sma_deviation_pct != null) parts.push(`SMA乖離: ${formatPercent(t.sma_deviation_pct, { sign: true })}`);
-				if (t.signal) parts.push(`総合判定: ${t.signal}`);
-				lines.push(`  ${parts.join(' / ')}`);
-			}
-		}
+		if (technical && technical.length > 0) lines.push(...buildTechnicalLines(technical));
 
-		const netFlowUnpricedAssets = [
-			...new Set([
-				...(dailyPerformance?.unpriced_flow_assets ?? []),
-				...(monthlyPerformance?.unpriced_flow_assets ?? []),
-				...(yearlyPerformance?.unpriced_flow_assets ?? []),
-			]),
-		].sort();
-		const startBoundaryUnpricedAssets = [
-			...new Set([
-				...(dailyPerformance?.unpriced_start_assets ?? []),
-				...(monthlyPerformance?.unpriced_start_assets ?? []),
-				...(yearlyPerformance?.unpriced_start_assets ?? []),
-			]),
-		].sort();
-		const currentUnpricedAssets = [
-			...new Set([
-				...(dailyPerformance?.unpriced_current_assets ?? []),
-				...(monthlyPerformance?.unpriced_current_assets ?? []),
-				...(yearlyPerformance?.unpriced_current_assets ?? []),
-			]),
-		].sort();
 		// 並びは summary の期間ブロックと同じ（前日比 → 年初比 → 月初比）。
 		const changePctSuppressed = [
 			{
@@ -1437,100 +1729,27 @@ export default async function analyzeMyPortfolioHandler(args: {
 				direction: changeJpyDirectionOf(monthlyPerformance),
 			},
 		].filter((e): e is typeof e & { reason: PortfolioChangePctUnavailableReason } => e.reason != null);
-		const calcWarnings: string[] = [];
-		// summary 本文の「算出不能」行は JSON より後ろに埋もれることがあるので、content 先頭にも出す。
-		if (flowUnavailableReason != null) {
-			calcWarnings.push(
-				`評価損益・取得原価は算出していません（${FLOW_UNAVAILABLE_NOTE[flowUnavailableReason]}）。期間パフォーマンスの純入出金も未計測です`,
-			);
-		}
-		if (qtyMismatchAssets.length > 0) {
-			calcWarnings.push(
-				`${qtyMismatchAssets.map((m) => `${m.asset.toUpperCase()}（${QTY_MISMATCH_CAUSE[m.reason]}）`).join(', ')} は約定・出庫から復元した保有数量が実残高と一致しないため、取得原価・評価損益を算出せず合計評価損益からも除外しています`,
-			);
-		}
-		// 約定履歴が打ち切られている実行で「販売所取引の可能性」と言い切らないよう、文言を tradesTruncated で分ける。
-		if (depositOnlyDetected.length > 0) {
-			calcWarnings.push(
-				tradesTruncated
-					? `${depositOnlyDetected.map((a) => a.toUpperCase()).join(', ')} は入出金履歴に暗号資産の入庫記録があるものの、約定履歴にも現在残高にも現れません。約定履歴の取得が件数上限で打ち切られているため取引所約定を見落としている可能性があり、該当銘柄の実現損益はこの結果に含まれていません（closed_positions に realized_pnl_unavailable_reason=history_truncated 付きで申告しています）`
-					: `${depositOnlyDetected.map((a) => a.toUpperCase()).join(', ')} は入出金履歴に暗号資産の入庫記録があるものの、約定履歴にも現在残高にも現れません。販売所取引など bitbank API に現れない取引で全量を処分した可能性があり（断定はできません）、該当銘柄の実現損益はこの結果に含まれていません（closed_positions に realized_pnl_unavailable_reason=untracked_trade_suspected 付きで申告しています）`,
-			);
-		}
-		if (unpricedDepositLabel !== '') {
-			calcWarnings.push(
-				`${unpricedDepositLabel} は入庫日の始値を解決できなかった暗号資産入庫（カッコ内は件数）を取得原価にも復元数量にも算入せずに cost_basis / avg_buy_price / unrealized_pnl / realized_pnl を算出しています。未算入ぶんを売却済みなら原価ゼロで売ったことになり実現損益は過大、保有継続なら取得原価が過小です。数量乖離が許容誤差に収まっているため cost_basis_reliable=true のまま確定値が出ますが、原価は不完全です（件数は holdings[].unpriced_deposit_count。該当銘柄は total_cost_basis / total_unrealized_pnl / total_realized_pnl から除外せず含めています）`,
-			);
-		}
-		// 原価をゼロ扱いにするのは実現損益として妥当なので抑止せず、算出条件として申告だけする（#89）。
-		if (qtyClampLabel !== '') {
-			calcWarnings.push(
-				`${qtyClampLabel} は約定・入出庫から復元した保有を超える売却があり（カッコ内は発火件数）、超過分を原価ゼロで按分して realized_pnl を算出しています（その分だけ過大側、取得原価は過小側）。**これ自体が取得漏れの症状**——API に現れない取得（販売所での買いなど）があると復元保有が不足し、その状態の売却がここに出ます。吸収された数量は holdings[].qty_clamp_absorbed_qty、乖離そのものは reconstructed_qty と amount の差で読むこと（数量側はクランプしていないので、乖離は吸収されずに残ります）`,
-			);
-		}
-		if (netFlowUnpricedAssets.length > 0) {
-			calcWarnings.push(
-				`${netFlowUnpricedAssets.map((a) => a.toUpperCase()).join(', ')} は入出庫日価格・現在価格のいずれも取得できず、期間中の入出庫を純入出金に計上できませんでした（未計上が入庫なら純入出金は過小・入出金調整後増減は過大、出庫なら逆向きにずれます）`,
-			);
-		}
-		if (startBoundaryUnpricedAssets.length > 0) {
-			calcWarnings.push(
-				`${startBoundaryUnpricedAssets.map((a) => a.toUpperCase()).join(', ')} は期初の始値を解決できず期初評価額に含めていません（当日足が未取得の時間帯では数十分後に解消しうる）。期初評価額は過小で、該当期間の増減額（change_jpy / adjusted_change_jpy）も同じ欠損の影響を受けます（ずれの向きが確定する期間には change_jpy_overstated=true が付きます）`,
-			);
-		}
-		// 全銘柄が並ぶのは ticker 取得そのものの失敗なので、全滅かどうかを文言で切り分ける（#109）。
-		if (currentUnpricedAssets.length > 0) {
-			const allCryptoUnpriced = cryptoHoldings.length > 0 && currentUnpricedAssets.length === cryptoHoldings.length;
-			calcWarnings.push(
-				`${currentUnpricedAssets.map((a) => a.toUpperCase()).join(', ')} は現在価格を解決できず現在評価額（current_value_jpy）に含めていません。現在評価額は過小で、増減額（change_jpy / adjusted_change_jpy）も同じ額だけ過小です（ずれの向きが確定する期間には change_jpy_understated=true が付きます）。同じ銘柄は合計評価損益（total_unrealized_pnl）・合計取得原価（total_cost_basis）からも除外しています${allCryptoUnpriced ? '。**保有する暗号資産が全て脱落しています ＝ ticker 取得そのものが失敗しており、現在評価額は JPY 残高だけに縮退しています。**増減額は口座の損失ではなく価格取得の失敗を表す数なので、損失として読まないでください（時間をおいて再実行してください）' : ''}`,
-			);
-		}
-		// 同じ理由でも向きが確定する期間としない期間が混ざりうるので、向きでも分けて行を出す。
-		for (const reason of Object.keys(CHANGE_PCT_UNAVAILABLE_NOTE) as PortfolioChangePctUnavailableReason[]) {
-			for (const direction of CHANGE_JPY_DIRECTIONS) {
-				const labels = changePctSuppressed
-					.filter((e) => e.reason === reason && e.direction === direction)
-					.map((e) => e.label);
-				if (labels.length === 0) continue;
-				calcWarnings.push(
-					`${labels.join(' / ')}の増減率（change_pct / adjusted_change_pct）は出していません（${CHANGE_PCT_UNAVAILABLE_NOTE[reason]}）。${changeJpyGuidanceWarning(reason, direction)}。率が無いのは「ゼロ %」の意味ではありません`,
-				);
-			}
-		}
 		const flowValuationFallbackCount = flowValuation?.current_price_fallback_count ?? 0;
-		if (flowValuationFallbackCount > 0) {
-			calcWarnings.push(
-				`暗号資産入出庫 ${flowValuationFallbackCount}件は入出庫日（入庫: confirmed_at / 出庫: requested_at）の価格を取得できず現在価格で仮評価しています。この分の評価額は相場変動で動きます（取得原価には算入しないため、該当する入庫で復元数量が実残高と乖離した銘柄は cost_basis_unavailable_reason=has_crypto_deposits になり、乖離が許容誤差以内に収まった銘柄は取得原価がその分だけ過小のまま出ます）`,
-			);
-		}
 		// フォールバック件数からは再実行で直るかが読めないので、上限・取得失敗の分は別枠で出す（#76）。
 		const chunkTruncated = flowDatePrices.truncatedByChunkLimit;
 		const chunkFailed = flowDatePrices.chunkFetchFailed;
-		// 件数だけでは値が出ているのか抑止されたのか読めないので、抑止した銘柄名を同じ行に載せる（#80）。
-		const depositShortfallWarning = (count: number, reason: PortfolioUnresolvedDepositReason): string => {
-			const label = suppressedLabelOf(reason);
-			const head = `暗号資産入庫 ${count}件は${UNRESOLVED_DEPOSIT_NOTE[reason]}`;
-			if (label === '') {
-				return `${head}。該当銘柄は保有・約定のいずれにも現れないため、抑止した出力はありません`;
-			}
-			return `${head}。${label}（カッコ内は件数）は取得原価・平均取得単価・評価損益・実現損益を確定値として出さず cost_basis_unavailable_reason=${reason} で抑止しています。合計実現損益（total_realized_pnl / account_pnl.spot_realized_pnl）と、抑止した銘柄が売却している期間の期間実現損益も、残りを足した部分和は出さず undefined です`;
-		};
-		if (chunkTruncated.deposits > 0) {
-			calcWarnings.push(depositShortfallWarning(chunkTruncated.deposits, 'deposit_price_chunk_truncated'));
-		}
-		if (chunkFailed.deposits > 0) {
-			calcWarnings.push(depositShortfallWarning(chunkFailed.deposits, 'deposit_price_fetch_failed'));
-		}
-		if (chunkTruncated.withdrawals > 0) {
-			calcWarnings.push(
-				`暗号資産出庫 ${chunkTruncated.withdrawals}件は出庫日を含む年足の追加取得が上限（${MAX_WITHDRAWAL_FLOW_PRICE_YEAR_CHUNKS}組）に達したため取りに行けず、現在価格で仮評価しています（純投入額の減算に使う表示専用の値で、取得原価には影響しません）`,
-			);
-		}
-		if (chunkFailed.withdrawals > 0) {
-			calcWarnings.push(
-				`暗号資産出庫 ${chunkFailed.withdrawals}件は出庫日を含む年足の取得に失敗したため現在価格で仮評価しています（純投入額の減算に使う表示専用の値で、取得原価には影響しません）`,
-			);
-		}
+		const calcWarnings = buildCalcWarnings({
+			dailyPerformance,
+			monthlyPerformance,
+			yearlyPerformance,
+			flowUnavailableReason,
+			qtyMismatchAssets,
+			depositOnlyDetected,
+			tradesTruncated,
+			unpricedDepositLabel,
+			qtyClampLabel,
+			cryptoHoldingCount: cryptoHoldings.length,
+			changePctSuppressed,
+			flowValuationFallbackCount,
+			chunkTruncated,
+			chunkFailed,
+			suppressedLabelOf,
+		});
 
 		// 取得層の warning（上の ⚠️ 行）とは別行・別フィールドで先頭に出す。
 		const summary = prependWarnings(lines.join('\n'), { warnings: calcWarnings }, { separator: '\n' });
