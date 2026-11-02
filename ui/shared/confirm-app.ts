@@ -1,14 +1,9 @@
 // トークンは `_meta` からしか読まない。`content` / `structuredContent` には載っておらず、それが「LLM には見えないがこの iframe には見える」という認可の根拠になっている（ADR-0007）。
 
-import {
-	App as McpApp,
-	applyDocumentTheme,
-	applyHostFonts,
-	applyHostStyleVariables,
-	getDocumentTheme,
-} from '@modelcontextprotocol/ext-apps';
+import { App as McpApp, applyDocumentTheme, getDocumentTheme } from '@modelcontextprotocol/ext-apps';
 import { type RefObject, useEffect, useRef, useState } from 'react';
 import { type SnapshotHydrationPhase, startSnapshotHydration } from '../../src/mcp-apps-hydration.js';
+import { applyHostStyles } from './host-styles';
 
 const CONNECT_TIMEOUT_MS = 7_000;
 const SNAPSHOT_TIMEOUT_MS = 10_000;
@@ -52,8 +47,7 @@ export function useConfirmApp(
 
 		mcpApp.onhostcontextchanged = (ctx) => {
 			if (ctx.theme) applyDocumentTheme(ctx.theme);
-			if (ctx.styles) applyHostStyleVariables(ctx.styles);
-			if (ctx.fontCss) applyHostFonts(ctx.fontCss);
+			applyHostStyles(ctx);
 		};
 
 		const connectTimeoutId = setTimeout(() => {
@@ -70,8 +64,7 @@ export function useConfirmApp(
 				setConnState('connected');
 				const ctx = mcpApp.getHostContext();
 				applyDocumentTheme(ctx?.theme ?? getDocumentTheme());
-				if (ctx?.styles) applyHostStyleVariables(ctx.styles);
-				if (ctx?.fontCss) applyHostFonts(ctx.fontCss);
+				applyHostStyles(ctx);
 				if (disposed) return;
 				// 一部ホストは ui/notifications/tool-result を配信しないので、get_ui_snapshot から直近の preview 応答を取得して復元する。
 				stopHydration = startSnapshotHydration({
