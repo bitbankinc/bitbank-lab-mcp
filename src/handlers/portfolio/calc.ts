@@ -91,6 +91,71 @@ function collectDepositCostEvents(input: DepositCostBasisInput | undefined, asse
 	return { priced, unpricedCounts };
 }
 
+interface CostBasis {
+	costQty: number;
+	cost: number;
+}
+
+interface ParsedTrade {
+	qty: number;
+	price: number;
+	feeQuote: number;
+	feeBase: number;
+}
+
+function parseTradeForReplay(t: RawTrade): ParsedTrade | null {
+	const qty = Number(t.amount);
+	const price = Number(t.price);
+	if (!Number.isFinite(qty) || !Number.isFinite(price)) return null;
+	return { qty, price, feeQuote: Number(t.fee_amount_quote) || 0, feeBase: Number(t.fee_amount_base) || 0 };
+}
+
+function applyDeposit(h: CostBasis, qty: number, cost: number): void {
+	h.cost += cost;
+	h.costQty += qty;
+}
+
+function applyBuy(h: CostBasis, t: ParsedTrade): void {
+	h.cost += t.qty * t.price + t.feeQuote;
+	h.costQty += t.qty - t.feeBase;
+}
+
+// 原価側（costQty）はゼロ床でクランプし、その発火を tally に数える（#89）。
+function applySell(h: CostBasis, t: ParsedTrade, clamp: QtyClampTally): { realized: number; soldQty: number } {
+	// 売りで減る base 量は qty + feeBase（reconstructHoldingsAtDate の巻き戻しと対称）。
+	const soldQty = t.qty + t.feeBase;
+	if (h.costQty > 0) {
+		const avgCost = h.cost / h.costQty;
+		const coveredQty = Math.min(soldQty, h.costQty);
+		const sellCost = coveredQty * avgCost;
+		const sellRevenue = t.qty * t.price - t.feeQuote; // 売却収入から手数料を差し引く
+		h.cost -= sellCost;
+		h.costQty -= coveredQty;
+		tallyQtyClamp(clamp, soldQty, coveredQty);
+		if (h.costQty < QTY_DUST_EPSILON) {
+			h.costQty = 0;
+			h.cost = 0;
+		}
+		return { realized: sellRevenue - sellCost, soldQty };
+	}
+	tallyQtyClamp(clamp, soldQty, 0);
+	return { realized: t.qty * t.price - t.feeQuote, soldQty };
+}
+
+// 出庫の Math.min のゼロ床クランプは #89 の対象外なので残す（発火としても数えない）。何もしなかったときは 0 ではなく undefined を返す（呼び出し側は 0 でも netQty を丸め直してしまう）。
+function applyWithdrawal(h: CostBasis, amount: number): number | undefined {
+	if (!(h.costQty > 0 && amount > 0)) return undefined;
+	const avgCost = h.cost / h.costQty;
+	const removedQty = Math.min(amount, h.costQty);
+	h.cost -= removedQty * avgCost;
+	h.costQty -= removedQty;
+	if (h.costQty < QTY_DUST_EPSILON) {
+		h.costQty = 0;
+		h.cost = 0;
+	}
+	return removedQty;
+}
+
 export function calcPnl(
 	trades: RawTrade[],
 	asset: string,
@@ -137,73 +202,36 @@ export function calcPnl(
 	].sort((a, b) => a.ts - b.ts);
 
 	// costQty はゼロ床でクランプし、netQty はしない（#89）。costQty を代数和にすると次の買いで平均単価の分母が縮み、実現損益と原価が動く。
-	let costQty = 0;
+	// netQty の負値は取得漏れの証拠なので握り潰さない（#89）。
+	const h: CostBasis = { costQty: 0, cost: 0 };
 	let netQty = 0;
-	let holdingCost = 0; // 保有分の取得原価合計（手数料込み）
 	let realizedPnl = 0;
 	const clamp: QtyClampTally = { count: 0, absorbed: 0 };
 
 	for (const event of events) {
 		if (event.type === 'deposit') {
-			holdingCost += event.cost;
-			costQty += event.qty;
+			applyDeposit(h, event.qty, event.cost);
 			netQty += event.qty;
 		} else if (event.type === 'trade') {
-			const t = event.trade;
-			const qty = Number(t.amount);
-			const price = Number(t.price);
-			if (!Number.isFinite(qty) || !Number.isFinite(price)) continue;
-
-			const feeQuote = Number(t.fee_amount_quote) || 0;
-			const feeBase = Number(t.fee_amount_base) || 0;
-
-			if (t.side === 'buy') {
-				holdingCost += qty * price + feeQuote;
-				costQty += qty - feeBase;
-				netQty += qty - feeBase;
+			const t = parseTradeForReplay(event.trade);
+			if (!t) continue;
+			if (event.trade.side === 'buy') {
+				applyBuy(h, t);
+				netQty += t.qty - t.feeBase;
 			} else {
-				// 売りで減る base 量は qty + feeBase（reconstructHoldingsAtDate の巻き戻しと対称）。
-				const soldQty = qty + feeBase;
-				if (costQty > 0) {
-					const avgCost = holdingCost / costQty;
-					const coveredQty = Math.min(soldQty, costQty);
-					const sellCost = coveredQty * avgCost;
-					const sellRevenue = qty * price - feeQuote; // 売却収入から手数料を差し引く
-					realizedPnl += sellRevenue - sellCost;
-					holdingCost -= sellCost;
-					costQty -= coveredQty;
-					tallyQtyClamp(clamp, soldQty, coveredQty);
-					// 原価側だけをリセットする。netQty の負値は取得漏れの証拠なので握り潰さない（#89）。
-					if (costQty < QTY_DUST_EPSILON) {
-						costQty = 0;
-						holdingCost = 0;
-					}
-				} else {
-					realizedPnl += qty * price - feeQuote;
-					tallyQtyClamp(clamp, soldQty, 0);
-				}
-				netQty = normalizeQtyDust(netQty - soldQty);
+				const sell = applySell(h, t, clamp);
+				realizedPnl += sell.realized;
+				netQty = normalizeQtyDust(netQty - sell.soldQty);
 			}
 		} else {
-			// 出庫の Math.min のゼロ床クランプは #89 の対象外なので残す（発火としても数えない）。
-			const wdQty = event.amount;
-			if (costQty > 0 && wdQty > 0) {
-				const avgCost = holdingCost / costQty;
-				const removedQty = Math.min(wdQty, costQty);
-				holdingCost -= removedQty * avgCost;
-				costQty -= removedQty;
-				netQty = normalizeQtyDust(netQty - removedQty);
-				if (costQty < QTY_DUST_EPSILON) {
-					costQty = 0;
-					holdingCost = 0;
-				}
-			}
+			const removedQty = applyWithdrawal(h, event.amount);
+			if (removedQty !== undefined) netQty = normalizeQtyDust(netQty - removedQty);
 		}
 	}
 
 	// 原価由来の 2 値は costQty で決める。netQty だと負の繰り越しを抱えた銘柄で cost_basis が黙って消える。
-	const avgBuyPrice = costQty > 0 ? holdingCost / costQty : undefined;
-	const costBasis = costQty > 0 ? holdingCost : undefined;
+	const avgBuyPrice = h.costQty > 0 ? h.cost / h.costQty : undefined;
+	const costBasis = h.costQty > 0 ? h.cost : undefined;
 
 	return {
 		avg_buy_price: avgBuyPrice,
@@ -329,7 +357,7 @@ export function calcPeriodRealizedPnl(
 	events.sort((a, b) => a.ts - b.ts);
 
 	// costQty は calcPnl と同じくゼロ床でクランプする。復元数量は出す先が無いので netQty は持たない（クランプの発火だけは申告する。#89）。
-	const holdings = new Map<string, { costQty: number; cost: number }>();
+	const holdings = new Map<string, CostBasis>();
 	let periodRealized = 0;
 	let periodSellCount = 0;
 	const clamp: QtyClampTally = { count: 0, absorbed: 0 };
@@ -338,47 +366,20 @@ export function calcPeriodRealizedPnl(
 	for (const event of events) {
 		if (event.type === 'deposit') {
 			const h = holdings.get(event.asset) ?? { costQty: 0, cost: 0 };
-			h.cost += event.cost;
-			h.costQty += event.qty;
+			applyDeposit(h, event.qty, event.cost);
 			holdings.set(event.asset, h);
 		} else if (event.type === 'trade') {
-			const t = event.trade;
-			const asset = t.pair.replace('_jpy', '');
-			const qty = Number(t.amount);
-			const price = Number(t.price);
-			if (!Number.isFinite(qty) || !Number.isFinite(price)) continue;
-
-			const feeQuote = Number(t.fee_amount_quote) || 0;
-			const feeBase = Number(t.fee_amount_base) || 0;
+			const t = parseTradeForReplay(event.trade);
+			if (!t) continue;
+			const asset = event.trade.pair.replace('_jpy', '');
 			const h = holdings.get(asset) ?? { costQty: 0, cost: 0 };
 
-			if (t.side === 'buy') {
-				h.cost += qty * price + feeQuote;
-				h.costQty += qty - feeBase;
+			if (event.trade.side === 'buy') {
+				applyBuy(h, t);
 			} else {
-				// 売りで減る base 量は qty + feeBase（calcPnl と同じ対称形。残数量・平均原価を一致させる）
-				const soldQty = qty + feeBase;
-				let sellRealized = 0;
-				if (h.costQty > 0) {
-					const avgCost = h.cost / h.costQty;
-					const coveredQty = Math.min(soldQty, h.costQty);
-					const sellCost = coveredQty * avgCost;
-					const sellRevenue = qty * price - feeQuote;
-					sellRealized = sellRevenue - sellCost;
-					h.cost -= sellCost;
-					h.costQty -= coveredQty;
-					tallyQtyClamp(clamp, soldQty, coveredQty);
-					if (h.costQty < QTY_DUST_EPSILON) {
-						h.costQty = 0;
-						h.cost = 0;
-					}
-				} else {
-					sellRealized = qty * price - feeQuote;
-					tallyQtyClamp(clamp, soldQty, 0);
-				}
-
-				if (t.executed_at >= sinceMs) {
-					periodRealized += sellRealized;
+				const sell = applySell(h, t, clamp);
+				if (event.trade.executed_at >= sinceMs) {
+					periodRealized += sell.realized;
 					periodSellCount++;
 					soldAssets.add(asset);
 				}
@@ -387,17 +388,7 @@ export function calcPeriodRealizedPnl(
 			holdings.set(asset, h);
 		} else {
 			const h = holdings.get(event.asset) ?? { costQty: 0, cost: 0 };
-			if (h.costQty > 0 && event.amount > 0) {
-				const avgCost = h.cost / h.costQty;
-				const removedQty = Math.min(event.amount, h.costQty);
-				h.cost -= removedQty * avgCost;
-				h.costQty -= removedQty;
-				if (h.costQty < QTY_DUST_EPSILON) {
-					h.costQty = 0;
-					h.cost = 0;
-				}
-				holdings.set(event.asset, h);
-			}
+			if (applyWithdrawal(h, event.amount) !== undefined) holdings.set(event.asset, h);
 		}
 	}
 
