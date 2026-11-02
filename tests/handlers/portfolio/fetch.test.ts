@@ -5,6 +5,7 @@ import { paginateMarginTrades, paginateTrades } from '../../../src/handlers/port
 import type { FlowValuationTarget } from '../../../src/handlers/portfolio/types.js';
 import type { GetCandlesData, GetCandlesMeta } from '../../../src/schemas.js';
 import getCandles from '../../../tools/get_candles.js';
+import { jstMs } from '../../helpers/time.js';
 
 vi.mock('../../../tools/get_candles.js', () => ({
 	default: vi.fn(),
@@ -988,8 +989,6 @@ describe('fetchCandlePriceData', () => {
 	/** 日次価格マップのキーは JST 暦日の 0:00。当日損益の起点（getJstPeriodBoundaries の dayStartMs）と同じ暦日境界でなければ、資産推移の日次点がこのマップを引けず全点が現在価格フォールバックに落ちる。 */
 	it('JST 0:00 前後の足を JST 暦日キーに正規化する（UTC 暦日ではない）', async () => {
 		/** JST の壁時計時刻を epoch ms に変換する（JST は DST を持たないので UTC+9 固定）。 */
-		const jstMs = (y: number, m: number, d: number, h = 0, min = 0, s = 0, ms = 0) =>
-			Date.UTC(y, m - 1, d, h - 9, min, s, ms);
 
 		const aug1 = jstMs(2026, 8, 1);
 		const aug2 = jstMs(2026, 8, 2);
@@ -1020,8 +1019,6 @@ describe('fetchCandlePriceData', () => {
 // 直近 400 日窓（`fetchCandlePriceData`）で解ける入出庫は追加取得せず、解けない分だけ (資産, 年) 単位で取りに行き、それでも取れなければ何もしない（現在価格フォールバックは `resolveFlowPrice` の担当）。入庫（取得原価に算入）と出庫（表示専用）は chunk 予算を共有しない（#76）。
 describe('fetchFlowDatePrices', () => {
 	const mockedGetCandles = vi.mocked(getCandles);
-
-	const jstMs = (y: number, m: number, d: number, h = 0) => Date.UTC(y, m - 1, d, h - 9);
 
 	const deposit = (asset: string, atMs: number): FlowValuationTarget => ({ asset, atMs, kind: 'deposit' });
 	const withdrawal = (asset: string, atMs: number): FlowValuationTarget => ({ asset, atMs, kind: 'withdrawal' });

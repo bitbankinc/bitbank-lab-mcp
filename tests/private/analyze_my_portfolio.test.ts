@@ -17,6 +17,7 @@ import {
 import { assertDefined, requireDefined } from '../helpers/assert.js';
 import { asMcp } from '../helpers/mcp.js';
 import { holdingOf } from '../helpers/portfolio.js';
+import { jstMs } from '../helpers/time.js';
 
 function assetFixture(asset: string) {
 	const found = rawAssetsResponse.assets.find((a) => a.asset === asset);
@@ -3005,8 +3006,6 @@ describe('analyze_my_portfolio — toolDef handler', () => {
 
 	/** 日次点・月次点の終端はリクエスト開始時の boundaries から導く。時計を読み直すと、応答待ちの間に JST 00:00 を跨いだとき取得していない翌日の点が増える。 */
 	it('リクエスト中に JST 00:00 を跨いでも日次点は取得時の暦日で止まる', async () => {
-		const jstMs = (y: number, m: number, d: number, h = 0, min = 0, s = 0, ms = 0) =>
-			Date.UTC(y, m - 1, d, h - 9, min, s, ms);
 		const beforeMidnight = jstMs(2026, 8, 2, 23, 59, 59, 900);
 
 		vi.useFakeTimers();
