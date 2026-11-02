@@ -392,7 +392,11 @@ describe('analyze_volume_profile', () => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(Date.UTC(2026, 6, 8, 1, 0, 0));
 		try {
-			const goodTxs = buildTxs(Array.from({ length: 5 }, (_, i) => 100 + i));
+			const windowStartMs = Date.UTC(2026, 6, 7, 23, 0, 0);
+			const goodTxs = buildTxs(Array.from({ length: 5 }, (_, i) => 100 + i)).map((t, i) => {
+				const timestampMs = windowStartMs + i * 60_000;
+				return { ...t, timestampMs, isoTime: dayjs(timestampMs).toISOString() };
+			});
 			mockedGetTransactions
 				.mockResolvedValueOnce(asMockResult(mockTxResult(goodTxs))) // 20260707
 				.mockResolvedValueOnce(asMockResult(mockFailResult('upstream', 'failed'))); // latest
