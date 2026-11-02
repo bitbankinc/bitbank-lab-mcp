@@ -115,6 +115,8 @@ export default async function getMyDepositWithdrawal(args: {
 		let allWithdrawals: RawWithdrawal[] = [];
 		const warnings: string[] = [];
 		let isComplete = true;
+		// 実際に呼んだ取得だけを入れる（type で呼ばなかった側は失敗の判定に含めない）。
+		const requested: Array<{ error?: string; cause?: unknown }> = [];
 
 		if (asset) {
 			const params: Record<string, string> = { ...baseParams, asset };
@@ -135,6 +137,8 @@ export default async function getMyDepositWithdrawal(args: {
 					: Promise.resolve({ withdrawals: [] as RawWithdrawal[], complete: true } as PaginatedWithdrawals),
 			]);
 
+			if (fetchDeposits) requested.push(depResult);
+			if (fetchWithdrawals) requested.push(wdResult);
 			if (depResult.error) warnings.push(`入金/入庫履歴の取得に失敗: ${depResult.error}`);
 			if (wdResult.error) warnings.push(`出金/出庫履歴の取得に失敗: ${wdResult.error}`);
 			allDeposits = depResult.deposits;
@@ -160,6 +164,8 @@ export default async function getMyDepositWithdrawal(args: {
 						: Promise.resolve({ withdrawals: [], complete: true } as PaginatedWithdrawals),
 				]);
 
+				if (fetchDeposits) requested.push(cryptoDepResult, jpyDepResult);
+				if (fetchWithdrawals) requested.push(cryptoWdResult, jpyWdResult);
 				collectResults(
 					cryptoDepResult,
 					jpyDepResult,
@@ -191,6 +197,8 @@ export default async function getMyDepositWithdrawal(args: {
 						: Promise.resolve({ withdrawals: [], complete: true } as PaginatedWithdrawals),
 				]);
 
+				if (fetchDeposits) requested.push(cryptoDepResult, jpyDepResult);
+				if (fetchWithdrawals) requested.push(cryptoWdResult, jpyWdResult);
 				collectResults(
 					cryptoDepResult,
 					jpyDepResult,
@@ -207,6 +215,14 @@ export default async function getMyDepositWithdrawal(args: {
 				isComplete =
 					cryptoDepResult.complete && jpyDepResult.complete && cryptoWdResult.complete && jpyWdResult.complete;
 			}
+		}
+
+		// 取得できなかったことを「入出金 0 件」と読ませないよう、1 件も取れずに全部失敗したら失敗として返す。
+		const failures = requested.filter((r) => r.error);
+		if (failures.length === requested.length && allDeposits.length + allWithdrawals.length === 0) {
+			return GetMyDepositWithdrawalOutputSchema.parse(
+				failPrivateToolError(failures[0]?.cause, '入出金履歴の取得に失敗しました'),
+			);
 		}
 
 		// 全フェッチ経路がここに合流するので、UUID の重複排除（暗号資産クエリに JPY が含まれるケース）と asset 正規化をこの 1 箇所で行う。
