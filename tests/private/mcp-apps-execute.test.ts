@@ -486,6 +486,69 @@ describe('不変条件 7: 不正・期限切れ・使用済み・別注文のト
 	});
 });
 
+describe('execute ハンドラのゲートの配線（3 ツール共通）', () => {
+	const WIRING_CASES = [
+		{
+			name: 'create_order',
+			load: () => import('../../tools/private/create_order.js'),
+			loadPreview: () => import('../../tools/private/preview_order.js'),
+			args: ORDER_ARGS,
+			uri: 'ui://order/confirm.html',
+		},
+		{
+			name: 'cancel_order',
+			load: () => import('../../tools/private/cancel_order.js'),
+			loadPreview: () => import('../../tools/private/preview_cancel_order.js'),
+			args: CANCEL_ARGS,
+			uri: 'ui://cancel/confirm.html',
+		},
+		{
+			name: 'cancel_orders',
+			load: () => import('../../tools/private/cancel_orders.js'),
+			loadPreview: () => import('../../tools/private/preview_cancel_orders.js'),
+			args: CANCEL_BULK_ARGS,
+			uri: 'ui://cancel/confirm.html',
+		},
+	] as const;
+
+	beforeEach(() => {
+		process.env.BITBANK_MCP_APPS_EXECUTE = '1';
+	});
+
+	for (const c of WIRING_CASES) {
+		it(`${c.name}: ゲート on でも token_expires_at が数値でなければ拒否され API を呼ばない`, async () => {
+			const { toolDef } = await c.load();
+			const result = (await toolDef.handler(
+				{ ...c.args, confirmation_token: 'x', token_expires_at: String(Date.now() + 60_000) } as never,
+				appUiCtx(),
+			)) as { ok: boolean; meta?: { errorType?: string } };
+			expect(result.ok).toBe(false);
+			expect(result.meta?.errorType).toBe('direct_execute_forbidden');
+			expect(countOrderApiCalls()).toBe(0);
+		});
+
+		it(`${c.name}: preview のトークンで実行でき、呼び出し元セッションの確認カードだけを消す`, async () => {
+			const { toolDef: previewDef } = await c.loadPreview();
+			const preview = (await previewDef.handler(c.args as never, appUiCtx())) as HandlerResult;
+			const payload = preview._meta?.[META_KEY] as { confirmation_token: string; expires_at: number };
+
+			const { storeUiSnapshot, getUiSnapshot } = await import('../../src/ui-snapshot-cache.js');
+			storeUiSnapshot(c.uri, { ok: true, summary: 'session-a' }, { sessionId: 'session-a' });
+			storeUiSnapshot(c.uri, { ok: true, summary: 'session-b' }, { sessionId: 'session-b' });
+
+			const { toolDef } = await c.load();
+			const result = (await toolDef.handler(
+				{ ...c.args, confirmation_token: payload.confirmation_token, token_expires_at: payload.expires_at } as never,
+				{ ...appUiCtx(), sessionId: 'session-a' },
+			)) as { ok: boolean };
+
+			expect(result.ok).toBe(true);
+			expect(getUiSnapshot(c.uri, { sessionId: 'session-a' })).toBeNull();
+			expect(getUiSnapshot(c.uri, { sessionId: 'session-b' })).not.toBeNull();
+		});
+	}
+});
+
 describe('不変条件 8: get_ui_snapshot の `_meta` はゲートと期限に従う', () => {
 	const RESOURCE_URI = 'ui://order/confirm.html';
 
