@@ -96,7 +96,8 @@ export interface DepositWithdrawalData {
 	isComplete: boolean;
 }
 
-export type FetchResult<T> = { ok: true; data: T } | { ok: false; error: string };
+// cause は元の例外。すべて失敗したときに PrivateApiError の分類（errorType）で fail を返すために残す。
+export type FetchResult<T> = { ok: true; data: T } | { ok: false; error: string; cause: unknown };
 
 export interface PnlResult {
 	avg_buy_price: number | undefined;
@@ -275,6 +276,6 @@ export async function tryGet<T>(
 		const data = await client.get<T>(path, params);
 		return { ok: true, data };
 	} catch (err) {
-		return { ok: false, error: getErrorMessage(err) };
+		return { ok: false, error: getErrorMessage(err), cause: err };
 	}
 }

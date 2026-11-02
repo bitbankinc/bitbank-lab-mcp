@@ -1,4 +1,3 @@
-import { normalizeAssetCodes } from '../../../lib/asset-code.js';
 import { toYearKey } from '../../../lib/calendar.js';
 import { retryAsync } from '../../../lib/http.js';
 import { normalizePairCodes } from '../../../lib/pair-code.js';
@@ -9,85 +8,20 @@ import getMarginPositions from '../../../tools/private/get_margin_positions.js';
 import getMarginStatus from '../../../tools/private/get_margin_status.js';
 import type { BitbankPrivateClient } from '../../private/client.js';
 import { PORTFOLIO_CALENDAR_TZ, portfolioDayStartMs } from './calendar.js';
+import { MAX_PAGES, paginateDeposits, paginateWithdrawals } from './pagination.js';
 import {
 	type CandlePriceData,
 	type DepositWithdrawalData,
 	type FlowValuationTarget,
 	type MarginAccountInfo,
-	type RawDeposit,
 	type RawMarginTrade,
 	type RawTrade,
-	type RawWithdrawal,
 	type TechnicalSummary,
 	tryGet,
 } from './types.js';
 
-const MAX_PAGES = 10;
-// 約定履歴は公式上限 1000。入出金履歴は公式上限 100（POST /v1/user/{deposit,withdrawal}_history）。
+// 約定履歴は公式上限 1000。
 const TRADE_PAGE_SIZE = 1000;
-const DW_PAGE_SIZE = 100;
-
-async function paginateDeposits(
-	client: BitbankPrivateClient,
-	baseParams: Record<string, string>,
-	sinceMs?: number,
-): Promise<{ deposits: RawDeposit[]; complete: boolean; error?: string }> {
-	const all: RawDeposit[] = [];
-	const seenIds = new Set<string>();
-	let since: string | undefined = sinceMs != null ? String(sinceMs) : undefined;
-	for (let page = 0; page < MAX_PAGES; page++) {
-		const params = { ...baseParams, count: String(DW_PAGE_SIZE), ...(since ? { since } : {}) };
-		const result = await tryGet<{ deposits: RawDeposit[] }>(client, '/v1/user/deposit_history', params);
-		if (!result.ok) {
-			return { deposits: all, complete: false, error: result.error };
-		}
-		// 現行 API は小文字を返すが、calc.ts が小文字前提で JPY 判定・prices 検索・holdings キーを組むので取得境界で正規化しておく。
-		const batch = normalizeAssetCodes(result.data.deposits || []);
-		const newRecords = batch.filter((d) => !seenIds.has(d.uuid));
-		for (const d of newRecords) seenIds.add(d.uuid);
-		all.push(...newRecords);
-		if (batch.length < DW_PAGE_SIZE) {
-			return { deposits: all, complete: true };
-		}
-		// 同一タイムスタンプが DW_PAGE_SIZE 件以上連続して進捗しない場合の保険
-		if (newRecords.length === 0) return { deposits: all, complete: false };
-		// 同一 ts を次ページで取り直して dedup する。confirmed_at は確認済の入金にしか無いので found_at にフォールバックする。
-		const last = batch[batch.length - 1];
-		const lastTs = last?.confirmed_at ?? last?.found_at;
-		if (!lastTs) break;
-		since = String(lastTs);
-	}
-	return { deposits: all, complete: false };
-}
-
-async function paginateWithdrawals(
-	client: BitbankPrivateClient,
-	baseParams: Record<string, string>,
-	sinceMs?: number,
-): Promise<{ withdrawals: RawWithdrawal[]; complete: boolean; error?: string }> {
-	const all: RawWithdrawal[] = [];
-	const seenIds = new Set<string>();
-	let since: string | undefined = sinceMs != null ? String(sinceMs) : undefined;
-	for (let page = 0; page < MAX_PAGES; page++) {
-		const params = { ...baseParams, count: String(DW_PAGE_SIZE), ...(since ? { since } : {}) };
-		const result = await tryGet<{ withdrawals: RawWithdrawal[] }>(client, '/v1/user/withdrawal_history', params);
-		if (!result.ok) {
-			return { withdrawals: all, complete: false, error: result.error };
-		}
-		const batch = normalizeAssetCodes(result.data.withdrawals || []);
-		const newRecords = batch.filter((w) => !seenIds.has(w.uuid));
-		for (const w of newRecords) seenIds.add(w.uuid);
-		all.push(...newRecords);
-		if (batch.length < DW_PAGE_SIZE) {
-			return { withdrawals: all, complete: true };
-		}
-		if (newRecords.length === 0) return { withdrawals: all, complete: false };
-		const lastTs = batch[batch.length - 1]?.requested_at;
-		if (!lastTs) break;
-		since = String(lastTs);
-	}
-	return { withdrawals: all, complete: false };
-}
 
 export interface PaginateTradesOptions {
 	baseParams?: Record<string, string>;
