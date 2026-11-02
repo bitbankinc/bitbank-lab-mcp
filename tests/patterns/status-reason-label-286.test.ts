@@ -2,6 +2,7 @@
 // `includeInvalid: true` が要るのは、既定 `swingDepth`（1hour = 3）で経路ゲートが `peak_after_last_pivot` を立てて、既定では `data.patterns` から消えるため。
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { asMockResult } from '../_assertResult.js';
+import { detectPatternsContent } from '../helpers/detect-patterns.js';
 
 vi.mock('../../tools/analyze_indicators.js', () => ({ default: vi.fn() }));
 
@@ -17,23 +18,9 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-async function liveWindowContent(view: string): Promise<string> {
+function liveWindowContent(view: string): Promise<string> {
 	const { start, end } = BTC_JPY_1HOUR_2026_09_05_ISSUE_WINDOW;
-	const candles = buildBtcJpy1hour20260905Candles().slice(start, end);
-	vi.mocked(analyzeIndicators).mockResolvedValueOnce(
-		asMockResult({ ok: true, summary: 'ok', data: { chart: { candles } } }),
-	);
-	const res = (await detectPatternsTool.handler({
-		pair: 'btc_jpy',
-		type: '1hour',
-		limit: candles.length,
-		view,
-		includeInvalid: true,
-	})) as { content?: Array<{ text?: string }> };
-	const text = res?.content?.[0]?.text;
-	// `?? ''` で畳まない。空文字に落とすと `not.toContain` 側が「ハンドラが content を返さなかった」ときにも通ってしまう。
-	if (typeof text !== 'string') throw new Error(`view=${view} の content[0].text が取れない`);
-	return text;
+	return detectPatternsContent(buildBtcJpy1hour20260905Candles().slice(start, end), { view, includeInvalid: true });
 }
 
 /** `text.split('\n').filter(状態行)` で全件をまとめて見ると、継続系の正しい「期待と逆方向にブレイク」と反転系の誤表示（#286）を区別できない（この窓には両方が同居している）。 */
