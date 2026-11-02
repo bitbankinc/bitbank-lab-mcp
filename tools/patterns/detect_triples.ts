@@ -1316,35 +1316,6 @@ function tryFormingTripleBottom(ctx: DetectContext): DeduplicablePattern | null 
 
 		const avgValleyPrice = (valley1.price + valley2.price) / 2;
 
-		const p1Cands = allPeaks.filter((p: { idx: number }) => p.idx > valley1.idx && p.idx < valley2.idx);
-		const p2Cands = allPeaks.filter((p: { idx: number }) => p.idx > valley2.idx && p.idx < lastIdx);
-		if (p1Cands.length === 0 || p2Cands.length === 0) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: 'forming_neckline_points_insufficient',
-				idxs: [valley1.idx, valley2.idx, lastIdx],
-			});
-			continue;
-		}
-		const pTop1 = p1Cands.reduce((m, p) => (p.price > m.price ? p : m));
-		const pTop2 = p2Cands.reduce((m, p) => (p.price > m.price ? p : m));
-
-		const peakMaxN = Math.max(pTop1.price, pTop2.price);
-		const peakMinN = Math.min(pTop1.price, pTop2.price);
-		const peakSpread = (peakMaxN - peakMinN) / Math.max(1, peakMaxN);
-		if (peakSpread > necklineSpreadLimit) {
-			pcand({
-				type: 'triple_bottom',
-				accepted: false,
-				reason: 'forming_neckline_not_horizontal',
-				idxs: [valley1.idx, valley2.idx, lastIdx],
-			});
-			continue;
-		}
-
-		const avgPeakPrice = (pTop1.price + pTop2.price) / 2;
-
 		const currentDiff = Math.abs(currentPrice - avgValleyPrice) / Math.max(1, avgValleyPrice);
 		if (currentDiff > tripleTolerancePct || currentPrice > avgValleyPrice * 1.05) continue;
 
@@ -1385,6 +1356,35 @@ function tryFormingTripleBottom(ctx: DetectContext): DeduplicablePattern | null 
 		}
 		const priorTrend = validateTriplePriorTrend(ctx, 'triple_bottom', [valley1.idx, valley2.idx, lastIdx]);
 		if (!priorTrend) continue;
+
+		const p1Cands = allPeaks.filter((p: { idx: number }) => p.idx > valley1.idx && p.idx < valley2.idx);
+		const p2Cands = allPeaks.filter((p: { idx: number }) => p.idx > valley2.idx && p.idx < lastIdx);
+		if (p1Cands.length === 0 || p2Cands.length === 0) {
+			pcand({
+				type: 'triple_bottom',
+				accepted: false,
+				reason: 'forming_neckline_points_insufficient',
+				idxs: [valley1.idx, valley2.idx, lastIdx],
+			});
+			continue;
+		}
+		const pTop1 = p1Cands.reduce((m, p) => (p.price > m.price ? p : m));
+		const pTop2 = p2Cands.reduce((m, p) => (p.price > m.price ? p : m));
+
+		const peakMaxN = Math.max(pTop1.price, pTop2.price);
+		const peakMinN = Math.min(pTop1.price, pTop2.price);
+		const peakSpread = (peakMaxN - peakMinN) / Math.max(1, peakMaxN);
+		if (peakSpread > necklineSpreadLimit) {
+			pcand({
+				type: 'triple_bottom',
+				accepted: false,
+				reason: 'forming_neckline_not_horizontal',
+				idxs: [valley1.idx, valley2.idx, lastIdx],
+			});
+			continue;
+		}
+
+		const avgPeakPrice = (pTop1.price + pTop2.price) / 2;
 
 		const progress = (currentPrice - avgValleyPrice) / Math.max(1e-12, avgPeakPrice - avgValleyPrice);
 		const completion = Math.min(1, 0.66 + Math.min(1, progress) * 0.34);

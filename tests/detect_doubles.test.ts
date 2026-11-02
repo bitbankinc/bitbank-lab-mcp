@@ -286,6 +286,22 @@ describe('detectDoubles', () => {
 		expect(result.found?.double_bottom).toBe(true);
 	});
 
+	it.each([
+		['double_top', buildDoubleTop],
+		['double_bottom', buildDoubleBottom],
+	] as const)('完成した %s の採用候補（debug）は、上下どちらもブレイク足を indices と points に含める', (type, build) => {
+		const { candles, pivots } = build();
+		const ctx = buildCtx({ candles, pivots });
+		const result = detectDoubles(ctx);
+
+		const breakoutIdx = requireDefined(result.patterns.find((p) => p.type === type)?.breakout, 'breakout').idx;
+		const accepted = ctx.debugCandidates.filter((d) => d.type === type && d.accepted);
+		expect(accepted.map((d) => d.indices?.at(-1))).toContain(breakoutIdx);
+		expect(accepted.flatMap((d) => d.points ?? []).filter((p) => p.role === 'breakout')).toEqual([
+			expect.objectContaining({ idx: breakoutIdx }),
+		]);
+	});
+
 	it('ダブルボトムのターゲット価格 = neckline + (neckline - avgValley)', () => {
 		const { candles, pivots } = buildDoubleBottom({ valley1: 100, peak: 130, valley2: 100 });
 		const ctx = buildCtx({ candles, pivots });

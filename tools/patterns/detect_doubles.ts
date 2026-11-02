@@ -1113,11 +1113,12 @@ export function detectDoubles(ctx: DetectContext): DetectResult {
 					type: 'double_bottom',
 					accepted: true,
 					...(dbUnbroken ? { status: dbUnbroken.status } : {}),
-					idxs: [a.idx, b.idx, c.idx],
+					idxs: isCompleted ? [a.idx, b.idx, c.idx, breakoutIdx] : [a.idx, b.idx, c.idx],
 					pts: [
 						{ role: 'valley1', idx: a.idx, price: a.price },
 						{ role: 'peak', idx: b.idx, price: b.price },
 						{ role: 'valley2', idx: c.idx, price: c.price },
+						...(isCompleted ? [{ role: 'breakout', idx: breakoutIdx, price: dbBp }] : []),
 					],
 				});
 			}
