@@ -110,14 +110,6 @@ export interface DetectContext {
 	debugCandidates: CandDebugEntry[];
 	type: string;
 	swingDepth: number;
-	near: (a: number, b: number) => boolean;
-	pct: (a: number, b: number) => number;
-	lrWithR2: (pts: Array<{ x: number; y: number }>) => {
-		slope: number;
-		intercept: number;
-		r2: number;
-		valueAt: (x: number) => number;
-	};
 	/** 構造図の日付表示にだけ使い、判定には使わない。未指定なら Asia/Tokyo。 */
 	tz?: string;
 }

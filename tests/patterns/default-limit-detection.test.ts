@@ -11,7 +11,6 @@ import {
 import { detectHeadAndShoulders, getHsFormingBarParams } from '../../tools/patterns/detect_hs.js';
 import { detectTriples } from '../../tools/patterns/detect_triples.js';
 import { detectWedges } from '../../tools/patterns/detect_wedges.js';
-import { linearRegressionWithR2 } from '../../tools/patterns/regression.js';
 import { detectSwingPoints } from '../../tools/patterns/swing.js';
 import type { CandleData, DetectContext } from '../../tools/patterns/types.js';
 
@@ -56,9 +55,6 @@ function buildCtx(tf: string, candles: CandleData[], includeForming: boolean): D
 		sizeThresholds: getSizeThresholdsForTf(tf),
 		hsShoulderMaxPct: getHsShoulderMaxPctForTf(tf),
 		swingDepth,
-		near: (a, b) => Math.abs(a - b) <= Math.max(a, b) * tolerancePct,
-		pct: (a, b) => ((b - a) / Math.max(1, a)) * 100,
-		lrWithR2: (pts) => linearRegressionWithR2(pts),
 	};
 }
 

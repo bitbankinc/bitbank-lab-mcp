@@ -25,9 +25,6 @@ function makeCtx(candles: Array<{ isoTime?: string }>): DetectContext {
 		sizeThresholds: getSizeThresholdsForTf('1day'),
 		hsShoulderMaxPct: getHsShoulderMaxPctForTf('1day'),
 		swingDepth: 6,
-		near: () => false,
-		pct: () => 0,
-		lrWithR2: () => ({ slope: 0, intercept: 0, r2: 0, valueAt: () => 0 }),
 	};
 }
 

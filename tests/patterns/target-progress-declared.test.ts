@@ -19,7 +19,6 @@ import {
 	getSizeThresholdsForTf,
 } from '../../tools/patterns/config.js';
 import { detectTriples } from '../../tools/patterns/detect_triples.js';
-import { linearRegressionWithR2 } from '../../tools/patterns/regression.js';
 import { detectSwingPoints, type Pivot } from '../../tools/patterns/swing.js';
 import type { CandleData, DetectContext, PatternEntry } from '../../tools/patterns/types.js';
 import { asMockResult, assertOk } from '../_assertResult.js';
@@ -47,9 +46,6 @@ function buildTripleCtxFor(candles: CandleData[], tf: string, swingDepthOverride
 		debugCandidates: [],
 		type: tf,
 		swingDepth,
-		near: (a: number, b: number) => Math.abs(a - b) <= Math.max(a, b) * tol,
-		pct: (a: number, b: number) => ((b - a) / Math.max(1, a)) * 100,
-		lrWithR2: (pts) => linearRegressionWithR2(pts),
 	};
 }
 

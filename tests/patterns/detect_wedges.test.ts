@@ -53,9 +53,6 @@ function buildCtx(opts: {
 		sizeThresholds: getSizeThresholdsForTf(opts.type ?? '1day'),
 		hsShoulderMaxPct: getHsShoulderMaxPctForTf(opts.type ?? '1day'),
 		swingDepth: opts.swingDepth ?? 7,
-		near: (a: number, b: number) => Math.abs(a - b) <= Math.max(a, b) * tol,
-		pct: (a: number, b: number) => ((b - a) / Math.max(1, a)) * 100,
-		lrWithR2: (pts) => linearRegressionWithR2(pts),
 	};
 }
 

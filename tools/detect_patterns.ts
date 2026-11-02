@@ -26,7 +26,6 @@ import {
 } from './patterns/mutual-exclusion.js';
 import { buildPeriodBlock, buildScanRange } from './patterns/period.js';
 import { rankPatterns } from './patterns/ranking.js';
-import { linearRegressionWithR2, near as nearFn, pct as pctFn } from './patterns/regression.js';
 import { buildScanWindowWarning } from './patterns/scan-window.js';
 import { REVERSAL_HISTORY_WARMUP_BARS } from './patterns/structural.js';
 import { formatStructureGateSkipLine, formatTriplePositionLines } from './patterns/structure-diagnostics.js';
@@ -264,9 +263,6 @@ export default async function detectPatterns(
 			debugCandidates,
 			type,
 			swingDepth,
-			near: (a: number, b: number) => nearFn(a, b, tolerancePct),
-			pct: pctFn,
-			lrWithR2: linearRegressionWithR2,
 			// ctx.tz は構造図の日付整形専用で、各検出器の判定には使わない。
 			tz,
 		};

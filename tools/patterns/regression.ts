@@ -99,10 +99,6 @@ export function near(a: number, b: number, tolerancePct: number): boolean {
 	return Math.abs(a - b) <= Math.max(a, b) * tolerancePct;
 }
 
-export function pct(a: number, b: number): number {
-	return (b - a) / (a === 0 ? 1 : a);
-}
-
 export function clamp01(x: number): number {
 	return Math.max(0, Math.min(1, x));
 }
@@ -135,17 +131,16 @@ function findWorstResidualIdx(
 export function robustFit(
 	pts: readonly RegressionPoint[],
 	minPoints: number,
-	lrWithR2: (pts: XYPoint[]) => LinearRegressionWithR2Result,
 	minR2: number,
 ): { line: LinearRegressionWithR2Result; filtered: RegressionPoint[] } {
 	let current = [...pts];
-	let line = lrWithR2(current.map((p) => ({ x: p.idx, y: p.price })));
+	let line = linearRegressionWithR2(current.map((p) => ({ x: p.idx, y: p.price })));
 	const maxRemovals = Math.max(0, pts.length - minPoints);
 	for (let r = 0; r < maxRemovals && line.r2 < minR2; r++) {
 		const worstIdx = findWorstResidualIdx(current, line);
 		current = current.filter((_, j) => j !== worstIdx);
 		if (current.length < minPoints) break;
-		line = lrWithR2(current.map((p) => ({ x: p.idx, y: p.price })));
+		line = linearRegressionWithR2(current.map((p) => ({ x: p.idx, y: p.price })));
 	}
 	return { line, filtered: current };
 }

@@ -2,7 +2,7 @@ import { generatePatternDiagram, type PatternDiagramData } from '../../lib/patte
 import { MIN_CONFIDENCE } from '../patterns/config.js';
 import { patternBarRange } from './bar-thresholds.js';
 import { finalizeConf, periodScoreBars } from './helpers.js';
-import { clamp01, relDev } from './regression.js';
+import { clamp01, near, relDev } from './regression.js';
 import { applyPostBreakoutGates, applyReversalGate, buildStructureGate } from './reversal-gate.js';
 import { averageDefinedAxes, breakoutQualityScore, retracementScore } from './scoring.js';
 import {
@@ -167,7 +167,7 @@ function tripleCompletionFields(opts: {
 }
 
 function findStrictTripleTop(ctx: DetectContext): DeduplicablePattern[] {
-	const { candles, pivots, allValleys, tolerancePct, minDist, near } = ctx;
+	const { candles, pivots, allValleys, tolerancePct, minDist } = ctx;
 	const pcand: Pcand = (arg) => pushCand(ctx, arg);
 	const patterns: DeduplicablePattern[] = [];
 	const highsOnly = pivots.filter((p) => p.kind === 'H');
@@ -185,7 +185,10 @@ function findStrictTripleTop(ctx: DetectContext): DeduplicablePattern[] {
 		const v1 = v1cands.length ? v1cands.reduce((m, v) => (v.price < m.price ? v : m)) : null;
 		const v2 = v2cands.length ? v2cands.reduce((m, v) => (v.price < m.price ? v : m)) : null;
 
-		const nearAll = near(a.price, b.price) && near(b.price, c.price) && near(a.price, c.price);
+		const nearAll =
+			near(a.price, b.price, tolerancePct) &&
+			near(b.price, c.price, tolerancePct) &&
+			near(a.price, c.price, tolerancePct);
 		if (!nearAll) {
 			pcand({
 				type: 'triple_top',
@@ -379,7 +382,7 @@ function findStrictTripleTop(ctx: DetectContext): DeduplicablePattern[] {
 }
 
 function findStrictTripleBottom(ctx: DetectContext): DeduplicablePattern[] {
-	const { candles, pivots, allPeaks, tolerancePct, minDist, near } = ctx;
+	const { candles, pivots, allPeaks, tolerancePct, minDist } = ctx;
 	const pcand: Pcand = (arg) => pushCand(ctx, arg);
 	const patterns: DeduplicablePattern[] = [];
 	const lowsOnly = pivots.filter((p) => p.kind === 'L');
@@ -396,7 +399,10 @@ function findStrictTripleBottom(ctx: DetectContext): DeduplicablePattern[] {
 		const p1 = p1cands.length ? p1cands.reduce((m, v) => (v.price > m.price ? v : m)) : null;
 		const p2 = p2cands.length ? p2cands.reduce((m, v) => (v.price > m.price ? v : m)) : null;
 
-		const nearAll = near(a.price, b.price) && near(b.price, c.price) && near(a.price, c.price);
+		const nearAll =
+			near(a.price, b.price, tolerancePct) &&
+			near(b.price, c.price, tolerancePct) &&
+			near(a.price, c.price, tolerancePct);
 		if (!nearAll) {
 			pcand({
 				type: 'triple_bottom',

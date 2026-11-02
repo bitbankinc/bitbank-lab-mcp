@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
 import { getHsShoulderMaxPctForTf, getSizeThresholdsForTf } from '../tools/patterns/config.js';
 import { detectDoubles } from '../tools/patterns/detect_doubles.js';
-import { linearRegressionWithR2 } from '../tools/patterns/regression.js';
 import type { Pivot } from '../tools/patterns/swing.js';
 import type { CandleData, DetectContext } from '../tools/patterns/types.js';
 import { requireDefined } from './helpers/assert.js';
@@ -43,9 +42,6 @@ function buildCtx(opts: {
 		sizeThresholds: getSizeThresholdsForTf(opts.type ?? '1day'),
 		hsShoulderMaxPct: getHsShoulderMaxPctForTf(opts.type ?? '1day'),
 		swingDepth: 7,
-		near: (a: number, b: number) => Math.abs(a - b) <= Math.max(a, b) * tol,
-		pct: (a: number, b: number) => ((b - a) / Math.max(1, a)) * 100,
-		lrWithR2: (pts) => linearRegressionWithR2(pts),
 	};
 }
 

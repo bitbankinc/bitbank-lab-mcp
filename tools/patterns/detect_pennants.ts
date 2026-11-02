@@ -263,7 +263,7 @@ function dedupFlagPennants(patterns: PatternEntry[]): PatternEntry[] {
 }
 
 export function detectPennantsFlags(ctx: DetectContext): DetectResult {
-	const { candles, want, includeForming, debugCandidates, lrWithR2 } = ctx;
+	const { candles, want, includeForming, debugCandidates } = ctx;
 	const type = ctx.type;
 	let patterns: PatternEntry[] = [];
 
@@ -348,8 +348,8 @@ export function detectPennantsFlags(ctx: DetectContext): DetectResult {
 
 		// pole 直後の調整足が外れ値になりやすく、単純な回帰では R² が落ちて検出を逃すので robust fit にする。
 		const minR2 = 0.5;
-		const { line: upperLine, filtered: filteredHighs } = robustFit(consHighs, minPointsForFit, lrWithR2, minR2);
-		const { line: lowerLine, filtered: filteredLows } = robustFit(consLows, minPointsForFit, lrWithR2, minR2);
+		const { line: upperLine, filtered: filteredHighs } = robustFit(consHighs, minPointsForFit, minR2);
+		const { line: lowerLine, filtered: filteredLows } = robustFit(consLows, minPointsForFit, minR2);
 
 		if (upperLine.r2 < minR2 || lowerLine.r2 < minR2) {
 			debugCandidates.push({
