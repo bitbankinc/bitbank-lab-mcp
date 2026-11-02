@@ -622,6 +622,75 @@ describe('detectTriples', () => {
 		expect(forming[0]?.confidence).toBeLessThanOrEqual(0.59);
 	});
 
+	it.each([
+		{
+			// 確定 2 山 100 / 101.5（平均 100.75）、ネックライン 80.5、現在値はネックラインへ 1.75 進んだ 99。
+			type: 'triple_top' as const,
+			mains: [100, 101.5],
+			necks: [80, 81],
+			current: 99,
+		},
+		{
+			// 上の鏡像。確定 2 谷 101.5 / 100（平均 100.75）、ネックライン 121、現在値はネックラインへ 1.75 進んだ 102.5。
+			type: 'triple_bottom' as const,
+			mains: [101.5, 100],
+			necks: [121, 121],
+			current: 102.5,
+		},
+	])('forming $type の完成度はネックラインまでの進み具合、信頼度は確定 2 点の水準のずれで決まる', ({
+		type,
+		mains,
+		necks,
+		current,
+	}) => {
+		const top = type === 'triple_top';
+		const total = 51;
+		const base = top ? 85 : 110;
+		const candles: CandleData[] = Array.from({ length: total }, (_, i) =>
+			mkCandle(total - i, base, base + 5, base - 5, base),
+		);
+		const bar = (price: number) =>
+			top ? [price - 1, price, price - 2, price - 1] : [price + 1, price + 2, price, price + 1];
+		const neckBar = (price: number) =>
+			top ? [price - 1, price + 1, price - 1, price] : [price + 1, price + 1, price - 1, price];
+		const at = (idx: number, ohlc: number[]) => {
+			candles[idx] = mkCandle(total - idx, ohlc[0], ohlc[1], ohlc[2], ohlc[3]);
+		};
+		at(0, bar(mains[0]));
+		at(10, neckBar(necks[0]));
+		at(20, bar(mains[1]));
+		at(32, neckBar(necks[1]));
+		for (let i = 45; i < total; i++)
+			at(i, top ? [current + 1, current + 1, current - 2, current] : [current - 1, current + 2, current - 1, current]);
+
+		const mainKind = top ? 'H' : 'L';
+		const neckKind = top ? 'L' : 'H';
+		const mainPivots: Pivot[] = [
+			{ idx: 0, price: mains[0], kind: mainKind, extremePrice: mains[0] },
+			{ idx: 20, price: mains[1], kind: mainKind, extremePrice: mains[1] },
+		];
+		const neckPivots: Pivot[] = [
+			{ idx: 10, price: necks[0], kind: neckKind, extremePrice: necks[0] },
+			{ idx: 32, price: necks[1], kind: neckKind, extremePrice: necks[1] },
+		];
+		const result = detectTriples(
+			buildCtx({
+				candles,
+				pivots: [...mainPivots, ...neckPivots],
+				allPeaks: top ? mainPivots : neckPivots,
+				allValleys: top ? neckPivots : mainPivots,
+				includeForming: true,
+			}),
+		);
+
+		const forming = result.patterns.filter((p) => p.type === type && p.status === 'forming');
+		expect(forming).toHaveLength(1);
+		// 0.66 + (1.75 / 20.25) × 0.34 = 0.689
+		expect(forming[0]?.completionPct).toBe(69);
+		// (1 - (1.5 / 101.5) / 0.048) × 0.8 = 0.554
+		expect(forming[0]?.confidence).toBe(0.55);
+	});
+
 	it('forming triple_top: 3 山が単調に切り上がる場合は forming_stair_step_up で reject', () => {
 		// peak1=100, peak2=100.5, currentPrice=104 → peakDiff=0.5/100.5=0.50%、currentDiff=3.75/100.25=3.74% で tripleTolerancePct=0.04*1.2=0.048 を通過するが、ステップ = (104-100)/100 = 4.0% > FORMING_STAIR_STEP_LIMIT(2%) で reject。
 		const total = 51;
