@@ -8,10 +8,10 @@ import { buildPeriodBlock } from '../../tools/patterns/period.js';
 import { extractScanWindowWarnings } from '../../tools/patterns/scan-window.js';
 import { DetectPatternsInputSchema, DetectPatternsOutputSchema } from '../schemas.js';
 import type { McpResponse, ToolDefinition } from '../tool-definition.js';
+import { formatDebugView } from './detectPatternsDebugView.js';
 import {
 	buildEffectiveParamsLine,
 	buildTypeSummary,
-	formatDebugView,
 	formatDetailedView,
 	formatFullView,
 	formatSummaryView,

@@ -5,14 +5,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../tools/detect_patterns.js', () => ({ default: vi.fn() }));
 
 import { dayjs } from '../lib/datetime.js';
-import { toolDef as detectPatternsTool } from '../src/handlers/detectPatternsHandler.js';
 import {
 	CANDIDATE_BREAKDOWN_LABEL,
+	REJECTION_CROSS_TOTAL_LABEL,
+	REJECTION_SUMMARY_LABEL,
+} from '../src/handlers/detectPatternsDebugView.js';
+import { toolDef as detectPatternsTool } from '../src/handlers/detectPatternsHandler.js';
+import {
 	DETECTION_ROUTE_LABEL,
 	EFFECTIVE_PARAMS_LABEL,
 	REDUCTION_LABEL,
-	REJECTION_CROSS_TOTAL_LABEL,
-	REJECTION_SUMMARY_LABEL,
 	TRIPLE_HS_NO_CANDIDATE_NOTE,
 } from '../src/handlers/detectPatternsViewsHandler.js';
 import { toolDef as volatilityTool } from '../src/handlers/getVolatilityMetricsHandler.js';

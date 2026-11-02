@@ -1,14 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { formatDebugView, REJECTION_CROSS_TOTAL_LABEL } from '../src/handlers/detectPatternsDebugView.js';
 import {
 	buildDetectionRouteLine,
 	buildTypeSummary,
-	formatDebugView,
 	formatDetailedView,
 	formatFullView,
 	formatPatternLine,
 	formatStatusLine,
 	formatSummaryView,
-	REJECTION_CROSS_TOTAL_LABEL,
 } from '../src/handlers/detectPatternsViewsHandler.js';
 import { DetectedPatternSchema, PatternTypeEnum } from '../src/schema/patterns.js';
 import type { BreakoutPathRejectReason, ContinuationInvalidReason } from '../tools/patterns/structural.js';
