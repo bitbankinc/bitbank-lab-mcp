@@ -1284,7 +1284,7 @@ describe('detect_macd_cross', () => {
 		expect(res.data.statistics).not.toBeNull();
 	});
 
-	it('screenMode: view=detailed で !res.ok → そのまま res を返す (handler early return)', async () => {
+	it('screenMode: view=summary は detailed の content を組まずに res をそのまま返す', async () => {
 		// screenMode が ok=false を返す状況は通常作れないので、代わりに view='summary' のとき detailed の経路に入らないことを見る。
 		mockedAnalyzeIndicators.mockResolvedValueOnce(
 			asMockResult(

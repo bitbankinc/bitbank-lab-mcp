@@ -551,7 +551,7 @@ describe('formatDebugView: reason 単独の横断合計（#193 B-1）', () => {
 		...rejects('triple_top', 'valleys_missing', 8),
 	];
 
-	it('type を跨ぐ reason を合算し、合計が rejected と一致する（LLM が外した 66 / 47 / 41 を出す）', () => {
+	it('type を跨ぐ reason を合算し、合計が rejected と一致する', () => {
 		const meta = makeMeta(liveLikeCandidates);
 		const text = formatDebugView('hdr', meta, [], makeDebugViewRes()).content[0].text;
 

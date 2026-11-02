@@ -385,7 +385,7 @@ describe('analyze_indicators', () => {
 
 	// 2 回の fetch は同じ timestamp の行を返すので dedupeByTimestamp で 1 本扱いになり、normalized の本数 = 行数。
 
-	it('各警告の分岐: RSI_14/Bollinger_Bands/Stochastic → データ不足 の警告を含む（モック2回 × 7行 = 14行）', async () => {
+	it('各警告の分岐: RSI_14/Bollinger_Bands/Stochastic → データ不足 の警告を含む（7 本）', async () => {
 		// 7 行 < 15 → RSI_14 警告、7 行 < 20 → SMA_20, Bollinger_Bands, Stochastic 警告
 		const rows = makeOhlcvRows(7);
 		globalThis.fetch = vi.fn().mockResolvedValue({
@@ -460,7 +460,7 @@ describe('analyze_indicators', () => {
 		expect(res.meta.warnings?.some((w) => w.includes('Stochastic'))).toBe(false);
 	});
 
-	it('各警告の分岐: SMA_200/EMA_200 → データ不足 の警告を含む（モック2回 × 99行 = 198行）', async () => {
+	it('各警告の分岐: SMA_200/EMA_200 → データ不足 の警告を含む（99 本）', async () => {
 		// 99 行 < 200 → SMA_200, EMA_200 警告
 		const rows = makeOhlcvRows(99);
 		globalThis.fetch = vi.fn().mockResolvedValue({
@@ -477,7 +477,7 @@ describe('analyze_indicators', () => {
 		expect(res.meta.warnings?.some((w) => w.includes('EMA_200'))).toBe(true);
 	});
 
-	it('各警告の分岐: Ichimoku → データ不足 の警告を含む（モック2回 × 25行 = 50行）', async () => {
+	it('各警告の分岐: Ichimoku → データ不足 の警告を含む（25 本）', async () => {
 		// 25 行 < 52 → Ichimoku 警告
 		const rows = makeOhlcvRows(25);
 		globalThis.fetch = vi.fn().mockResolvedValue({
@@ -493,7 +493,7 @@ describe('analyze_indicators', () => {
 		expect(res.meta.warnings?.some((w) => w.includes('Ichimoku'))).toBe(true);
 	});
 
-	it('各警告の分岐: StochRSI → データ不足 の警告を含む（モック2回 × 16行 = 32行）', async () => {
+	it('各警告の分岐: StochRSI → データ不足 の警告を含む（16 本）', async () => {
 		// 16 行 < 34 → StochRSI 警告
 		const rows = makeOhlcvRows(16);
 		globalThis.fetch = vi.fn().mockResolvedValue({
@@ -509,7 +509,7 @@ describe('analyze_indicators', () => {
 		expect(res.meta.warnings?.some((w) => w.includes('StochRSI'))).toBe(true);
 	});
 
-	it('各警告の分岐: SMA_5 → データ不足 の警告を含む（モック2回 × 2行 = 4行）', async () => {
+	it('各警告の分岐: SMA_5 → データ不足 の警告を含む（2 本）', async () => {
 		// 2 行 < 5 → SMA_5, SMA_20 などの警告
 		const rows = makeOhlcvRows(2);
 		globalThis.fetch = vi.fn().mockResolvedValue({
@@ -539,7 +539,7 @@ describe('analyze_indicators', () => {
 		expect(res.summary).toContain('ICHI_conv');
 	});
 
-	it('データ不足（< 52行）で ichimoku が null → summary に ICHI_conv が含まれない（2呼び出し × 25行 = 50行）', async () => {
+	it('データ不足（< 52行）で ichimoku が null → summary に ICHI_conv が含まれない（25 本）', async () => {
 		// 25 行 < 52 → ichimoku snapshot が null → ICHI_conv は summary に含まれない
 		const rows = makeOhlcvRows(25);
 		globalThis.fetch = vi.fn().mockResolvedValue({

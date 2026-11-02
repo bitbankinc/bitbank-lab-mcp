@@ -381,7 +381,7 @@ describe('get_volatility_metrics', () => {
 		});
 	});
 
-	describe('Handler タグ閾値の annualize=false 問題', () => {
+	describe('annualize=false の per-period RV と handler のタグ閾値', () => {
 		it('annualize=false の per-period RV は常に handler 閾値 0.2 未満になる', async () => {
 			const rows = makeOhlcvRows(60, { noise: 0.05 });
 			mockFetchWithOhlcv(rows);
