@@ -14,7 +14,7 @@ MCP ツールをコマンドラインから単体実行するためのスクリ�
 |---|---|---|
 | `stat.ts` | `npm run stat` | `logs/` 配下の JSONL ログを集計し、成功率・エラー種別・処理時間の統計を表示 |
 | `report.ts` | `npm run report` | 前日分のログから日次レポート (Markdown) を `reports/` に生成 |
-| `verify_log_integrity.ts` | なし | 取引操作ログ（`category: "trade_action"`）のハッシュ連鎖（`_hash` / `_prevHash`）を検証する。改ざんや欠落があれば行番号を出して終了コード 1 で終わる |
+| `verify_log_integrity.ts` | なし | 取引操作ログ（`category: "trade_action"` で `_hash` / `_prevHash` を持つ行）について、ハッシュ連鎖とハッシュ値を検証する。不整合があれば行番号を出して終了コード 1 で終わる。ハッシュを持たない行や JSON として読めない行は対象外で、末尾の行が消えた場合も検出できない |
 
 ```bash
 # 直近 7 日間の統計
