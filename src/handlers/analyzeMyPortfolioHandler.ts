@@ -1,14 +1,13 @@
 import { normalizeAssetCodes } from '../../lib/asset-code.js';
 import { dayjs, nowIso } from '../../lib/datetime.js';
 import { formatPair, formatPercent, formatPrice, formatPriceJPY } from '../../lib/formatter.js';
-import { fetchPairsSpec, type PairSpec, roundToPriceDigits } from '../../lib/pairs.js';
+import { fetchPairsSpec } from '../../lib/pairs.js';
 import { ok } from '../../lib/result.js';
 import { prependWarnings } from '../../lib/warning-propagation.js';
 import { getDefaultClient } from '../private/client.js';
 import {
 	AnalyzeMyPortfolioOutputSchema,
 	type PortfolioChangePctUnavailableReason,
-	type PortfolioCostBasisUnavailableReason,
 	type PortfolioFlowUnavailableReason,
 	type PortfolioFlowValuationBasis,
 	type PortfolioQtyMismatchReason,
@@ -33,11 +32,9 @@ import {
 	flowUnavailableReasonFor,
 	getJstPeriodBoundaries,
 	MIN_START_VALUE_RATIO,
+	type PeriodPerformanceKey,
 	type PeriodSpec,
 	type PortfolioPerformanceContext,
-	qtyInvariantHolds,
-	qtyInvariantTolerance,
-	qtyMismatchReasonFor,
 	resolveDepositWithdrawalStatus,
 	summarizeFlowValuation,
 	unresolvedDepositReasonsByAsset,
@@ -55,9 +52,20 @@ import {
 	paginateMarginTrades,
 	paginateTrades,
 } from './portfolio/fetch.js';
+import {
+	assetCountLabel,
+	buildHoldingsPerformance,
+	depositCountOrUndefined,
+	summarizeUnrealized,
+	tallyClosedAssets,
+	tallyHeldAssets,
+	type UnresolvedDeposits,
+	withDepositOnlyAssets,
+} from './portfolio/holdings.js';
 import type {
 	AccountPnl,
 	CandlePriceData,
+	DepositWithdrawalData,
 	DepositWithdrawalSummary,
 	EquityPoint,
 	FlowPricing,
@@ -67,7 +75,6 @@ import type {
 	PeriodDWSummary,
 	PeriodPerformance,
 	PeriodRealizedPnl,
-	PnlResult,
 	RawAsset,
 	RawMarginTrade,
 	RawTrade,
@@ -124,9 +131,6 @@ function buildMarginPositionsBlock(info: MarginAccountInfo): string[] {
 	lines.push(`  集計: ${aggregateParts.join(' / ')}`);
 	return lines;
 }
-
-// avg_buy_price は板に出せる価格ではないので price_digits より桁を残して丸める（刻みで丸めると cost_basis との再構成誤差が乗る）。pairs を取れないときは丸めず、整数丸めに逃げない。
-const AVG_BUY_PRICE_EXTRA_DIGITS = 2;
 
 const FLOW_VALUATION_LABEL: Record<PortfolioFlowValuationBasis, string> = {
 	deposit_date_price: '入出庫日の始値ベース',
@@ -221,11 +225,6 @@ const UNRESOLVED_DEPOSIT_NOTE: Record<PortfolioUnresolvedDepositReason, string> 
 	deposit_price_chunk_truncated: `入庫日を含む年足の追加取得が上限（${MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS}組）に達したため取りに行けず、取得原価に算入していません（上限は決定的なので同じ入力なら同じ結果になりますが、上限に収まる構成に変われば再実行で値が変わります）`,
 };
 
-// 0 だと「数えたが 0」と「入庫が無い」が同じ表示になるので、キーごと落とす（#77）。
-function depositCountOrUndefined(count: number | undefined): number | undefined {
-	return count != null && count > 0 ? count : undefined;
-}
-
 // DEPRECATED_FIELD_REMOVAL_TARGET で alias を削除するときは、旧名 2 行とスキーマ・description をまとめて落とす（#85）。
 function periodRealizedPnlForWire(
 	period: PeriodRealizedPnl,
@@ -253,37 +252,6 @@ function periodRealizedPnlForWire(
 		realized_pnl_unavailable_reason: unavailableReason,
 		priced_deposit_count_all_time: priced,
 		unpriced_deposit_count_all_time: unpriced,
-	};
-}
-
-// reconstructed_qty は丸めず、0 でもキーを落とさない（消費者が判定を検算できるように。#87）。原価を抑止した銘柄でも出す。
-function qtyInvariantInputsOf(
-	pnl: PnlResult | undefined,
-	onhandAmount: string,
-	amountPrecision: number,
-): {
-	reconstructed_qty: number | undefined;
-	qty_invariant_tolerance: number | undefined;
-	qty_clamp_count: number | undefined;
-	qty_clamp_absorbed_qty: number | undefined;
-} {
-	if (pnl == null) {
-		return {
-			reconstructed_qty: undefined,
-			qty_invariant_tolerance: undefined,
-			qty_clamp_count: undefined,
-			qty_clamp_absorbed_qty: undefined,
-		};
-	}
-	const onhand = Number(onhandAmount);
-	const clamped = pnl.qty_clamp_count > 0;
-	return {
-		reconstructed_qty: Number.isFinite(pnl.reconstructed_qty) ? pnl.reconstructed_qty : undefined,
-		// NaN は出力スキーマ（z.number()）を通らずレスポンス全体が落ちるので、値にならないものは出さない。
-		qty_invariant_tolerance: Number.isFinite(onhand) ? qtyInvariantTolerance(onhand, amountPrecision) : undefined,
-		// 吸収量は件数と対で意味を持つので同じ条件で出し入れする（#89）。
-		qty_clamp_count: clamped ? pnl.qty_clamp_count : undefined,
-		qty_clamp_absorbed_qty: clamped ? pnl.qty_clamp_absorbed_qty : undefined,
 	};
 }
 
@@ -753,6 +721,108 @@ function buildTechnicalLines(technical: readonly TechnicalSummary[]): string[] {
 	return lines;
 }
 
+type EquitySeriesQuality = 'complete' | 'partial_fallback' | 'fallback_only' | 'jpy_only';
+
+function calendarPoints(startMs: number, endMs: number, unit: 'day' | 'month'): ReturnType<typeof dayjs>[] {
+	const points: ReturnType<typeof dayjs>[] = [];
+	for (let d = dayjs(startMs).tz(PORTFOLIO_CALENDAR_TZ); d.valueOf() <= endMs; d = d.add(1, unit)) {
+		points.push(d);
+	}
+	return points;
+}
+
+// 判定は buildEquitySeries が実際に lookup する日付キーがすべて揃っているか。任意の 1 件で OK とすると sparse coverage でも complete になる。
+function equitySeriesFallbackAssetsOf(
+	cryptoAssets: readonly string[],
+	requiredDateKeys: ReadonlySet<number>,
+	dailyPrices: CandlePriceData['dailyPrices'],
+): string[] {
+	return cryptoAssets.filter((asset) => {
+		const dp = dailyPrices.get(asset);
+		if (!dp) return true;
+		for (const ts of requiredDateKeys) {
+			if (!dp.has(ts)) return true;
+		}
+		return false;
+	});
+}
+
+function equitySeriesQualityOf(cryptoAssetCount: number, fallbackAssetCount: number): EquitySeriesQuality {
+	if (cryptoAssetCount === 0) return 'jpy_only';
+	if (fallbackAssetCount === 0) return 'complete';
+	return fallbackAssetCount === cryptoAssetCount ? 'fallback_only' : 'partial_fallback';
+}
+
+interface DWSection {
+	dwSummary: DepositWithdrawalSummary | undefined;
+	yearlyDWSummary: PeriodDWSummary | undefined;
+	monthlyDWSummary: PeriodDWSummary | undefined;
+	dwWarnings: string[];
+}
+
+function buildDWSection(
+	dwData: DepositWithdrawalData | null,
+	totalJpyValue: number,
+	flowPricing: FlowPricing,
+	boundaries: ReturnType<typeof getJstPeriodBoundaries>,
+): DWSection {
+	const section: DWSection = {
+		dwSummary: undefined,
+		yearlyDWSummary: undefined,
+		monthlyDWSummary: undefined,
+		dwWarnings: [],
+	};
+	if (dwData == null) return section;
+	if (dwData.allFailed) {
+		section.dwWarnings.push('入出金履歴の取得に全て失敗したため、約定ベースの分析のみです');
+		return section;
+	}
+	section.dwWarnings.push(...dwData.warnings.map((w) => `注意: ${w}（部分的なデータで概算）`));
+	if (dwData.deposits.length > 0 || dwData.withdrawals.length > 0) {
+		section.dwSummary = calcDepositWithdrawalSummary(dwData, totalJpyValue, flowPricing);
+		section.yearlyDWSummary = calcPeriodDWSummary(
+			dwData,
+			boundaries.yearStartMs,
+			boundaries.yearStartIso,
+			boundaries.nowIso,
+			flowPricing,
+		);
+		section.monthlyDWSummary = calcPeriodDWSummary(
+			dwData,
+			boundaries.monthStartMs,
+			boundaries.monthStartIso,
+			boundaries.nowIso,
+			flowPricing,
+		);
+	}
+	return section;
+}
+
+interface SuppressedChangePct {
+	key: PeriodPerformanceKey;
+	label: string;
+	reason: PortfolioChangePctUnavailableReason;
+	direction: ChangeJpyDirection;
+}
+
+// 並びは summary の期間ブロックと同じ（前日比 → 年初比 → 月初比）。
+function suppressedChangePcts(
+	periods: Record<PeriodPerformanceKey, PeriodPerformance | undefined>,
+): SuppressedChangePct[] {
+	const labels: Array<[PeriodPerformanceKey, string]> = [
+		['daily', '前日比'],
+		['yearly', '年初比'],
+		['monthly', '月初比'],
+	];
+	const suppressed: SuppressedChangePct[] = [];
+	for (const [key, label] of labels) {
+		const p = periods[key];
+		const reason = p?.change_pct_unavailable_reason;
+		if (reason != null) suppressed.push({ key, label, reason, direction: changeJpyDirectionOf(p) });
+	}
+	return suppressed;
+}
+
 interface CalcWarningsInput {
 	dailyPerformance: PeriodPerformance | undefined;
 	monthlyPerformance: PeriodPerformance | undefined;
@@ -1018,326 +1088,66 @@ export default async function analyzeMyPortfolioHandler(args: {
 
 		const timestamp = nowIso();
 
-		let totalJpyValue = 0;
-		let _totalCostBasis = 0;
-		let totalRealizedPnl = 0;
-
-		const qtyMismatchAssets: Array<{ asset: string; reason: PortfolioQtyMismatchReason }> = [];
-
-		// 数量乖離で抑止した銘柄は入れない（has_crypto_deposits の警告と二重になる）。売り切り銘柄は後段の集計ループで足す（#77）。
-		const unpricedDepositAssets: Array<{ asset: string; count: number }> = [];
-
-		// 売り切り銘柄は holdings に載らないので警告行が唯一の申告経路になる（#89）。
-		const qtyClampAssets: Array<{ asset: string; count: number }> = [];
-
-		let depositOnlyDetected: string[] = [];
-
 		// pnlUsesFlow が false の構成では入庫を原価に算入しておらず、原価由来フィールドも既に抑止されているので判定しない。
-		const unresolvedDepositReasons = pnlUsesFlow
-			? unresolvedDepositReasonsByAsset(
-					flowDatePrices.truncatedByChunkLimit.depositsByAsset,
-					flowDatePrices.chunkFetchFailed.depositsByAsset,
-				)
-			: new Map<string, PortfolioUnresolvedDepositReason>();
-		const suppressedRealizedAssets: Array<{
-			asset: string;
-			count: number;
-			reason: PortfolioUnresolvedDepositReason;
-		}> = [];
-		/** 警告に出す件数の単一ソース。 */
-		const unresolvedDepositCountOf = (asset: string): number =>
-			(flowDatePrices.chunkFetchFailed.depositsByAsset.get(asset) ?? 0) +
-			(flowDatePrices.truncatedByChunkLimit.depositsByAsset.get(asset) ?? 0);
+		const unresolvedDeposits: UnresolvedDeposits = {
+			reasons: pnlUsesFlow
+				? unresolvedDepositReasonsByAsset(
+						flowDatePrices.truncatedByChunkLimit.depositsByAsset,
+						flowDatePrices.chunkFetchFailed.depositsByAsset,
+					)
+				: new Map<string, PortfolioUnresolvedDepositReason>(),
+			countOf: (asset) =>
+				(flowDatePrices.chunkFetchFailed.depositsByAsset.get(asset) ?? 0) +
+				(flowDatePrices.truncatedByChunkLimit.depositsByAsset.get(asset) ?? 0),
+		};
+		const pnlOf = (asset: string) => calcPnl(allTrades, asset, dwData?.withdrawals, depositCost);
 
-		const holdings = nonZeroAssets.map((a) => {
-			const amount = a.onhand_amount;
-			const isJpy = a.asset === 'jpy';
-
-			const currentPrice = isJpy ? 1 : prices.get(a.asset);
-			const jpyValue = isJpy ? Number(amount) : currentPrice ? Number(amount) * currentPrice : undefined;
-
-			if (jpyValue != null && Number.isFinite(jpyValue)) {
-				totalJpyValue += jpyValue;
-			}
-
-			if (isJpy) {
-				return {
-					asset: a.asset,
-					pair: 'jpy',
-					amount,
-					avg_buy_price: undefined,
-					current_price: undefined,
-					jpy_value: jpyValue != null ? Math.round(jpyValue) : undefined,
-					cost_basis: undefined,
-					unrealized_pnl: undefined,
-					unrealized_pnl_pct: undefined,
-					realized_pnl: undefined,
-					trade_count: undefined,
-					cost_basis_unavailable_reason: undefined,
-					cost_basis_reliable: undefined,
-					priced_deposit_count: undefined,
-					unpriced_deposit_count: undefined,
-					// JPY は calcPnl を呼んでいない（復元数量という概念が無い）のでまとめて省く。
-					reconstructed_qty: undefined,
-					qty_invariant_tolerance: undefined,
-					qty_clamp_count: undefined,
-					qty_clamp_absorbed_qty: undefined,
-				};
-			}
-
-			const pair = `${a.asset}_jpy`;
-			const pairSpec: PairSpec | undefined = pairsSpec?.get(pair);
-			const roundedCurrentPrice = roundToPriceDigits(currentPrice, pairSpec);
-			const pnl = include_pnl ? calcPnl(allTrades, a.asset, dwData?.withdrawals, depositCost) : undefined;
-
-			if (pnl?.cost_basis != null) {
-				_totalCostBasis += pnl.cost_basis;
-			}
-			// 抑止する銘柄の realized_pnl は実行ごとに変わりうるので合計にも積まない。
-			const unresolvedDepositReason = unresolvedDepositReasons.get(a.asset);
-			if (pnl && unresolvedDepositReason == null) {
-				totalRealizedPnl += pnl.realized_pnl;
-			}
-			// unresolvedDepositReason が付く銘柄では集めない。その経路は realized_pnl を出さないので、過大寄りの警告が出してもいない値を指す。
-			if (pnl != null && unresolvedDepositReason == null && pnl.qty_clamp_count > 0) {
-				qtyClampAssets.push({ asset: a.asset, count: pnl.qty_clamp_count });
-			}
-
-			// avg_buy_price 単体は出庫に対して不変だが、amount × avg_buy_price で原価を再構成されると同じ誤りに戻るので 4 フィールドをまとめて出さない。
-			if (flowUnavailableReason != null) {
-				return {
-					asset: a.asset,
-					pair,
-					amount,
-					avg_buy_price: undefined,
-					current_price: roundedCurrentPrice,
-					jpy_value: jpyValue != null ? Math.round(jpyValue) : undefined,
-					cost_basis: undefined,
-					unrealized_pnl: undefined,
-					unrealized_pnl_pct: undefined,
-					realized_pnl: pnl?.realized_pnl,
-					trade_count: pnl?.trade_count,
-					cost_basis_unavailable_reason: flowUnavailableReason,
-					cost_basis_reliable: false,
-					// 入庫の原価算入をしていない経路なので 0 を出さずキーごと落とす。
-					priced_deposit_count: depositCountOrUndefined(pnl?.priced_deposit_count),
-					unpriced_deposit_count: depositCountOrUndefined(pnl?.unpriced_deposit_count),
-					// 数量不変条件を評価する前に抑止した経路でも復元数量は出す（#87）。
-					...qtyInvariantInputsOf(pnl, amount, a.amount_precision),
-				};
-			}
-
-			// 数量不変条件より先に判定する。両方成立する構成で抑止が広いこちらを載せないと realized_pnl が漏れる（#80）。
-			if (pnl != null && unresolvedDepositReason != null) {
-				suppressedRealizedAssets.push({
-					asset: a.asset,
-					count: unresolvedDepositCountOf(a.asset),
-					reason: unresolvedDepositReason,
-				});
-				return {
-					asset: a.asset,
-					pair,
-					amount,
-					avg_buy_price: undefined,
-					current_price: roundedCurrentPrice,
-					jpy_value: jpyValue != null ? Math.round(jpyValue) : undefined,
-					cost_basis: undefined,
-					unrealized_pnl: undefined,
-					unrealized_pnl_pct: undefined,
-					realized_pnl: undefined,
-					// 約定件数は原価に依存しないのでそのまま出す（何件の約定を見た結果かが読める）。
-					trade_count: pnl.trade_count,
-					cost_basis_unavailable_reason: unresolvedDepositReason,
-					cost_basis_reliable: false,
-					// 件数は抑止の根拠そのものなので落とさない。
-					priced_deposit_count: depositCountOrUndefined(pnl.priced_deposit_count),
-					unpriced_deposit_count: depositCountOrUndefined(pnl.unpriced_deposit_count),
-					// 数量不変条件より先に抑止しているので、許容誤差内なのに cost_basis_reliable=false という組み合わせが出る（#87）。
-					...qtyInvariantInputsOf(pnl, amount, a.amount_precision),
-				};
-			}
-
-			if (pnl != null && !qtyInvariantHolds(Number(amount), pnl.reconstructed_qty, a.amount_precision)) {
-				const reason = qtyMismatchReasonFor(dwData, tradesTruncated, pnl.unpriced_deposit_count, pnl.reconstructed_qty);
-				qtyMismatchAssets.push({ asset: a.asset, reason });
-				return {
-					asset: a.asset,
-					pair,
-					amount,
-					avg_buy_price: undefined,
-					current_price: roundedCurrentPrice,
-					jpy_value: jpyValue != null ? Math.round(jpyValue) : undefined,
-					cost_basis: undefined,
-					unrealized_pnl: undefined,
-					unrealized_pnl_pct: undefined,
-					realized_pnl: pnl.realized_pnl,
-					trade_count: pnl.trade_count,
-					cost_basis_unavailable_reason: reason,
-					cost_basis_reliable: false,
-					priced_deposit_count: depositCountOrUndefined(pnl.priced_deposit_count),
-					unpriced_deposit_count: depositCountOrUndefined(pnl.unpriced_deposit_count),
-					...qtyInvariantInputsOf(pnl, amount, a.amount_precision),
-				};
-			}
-
-			const unrealizedPnl =
-				jpyValue != null && pnl?.cost_basis != null ? Math.round(jpyValue - pnl.cost_basis) : undefined;
-			const unrealizedPnlPct =
-				unrealizedPnl != null && pnl?.cost_basis != null && pnl.cost_basis > 0
-					? Math.round((unrealizedPnl / pnl.cost_basis) * 10000) / 100
-					: undefined;
-
-			// 数量乖離が許容誤差に収まれば未算入の入庫があってもここを通るので、cost_basis_reliable=true と unpriced_deposit_count>0 は同時に立つ。
-			if (pnl != null && pnl.unpriced_deposit_count > 0) {
-				unpricedDepositAssets.push({ asset: a.asset, count: pnl.unpriced_deposit_count });
-			}
-
-			return {
-				asset: a.asset,
-				pair,
-				amount,
-				avg_buy_price: roundToPriceDigits(pnl?.avg_buy_price, pairSpec, {
-					extraDigits: AVG_BUY_PRICE_EXTRA_DIGITS,
-				}),
-				current_price: roundedCurrentPrice,
-				jpy_value: jpyValue != null ? Math.round(jpyValue) : undefined,
-				cost_basis: pnl?.cost_basis != null ? Math.round(pnl.cost_basis) : undefined,
-				unrealized_pnl: unrealizedPnl,
-				unrealized_pnl_pct: unrealizedPnlPct,
-				realized_pnl: pnl?.realized_pnl,
-				trade_count: pnl?.trade_count,
-				cost_basis_unavailable_reason: undefined,
-				cost_basis_reliable: pnl != null ? true : undefined,
-				priced_deposit_count: depositCountOrUndefined(pnl?.priced_deposit_count),
-				unpriced_deposit_count: depositCountOrUndefined(pnl?.unpriced_deposit_count),
-				...qtyInvariantInputsOf(pnl, amount, a.amount_precision),
-			};
+		const held = tallyHeldAssets(nonZeroAssets, {
+			prices,
+			pairsSpec,
+			pnlOf: include_pnl ? pnlOf : undefined,
+			flowUnavailableReason,
+			unresolvedDeposits,
+			dwData,
+			tradesTruncated,
 		});
-
+		const { holdings, totalJpyValue, qtyMismatchAssets } = held;
 		// summary の内訳行はこの退避値を使う（spot_realized_pnl - closed の引き算だと浮動小数の残差が表示に乗る）。
-		const heldRealizedPnl = totalRealizedPnl;
+		const heldRealizedPnl = held.realizedPnl;
 
-		// undefined = 集計していない、0 = 売り切りはあったが実現損益ゼロ / 売り切り銘柄なし。
-		let closedPositionRealizedPnl: number | undefined;
-		let closedPositionAssetCount: number | undefined;
-		// undefined の条件は closedPositionRealizedPnl と同一で、部分和を出さない方針を引き継ぐ（#92）。
-		let closedPositions:
-			| Array<{
-					asset: string;
-					realized_pnl: number | undefined;
-					priced_deposit_count: number | undefined;
-					unpriced_deposit_count: number | undefined;
-					realized_pnl_unavailable_reason: PortfolioCostBasisUnavailableReason | undefined;
-			  }>
-			| undefined;
 		// #93 の検出でも使うので include_pnl の外側で一度だけ計算する。
 		const heldAssets = new Set(nonZeroAssets.map((a) => a.asset));
 		const tradedAssets = new Set(allTrades.map((t) => t.pair.replace('_jpy', '')).filter((a) => a !== 'jpy'));
-		if (include_pnl && allTrades.length > 0) {
-			let closedSum = 0;
-			let closedCount = 0;
-			// 1 銘柄でも抑止したら closed 系は部分和になるので確定値を出さない。
-			let closedSuppressed = false;
-			const closedBreakdown: NonNullable<typeof closedPositions> = [];
-			for (const asset of tradedAssets) {
-				if (!heldAssets.has(asset)) {
-					const pnl = calcPnl(allTrades, asset, dwData?.withdrawals, depositCost);
-					const unresolvedDepositReason = unresolvedDepositReasons.get(asset);
-					if (unresolvedDepositReason != null) {
-						suppressedRealizedAssets.push({
-							asset,
-							count: unresolvedDepositCountOf(asset),
-							reason: unresolvedDepositReason,
-						});
-						closedSuppressed = true;
-						continue;
-					}
-					// 金額の集計条件とは切り離す。未算入入庫があるからこそ 0 円に丸まるケースまで申告が消える（#77）。
-					if (pnl.unpriced_deposit_count > 0) {
-						unpricedDepositAssets.push({ asset, count: pnl.unpriced_deposit_count });
-					}
-					if (pnl.qty_clamp_count > 0) {
-						qtyClampAssets.push({ asset, count: pnl.qty_clamp_count });
-					}
-					// realized_pnl が 0 の銘柄も内訳に含める。件数だけだと銘柄の入れ替わりが相殺されて見えなくなる（#92）。
-					closedBreakdown.push({
-						asset,
-						realized_pnl: pnl.realized_pnl,
-						priced_deposit_count: depositCountOrUndefined(pnl.priced_deposit_count),
-						unpriced_deposit_count: depositCountOrUndefined(pnl.unpriced_deposit_count),
-						realized_pnl_unavailable_reason: undefined,
-					});
-					if (pnl.realized_pnl !== 0) {
-						totalRealizedPnl += pnl.realized_pnl;
-						closedSum += pnl.realized_pnl;
-						closedCount++;
-					}
-				}
-			}
-			closedPositionRealizedPnl = closedSuppressed ? undefined : closedSum;
-			closedPositionAssetCount = closedSuppressed ? undefined : closedCount;
-			// 抑止時は内訳も undefined にする。部分配列を出すと内訳の合計を本当の合計と誤認させる。
-			closedPositions = closedSuppressed
-				? undefined
-				: closedBreakdown.sort(
-						(x, y) => (y.realized_pnl ?? 0) - (x.realized_pnl ?? 0) || x.asset.localeCompare(y.asset),
-					);
-		}
+		// undefined なら closed 系はすべて undefined（集計していない）。
+		const closed =
+			include_pnl && allTrades.length > 0
+				? tallyClosedAssets({ tradedAssets, heldAssets, pnlOf, unresolvedDeposits, heldRealizedPnl })
+				: undefined;
+		const totalRealizedPnl = closed?.totalRealizedPnl ?? heldRealizedPnl;
+		const closedPositionRealizedPnl = closed?.closedPositionRealizedPnl;
+		const closedPositionAssetCount = closed?.closedPositionAssetCount;
+		const unpricedDepositAssets = [...held.unpricedDepositAssets, ...(closed?.unpricedDepositAssets ?? [])];
+		// 売り切り銘柄は holdings に載らないので警告行が唯一の申告経路になる（#89）。
+		const qtyClampAssets = [...held.qtyClampAssets, ...(closed?.qtyClampAssets ?? [])];
+		const suppressedRealizedAssets = [...held.suppressedRealizedAssets, ...(closed?.suppressedRealizedAssets ?? [])];
 
-		// closedSuppressed とは無関係に動く。検出結果は合計に寄与しないので、他銘柄の抑止に道連れにしない（#93）。
-		if (include_pnl) {
-			// 除外判定は出庫履歴の完全性に依存するので、flowUnavailableReason が立つ実行では検出自体を行わない。
-			depositOnlyDetected = flowUnavailableReason == null ? depositOnlyAssets(dwData, heldAssets, tradedAssets) : [];
-			if (depositOnlyDetected.length > 0) {
-				// 約定履歴が打ち切られていると誤検出しうるので、確度が落ちる場合は history_truncated に倒す（qtyMismatchReasonFor の優先順と揃える）。
-				const detectionReason: PortfolioCostBasisUnavailableReason = tradesTruncated
-					? 'history_truncated'
-					: 'untracked_trade_suspected';
-				const detectedEntries: NonNullable<typeof closedPositions> = depositOnlyDetected.map((asset) => ({
-					asset,
-					realized_pnl: undefined,
-					priced_deposit_count: undefined,
-					unpriced_deposit_count: undefined,
-					realized_pnl_unavailable_reason: detectionReason,
-				}));
-				// ?? 0 で欠損扱いすると負の realized_pnl を持つ要素より前に出るので、先に defined / undefined で分けて末尾にまとめる。
-				closedPositions = [...(closedPositions ?? []), ...detectedEntries].sort((x, y) => {
-					if (x.realized_pnl == null || y.realized_pnl == null) {
-						if ((x.realized_pnl == null) !== (y.realized_pnl == null)) {
-							return x.realized_pnl == null ? 1 : -1;
-						}
-						return x.asset.localeCompare(y.asset);
-					}
-					return y.realized_pnl - x.realized_pnl || x.asset.localeCompare(y.asset);
-				});
-			}
-		}
+		// 除外判定は出庫履歴の完全性に依存するので、flowUnavailableReason が立つ実行では検出自体を行わない。
+		const depositOnlyDetected =
+			include_pnl && flowUnavailableReason == null ? depositOnlyAssets(dwData, heldAssets, tradedAssets) : [];
+		const closedPositions = withDepositOnlyAssets(closed?.closedPositions, depositOnlyDetected, tradesTruncated);
 
 		// 抑止した銘柄を除いても含めても正しい合計にならないので、合計そのものを出さない（#80）。
 		const totalRealizedPnlUnavailableReason = dominantUnresolvedDepositReason(
 			suppressedRealizedAssets.map((e) => e.reason),
 		);
 
-		let yearlyRealizedPnl: PeriodRealizedPnl | undefined;
-		let monthlyRealizedPnl: PeriodRealizedPnl | undefined;
-		if (include_pnl && allTrades.length > 0) {
-			yearlyRealizedPnl = calcPeriodRealizedPnl(
-				allTrades,
-				boundaries.yearStartMs,
-				boundaries.yearStartIso,
-				boundaries.nowIso,
-				dwData?.withdrawals,
-				depositCost,
-			);
-			monthlyRealizedPnl = calcPeriodRealizedPnl(
-				allTrades,
-				boundaries.monthStartMs,
-				boundaries.monthStartIso,
-				boundaries.nowIso,
-				dwData?.withdrawals,
-				depositCost,
-			);
-		}
+		const periodRealizedPnl = (startMs: number, startIso: string) =>
+			calcPeriodRealizedPnl(allTrades, startMs, startIso, boundaries.nowIso, dwData?.withdrawals, depositCost);
+		const hasPnl = include_pnl && allTrades.length > 0;
+		const yearlyRealizedPnl = hasPnl ? periodRealizedPnl(boundaries.yearStartMs, boundaries.yearStartIso) : undefined;
+		const monthlyRealizedPnl = hasPnl
+			? periodRealizedPnl(boundaries.monthStartMs, boundaries.monthStartIso)
+			: undefined;
 
 		// 抑止した銘柄がその期間に売却しているときだけ壊れるので、抑止範囲を広げない（#80）。
 		const periodRealizedPnlUnavailableReasonFor = (
@@ -1353,52 +1163,49 @@ export default async function analyzeMyPortfolioHandler(args: {
 		const monthlyRealizedPnlUnavailableReason = periodRealizedPnlUnavailableReasonFor(monthlyRealizedPnl);
 
 		// totalRealizedPnl と yearly / monthly は現物単独の値のまま維持し、信用込みは account_pnl 系にまとめる。
-		let accountPnl: AccountPnl | undefined;
-		let yearlyAccountPnl: PeriodAccountPnl | undefined;
-		let monthlyAccountPnl: PeriodAccountPnl | undefined;
-		if (include_pnl) {
-			const marginPnlAll = calcMarginPnl(allMarginTrades);
-			accountPnl = buildAccountPnl(
-				totalRealizedPnlUnavailableReason != null ? undefined : totalRealizedPnl,
-				marginPnlAll,
-				totalRealizedPnlUnavailableReason,
-			);
-
-			const marginPnlYearly = calcPeriodMarginPnl(
-				allMarginTrades,
-				boundaries.yearStartMs,
-				boundaries.yearStartIso,
+		const periodAccountPnl = (
+			startMs: number,
+			startIso: string,
+			spot: PeriodRealizedPnl | undefined,
+			spotUnavailableReason: PortfolioUnresolvedDepositReason | undefined,
+		): PeriodAccountPnl =>
+			buildPeriodAccountPnl(
+				spotUnavailableReason != null ? undefined : (spot?.realized_pnl ?? 0),
+				calcPeriodMarginPnl(allMarginTrades, startMs, startIso, boundaries.nowIso),
+				startIso,
 				boundaries.nowIso,
+				spotUnavailableReason,
 			);
-			yearlyAccountPnl = buildPeriodAccountPnl(
-				yearlyRealizedPnlUnavailableReason != null ? undefined : (yearlyRealizedPnl?.realized_pnl ?? 0),
-				marginPnlYearly,
-				boundaries.yearStartIso,
-				boundaries.nowIso,
-				yearlyRealizedPnlUnavailableReason,
-			);
-
-			const marginPnlMonthly = calcPeriodMarginPnl(
-				allMarginTrades,
-				boundaries.monthStartMs,
-				boundaries.monthStartIso,
-				boundaries.nowIso,
-			);
-			monthlyAccountPnl = buildPeriodAccountPnl(
-				monthlyRealizedPnlUnavailableReason != null ? undefined : (monthlyRealizedPnl?.realized_pnl ?? 0),
-				marginPnlMonthly,
-				boundaries.monthStartIso,
-				boundaries.nowIso,
-				monthlyRealizedPnlUnavailableReason,
-			);
-		}
+		const accountPnl: AccountPnl | undefined = include_pnl
+			? buildAccountPnl(
+					totalRealizedPnlUnavailableReason != null ? undefined : totalRealizedPnl,
+					calcMarginPnl(allMarginTrades),
+					totalRealizedPnlUnavailableReason,
+				)
+			: undefined;
+		const yearlyAccountPnl = include_pnl
+			? periodAccountPnl(
+					boundaries.yearStartMs,
+					boundaries.yearStartIso,
+					yearlyRealizedPnl,
+					yearlyRealizedPnlUnavailableReason,
+				)
+			: undefined;
+		const monthlyAccountPnl = include_pnl
+			? periodAccountPnl(
+					boundaries.monthStartMs,
+					boundaries.monthStartIso,
+					monthlyRealizedPnl,
+					monthlyRealizedPnlUnavailableReason,
+				)
+			: undefined;
 
 		let yearlyPerformance: PeriodPerformance | undefined;
 		let monthlyPerformance: PeriodPerformance | undefined;
 		let dailyPerformance: PeriodPerformance | undefined;
 		let monthlyEquitySeries: EquityPoint[] | undefined;
 		let yearlyEquitySeries: EquityPoint[] | undefined;
-		let equitySeriesQuality: 'complete' | 'partial_fallback' | 'fallback_only' | 'jpy_only' | undefined;
+		let equitySeriesQuality: EquitySeriesQuality | undefined;
 		let equitySeriesFallbackAssets: string[] = [];
 		if (include_pnl) {
 			const currentJpyValueRounded = Math.round(totalJpyValue);
@@ -1426,109 +1233,45 @@ export default async function analyzeMyPortfolioHandler(args: {
 			const holdingsForReconstruction = nonZeroAssets.map((a) => ({ asset: a.asset, amount: a.onhand_amount }));
 
 			// 今日 00:00 JST は fetchCandlePriceData に渡した boundaries と同じ瞬間から導く。時計を読み直すと JST 00:00 を跨いだときに日次価格に無い点が 1 つ増える。
-			const monthDates: ReturnType<typeof dayjs>[] = [];
-			let d = dayjs(boundaries.monthStartMs).tz(PORTFOLIO_CALENDAR_TZ);
-			while (d.valueOf() <= boundaries.dayStartMs) {
-				monthDates.push(d);
-				d = d.add(1, 'day');
-			}
-			monthlyEquitySeries = buildEquitySeries(
-				monthDates,
-				holdingsForReconstruction,
-				allTrades,
-				dwData,
-				candlePriceData.dailyPrices,
-				currentJpyValueRounded,
-				boundaries.nowIso,
-				prices,
-				flowPricing,
-			);
-
+			const monthDates = calendarPoints(boundaries.monthStartMs, boundaries.dayStartMs, 'day');
 			// 月次点の終端も同じ理由で boundaries 由来（月跨ぎのレースを避ける）。
-			const yearDates: ReturnType<typeof dayjs>[] = [];
-			let m = dayjs(boundaries.yearStartMs).tz(PORTFOLIO_CALENDAR_TZ);
-			while (m.valueOf() <= boundaries.monthStartMs) {
-				yearDates.push(m);
-				m = m.add(1, 'month');
-			}
-			yearlyEquitySeries = buildEquitySeries(
-				yearDates,
-				holdingsForReconstruction,
-				allTrades,
-				dwData,
-				candlePriceData.dailyPrices,
-				currentJpyValueRounded,
-				boundaries.nowIso,
-				prices,
-				flowPricing,
-			);
+			const yearDates = calendarPoints(boundaries.yearStartMs, boundaries.monthStartMs, 'month');
+			const equitySeriesOver = (dates: ReturnType<typeof dayjs>[]) =>
+				buildEquitySeries(
+					dates,
+					holdingsForReconstruction,
+					allTrades,
+					dwData,
+					candlePriceData.dailyPrices,
+					currentJpyValueRounded,
+					boundaries.nowIso,
+					prices,
+					flowPricing,
+				);
+			monthlyEquitySeries = equitySeriesOver(monthDates);
+			yearlyEquitySeries = equitySeriesOver(yearDates);
 
-			// 判定は buildEquitySeries が実際に lookup する日付キーがすべて揃っているか。任意の 1 件で OK とすると sparse coverage でも complete になる。
 			const cryptoAssetsInPortfolio = nonZeroAssets.filter((a) => a.asset !== 'jpy').map((a) => a.asset);
-			if (cryptoAssetsInPortfolio.length === 0) {
-				equitySeriesQuality = 'jpy_only';
-			} else {
-				const requiredDateKeys = new Set<number>([
-					...monthDates.map((d) => d.valueOf()),
-					...yearDates.map((d) => d.valueOf()),
-				]);
-				equitySeriesFallbackAssets = cryptoAssetsInPortfolio.filter((asset) => {
-					const dp = candlePriceData.dailyPrices.get(asset);
-					if (!dp) return true;
-					for (const ts of requiredDateKeys) {
-						if (!dp.has(ts)) return true;
-					}
-					return false;
-				});
-				if (equitySeriesFallbackAssets.length === 0) {
-					equitySeriesQuality = 'complete';
-				} else if (equitySeriesFallbackAssets.length === cryptoAssetsInPortfolio.length) {
-					equitySeriesQuality = 'fallback_only';
-				} else {
-					equitySeriesQuality = 'partial_fallback';
-				}
-			}
+			equitySeriesFallbackAssets = equitySeriesFallbackAssetsOf(
+				cryptoAssetsInPortfolio,
+				new Set<number>([...monthDates.map((d) => d.valueOf()), ...yearDates.map((d) => d.valueOf())]),
+				candlePriceData.dailyPrices,
+			);
+			equitySeriesQuality = equitySeriesQualityOf(cryptoAssetsInPortfolio.length, equitySeriesFallbackAssets.length);
 		}
-
-		holdings.sort((a, b) => (b.jpy_value ?? 0) - (a.jpy_value ?? 0));
 
 		const cryptoHoldings = holdings.filter((h) => h.asset !== 'jpy');
 		const jpyHolding = holdings.find((h) => h.asset === 'jpy');
 
-		// ticker 未取得の銘柄の原価まで積むと過大なマイナスになるので、現在値が取れた銘柄の原価だけを集計し直す。
-		let validCostBasis = 0;
-		let validJpyValue = 0;
-		for (const h of cryptoHoldings) {
-			if (h.jpy_value != null && h.cost_basis != null) {
-				validCostBasis += h.cost_basis;
-				validJpyValue += h.jpy_value;
-			}
-		}
-		// validCostBasis は既に 0 だが、意図を明示するため理由コードでも閉じる。
-		const hasValidCostData = flowUnavailableReason == null && validCostBasis > 0;
-		const totalUnrealizedPnl = hasValidCostData ? Math.round(validJpyValue - validCostBasis) : undefined;
-		const totalUnrealizedPnlPct =
-			totalUnrealizedPnl != null && validCostBasis > 0
-				? Math.round((totalUnrealizedPnl / validCostBasis) * 10000) / 100
-				: undefined;
+		const { validCostBasis, hasValidCostData, totalUnrealizedPnl, totalUnrealizedPnlPct } = summarizeUnrealized(
+			cryptoHoldings,
+			flowUnavailableReason,
+		);
 
-		// 銘柄名と件数のみで金額は出さない（sensitive-data の HIGH 分類）。売り切り銘柄は順序不定なので銘柄名でソートする。
-		const unpricedDepositLabel = [...unpricedDepositAssets]
-			.sort((x, y) => x.asset.localeCompare(y.asset))
-			.map((e) => `${e.asset.toUpperCase()}（${e.count}件）`)
-			.join(', ');
-
-		const qtyClampLabel = [...qtyClampAssets]
-			.sort((x, y) => x.asset.localeCompare(y.asset))
-			.map((e) => `${e.asset.toUpperCase()}（${e.count}件）`)
-			.join(', ');
-
+		const unpricedDepositLabel = assetCountLabel(unpricedDepositAssets);
+		const qtyClampLabel = assetCountLabel(qtyClampAssets);
 		const suppressedLabelOf = (reason?: PortfolioUnresolvedDepositReason): string =>
-			[...suppressedRealizedAssets]
-				.filter((e) => reason == null || e.reason === reason)
-				.sort((x, y) => x.asset.localeCompare(y.asset))
-				.map((e) => `${e.asset.toUpperCase()}（${e.count}件）`)
-				.join(', ');
+			assetCountLabel(suppressedRealizedAssets.filter((e) => reason == null || e.reason === reason));
 		const suppressedRealizedLabel = suppressedLabelOf();
 
 		const missingPriceAssets = cryptoHoldings
@@ -1536,73 +1279,17 @@ export default async function analyzeMyPortfolioHandler(args: {
 			.map((h) => h.asset.toUpperCase());
 		const hasMissingPrices = missingPriceAssets.length > 0;
 
-		let holdingsPerformance:
-			| Array<{
-					asset: string;
-					pair: string;
-					current_price: number | undefined;
-					monthly_change_pct: number | undefined;
-					yearly_change_pct: number | undefined;
-					jpy_value: number | undefined;
-					amount: string;
-			  }>
-			| undefined;
-		if (include_pnl) {
-			const periodPrices = candlePriceData.boundaryPrices;
-			holdingsPerformance = cryptoHoldings.map((h) => {
-				const currentPrice = prices.get(h.asset);
-				const bp = periodPrices.get(h.asset);
-				const monthlyChangePct =
-					currentPrice != null && bp?.monthStart != null && bp.monthStart > 0
-						? Math.round(((currentPrice - bp.monthStart) / bp.monthStart) * 10000) / 100
-						: undefined;
-				const yearlyChangePct =
-					currentPrice != null && bp?.yearStart != null && bp.yearStart > 0
-						? Math.round(((currentPrice - bp.yearStart) / bp.yearStart) * 10000) / 100
-						: undefined;
-				return {
-					asset: h.asset,
-					pair: h.pair,
-					current_price: h.current_price,
-					monthly_change_pct: monthlyChangePct,
-					yearly_change_pct: yearlyChangePct,
-					jpy_value: h.jpy_value,
-					amount: h.amount,
-				};
-			});
-		}
+		const holdingsPerformance = include_pnl
+			? buildHoldingsPerformance(cryptoHoldings, prices, candlePriceData.boundaryPrices)
+			: undefined;
 
 		// ここから下は入出金分析セクションなので include_deposit_withdrawal で閉じる。損益計算側はこのフラグの影響を受けない。
-		let dwSummary: DepositWithdrawalSummary | undefined;
-		let yearlyDWSummary: PeriodDWSummary | undefined;
-		let monthlyDWSummary: PeriodDWSummary | undefined;
-		const dwWarnings: string[] = [];
-		if (include_deposit_withdrawal && dwData) {
-			if (dwData.allFailed) {
-				dwWarnings.push('入出金履歴の取得に全て失敗したため、約定ベースの分析のみです');
-			} else {
-				if (dwData.warnings.length > 0) {
-					dwWarnings.push(...dwData.warnings.map((w) => `注意: ${w}（部分的なデータで概算）`));
-				}
-				if (dwData.deposits.length > 0 || dwData.withdrawals.length > 0) {
-					dwSummary = calcDepositWithdrawalSummary(dwData, totalJpyValue, flowPricing);
-					yearlyDWSummary = calcPeriodDWSummary(
-						dwData,
-						boundaries.yearStartMs,
-						boundaries.yearStartIso,
-						boundaries.nowIso,
-						flowPricing,
-					);
-					monthlyDWSummary = calcPeriodDWSummary(
-						dwData,
-						boundaries.monthStartMs,
-						boundaries.monthStartIso,
-						boundaries.nowIso,
-						flowPricing,
-					);
-				}
-			}
-		}
+		const { dwSummary, yearlyDWSummary, monthlyDWSummary, dwWarnings } = buildDWSection(
+			include_deposit_withdrawal ? dwData : null,
+			totalJpyValue,
+			flowPricing,
+			boundaries,
+		);
 
 		let technical: TechnicalSummary[] | undefined;
 		if (include_technical && cryptoHoldings.length > 0) {
@@ -1708,27 +1395,11 @@ export default async function analyzeMyPortfolioHandler(args: {
 
 		if (technical && technical.length > 0) lines.push(...buildTechnicalLines(technical));
 
-		// 並びは summary の期間ブロックと同じ（前日比 → 年初比 → 月初比）。
-		const changePctSuppressed = [
-			{
-				key: 'daily' as const,
-				label: '前日比',
-				reason: dailyPerformance?.change_pct_unavailable_reason,
-				direction: changeJpyDirectionOf(dailyPerformance),
-			},
-			{
-				key: 'yearly' as const,
-				label: '年初比',
-				reason: yearlyPerformance?.change_pct_unavailable_reason,
-				direction: changeJpyDirectionOf(yearlyPerformance),
-			},
-			{
-				key: 'monthly' as const,
-				label: '月初比',
-				reason: monthlyPerformance?.change_pct_unavailable_reason,
-				direction: changeJpyDirectionOf(monthlyPerformance),
-			},
-		].filter((e): e is typeof e & { reason: PortfolioChangePctUnavailableReason } => e.reason != null);
+		const changePctSuppressed = suppressedChangePcts({
+			daily: dailyPerformance,
+			yearly: yearlyPerformance,
+			monthly: monthlyPerformance,
+		});
 		const flowValuationFallbackCount = flowValuation?.current_price_fallback_count ?? 0;
 		// フォールバック件数からは再実行で直るかが読めないので、上限・取得失敗の分は別枠で出す（#76）。
 		const chunkTruncated = flowDatePrices.truncatedByChunkLimit;
@@ -1813,7 +1484,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 		const meta = {
 			fetchedAt: timestamp,
 			holdingCount: holdings.length,
-			hasPnl: include_pnl && allTrades.length > 0,
+			hasPnl,
 			hasTechnical: include_technical && (technical?.length ?? 0) > 0,
 			depositWithdrawalStatus,
 			dwFetchedForPnl,
