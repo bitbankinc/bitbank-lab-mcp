@@ -187,8 +187,8 @@ describe('get_my_deposit_withdrawal', () => {
 		expect(depositCallCount).toBe(2);
 		expect(result.data.deposits.length).toBe(130);
 		expect(result.meta.isComplete).toBe(true);
-		// カーソルは末尾レコードの found_at (+1) にフォールバックして前進している
-		expect(sinceValues).toContain(String(1709900000000 + 99 * 1000 + 1));
+		// カーソルは末尾レコードの found_at にフォールバックする（同じ時刻を取り直し、重複は uuid で除く）
+		expect(sinceValues).toContain(String(1709900000000 + 99 * 1000));
 	});
 
 	it('部分的失敗時に警告付きで成功する', async () => {
@@ -357,6 +357,72 @@ describe('get_my_deposit_withdrawal', () => {
 		const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
 		const calledUrls = fetchMock.mock.calls.map((c) => String(c[0]));
 		expect(calledUrls.some((u) => u.includes('deposit_history'))).toBe(false);
+	});
+});
+
+describe('get_my_deposit_withdrawal — ページの境目と途中の失敗', () => {
+	const T0 = 1709900000000;
+	const depositAt = (uuid: string, ts: number) => ({
+		uuid,
+		asset: 'jpy',
+		amount: '1000',
+		status: 'DONE',
+		found_at: ts,
+		confirmed_at: ts,
+	});
+
+	it('ページの境目と同じミリ秒の入金を取りこぼさない', async () => {
+		// 100 件目から 102 件目までが同じ時刻。API の since はその時刻を含むものとして、昇順に 100 件ずつ返す。
+		const all = [
+			...Array.from({ length: 99 }, (_, i) => depositAt(`dep-${i}`, T0 + i)),
+			depositAt('dep-99', T0 + 1000),
+			depositAt('dep-100', T0 + 1000),
+			depositAt('dep-101', T0 + 1000),
+		];
+		setupFetchMock({
+			customHandler: (url: string) => {
+				if (url.includes('deposit_history')) {
+					const since = Number(new URL(url).searchParams.get('since') ?? 0);
+					const deposits = all.filter((d) => d.confirmed_at >= since).slice(0, 100);
+					return new Response(JSON.stringify(mockBitbankSuccess({ deposits })), { status: 200 });
+				}
+				return new Response(JSON.stringify(mockBitbankSuccess({ withdrawals: [] })), { status: 200 });
+			},
+		});
+
+		const { default: getMyDepositWithdrawal } = await import('../../tools/private/get_my_deposit_withdrawal.js');
+		const result = await getMyDepositWithdrawal({ asset: 'jpy', type: 'deposit' });
+
+		assertOk(result);
+		expect(result.data.deposits.map((d) => d.uuid)).toEqual(all.map((d) => d.uuid));
+		expect(result.meta.isComplete).toBe(true);
+	});
+
+	it('2 ページ目の取得に失敗したら、取得状態を partial にして警告を出す', async () => {
+		let depositCalls = 0;
+		setupFetchMock({
+			customHandler: (url: string) => {
+				if (url.includes('deposit_history')) {
+					depositCalls++;
+					if (depositCalls === 1) {
+						const deposits = Array.from({ length: 100 }, (_, i) => depositAt(`dep-${i}`, T0 + i));
+						return new Response(JSON.stringify(mockBitbankSuccess({ deposits })), { status: 200 });
+					}
+					return new Response(JSON.stringify(mockBitbankError(20001)), { status: 400 });
+				}
+				return new Response(JSON.stringify(mockBitbankSuccess({ withdrawals: [] })), { status: 200 });
+			},
+		});
+
+		const { default: getMyDepositWithdrawal } = await import('../../tools/private/get_my_deposit_withdrawal.js');
+		const result = await getMyDepositWithdrawal({ asset: 'jpy', type: 'deposit' });
+
+		assertOk(result);
+		expect(depositCalls).toBe(2);
+		expect(result.data.deposits).toHaveLength(100);
+		expect(result.meta.isComplete).toBe(false);
+		expect(result.meta.hasWarnings).toBe(true);
+		expect(result.summary).toContain('取得状態: partial');
 	});
 });
 

@@ -1,27 +1,18 @@
 import { normalizeAssetCodes } from '../../lib/asset-code.js';
 import { nowIso, parseIso8601, toIsoMs } from '../../lib/datetime.js';
-import { getErrorMessage } from '../../lib/error.js';
 import { formatPrice } from '../../lib/formatter.js';
 import { fail, ok } from '../../lib/result.js';
+import {
+	type PaginatedDeposits as PaginatedDepositsOf,
+	type PaginatedWithdrawals as PaginatedWithdrawalsOf,
+	paginateDeposits,
+	paginateWithdrawals,
+} from '../../src/handlers/portfolio/pagination.js';
+import { tryGet } from '../../src/handlers/portfolio/types.js';
 import { type BitbankPrivateClient, getDefaultClient } from '../../src/private/client.js';
 import { GetMyDepositWithdrawalInputSchema, GetMyDepositWithdrawalOutputSchema } from '../../src/private/schemas.js';
 import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
-
-type FetchResult<T> = { ok: true; data: T } | { ok: false; error: string };
-
-async function tryGet<T>(
-	client: BitbankPrivateClient,
-	path: string,
-	params?: Record<string, string>,
-): Promise<FetchResult<T>> {
-	try {
-		const data = await client.get<T>(path, params);
-		return { ok: true, data };
-	} catch (err) {
-		return { ok: false, error: getErrorMessage(err) };
-	}
-}
 
 interface RawDeposit {
 	uuid: string;
@@ -55,68 +46,8 @@ interface RawWithdrawal {
 	requested_at: number;
 }
 
-const MAX_PAGES = 10;
-
-interface PaginatedDeposits {
-	deposits: RawDeposit[];
-	complete: boolean;
-	error?: string;
-}
-interface PaginatedWithdrawals {
-	withdrawals: RawWithdrawal[];
-	complete: boolean;
-	error?: string;
-}
-
-async function paginateDeposits(
-	client: BitbankPrivateClient,
-	baseParams: Record<string, string>,
-): Promise<PaginatedDeposits> {
-	const all: RawDeposit[] = [];
-	let since: string | undefined;
-	for (let page = 0; page < MAX_PAGES; page++) {
-		const params = { ...baseParams, count: '100', ...(since ? { since } : {}) };
-		const result = await tryGet<{ deposits: RawDeposit[] }>(client, '/v1/user/deposit_history', params);
-		if (!result.ok) {
-			return { deposits: all, complete: all.length !== 0, error: result.error };
-		}
-		const batch = result.data.deposits || [];
-		all.push(...batch);
-		if (batch.length < 100) {
-			return { deposits: all, complete: true };
-		}
-		// confirmed_at は確認済みの入金にしか無いので、末尾が未確認入金だとカーソルが進まない。常在する found_at にフォールバックして早期終了を防ぐ。
-		const last = batch[batch.length - 1];
-		const lastTs = last?.confirmed_at ?? last?.found_at;
-		if (!lastTs) break;
-		since = String(lastTs + 1);
-	}
-	return { deposits: all, complete: false };
-}
-
-async function paginateWithdrawals(
-	client: BitbankPrivateClient,
-	baseParams: Record<string, string>,
-): Promise<PaginatedWithdrawals> {
-	const all: RawWithdrawal[] = [];
-	let since: string | undefined;
-	for (let page = 0; page < MAX_PAGES; page++) {
-		const params = { ...baseParams, count: '100', ...(since ? { since } : {}) };
-		const result = await tryGet<{ withdrawals: RawWithdrawal[] }>(client, '/v1/user/withdrawal_history', params);
-		if (!result.ok) {
-			return { withdrawals: all, complete: all.length !== 0, error: result.error };
-		}
-		const batch = result.data.withdrawals || [];
-		all.push(...batch);
-		if (batch.length < 100) {
-			return { withdrawals: all, complete: true };
-		}
-		const lastTs = batch[batch.length - 1]?.requested_at;
-		if (!lastTs) break;
-		since = String(lastTs + 1);
-	}
-	return { withdrawals: all, complete: false };
-}
+type PaginatedDeposits = PaginatedDepositsOf<RawDeposit>;
+type PaginatedWithdrawals = PaginatedWithdrawalsOf<RawWithdrawal>;
 
 async function singleFetchDeposits(
 	client: BitbankPrivateClient,
@@ -124,7 +55,7 @@ async function singleFetchDeposits(
 ): Promise<PaginatedDeposits> {
 	const result = await tryGet<{ deposits: RawDeposit[] }>(client, '/v1/user/deposit_history', params);
 	if (!result.ok) {
-		return { deposits: [], complete: false, error: result.error };
+		return { deposits: [], complete: false, error: result.error, cause: result.cause };
 	}
 	const batch = result.data.deposits || [];
 	const count = Number(params.count) || 100;
@@ -137,7 +68,7 @@ async function singleFetchWithdrawals(
 ): Promise<PaginatedWithdrawals> {
 	const result = await tryGet<{ withdrawals: RawWithdrawal[] }>(client, '/v1/user/withdrawal_history', params);
 	if (!result.ok) {
-		return { withdrawals: [], complete: false, error: result.error };
+		return { withdrawals: [], complete: false, error: result.error, cause: result.cause };
 	}
 	const batch = result.data.withdrawals || [];
 	const count = Number(params.count) || 100;
@@ -195,12 +126,12 @@ export default async function getMyDepositWithdrawal(args: {
 				fetchDeposits
 					? hasSinceEnd
 						? singleFetchDeposits(client, params)
-						: paginateDeposits(client, { asset })
+						: paginateDeposits<RawDeposit>(client, { asset })
 					: Promise.resolve({ deposits: [] as RawDeposit[], complete: true } as PaginatedDeposits),
 				fetchWithdrawals
 					? hasSinceEnd
 						? singleFetchWithdrawals(client, params)
-						: paginateWithdrawals(client, { asset })
+						: paginateWithdrawals<RawWithdrawal>(client, { asset })
 					: Promise.resolve({ withdrawals: [] as RawWithdrawal[], complete: true } as PaginatedWithdrawals),
 			]);
 
@@ -247,16 +178,16 @@ export default async function getMyDepositWithdrawal(args: {
 			} else {
 				const [cryptoDepResult, jpyDepResult, cryptoWdResult, jpyWdResult] = await Promise.all([
 					fetchDeposits
-						? paginateDeposits(client, {})
+						? paginateDeposits<RawDeposit>(client, {})
 						: Promise.resolve({ deposits: [], complete: true } as PaginatedDeposits),
 					fetchDeposits
-						? paginateDeposits(client, { asset: 'jpy' })
+						? paginateDeposits<RawDeposit>(client, { asset: 'jpy' })
 						: Promise.resolve({ deposits: [], complete: true } as PaginatedDeposits),
 					fetchWithdrawals
-						? paginateWithdrawals(client, {})
+						? paginateWithdrawals<RawWithdrawal>(client, {})
 						: Promise.resolve({ withdrawals: [], complete: true } as PaginatedWithdrawals),
 					fetchWithdrawals
-						? paginateWithdrawals(client, { asset: 'jpy' })
+						? paginateWithdrawals<RawWithdrawal>(client, { asset: 'jpy' })
 						: Promise.resolve({ withdrawals: [], complete: true } as PaginatedWithdrawals),
 				]);
 
@@ -450,7 +381,7 @@ function deduplicateByUuid<T extends { uuid: string }>(items: T[]): T[] {
 export const toolDef: ToolDefinition = {
 	name: 'get_my_deposit_withdrawal',
 	description:
-		'[Deposit / Withdrawal / Transfer History] 入出金・入出庫の履歴（deposit / withdrawal / transfer / funding history）を取得。JPY入出金+暗号資産入出庫に対応。全件取得可能。Private API。',
+		'[Deposit / Withdrawal / Transfer History] 入出金・入出庫の履歴（deposit / withdrawal / transfer / funding history）を取得。JPY入出金+暗号資産入出庫に対応。期間を指定しないときは入金・出金ごとに最大 1,000 件までさかのぼる（上限に達したら取得状態が partial になる）。Private API。',
 	inputSchema: GetMyDepositWithdrawalInputSchema,
 	handler: async (args: {
 		asset?: string;
