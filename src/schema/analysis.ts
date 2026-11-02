@@ -5,11 +5,14 @@ import {
 	CandleTypeEnum,
 	FailResultSchema,
 	MAX_TX_COUNT_LIMIT,
+	provisionalField,
 	TrendLabelEnum,
 	TX_RANGE_SINCE_SCHEMA,
 	TX_RANGE_UNTIL_SCHEMA,
 	toolResultSchema,
 	VIEW_CONTRACT_NOTE,
+	warningField,
+	warningsField,
 } from './base.js';
 
 export const GetVolMetricsInputSchema = z.object({
@@ -80,8 +83,8 @@ export const GetVolMetricsDataSchemaOut = z.object({
 export const GetVolMetricsMetaSchemaOut = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number().int(),
-	warning: z.string().optional(),
-	provisional: z.boolean().optional(),
+	...warningField,
+	...provisionalField,
 });
 
 export const GetVolMetricsOutputSchema = toolResultSchema(GetVolMetricsDataSchemaOut, GetVolMetricsMetaSchemaOut);
@@ -200,8 +203,8 @@ export const AnalyzeMarketSignalMetaSchemaOut = BaseMetaSchema.extend({
 	windows: z.array(z.number()),
 	bucketMs: z.number().int(),
 	flowLimit: z.number().int(),
-	warning: z.string().optional(),
-	warnings: z.array(z.string()).optional(),
+	...warningField,
+	...warningsField,
 });
 export const AnalyzeMarketSignalOutputSchema = toolResultSchema(
 	AnalyzeMarketSignalDataSchemaOut,
@@ -319,9 +322,9 @@ export const AnalyzeIchimokuSnapshotDataSchemaOut = z.object({
 export const AnalyzeIchimokuSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number().int(),
-	warning: z.string().optional(),
-	warnings: z.array(z.string()).optional(),
-	provisional: z.boolean().optional(),
+	...warningField,
+	...warningsField,
+	...provisionalField,
 });
 
 export const AnalyzeIchimokuSnapshotOutputSchema = toolResultSchema(
@@ -386,9 +389,9 @@ export const AnalyzeBbSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	count: z.number().int(),
 	mode: z.enum(['default', 'extended']),
 	extra: z.object({}).passthrough().optional(),
-	warning: z.string().optional(),
-	warnings: z.array(z.string()).optional(),
-	provisional: z.boolean().optional(),
+	...warningField,
+	...warningsField,
+	...provisionalField,
 });
 
 export const AnalyzeBbSnapshotOutputSchema = toolResultSchema(
@@ -448,9 +451,9 @@ export const AnalyzeSmaSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number().int(),
 	periods: z.array(z.number().int()),
-	warning: z.string().optional(),
-	warnings: z.array(z.string()).optional(),
-	provisional: z.boolean().optional(),
+	...warningField,
+	...warningsField,
+	...provisionalField,
 });
 
 export const AnalyzeSmaSnapshotOutputSchema = toolResultSchema(
@@ -510,9 +513,9 @@ export const AnalyzeEmaSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number().int(),
 	periods: z.array(z.number().int()),
-	warning: z.string().optional(),
-	warnings: z.array(z.string()).optional(),
-	provisional: z.boolean().optional(),
+	...warningField,
+	...warningsField,
+	...provisionalField,
 });
 
 export const AnalyzeEmaSnapshotOutputSchema = toolResultSchema(
@@ -562,9 +565,9 @@ export const AnalyzeStochSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number().int(),
 	params: z.object({ kPeriod: z.number().int(), smoothK: z.number().int(), smoothD: z.number().int() }),
-	warning: z.string().optional(),
-	warnings: z.array(z.string()).optional(),
-	provisional: z.boolean().optional(),
+	...warningField,
+	...warningsField,
+	...provisionalField,
 });
 
 export const AnalyzeStochSnapshotOutputSchema = toolResultSchema(
@@ -637,8 +640,8 @@ export const AnalyzeMtfSmaDataSchemaOut = z
 export const AnalyzeMtfSmaMetaSchemaOut = BaseMetaSchema.extend({
 	timeframes: z.array(z.string()),
 	periods: z.array(z.number().int()),
-	warning: z.string().optional(),
-	warnings: z.array(z.string()).optional(),
+	...warningField,
+	...warningsField,
 });
 
 export const AnalyzeMtfSmaOutputSchema = toolResultSchema(AnalyzeMtfSmaDataSchemaOut, AnalyzeMtfSmaMetaSchemaOut);
@@ -754,7 +757,7 @@ export const AnalyzeFibonacciMetaSchemaOut = BaseMetaSchema.extend({
 	lookbackDays: z.number().int(),
 	mode: z.string(),
 	historyLookbackDays: z.number().int().optional(),
-	warning: z.string().optional(),
+	...warningField,
 }).passthrough();
 
 export const AnalyzeFibonacciOutputSchema = z.union([
@@ -806,7 +809,7 @@ export const AnalyzeMtfFibonacciDataSchemaOut = z
 
 export const AnalyzeMtfFibonacciMetaSchemaOut = BaseMetaSchema.extend({
 	lookbackDays: z.array(z.number().int()),
-	warning: z.string().optional(),
+	...warningField,
 }).passthrough();
 
 export const AnalyzeMtfFibonacciOutputSchema = z.union([
@@ -956,8 +959,8 @@ export const AnalyzeVolumeProfileMetaSchemaOut = BaseMetaSchema.extend({
 		.boolean()
 		.optional()
 		.describe('limit により切り捨てが発生したか。true のとき集計値・timeRange は切り捨て後の区間のみが対象'),
-	warning: z.string().optional(),
-	warnings: z.array(z.string()).optional(),
+	...warningField,
+	...warningsField,
 });
 
 export const AnalyzeVolumeProfileOutputSchema = toolResultSchema(

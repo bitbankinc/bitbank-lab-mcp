@@ -6,8 +6,11 @@ import {
 	CandleSchema,
 	CandleTypeEnum,
 	NumericSeriesSchema,
+	provisionalField,
 	TrendLabelEnum,
 	toolResultSchema,
+	warningField,
+	warningsField,
 } from './base.js';
 import { ChartIndicatorsSchema, ChartMetaSchema, ChartStatsSchema } from './chart.js';
 
@@ -108,9 +111,9 @@ export const GetIndicatorsMetaSchema = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number(),
 	requiredCount: z.number(),
-	warnings: z.array(z.string()).optional(),
-	warning: z.string().optional(),
-	provisional: z.boolean().optional(),
+	...warningsField,
+	...warningField,
+	...provisionalField,
 });
 
 export const GetIndicatorsInputSchema = BasePairInputSchema.extend({

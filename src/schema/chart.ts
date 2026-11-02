@@ -1,5 +1,13 @@
 import { z } from 'zod';
-import { BaseMetaSchema, CandleSchema, CandleTypeEnum, NumericSeriesSchema, toolResultSchema } from './base.js';
+import {
+	BaseMetaSchema,
+	CandleSchema,
+	CandleTypeEnum,
+	NumericSeriesSchema,
+	toolResultSchema,
+	warningField,
+	warningsField,
+} from './base.js';
 
 export const IchimokuSeriesSchema = z.object({
 	ICHI_tenkan: NumericSeriesSchema,
@@ -183,8 +191,8 @@ export const PrepareChartDataOutputSchema = z.object({
 		count: z.number(),
 		indicators: z.array(z.string()),
 		volumeUnit: z.string(),
-		warning: z.string().optional(),
-		warnings: z.array(z.string()).optional(),
+		...warningField,
+		...warningsField,
 	}),
 });
 
@@ -234,7 +242,7 @@ export const PrepareDepthDataMetaSchemaOut = BaseMetaSchema.extend({
 	levels: z.object({ bids: z.number().int(), asks: z.number().int() }),
 	volumeUnit: z.string(),
 	droppedRows: z.object({ bids: z.number().int(), asks: z.number().int() }).optional(),
-	warning: z.string().optional(),
+	...warningField,
 });
 
 export const PrepareDepthDataOutputSchema = toolResultSchema(
@@ -373,8 +381,8 @@ export const RenderChartSvgOutputSchema = z.object({
 			sizeBytes: z.number().optional(),
 			layerCount: z.number().optional(),
 			fallback: z.string().optional(),
-			warning: z.string().optional(),
-			warnings: z.array(z.string()).optional(),
+			...warningField,
+			...warningsField,
 			// レンダリング層独自の警告（雲のデータ不足等）
 			renderWarnings: z.array(z.string()).optional(),
 		})
