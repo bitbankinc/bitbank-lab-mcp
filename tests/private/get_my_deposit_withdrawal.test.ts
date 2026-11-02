@@ -237,13 +237,12 @@ describe('get_my_deposit_withdrawal', () => {
 		expect(result.meta.errorType).toBe('validation_error');
 	});
 
-	it('PrivateApiError で fail を返す', async () => {
+	it('入金と出金の両方が PrivateApiError でも、警告付きの成功を返す', async () => {
 		setupFetchMock({ depositFail: true, withdrawalFail: true });
 
 		const { default: getMyDepositWithdrawal } = await import('../../tools/private/get_my_deposit_withdrawal.js');
 		const result = await getMyDepositWithdrawal({ asset: 'btc' });
 
-		// 部分的失敗は warn 付き成功になるため、assert で確認
 		assertOk(result);
 		expect(result.meta.hasWarnings).toBe(true);
 	});

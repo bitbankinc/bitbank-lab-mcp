@@ -1490,7 +1490,7 @@ describe('detectTriples', () => {
 		expect(forming).toHaveLength(0);
 	});
 
-	it('1month vs 1day: 同一バー数（25 本）なら 1day では検出されるが 1month では弾かれる（daysPerBar の効果）', () => {
+	it('1month vs 1day: 同一バー数（25 本）なら 1day では検出されるが 1month では弾かれる（時間足別の形成バー数の範囲）', () => {
 		// ネックライン構成点 2 つを満たすため valley を 2 つ配置。
 		const total = 26;
 		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 85, 90, 80, 85));

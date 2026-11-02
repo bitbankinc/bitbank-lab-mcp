@@ -5,7 +5,7 @@ vi.mock('../../tools/analyze_indicators.js', () => ({
 	default: vi.fn(),
 }));
 
-import { formatDebugView } from '../../src/handlers/detectPatternsViewsHandler.js';
+import { formatDebugView } from '../../src/handlers/detectPatternsDebugView.js';
 import analyzeIndicators from '../../tools/analyze_indicators.js';
 import detectPatterns from '../../tools/detect_patterns.js';
 import { buildBtcJpy2026Candles } from '../fixtures/btc_jpy_1day_2026.js';

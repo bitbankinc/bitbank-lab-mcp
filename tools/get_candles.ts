@@ -18,6 +18,7 @@ import {
 	describeFailedChunks,
 	type FetchChunkResult,
 	fetchCandleChunk,
+	type MergedChunkResult,
 	mergeChunks,
 	type OhlcvRow,
 	UpstreamApiError,
@@ -198,12 +199,18 @@ function isMajorityChunkFailure(hardFailedCount: number, totalChunks: number): b
 	return hardFailedCount > 0 && hardFailedCount * 2 > totalChunks;
 }
 
+interface ChunkWarnLabels {
+	unit: string;
+	calendar: string;
+	pendingSuffix: string;
+}
+
 function buildChunkWarnLines(
 	keys: string[],
 	results: FetchChunkResult[],
 	partition: FailedChunkPartition,
 	totalChunks: number,
-	labels: { unit: string; calendar: string; pendingSuffix: string },
+	labels: ChunkWarnLabels,
 ): string[] {
 	const { hardFailedKeys, pendingGapKeys, absentGapKeys } = partition;
 	const lines: string[] = [];
@@ -224,6 +231,33 @@ function buildChunkWarnLines(
 		);
 	}
 	return lines;
+}
+
+function evaluateMergedChunks(
+	keys: string[],
+	merged: Pick<MergedChunkResult, 'rows' | 'results'>,
+	pair: string,
+	type: string,
+	labels: ChunkWarnLabels,
+): FailResult | { ok: true; warning: string | undefined } {
+	if (merged.rows.length === 0) {
+		const classified = classifyAllChunksFailure(merged.results);
+		if (classified) return classified;
+	}
+
+	// 進行中の UTC 期間は開始直後に chunk 未生成で 404 になるので、過半数失敗に数えない（JST 早朝の当日取得が全滅した原因）。
+	const nowUtcDayKey = toDayKey(Date.now(), FETCH_CHUNK_TZ);
+	const partition = partitionFailedChunks(keys, merged.results, nowUtcDayKey);
+	const totalChunks = merged.results.length - partition.pendingGapKeys.length - partition.absentGapKeys.length;
+	if (isMajorityChunkFailure(partition.hardFailedKeys.length, totalChunks)) {
+		const detail = describeFailedChunks(keys, merged.results, new Set(partition.hardFailedKeys));
+		return fail(
+			`ローソク足取得の過半数が失敗しました（${pair}/${type}, ${totalChunks}${labels.unit}中${partition.hardFailedKeys.length}${labels.unit}失敗: ${detail}）`,
+			'upstream',
+		);
+	}
+	const warnLines = buildChunkWarnLines(keys, merged.results, partition, totalChunks, labels);
+	return { ok: true, warning: warnLines.length > 0 ? warnLines.join('\n') : undefined };
 }
 
 export default async function getCandles(
@@ -358,27 +392,13 @@ export default async function getCandles(
 			);
 			lastRateLimit = merged.lastRateLimit;
 
-			if (merged.rows.length === 0) {
-				const classified = classifyAllChunksFailure(merged.results);
-				if (classified) return classified;
-			}
-
-			const nowUtcDayKey = toDayKey(Date.now(), FETCH_CHUNK_TZ);
-			const partition = partitionFailedChunks(yearKeys, merged.results, nowUtcDayKey);
-			const totalChunks = merged.results.length - partition.pendingGapKeys.length - partition.absentGapKeys.length;
-			if (isMajorityChunkFailure(partition.hardFailedKeys.length, totalChunks)) {
-				const detail = describeFailedChunks(yearKeys, merged.results, new Set(partition.hardFailedKeys));
-				return fail(
-					`ローソク足取得の過半数が失敗しました（${chk.pair}/${type}, ${totalChunks}年中${partition.hardFailedKeys.length}年失敗: ${detail}）`,
-					'upstream',
-				);
-			}
-			const warnLines = buildChunkWarnLines(yearKeys, merged.results, partition, totalChunks, {
+			const outcome = evaluateMergedChunks(yearKeys, merged, chk.pair, type, {
 				unit: '年',
 				calendar: 'UTC 暦年',
 				pendingSuffix: '',
 			});
-			if (warnLines.length > 0) fetchWarning = warnLines.join('\n');
+			if (!outcome.ok) return outcome;
+			fetchWarning = outcome.warning;
 
 			ohlcvs = merged.rows;
 			const years = yearKeys.map(Number);
@@ -396,28 +416,13 @@ export default async function getCandles(
 			);
 			lastRateLimit = merged.lastRateLimit;
 
-			if (merged.rows.length === 0) {
-				const classified = classifyAllChunksFailure(merged.results);
-				if (classified) return classified;
-			}
-
-			// 進行中の UTC 日は開始直後に chunk 未生成で 404 になるので、過半数失敗に数えない（JST 早朝の当日取得が全滅した原因）。
-			const nowUtcDayKey = toDayKey(Date.now(), FETCH_CHUNK_TZ);
-			const partition = partitionFailedChunks(multiDayUtcKeys, merged.results, nowUtcDayKey);
-			const totalDays = merged.results.length - partition.pendingGapKeys.length - partition.absentGapKeys.length;
-			if (isMajorityChunkFailure(partition.hardFailedKeys.length, totalDays)) {
-				const detail = describeFailedChunks(multiDayUtcKeys, merged.results, new Set(partition.hardFailedKeys));
-				return fail(
-					`ローソク足取得の過半数が失敗しました（${chk.pair}/${type}, ${totalDays}日中${partition.hardFailedKeys.length}日失敗: ${detail}）`,
-					'upstream',
-				);
-			}
-			const warnLines = buildChunkWarnLines(multiDayUtcKeys, merged.results, partition, totalDays, {
+			const outcome = evaluateMergedChunks(multiDayUtcKeys, merged, chk.pair, type, {
 				unit: '日',
 				calendar: 'UTC 暦日',
 				pendingSuffix: '（当日分は形成され次第、以降の取得で揃います）',
 			});
-			if (warnLines.length > 0) fetchWarning = warnLines.join('\n');
+			if (!outcome.ok) return outcome;
+			fetchWarning = outcome.warning;
 
 			ohlcvs = merged.rows;
 			json = {
