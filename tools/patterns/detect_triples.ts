@@ -62,8 +62,7 @@ export const FORMING_MIN_DAYS = 21;
 const FORMING_MAX_DAYS = 90;
 
 const FORMING_TOLERANCE_MULTIPLIER = 1.2;
-// top では completion が 0.66 を下回らないので届かない（重みを変えたときのガード）。bottom は progress が負になりうるので届く。
-export const FORMING_MIN_COMPLETION = 0.4;
+const FORMING_MIN_COMPLETION = 0.4;
 const FORMING_MIN_CONFIDENCE = 0.5;
 // 3 点目が暫定なので、detectPatternsViewsHandler の低信頼ラベル（< 0.6）に入るよう抑える。
 const FORMING_MAX_CONFIDENCE = 0.59;
@@ -1175,9 +1174,11 @@ function tryFormingTripleTop(ctx: DetectContext): DeduplicablePattern | null {
 			continue;
 		}
 
-		const progress = Math.min(1, currentPrice / avgPeakPrice);
-		const completion = Math.min(1, 0.66 + progress * 0.34);
-		const rawConfidence = Math.round((1 - currentDiff / tripleTolerancePct) * 0.8 * 100) / 100;
+		const avgValley = (v1.price + v2.price) / 2;
+
+		const progress = (avgPeakPrice - currentPrice) / Math.max(1e-12, avgPeakPrice - avgValley);
+		const completion = Math.min(1, 0.66 + Math.min(1, progress) * 0.34);
+		const rawConfidence = Math.round((1 - peakDiff / tripleTolerancePct) * 0.8 * 100) / 100;
 		const confidence = Math.min(rawConfidence, FORMING_MAX_CONFIDENCE);
 
 		if (completion < FORMING_MIN_COMPLETION || confidence < FORMING_MIN_CONFIDENCE) {
@@ -1206,8 +1207,6 @@ function tryFormingTripleTop(ctx: DetectContext): DeduplicablePattern | null {
 			pcand({ type: 'triple_top', accepted: false, reason: sizeReason, idxs: [peak1.idx, peak2.idx, lastIdx] });
 			continue;
 		}
-
-		const avgValley = (v1.price + v2.price) / 2;
 
 		const gate = applyReversalGate({
 			candles,

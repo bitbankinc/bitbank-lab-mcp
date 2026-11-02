@@ -9,7 +9,6 @@ vi.mock('../../tools/analyze_indicators.js', () => ({
 
 import analyzeIndicators from '../../tools/analyze_indicators.js';
 import detectPatterns from '../../tools/detect_patterns.js';
-import { FORMING_MIN_COMPLETION as TRIPLE_MIN_COMPLETION } from '../../tools/patterns/detect_triples.js';
 import type { CandDebugEntry, DetectContext, PatternEntry } from '../../tools/patterns/types.js';
 import { pushCand } from '../../tools/patterns/types.js';
 import { formingTripleTopRows, mirrorRows, rowsToCandles } from '../fixtures/forming_neckline_side_261.js';
@@ -193,15 +192,15 @@ describe('forming double / triple debug candidates (#158)', () => {
 			{
 				reason: 'forming_confidence_below_min',
 				type: 'triple_top',
-				// 2 山は 129 → 130 の順（非単調）。130 → 129 → 126.5 だと 3 点が単調に切り下がり、前段の単調性ゲートが `forming_stair_step_down` で先に落とす（#263）。
+				// 2 山は 127 → 130 の順（非単調）。130 → 127 → 125.5 だと単調な切り下がりで `forming_stair_step_down` が先に落とす（#263）。
 				candles: () =>
 					fromCloses(
 						legs(100, [
-							[9, 129],
+							[9, 127],
 							[6, 112],
 							[7, 130],
 							[6, 113],
-							[7, 126.5],
+							[7, 125.5],
 						]),
 					),
 			},
@@ -277,8 +276,23 @@ describe('forming double / triple debug candidates (#158)', () => {
 			},
 			{
 				reason: 'forming_completion_below_min',
+				type: 'triple_top',
+				// 山と谷の差が小さく、現在値が山水準を上回る形。progress が負に振れて completion が 0.4 を割る
+				candles: () =>
+					fromCloses(
+						legs(93, [
+							[10, 105],
+							[8, 100],
+							[8, 105],
+							[8, 100],
+							[8, 109.5],
+						]),
+					),
+			},
+			{
+				reason: 'forming_completion_below_min',
 				type: 'triple_bottom',
-				// 山と谷の差が小さく、現在値が谷水準をわずかに下回る形。progress が負に振れて completion が 0.4 を割る（bottom 側だけが到達しうる）
+				// 上の鏡像。現在値が谷水準を下回る
 				candles: () =>
 					fromCloses(
 						legs(112, [
@@ -302,14 +316,6 @@ describe('forming double / triple debug candidates (#158)', () => {
 				expect(hit?.status).toBeUndefined();
 			});
 		}
-	});
-
-	describe('到達しないガード — fixture ではなく算術境界を固定する', () => {
-		it('triple top の forming_completion_below_min は現行の重みでは発火しない', () => {
-			// top 側の progress = min(1, currentPrice / avgPeakPrice) は価格が正である限り正なので、completion > 0.66 になり、しきい値を割れない（bottom 側は progress が負を取りうる）。
-			const baseCompletion = 0.66;
-			expect(baseCompletion).toBeGreaterThan(TRIPLE_MIN_COMPLETION);
-		});
 	});
 
 	describe('pushCand の status', () => {
