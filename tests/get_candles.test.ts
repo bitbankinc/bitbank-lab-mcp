@@ -4,6 +4,7 @@ import { GetCandlesInputSchema } from '../src/schemas.js';
 import getCandles, { toolDef } from '../tools/get_candles.js';
 import { assertFail, assertOk } from './_assertResult.js';
 import { candlesError } from './fixtures/bitbank-api.js';
+import { requireDefined } from './helpers/assert.js';
 
 /** `CandleSchema.timestamp` はスキーマ上 optional だが get_candles は全経路で必ず埋めるので、欠損は契約違反としてここで落とす（`c.timestamp!` で握りつぶさない）。 */
 function timestampsOf(candles: readonly { timestamp?: number }[]): number[] {
@@ -131,10 +132,10 @@ describe('getCandles', () => {
 		const res = await getCandles('btc_jpy', '1day', '2024', 100);
 		assertOk(res);
 
-		expect(res.data.keyPoints!.today).not.toBeNull();
-		expect(res.data.keyPoints!.sevenDaysAgo).not.toBeNull();
-		expect(res.data.keyPoints!.thirtyDaysAgo).not.toBeNull();
-		expect(res.data.keyPoints!.ninetyDaysAgo).not.toBeNull();
+		expect(requireDefined(res.data.keyPoints, 'res.data.keyPoints').today).not.toBeNull();
+		expect(requireDefined(res.data.keyPoints, 'res.data.keyPoints').sevenDaysAgo).not.toBeNull();
+		expect(requireDefined(res.data.keyPoints, 'res.data.keyPoints').thirtyDaysAgo).not.toBeNull();
+		expect(requireDefined(res.data.keyPoints, 'res.data.keyPoints').ninetyDaysAgo).not.toBeNull();
 
 		// baseTs=2024-01-01T00:00:00Z（JST 09:00）から 100 本 → today index=99 は 2024-04-09T00:00:00Z で、既定 tz='Asia/Tokyo' の暦日 '2024-04-09' として出る
 		expect(res.data.keyPoints?.today?.date).toBe('2024-04-09');

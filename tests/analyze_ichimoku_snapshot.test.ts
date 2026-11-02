@@ -3,6 +3,7 @@ import { dayjs } from '../lib/datetime.js';
 import { ICHIMOKU_SHIFT } from '../lib/indicator-config.js';
 import type { Candle } from '../src/schemas.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
+import { requireDefined } from './helpers/assert.js';
 
 vi.mock('../tools/analyze_indicators.js', () => ({
 	default: vi.fn(),
@@ -97,7 +98,7 @@ describe('analyze_ichimoku_snapshot', () => {
 		expect(res.data.assessment.pricePosition).toBe('below_cloud');
 		expect(res.data.assessment.tenkanKijun).toBe('bearish');
 		expect(res.data.assessment.cloudSlope).toBe('falling');
-		expect(res.data.signals!.overallSignal).toBe('strong_bearish');
+		expect(requireDefined(res.data.signals, 'res.data.signals').overallSignal).toBe('strong_bearish');
 	});
 
 	it('遅行スパンは spanB の有無に依存せず ichi_series.chikou から取得されるべき', async () => {
@@ -122,9 +123,9 @@ describe('analyze_ichimoku_snapshot', () => {
 
 		const res = await analyzeIchimokuSnapshot('btc_jpy', '1day', 120, 2);
 		assertOk(res);
-		expect(res.data.trend!.cloudHistory).toHaveLength(2);
-		expect(res.data.trend!.cloudHistory[0].barsAgo).toBe(0);
-		expect(res.data.trend!.cloudHistory[1].barsAgo).toBe(1);
+		expect(requireDefined(res.data.trend, 'res.data.trend').cloudHistory).toHaveLength(2);
+		expect(requireDefined(res.data.trend, 'res.data.trend').cloudHistory[0].barsAgo).toBe(0);
+		expect(requireDefined(res.data.trend, 'res.data.trend').cloudHistory[1].barsAgo).toBe(1);
 	});
 
 	it('強気条件（雲上 + 転換線>基準線 + 雲上昇）では overallSignal は strong_bullish', async () => {
@@ -149,7 +150,7 @@ describe('analyze_ichimoku_snapshot', () => {
 		assertOk(res);
 		expect(res.data.assessment.pricePosition).toBe('above_cloud');
 		expect(res.data.assessment.tenkanKijun).toBe('bullish');
-		expect(res.data.signals!.overallSignal).toContain('bullish');
+		expect(requireDefined(res.data.signals, 'res.data.signals').overallSignal).toContain('bullish');
 	});
 
 	it('雲の中（in_cloud）の判定', async () => {
@@ -272,7 +273,7 @@ describe('analyze_ichimoku_snapshot', () => {
 		const res = await analyzeIchimokuSnapshot('btc_jpy', '1day', 120, 10);
 		assertOk(res);
 		expect(res.data.assessment.cloudSlope).toBe('unknown');
-		expect(res.data.cloud!.direction).toBeNull();
+		expect(requireDefined(res.data.cloud, 'res.data.cloud').direction).toBeNull();
 	});
 
 	it('上流 meta.warning（取得層）が tool の meta.warning と summary 先頭に伝播する', async () => {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import getDepth, { buildDepthText } from '../../lib/get-depth.js';
 import { assertFail, assertOk } from '../_assertResult.js';
+import { requireDefined } from '../helpers/assert.js';
 
 function depthApiResponse() {
 	return {
@@ -119,7 +120,7 @@ describe('getDepth', () => {
 		const res = await getDepth('btc_jpy');
 		assertOk(res);
 		expect(res.data.overlays).toBeDefined();
-		expect(Array.isArray(res.data.overlays!.depth_zones)).toBe(true);
+		expect(Array.isArray(requireDefined(res.data.overlays, 'res.data.overlays').depth_zones)).toBe(true);
 	});
 
 	it('不正な pair で fail を返す', async () => {

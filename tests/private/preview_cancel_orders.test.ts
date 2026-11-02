@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import previewCancelOrders from '../../tools/private/preview_cancel_orders.js';
 import { assertOk } from '../_assertResult.js';
+import { requireDefined } from '../helpers/assert.js';
 
 beforeEach(() => {
 	process.env.BITBANK_API_KEY = 'test_key';
@@ -18,9 +19,9 @@ describe('preview_cancel_orders', () => {
 
 		assertOk(result);
 		expect(result.data.confirmation_token).toBeTypeOf('string');
-		expect(result.data.confirmation_token!.length).toBeGreaterThan(0);
+		expect(requireDefined(result.data.confirmation_token, 'result.data.confirmation_token').length).toBeGreaterThan(0);
 		expect(result.data.expires_at).toBeTypeOf('number');
-		expect(result.data.expires_at!).toBeGreaterThan(Date.now());
+		expect(requireDefined(result.data.expires_at, 'result.data.expires_at')).toBeGreaterThan(Date.now());
 	});
 
 	it('summary にペア名と件数が含まれる', () => {

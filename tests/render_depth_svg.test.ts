@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
+import { requireDefined } from './helpers/assert.js';
 
 vi.mock('../lib/get-depth.js', () => ({
 	default: vi.fn(),
@@ -80,12 +81,12 @@ describe('render_depth_svg', () => {
 		assertOk(res);
 		const s = res.data.summary;
 		expect(s).toBeDefined();
-		expect(s!.currentPrice).toBe(10000); // (9900+10100)/2
-		expect(s!.bestBid).toBe(9900);
-		expect(s!.bestAsk).toBe(10100);
-		expect(s!.bidDepth).toBeGreaterThan(0);
-		expect(s!.askDepth).toBeGreaterThan(0);
-		expect(s!.ratio).toBeGreaterThan(0);
+		expect(requireDefined(s, 's').currentPrice).toBe(10000); // (9900+10100)/2
+		expect(requireDefined(s, 's').bestBid).toBe(9900);
+		expect(requireDefined(s, 's').bestAsk).toBe(10100);
+		expect(requireDefined(s, 's').bidDepth).toBeGreaterThan(0);
+		expect(requireDefined(s, 's').askDepth).toBeGreaterThan(0);
+		expect(requireDefined(s, 's').ratio).toBeGreaterThan(0);
 	});
 
 	it('preferFile=true でファイル保存', async () => {

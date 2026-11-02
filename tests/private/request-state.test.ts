@@ -14,6 +14,7 @@ import {
 	startNonceCleanupTimer,
 	stopNonceCleanupTimer,
 } from '../../src/private/request-state.js';
+import { requireDefined } from '../helpers/assert.js';
 
 const ACTION = 'create_order';
 const ARGS = { pair: 'btc_jpy', amount: '0.01', side: 'buy', type: 'limit' } as Record<string, unknown>;
@@ -121,7 +122,7 @@ describe('mintConfirmState / requestStateCodec.verify', () => {
 		expect(body).toBeTruthy();
 		expect(mac).toBeTruthy();
 		// body の末尾をわずかに改変（base64url として壊さない範囲で）
-		const tamperedBody = `${body!.slice(0, -1)}${body!.endsWith('A') ? 'B' : 'A'}`;
+		const tamperedBody = `${requireDefined(body, 'body').slice(0, -1)}${requireDefined(body, 'body').endsWith('A') ? 'B' : 'A'}`;
 		const tampered = `${prefix}.${tamperedBody}.${mac}`;
 		await expect(requestStateCodec.verify(tampered, ctx({ sessionId: 'sess-a' }))).rejects.toThrow();
 	});
@@ -139,7 +140,7 @@ describe('mintConfirmState / requestStateCodec.verify', () => {
 
 	it('wire 上の payload に confirmation_token / sessionId / token を載せない', async () => {
 		const state = await mintConfirmState(ACTION, ARGS, ctx({ sessionId: 'sess-secret', clientId: 'client-1' }));
-		const body = state.split('.')[1]!;
+		const body = requireDefined(state.split('.')[1], "state.split('.')[1]");
 		const padded = body.replace(/-/g, '+').replace(/_/g, '/');
 		const pad = padded.length % 4 === 0 ? '' : '='.repeat(4 - (padded.length % 4));
 		const json = Buffer.from(padded + pad, 'base64').toString('utf8');

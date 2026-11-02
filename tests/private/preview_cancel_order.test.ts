@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OrderStatusEnum, TERMINAL_ORDER_STATUSES } from '../../src/private/schemas.js';
 import { assertFail, assertOk } from '../_assertResult.js';
+import { requireDefined } from '../helpers/assert.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -57,9 +58,9 @@ describe('preview_cancel_order', () => {
 
 		assertOk(result);
 		expect(result.data.confirmation_token).toBeTypeOf('string');
-		expect(result.data.confirmation_token!.length).toBeGreaterThan(0);
+		expect(requireDefined(result.data.confirmation_token, 'result.data.confirmation_token').length).toBeGreaterThan(0);
 		expect(result.data.expires_at).toBeTypeOf('number');
-		expect(result.data.expires_at!).toBeGreaterThan(Date.now());
+		expect(requireDefined(result.data.expires_at, 'result.data.expires_at')).toBeGreaterThan(Date.now());
 	});
 
 	it('summary にペア名（BTC/JPY）と注文IDが含まれる', async () => {

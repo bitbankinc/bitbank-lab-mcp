@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
 import type { Candle } from '../src/schemas.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
+import { requireDefined } from './helpers/assert.js';
 
 vi.mock('../tools/analyze_indicators.js', () => ({
 	default: vi.fn(),
@@ -155,7 +156,7 @@ describe('analyze_sma_snapshot', () => {
 		const res = await analyzeSmaSnapshot('btc_jpy', '1day', 220, [5, 20, 50]);
 
 		assertOk(res);
-		expect(res.data.summary!.position).toBe('below_all');
+		expect(requireDefined(res.data.summary, 'res.data.summary').position).toBe('below_all');
 	});
 
 	it('価格がSMAの間にある場合は position=between を返す', async () => {
@@ -169,7 +170,7 @@ describe('analyze_sma_snapshot', () => {
 		const res = await analyzeSmaSnapshot('btc_jpy', '1day', 220, [5, 20, 50]);
 
 		assertOk(res);
-		expect(res.data.summary!.position).toBe('between');
+		expect(requireDefined(res.data.summary, 'res.data.summary').position).toBe('between');
 	});
 
 	it('SMA の slope が rising/falling/flat を正しく判定するべき', async () => {
@@ -186,9 +187,9 @@ describe('analyze_sma_snapshot', () => {
 		const res = await analyzeSmaSnapshot('btc_jpy', '1day', 220, [5, 20, 50]);
 
 		assertOk(res);
-		expect(res.data.smas!['5'].slope).toBe('rising');
-		expect(res.data.smas!['20'].slope).toBe('falling');
-		expect(res.data.smas!['50'].slope).toBe('flat');
+		expect(requireDefined(res.data.smas, 'res.data.smas')['5'].slope).toBe('rising');
+		expect(requireDefined(res.data.smas, 'res.data.smas')['20'].slope).toBe('falling');
+		expect(requireDefined(res.data.smas, 'res.data.smas')['50'].slope).toBe('flat');
 	});
 
 	it('チャートインジケータが短すぎる場合 slope は flat になるべき', async () => {
@@ -200,7 +201,7 @@ describe('analyze_sma_snapshot', () => {
 		const res = await analyzeSmaSnapshot('btc_jpy', '1day', 220, [5, 20, 50]);
 
 		assertOk(res);
-		expect(res.data.smas!['5'].slope).toBe('flat');
+		expect(requireDefined(res.data.smas, 'res.data.smas')['5'].slope).toBe('flat');
 	});
 
 	it('無効なペアは failFromValidation を返す', async () => {
@@ -214,7 +215,7 @@ describe('analyze_sma_snapshot', () => {
 		const res = await analyzeSmaSnapshot('btc_jpy', '1hour', 220, [5, 20, 50]);
 
 		assertOk(res);
-		expect(res.data.smas!['5'].slopePctPerDay).toBeUndefined();
+		expect(requireDefined(res.data.smas, 'res.data.smas')['5'].slopePctPerDay).toBeUndefined();
 	});
 
 	it('最近のクロスを検出するべき', async () => {
@@ -230,8 +231,8 @@ describe('analyze_sma_snapshot', () => {
 		const res = await analyzeSmaSnapshot('btc_jpy', '1day', 220, [5, 20]);
 
 		assertOk(res);
-		expect(res.data.recentCrosses!.length).toBeGreaterThan(0);
-		expect(res.data.recentCrosses![0].type).toBe('golden_cross');
+		expect(requireDefined(res.data.recentCrosses, 'res.data.recentCrosses').length).toBeGreaterThan(0);
+		expect(requireDefined(res.data.recentCrosses, 'res.data.recentCrosses')[0].type).toBe('golden_cross');
 	});
 
 	it('pricePosition が below を返すケース', async () => {
@@ -246,7 +247,7 @@ describe('analyze_sma_snapshot', () => {
 
 		assertOk(res);
 		// pricePosition is optional in the schema, check via summary.position
-		expect(res.data.summary!.position).toBe('below_all');
+		expect(requireDefined(res.data.summary, 'res.data.summary').position).toBe('below_all');
 	});
 
 	it('SMA値が null の場合 distancePct/distanceAbs も null になるべき', async () => {
@@ -257,8 +258,8 @@ describe('analyze_sma_snapshot', () => {
 		const res = await analyzeSmaSnapshot('btc_jpy', '1day', 220, [5, 20, 50]);
 
 		assertOk(res);
-		expect(res.data.smas!['5'].distancePct).toBeNull();
-		expect(res.data.smas!['5'].distanceAbs).toBeNull();
+		expect(requireDefined(res.data.smas, 'res.data.smas')['5'].distancePct).toBeNull();
+		expect(requireDefined(res.data.smas, 'res.data.smas')['5'].distanceAbs).toBeNull();
 	});
 
 	it('chart.candles がない場合は normalized をフォールバックとして使うべき', async () => {
