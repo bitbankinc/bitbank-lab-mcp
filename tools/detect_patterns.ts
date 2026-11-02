@@ -32,7 +32,13 @@ import { formatStructureGateSkipLine, formatTriplePositionLines } from './patter
 import { type Candle, detectSwingPoints, filterPeaks, filterValleys } from './patterns/swing.js';
 import { annotateTargetBreakoutConfounders, type TargetBreakoutConfounder } from './patterns/target-confounders.js';
 import { formatTargetProgressLine } from './patterns/target-reach.js';
-import { type CandDebugEntry, type DeduplicablePattern, type DetectContext, pushCand } from './patterns/types.js';
+import {
+	type CandDebugEntry,
+	type DeduplicablePattern,
+	type DetectContext,
+	type PatternEntry,
+	pushCand,
+} from './patterns/types.js';
 
 /** PatternEntry と同じ形。DeduplicablePattern 経由の summary 生成では型情報が落ちるのでキャストに使う。 */
 interface FlagFamilyMetadata {
@@ -89,6 +95,25 @@ const REVERSAL_PATTERN_TYPES = new Set([
 	'inverse_head_and_shoulders',
 ]);
 const PIPELINE_REJECTION_REASONS = new Set(['reversal_history_insufficient', TRIPLE_HS_EXCLUSION_REASON]);
+
+// identifier は開始日までしか持たない（#200）ので、同じ日に始まる同種のパターンが並ぶとぶつかる。並べた後の 2 つ目以降に連番を付けて、結果の中で一意にする。
+function uniquifyDiagramIdentifiers(patterns: DeduplicablePattern[]): DeduplicablePattern[] {
+	const seen = new Map<string, number>();
+	return patterns.map((p) => {
+		const diagram = p.structureDiagram as PatternEntry['structureDiagram'];
+		if (!diagram?.artifact) return p;
+		const n = (seen.get(diagram.artifact.identifier) ?? 0) + 1;
+		seen.set(diagram.artifact.identifier, n);
+		if (n === 1) return p;
+		return {
+			...p,
+			structureDiagram: {
+				...diagram,
+				artifact: { ...diagram.artifact, identifier: `${diagram.artifact.identifier}-${n}` },
+			},
+		};
+	});
+}
 
 // 継続系には先行反転トレンドの要件が無いので対象にしない。
 function filterReversalPatternsWithoutHistory(
@@ -402,6 +427,7 @@ export default async function detectPatterns(
 
 		// content と structuredContent が同じ並び順を共有するよう、表示・返却前に並べる。
 		patterns = rankPatterns(patterns);
+		patterns = uniquifyDiagramIdentifiers(patterns);
 
 		const summaryPatterns = patterns as SummaryPattern[];
 
