@@ -5,11 +5,7 @@ import { isJpyQuotedPair, withNormalizedPair } from '../../lib/pair-code.js';
 import { fail, ok } from '../../lib/result.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import { validateToken } from '../../src/private/confirmation.js';
-import {
-	DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE,
-	DIRECT_EXECUTE_FORBIDDEN_MESSAGE,
-	isAppUiExecuteAllowed,
-} from '../../src/private/elicitation.js';
+import { runAppUiExecute } from '../../src/private/execute-gate.js';
 import type { OrderResponse } from '../../src/private/schemas.js';
 import { CancelOrderInputSchema, CancelOrderOutputSchema } from '../../src/private/schemas.js';
 import { failPrivateToolError } from '../../src/private/tool-error.js';
@@ -104,18 +100,5 @@ export const toolDef: ToolDefinition = {
 		' ⚠️ このツールを MCP tools/call から直接呼び出してはならない。サーバー側で拒否される。' +
 		' キャンセルは必ず preview_cancel_order から始まるユーザー確認フローを経由してのみ行われる。',
 	inputSchema: CancelOrderInputSchema,
-	handler: async (args, extra) => {
-		// preview_cancel_order の elicitation accept は cancelOrder() を直接呼ぶのでここを通らない。
-		if (!isAppUiExecuteAllowed(extra)) {
-			return CancelOrderOutputSchema.parse(fail(DIRECT_EXECUTE_FORBIDDEN_MESSAGE, DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE));
-		}
-		const typedArgs = args as Parameters<typeof cancelOrder>[0];
-		// トークン欠落は preview を経ていない直接呼び出しとして拒否し、値の正当性は cancelOrder 内の validateToken に任せる。
-		if (!typedArgs?.confirmation_token || typeof typedArgs.token_expires_at !== 'number') {
-			return CancelOrderOutputSchema.parse(fail(DIRECT_EXECUTE_FORBIDDEN_MESSAGE, DIRECT_EXECUTE_FORBIDDEN_ERROR_TYPE));
-		}
-		return cancelOrder(typedArgs, 'ui-button', {
-			sessionId: (extra as { sessionId?: string } | undefined)?.sessionId,
-		});
-	},
+	handler: async (args, extra) => runAppUiExecute(args, extra, CancelOrderOutputSchema, cancelOrder),
 };
