@@ -2,10 +2,10 @@ import { estimateOrderFee } from '../../lib/fees.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
 import { isJpyQuotedPair } from '../../lib/pair-code.js';
 import { fetchPairsSpec, type PairSpec, validateOrderConstraints } from '../../lib/pairs.js';
-import { fail, ok, toStructured } from '../../lib/result.js';
+import { fail, ok } from '../../lib/result.js';
 import { validateTriggerPrice } from '../../lib/trigger-price.js';
 import { generateToken } from '../../src/private/confirmation.js';
-import { withElicitedConfirmation } from '../../src/private/elicitation.js';
+import { confirmPreview } from '../../src/private/preview-confirmation.js';
 import { PreviewOrderInputSchema, PreviewOrderOutputSchema } from '../../src/private/schemas.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 import createOrder from './create_order.js';
@@ -261,54 +261,23 @@ export const toolDef: ToolDefinition = {
 		const result = await previewOrder(typedArgs);
 		if (!result.ok) return result;
 
-		// スキーマ上 optional だが preview 成功時は必ず生成される。万一無ければ、トークン無しで execute 経路へ進ませないよう fail-closed にする。
-		const { confirmation_token, expires_at } = result.data;
-		if (!confirmation_token || expires_at == null) {
-			return PreviewOrderOutputSchema.parse(fail('確認トークンを生成できませんでした', 'internal'));
-		}
-
-		// elicitation 非対応かつ MCP Apps 実行経路も無効なホスト向け。トークンの存在は仄めかさない。
-		const fallbackText = [
-			result.summary,
-			'',
-			'※ このホストでは取引実行に対応していません。',
-			'  実際に発注するには、elicitation/MRTR 対応クライアントで同じ操作を行うか、bitbank アプリ/ウェブで同じ内容を手動発注してください。',
-		].join('\n');
-
-		const appUiFallbackText = [
-			result.summary,
-			'',
-			'※ 上部の確認カードで内容を確認し、「注文を確定する」ボタンを押すと発注されます。',
-			'  ボタンを押さない限り発注されません。確認は 60 秒で期限切れになるため、その場合は preview_order をやり直してください。',
-		].join('\n');
-
-		return withElicitedConfirmation({
+		return confirmPreview({
 			extra,
 			action: 'create_order',
-			bindArgs: typedArgs as unknown as Record<string, unknown>,
-			summary: result.summary,
-			confirmTitle: 'この注文を発注する',
-			onConfirmed: () =>
-				createOrder(
-					{
-						...typedArgs,
-						confirmation_token,
-						token_expires_at: expires_at,
-					},
-					'elicitation',
-					{ sessionId: (extra as { sessionId?: string } | undefined)?.sessionId },
-				),
-			onDeclinedText: 'ユーザーが発注をキャンセルしました（elicitation）',
-			declinedStructured: toStructured(result),
-			fallback: {
-				content: [{ type: 'text', text: fallbackText }],
-				structuredContent: toStructured(result),
+			args: typedArgs,
+			result,
+			outputSchema: PreviewOrderOutputSchema,
+			texts: {
+				confirmTitle: 'この注文を発注する',
+				declinedText: 'ユーザーが発注をキャンセルしました（elicitation）',
+				unsupportedHostGuide:
+					'  実際に発注するには、elicitation/MRTR 対応クライアントで同じ操作を行うか、bitbank アプリ/ウェブで同じ内容を手動発注してください。',
+				appUiGuide: [
+					'※ 上部の確認カードで内容を確認し、「注文を確定する」ボタンを押すと発注されます。',
+					'  ボタンを押さない限り発注されません。確認は 60 秒で期限切れになるため、その場合は preview_order をやり直してください。',
+				],
 			},
-			metaConfirmation: {
-				confirmation_token,
-				expires_at,
-			},
-			appUiFallbackText,
+			execute: createOrder,
 		});
 	},
 };
