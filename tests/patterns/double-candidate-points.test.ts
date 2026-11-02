@@ -7,7 +7,6 @@ import {
 	resolveParams,
 } from '../../tools/patterns/config.js';
 import { detectDoubles } from '../../tools/patterns/detect_doubles.js';
-import { linearRegressionWithR2, near, pct } from '../../tools/patterns/regression.js';
 import type {
 	BreakoutPathRejectReason,
 	MainPointNecklineSideRejectReason,
@@ -68,9 +67,6 @@ function detectDebugCandidates(candles: CandleData[]): CandDebugEntry[] {
 		debugCandidates: [],
 		type: tf,
 		swingDepth,
-		near: (a, b) => near(a, b, tolerancePct),
-		pct,
-		lrWithR2: linearRegressionWithR2,
 		tz: 'Asia/Tokyo',
 	};
 	detectDoubles(ctx);

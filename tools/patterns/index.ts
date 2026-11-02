@@ -17,7 +17,6 @@ export {
 	linearRegressionWithR2,
 	marginFromRelDev,
 	near,
-	pct,
 	type RegressionPoint,
 	relDev,
 	trendlineFit,

@@ -2,6 +2,7 @@ import { EPSILON } from '../../lib/math.js';
 import { generatePatternDiagram, type PatternDiagramData } from '../../lib/pattern-diagrams.js';
 import { patternBarRange } from './bar-thresholds.js';
 import { calcATR, deduplicatePatterns } from './helpers.js';
+import { linearRegressionWithR2 } from './regression.js';
 import { smoothCandleExtremes } from './smoothing.js';
 import type { Pivot } from './swing.js';
 import { computeTargetReach, omittedTargetReach, type TargetReachResult, targetReachFields } from './target-reach.js';
@@ -524,7 +525,7 @@ function detectRegressionWedges(
 	barParams: WedgeBarParams,
 	ctx: DetectContext,
 ): DeduplicablePattern[] {
-	const { candles, pivots, want, lrWithR2, debugCandidates } = ctx;
+	const { candles, pivots, want, debugCandidates } = ctx;
 	const patterns: DeduplicablePattern[] = [];
 
 	const params = {
@@ -561,8 +562,8 @@ function detectRegressionWedges(
 		const highsIn = swings.highs.filter((s) => s.index >= w.startIdx && s.index <= w.endIdx);
 		const lowsIn = swings.lows.filter((s) => s.index >= w.startIdx && s.index <= w.endIdx);
 		if (highsIn.length < 4 || lowsIn.length < 4) continue;
-		const upper = lrWithR2(highsIn.map((s) => ({ x: s.index, y: s.price })));
-		const lower = lrWithR2(lowsIn.map((s) => ({ x: s.index, y: s.price })));
+		const upper = linearRegressionWithR2(highsIn.map((s) => ({ x: s.index, y: s.price })));
+		const lower = linearRegressionWithR2(lowsIn.map((s) => ({ x: s.index, y: s.price })));
 		if (upper.r2 < MIN_R2_THRESHOLD || lower.r2 < MIN_R2_THRESHOLD) {
 			const dbgType =
 				upper.slope < 0 && lower.slope < 0

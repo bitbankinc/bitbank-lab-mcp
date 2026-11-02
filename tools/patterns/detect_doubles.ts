@@ -1,6 +1,6 @@
 import { generatePatternDiagram } from '../../lib/pattern-diagrams.js';
 import { deduplicatePatterns, finalizeConf, periodScoreDays } from './helpers.js';
-import { clamp01, relDev } from './regression.js';
+import { clamp01, near, relDev } from './regression.js';
 import { averageDefinedAxes, breakoutQualityScore, retracementScore } from './scoring.js';
 import {
 	type BreakoutPathRejectReason,
@@ -719,7 +719,7 @@ function findRelaxedDoubleBottom(ctx: DetectContext, factor: number): PatternEnt
 
 // double は forming を出さない。最終構成点が 1 つしか無く、暫定値で埋めると double だけの例外が仕様に増えるため（#268）。
 export function detectDoubles(ctx: DetectContext): DetectResult {
-	const { candles, pivots, tolerancePct, want, includeForming, near, minDist } = ctx;
+	const { candles, pivots, tolerancePct, want, includeForming, minDist } = ctx;
 	const pcand: Pcand = (arg) => pushCand(ctx, arg);
 	const lastIdx = candles.length - 1;
 	const levelTolerancePct = Math.min(tolerancePct, DOUBLE_LEVEL_MAX_PCT);
@@ -740,7 +740,7 @@ export function detectDoubles(ctx: DetectContext): DetectResult {
 					pcand({ type: 'double_top', accepted: false, reason: sizeReason, idxs: [a.idx, b.idx, c.idx] });
 					continue;
 				}
-				if (!near(a.price, c.price)) {
+				if (!near(a.price, c.price, tolerancePct)) {
 					const diffPct = Math.abs(a.price - c.price) / Math.max(1, Math.max(a.price, c.price));
 					if (diffPct > tolerancePct) {
 						pcand({
@@ -937,7 +937,7 @@ export function detectDoubles(ctx: DetectContext): DetectResult {
 					pcand({ type: 'double_bottom', accepted: false, reason: sizeReason, idxs: [a.idx, b.idx, c.idx] });
 					continue;
 				}
-				if (!near(a.price, c.price)) {
+				if (!near(a.price, c.price, tolerancePct)) {
 					const diffPct = Math.abs(a.price - c.price) / Math.max(1, Math.max(a.price, c.price));
 					if (diffPct > tolerancePct) {
 						pcand({

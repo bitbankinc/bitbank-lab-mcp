@@ -308,7 +308,7 @@ export function classifyTriangle(
 }
 
 export function detectTriangles(ctx: DetectContext): DetectResult {
-	const { candles, want, includeForming, debugCandidates, lrWithR2 } = ctx;
+	const { candles, want, includeForming, debugCandidates } = ctx;
 	const type = ctx.type;
 	let patterns: PatternEntry[] = [];
 
@@ -348,8 +348,8 @@ export function detectTriangles(ctx: DetectContext): DetectResult {
 			if (peaks.length < 2 || valleys.length < 2) continue;
 
 			const minPtsForFit = 3;
-			let { line: upperLine, filtered: filteredPeaks } = robustFit(peaks, minPtsForFit, lrWithR2, params.minR2);
-			let { line: lowerLine, filtered: filteredValleys } = robustFit(valleys, minPtsForFit, lrWithR2, params.minR2);
+			let { line: upperLine, filtered: filteredPeaks } = robustFit(peaks, minPtsForFit, params.minR2);
+			let { line: lowerLine, filtered: filteredValleys } = robustFit(valleys, minPtsForFit, params.minR2);
 
 			// tryFlatFallback より前に置く。fallback が見るのは除去後に残った点だけなので、同じ問題を引き継ぐ。
 			// 除去率は上下のラインで別々に見る。合算すると、当てはまりの良いラインが破綻したラインを覆い隠す。

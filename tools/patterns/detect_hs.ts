@@ -1,7 +1,7 @@
 import { generatePatternDiagram } from '../../lib/pattern-diagrams.js';
 import { patternBarRange } from './bar-thresholds.js';
 import { finalizeConf, periodScoreDays } from './helpers.js';
-import { clamp01, relDev } from './regression.js';
+import { clamp01, near, relDev } from './regression.js';
 import { applyPostBreakoutGates, applyReversalGate, buildStructureGate } from './reversal-gate.js';
 import { averageDefinedAxes, breakoutQualityScore, retracementScore } from './scoring.js';
 import {
@@ -383,13 +383,13 @@ function enumerateHsWindows(ctx: DetectContext, side: 'top' | 'bottom'): HsWindo
 }
 
 function findStrictInverseHS(ctx: DetectContext): { patterns: DeduplicablePattern[]; found: boolean } {
-	const { candles, pivots, tolerancePct, headProminencePct, near, debugCandidates } = ctx;
+	const { candles, pivots, tolerancePct, headProminencePct, debugCandidates } = ctx;
 	const patterns: DeduplicablePattern[] = [];
 	let found = false;
 
 	for (const { p0, p1, p2, p3, p4 } of enumerateHsWindows(ctx, 'bottom')) {
 		// reason にどちらのゲートで落ちたかを出すため、短絡させずに別々に評価する（#172）。
-		const shouldersWithinTolerance = near(p0.price, p4.price);
+		const shouldersWithinTolerance = near(p0.price, p4.price, tolerancePct);
 		const shouldersWithinCap = isSameLevel(p0.price, p4.price, ctx.hsShoulderMaxPct);
 		const shouldersNear = shouldersWithinTolerance && shouldersWithinCap;
 		const headLower = p2.price < Math.min(p0.price, p4.price) * (1 - headProminencePct);
@@ -619,12 +619,12 @@ function findStrictInverseHS(ctx: DetectContext): { patterns: DeduplicablePatter
 }
 
 function findStrictHS(ctx: DetectContext): { patterns: DeduplicablePattern[]; found: boolean } {
-	const { candles, pivots, tolerancePct, headProminencePct, near, debugCandidates } = ctx;
+	const { candles, pivots, tolerancePct, headProminencePct, debugCandidates } = ctx;
 	const patterns: DeduplicablePattern[] = [];
 	let found = false;
 
 	for (const { p0, p1, p2, p3, p4 } of enumerateHsWindows(ctx, 'top')) {
-		const shouldersWithinTolerance = near(p0.price, p4.price);
+		const shouldersWithinTolerance = near(p0.price, p4.price, tolerancePct);
 		const shouldersWithinCap = isSameLevel(p0.price, p4.price, ctx.hsShoulderMaxPct);
 		const shouldersNear = shouldersWithinTolerance && shouldersWithinCap;
 		const headHigher = p2.price > Math.max(p0.price, p4.price) * (1 + headProminencePct);

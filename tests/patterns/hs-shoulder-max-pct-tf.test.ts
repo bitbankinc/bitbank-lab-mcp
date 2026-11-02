@@ -8,7 +8,6 @@ import {
 	resolveParams,
 } from '../../tools/patterns/config.js';
 import { detectHeadAndShoulders } from '../../tools/patterns/detect_hs.js';
-import { linearRegressionWithR2, near as nearFn, pct as pctFn } from '../../tools/patterns/regression.js';
 import { HS_SHOULDER_MAX_PCT } from '../../tools/patterns/structural.js';
 import { detectSwingPoints, filterPeaks, filterValleys, type Pivot } from '../../tools/patterns/swing.js';
 import type { CandDebugEntry, CandleData, DetectContext } from '../../tools/patterns/types.js';
@@ -144,9 +143,6 @@ function buildFive(
 			debugCandidates: debug,
 			type: tf,
 			swingDepth: resolved.swingDepth,
-			near: (a: number, b: number) => Math.abs(a - b) <= Math.max(a, b) * tol,
-			pct: (a: number, b: number) => ((b - a) / Math.max(1, a)) * 100,
-			lrWithR2: (pts) => linearRegressionWithR2(pts),
 		},
 	};
 }
@@ -232,9 +228,6 @@ describe('実データ D の 1hour: Phase 1.5 の「形 X」が shoulders_not_ne
 			debugCandidates,
 			type: TF,
 			swingDepth: resolved.swingDepth,
-			near: (a: number, b: number) => nearFn(a, b, resolved.tolerancePct),
-			pct: pctFn,
-			lrWithR2: linearRegressionWithR2,
 			tz: 'Asia/Tokyo',
 		});
 		return debugCandidates;

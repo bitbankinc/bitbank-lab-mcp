@@ -9,7 +9,6 @@ import {
 	getSizeThresholdsForTf,
 } from '../../tools/patterns/config.js';
 import { detectHeadAndShoulders } from '../../tools/patterns/detect_hs.js';
-import { linearRegressionWithR2 } from '../../tools/patterns/regression.js';
 import { detectSwingPoints, type Pivot } from '../../tools/patterns/swing.js';
 import type { CandleData, DetectContext } from '../../tools/patterns/types.js';
 import {
@@ -61,9 +60,6 @@ function buildCtx(opts?: { swingDepth?: number; headProminencePct?: number }): D
 		debugCandidates: [],
 		type: TF,
 		swingDepth: depth,
-		near: (a: number, b: number) => Math.abs(a - b) <= Math.max(a, b) * tol,
-		pct: (a: number, b: number) => ((b - a) / Math.max(1, a)) * 100,
-		lrWithR2: (pts) => linearRegressionWithR2(pts),
 	};
 }
 

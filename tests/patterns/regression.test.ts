@@ -5,7 +5,6 @@ import {
 	linearRegressionWithR2,
 	marginFromRelDev,
 	near,
-	pct,
 	relDev,
 	trendlineFit,
 } from '../../tools/patterns/regression.js';
@@ -131,24 +130,6 @@ describe('near', () => {
 
 	it('ゼロ同士は true', () => {
 		expect(near(0, 0, 0.01)).toBe(true);
-	});
-});
-
-describe('pct', () => {
-	it('正のパーセント変化', () => {
-		expect(pct(100, 110)).toBeCloseTo(0.1, 10);
-	});
-
-	it('負のパーセント変化', () => {
-		expect(pct(100, 90)).toBeCloseTo(-0.1, 10);
-	});
-
-	it('変化なしは 0', () => {
-		expect(pct(100, 100)).toBe(0);
-	});
-
-	it('a=0 の場合は b をそのまま返す', () => {
-		expect(pct(0, 5)).toBe(5);
 	});
 });
 

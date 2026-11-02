@@ -9,7 +9,6 @@ import { getHsShoulderMaxPctForTf, getSizeThresholdsForTf } from '../../tools/pa
 import { detectDoubles } from '../../tools/patterns/detect_doubles.js';
 import { detectHeadAndShoulders } from '../../tools/patterns/detect_hs.js';
 import { detectTriples } from '../../tools/patterns/detect_triples.js';
-import { linearRegressionWithR2 } from '../../tools/patterns/regression.js';
 import type { Pivot } from '../../tools/patterns/swing.js';
 import type { CandleData, DetectContext } from '../../tools/patterns/types.js';
 
@@ -48,9 +47,6 @@ function buildCtx(opts: {
 		hsShoulderMaxPct: getHsShoulderMaxPctForTf(opts.type),
 		swingDepth: 7,
 		tz: 'Asia/Tokyo',
-		near: (a: number, b: number) => Math.abs(a - b) <= Math.max(a, b) * tol,
-		pct: (a: number, b: number) => ((b - a) / Math.max(1, a)) * 100,
-		lrWithR2: (pts) => linearRegressionWithR2(pts),
 	};
 }
 
