@@ -179,7 +179,7 @@ describe('実データ（`btc_jpy_1hour_2026_08`）の H&S 候補が誤った側
 			expect(c.type).toBe('head_and_shoulders');
 			expect(c.accepted).toBe(false);
 		}
-		// 283 / 211 / 204 は右肩 330 との肩 `relDiff` が 1.386% / 1.188% / 1.306% で `1hour` の肩ゲート（1.04%）を超え、本ゲートより手前の `shoulders_not_near:cap` で落ちる（257 は 0.844% で通る）。
+		// 283 / 211 / 204 は右肩 330 との肩 `relDev` が 1.386% / 1.188% / 1.306% で `1hour` の肩ゲート（1.04%）を超え、本ゲートより手前の `shoulders_not_near:cap` で落ちる（257 は 0.844% で通る）。
 		expect(rejected.map((c) => c.indices?.join('-'))).toEqual(expect.arrayContaining(['257-272-294-325-330']));
 	});
 

@@ -543,11 +543,10 @@ export default async function analyzeCandlePatterns(
 		const windowStart = allCandles.length - windowDays;
 		const windowCandles = allCandles.slice(windowStart);
 
-		const displayTz = 'Asia/Tokyo';
-		const todayStr = dayjs().tz(displayTz).format('YYYY-MM-DD');
 		const lastCandle = windowCandles[windowCandles.length - 1];
-		const lastCandleDate = calendarDateFromIso(lastCandle?.isoTime ?? lastCandle?.time) ?? '';
-		const isLastPartial = !isHistoricalQuery && lastCandleDate === todayStr;
+		const lastOpen = lastCandle?.isoTime ?? lastCandle?.time;
+		// 日足は UTC 00:00 始まりなので、JST の暦日で今日と比べると 0〜9 時に進行中の足を確定扱いにしてしまう。
+		const isLastPartial = !isHistoricalQuery && lastOpen != null && dayjs().isBefore(dayjs(lastOpen).add(24, 'hour'));
 
 		const formattedWindowCandles: WindowCandle[] = windowCandles.map((c, idx) => ({
 			timestamp: c.isoTime || toIsoTime(c.time || 0) || '',

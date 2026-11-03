@@ -1,3 +1,4 @@
+import { EPSILON } from '../../lib/math.js';
 import { generatePatternDiagram } from '../../lib/pattern-diagrams.js';
 import { patternBarRange } from './bar-thresholds.js';
 import { finalizeConf, periodScoreDays } from './helpers.js';
@@ -600,7 +601,7 @@ function findStrictInverseHS(ctx: DetectContext): { patterns: DeduplicablePatter
 					leftShoulder: p0.price,
 					rightShoulder: p4.price,
 					shouldersDiff: Math.abs(p0.price - p4.price),
-					shouldersDiffPct: Math.abs(p0.price - p4.price) / Math.max(1, Math.max(p0.price, p4.price)),
+					shouldersDiffPct: relDev(p0.price, p4.price),
 					shoulderMaxPct: ctx.hsShoulderMaxPct,
 					tolerancePct,
 					head: p2.price,
@@ -818,7 +819,7 @@ function findStrictHS(ctx: DetectContext): { patterns: DeduplicablePattern[]; fo
 					leftShoulder: p0.price,
 					rightShoulder: p4.price,
 					shouldersDiff: Math.abs(p0.price - p4.price),
-					shouldersDiffPct: Math.abs(p0.price - p4.price) / Math.max(1, Math.max(p0.price, p4.price)),
+					shouldersDiffPct: relDev(p0.price, p4.price),
 					shoulderMaxPct: ctx.hsShoulderMaxPct,
 					tolerancePct,
 					head: p2.price,
@@ -858,8 +859,7 @@ function findRelaxedHS(ctx: DetectContext): DeduplicablePattern | null {
 			)
 				continue;
 			const relaxedTolerancePct = tolerancePct * factors.shoulder;
-			const shouldersWithinRelaxedTolerance =
-				Math.abs(p0.price - p4.price) / Math.max(1, Math.max(p0.price, p4.price)) <= relaxedTolerancePct;
+			const shouldersWithinRelaxedTolerance = relDev(p0.price, p4.price) <= relaxedTolerancePct;
 			const shouldersWithinCap = isSameLevel(p0.price, p4.price, ctx.hsShoulderMaxPct);
 			const shouldersNearRelaxed = shouldersWithinRelaxedTolerance && shouldersWithinCap;
 			const headHigherRelaxed = p2.price > Math.max(p0.price, p4.price) * (1 + headProminencePct * factors.head);
@@ -880,7 +880,7 @@ function findRelaxedHS(ctx: DetectContext): DeduplicablePattern | null {
 							leftShoulder: p0.price,
 							rightShoulder: p4.price,
 							shouldersDiff: Math.abs(p0.price - p4.price),
-							shouldersDiffPct: Math.abs(p0.price - p4.price) / Math.max(1, Math.max(p0.price, p4.price)),
+							shouldersDiffPct: relDev(p0.price, p4.price),
 							shoulderMaxPct: ctx.hsShoulderMaxPct,
 							tolerancePct,
 							relaxedShoulderFactor: factors.shoulder,
@@ -1101,8 +1101,7 @@ function findRelaxedInverseHS(ctx: DetectContext): DeduplicablePattern | null {
 			)
 				continue;
 			const relaxedTolerancePct = tolerancePct * factors.shoulder;
-			const shouldersWithinRelaxedTolerance =
-				Math.abs(p0.price - p4.price) / Math.max(1, Math.max(p0.price, p4.price)) <= relaxedTolerancePct;
+			const shouldersWithinRelaxedTolerance = relDev(p0.price, p4.price) <= relaxedTolerancePct;
 			const shouldersWithinCap = isSameLevel(p0.price, p4.price, ctx.hsShoulderMaxPct);
 			const shouldersNearRelaxed = shouldersWithinRelaxedTolerance && shouldersWithinCap;
 			const headLowerRelaxed = p2.price < Math.min(p0.price, p4.price) * (1 - headProminencePct * factors.head);
@@ -1122,7 +1121,7 @@ function findRelaxedInverseHS(ctx: DetectContext): DeduplicablePattern | null {
 							leftShoulder: p0.price,
 							rightShoulder: p4.price,
 							shouldersDiff: Math.abs(p0.price - p4.price),
-							shouldersDiffPct: Math.abs(p0.price - p4.price) / Math.max(1, Math.max(p0.price, p4.price)),
+							shouldersDiffPct: relDev(p0.price, p4.price),
 							shoulderMaxPct: ctx.hsShoulderMaxPct,
 							tolerancePct,
 							relaxedShoulderFactor: factors.shoulder,
@@ -1370,7 +1369,7 @@ function formingHsForHead(
 		(p) =>
 			p.idx > postHeadValley.idx &&
 			p.price < head.price &&
-			Math.abs(p.price - left.price) / Math.max(1, left.price) <= FORMING_RIGHT_TOLERANCE_PCT,
+			Math.abs(p.price - left.price) / Math.max(EPSILON, left.price) <= FORMING_RIGHT_TOLERANCE_PCT,
 	);
 
 	let rightShoulder: Pivot | null = rightPeakCandidates.length
@@ -1379,7 +1378,7 @@ function formingHsForHead(
 	let isProvisional = false;
 
 	if (!rightShoulder) {
-		const nearLeft = Math.abs(currentPrice - left.price) / Math.max(1, left.price) <= FORMING_RIGHT_TOLERANCE_PCT;
+		const nearLeft = Math.abs(currentPrice - left.price) / Math.max(EPSILON, left.price) <= FORMING_RIGHT_TOLERANCE_PCT;
 		if (nearLeft && currentPrice < head.price && currentPrice > postHeadValley.price) {
 			rightShoulder = { idx: lastIdx, price: currentPrice, kind: 'H', extremePrice: currentPrice };
 			isProvisional = true;
@@ -1629,7 +1628,7 @@ function formingInverseHsForHead(
 		(v) =>
 			v.idx > postHeadPeak.idx &&
 			v.price > head.price &&
-			Math.abs(v.price - left.price) / Math.max(1, left.price) <= FORMING_RIGHT_TOLERANCE_PCT,
+			Math.abs(v.price - left.price) / Math.max(EPSILON, left.price) <= FORMING_RIGHT_TOLERANCE_PCT,
 	);
 
 	let rightShoulder: Pivot | null = rightValleyCandidates.length
@@ -1638,7 +1637,7 @@ function formingInverseHsForHead(
 	let isProvisional = false;
 
 	if (!rightShoulder) {
-		const nearLeft = Math.abs(currentPrice - left.price) / Math.max(1, left.price) <= FORMING_RIGHT_TOLERANCE_PCT;
+		const nearLeft = Math.abs(currentPrice - left.price) / Math.max(EPSILON, left.price) <= FORMING_RIGHT_TOLERANCE_PCT;
 		if (nearLeft && currentPrice > head.price && currentPrice < postHeadPeak.price) {
 			rightShoulder = { idx: lastIdx, price: currentPrice, kind: 'L', extremePrice: currentPrice };
 			isProvisional = true;

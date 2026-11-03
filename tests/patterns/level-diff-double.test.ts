@@ -2,11 +2,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../../lib/datetime.js';
 import { getSizeThresholdsForTf } from '../../tools/patterns/config.js';
+import { relDev } from '../../tools/patterns/regression.js';
 import {
 	DOUBLE_LEVEL_MAX_PCT,
 	levelSpreadMetrics,
 	MAX_LEVEL_SPREAD_RATIO,
-	relDiff,
 	validateLevelDiff,
 	validateLevelSpread,
 	validatePatternSize,
@@ -113,9 +113,9 @@ describe('levelSpreadMetrics: double 形状の性質（issue #178 項目 4 の�
 	const all = (extremePrice: number) => ({ extremePrice });
 
 	// double では `mainPoints` が 2 点なので `spreadPct` は `isSameLevel` が見る量そのもので、ゲートしている量と診断値が一致する。
-	it('spreadPct は isSameLevel が見る relDiff と一致する', () => {
+	it('spreadPct は isSameLevel が見る relDev と一致する', () => {
 		const m = levelSpreadMetrics([main(100), main(97.5)], [all(100), all(96), all(97.5)]);
-		expect(m.spreadPct).toBeCloseTo(relDiff(100, 97.5), 12);
+		expect(m.spreadPct).toBeCloseTo(relDev(100, 97.5), 12);
 	});
 
 	// 分子は `price`（終値）・分母は `extremePrice`（高安）で読むフィールドが違うので、低いほうの山に上ヒゲが付くと高さを増やさずに終値の差だけが広がる。
