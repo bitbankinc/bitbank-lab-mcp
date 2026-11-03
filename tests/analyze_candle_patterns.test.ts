@@ -591,7 +591,8 @@ describe('analyze_candle_patterns', () => {
 			expect(res.data.window.candles.at(-1)?.is_partial).toBe(false);
 		} finally {
 			vi.useRealTimers();
-			process.env.TZ = originalTz;
+			if (originalTz === undefined) delete process.env.TZ;
+			else process.env.TZ = originalTz;
 		}
 	});
 
