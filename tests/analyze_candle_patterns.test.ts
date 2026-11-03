@@ -514,6 +514,15 @@ describe('analyze_candle_patterns', () => {
 		expect(res.data.window.to).toBe('2026-01-21');
 	});
 
+	it('as_of は get_candles と同じ tz の暦日で読み、その日の足を含めて翌日の足を含めない', async () => {
+		const candles = Array.from({ length: 40 }, (_, i) => mcFixed(i, 100 + i, 106 + i, 96 + i, 103 + i));
+		mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
+		const res = await analyzeCandlePatterns({ as_of: '2026-01-21', window_days: 5, history_lookback_days: 30 });
+		assertOk(res);
+		expect(mockedGetCandles).toHaveBeenCalledWith('btc_jpy', '1day', '20260121', expect.any(Number), 'Asia/Tokyo');
+		expect(res.data.window.to).toBe('2026-01-21');
+	});
+
 	it('strength < 0.5 のパターンはフィルタされる', async () => {
 		// range=0 の場合検出されない（strength=0）
 		const candles = Array.from({ length: 5 }, (_, i) => mc(5 - i, 100, 100, 100, 100));
