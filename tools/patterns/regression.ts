@@ -105,7 +105,7 @@ export function clamp01(x: number): number {
 
 // 分母に 1 円の下限を付けると、1 円未満の価格で差が実際より小さく見える。
 export function relDev(a: number, b: number): number {
-	const max = Math.max(a, b);
+	const max = Math.max(Math.abs(a), Math.abs(b));
 	if (max === 0) return 0;
 	return Math.abs(a - b) / max;
 }

@@ -171,6 +171,11 @@ describe('relDev', () => {
 		expect(relDev(0, 0)).toBe(0);
 	});
 
+	it('負の入力でも負にならない', () => {
+		expect(relDev(-0.02, -0.01)).toBe(0.5);
+		expect(relDev(-0.01, 0)).toBe(1);
+	});
+
 	it('1 円未満の価格でも、同じ比率なら同じ値になる', () => {
 		expect(relDev(0.01, 0.011)).toBeCloseTo(relDev(100, 110), 12);
 	});

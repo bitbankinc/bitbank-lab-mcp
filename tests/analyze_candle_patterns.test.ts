@@ -564,6 +564,37 @@ describe('analyze_candle_patterns', () => {
 		}
 	});
 
+	it('サマータイムの切り替わる日も、開始から 24 時間で確定する', async () => {
+		// 2026-11-01 は America/New_York で夏時間が終わる日。暦日で 1 日足すと 25 時間後になる。
+		const originalTz = process.env.TZ;
+		process.env.TZ = 'America/New_York';
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2026-11-02T00:30:00Z'));
+		try {
+			const candles = Array.from({ length: 3 }, (_, i) => ({
+				isoTime: dayjs.utc('2026-10-30').add(i, 'day').toISOString(),
+				open: 100 + i,
+				high: 110 + i,
+				low: 90 + i,
+				close: 100.1 + i,
+				volume: 100,
+			}));
+			mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
+			const res = await analyzeCandlePatterns({
+				window_days: 3,
+				focus_last_n: 3,
+				patterns: ['doji'],
+				allow_partial_patterns: true,
+				history_lookback_days: 30,
+			});
+			assertOk(res);
+			expect(res.data.window.candles.at(-1)?.is_partial).toBe(false);
+		} finally {
+			vi.useRealTimers();
+			process.env.TZ = originalTz;
+		}
+	});
+
 	// 最後の足（doji）は 2026-01-21T00:00Z 始まり。JST 0〜9 時（UTC 15〜24 時）も進行中として扱う。
 	it.each([
 		['UTC の日中（JST 21 時）', '2026-01-21T12:00:00Z', true],
