@@ -1,3 +1,4 @@
+import { log } from '../../lib/logger.js';
 import { EPSILON } from '../../lib/math.js';
 import { generatePatternDiagram, type PatternDiagramData } from '../../lib/pattern-diagrams.js';
 import { patternBarRange } from './bar-thresholds.js';
@@ -450,8 +451,13 @@ function buildRegressionEntry(
 	let diagram: PatternDiagramData | undefined;
 	try {
 		diagram = generatePatternDiagram(wedgeType, pivForDiagram, { price: 0 }, { start, end }, { tz, type });
-	} catch {
-		/* noop */
+	} catch (err) {
+		// 図が無くてもパターンは返せるので止めないが、黙って捨てずに記録する。
+		log('warn', {
+			type: 'pattern_diagram_error',
+			pattern: wedgeType,
+			error: err instanceof Error ? err.message : String(err),
+		});
 	}
 
 	const aftermath = breakInfo.detected

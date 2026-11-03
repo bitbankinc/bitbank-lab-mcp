@@ -457,8 +457,8 @@ function calculateHistoryStats(
 	};
 }
 
-// UTC 固定は現行挙動の維持のため。get_candles は同じ日付キーを tz の暦日として解釈しておりずれているが、揃えると含める足が変わる仕様変更になる。
-const AS_OF_FILTER_TZ = 'UTC';
+// get_candles に渡す tz と同じ暦日で絞る。日足の timestamp は UTC 00:00 なので、UTC の暦日で絞っても残る足は同じ。
+const AS_OF_TZ = 'Asia/Tokyo';
 
 function normalizeDateToYYYYMMDD(dateStr: string | undefined): string | undefined {
 	if (!dateStr) return undefined;
@@ -511,7 +511,7 @@ export default async function analyzeCandlePatterns(
 		const isHistoricalQuery = !!targetDate;
 
 		const requiredCandles = Math.max(windowDays, historyLookbackDays + 10);
-		const candlesResult = await getCandles(pair, '1day', targetDate, requiredCandles);
+		const candlesResult = await getCandles(pair, '1day', targetDate, requiredCandles, AS_OF_TZ);
 
 		if (!candlesResult.ok) {
 			return AnalyzeCandlePatternsOutputSchema.parse(fail(candlesResult.summary, 'internal'));
@@ -526,7 +526,7 @@ export default async function analyzeCandlePatterns(
 		// get_candles は年単位で取得するので指定日以降の足も含まれる。その日付以前だけに絞る。
 		if (isHistoricalQuery && targetDate) {
 			// 形式しか見ないので実在しない日付が届きうる。従来どおり繰り上げ許容で読み、解釈できない値は NaN のまま「データ不足 fail」に落とす。
-			const targetDateMs = parseDayKeyAllowingOverflow(targetDate, AS_OF_FILTER_TZ)?.endMs ?? Number.NaN;
+			const targetDateMs = parseDayKeyAllowingOverflow(targetDate, AS_OF_TZ)?.endMs ?? Number.NaN;
 
 			allCandles = allCandles.filter((c) => {
 				if (!c.isoTime) return false;

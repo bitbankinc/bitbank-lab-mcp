@@ -545,7 +545,7 @@ export function detectPennantsFlags(ctx: DetectContext): DetectResult {
 
 	const beforeDedup = patterns.length;
 	patterns = dedupFlagPennants(patterns);
-	// 念のため標準 dedup も適用（type='flag'/'pennant' レガシーケース対策）
+	// dedupFlagPennants は置き換えた候補と残りの候補の重なりを見直さないので、標準の dedup でもう一度まとめる。
 	patterns = deduplicatePatterns(patterns);
 	const afterDedup = patterns.length;
 
