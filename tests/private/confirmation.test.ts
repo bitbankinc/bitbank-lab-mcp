@@ -6,6 +6,7 @@ import {
 	_rotateProcessNonce,
 	_usedTokenCapacity,
 	_usedTokenCount,
+	confirmationTtlSeconds,
 	generateToken,
 	purgeExpiredTokens,
 	startCleanupTimer,
@@ -24,6 +25,17 @@ afterEach(() => {
 	// 件数上限を絞ったテストがストアを作り直すため、既定値へ戻してから次のテストに渡す
 	_resetUsedTokens({ maxEntries: DEFAULT_MAX_ENTRIES });
 	vi.useRealTimers();
+});
+
+describe('confirmationTtlSeconds', () => {
+	it.each([
+		['既定', undefined, 60],
+		['ORDER_CONFIRM_TTL_MS に従う', '120000', 120],
+		['上限（5分）でキャップされる', '600000', 300],
+	])('%s', (_label, env, expected) => {
+		if (env !== undefined) process.env.ORDER_CONFIRM_TTL_MS = env;
+		expect(confirmationTtlSeconds()).toBe(expected);
+	});
 });
 
 describe('generateToken', () => {

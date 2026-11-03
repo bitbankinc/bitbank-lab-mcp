@@ -1199,7 +1199,7 @@ describe('wilderAtr', () => {
 		expect(result[n - 1]).toBeCloseTo(2, 10);
 	});
 
-	// TradingView / MT4 標準仕様（Wilder の RMA）の golden。入力は drift 付きで TR が一定にならないよう設計した 30 本の合成 OHLC で、期待値は同一スペックの参照実装で生成する。
+	// TradingView 標準仕様（Wilder の RMA）の golden。入力は drift 付きで TR が一定にならないよう設計した 30 本の合成 OHLC で、期待値は同一スペックの参照実装で生成する。
 	it('golden: Wilder ATR(14) 数値固定（period=14, ε=1e-8）', () => {
 		const highs = [
 			102.5, 104.0, 102.0, 105.0, 104.5, 103.5, 106.0, 107.5, 106.0, 108.0, 110.0, 108.5, 111.0, 112.5, 111.0, 113.5,

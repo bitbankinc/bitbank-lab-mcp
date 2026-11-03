@@ -324,7 +324,7 @@ describe('get_volatility_metrics', () => {
 			expect(res.data.aggregates.atr).toBeCloseTo(0, 2);
 		});
 
-		// Wilder ATR (RMA ベース): 初回値 = SMA(TR[1..14])、以降は ATR_n = (ATR_{n-1} * 13 + TR_n) / 14（TradingView・MT4 デフォルトの ATR と同じ）。
+		// Wilder ATR (RMA ベース): 初回値 = SMA(TR[1..14])、以降は ATR_n = (ATR_{n-1} * 13 + TR_n) / 14（TradingView デフォルトの ATR と同じ）。
 		it('aggregate ATR は手計算した Wilder ATR (period=14 固定) と一致する', async () => {
 			const rows = makeOhlcvRows(60);
 			mockFetchWithOhlcv(rows);
