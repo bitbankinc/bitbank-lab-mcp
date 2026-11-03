@@ -564,32 +564,38 @@ describe('analyze_candle_patterns', () => {
 		}
 	});
 
-	it('allow_partial_patterns=true で未確定足パターンも検出', async () => {
-		const candles = [
-			mc(2, 100, 106, 94, 103),
-			mc(1, 103, 108, 95, 105),
-			{
-				isoTime: dayjs().startOf('day').toISOString(),
-				open: 105,
-				high: 115,
-				low: 95,
-				close: 105.1,
-				volume: 100,
-			}, // doji（今日=未確定）
-		];
-
-		mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
-		const res = await analyzeCandlePatterns({
-			window_days: 3,
-			focus_last_n: 3,
-			patterns: ['doji'],
-			allow_partial_patterns: true,
-			history_lookback_days: 30,
-		});
-		assertOk(res);
-		const partials = res.data.recent_patterns.filter((p: { uses_partial_candle: boolean }) => p.uses_partial_candle);
-		expect(partials.length).toBeGreaterThan(0);
-		expect(partials[0].status).toBe('forming');
+	// 最後の足（doji）は 2026-01-21T00:00Z 始まり。JST 0〜9 時（UTC 15〜24 時）も進行中として扱う。
+	it.each([
+		['UTC の日中（JST 21 時）', '2026-01-21T12:00:00Z', true],
+		['JST の日付が先に変わった時間帯（JST 01 時）', '2026-01-21T16:00:00Z', true],
+		['足が閉じた後', '2026-01-22T01:00:00Z', false],
+	])('最後の足は開始から 1 日たつまで未確定: %s', async (_label, now, partial) => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date(now));
+		try {
+			const candles = [
+				mcFixed(18, 100, 106, 94, 103),
+				mcFixed(19, 103, 108, 95, 105),
+				mcFixed(20, 105, 115, 95, 105.1), // doji
+			];
+			mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
+			const res = await analyzeCandlePatterns({
+				window_days: 3,
+				focus_last_n: 3,
+				patterns: ['doji'],
+				allow_partial_patterns: true,
+				history_lookback_days: 30,
+			});
+			assertOk(res);
+			const doji = requireDefined(
+				res.data.recent_patterns.find((p: { pattern: string }) => p.pattern === 'doji'),
+				'doji',
+			);
+			expect(doji.uses_partial_candle).toBe(partial);
+			expect(doji.status).toBe(partial ? 'forming' : 'confirmed');
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('as_of に ISO 形式を指定可能', async () => {
