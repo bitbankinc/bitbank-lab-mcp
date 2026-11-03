@@ -1,3 +1,4 @@
+import { EPSILON } from '../../lib/math.js';
 import { generatePatternDiagram, type PatternDiagramData } from '../../lib/pattern-diagrams.js';
 import { MIN_CONFIDENCE } from '../patterns/config.js';
 import { patternBarRange } from './bar-thresholds.js';
@@ -242,7 +243,7 @@ function evaluateCompletedTriple(
 	const n2 = necklinePoint(ctx, side, b.idx, c.idx);
 
 	if (relaxed) {
-		const nearTriple = (x: number, y: number) => Math.abs(x - y) / Math.max(1, Math.max(x, y)) <= tol;
+		const nearTriple = (x: number, y: number) => relDev(x, y) <= tol;
 		if (!(nearTriple(a.price, b.price) && nearTriple(b.price, c.price))) {
 			pcand({
 				type,
@@ -271,7 +272,7 @@ function evaluateCompletedTriple(
 		pcand({ type, accepted: false, reason: `${spec.neckMissingReason}${suffix}`, idxs: [a.idx, b.idx, c.idx] });
 		return null;
 	}
-	const necklineSlope = Math.abs(n1.price - n2.price) / Math.max(1, Math.max(n1.price, n2.price));
+	const necklineSlope = relDev(n1.price, n2.price);
 	if (necklineSlope > NECKLINE_SLOPE_LIMIT) {
 		pcand({ type, accepted: false, reason: `neckline_slope_excess${suffix}`, idxs: [a.idx, b.idx, c.idx] });
 		return null;
@@ -506,7 +507,7 @@ function rejectFormingStairStep(
 	const direction = stairStepDirection(main1.price, main2.price, currentPrice);
 	if (!direction) return false;
 
-	const totalStep = Math.abs(currentPrice - main1.price) / Math.max(1, main1.price);
+	const totalStep = Math.abs(currentPrice - main1.price) / Math.max(EPSILON, main1.price);
 	if (totalStep <= FORMING_STAIR_STEP_LIMIT) return false;
 
 	const role = type === 'triple_top' ? 'peak' : 'valley';
@@ -574,11 +575,11 @@ function tryFormingTriple(ctx: DetectContext, side: ReversalSide): DeduplicableP
 		const main1 = confirmedMains[i - 1];
 		if (main2.idx - main1.idx < minDist) continue;
 
-		const mainDiff = Math.abs(main1.price - main2.price) / Math.max(1, Math.max(main1.price, main2.price));
+		const mainDiff = relDev(main1.price, main2.price);
 		if (mainDiff > tripleTolerancePct) continue;
 
 		const avgMain = (main1.price + main2.price) / 2;
-		const currentDiff = Math.abs(currentPrice - avgMain) / Math.max(1, avgMain);
+		const currentDiff = Math.abs(currentPrice - avgMain) / Math.max(EPSILON, avgMain);
 		const pastLevel = top ? currentPrice < avgMain * 0.95 : currentPrice > avgMain * 1.05;
 		if (currentDiff > tripleTolerancePct || pastLevel) continue;
 
@@ -594,7 +595,7 @@ function tryFormingTriple(ctx: DetectContext, side: ReversalSide): DeduplicableP
 		// 2 点ずつの判定だけでは非単調な配置（100 → 95 → 100 など）で累積したばらつきを捉えられないので、3 点の max-min でも見る。
 		const levelMax = Math.max(main1.price, main2.price, currentPrice);
 		const levelMin = Math.min(main1.price, main2.price, currentPrice);
-		const levelSpread = (levelMax - levelMin) / Math.max(1, levelMax);
+		const levelSpread = (levelMax - levelMin) / Math.max(EPSILON, levelMax);
 		if (levelSpread > levelSpreadLimit) {
 			pcand({ type, accepted: false, reason: spec.formingNotLevelReason, idxs: [...idxs], pts: levelPts() });
 			continue;
@@ -618,7 +619,7 @@ function tryFormingTriple(ctx: DetectContext, side: ReversalSide): DeduplicableP
 
 		const neckMax = Math.max(n1.price, n2.price);
 		const neckMin = Math.min(n1.price, n2.price);
-		const neckSpread = (neckMax - neckMin) / Math.max(1, neckMax);
+		const neckSpread = (neckMax - neckMin) / Math.max(EPSILON, neckMax);
 		if (neckSpread > necklineSpreadLimit) {
 			pcand({ type, accepted: false, reason: 'forming_neckline_not_horizontal', idxs: [...idxs] });
 			continue;

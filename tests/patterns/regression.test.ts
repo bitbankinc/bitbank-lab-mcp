@@ -164,6 +164,16 @@ describe('relDev', () => {
 	it('順序は関係ない', () => {
 		expect(relDev(100, 110)).toBe(relDev(110, 100));
 	});
+
+	it('一方が 0 なら 1、両方 0 はゼロ除算を避けて 0', () => {
+		expect(relDev(0, 5)).toBe(1);
+		expect(relDev(5, 0)).toBe(1);
+		expect(relDev(0, 0)).toBe(0);
+	});
+
+	it('1 円未満の価格でも、同じ比率なら同じ値になる', () => {
+		expect(relDev(0.01, 0.011)).toBeCloseTo(relDev(100, 110), 12);
+	});
 });
 
 describe('marginFromRelDev', () => {

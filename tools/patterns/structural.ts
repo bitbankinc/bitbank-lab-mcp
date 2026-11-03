@@ -1,4 +1,5 @@
-import { linearRegressionWithR2 } from './regression.js';
+import { EPSILON } from '../../lib/math.js';
+import { linearRegressionWithR2, relDev } from './regression.js';
 import type { Pivot } from './swing.js';
 import type { CandleData, PatternPrecedingTrend } from './types.js';
 
@@ -33,15 +34,8 @@ export const DEFAULT_PRIOR_TREND_PARAMS: PriorTrendParams = {
 	lookbackMax: PRIOR_TREND_LOOKBACK_MAX,
 };
 
-// 分母を 1 でクランプする regression.ts の relDev とは意図的に分けている。
-export function relDiff(a: number, b: number): number {
-	const max = Math.max(a, b);
-	if (max === 0) return 0;
-	return Math.abs(a - b) / max;
-}
-
 export function isSameLevel(a: number, b: number, maxPct: number): boolean {
-	return relDiff(a, b) <= maxPct;
+	return relDev(a, b) <= maxPct;
 }
 
 export interface NecklineHorizontalityResult {
@@ -54,7 +48,7 @@ export function validateHorizontalNeckline(
 	p3Price: number,
 	maxPct: number,
 ): NecklineHorizontalityResult {
-	const diffPct = relDiff(p1Price, p3Price);
+	const diffPct = relDev(p1Price, p3Price);
 	return { ok: diffPct <= maxPct, diffPct };
 }
 
@@ -214,7 +208,7 @@ export function levelSpreadMetrics(
 ): LevelSpreadMetrics {
 	const levels = mainPoints.map((p) => p.price);
 	const spreadAbs = Math.max(...levels) - Math.min(...levels);
-	const spreadPct = spreadAbs / Math.max(1, Math.max(...levels));
+	const spreadPct = spreadAbs / Math.max(EPSILON, Math.max(...levels));
 
 	const extremes = allPoints.map((p) => p?.extremePrice);
 	const complete = extremes.every((v): v is number => Number.isFinite(v));
@@ -227,7 +221,7 @@ export function levelSpreadMetrics(
 		spreadAbs,
 		spreadPct,
 		heightAbs,
-		heightPct: heightAbs / Math.max(1, hi),
+		heightPct: heightAbs / Math.max(EPSILON, hi),
 		spreadRatio: heightAbs > 0 ? spreadAbs / heightAbs : null,
 	};
 }
@@ -316,7 +310,7 @@ export function necklineSideDetailsFrom(
 			idx: o.idx,
 			price: o.price,
 			deviation: o.deviation,
-			deviationPct: o.deviation / Math.max(1, Math.abs(necklinePrice)),
+			deviationPct: o.deviation / Math.max(EPSILON, Math.abs(necklinePrice)),
 		})),
 		maxDeviation: maxOffenderDeviation(offenders),
 	};
@@ -363,7 +357,7 @@ export function necklineSideDetailsFromAt(
 				price: o.price,
 				necklinePrice,
 				deviation: o.deviation,
-				deviationPct: o.deviation / Math.max(1, Math.abs(necklinePrice)),
+				deviationPct: o.deviation / Math.max(EPSILON, Math.abs(necklinePrice)),
 			};
 		}),
 		maxDeviation: maxOffenderDeviation(offenders),
@@ -383,13 +377,13 @@ export function validatePatternSize(
 
 	const hi = Math.max(...prices);
 	const lo = Math.min(...prices);
-	if ((hi - lo) / Math.max(1, hi) < thresholds.heightPct) return 'pattern_too_small';
+	if ((hi - lo) / Math.max(EPSILON, hi) < thresholds.heightPct) return 'pattern_too_small';
 
 	const shallow: PatternSizeRejectReason = side === 'top' ? 'valley_too_shallow' : 'peak_too_shallow';
 	for (let i = 1; i < prices.length - 1; i += 2) {
 		const flankAvg = (prices[i - 1] + prices[i + 1]) / 2;
 		const depth = side === 'top' ? flankAvg - prices[i] : prices[i] - flankAvg;
-		const depthPct = depth / Math.max(1, flankAvg);
+		const depthPct = depth / Math.max(EPSILON, flankAvg);
 		if (depthPct < thresholds.depthPct) return shallow;
 	}
 	return null;

@@ -148,7 +148,7 @@ function buildFive(
 }
 
 describe('窓生成（outerShoulderOk）は 5% のまま（#244 決定コメントの宿題 1）', () => {
-	// 肩差 3%（左肩 100 / 右肩 103 → relDiff ≈ 2.913%）は肩ゲート（`1hour` = 1.04%）で落ちるが、窓生成（5% 固定）は通るので候補は生成される。
+	// 肩差 3%（左肩 100 / 右肩 103 → relDev ≈ 2.913%）は肩ゲート（`1hour` = 1.04%）で落ちるが、窓生成（5% 固定）は通るので候補は生成される。
 	// 窓生成まで時間足別にしていたら窓自体が作られず、`view=debug` に何も残らない（無音の偽陰性）。
 	const SHOULDER_DIFF_PCT = 3 / 103;
 
@@ -249,7 +249,7 @@ describe('実データ D の 1hour: Phase 1.5 の「形 X」が shoulders_not_ne
 			expect(c?.reason, key).toBe('shoulders_not_near:cap');
 			const details = c?.details as Record<string, unknown> | undefined;
 			expect(details?.shoulderMaxPct, key).toBe(0.0104);
-			// 肩 relDiff は §10 の 2.076〜2.719% の帯に入る（`1hour` の閾値 1.04% の 2 倍以上）。
+			// 肩 relDev は §10 の 2.076〜2.719% の帯に入る（`1hour` の閾値 1.04% の 2 倍以上）。
 			expect(details?.shouldersDiffPct as number, key).toBeGreaterThan(0.0207);
 			expect(details?.shouldersDiffPct as number, key).toBeLessThan(0.0272);
 		}

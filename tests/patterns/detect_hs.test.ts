@@ -746,7 +746,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('relaxed のネックライン棄却は relaxed_ 接頭辞で strict と分かれる', () => {
-		// 谷1=85 / 谷2=95 → relDiff = 10/95 ≈ 0.105 > HS_NECKLINE_MAX_PCT(0.05)。肩と頭は strict / relaxed とも通るので、両経路がネックラインで落ちる。
+		// 谷1=85 / 谷2=95 → relDev = 10/95 ≈ 0.105 > HS_NECKLINE_MAX_PCT(0.05)。肩と頭は strict / relaxed とも通るので、両経路がネックラインで落ちる。
 		const { candles, pivots } = buildHS({ valley1: 85, valley2: 95, head: 130 });
 		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.04 });
 		detectHeadAndShoulders(ctx);

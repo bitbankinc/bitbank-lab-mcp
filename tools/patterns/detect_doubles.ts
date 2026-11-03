@@ -1,3 +1,4 @@
+import { EPSILON } from '../../lib/math.js';
 import { generatePatternDiagram } from '../../lib/pattern-diagrams.js';
 import { deduplicatePatterns, finalizeConf, periodScoreDays } from './helpers.js';
 import { clamp01, near, relDev } from './regression.js';
@@ -99,11 +100,11 @@ function validateDoubleSize(
 	c: Pick<Pivot, 'extremePrice'>,
 	thresholds: SizeThresholds,
 ): PatternSizeRejectReason | null {
-	const heightPct = Math.abs(a.extremePrice - b.extremePrice) / Math.max(1, Math.max(a.extremePrice, b.extremePrice));
+	const heightPct = relDev(a.extremePrice, b.extremePrice);
 	if (heightPct < thresholds.heightPct) return 'pattern_too_small';
 	const outerAvg = (a.extremePrice + c.extremePrice) / 2;
 	const middleDepth = side === 'top' ? outerAvg - b.extremePrice : b.extremePrice - outerAvg;
-	if (middleDepth / Math.max(1, outerAvg) < thresholds.depthPct) return DOUBLE_SIDES[side].shallowReason;
+	if (middleDepth / Math.max(EPSILON, outerAvg) < thresholds.depthPct) return DOUBLE_SIDES[side].shallowReason;
 	return null;
 }
 
@@ -348,17 +349,13 @@ function evaluateDouble(
 	}
 	const [outer1, , outer2] = doublePts(side, a, b, c);
 	if (!near(a.price, c.price, tol)) {
-		const diffPct = Math.abs(a.price - c.price) / Math.max(1, Math.max(a.price, c.price));
-		// strict だけ、分母に下限 1 を付けた乖離率でも外れたときに記録する（1 円未満の価格では記録されない候補がある）。
-		if (relaxed || diffPct > tol) {
-			pcand({
-				type,
-				accepted: false,
-				reason: `${spec.notEqualReason}${suffix}`,
-				idxs: [a.idx, b.idx, c.idx],
-				pts: [outer1, outer2],
-			});
-		}
+		pcand({
+			type,
+			accepted: false,
+			reason: `${spec.notEqualReason}${suffix}`,
+			idxs: [a.idx, b.idx, c.idx],
+			pts: [outer1, outer2],
+		});
 		return null;
 	}
 	if (!isSameLevel(a.price, c.price, DOUBLE_LEVEL_MAX_PCT)) {

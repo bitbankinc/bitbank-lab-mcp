@@ -10,7 +10,6 @@ import {
 	PRIOR_TREND_MIN_R2,
 	PRIOR_TREND_SIDEWAYS_PCT,
 	REVERSAL_HISTORY_WARMUP_BARS,
-	relDiff,
 	validateHorizontalNeckline,
 	validatePriorTrend,
 } from '../../tools/patterns/structural.js';
@@ -30,41 +29,14 @@ describe('定数', () => {
 	});
 });
 
-describe('relDiff', () => {
-	it('同じ値は 0', () => {
-		expect(relDiff(100, 100)).toBe(0);
-	});
-
-	it('一方が 0 の境界（a=0）は 1', () => {
-		expect(relDiff(0, 5)).toBe(1);
-	});
-
-	it('一方が 0 の境界（b=0）は 1', () => {
-		expect(relDiff(5, 0)).toBe(1);
-	});
-
-	it('両方 0 はゼロ除算を避けて 0 を返す', () => {
-		expect(relDiff(0, 0)).toBe(0);
-	});
-
-	it('通常ケース: max(a,b) を分母にとる', () => {
-		// |100 - 110| / 110 = 10 / 110
-		expect(relDiff(100, 110)).toBeCloseTo(10 / 110, 10);
-	});
-
-	it('順序は関係ない', () => {
-		expect(relDiff(100, 110)).toBe(relDiff(110, 100));
-	});
-});
-
 describe('isSameLevel', () => {
 	it('境界値（=== maxPct）で true', () => {
-		// relDiff(95, 100) = 5/100 = 0.05
+		// relDev(95, 100) = 5/100 = 0.05
 		expect(isSameLevel(95, 100, 0.05)).toBe(true);
 	});
 
 	it('上限超え（> maxPct）で false', () => {
-		// relDiff(90, 100) = 10/100 = 0.1 > 0.05
+		// relDev(90, 100) = 10/100 = 0.1 > 0.05
 		expect(isSameLevel(90, 100, 0.05)).toBe(false);
 	});
 
@@ -85,21 +57,21 @@ describe('validateHorizontalNeckline', () => {
 	});
 
 	it('5% 境界はギリギリ OK', () => {
-		// relDiff(95, 100) = 0.05 === maxPct
+		// relDev(95, 100) = 0.05 === maxPct
 		const result = validateHorizontalNeckline(95, 100, HS_NECKLINE_MAX_PCT);
 		expect(result.ok).toBe(true);
 		expect(result.diffPct).toBeCloseTo(0.05, 10);
 	});
 
 	it('7% 超え（山1=17.5M、山2=18.8M 相当）は NG', () => {
-		// relDiff(17_500_000, 18_800_000) = 1.3M / 18.8M ≈ 0.0691
+		// relDev(17_500_000, 18_800_000) = 1.3M / 18.8M ≈ 0.0691
 		const result = validateHorizontalNeckline(17_500_000, 18_800_000, HS_NECKLINE_MAX_PCT);
 		expect(result.ok).toBe(false);
 		expect(result.diffPct).toBeCloseTo(1_300_000 / 18_800_000, 10);
 	});
 
 	it('差が完全に許容内なら ok=true', () => {
-		// relDiff(99, 100) = 0.01 < 0.05
+		// relDev(99, 100) = 0.01 < 0.05
 		const result = validateHorizontalNeckline(99, 100, HS_NECKLINE_MAX_PCT);
 		expect(result.ok).toBe(true);
 		expect(result.diffPct).toBeCloseTo(0.01, 10);
