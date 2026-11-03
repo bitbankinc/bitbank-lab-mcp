@@ -618,6 +618,16 @@ describe('`_meta` 経路の案内文言', () => {
 		expect(text).not.toContain(metaToken(result));
 	});
 
+	for (const c of PREVIEW_CASES) {
+		it(`${c.name}: 確認の期限は ORDER_CONFIRM_TTL_MS の値で案内する`, async () => {
+			process.env.BITBANK_MCP_APPS_EXECUTE = '1';
+			process.env.ORDER_CONFIRM_TTL_MS = '120000';
+			const { toolDef } = await c.load();
+			const result = (await toolDef.handler(c.args as never, appUiCtx())) as HandlerResult;
+			expect(result.content?.[0]?.text ?? '').toContain('確認は 120 秒で期限切れ');
+		});
+	}
+
 	it('ゲート off では従来どおり「実行に対応していません」を案内する', async () => {
 		const { toolDef } = await import('../../tools/private/preview_order.js');
 		const result = (await toolDef.handler(ORDER_ARGS as never, appUiCtx())) as HandlerResult;

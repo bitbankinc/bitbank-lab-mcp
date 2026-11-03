@@ -59,6 +59,10 @@ function getTtlMs(): number {
 	return DEFAULT_TTL_MS;
 }
 
+export function confirmationTtlSeconds(): number {
+	return Math.floor(getTtlMs() / 1000);
+}
+
 function getSecret(): string {
 	const secret = process.env.BITBANK_API_SECRET;
 	if (!secret) throw new Error('BITBANK_API_SECRET is not configured');

@@ -1,6 +1,6 @@
 import { formatPair } from '../../lib/formatter.js';
 import { ok } from '../../lib/result.js';
-import { generateToken } from '../../src/private/confirmation.js';
+import { confirmationTtlSeconds, generateToken } from '../../src/private/confirmation.js';
 import { confirmPreview } from '../../src/private/preview-confirmation.js';
 import { PreviewCancelOrdersInputSchema, PreviewCancelOrdersOutputSchema } from '../../src/private/schemas.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
@@ -64,7 +64,7 @@ export const toolDef: ToolDefinition = {
 					'  実際に一括キャンセルするには、elicitation/MRTR 対応クライアントで同じ操作を行うか、bitbank アプリ/ウェブで該当注文をキャンセルしてください。',
 				appUiGuide: [
 					'※ 上部の確認カードで内容を確認し、「一括キャンセルを確定する」ボタンを押すと取消が実行されます。',
-					'  ボタンを押さない限り実行されません。確認は 60 秒で期限切れになるため、その場合は preview_cancel_orders をやり直してください。',
+					`  ボタンを押さない限り実行されません。確認は ${confirmationTtlSeconds()} 秒で期限切れになるため、その場合は preview_cancel_orders をやり直してください。`,
 				],
 			},
 			execute: cancelOrders,

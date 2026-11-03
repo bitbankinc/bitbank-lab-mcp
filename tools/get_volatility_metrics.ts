@@ -41,7 +41,7 @@ export function classifyRealizedVolTags(rvStdAnn: number): string[] {
 export const VOLATILITY_METRICS_FOOTER =
 	`---\n📌 含まれるもの: ボラティリティ指標（RV・Parkinson・GK・RS・ATR）、ローリング分析` +
 	`\n📌 含まれないもの: 価格の方向性・トレンド、出来高フロー、板情報、テクニカル指標` +
-	`\n📌 ATR の定義: aggregates.atr は Wilder ATR（RMA ベース、period=${WILDER_ATR_PERIOD}、TradingView・MT4 標準と一致）。ローリングではボラ変化を RV / Parkinson で追跡してください。` +
+	`\n📌 ATR の定義: aggregates.atr は Wilder ATR（RMA ベース、period=${WILDER_ATR_PERIOD}、TradingView 標準と一致）。ローリングではボラ変化を RV / Parkinson で追跡してください。` +
 	`\n📌 補完ツール: get_candles（価格OHLCV）, analyze_indicators（方向性指標）, get_flow_metrics（出来高フロー）`;
 
 export interface RollingEntry {

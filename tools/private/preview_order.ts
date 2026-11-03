@@ -4,7 +4,7 @@ import { isJpyQuotedPair } from '../../lib/pair-code.js';
 import { fetchPairsSpec, type PairSpec, validateOrderConstraints } from '../../lib/pairs.js';
 import { fail, ok } from '../../lib/result.js';
 import { validateTriggerPrice } from '../../lib/trigger-price.js';
-import { generateToken } from '../../src/private/confirmation.js';
+import { confirmationTtlSeconds, generateToken } from '../../src/private/confirmation.js';
 import { confirmPreview } from '../../src/private/preview-confirmation.js';
 import { PreviewOrderInputSchema, PreviewOrderOutputSchema } from '../../src/private/schemas.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
@@ -274,7 +274,7 @@ export const toolDef: ToolDefinition = {
 					'  実際に発注するには、elicitation/MRTR 対応クライアントで同じ操作を行うか、bitbank アプリ/ウェブで同じ内容を手動発注してください。',
 				appUiGuide: [
 					'※ 上部の確認カードで内容を確認し、「注文を確定する」ボタンを押すと発注されます。',
-					'  ボタンを押さない限り発注されません。確認は 60 秒で期限切れになるため、その場合は preview_order をやり直してください。',
+					`  ボタンを押さない限り発注されません。確認は ${confirmationTtlSeconds()} 秒で期限切れになるため、その場合は preview_order をやり直してください。`,
 				],
 			},
 			execute: createOrder,
