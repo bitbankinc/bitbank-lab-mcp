@@ -130,6 +130,27 @@ describe('analyze_volume_profile', () => {
 		);
 	});
 
+	it('構造化データの VWAP を、自分の σ バンドの外に出さない', async () => {
+		const prices = [...Array.from({ length: 9 }, () => 1000.004), 1000.005];
+		mockedGetTransactions.mockResolvedValue(
+			asMockResult(
+				mockTxResult(
+					buildTxs(
+						prices,
+						Array.from({ length: 10 }, () => 1),
+					),
+				),
+			),
+		);
+
+		const res = await analyzeVolumeProfile('btc_jpy', 0, 10, 4, 0.7);
+
+		assertOk(res);
+		const { price, bands } = res.data.vwap;
+		expect(price).toBeGreaterThanOrEqual(bands.lower1sigma);
+		expect(price).toBeLessThanOrEqual(bands.upper1sigma);
+	});
+
 	it('1 円未満の価格でも価格帯・POC・Value Area・VWAP を 0 に潰さない', async () => {
 		const prices = Array.from({ length: 20 }, (_, i) => 0.0012 + (i % 5) * 0.00001);
 		mockedGetTransactions.mockResolvedValue(asMockResult(mockTxResult(buildTxs(prices))));

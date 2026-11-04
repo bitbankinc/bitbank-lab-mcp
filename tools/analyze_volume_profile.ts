@@ -410,12 +410,12 @@ export default async function analyzeVolumeProfile(
 		const totalVolume = txs.reduce((s, t) => s + t.amount, 0);
 		const { low: priceLow, high: priceHigh } = priceRangeOf(txs);
 
-		// σ が呼び値より小さいとバンドが価格の水準の桁では VWAP と同じ数字になるので、σ の 1 桁下までは残す。
+		// σ が呼び値より小さいとバンドが価格の水準の桁では VWAP と同じ数字になるので、VWAP とバンドは σ の 1 桁下までは残す。
 		const sigmaDigits = stdDev > 0 ? 1 - Math.floor(Math.log10(stdDev)) : 0;
 		const roundBand = (v: number) => roundAtDecimalDigits(v, Math.max(2, priceDecimals(v), sigmaDigits));
 		const data = {
 			vwap: {
-				price: roundProfilePrice(vwap),
+				price: roundBand(vwap),
 				stdDev: roundProfilePrice(stdDev),
 				bands: {
 					upper2sigma: roundBand(vwap + 2 * stdDev),
@@ -476,7 +476,7 @@ export default async function analyzeVolumeProfile(
 			`期間: ${rangeStr}`,
 			'',
 			'📊 VWAP:',
-			`  VWAP: ${fmtPx(vwap)} (σ=${fmtPx(stdDev)})`,
+			`  VWAP: ${fmtBand(vwap)} (σ=${fmtPx(stdDev)})`,
 			`  バンド: +2σ=${fmtBand(vwap + 2 * stdDev)} / +1σ=${fmtBand(vwap + stdDev)} / -1σ=${fmtBand(vwap - stdDev)} / -2σ=${fmtBand(vwap - 2 * stdDev)}`,
 			`  現在値: ${fmtPx(currentPrice)} (VWAP比 ${formatPercent(deviationPct, { sign: true })})`,
 			`  判定: ${positionLabel[position]}`,
