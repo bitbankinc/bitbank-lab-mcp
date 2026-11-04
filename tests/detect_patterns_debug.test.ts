@@ -359,13 +359,14 @@ describe('detect_patterns: wedge の分類前ラベル', () => {
 
 	// BTC 日足（90 本）では、ウェッジの走査が上下の線の傾きの向きがそろわない窓を回帰の当てはまり不足で 4 件棄却する。
 	const isWedgeScanReject = (c: { reason?: string }) => c.reason === 'r2_below_threshold';
+	const WEDGE_LABEL_REASONS = ['r2_below_threshold', 'type_classification_failed', 'slopes_not_same_direction'];
 
 	it('上下の傾きの向きがそろわない窓の棄却は umbrella ラベル wedge で積まれ、ウェッジの要求で届く', async () => {
 		const res = await run(buildBtcJpy2026Candles(), { patterns: ['rising_wedge'] });
 		assertOk(res);
 		const rejects = (res.meta.debug?.candidates ?? []).filter((c) => c.type === 'wedge');
-		expect(rejects).toHaveLength(4);
-		expect(rejects.every(isWedgeScanReject)).toBe(true);
+		expect(rejects.filter(isWedgeScanReject)).toHaveLength(4);
+		expect(rejects.filter((c) => !WEDGE_LABEL_REASONS.includes(String(c.reason)))).toEqual([]);
 	});
 
 	it('ウェッジの走査の棄却は三角形の要求では届かない', async () => {
@@ -374,6 +375,47 @@ describe('detect_patterns: wedge の分類前ラベル', () => {
 		const cands = res.meta.debug?.candidates ?? [];
 		expect(cands.length, '三角形系の候補が 0 件では検証にならない').toBeGreaterThan(0);
 		expect(cands.filter(isWedgeScanReject)).toEqual([]);
+	});
+
+	/** 上の線が下がり下の線が上がる収束（対称三角形の形）。BTC 日足には、傾きの分類まで届く逆向きの窓が無い。 */
+	function buildConvergingZigzag(): Candle[] {
+		const n = 60;
+		const period = 8;
+		return Array.from({ length: n }, (_, i) => {
+			const upper = 130 - (20 * i) / n;
+			const lower = 90 + (16 * i) / n;
+			const phase = (i % period) / period;
+			const tri = phase < 0.5 ? phase * 2 : 2 - phase * 2;
+			const close = lower + (upper - lower) * tri;
+			return { isoTime: makeIso(i), open: close, high: close + 0.5, low: close - 0.5, close, volume: 100 };
+		});
+	}
+
+	const typeFailed = (c: { reason?: string }) => c.reason === 'type_classification_failed';
+	const formingOpposite = (c: { reason?: string }) => c.reason === 'slopes_not_same_direction';
+
+	it.each([
+		'rising_wedge',
+		'falling_wedge',
+	] as const)('逆向きの傾きの棄却は、完成済みの走査・形成中の走査とも wedge で積まれ、patterns=[%s] で届く', async (want) => {
+		const res = await run(buildConvergingZigzag(), { patterns: [want] });
+		assertOk(res);
+		const cands = res.meta.debug?.candidates ?? [];
+		const failed = cands.filter(typeFailed);
+		const forming = cands.filter(formingOpposite);
+		expect(failed.length, '傾きの分類まで届く窓が無いと検証にならない').toBeGreaterThan(0);
+		expect(forming.length, '形成中の走査の棄却が無いと検証にならない').toBeGreaterThan(0);
+		expect([...failed, ...forming].filter((c) => c.type !== 'wedge')).toEqual([]);
+		// 傾きの比ではなく、向きがそろわないことが棄却の理由
+		const reasons = new Set(failed.map((c) => (c.details as { failureReason?: string } | undefined)?.failureReason));
+		expect([...reasons]).toEqual(['slopes_not_same_direction']);
+	});
+
+	it('逆向きの傾きの棄却は三角形の要求では届かない', async () => {
+		const res = await run(buildConvergingZigzag(), { patterns: ['triangle'] });
+		assertOk(res);
+		const cands = res.meta.debug?.candidates ?? [];
+		expect(cands.filter((c) => typeFailed(c) || formingOpposite(c))).toEqual([]);
 	});
 });
 

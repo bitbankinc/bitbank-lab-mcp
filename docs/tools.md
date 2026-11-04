@@ -1174,12 +1174,14 @@ accepted も押し出されうる（`content` はこの 2 つを区別して書�
 |---|---|---|
 | `flag` | `detect_pennants`（分類前の棄却をすべてこのラベルで積む） | `bull_flag` / `bear_flag` / `bull_pennant` / `bear_pennant`（flag / pennant の**両方**） |
 | `triangle` | `detect_triangles`（`poor_trendline_fit` / `classification_failed` はどの三角形になりえたかが決まる前の棄却） | `triangle_ascending` / `triangle_descending` / `triangle_symmetrical` |
-| `wedge` | `detect_wedges`（`r2_below_threshold` / `type_classification_failed` のうち、上下の線の傾きの向きがそろわない窓の棄却） | `rising_wedge` / `falling_wedge` |
+| `wedge` | `detect_wedges`（上下の線の傾きの向きがそろわない窓の棄却。完成済みの走査の `r2_below_threshold` / `type_classification_failed` と、形成中の走査の `slopes_not_same_direction`） | `rising_wedge` / `falling_wedge` |
 
 `detect_wedges` の棄却の大半は `rising_wedge` / `falling_wedge` に分類済みのラベルで積まれる。
-`r2_below_threshold` と `type_classification_failed` は上下の傾きから種別を推定してラベルを付け、
-向きがそろわない窓だけ `wedge` で積む。`wedge` は候補ラベルにだけ使い、入力の `patterns` では
-受け付けない（ウェッジの候補を見るには `rising_wedge` / `falling_wedge` を指定する）。
+完成済みの走査の `r2_below_threshold` と `type_classification_failed` は上下の傾きから種別を推定して
+ラベルを付け、向きがそろわない窓だけ `wedge` で積む（`type_classification_failed` の
+`details.failureReason` は `slopes_not_same_direction`）。形成中の走査の `slopes_not_same_direction` は
+常に `wedge`。`wedge` は候補ラベルにだけ使い、入力の `patterns` では受け付けない
+（ウェッジの候補を見るには `rising_wedge` / `falling_wedge` を指定する）。
 
 **`candidates[].type` は「その候補がどの種別になりえたか」であって、必ずしも確定した種別ではない。**
 

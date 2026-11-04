@@ -239,8 +239,8 @@ export const DetectPatternsInputSchema = BasePairInputSchema.extend({
 				'    `▼ 棄却理由の内訳（type 別 → reason 別。合計は上の rejected 62 件と一致する）`\n' +
 				'    `   - triple_top 40 件: three_peaks_not_level 21 / valleys_missing 12 / valley_too_shallow 7`\n' +
 				'    `   - triple_bottom 22 件: peak_too_shallow 15 / peaks_missing 7`\n' +
-				'  内訳は **type と reason の 2 軸**で数える（`rising_wedge:slopes_not_same_direction` と ' +
-				'`falling_wedge:slopes_not_same_direction` を同じ行に潰さないため——' +
+				'  内訳は **type と reason の 2 軸**で数える（`rising_wedge:no_convergence` と ' +
+				'`falling_wedge:no_convergence` を同じ行に潰さないため——' +
 				'同じ reason でも type が違えば意味が違う）。type 行の合計は上の rejected 件数と、' +
 				'行内の reason の合計はその type の件数と必ず一致する（多すぎる場合は残余に畳むが、畳んだ分も件数で残す）。\n' +
 				'  **その下に `▼ reason 横断合計` が 1 行出る**（type を畳んで reason だけで合算したもの。issue #193）:\n' +
@@ -251,7 +251,7 @@ export const DetectPatternsInputSchema = BasePairInputSchema.extend({
 				'`no_convergence(41) > slopes_not_same_direction(66)` という不等号が成立しない式を出力した）。' +
 				'`reason` が `type` を跨ぐ実行ほど外れやすいので、跨ぎが起きうる **type が 2 種別以上のときだけ**出す' +
 				'（1 種別なら type 行がそのまま横断合計なので出さない）。type 別の内訳を**置き換えるものではない**——' +
-				'同じ reason でも type ごとに意味が違いうる（`slopes_not_same_direction` は rising / falling で別の話）ので、' +
+				'同じ reason でも type ごとに意味が違いうる（`no_convergence` は rising / falling で別の話）ので、' +
 				'**帰属は必ず type 別行で見る。** 上限（10 種）を超えた分は type 行と同じ `他 N 種 M` に畳み、' +
 				'cap 飽和時は type 別行と同じ `**全 N 件の内訳ではない**` が付く。\n' +
 				'  **cap で押し出しが起きているときは分母が「表示分」に変わる**: ' +
