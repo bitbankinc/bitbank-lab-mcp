@@ -144,6 +144,25 @@ describe('render_depth_svg', () => {
 		for (const t of ticks) expect(t.y).toBeGreaterThanOrEqual(84);
 	});
 
+	it('最大の数量が目盛りの境目のすぐ下でも、境目の目盛りをプロット領域の上に出さない', async () => {
+		mockedGetDepth.mockResolvedValueOnce(
+			asMockResult(
+				depthOk({
+					asks: [['10100', '1.0']],
+					bids: [
+						['9900', '1.49'],
+						['9800', '1.0'],
+					],
+				}),
+			),
+		);
+		const res = await renderDepthSvg({ pair: 'btc_jpy' });
+		assertOk(res);
+		const ticks = yAxisTicks(requireDefined(res.data.svg, 'svg'));
+		// 最大の数量 2.49 に対して niceTicks は 2.5 も返す（最大値の 1% 上まで）
+		expect(ticks.map((t) => t.label)).toEqual(['0 BTC', '0.5 BTC', '1 BTC', '1.5 BTC', '2 BTC']);
+	});
+
 	it('数量が数百万になる安いペアでも、数量軸の目盛りは数本にとどめる', async () => {
 		mockedGetDepth.mockResolvedValueOnce(
 			asMockResult(

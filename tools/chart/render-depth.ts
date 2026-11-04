@@ -26,6 +26,9 @@ export async function renderDepthChart(
 		if (!depth.ok) return fail(depth.summary.replace(/^Error: /, ''), depth.meta?.errorType || 'internal');
 		const asks: Array<[string, string]> = depth.data.asks || [];
 		const bids: Array<[string, string]> = depth.data.bids || [];
+		if (!asks.length || !bids.length) {
+			return fail('板データが不足しています（asks/bids の両方が必要です）', 'upstream');
+		}
 		const minBid = Number(bids[bids.length - 1]?.[0] ?? bids[0]?.[0] ?? 0);
 		const maxAsk = Number(asks[asks.length - 1]?.[0] ?? asks[0]?.[0] ?? 0);
 		const xMinP = Math.min(minBid, Number(bids[0]?.[0] ?? minBid));

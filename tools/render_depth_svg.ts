@@ -91,7 +91,9 @@ export default async function renderDepthSvg(
 		const xAxis = `<line x1="${padding.left}" y1="${h - padding.bottom}" x2="${w - padding.right}" y2="${h - padding.bottom}" stroke="#4b5563" stroke-width="1"/>`;
 		// 数量が数百万になるペアがあり、桁をそのまま出すと左の余白に収まらない。
 		const fmtQtyAxis = new Intl.NumberFormat('en-US', { notation: 'compact', maximumSignificantDigits: 3 });
+		// niceTicks は最大値の 1% 上まで目盛りを返すので、プロット領域の上端より上に出る分を落とす。
 		const yTickTexts = niceTicks(0, maxQty, 5)
+			.filter((q) => y(q) >= padding.top)
 			.map(
 				(q) =>
 					`<text x="${padding.left - 8}" y="${y(q)}" text-anchor="end" dominant-baseline="middle" fill="#e5e7eb" font-size="10">${fmtQtyAxis.format(q)} ${baseCcy}</text>`,
