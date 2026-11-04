@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import { calendarDateFromIso, formatDateWithDayOfWeek } from '../../lib/datetime.js';
 import { formatPrice as fmtPrice } from '../../lib/formatter.js';
+import { roundPriceAtLevel } from '../../lib/price.js';
 import type { CandlePatternTypeEnum } from '../schemas.js';
 
 export type CandlePatternType = z.infer<typeof CandlePatternTypeEnum>;
@@ -55,8 +56,9 @@ const DIRECTION_DETAIL_LABELS: Record<string, string> = {
 };
 const TREND_SHORT_LABELS: Record<string, string> = { up: '上昇', down: '下落' };
 
-function formatPrice(price: number): string {
-	return fmtPrice(Math.round(price));
+// 実体・ヒゲなどの値幅は refPrice に足の価格を渡し、値幅自体ではなく価格の水準で桁を決める。
+function formatPrice(price: number, refPrice: number = price): string {
+	return fmtPrice(roundPriceAtLevel(price, refPrice));
 }
 
 export function generateSummary(patterns: DetectedCandlePattern[], windowCandles: WindowCandle[]): string {
@@ -102,18 +104,22 @@ function format1CandleDetail(p: DetectedCandlePattern, c: WindowCandle, dateStr:
 
 	lines.push(`  📍 ${dateStr} に${p.pattern_jp}を検出${statusMark}`);
 	lines.push(
-		`    ${dateStr}: ${candleType} 始値${formatPrice(c.open)} → 終値${formatPrice(c.close)} (実体 ${body >= 0 ? '+' : '-'}${formatPrice(Math.abs(body)).replace('¥', '')}円)`,
+		`    ${dateStr}: ${candleType} 始値${formatPrice(c.open)} → 終値${formatPrice(c.close)} (実体 ${body >= 0 ? '+' : '-'}${formatPrice(Math.abs(body), c.close).replace('¥', '')}円)`,
 	);
 	lines.push(
-		`    高値${formatPrice(c.high)} 安値${formatPrice(c.low)} (レンジ ${formatPrice(c.high - c.low).replace('¥', '')}円)`,
+		`    高値${formatPrice(c.high)} 安値${formatPrice(c.low)} (レンジ ${formatPrice(c.high - c.low, c.close).replace('¥', '')}円)`,
 	);
 
 	if (p.pattern === 'hammer') {
 		const lower = Math.min(c.open, c.close) - c.low;
-		lines.push(`    判定: 小さい実体 + 長い下ヒゲ（${formatPrice(lower).replace('¥', '')}円）→ 下値の強い買い圧力`);
+		lines.push(
+			`    判定: 小さい実体 + 長い下ヒゲ（${formatPrice(lower, c.close).replace('¥', '')}円）→ 下値の強い買い圧力`,
+		);
 	} else if (p.pattern === 'shooting_star') {
 		const upper = c.high - Math.max(c.open, c.close);
-		lines.push(`    判定: 小さい実体 + 長い上ヒゲ（${formatPrice(upper).replace('¥', '')}円）→ 上値の強い売り圧力`);
+		lines.push(
+			`    判定: 小さい実体 + 長い上ヒゲ（${formatPrice(upper, c.close).replace('¥', '')}円）→ 上値の強い売り圧力`,
+		);
 	} else if (p.pattern === 'doji') {
 		const upper = c.high - Math.max(c.open, c.close);
 		const lower = Math.min(c.open, c.close) - c.low;
@@ -145,10 +151,10 @@ function format2CandleDetail(
 
 	lines.push(`  📍 ${date2} に${p.pattern_jp}を検出${statusMark}（${date1}-${date2}で形成）`);
 	lines.push(
-		`    ${date1}(前日): ${type1} 始値${formatPrice(c1.open)} → 終値${formatPrice(c1.close)} (実体 ${body1 >= 0 ? '+' : '-'}${formatPrice(Math.abs(body1)).replace('¥', '')}円)`,
+		`    ${date1}(前日): ${type1} 始値${formatPrice(c1.open)} → 終値${formatPrice(c1.close)} (実体 ${body1 >= 0 ? '+' : '-'}${formatPrice(Math.abs(body1), c1.close).replace('¥', '')}円)`,
 	);
 	lines.push(
-		`    ${date2}(確定日): ${type2} 始値${formatPrice(c2.open)} → 終値${formatPrice(c2.close)} (実体 ${body2 >= 0 ? '+' : '-'}${formatPrice(Math.abs(body2)).replace('¥', '')}円) ← パターン確定`,
+		`    ${date2}(確定日): ${type2} 始値${formatPrice(c2.open)} → 終値${formatPrice(c2.close)} (実体 ${body2 >= 0 ? '+' : '-'}${formatPrice(Math.abs(body2), c2.close).replace('¥', '')}円) ← パターン確定`,
 	);
 
 	if (p.pattern === 'bullish_engulfing') {
@@ -207,7 +213,7 @@ function format3CandleDetail(
 		const body = c.close - c.open;
 		const ct = body >= 0 ? '陽線' : '陰線';
 		lines.push(
-			`    ${dateStr}(${label}): ${ct} 始値${formatPrice(c.open)} → 終値${formatPrice(c.close)} (実体 ${body >= 0 ? '+' : '-'}${formatPrice(Math.abs(body)).replace('¥', '')}円)`,
+			`    ${dateStr}(${label}): ${ct} 始値${formatPrice(c.open)} → 終値${formatPrice(c.close)} (実体 ${body >= 0 ? '+' : '-'}${formatPrice(Math.abs(body), c.close).replace('¥', '')}円)`,
 		);
 	}
 
@@ -292,7 +298,7 @@ export function generateContent(
 		const candleType = change >= 0 ? '陽線' : '陰線';
 		const partialMark = c.is_partial ? ' ⚠未確定' : '';
 		lines.push(
-			`${dateStr}: 始値${formatPrice(c.open)} 高値${formatPrice(c.high)} 安値${formatPrice(c.low)} 終値${formatPrice(c.close)} [${candleType} ${changeSign}${formatPrice(Math.abs(change)).replace('¥', '')}円]${partialMark}`,
+			`${dateStr}: 始値${formatPrice(c.open)} 高値${formatPrice(c.high)} 安値${formatPrice(c.low)} 終値${formatPrice(c.close)} [${candleType} ${changeSign}${formatPrice(Math.abs(change), c.close).replace('¥', '')}円]${partialMark}`,
 		);
 	}
 	lines.push('');

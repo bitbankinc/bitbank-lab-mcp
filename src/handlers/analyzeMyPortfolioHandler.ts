@@ -1,6 +1,6 @@
 import { normalizeAssetCodes } from '../../lib/asset-code.js';
 import { dayjs, nowIso } from '../../lib/datetime.js';
-import { formatPair, formatPercent, formatPrice, formatPriceJPY } from '../../lib/formatter.js';
+import { formatPair, formatPercent, formatPrice, formatYenAmount } from '../../lib/formatter.js';
 import { fetchPairsSpec } from '../../lib/pairs.js';
 import { ok } from '../../lib/result.js';
 import { prependWarnings } from '../../lib/warning-propagation.js';
@@ -125,7 +125,7 @@ function buildMarginPositionsBlock(info: MarginAccountInfo): string[] {
 		const pl = Number(status.margin_position_profit_loss);
 		if (Number.isFinite(pl)) {
 			const sign = pl >= 0 ? '+' : '';
-			aggregateParts.push(`建玉含み損益: ${sign}${formatPriceJPY(pl)}`);
+			aggregateParts.push(`建玉含み損益: ${sign}${formatYenAmount(pl)}`);
 		}
 	}
 	lines.push(`  集計: ${aggregateParts.join(' / ')}`);
@@ -259,9 +259,9 @@ function periodRealizedPnlForWire(
 function buildPerformanceLines(label: string, p: PeriodPerformance): string[] {
 	const lines: string[] = [];
 	const sign = p.change_jpy >= 0 ? '+' : '';
-	lines.push(`${label}: ${formatPriceJPY(p.start_value_jpy)} → ${formatPriceJPY(p.current_value_jpy)}`);
+	lines.push(`${label}: ${formatYenAmount(p.start_value_jpy)} → ${formatYenAmount(p.current_value_jpy)}`);
 	lines.push(
-		`  増減: ${sign}${formatPriceJPY(p.change_jpy)}${p.change_pct != null ? ` (${formatPercent(p.change_pct, { sign: true })})` : ''}`,
+		`  増減: ${sign}${formatYenAmount(p.change_jpy)}${p.change_pct != null ? ` (${formatPercent(p.change_pct, { sign: true })})` : ''}`,
 	);
 	if (p.change_pct_unavailable_reason) {
 		lines.push(
@@ -294,12 +294,12 @@ function buildPerformanceLines(label: string, p: PeriodPerformance): string[] {
 	if (p.net_flow_jpy !== 0 || p.withdrawal_fee_jpy > 0) {
 		const adjSign = p.adjusted_change_jpy >= 0 ? '+' : '';
 		lines.push(
-			`  入出金調整後: ${adjSign}${formatPriceJPY(p.adjusted_change_jpy)}${p.adjusted_change_pct != null ? ` (${formatPercent(p.adjusted_change_pct, { sign: true })})` : ''}`,
+			`  入出金調整後: ${adjSign}${formatYenAmount(p.adjusted_change_jpy)}${p.adjusted_change_pct != null ? ` (${formatPercent(p.adjusted_change_pct, { sign: true })})` : ''}`,
 		);
 		const flowSign = p.net_flow_jpy >= 0 ? '+' : '';
-		lines.push(`  純入出金（元本）: ${flowSign}${formatPriceJPY(p.net_flow_jpy)}`);
+		lines.push(`  純入出金（元本）: ${flowSign}${formatYenAmount(p.net_flow_jpy)}`);
 		if (p.withdrawal_fee_jpy > 0) {
-			lines.push(`  出金手数料: -${formatPriceJPY(p.withdrawal_fee_jpy)}`);
+			lines.push(`  出金手数料: -${formatYenAmount(p.withdrawal_fee_jpy)}`);
 		}
 	}
 	return lines;
@@ -315,10 +315,10 @@ function buildEquitySeriesLines(headingBase: string, series: EquityPoint[]): str
 	const lines = [hasFlow ? `${headingBase}。${EQUITY_FLOW_MARKER_NOTE}:` : `${headingBase}:`];
 	for (let i = 0; i < series.length; i++) {
 		const p = series[i];
-		// 符号の出し方は buildPerformanceLines の純入出金行と揃える（負値は formatPriceJPY が符号を持つ）。
-		const marker = p.flow_jpy != null ? ` ← 純入出金 ${p.flow_jpy >= 0 ? '+' : ''}${formatPriceJPY(p.flow_jpy)}` : '';
+		// 符号の出し方は buildPerformanceLines の純入出金行と揃える（負値は formatYenAmount が符号を持つ）。
+		const marker = p.flow_jpy != null ? ` ← 純入出金 ${p.flow_jpy >= 0 ? '+' : ''}${formatYenAmount(p.flow_jpy)}` : '';
 		const label = i === series.length - 1 ? '（現在）' : '';
-		lines.push(`  ${p.timestamp}: ${formatPriceJPY(p.value_jpy)}${marker}${label}`);
+		lines.push(`  ${p.timestamp}: ${formatYenAmount(p.value_jpy)}${marker}${label}`);
 	}
 	return lines;
 }
@@ -430,15 +430,15 @@ function buildPerformanceSectionLines(input: {
 
 function periodDWLine(label: '年初来' | '月初来', d: PeriodDWSummary): string {
 	const parts = [
-		`${label}入出金: JPY入金 ${formatPriceJPY(d.jpy_deposited)} / JPY出金 ${formatPriceJPY(d.jpy_withdrawn)} / 純入出金 ${formatPriceJPY(d.net_jpy)}`,
+		`${label}入出金: JPY入金 ${formatYenAmount(d.jpy_deposited)} / JPY出金 ${formatYenAmount(d.jpy_withdrawn)} / 純入出金 ${formatYenAmount(d.net_jpy)}`,
 	];
 	if (d.crypto_deposit_count > 0)
 		parts.push(
-			`暗号資産入庫 ${d.crypto_deposit_count}件${d.crypto_deposit_estimated_jpy ? `（概算 ${formatPriceJPY(d.crypto_deposit_estimated_jpy)}）` : ''}`,
+			`暗号資産入庫 ${d.crypto_deposit_count}件${d.crypto_deposit_estimated_jpy ? `（概算 ${formatYenAmount(d.crypto_deposit_estimated_jpy)}）` : ''}`,
 		);
 	if (d.crypto_withdrawal_count > 0)
 		parts.push(
-			`暗号資産出庫 ${d.crypto_withdrawal_count}件${d.crypto_withdrawal_estimated_jpy ? `（概算 ${formatPriceJPY(d.crypto_withdrawal_estimated_jpy)}）` : ''}`,
+			`暗号資産出庫 ${d.crypto_withdrawal_count}件${d.crypto_withdrawal_estimated_jpy ? `（概算 ${formatYenAmount(d.crypto_withdrawal_estimated_jpy)}）` : ''}`,
 		);
 	return parts.join(' / ');
 }
@@ -493,22 +493,22 @@ function buildAccountReturnLines(dwSummary: DepositWithdrawalSummary): string[] 
 		const sign = dwSummary.account_return_jpy >= 0 ? '+' : '';
 		const approxLabel = dwSummary.is_complete ? '' : '（概算）';
 		lines.push(
-			`口座全体リターン${approxLabel}: ${sign}${formatPriceJPY(dwSummary.account_return_jpy)} (${formatPercent(dwSummary.account_return_pct, { sign: true })})`,
+			`口座全体リターン${approxLabel}: ${sign}${formatYenAmount(dwSummary.account_return_jpy)} (${formatPercent(dwSummary.account_return_pct, { sign: true })})`,
 		);
-		lines.push(`  JPY入金合計: ${formatPriceJPY(dwSummary.total_jpy_deposited)}`);
+		lines.push(`  JPY入金合計: ${formatYenAmount(dwSummary.total_jpy_deposited)}`);
 		if (dwSummary.total_jpy_withdrawn > 0) {
-			lines.push(`  JPY出金合計: ${formatPriceJPY(dwSummary.total_jpy_withdrawn)}`);
+			lines.push(`  JPY出金合計: ${formatYenAmount(dwSummary.total_jpy_withdrawn)}`);
 		}
 		const netJpyDeposit = dwSummary.total_jpy_deposited - dwSummary.total_jpy_withdrawn;
-		lines.push(`  JPY純入金: ${formatPriceJPY(Math.round(netJpyDeposit))}`);
+		lines.push(`  JPY純入金: ${formatYenAmount(Math.round(netJpyDeposit))}`);
 		if (dwSummary.crypto_deposit_estimated_jpy) {
 			lines.push(
-				`  暗号資産入庫の評価: ${formatPriceJPY(dwSummary.crypto_deposit_estimated_jpy)}（${valuedDepositCount}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_deposit_valuation?.basis ?? 'current_price_fallback']}）`,
+				`  暗号資産入庫の評価: ${formatYenAmount(dwSummary.crypto_deposit_estimated_jpy)}（${valuedDepositCount}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_deposit_valuation?.basis ?? 'current_price_fallback']}）`,
 			);
 		}
 		if (dwSummary.crypto_withdrawal_estimated_jpy) {
 			lines.push(
-				`  暗号資産出庫の評価: -${formatPriceJPY(dwSummary.crypto_withdrawal_estimated_jpy)}（${valuedWithdrawalCount}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_withdrawal_valuation?.basis ?? 'current_price_fallback']}）`,
+				`  暗号資産出庫の評価: -${formatYenAmount(dwSummary.crypto_withdrawal_estimated_jpy)}（${valuedWithdrawalCount}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_withdrawal_valuation?.basis ?? 'current_price_fallback']}）`,
 			);
 		}
 		// 内訳の式は実際に載っている項だけを並べる（0 円の項を書くと読み手が総額を追えない）。
@@ -517,7 +517,7 @@ function buildAccountReturnLines(dwSummary: DepositWithdrawalSummary): string[] 
 			dwSummary.crypto_withdrawal_estimated_jpy ? '- 暗号資産出庫の評価額' : '',
 		].filter(Boolean);
 		lines.push(
-			`  純投入額: ${formatPriceJPY(dwSummary.net_jpy_invested)}${netInvestedTerms.length > 0 ? `（JPY純入金 ${netInvestedTerms.join(' ')}）` : ''}`,
+			`  純投入額: ${formatYenAmount(dwSummary.net_jpy_invested)}${netInvestedTerms.length > 0 ? `（JPY純入金 ${netInvestedTerms.join(' ')}）` : ''}`,
 		);
 		if (!dwSummary.is_complete) {
 			lines.push('  ※ 入出金履歴が多く全件取得できなかったため、概算値です');
@@ -550,7 +550,7 @@ function buildAccountReturnLines(dwSummary: DepositWithdrawalSummary): string[] 
 		const withdrawalCause =
 			valuedWithdrawalCount > 0 ? `暗号資産出庫 ${valuedWithdrawalCount}件を元本の回収として差し引いた結果、` : '';
 		lines.push(
-			`口座全体リターン: 算出不可（${withdrawalCause}純投入額が ${formatPriceJPY(dwSummary.net_jpy_invested)} と 0 以下になりました。引き出しが投入を上回る口座ではリターン率を定義できません）`,
+			`口座全体リターン: 算出不可（${withdrawalCause}純投入額が ${formatYenAmount(dwSummary.net_jpy_invested)} と 0 以下になりました。引き出しが投入を上回る口座ではリターン率を定義できません）`,
 		);
 	}
 	return lines;
@@ -578,7 +578,7 @@ function buildAccountPnlLines(input: {
 	const hasMargin =
 		accountPnl.margin_realized_pnl !== 0 || accountPnl.margin_interest_cost !== 0 || accountPnl.margin_fee_cost !== 0;
 	// data 側はコスト = 正値なので、表示は total への寄与として - を前置する（#72）。
-	const marginPart = `Margin: ${accountPnl.margin_realized_pnl >= 0 ? '+' : ''}${formatPriceJPY(accountPnl.margin_realized_pnl)} / Interest cost: -${formatPriceJPY(accountPnl.margin_interest_cost)} / Fee cost: -${formatPriceJPY(accountPnl.margin_fee_cost)}`;
+	const marginPart = `Margin: ${accountPnl.margin_realized_pnl >= 0 ? '+' : ''}${formatYenAmount(accountPnl.margin_realized_pnl)} / Interest cost: -${formatYenAmount(accountPnl.margin_interest_cost)} / Fee cost: -${formatYenAmount(accountPnl.margin_fee_cost)}`;
 	if (spotRealized == null && totalRealizedPnlUnavailableReason != null) {
 		// 抑止した銘柄を除いた部分和を見出しに載せない。数字を出した時点で口座の実現損益として読まれる（#80）。
 		lines.push(
@@ -591,25 +591,25 @@ function buildAccountPnlLines(input: {
 		);
 	} else {
 		const spotSign = (spotRealized ?? 0) >= 0 ? '+' : '';
-		lines.push(`Realized PnL (Spot, 全履歴・売り切り銘柄含む): ${spotSign}${formatPriceJPY(spotRealized ?? 0)}`);
+		lines.push(`Realized PnL (Spot, 全履歴・売り切り銘柄含む): ${spotSign}${formatYenAmount(spotRealized ?? 0)}`);
 		if (closedPositionRealizedPnl != null) {
 			const heldSign = heldRealizedPnl >= 0 ? '+' : '';
 			const closedPart =
 				closedPositionAssetCount != null && closedPositionAssetCount > 0
-					? `売り切り銘柄 ${closedPositionAssetCount}銘柄 ${closedPositionRealizedPnl >= 0 ? '+' : ''}${formatPriceJPY(closedPositionRealizedPnl)}`
+					? `売り切り銘柄 ${closedPositionAssetCount}銘柄 ${closedPositionRealizedPnl >= 0 ? '+' : ''}${formatYenAmount(closedPositionRealizedPnl)}`
 					: '売り切り銘柄なし（0円）';
 			lines.push(
-				`  内訳: 現在保有銘柄（holdings[].realized_pnl の合計）${heldSign}${formatPriceJPY(heldRealizedPnl)} / ${closedPart}`,
+				`  内訳: 現在保有銘柄（holdings[].realized_pnl の合計）${heldSign}${formatYenAmount(heldRealizedPnl)} / ${closedPart}`,
 			);
 		}
 		const total = accountPnl.total ?? 0;
 		const totalSign = total >= 0 ? '+' : '';
 		if (hasMargin) {
 			lines.push(
-				`Account PnL (全履歴): ${totalSign}${formatPriceJPY(total)} (Spot: ${spotSign}${formatPriceJPY(spotRealized ?? 0)} / ${marginPart})`,
+				`Account PnL (全履歴): ${totalSign}${formatYenAmount(total)} (Spot: ${spotSign}${formatYenAmount(spotRealized ?? 0)} / ${marginPart})`,
 			);
 		} else {
-			lines.push(`Account PnL (全履歴): ${totalSign}${formatPriceJPY(total)}`);
+			lines.push(`Account PnL (全履歴): ${totalSign}${formatYenAmount(total)}`);
 		}
 	}
 	// 年初来 / 月初来は data 側にしか出ないので、全履歴の値と取り違えられないよう所在を示す。
@@ -649,7 +649,7 @@ function buildCostNoteLines(input: {
 		if (totalUnrealizedPnl != null) {
 			const sign = totalUnrealizedPnl >= 0 ? '+' : '';
 			lines.push(
-				`合計評価損益（全履歴の約定ベース）: ${sign}${formatPriceJPY(totalUnrealizedPnl)} (${formatPercent(totalUnrealizedPnlPct, { sign: true })})`,
+				`合計評価損益（全履歴の約定ベース）: ${sign}${formatYenAmount(totalUnrealizedPnl)} (${formatPercent(totalUnrealizedPnlPct, { sign: true })})`,
 			);
 		}
 		lines.push(
@@ -697,7 +697,7 @@ function buildHoldingsPerformanceLines(
 	for (const hp of holdingsPerformance) {
 		const assetUpper = hp.asset.toUpperCase();
 		const parts = [`${assetUpper}`];
-		if (hp.jpy_value != null) parts.push(formatPriceJPY(hp.jpy_value));
+		if (hp.jpy_value != null) parts.push(formatYenAmount(hp.jpy_value));
 		if (hp.monthly_change_pct != null)
 			parts.push(`月次騰落率: ${formatPercent(hp.monthly_change_pct, { sign: true })}`);
 		if (hp.yearly_change_pct != null) parts.push(`年次騰落率: ${formatPercent(hp.yearly_change_pct, { sign: true })}`);
@@ -1314,7 +1314,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 		lines.push(`取得時刻: ${timestamp}`);
 		if (totalJpyValue > 0) {
 			lines.push(
-				`口座合計: ${formatPrice(Math.round(totalJpyValue))}${jpyHolding ? ` (うち JPY: ${formatPriceJPY(jpyHolding.jpy_value ?? 0)})` : ''}`,
+				`口座合計: ${formatPrice(Math.round(totalJpyValue))}${jpyHolding ? ` (うち JPY: ${formatYenAmount(jpyHolding.jpy_value ?? 0)})` : ''}`,
 			);
 		}
 

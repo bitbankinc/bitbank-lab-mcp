@@ -50,9 +50,9 @@ export interface VolViewInput {
 export function buildVolatilityBeginnerText(input: VolViewInput): string {
 	const { pair, type, lastClose, atrAbs, atrPct, rvAnn, tagsAll } = input;
 	const rvPct = formatPercent(rvAnn, { multiply: true, digits: 0 });
-	const atrJpy = formatPriceJPY(atrAbs);
+	const atrJpy = formatPriceJPY(atrAbs, lastClose);
 	const atrPctStr = formatPercent(atrPct, { multiply: true });
-	const closeStr = formatPriceJPY(lastClose);
+	const closeStr = lastClose != null ? `${formatExactPrice(lastClose)}円` : 'n/a';
 	return [
 		`${String(pair).toUpperCase()} [${String(type)}] 現在価格: ${closeStr}`,
 		`・年間のおおよその動き: 約${rvPct}（1年でこのくらい上下しやすい目安）`,

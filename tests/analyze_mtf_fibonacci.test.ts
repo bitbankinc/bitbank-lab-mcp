@@ -60,7 +60,7 @@ describe('analyze_mtf_fibonacci', () => {
 		assertOk(res);
 		expect(res.data.confluence).toHaveLength(1);
 		expect(res.data.confluence[0].strength).toBe('strong');
-		expect(res.data.confluence[0].priceZone).toEqual([100, 101]);
+		expect(res.data.confluence[0].priceZone).toEqual([100.4, 101.1]);
 	});
 
 	it('重複 lookbackDays 指定時は analyze_fibonacci を重複実行しないべき', async () => {

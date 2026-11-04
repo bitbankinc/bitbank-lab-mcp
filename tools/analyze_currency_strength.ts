@@ -1,7 +1,7 @@
 import type { z } from 'zod';
 import { toNum } from '../lib/conversions.js';
 import { nowIso } from '../lib/datetime.js';
-import { formatPercent, formatPriceJPY, formatVolumeJPY } from '../lib/formatter.js';
+import { formatExactPrice, formatPercent, formatVolumeJPY } from '../lib/formatter.js';
 import { fail, failFromError, ok } from '../lib/result.js';
 import {
 	type AnalyzeCurrencyStrengthDataSchemaOut,
@@ -204,7 +204,7 @@ export default async function analyzeCurrencyStrength(topN: number = 10, type: s
 					? `SMA25乖離${formatPercent(item.components.smaDeviation, { sign: true, digits: 2 })}`
 					: '';
 			const volStr = formatVolumeJPY(item.volumeJPY);
-			const priceStr = item.price != null ? formatPriceJPY(item.price) : 'n/a';
+			const priceStr = item.price != null ? `${formatExactPrice(item.price)}円` : 'n/a';
 			lines.push(
 				`${item.rank}. ${emoji} ${item.currency} ${priceStr} score=${item.score} | 24h:${chgStr} | ${rsiStr} | ${smaStr} | 出来高${volStr}`,
 			);

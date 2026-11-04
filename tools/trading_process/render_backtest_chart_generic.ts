@@ -75,10 +75,11 @@ export interface GenericBacktestChartData {
 	summary: BacktestEngineSummary;
 }
 
-function formatPrice(price: number): string {
+// 1,000 未満は目盛りの間隔の桁で出す（数円のペアで目盛りがすべて同じ整数にならない）。
+function formatPrice(price: number, tickStep: number): string {
 	if (price >= 1000000) return `${(price / 1000000).toFixed(2)}M`;
 	if (price >= 1000) return `${(price / 1000).toFixed(1)}K`;
-	return price.toFixed(0);
+	return price.toFixed(tickStep > 0 ? Math.max(0, -Math.floor(Math.log10(tickStep))) : 0);
 }
 
 function formatPct(pct: number): string {
@@ -381,13 +382,14 @@ function renderFullChart(data: GenericBacktestChartData): string {
 	);
 
 	const priceTicks = generateYTicks(priceMin, priceMax, 5);
+	const priceTickStep = (priceTicks[1] ?? 0) - (priceTicks[0] ?? 0);
 	for (const tick of priceTicks) {
 		const y = priceYScale(tick);
 		svg.push(
 			`<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="${COLORS.grid}" stroke-dasharray="2,2"/>`,
 		);
 		svg.push(
-			`<text x="${width - margin.right + 5}" y="${y + 4}" fill="${COLORS.textMuted}" font-size="10">${formatPrice(tick)}</text>`,
+			`<text x="${width - margin.right + 5}" y="${y + 4}" fill="${COLORS.textMuted}" font-size="10">${formatPrice(tick, priceTickStep)}</text>`,
 		);
 	}
 
@@ -491,7 +493,8 @@ function renderFullChart(data: GenericBacktestChartData): string {
 		const indAbsMax = Math.max(Math.abs(Math.min(...allIndValues, 0)), Math.abs(Math.max(...allIndValues, 0))) * 1.15;
 		const indMin = -indAbsMax;
 		const indMax = indAbsMax;
-		const indRange = Math.max(indMax - indMin, 1);
+		// 1 の下限を付けると、安いペアの MACD（±0.01 など）がパネルの下端に潰れる。
+		const indRange = indMax - indMin > 0 ? indMax - indMin : 1;
 		const indYScale = (v: number) => indBottom - ((v - indMin) / indRange) * indicatorHeight;
 
 		const indLines = indicatorOverlays.filter((o) => o.type === 'line');
@@ -513,13 +516,14 @@ function renderFullChart(data: GenericBacktestChartData): string {
 		);
 
 		const indTicks = generateYTicks(indMin, indMax, 5);
+		const indTickStep = (indTicks[1] ?? 0) - (indTicks[0] ?? 0);
 		for (const tick of indTicks) {
 			const y = indYScale(tick);
 			svg.push(
 				`<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="${COLORS.grid}" stroke-dasharray="2,2"/>`,
 			);
 			svg.push(
-				`<text x="${margin.left - 5}" y="${y + 3}" fill="${COLORS.textMuted}" font-size="8" text-anchor="end">${formatPrice(tick)}</text>`,
+				`<text x="${margin.left - 5}" y="${y + 3}" fill="${COLORS.textMuted}" font-size="8" text-anchor="end">${formatPrice(tick, indTickStep)}</text>`,
 			);
 		}
 

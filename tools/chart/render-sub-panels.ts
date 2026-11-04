@@ -117,7 +117,7 @@ function renderMacdPanel(currentTop: number, ctx: SubPanelContext): string {
 		if (sPts.length > 1) pc += `<path d="M ${sPts.join(' L ')}" fill="none" stroke="#f97316" stroke-width="1.5"/>`;
 		const mt = niceTicks(yMin, yMax, 3);
 		mt.forEach((v) => {
-			pc += `<text x="${padding.left - 8}" y="${py(v, yMin, yMax)}" text-anchor="end" dominant-baseline="middle" fill="#9ca3af" font-size="10">${v.toFixed(0)}</text>`;
+			pc += `<text x="${padding.left - 8}" y="${py(v, yMin, yMax)}" text-anchor="end" dominant-baseline="middle" fill="#9ca3af" font-size="10">${v}</text>`;
 		});
 	}
 	pc += `<text x="${padding.left + 4}" y="${currentTop + 12}" fill="#9ca3af" font-size="10" font-weight="bold">MACD</text>`;

@@ -1,6 +1,13 @@
 import type { z } from 'zod';
 import { nowIso, resolveTz, toDisplayTime } from '../../lib/datetime.js';
-import { formatDeviation, formatPercent, formatPriceJPY, formatTrendSymbol } from '../../lib/formatter.js';
+import {
+	formatDeviation,
+	formatExactPrice,
+	formatPercent,
+	formatPriceAtLevel,
+	formatPriceJPY,
+	formatTrendSymbol,
+} from '../../lib/formatter.js';
 import { ICHIMOKU_SHIFT, RSI_OVERBOUGHT, RSI_OVERSOLD } from '../../lib/indicator-config.js';
 import { currentCloudSpans, lastCrossover } from '../../lib/indicators.js';
 import { EPSILON } from '../../lib/math.js';
@@ -141,7 +148,8 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	lines.push(`=== ${String(pair).toUpperCase()} ${String(type)} 分析 ===`);
 	lines.push(timeContext ?? `${nowJst} 現在`);
 	const chgLine = deltaPrev ? `(${deltaLabel}: ${formatPercent(deltaPrev.pct, { sign: true, digits: 1 })})` : '';
-	lines.push(deltaPrev ? `${formatPriceJPY(close)} ${chgLine}` : formatPriceJPY(close));
+	const closeStr = close != null ? `${formatExactPrice(close)}円` : 'n/a';
+	lines.push(deltaPrev ? `${closeStr} ${chgLine}` : closeStr);
 	lines.push('');
 	lines.push('【総合判定】');
 	const trendText =
@@ -169,8 +177,8 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 		lines.push('');
 		lines.push(`    ${recentRsiFormatted.join(' → ')}`);
 	}
-	const fmtMacd = (v: number | null) =>
-		v == null || !Number.isFinite(v) ? 'n/a' : Math.round(v).toLocaleString('ja-JP');
+	// MACD は価格の差なので、値自体ではなく価格の水準で桁を決める。
+	const fmtMacd = (v: number | null) => (v == null || !Number.isFinite(v) ? 'n/a' : formatPriceAtLevel(v, close ?? v));
 	const macdLineFmt = fmtMacd(macdLine);
 	const macdSignalFmt = fmtMacd(macdSignal);
 	const macdHistFmt = fmtMacd(macdHist);
@@ -227,7 +235,7 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	lines.push(`  先行スパンB: ${formatPriceJPY(spanB)} (${vsCurPct(spanB)})`);
 	if (cloudThickness != null)
 		lines.push(
-			`  雲の厚さ: ${Math.round(cloudThickness).toLocaleString('ja-JP')}円（${cloudThicknessPct != null ? `${cloudThicknessPct.toFixed(1)}%` : 'n/a'}）`,
+			`  雲の厚さ: ${formatPriceJPY(cloudThickness, close)}（${cloudThicknessPct != null ? `${cloudThicknessPct.toFixed(1)}%` : 'n/a'}）`,
 		);
 	if (chikouBull != null) lines.push(`  遅行スパン: ${chikouBull ? '価格より上 → 強気' : '価格より下 → 弱気'}`);
 	if (threeSignals) lines.push(`  三役判定: ${threeSignals.judge}`);

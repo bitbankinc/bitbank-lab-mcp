@@ -1,6 +1,5 @@
 import { dayjs, isIntradayType, resolveTz, toIsoWithTz } from './datetime.js';
-import { formatPriceDecimals } from './formatter.js';
-import { priceDecimals } from './price.js';
+import { formatPriceAtLevel } from './formatter.js';
 
 export interface PatternDiagramData {
 	svg: string;
@@ -73,11 +72,6 @@ function formatDateIsoShort(iso?: string): string {
 	return String(iso).split('T')[0] || String(iso);
 }
 
-// 円の整数に丸めると、1 円前後のペアではネックラインが 0 円や 1 円と表示される。
-function formatPriceAtOwnLevel(v: number): string {
-	return formatPriceDecimals(v, priceDecimals(v));
-}
-
 // neckline.price は呼び出し側の水準をそのまま使い、構成点から再計算しない（relaxed H&S は水平線の y を持つので、再計算すると図だけが本文・ブレイク判定と食い違う。#226）。
 export function generatePatternDiagram(
 	patternType: string,
@@ -103,7 +97,7 @@ export function generatePatternDiagram(
 		const valley1Date = formatDateTime(v1?.date, tz, type);
 		const peakDate = formatDateTime(pk?.date, tz, type);
 		const valley2Date = formatDateTime(v2?.date, tz, type);
-		const necklinePrice = formatPriceAtOwnLevel(neckline.price);
+		const necklinePrice = formatPriceAtLevel(neckline.price);
 		const svg = `<svg width="600" height="300" xmlns="http://www.w3.org/2000/svg">
   <rect width="600" height="300" fill="#f8f9fa"/>
   <line x1="50" y1="100" x2="550" y2="100" stroke="#666" stroke-width="2" stroke-dasharray="5,5"/>
@@ -131,7 +125,7 @@ export function generatePatternDiagram(
 		const peak1Date = formatDateTime(p1?.date, tz, type);
 		const valleyDate = formatDateTime(vl?.date, tz, type);
 		const peak2Date = formatDateTime(p2?.date, tz, type);
-		const necklinePrice = formatPriceAtOwnLevel(neckline.price);
+		const necklinePrice = formatPriceAtLevel(neckline.price);
 		const svg = `<svg width="600" height="300" xmlns="http://www.w3.org/2000/svg">
   <rect width="600" height="300" fill="#f8f9fa"/>
   <line x1="50" y1="200" x2="550" y2="200" stroke="#666" stroke-width="2" stroke-dasharray="5,5"/>
@@ -164,7 +158,7 @@ export function generatePatternDiagram(
 		const rsDate = formatDateTime(rightShoulder?.date, tz, type);
 		// SVG 内の <!-- Neckline (peaks average) --> は strict の SVG を byte 単位で不変に保つため据え置く（relaxed では平均ではない。#226）。
 		const nlVal = neckline.price;
-		const necklinePrice = formatPriceAtOwnLevel(nlVal);
+		const necklinePrice = formatPriceAtLevel(nlVal);
 		const svg = `<svg width="600" height="300" xmlns="http://www.w3.org/2000/svg">
   <rect width="600" height="300" fill="#f8f9fa"/>
   <!-- Neckline (peaks average) -->
@@ -204,7 +198,7 @@ export function generatePatternDiagram(
 		const v2Date = formatDateTime(valley2?.date, tz, type);
 		const rsDate = formatDateTime(rightShoulder?.date, tz, type);
 		const nlVal = neckline.price;
-		const necklinePrice = formatPriceAtOwnLevel(nlVal);
+		const necklinePrice = formatPriceAtLevel(nlVal);
 		const svg = `<svg width="600" height="300" xmlns="http://www.w3.org/2000/svg">
   <rect width="600" height="300" fill="#f8f9fa"/>
   <!-- Neckline (valleys average) -->
@@ -244,7 +238,7 @@ export function generatePatternDiagram(
 		const p2Date = formatDateTime(peak2?.date, tz, type);
 		const v3Date = formatDateTime(valley3?.date, tz, type);
 		const nlVal = ((peak1?.price ?? 0) + (peak2?.price ?? 0)) / 2;
-		const necklinePrice = formatPriceAtOwnLevel(nlVal);
+		const necklinePrice = formatPriceAtLevel(nlVal);
 		const svg = `<svg width="600" height="300" xmlns="http://www.w3.org/2000/svg">
   <rect width="600" height="300" fill="#f8f9fa"/>
   <!-- Neckline (peaks average) -->
@@ -279,7 +273,7 @@ export function generatePatternDiagram(
 		const v2Date = formatDateTime(valley2?.date, tz, type);
 		const p3Date = formatDateTime(peak3?.date, tz, type);
 		const nlVal = ((valley1?.price ?? 0) + (valley2?.price ?? 0)) / 2;
-		const necklinePrice = formatPriceAtOwnLevel(nlVal);
+		const necklinePrice = formatPriceAtLevel(nlVal);
 		const svg = `<svg width="600" height="300" xmlns="http://www.w3.org/2000/svg">
   <rect width="600" height="300" fill="#f8f9fa"/>
   <!-- Neckline (valleys average) -->
@@ -426,7 +420,7 @@ export function generateSupportResistanceDiagram(
 
 	const lines = allLevels.map((level, _idx) => {
 		const y = getY(level.price);
-		const priceStr = Math.round(level.price).toLocaleString('ja-JP');
+		const priceStr = formatPriceAtLevel(level.price);
 		const pctStr =
 			level.pctFromCurrent !== 0 ? `(${level.pctFromCurrent > 0 ? '+' : ''}${level.pctFromCurrent.toFixed(1)}%)` : '';
 

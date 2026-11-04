@@ -155,6 +155,31 @@ describe('analyze_support_resistance', () => {
 		expect(resi.label).toBe('レジスタンス');
 	});
 
+	it('安いペアでも水準を円の整数に潰さない', async () => {
+		const candles = buildSRCandles({
+			swingLows: [
+				{ idx: 10, low: 88 },
+				{ idx: 24, low: 89 },
+			],
+			swingHighs: [
+				{ idx: 17, high: 112 },
+				{ idx: 31, high: 113 },
+			],
+		}).map((c) => ({ ...c, open: c.open / 100, high: c.high / 100, low: c.low / 100, close: c.close / 100 }));
+
+		mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
+		const res = await analyzeSupportResistance('btc_jpy', { lookbackDays: 90, topN: 3, tolerance: 0.015 });
+		assertOk(res);
+
+		const sup = res.data.supports[0];
+		expect(sup.price).toBeGreaterThanOrEqual(0.85);
+		expect(sup.price).toBeLessThanOrEqual(0.93);
+		const resi = res.data.resistances[0];
+		expect(resi.price).toBeGreaterThanOrEqual(1.1);
+		expect(resi.price).toBeLessThanOrEqual(1.15);
+		expect(res.content?.[0]?.text ?? res.summary).toContain(`${sup.price}円`);
+	});
+
 	it('content に判定ロジック・サポート・レジスタンスのセクションを含む', async () => {
 		const candles = buildSRCandles({
 			swingLows: [

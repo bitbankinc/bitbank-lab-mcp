@@ -20,13 +20,13 @@ interface IndexedPoint {
 	price: number;
 }
 
-const fmtPointList = (arr: unknown): string =>
-	Array.isArray(arr) ? arr.map((p: IndexedPoint) => `[${p.index}:${formatRounded(p.price)}]`).join(', ') : 'n/a';
+const fmtPointList = (fmtPrice: (v: unknown) => string, arr: unknown): string =>
+	Array.isArray(arr) ? arr.map((p: IndexedPoint) => `[${p.index}:${fmtPrice(p.price)}]`).join(', ') : 'n/a';
 
 const GENERIC_DETAILS_MAX_FIELDS = 16;
 const GENERIC_DETAILS_MAX_JSON = 160;
 
-function formatCandidateDetails(c: CandidateDebug): string {
+function formatCandidateDetails(c: CandidateDebug, fmtPrice: (v: unknown) => string): string {
 	if (!c.details) return '\n   details: none';
 	const d: Record<string, unknown> = c.details;
 	const reason = String(c?.reason ?? '');
@@ -43,11 +43,11 @@ function formatCandidateDetails(c: CandidateDebug): string {
 		return (
 			`\n   upper.slope: ${formatFixed(d?.slopeHigh)}` +
 			`\n   lower.slope: ${formatFixed(d?.slopeLow)}` +
-			`\n   priceRange: ${formatRounded(d?.priceRange)}` +
+			`\n   priceRange: ${fmtPrice(d?.priceRange)}` +
 			`\n   barsSpan: ${formatInt(d?.barsSpan)}` +
 			`\n   minMeaningfulSlope: ${formatFixed(d?.minMeaningfulSlope)}` +
-			`\n   highsIn: ${fmtPointList(d?.highsIn)}` +
-			`\n   lowsIn: ${fmtPointList(d?.lowsIn)}`
+			`\n   highsIn: ${fmtPointList(fmtPrice, d?.highsIn)}` +
+			`\n   lowsIn: ${fmtPointList(fmtPrice, d?.lowsIn)}`
 		);
 	}
 
@@ -55,8 +55,8 @@ function formatCandidateDetails(c: CandidateDebug): string {
 		return (
 			`\n   ${reason === 'declining_highs' ? 'declining_highs: true' : 'declining_highs_probe: metrics'}` +
 			`\n   highsIn.count: ${formatInt(d?.highsCount)}` +
-			`\n   1st half avg: ${formatRounded(d?.firstAvg)}` +
-			`\n   2nd half avg: ${formatRounded(d?.secondAvg)}` +
+			`\n   1st half avg: ${fmtPrice(d?.firstAvg)}` +
+			`\n   2nd half avg: ${fmtPrice(d?.secondAvg)}` +
 			`\n   ratio: ${formatPctFromRatio(d?.ratio)}`
 		);
 	}
@@ -66,11 +66,11 @@ function formatCandidateDetails(c: CandidateDebug): string {
 			`\n   r2: hi=${Number.isFinite(Number(d?.r2High)) ? Number(d.r2High).toFixed(3) : 'n/a'}, lo=${Number.isFinite(Number(d?.r2Low)) ? Number(d.r2Low).toFixed(3) : 'n/a'}` +
 			`\n   slopes: hi=${Number.isFinite(Number(d?.slopeHigh)) ? Number(d.slopeHigh).toFixed(6) : 'n/a'} lo=${Number.isFinite(Number(d?.slopeLow)) ? Number(d.slopeLow).toFixed(6) : 'n/a'}` +
 			`\n   slopeRatioLH: ${Number.isFinite(Number(d?.slopeRatioLH)) ? Number(d.slopeRatioLH).toFixed(3) : 'n/a'}` +
-			`\n   priceRange: ${formatRounded(d?.priceRange)}, barsSpan: ${formatInt(d?.barsSpan)}` +
+			`\n   priceRange: ${fmtPrice(d?.priceRange)}, barsSpan: ${formatInt(d?.barsSpan)}` +
 			`\n   minMeaningfulSlope: ${Number.isFinite(Number(d?.minMeaningfulSlope)) ? Number(d.minMeaningfulSlope).toFixed(6) : 'n/a'}` +
-			`\n   highsIn: ${fmtPointList(d?.highsIn)}` +
-			`\n   lowsIn: ${fmtPointList(d?.lowsIn)}` +
-			`\n   declining_highs metrics: firstAvg=${formatRounded(d?.firstAvg)}, secondAvg=${formatRounded(d?.secondAvg)}, ratio=${formatPctFromRatio(d?.ratio)}`
+			`\n   highsIn: ${fmtPointList(fmtPrice, d?.highsIn)}` +
+			`\n   lowsIn: ${fmtPointList(fmtPrice, d?.lowsIn)}` +
+			`\n   declining_highs metrics: firstAvg=${fmtPrice(d?.firstAvg)}, secondAvg=${fmtPrice(d?.secondAvg)}, ratio=${formatPctFromRatio(d?.ratio)}`
 		);
 	}
 
@@ -78,8 +78,8 @@ function formatCandidateDetails(c: CandidateDebug): string {
 		return (
 			`\n   post_filter: rising highs not declining` +
 			`\n   highsIn.count: ${formatInt(d?.highsCount)}` +
-			`\n   1st half avg: ${formatRounded(d?.firstAvg)}` +
-			`\n   2nd half avg: ${formatRounded(d?.secondAvg)}` +
+			`\n   1st half avg: ${fmtPrice(d?.firstAvg)}` +
+			`\n   2nd half avg: ${fmtPrice(d?.secondAvg)}` +
 			`\n   ratio: ${formatPctFromRatio(d?.ratio)}`
 		);
 	}
@@ -88,8 +88,8 @@ function formatCandidateDetails(c: CandidateDebug): string {
 		return (
 			`\n   post_filter: falling lows not rising` +
 			`\n   lowsIn.count: ${formatInt(d?.lowsCount)}` +
-			`\n   1st half avg: ${formatRounded(d?.firstAvg)}` +
-			`\n   2nd half avg: ${formatRounded(d?.secondAvg)}` +
+			`\n   1st half avg: ${fmtPrice(d?.firstAvg)}` +
+			`\n   2nd half avg: ${fmtPrice(d?.secondAvg)}` +
 			`\n   ratio: ${formatPctFromRatio(d?.ratio)}`
 		);
 	}
@@ -122,10 +122,10 @@ function formatCandidateDetails(c: CandidateDebug): string {
 			);
 		}
 		if (d?.spreadAvg != null || d?.spreadStability != null || d?.spreadStart != null) {
-			const spAvg = d?.spreadAvg != null ? formatRounded(d.spreadAvg) : 'n/a';
+			const spAvg = d?.spreadAvg != null ? fmtPrice(d.spreadAvg) : 'n/a';
 			const spStab = d?.spreadStability != null ? `${(Number(d.spreadStability) * 100).toFixed(0)}%` : 'n/a';
-			const spStart = d?.spreadStart != null ? formatRounded(d.spreadStart) : null;
-			const spEnd = d?.spreadEnd != null ? formatRounded(d.spreadEnd) : null;
+			const spStart = d?.spreadStart != null ? fmtPrice(d.spreadStart) : null;
+			const spEnd = d?.spreadEnd != null ? fmtPrice(d.spreadEnd) : null;
 			const seg = spStart && spEnd ? `, start→end=${spStart}→${spEnd}` : '';
 			lines.push(`   spread: avg=${spAvg}, stability=${spStab}${seg}`);
 		}
@@ -158,7 +158,7 @@ function formatCandidateDetails(c: CandidateDebug): string {
 		}
 		if (reason === 'consolidation_too_wide') {
 			lines.push(
-				`   geometry: consRange=${formatRounded(d?.consRange)}, poleRange=${formatRounded(d?.poleRange)}, ratio=${(Number(d?.ratio) * 100).toFixed(0)}%`,
+				`   geometry: consRange=${fmtPrice(d?.consRange)}, poleRange=${fmtPrice(d?.poleRange)}, ratio=${(Number(d?.ratio) * 100).toFixed(0)}%`,
 			);
 		}
 		if (reason === 'detected' && d?.touchCount != null) {
@@ -328,6 +328,7 @@ export function formatDebugView(
 	}, 0);
 	const decimals = priceDecimals(priceLevel);
 	const yen = (v: unknown) => formatPriceDecimals(Number(v), decimals);
+	const detailPrice = (v: unknown) => (v == null || !Number.isFinite(Number(v)) ? 'n/a' : yen(v));
 
 	const swingLines = swings.map((s) => {
 		// intraday では時刻まで出す（#200）。1hour 等は 24 本が同じ日付ラベルに潰れる。
@@ -347,7 +348,7 @@ export function formatDebugView(
 		const dirStr = dir ? ` breakoutDirection=${dir}` : '';
 		const pts = Array.isArray(c.points) ? c.points.map((p) => `${p.role}@${p.idx}:${yen(p.price)}`).join(', ') : '';
 		const indices = Array.isArray(c.indices) ? ` indices=[${c.indices.join(',')}]` : '';
-		const detailsStr = formatCandidateDetails(c);
+		const detailsStr = formatCandidateDetails(c, detailPrice);
 		return `${i + 1}. ${tag} ${c.type}${reason}${statusStr}${dirStr}${indices}${pts ? `\n   ${pts}` : ''}${detailsStr}`;
 	});
 

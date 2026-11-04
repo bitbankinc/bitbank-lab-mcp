@@ -1,6 +1,6 @@
 import { dayjs, toDisplayTime } from './datetime.js';
 import { isJpyQuotedPair } from './pair-code.js';
-import { fractionDigits, roundAtDecimalDigits } from './price.js';
+import { fractionDigits, priceDecimals, roundAtDecimalDigits } from './price.js';
 
 export function timeframeLabel(type: string): string {
 	const map: Record<string, string> = {
@@ -35,15 +35,26 @@ export function formatTimestampJST(ts?: number, tz: string = 'Asia/Tokyo'): stri
 	return result ?? dayjs(ts).toISOString();
 }
 
-export function formatPrice(value: number | null | undefined, pair?: string): string {
-	if (value == null || !Number.isFinite(Number(value))) return 'N/A';
-	const n = Number(value);
-	const jpy = !pair || (typeof pair === 'string' && isJpyQuotedPair(pair));
-	if (jpy) return `¥${n.toLocaleString('ja-JP')}`;
-	return n.toLocaleString('ja-JP');
+// toLocaleString の既定は小数 3 桁で切るので、100 円未満のペアの刻み（0.0001 円など）が落ちる。100 円以上は既定と同じ 3 桁。
+export function formatPriceNumber(value: number): string {
+	return value.toLocaleString('ja-JP', { maximumFractionDigits: Math.max(3, priceDecimals(value)) });
 }
 
-export function formatPriceJPY(value: number | null | undefined): string {
+export function formatPrice(value: number | null | undefined, pair?: string): string {
+	if (value == null || !Number.isFinite(Number(value))) return 'N/A';
+	const text = formatPriceNumber(Number(value));
+	const jpy = !pair || (typeof pair === 'string' && isJpyQuotedPair(pair));
+	return jpy ? `¥${text}` : text;
+}
+
+// 計算した価格（指標・水準）用。値幅は refPrice に価格を渡す。取引所の値は formatExactPrice で桁を落とさずに出す。
+export function formatPriceJPY(value: number | null | undefined, refPrice?: number | null): string {
+	if (value == null || !Number.isFinite(Number(value))) return 'n/a';
+	return `${formatPriceAtLevel(Number(value), refPrice ?? Number(value))}円`;
+}
+
+// 損益・評価額などの金額。価格ではないので円の整数でよい。
+export function formatYenAmount(value: number | null | undefined): string {
 	if (value == null || !Number.isFinite(Number(value))) return 'n/a';
 	return `${Math.round(Number(value)).toLocaleString('ja-JP')}円`;
 }
@@ -234,4 +245,9 @@ export function formatPriceDecimals(value: number, decimals: number): string {
 // toLocaleString の既定は小数 3 桁で切るので、0.0001 円刻みのペアの気配や中値の最後の桁が落ちる。
 export function formatExactPrice(value: number): string {
 	return formatPriceDecimals(value, fractionDigits(value));
+}
+
+// 円の整数に丸めると、数円のペアでは価格や値幅が潰れる。値幅は値幅自体ではなく価格の水準（refPrice）で桁を決める。
+export function formatPriceAtLevel(value: number, refPrice: number = value): string {
+	return formatPriceDecimals(value, priceDecimals(refPrice));
 }

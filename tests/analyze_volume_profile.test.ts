@@ -50,6 +50,120 @@ function mockFailResult(errorType = 'network', summary = 'network failed') {
 describe('analyze_volume_profile', () => {
 	const mockedGetTransactions = vi.mocked(getTransactions);
 
+	it('価格帯の幅が呼び値より細かくても、隣の価格帯と同じ数字にしない', async () => {
+		const prices = Array.from({ length: 20 }, (_, i) => (i % 2 === 0 ? 31.2345 : 31.2346));
+		mockedGetTransactions.mockResolvedValue(asMockResult(mockTxResult(buildTxs(prices))));
+
+		const res = await analyzeVolumeProfile('btc_jpy', 0, 10, 20, 0.7);
+
+		assertOk(res);
+		const bins = res.data.profile.bins;
+		expect(new Set(bins.map((b) => b.low)).size).toBe(bins.length);
+		expect(new Set(bins.map((b) => b.label)).size).toBe(bins.length);
+	});
+
+	it('σ が呼び値より小さくても構造化データで 0 にしない', async () => {
+		const prices = [...Array.from({ length: 9 }, () => 31.2345), 31.2346];
+		mockedGetTransactions.mockResolvedValue(
+			asMockResult(
+				mockTxResult(
+					buildTxs(
+						prices,
+						Array.from({ length: 10 }, () => 1),
+					),
+				),
+			),
+		);
+
+		const res = await analyzeVolumeProfile('btc_jpy', 0, 10, 4, 0.7);
+
+		assertOk(res);
+		expect(res.data.vwap.stdDev).toBeGreaterThan(0);
+	});
+
+	it('全約定が同じ価格なら、丸め誤差で σ を 0 以外にしない', async () => {
+		const prices = Array.from({ length: 10 }, () => 10_000_000);
+		mockedGetTransactions.mockResolvedValue(
+			asMockResult(
+				mockTxResult(
+					buildTxs(
+						prices,
+						Array.from({ length: 10 }, () => 0.1),
+					),
+				),
+			),
+		);
+
+		const res = await analyzeVolumeProfile('btc_jpy', 0, 10, 4, 0.7);
+
+		assertOk(res);
+		expect(res.data.vwap.price).toBe(10_000_000);
+		expect(res.data.vwap.stdDev).toBe(0);
+	});
+
+	it('σ が呼び値より小さくても、σ バンドと POC・Value Area を本文と構造化データで潰さない', async () => {
+		const prices = [...Array.from({ length: 9 }, () => 31.2345), 31.2346];
+		mockedGetTransactions.mockResolvedValue(
+			asMockResult(
+				mockTxResult(
+					buildTxs(
+						prices,
+						Array.from({ length: 10 }, () => 1),
+					),
+				),
+			),
+		);
+
+		const res = await analyzeVolumeProfile('btc_jpy', 0, 10, 20, 0.7);
+
+		assertOk(res);
+		const { bands } = res.data.vwap;
+		expect(bands.upper1sigma).toBeGreaterThan(bands.lower1sigma);
+		const text = res.summary;
+		const bandLine = text.split('\n').find((l) => l.includes('バンド:')) ?? '';
+		const [up1, lo1] = [/\+1σ=([^ ]+)/u.exec(bandLine)?.[1], /-1σ=([^ ]+)/u.exec(bandLine)?.[1]];
+		expect(up1).not.toBe(lo1);
+		const { low, high } = res.data.profile.valueArea;
+		expect(low).toBeLessThan(high);
+		expect(text).toContain(
+			`Value Area: ¥${low.toLocaleString('ja-JP', { maximumFractionDigits: 12 })}〜¥${high.toLocaleString('ja-JP', { maximumFractionDigits: 12 })}`,
+		);
+	});
+
+	it('構造化データの VWAP を、自分の σ バンドの外に出さない', async () => {
+		const prices = [...Array.from({ length: 9 }, () => 1000.004), 1000.005];
+		mockedGetTransactions.mockResolvedValue(
+			asMockResult(
+				mockTxResult(
+					buildTxs(
+						prices,
+						Array.from({ length: 10 }, () => 1),
+					),
+				),
+			),
+		);
+
+		const res = await analyzeVolumeProfile('btc_jpy', 0, 10, 4, 0.7);
+
+		assertOk(res);
+		const { price, bands } = res.data.vwap;
+		expect(price).toBeGreaterThanOrEqual(bands.lower1sigma);
+		expect(price).toBeLessThanOrEqual(bands.upper1sigma);
+	});
+
+	it('1 円未満の価格でも価格帯・POC・Value Area・VWAP を 0 に潰さない', async () => {
+		const prices = Array.from({ length: 20 }, (_, i) => 0.0012 + (i % 5) * 0.00001);
+		mockedGetTransactions.mockResolvedValue(asMockResult(mockTxResult(buildTxs(prices))));
+
+		const res = await analyzeVolumeProfile('btc_jpy', 0, 10, 4, 0.7);
+
+		assertOk(res);
+		expect(res.data.profile.poc.price).toBeGreaterThan(0.0011);
+		expect(res.data.profile.valueArea.low).toBeGreaterThan(0.0011);
+		expect(res.data.profile.bins[0].low).toBeGreaterThan(0.0011);
+		expect(res.data.vwap.price).toBeGreaterThan(0.0011);
+	});
+
 	afterEach(() => {
 		vi.resetAllMocks();
 	});
