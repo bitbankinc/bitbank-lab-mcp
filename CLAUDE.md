@@ -25,6 +25,8 @@ npm run typecheck           # tsc --noEmit
 - `lib/` に共通ユーティリティがある処理は、外部ライブラリの直接利用や自前実装をせず `lib/` を使う
 - private API の接続先（`src/private/client.ts`）を環境変数・`.env`・設定ファイルから変えられるようにしない。
   研究用の差し替えは `lab/` の起動口だけ（npm の配布物に入らない。ADR-0008、ガードは `tests/private-api-origin-tripwire.test.ts`）。
+- Claude Code / claude.ai 向け plugin の本体は `plugins/bitbank-lab-mcp/`（`.claude-plugin/plugin.json` と `skills/`）。Skill はここに置き、`.claude/skills/` からは symlink で参照する。
+  marketplace の `source` をリポジトリ直下にしない（npm 用の `bin/` が plugin に入り、claude.ai の組織同期が拒否する）。ガードは `tests/plugin-marketplace-layout.test.ts`。
 - 対応ペアは JPY 建てのみ（表示層が円前提）。非 JPY 建て対応は別途、表示層の quote 通貨移行が前提（`lib/validate.ts` の `ALLOWED_PAIRS`、ガードは `tests/lib/validate.test.ts`）。
 - **stdio 以外のトランスポート（HTTP 等）を `src/server.ts` に足す変更は、同じ PR で
   `confirmation_token` の session / principal 束縛を実装しない限り入れない**（ADR-0007 判断事項 B）。

@@ -4,7 +4,7 @@ description: Claude Code / Cursor / Codex / Gemini CLI に Plugin として導�
 
 # Plugin 導入（Claude Code / Cursor / Codex / Gemini CLI）
 
-これらのクライアントには plugin manifest（`.claude-plugin/plugin.json` ほか3種）を同梱しています。各クライアントの `/plugin install`（または相当のコマンド）でこのリポジトリを指定するだけでセットアップが完了します。
+これらのクライアントには plugin manifest（Claude Code 用の `plugins/bitbank-lab-mcp/.claude-plugin/plugin.json` ほか3種）を同梱しています。各クライアントの `/plugin install`（または相当のコマンド）でこのリポジトリを指定するだけでセットアップが完了します。
 
 ## クライアントごとの API キーの渡し方
 
@@ -12,7 +12,7 @@ description: Claude Code / Cursor / Codex / Gemini CLI に Plugin として導�
 
 | クライアント | manifest | API キーの渡し方 |
 | --- | --- | --- |
-| Claude Code | `.claude-plugin/plugin.json` | ✅ **GUI で入力**: `/plugin install` 直後に `userConfig` UI が表示され、OS キーチェーンに保管 |
+| Claude Code | `plugins/bitbank-lab-mcp/.claude-plugin/plugin.json` | ✅ **GUI で入力**: `/plugin install` 直後に `userConfig` UI が表示され、OS キーチェーンに保管 |
 | Gemini CLI | `gemini-extension.json` | ✅ **対話 prompt**: `settings` 配列で対話的に入力、`.env` に保管 |
 | Cursor | `.cursor-plugin/plugin.json` | ⚙️ **シェル環境変数のみ**: `BITBANK_API_KEY` / `BITBANK_API_SECRET` を環境変数に設定 |
 | Codex | `.codex-plugin/plugin.json` | ⚙️ **シェル環境変数のみ**: `BITBANK_API_KEY` / `BITBANK_API_SECRET` を環境変数に設定 |
