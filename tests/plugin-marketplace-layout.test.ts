@@ -68,7 +68,7 @@ describe('marketplace の plugin の置き場所', () => {
 function skillLinks(dir: string): Array<{ name: string; target: string }> {
 	return fs
 		.readdirSync(dir, { withFileTypes: true })
-		.filter((d) => d.isSymbolicLink() || d.isFile())
+		.filter((d) => !d.name.startsWith('.') && (d.isSymbolicLink() || d.isFile()))
 		.map((d) => ({
 			name: d.name,
 			target: d.isSymbolicLink()
@@ -91,15 +91,17 @@ describe('.claude/skills のシンボリックリンク', () => {
 		});
 	}
 
-	it('symlink の代わりにリンク先のパスを書いたファイル（core.symlinks=false）もリンクとしてたどる', () => {
+	it('symlink の代わりにリンク先のパスを書いたファイル（core.symlinks=false）もリンクとしてたどり、.DS_Store などの隠しファイルは数えない', () => {
 		const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-links-'));
 		try {
 			fs.mkdirSync(path.join(tmp, 'real/skill-a'), { recursive: true });
 			fs.writeFileSync(path.join(tmp, 'real/skill-a/SKILL.md'), '');
 			fs.mkdirSync(path.join(tmp, 'links'));
 			fs.writeFileSync(path.join(tmp, 'links/skill-a'), '../real/skill-a');
-			const [link] = skillLinks(path.join(tmp, 'links'));
-			expect(link?.name).toBe('skill-a');
+			fs.writeFileSync(path.join(tmp, 'links/.DS_Store'), '');
+			const links = skillLinks(path.join(tmp, 'links'));
+			expect(links.map((l) => l.name)).toEqual(['skill-a']);
+			const [link] = links;
 			expect(fs.existsSync(path.join(link?.target ?? '', 'SKILL.md'))).toBe(true);
 		} finally {
 			fs.rmSync(tmp, { recursive: true, force: true });
