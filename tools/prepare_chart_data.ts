@@ -31,9 +31,9 @@ function isAllNull(series: NumericSeries): boolean {
 	return series.every((v) => v === null);
 }
 
-function toRoundedArray(series: NumericSeries, round: (v: number) => number): (number | null)[] | undefined {
+function toRoundedArray(series: NumericSeries, round: (v: number, i: number) => number): (number | null)[] | undefined {
 	if (isAllNull(series)) return undefined;
-	return series.map((v) => (v === null ? null : round(v)));
+	return series.map((v, i) => (v === null ? null : round(v, i)));
 }
 
 const roundTo2 = (v: number) => Number(v.toFixed(2));
@@ -126,9 +126,8 @@ export default async function prepareChartData(
 
 		// ローソク足は取引所の価格（呼び値の刻み）のままなので丸めない。
 		const compactCandles = candles.map((c: Candle) => [c.open, c.high, c.low, c.close, c.volume ?? 0]);
-		// MACD は価格の差なので、値自体ではなく価格の水準で桁を決める。
-		const priceLevel = candles.at(-1)?.close ?? 0;
-		const roundAtPriceLevel = (v: number) => roundPriceAtLevel(v, priceLevel);
+		// MACD は価格の差なので、値自体ではなく同じ足の終値の水準で桁を決める。
+		const roundAtCandleLevel = (v: number, i: number) => roundPriceAtLevel(v, candles[i]?.close ?? v);
 
 		const series: Record<string, (number | null)[]> = {};
 		for (const [group, keys] of Object.entries(MAIN_SERIES_KEYS)) {
@@ -160,9 +159,9 @@ export default async function prepareChartData(
 				| { line: NumericSeries; signal: NumericSeries; hist: NumericSeries }
 				| undefined;
 			if (macdData) {
-				const line = toRoundedArray(macdData.line.slice(-effectiveLimit), roundAtPriceLevel);
-				const signal = toRoundedArray(macdData.signal.slice(-effectiveLimit), roundAtPriceLevel);
-				const hist = toRoundedArray(macdData.hist.slice(-effectiveLimit), roundAtPriceLevel);
+				const line = toRoundedArray(macdData.line.slice(-effectiveLimit), roundAtCandleLevel);
+				const signal = toRoundedArray(macdData.signal.slice(-effectiveLimit), roundAtCandleLevel);
+				const hist = toRoundedArray(macdData.hist.slice(-effectiveLimit), roundAtCandleLevel);
 				if (line || signal || hist) {
 					subPanels.MACD = {
 						line: line ?? macdData.line.slice(-effectiveLimit),

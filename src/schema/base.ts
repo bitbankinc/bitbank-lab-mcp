@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { roundPriceAtLevel } from '../../lib/price.js';
 
 export const CandleTypeEnum = z.enum([
 	'1min',
@@ -125,9 +126,10 @@ export const TrendLabelEnum = z.enum([
 	'insufficient_data',
 ]);
 
+// 小数 2 桁に固定すると数円のペアの価格の系列の桁が落ちるので、値の水準の桁（最低 2 桁）で丸める。RSI など 0〜100 の系列は計算側で 2 桁に丸め済み。
 export const NumericSeriesSchema = z
 	.array(z.union([z.number(), z.null()]))
-	.transform((arr) => arr.map((v) => (v == null ? null : Number(Number(v).toFixed(2)))));
+	.transform((arr) => arr.map((v) => (v == null ? null : roundPriceAtLevel(Number(v), Number(v), 2))));
 
 /** volume は base 通貨建てで買い売りを区別しない（/candlestick の OHLCV[4] をそのまま使う）。公式アプリの Volume バーとは集計方法が異なる。 */
 export const CandleSchema = z.object({

@@ -34,6 +34,7 @@ import {
 	stochRSI as rawStochRSI,
 	toNumericSeries,
 } from '../lib/indicators.js';
+import { roundPriceAtLevel } from '../lib/price.js';
 import { isLatestBarProvisional, prependProvisionalNote } from '../lib/provisional-bar.js';
 import { fail, failFromValidation, ok, parseAsResult } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
@@ -77,8 +78,13 @@ export function clearIndicatorCache(): void {
 	indicatorCache.clear();
 }
 
+// 価格の系列を小数 2 桁に固定すると数円のペアで有効数字が 3 桁ほどしか残らないので、価格の水準の桁（最低 2 桁）で丸める。MACD のような値幅は refPrices に各足の価格を渡す。
+function toPriceSeries(values: number[], refPrices?: readonly number[]): NumericSeries {
+	return values.map((v, i) => (Number.isFinite(v) ? roundPriceAtLevel(v, refPrices?.[i] ?? v, 2) : null));
+}
+
 export function sma(values: number[], period: number = SMA_DEFAULT_PERIOD): NumericSeries {
-	return toNumericSeries(rawSma(values, period), 2);
+	return toPriceSeries(rawSma(values, period));
 }
 
 export function rsi(values: number[], period: number = RSI_PERIOD): NumericSeries {
@@ -92,15 +98,15 @@ export function bollingerBands(
 ): { upper: NumericSeries; middle: NumericSeries; lower: NumericSeries } {
 	const raw = rawBollingerBands(values, period, stdDev);
 	return {
-		upper: toNumericSeries(raw.upper, 2),
-		middle: toNumericSeries(raw.middle, 2),
-		lower: toNumericSeries(raw.lower, 2),
+		upper: toPriceSeries(raw.upper),
+		middle: toPriceSeries(raw.middle),
+		lower: toPriceSeries(raw.lower),
 	};
 }
 
 export function ema(values: number[], period: number): NumericSeries {
-	if (period <= 1) return values.map((v) => (v != null ? Number(v.toFixed(2)) : null));
-	return toNumericSeries(rawEma(values, period), 2);
+	if (period <= 1) return toPriceSeries(values);
+	return toPriceSeries(rawEma(values, period));
 }
 
 export function macd(
@@ -110,10 +116,11 @@ export function macd(
 	signal = MACD_SIGNAL,
 ): { line: NumericSeries; signal: NumericSeries; hist: NumericSeries } {
 	const raw = rawMacd(values, fast, slow, signal);
+	// 最新の終値の水準で決めると、価格の桁が変わったときに過去の値の桁まで変わり、小さい値が 0 になってクロスが消えるので、同じ足の終値で決める。
 	return {
-		line: toNumericSeries(raw.line, 2),
-		signal: toNumericSeries(raw.signal, 2),
-		hist: toNumericSeries(raw.hist, 2),
+		line: toPriceSeries(raw.line, values),
+		signal: toPriceSeries(raw.signal, values),
+		hist: toPriceSeries(raw.hist, values),
 	};
 }
 
@@ -124,11 +131,11 @@ export function ichimokuSeries(
 ): { tenkan: NumericSeries; kijun: NumericSeries; spanA: NumericSeries; spanB: NumericSeries; chikou: NumericSeries } {
 	const raw = rawIchimokuSeries(highs, lows, closes);
 	return {
-		tenkan: toNumericSeries(raw.tenkan, 2),
-		kijun: toNumericSeries(raw.kijun, 2),
-		spanA: toNumericSeries(raw.spanA, 2),
-		spanB: toNumericSeries(raw.spanB, 2),
-		chikou: toNumericSeries(raw.chikou, 2),
+		tenkan: toPriceSeries(raw.tenkan),
+		kijun: toPriceSeries(raw.kijun),
+		spanA: toPriceSeries(raw.spanA),
+		spanB: toPriceSeries(raw.spanB),
+		chikou: toPriceSeries(raw.chikou),
 	};
 }
 
@@ -217,10 +224,10 @@ function ichimoku(
 	const snap = ichimokuSnapshot(highs, lows, closes);
 	if (!snap) return null;
 	return {
-		conversion: Number(snap.conversion.toFixed(2)),
-		base: Number(snap.base.toFixed(2)),
-		spanA: Number(snap.spanA.toFixed(2)),
-		spanB: Number(snap.spanB.toFixed(2)),
+		conversion: roundPriceAtLevel(snap.conversion, snap.conversion, 2),
+		base: roundPriceAtLevel(snap.base, snap.base, 2),
+		spanA: roundPriceAtLevel(snap.spanA, snap.spanA, 2),
+		spanB: roundPriceAtLevel(snap.spanB, snap.spanB, 2),
 	};
 }
 
@@ -265,12 +272,11 @@ function createChartData(
 			ICHI_spanA: indicators.ichi_series?.spanA ?? [],
 			ICHI_spanB: indicators.ichi_series?.spanB ?? [],
 			ICHI_chikou: indicators.ichi_series?.chikou
-				? toNumericSeries(
+				? toPriceSeries(
 						rawShiftChikou(
 							indicators.ichi_series.chikou.map((v) => v ?? NaN),
 							shift,
 						),
-						2,
 					)
 				: [],
 			macd_series: indicators.macd_series,

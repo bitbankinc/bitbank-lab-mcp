@@ -1,4 +1,5 @@
 import { calendarDateFromIso, dayjs } from './datetime.js';
+import { roundPriceAtLevel } from './price.js';
 
 export type MaPrefix = 'SMA' | 'EMA';
 
@@ -106,7 +107,8 @@ export function detectCrossStatuses(
 				a: `${prefix}_${a}`,
 				b: `${prefix}_${b}`,
 				type: delta >= 0 ? 'golden' : 'dead',
-				delta: Number(delta.toFixed(2)),
+				// 移動平均線どうしの差なので、差自体ではなく価格の水準で桁を決める。
+				delta: roundPriceAtLevel(delta, va as number, 2),
 			});
 		}
 	}
@@ -192,7 +194,7 @@ export function computeMaExt(
 ): MaExtEntry {
 	const distancePct =
 		close != null && val != null && val !== 0 ? Number((((close - val) / val) * 100).toFixed(2)) : null;
-	const distanceAbs = close != null && val != null ? Number((close - val).toFixed(2)) : null;
+	const distanceAbs = close != null && val != null ? roundPriceAtLevel(close - val, close, 2) : null;
 	const slope = slopeOfSeries(series);
 	const rates = computeSlopeRates(series);
 	const slopePctPerBar = rates.pctPerBar != null ? Number(rates.pctPerBar.toFixed(3)) : null;
