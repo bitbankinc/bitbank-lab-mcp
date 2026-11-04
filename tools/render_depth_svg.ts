@@ -122,7 +122,7 @@ export default async function renderDepthSvg(
         <text x="136" y="0">売り (Asks)</text>
       </g>`;
 
-		const nowJst = toDisplayTime(undefined) ?? nowIso();
+		const nowLabel = toDisplayTime(undefined) ?? nowIso();
 		const band = 0.01;
 		const bidBand = bidsSorted.filter(([p]) => p >= mid * (1 - band));
 		const askBand = asksSorted.filter(([p]) => p <= mid * (1 + band));
@@ -132,7 +132,7 @@ export default async function renderDepthSvg(
 		const headerTexts = `
       <g font-size="12" fill="#e5e7eb">
         <text x="${padding.left}" y="${padding.top - 36}">${formatPair(pair)} 板の深さ</text>
-        <text x="${padding.left}" y="${padding.top - 22}">${nowJst} JST</text>
+        <text x="${padding.left}" y="${padding.top - 22}">${nowLabel}</text>
         <text x="${w - padding.right}" y="${padding.top - 8}" text-anchor="end">買い/売り 比率(±1%): ${Number.isFinite(ratio) ? ratio.toFixed(2) : '∞'}</text>
       </g>`;
 		const midLabel = `<text x="${x(mid)}" y="${padding.top + 12}" text-anchor="middle" fill="#e5e7eb" font-size="12">¥${formatPriceDecimals(mid, midDecimals)}</text>`;
