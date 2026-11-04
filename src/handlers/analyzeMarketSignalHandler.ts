@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import { formatExactPrice, formatPriceAtLevel } from '../../lib/formatter.js';
 import { currentCloudSpans } from '../../lib/indicators.js';
 import { extractUpstreamWarning, prependWarnings } from '../../lib/warning-propagation.js';
 import analyzeMarketSignal from '../../tools/analyze_market_signal.js';
@@ -71,8 +72,7 @@ export function buildMarketSignalHandlerText(input: BuildMarketSignalHandlerText
 	if (topContributors.length) lines.push(`主要因: ${topContributors.join(', ')}`);
 
 	if (sma) {
-		const curPx =
-			sma.current != null && Number.isFinite(sma.current) ? Math.round(sma.current).toLocaleString('ja-JP') : null;
+		const curPx = sma.current != null && Number.isFinite(sma.current) ? formatExactPrice(sma.current) : null;
 		const v = sma.values;
 		const dev = sma.deviations;
 		const arr = sma.arrangement;
@@ -82,9 +82,9 @@ export function buildMarketSignalHandlerText(input: BuildMarketSignalHandlerText
 			if (curPx) lines.push(`現在価格: ${curPx}円`);
 			const fmtVs = (x: number | null) => (x == null ? 'n/a' : `${x >= 0 ? '+' : ''}${x.toFixed(2)}%`);
 			const dir = (x: number | null) => (x == null ? '' : x >= 0 ? '上' : '下');
-			const s25 = v.sma25 != null && Number.isFinite(v.sma25) ? Math.round(v.sma25).toLocaleString('ja-JP') : 'n/a';
-			const s75 = v.sma75 != null && Number.isFinite(v.sma75) ? Math.round(v.sma75).toLocaleString('ja-JP') : 'n/a';
-			const s200 = v.sma200 != null && Number.isFinite(v.sma200) ? Math.round(v.sma200).toLocaleString('ja-JP') : 'n/a';
+			const s25 = v.sma25 != null && Number.isFinite(v.sma25) ? formatPriceAtLevel(v.sma25) : 'n/a';
+			const s75 = v.sma75 != null && Number.isFinite(v.sma75) ? formatPriceAtLevel(v.sma75) : 'n/a';
+			const s200 = v.sma200 != null && Number.isFinite(v.sma200) ? formatPriceAtLevel(v.sma200) : 'n/a';
 			lines.push(`- 短期（25日）: ${s25}円（今の価格より ${fmtVs(dev.vs25)} ${dir(dev.vs25)}に位置）`);
 			lines.push(`- 中期（75日）: ${s75}円（今の価格より ${fmtVs(dev.vs75)} ${dir(dev.vs75)}に位置）`);
 			lines.push(`- 長期（200日）: ${s200}円（今の価格より ${fmtVs(dev.vs200)} ${dir(dev.vs200)}に位置）`);
@@ -150,7 +150,8 @@ export function buildMarketSignalHandlerText(input: BuildMarketSignalHandlerText
 			lines.push(`一目均衡表: ${positionLabel}（距離 ${distancePct}、雲の厚さ ${cloudThicknessPct}%）`);
 		}
 		if (macdHist != null && Number.isFinite(macdHist)) {
-			const histRounded = Math.round(macdHist).toLocaleString('ja-JP');
+			// MACD は価格の差なので、値自体ではなく価格の水準で桁を決める。
+			const histRounded = formatPriceAtLevel(macdHist, sma?.current ?? macdHist);
 			const macdLabel = macdHist > 0 ? '強気' : '弱気';
 			lines.push(`MACD: ヒストグラム ${histRounded}（${macdLabel}）`);
 		}

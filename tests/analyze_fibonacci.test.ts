@@ -166,9 +166,9 @@ describe('analyze_fibonacci', () => {
 		assertOk(res);
 
 		expect(res.data.trend).toBe('up');
-		// 上昇: swingLow + range * ratio → 100 + 100*1.272 = 227
+		// 上昇: swingLow + range * ratio → 100 + 100*1.272 = 227.2
 		expect(res.data.extensions[0].ratio).toBe(1.272);
-		expect(res.data.extensions[0].price).toBe(227);
+		expect(res.data.extensions[0].price).toBe(227.2);
 		expect(res.data.levels).toHaveLength(0); // extension-only mode
 	});
 
@@ -177,8 +177,8 @@ describe('analyze_fibonacci', () => {
 		const res = await analyzeFibonacci({ pair: 'btc_jpy', mode: 'extension', lookbackDays: 14 });
 		assertOk(res);
 
-		// 下降: swingHigh - range * ratio → 200 - 100*1.272 = 73
-		expect(res.data.extensions[0].price).toBe(73);
+		// 下降: swingHigh - range * ratio → 200 - 100*1.272 = 72.8
+		expect(res.data.extensions[0].price).toBe(72.8);
 	});
 
 	it('mode=both でリトレースメントとエクステンション両方を返す', async () => {

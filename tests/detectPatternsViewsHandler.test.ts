@@ -144,6 +144,25 @@ describe('formatDebugView / formatCandidateDetails', () => {
 		expect(text).toContain('1st half avg');
 	});
 
+	it('詳細の価格もスイングと同じ桁で出し、1 円未満のペアで 0 に潰さない', () => {
+		const meta = {
+			debug: {
+				swings: [{ kind: 'peak', idx: 3, price: 0.0512345, isoTime: '2026-01-03T00:00:00.000Z' }],
+				candidates: [
+					{
+						type: 'wedge',
+						accepted: false,
+						reason: 'declining_highs',
+						details: { highsCount: 5, firstAvg: 0.0512345, secondAvg: 0.0498765, ratio: 0.96 },
+					},
+				],
+			},
+		};
+		const text = formatDebugView('hdr', meta, [], makeDebugViewRes()).content[0].text;
+		expect(text).toContain('1st half avg: 0.0512345');
+		expect(text).toContain('2nd half avg: 0.0498765');
+	});
+
 	it('declining_highs_probe の詳細を表示する', () => {
 		const meta = makeMeta([
 			{

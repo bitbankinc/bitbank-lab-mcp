@@ -1,4 +1,5 @@
 import { bollingerBands } from '../../../../lib/indicators.js';
+import { roundPriceAtLevel } from '../../../../lib/price.js';
 import type { Candle } from '../../types.js';
 import type { Overlay, ParamValidationResult, Signal, Strategy } from './types.js';
 
@@ -82,7 +83,7 @@ export const bbBreakoutStrategy: Strategy = {
 				signals.push({
 					time: candles[i].time,
 					action: 'buy',
-					reason: `BB Breakout: Price crossed above middle band (${mid.toFixed(0)})`,
+					reason: `BB Breakout: Price crossed above middle band (${roundPriceAtLevel(mid)})`,
 				});
 				belowLowerBand = false; // リセット
 			}
@@ -91,7 +92,7 @@ export const bbBreakoutStrategy: Strategy = {
 				signals.push({
 					time: candles[i].time,
 					action: 'sell',
-					reason: `BB Upper Band reached: ${up.toFixed(0)}`,
+					reason: `BB Upper Band reached: ${roundPriceAtLevel(up)}`,
 				});
 				belowLowerBand = false; // リセット
 			}

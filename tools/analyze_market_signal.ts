@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import { formatPercent, formatPriceJPY } from '../lib/formatter.js';
+import { formatExactPrice, formatPercent, formatPriceJPY } from '../lib/formatter.js';
 import { lastCrossover, sma } from '../lib/indicators.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
@@ -75,7 +75,7 @@ export function buildMarketSignalText(input: BuildMarketSignalTextInput): string
 	const { sma25, sma75, sma200 } = sma;
 
 	const score100 = Math.round(score * 100);
-	const priceNowStr = formatPriceJPY(latestClose);
+	const priceNowStr = latestClose != null ? `${formatExactPrice(latestClose)}円` : 'n/a';
 	const relToNow = (smaVal?: number | null) => {
 		if (smaVal == null || latestClose == null || latestClose === 0) return 'n/a';
 		const rel = ((smaVal - latestClose) / latestClose) * 100;

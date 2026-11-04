@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { formatPair, formatPercent, formatPrice } from '../lib/formatter.js';
+import { roundPriceAtLevel } from '../lib/price.js';
 import { failFromError, failFromValidation } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { collectUpstreamWarnings, extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
@@ -84,7 +85,7 @@ function detectConfluence(
 			uniquePeriods.size >= 3 ? 'strong' : uniquePeriods.size >= 2 && cluster.length >= 3 ? 'moderate' : 'weak';
 
 		zones.push({
-			priceZone: [Math.round(zoneMin), Math.round(zoneMax)],
+			priceZone: [roundPriceAtLevel(zoneMin), roundPriceAtLevel(zoneMax)],
 			matchedLevels: cluster,
 			strength,
 			distancePct: Number(distancePct.toFixed(2)),

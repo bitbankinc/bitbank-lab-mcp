@@ -1,5 +1,6 @@
 import { calendarDateFromIso, dayjs } from '../lib/datetime.js';
-import { formatSummary } from '../lib/formatter.js';
+import { formatExactPrice, formatPriceAtLevel, formatSummary } from '../lib/formatter.js';
+import { roundPriceAtLevel } from '../lib/price.js';
 import { fail, failFromError, failFromValidation } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { AnalyzeSupportResistanceInputSchema, AnalyzeSupportResistanceOutputSchema } from '../src/schemas.js';
@@ -146,7 +147,7 @@ function clusterSwingPoints(
 	clusters.push(current);
 
 	return clusters.map((c) => ({
-		level: Math.round(c.prices.reduce((a, b) => a + b, 0) / c.prices.length),
+		level: roundPriceAtLevel(c.prices.reduce((a, b) => a + b, 0) / c.prices.length),
 		points: c.points,
 	}));
 }
@@ -661,7 +662,7 @@ export default async function analyzeSupportResistance(
 
 		const formatLevel = (level: SupportResistanceLevel, type: 'support' | 'resistance') => {
 			const stars = '★'.repeat(level.strength) + '☆'.repeat(3 - level.strength);
-			let text = `${level.label}: ${level.price.toLocaleString('ja-JP')}円（${level.pctFromCurrent > 0 ? '+' : ''}${level.pctFromCurrent.toFixed(1)}%）強度：${stars}\n`;
+			let text = `${level.label}: ${formatPriceAtLevel(level.price)}円（${level.pctFromCurrent > 0 ? '+' : ''}${level.pctFromCurrent.toFixed(1)}%）強度：${stars}\n`;
 
 			if (level.formationType === 'new_formation') {
 				text += `  - 背景: ${level.note || '直近で底を打ち、安値を切り上げ中'}\n`;
@@ -702,7 +703,7 @@ export default async function analyzeSupportResistance(
 			}
 
 			if (level.recentBreak) {
-				text += `  - ⚠️ 直近の崩壊: ${level.recentBreak.date}に${Math.abs(level.recentBreak.breakPct).toFixed(1)}%${type === 'support' ? '下抜け' : '上抜け'}（${type === 'support' ? '最安' : '最高'}${level.recentBreak.price.toLocaleString('ja-JP')}円）\n`;
+				text += `  - ⚠️ 直近の崩壊: ${level.recentBreak.date}に${Math.abs(level.recentBreak.breakPct).toFixed(1)}%${type === 'support' ? '下抜け' : '上抜け'}（${type === 'support' ? '最安' : '最高'}${formatExactPrice(level.recentBreak.price)}円）\n`;
 				text += `  - 評価: 崩壊実績により信頼性低下、${type === 'support' ? '再割れ' : '再突破'}リスク高\n`;
 			}
 
@@ -711,7 +712,7 @@ export default async function analyzeSupportResistance(
 
 		const displayPair = chk.pair.replace('_', '/').toUpperCase();
 		let contentText = `${displayPair} サポート・レジスタンス分析（過去${lookbackDays}日）\n`;
-		contentText += `現在価格: ${currentPrice.toLocaleString('ja-JP')}円\n`;
+		contentText += `現在価格: ${formatExactPrice(currentPrice)}円\n`;
 		contentText += `分析日時: ${srCalendarDate(currentCandle)}\n\n`;
 
 		contentText += `【サポートライン】\n`;

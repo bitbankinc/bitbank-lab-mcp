@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import { toDisplayTime, toIsoWithTz } from '../lib/datetime.js';
-import { formatPair, formatPercent, formatPrice } from '../lib/formatter.js';
+import { formatPair, formatPercent, formatPrice, formatPriceAtLevel } from '../lib/formatter.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import {
 	applyTxLimit,
@@ -140,9 +140,8 @@ function calcVolumeProfile(txs: Tx[], bins: number, valueAreaPct: number) {
 			singleBin.totalVolume += t.amount;
 		}
 		const totalVolume = singleBin.totalVolume;
-		const isJpy = true;
 		const fmtSingle = () => {
-			const p = isJpy ? Math.round(priceLow).toLocaleString('ja-JP') : priceLow.toFixed(2);
+			const p = formatPriceAtLevel(priceLow);
 			return `${p}〜${p}`;
 		};
 		const binResult = {
@@ -234,12 +233,7 @@ function calcVolumeProfile(txs: Tx[], bins: number, valueAreaPct: number) {
 		}
 	}
 
-	const isJpy = true; // This tool always operates on JPY pairs primarily
-	const fmtBin = (b: (typeof profileBins)[0]) => {
-		const lo = isJpy ? Math.round(b.low).toLocaleString('ja-JP') : b.low.toFixed(2);
-		const hi = isJpy ? Math.round(b.high).toLocaleString('ja-JP') : b.high.toFixed(2);
-		return `${lo}〜${hi}`;
-	};
+	const fmtBin = (b: (typeof profileBins)[0]) => `${formatPriceAtLevel(b.low)}〜${formatPriceAtLevel(b.high)}`;
 
 	return {
 		bins: profileBins.map((b, _i) => ({

@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import { currentCloudSpans } from '../lib/indicators.js';
 import { avg } from '../lib/math.js';
+import { roundPriceAtLevel } from '../lib/price.js';
 import { isLatestBarProvisional, prependProvisionalNote } from '../lib/provisional-bar.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
@@ -315,7 +316,11 @@ export default async function analyzeIchimokuSnapshot(
 			thicknessPct == null ? null : thicknessPct >= 2 ? 'strong' : thicknessPct >= 0.8 ? 'moderate' : 'weak';
 
 		const tkRel = tenkan != null && kijun != null ? (tenkan > kijun ? 'bullish' : 'bearish') : null;
-		const tkDist = tenkan != null && kijun != null ? Number(((tenkan as number) - (kijun as number)).toFixed(0)) : null;
+		// 距離は価格の差なので、値自体ではなく価格の水準で桁を決める。
+		const tkDist =
+			tenkan != null && kijun != null
+				? roundPriceAtLevel((tenkan as number) - (kijun as number), close ?? (tenkan as number))
+				: null;
 		const tkDistPct =
 			tkDist != null && close != null && close !== 0 ? Number(((tkDist / close) * 100).toFixed(2)) : null;
 
@@ -328,7 +333,7 @@ export default async function analyzeIchimokuSnapshot(
 		if (Array.isArray(candles) && candles.length >= 27 && close != null) {
 			const ref = candles.at(-27)?.close ?? null;
 			if (ref != null) {
-				const dist = Number((close - ref).toFixed(0));
+				const dist = roundPriceAtLevel(close - ref, close);
 				chikouSpan = { position: close >= ref ? 'above' : 'below', distance: dist, clearance: dist };
 			}
 		}
@@ -489,12 +494,12 @@ export default async function analyzeIchimokuSnapshot(
 				scenarios: {
 					bullish: {
 						condition: '転換線が基準線を上抜け',
-						target: close != null ? Math.round((close as number) * 1.07) : 0,
+						target: close != null ? roundPriceAtLevel((close as number) * 1.07) : 0,
 						probability: 'medium',
 					},
 					bearish: {
 						condition: '雲突入（雲上限割れ）',
-						target: cloudBottom != null ? Math.round((cloudBottom as number) * 0.97) : 0,
+						target: cloudBottom != null ? roundPriceAtLevel((cloudBottom as number) * 0.97) : 0,
 						probability: 'low',
 					},
 				},

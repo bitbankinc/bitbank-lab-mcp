@@ -1,5 +1,6 @@
 import { calendarDateFromIso } from '../lib/datetime.js';
 import { formatPair, formatPercent, formatPrice, timeframeLabel } from '../lib/formatter.js';
+import { roundPriceAtLevel } from '../lib/price.js';
 import { fail, failFromError, failFromValidation } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
@@ -89,7 +90,7 @@ function calculateLevels(
 
 		const distancePct = ((price - currentPrice) / currentPrice) * 100;
 
-		return { ratio, price: Math.round(price), distancePct: Number(distancePct.toFixed(2)), isNearest: false };
+		return { ratio, price: roundPriceAtLevel(price), distancePct: Number(distancePct.toFixed(2)), isNearest: false };
 	});
 }
 
@@ -107,7 +108,7 @@ function calculateExtensions(
 
 		const distancePct = ((price - currentPrice) / currentPrice) * 100;
 
-		return { ratio, price: Math.round(price), distancePct: Number(distancePct.toFixed(2)), isNearest: false };
+		return { ratio, price: roundPriceAtLevel(price), distancePct: Number(distancePct.toFixed(2)), isNearest: false };
 	});
 }
 
