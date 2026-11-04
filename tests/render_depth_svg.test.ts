@@ -74,6 +74,15 @@ describe('render_depth_svg', () => {
 		expect(res.data.svg).not.toContain('BTC');
 	});
 
+	it('ヘッダーの時刻は時間帯の表記を 1 回だけ付ける', async () => {
+		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
+		const res = await renderDepthSvg({ pair: 'btc_jpy' });
+		assertOk(res);
+		const svg = requireDefined(res.data.svg, 'svg');
+		expect(svg).toMatch(/>\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2} JST<\/text>/);
+		expect(svg).not.toContain('JST JST');
+	});
+
 	it('SVG に板の深さヘッダー・買い売り比率・中央価格を含む', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
 		const res = await renderDepthSvg({ pair: 'btc_jpy' });
