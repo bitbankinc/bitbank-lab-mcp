@@ -9,6 +9,7 @@ import {
 	formatPctFromRatio,
 	formatPercent,
 	formatPrice,
+	formatPriceDecimals,
 	formatPriceJPY,
 	formatRounded,
 	formatSummary,
@@ -55,6 +56,19 @@ describe('formatPriceJPY', () => {
 	});
 	it('null は n/a を返す', () => {
 		expect(formatPriceJPY(null)).toBe('n/a');
+	});
+});
+
+describe('formatPriceDecimals', () => {
+	it('0 桁では円の整数に丸めて桁区切りを付ける', () => {
+		expect(formatPriceDecimals(15_234_567.6, 0)).toBe('15,234,568');
+	});
+	it('指定の桁で丸め、末尾の 0 は出さない', () => {
+		expect(formatPriceDecimals(0.0512345678, 7)).toBe('0.0512346');
+		expect(formatPriceDecimals(1.5, 5)).toBe('1.5');
+	});
+	it('負の値も同じ桁で出す', () => {
+		expect(formatPriceDecimals(-0.0012345678, 7)).toBe('-0.0012346');
 	});
 });
 

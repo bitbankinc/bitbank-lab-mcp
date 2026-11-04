@@ -1,4 +1,5 @@
 import { avg as avgRaw, median as medianRaw } from '../../lib/math.js';
+import { roundPriceAtLevel } from '../../lib/price.js';
 import type { AftermathResult, CandleData, PatternEntry } from './types.js';
 
 export function necklineValue(p: PatternEntry, idx: number): number | null {
@@ -75,8 +76,8 @@ export function analyzeAftermath(
 			const ret = ((closeTo - baseClose) / baseClose) * 100;
 			priceMove[`days${h}`] = {
 				return: Number(ret.toFixed(2)),
-				high: Number(hi.toFixed(0)),
-				low: Number(lo.toFixed(0)),
+				high: roundPriceAtLevel(hi, baseClose),
+				low: roundPriceAtLevel(lo, baseClose),
 			};
 		}
 		let theoreticalTarget = NaN;
@@ -131,7 +132,7 @@ export function analyzeAftermath(
 			breakoutConfirmed,
 			priceMove,
 			targetReached,
-			theoreticalTarget: Number.isFinite(theoreticalTarget) ? Math.round(theoreticalTarget) : null,
+			theoreticalTarget: Number.isFinite(theoreticalTarget) ? roundPriceAtLevel(theoreticalTarget, nl) : null,
 			outcome,
 			daysToTarget,
 		};

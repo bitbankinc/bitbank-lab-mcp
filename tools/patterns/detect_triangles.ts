@@ -1,3 +1,4 @@
+import { roundPriceAtLevel } from '../../lib/price.js';
 import { patternBarsCap, structuralFloorBars } from './bar-thresholds.js';
 import { barsPerDay, calcATR, deduplicatePatterns, finalizeConf } from './helpers.js';
 import { clamp01, robustFit } from './regression.js';
@@ -204,8 +205,8 @@ function buildTriangleResult(c: TriangleCandidateCtx): { pattern: PatternEntry; 
 					? lowerLine
 					: upperLine;
 	const neckline = [
-		{ x: winStart, y: Number(necklineLine.valueAt(winStart).toFixed(2)) },
-		{ x: winEnd, y: Number(necklineLine.valueAt(winEnd).toFixed(2)) },
+		{ x: winStart, y: roundPriceAtLevel(necklineLine.valueAt(winStart), necklineLine.valueAt(winStart), 2) },
+		{ x: winEnd, y: roundPriceAtLevel(necklineLine.valueAt(winEnd), necklineLine.valueAt(winEnd), 2) },
 	];
 
 	const fitScore = (upperLine.r2 + lowerLine.r2) / 2;
@@ -236,7 +237,7 @@ function buildTriangleResult(c: TriangleCandidateCtx): { pattern: PatternEntry; 
 	if (hasBreakout && breakoutDirection) {
 		const bp = candles[breakoutIdx].close;
 		breakoutTarget = breakoutDirection === 'up' ? bp + patternHeight : bp - patternHeight;
-		breakoutTarget = Math.round(breakoutTarget);
+		breakoutTarget = roundPriceAtLevel(breakoutTarget, bp);
 		targetReach = computeTargetReach(candles, breakoutIdx, bp, breakoutTarget, breakoutDirection, patternHeight);
 	}
 

@@ -1,5 +1,6 @@
 import { EPSILON } from '../../lib/math.js';
 import { generatePatternDiagram } from '../../lib/pattern-diagrams.js';
+import { roundPriceAtLevel } from '../../lib/price.js';
 import { deduplicatePatterns, finalizeConf, periodScoreDays } from './helpers.js';
 import { clamp01, near, relDev } from './regression.js';
 import { averageDefinedAxes, breakoutQualityScore, retracementScore } from './scoring.js';
@@ -463,7 +464,10 @@ function evaluateDouble(
 		{ start, end },
 		{ tz: ctx.tz, type: ctx.type },
 	);
-	const target = Math.round(side === 'top' ? necklinePrice - patternHeight : necklinePrice + patternHeight);
+	const target = roundPriceAtLevel(
+		side === 'top' ? necklinePrice - patternHeight : necklinePrice + patternHeight,
+		necklinePrice,
+	);
 	// 測れない理由を名乗る。breakoutTarget だけを出すと LLM が「進捗 0%」と読み違える（#224）。
 	const reach = !isCompleted
 		? omittedTargetReach('not_broken_out')

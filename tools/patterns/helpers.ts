@@ -1,5 +1,6 @@
 import { dayjs } from '../../lib/datetime.js';
 import { trueRange } from '../../lib/indicators.js';
+import { priceDecimals } from '../../lib/price.js';
 import { statusScore } from './ranking.js';
 import type { CandleData, DeduplicablePattern } from './types.js';
 
@@ -239,4 +240,33 @@ export function globalDedup(patterns: DeduplicablePattern[]): DeduplicablePatter
 		}
 	}
 	return out;
+}
+
+interface PricedPattern {
+	pivots?: ReadonlyArray<{ price?: number }>;
+	neckline?: ReadonlyArray<{ y?: number }>;
+	breakout?: { price?: number } | null;
+	confirmation?: object;
+	breakoutTarget?: number;
+	flagpoleHeight?: number;
+}
+
+// 応答の中の円表示の桁は、パターンに出てくる価格のうち最大のものの水準でそろえる。価格が 1 つも無い（未ブレイクの旗だけ）ときは値幅で代える。
+export function patternPriceDecimals(patterns: ReadonlyArray<PricedPattern>): number {
+	let level = 0;
+	let heightLevel = 0;
+	const take = (v: unknown) => {
+		const n = Math.abs(Number(v));
+		if (Number.isFinite(n) && n > level) level = n;
+	};
+	for (const p of patterns) {
+		for (const pv of p.pivots ?? []) take(pv?.price);
+		for (const pt of p.neckline ?? []) take(pt?.y);
+		take(p.breakout?.price);
+		take((p.confirmation as { price?: unknown } | undefined)?.price);
+		take(p.breakoutTarget);
+		const h = Math.abs(Number(p.flagpoleHeight));
+		if (Number.isFinite(h) && h > heightLevel) heightLevel = h;
+	}
+	return priceDecimals(level > 0 ? level : heightLevel);
 }

@@ -1564,7 +1564,7 @@ describe('detectHeadAndShoulders: ネックライン射影の高さ基準（issu
 	}
 
 	it('strict H&S: 高さは頭の真下、投影の起点はブレイク足', () => {
-		// nlAt(30) = 85 → 高さ = 130 - 85 = 45、nlAt(65) = 87（#211 のクランプで谷2 の 87 に頭打ち）→ target = round(87 - 45) = 42
+		// nlAt(30) = 85 → 高さ = 130 - 85 = 45、nlAt(65) = 87（#211 のクランプで谷2 の 87 に頭打ち）→ target = 87 - 45 = 42
 		const { candles, pivots } = buildSlopedHsWithBreakout();
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectHeadAndShoulders(ctx);
@@ -1577,14 +1577,14 @@ describe('detectHeadAndShoulders: ネックライン射影の高さ基準（issu
 	});
 
 	it('strict Inverse H&S: 高さは頭の真下、投影の起点はブレイク足', () => {
-		// nlAt(30) = 115.5 → 高さ = 115.5 - 70 = 45.5、nlAt(65) = 118（#211 のクランプで山2 の 118 に頭打ち）→ target = round(118 + 45.5) = 164
+		// nlAt(30) = 115.5 → 高さ = 115.5 - 70 = 45.5、nlAt(65) = 118（#211 のクランプで山2 の 118 に頭打ち）→ target = 118 + 45.5 = 163.5
 		const { candles, pivots } = buildSlopedIhsWithBreakout();
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectHeadAndShoulders(ctx);
 
 		const ihs = result.patterns.find((p) => p.type === 'inverse_head_and_shoulders');
 		expect(ihs?.breakoutBarIndex).toBe(65);
-		expect(ihs?.breakoutTarget).toBe(164);
+		expect(ihs?.breakoutTarget).toBe(163.5);
 		expect(ihs?.breakoutTarget).not.toBe(166);
 		expect(ihs?.targetMethod).toBe('neckline_projection');
 	});
@@ -1602,7 +1602,7 @@ describe('detectHeadAndShoulders: ネックライン射影の高さ基準（issu
 	});
 
 	it('forming H&S: 投影の起点は最終構成点（暫定右肩）で、高さは頭の真下', () => {
-		// ネックライン (20,88) → (45,90)。nlAt(30) = 88.8 → 高さ = 135 - 88.8 = 46.2、暫定右肩 idx=65 → nlAt(65) = 90（#211 のクランプ）→ target = round(90 - 46.2) = 44
+		// ネックライン (20,88) → (45,90)。nlAt(30) = 88.8 → 高さ = 135 - 88.8 = 46.2、暫定右肩 idx=65 → nlAt(65) = 90（#211 のクランプ）→ target = 90 - 46.2 = 43.8
 		const total = 66;
 		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 90, 95, 85, 90));
 		candles[5] = mkCandle(total - 5, 99, 100, 97, 99);
@@ -1629,7 +1629,7 @@ describe('detectHeadAndShoulders: ネックライン射影の高さ基準（issu
 		const result = detectHeadAndShoulders(ctx);
 
 		const forming = result.patterns.find((p) => p.type === 'head_and_shoulders' && p.status === 'forming');
-		expect(forming?.breakoutTarget).toBe(44);
+		expect(forming?.breakoutTarget).toBe(43.8);
 		expect(forming?.breakoutTarget).not.toBe(41);
 	});
 
@@ -1875,7 +1875,7 @@ describe('necklineAt の外挿クランプ（issue #211）', () => {
 	});
 
 	it('ターゲット投影の起点までクランプが届く（H&S / 逆 H&S）', () => {
-		// 頭 idx=30 の真下は 87 → 高さ = 130 - 87 = 43。起点は nlAt(65) = 89 に頭打ちになるので target = round(89 - 43) = 46。
+		// 頭 idx=30 の真下は 87 → 高さ = 130 - 87 = 43。起点は nlAt(65) = 89 に頭打ちになるので target = 89 - 43 = 46。
 		expect(
 			necklineProjectionTarget({
 				neckline: sloped,
@@ -1887,7 +1887,7 @@ describe('necklineAt の外挿クランプ（issue #211）', () => {
 			}),
 		).toBe(46);
 
-		// 山1 (15,113) → 山2 (45,118)。nlAt(30) = 115.5 → 高さ = 115.5 - 70 = 45.5。起点は nlAt(65) = 118 → target = round(118 + 45.5) = 164。
+		// 山1 (15,113) → 山2 (45,118)。nlAt(30) = 115.5 → 高さ = 115.5 - 70 = 45.5。起点は nlAt(65) = 118 → target = 118 + 45.5 = 163.5。
 		expect(
 			necklineProjectionTarget({
 				neckline: [
@@ -1900,7 +1900,7 @@ describe('necklineAt の外挿クランプ（issue #211）', () => {
 				direction: 'up',
 				fallbackNecklinePrice: 115.5,
 			}),
-		).toBe(164);
+		).toBe(163.5);
 	});
 });
 

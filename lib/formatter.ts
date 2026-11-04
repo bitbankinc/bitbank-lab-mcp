@@ -1,5 +1,6 @@
 import { dayjs, toDisplayTime } from './datetime.js';
 import { isJpyQuotedPair } from './pair-code.js';
+import { roundAtDecimalDigits } from './price.js';
 
 export function timeframeLabel(type: string): string {
 	const map: Record<string, string> = {
@@ -223,4 +224,9 @@ export function formatSummary(
 
 	const tail = extra ? ` ${extra}` : '';
 	return `${summary}${tail}`.trim();
+}
+
+// 桁数は呼び出し側が価格の水準から決める（priceDecimals）。小数の末尾の 0 は出さない。
+export function formatPriceDecimals(value: number, decimals: number): string {
+	return roundAtDecimalDigits(value, decimals).toLocaleString('ja-JP', { maximumFractionDigits: decimals });
 }

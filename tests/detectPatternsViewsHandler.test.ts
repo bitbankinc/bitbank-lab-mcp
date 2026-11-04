@@ -2394,3 +2394,60 @@ describe('状態行: status × 理由コードの網羅（issue #286）', () => 
 		);
 	});
 });
+
+describe('価格の表示桁は価格の水準で決める', () => {
+	const subYenPattern = () =>
+		makePattern({
+			pivots: [
+				{ idx: 0, price: 0.0512, kind: 'H', extremePrice: 0.05131 },
+				{ idx: 5, price: 0.0461, kind: 'L', extremePrice: 0.0461 },
+				{ idx: 10, price: 0.05118, kind: 'H', extremePrice: 0.05129 },
+			],
+			breakout: { idx: 12, price: 0.04583 },
+			breakoutTarget: 0.0409876,
+			targetMethod: 'pattern_height',
+		});
+
+	it('1 円未満のペアでは目標・ブレイク・山谷の価格を 0 や 1 に潰さない', () => {
+		const text = formatPatternLine(subYenPattern(), 0, 'full', emptyMeta);
+		expect(text).toContain('ターゲット価格: 0.0409876円');
+		expect(text).toContain('(0.04583円)');
+		expect(text).toContain('終値 0.0512円 / 高値 0.05131円');
+		expect(text).toContain('安値 0.0461円（判定は安値基準）');
+	});
+
+	it('full view の応答でも同じ桁で出る', () => {
+		const text = formatFullView('hdr', [subYenPattern()], '', '', emptyMeta, emptyRes).content[0].text;
+		expect(text).toContain('ターゲット価格: 0.0409876円');
+	});
+
+	it('10 万円以上では円の整数のまま', () => {
+		const p = makePattern({
+			breakout: { idx: 12, price: 95_000.4 },
+			breakoutTarget: 15_234_567.6,
+			targetMethod: 'pattern_height',
+		});
+		const text = formatPatternLine(p, 0, 'full', emptyMeta);
+		expect(text).toContain('ターゲット価格: 15,234,568円');
+		expect(text).toContain('(95,000円)');
+	});
+
+	it('debug view のスイングと候補の点も 1 円未満の桁で出す', () => {
+		const meta = {
+			debug: {
+				swings: [{ kind: 'peak', idx: 3, price: 0.0512345, isoTime: '2026-01-03T00:00:00.000Z' }],
+				candidates: [
+					{
+						type: 'double_top',
+						accepted: false,
+						reason: 'peaks_not_equal',
+						points: [{ role: 'peak1', idx: 3, price: 0.0512345 }],
+					},
+				],
+			},
+		};
+		const text = formatDebugView('hdr', meta, [], makeDebugViewRes()).content[0].text;
+		expect(text).toContain('price=0.0512345');
+		expect(text).toContain('peak1@3:0.0512345');
+	});
+});
