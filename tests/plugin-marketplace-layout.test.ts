@@ -16,6 +16,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -63,20 +64,45 @@ describe('marketplace の plugin の置き場所', () => {
 	}
 });
 
+// core.symlinks=false の Windows では、git が symlink をリンク先のパスを書いた普通のファイルとして置く。
+function skillLinks(dir: string): Array<{ name: string; target: string }> {
+	return fs
+		.readdirSync(dir, { withFileTypes: true })
+		.filter((d) => d.isSymbolicLink() || d.isFile())
+		.map((d) => ({
+			name: d.name,
+			target: d.isSymbolicLink()
+				? path.join(dir, d.name)
+				: path.resolve(dir, fs.readFileSync(path.join(dir, d.name), 'utf8').trim()),
+		}));
+}
+
 describe('.claude/skills のシンボリックリンク', () => {
 	const skillsDir = path.join(PACKAGE_ROOT, '.claude/skills');
-	const links = fs
-		.readdirSync(skillsDir, { withFileTypes: true })
-		.filter((d) => d.isSymbolicLink())
-		.map((d) => d.name);
+	const links = skillLinks(skillsDir);
 
 	it('リンクが 1 つ以上ある', () => {
 		expect(links.length).toBeGreaterThan(0);
 	});
 
-	for (const name of links) {
+	for (const { name, target } of links) {
 		it(`${name} が SKILL.md のある skill を指している`, () => {
-			expect(fs.existsSync(path.join(skillsDir, name, 'SKILL.md')), `.claude/skills/${name} のリンク切れ`).toBe(true);
+			expect(fs.existsSync(path.join(target, 'SKILL.md')), `.claude/skills/${name} のリンク切れ`).toBe(true);
 		});
 	}
+
+	it('symlink の代わりにリンク先のパスを書いたファイル（core.symlinks=false）もリンクとしてたどる', () => {
+		const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-links-'));
+		try {
+			fs.mkdirSync(path.join(tmp, 'real/skill-a'), { recursive: true });
+			fs.writeFileSync(path.join(tmp, 'real/skill-a/SKILL.md'), '');
+			fs.mkdirSync(path.join(tmp, 'links'));
+			fs.writeFileSync(path.join(tmp, 'links/skill-a'), '../real/skill-a');
+			const [link] = skillLinks(path.join(tmp, 'links'));
+			expect(link?.name).toBe('skill-a');
+			expect(fs.existsSync(path.join(link?.target ?? '', 'SKILL.md'))).toBe(true);
+		} finally {
+			fs.rmSync(tmp, { recursive: true, force: true });
+		}
+	});
 });
