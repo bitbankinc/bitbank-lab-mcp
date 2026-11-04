@@ -7,16 +7,13 @@
 
 ## [Unreleased]
 
-### Fixed
-- `.claude-plugin/marketplace.json` の plugin `source` を fork 固定の `{ "source": "github", "repo": "tjackiet/bitbank-lab-mcp" }` から相対パス `"./"` に変更。`bitbankinc/bitbank-lab-mcp` を marketplace として登録した場合も、plugin が fork ではなく登録元リポジトリ自身から解決されるようになった。あわせて同エントリと Claude Code / Cursor / Codex 向け plugin manifest の `homepage` / `repository`（Codex は `interface.websiteURL` も）を、README と npm（`package.json`）が案内する `bitbankinc/bitbank-lab-mcp` に揃えた。
-
 ### Security
 - `@modelcontextprotocol/server` を 2.0.0 から 2.4.0 に更新（HTTP トランスポートの high 脆弱性。本サーバーは stdio だけなので該当しないが、依存の監査を通すために上げる）。依存する `@modelcontextprotocol/core` も 2.4.0 になる。ツール・プロンプト・リソースの一覧とサーバーの capabilities は変わらない。
 - `body-parser` を 2.3.0 から 2.4.0 に更新（`@modelcontextprotocol/sdk` → `express` 経由の high 脆弱性。HTTP 経路だけ）。
 - `@hono/node-server` を 2.0.12 から 2.1.5 に更新（`@modelcontextprotocol/sdk` 経由の moderate 脆弱性。HTTP 経路だけ）。
 - `qs` を 6.16.0 から 6.16.1 に更新（`@modelcontextprotocol/sdk` → `express` 経由の moderate 脆弱性。HTTP 経路だけ）。
-- `fast-uri` を 3.1.6 から 3.1.9 に更新（`@modelcontextprotocol/sdk` → `ajv` 経由の high / moderate 脆弱性）。
-- `ip-address` を 10.4.0 から 10.7.4 に更新（`@modelcontextprotocol/sdk` → `express-rate-limit` 経由）。
+- `fast-uri` を 3.1.8 から 3.1.9 に更新（`@modelcontextprotocol/sdk` → `ajv` 経由の high / moderate 脆弱性）。
+- `ip-address` を 10.7.2 から 10.7.4 に更新（`@modelcontextprotocol/sdk` → `express-rate-limit` 経由）。
 - `@modelcontextprotocol/sdk` を 1.30.0 から 1.32.1 に更新（OAuth クライアントの high 脆弱性）。
 - `proxy-addr` を 2.0.7 から 2.0.8 に更新（`@modelcontextprotocol/sdk` → `express` 経由の critical 脆弱性）。
 - `hono` を 4.13.5 から 4.13.13 に更新（`@modelcontextprotocol/sdk` 経由の moderate 脆弱性）。
@@ -25,6 +22,30 @@
 - `vite` を 8.1.0 から 8.3.4 に更新（devDependency。開発サーバーと同梱の `launch-editor` の high 脆弱性）。確認 UI の `ui/*/dist` は作り直していない。
 - `vitest` / `@vitest/coverage-v8` を 4.1.11 から 4.1.12 に更新（devDependency。`@vitest/mocker` の moderate 脆弱性）。
 - `zod` を 4.4.3 から 4.6.7 に更新（大きすぎる配列などを検証するときのメモリ枯渇の high 脆弱性）。配列の件数の上限を要素より先に確かめるようになり、上限を超えた配列を弾くときは要素ごとのエラーを出さなくなった（変更前後で全ツールの入力 974 通りを比べた範囲では、受け付ける入力・弾く入力は変わらなかった）。`render_candle_pattern_diagram` の `involvedIndices`（2 要素のタプル）は、ツール定義の JSON Schema に `items: false` / `minItems: 2` / `maxItems: 2` が付く。
+
+## [0.5.2] - 2026-09-29
+
+### Fixed
+
+- Claude Code / claude.ai 向け plugin の本体を `plugins/bitbank-lab-mcp/`（`.claude-plugin/plugin.json` と `skills/`）に移し、`.claude-plugin/marketplace.json` の `source` を `./plugins/bitbank-lab-mcp` に変更した。`source: "./"` ではリポジトリ直下の npm 用 `bin/bitbank-lab-mcp.js` が plugin に含まれ、claude.ai の組織同期（Claude Desktop / claude.ai への配布）が `marketplace_sync_bin_directory_not_allowed` で拒否していた。`.claude/skills/` の symlink と README / docs の参照先も新しい場所に合わせ、置き場所を `tests/plugin-marketplace-layout.test.ts` で固定した。
+
+### Security
+
+- `fast-uri` を 3.1.6 → 3.1.8 に上げた（`@modelcontextprotocol/sdk` → `ajv` 経由。high: GHSA-qw65-cvwx-89v3 / GHSA-58mr-gqgx-xq4g）。
+- `ip-address` を 10.4.0 → 10.7.2 に上げた（`@modelcontextprotocol/sdk` → `express-rate-limit` 経由。moderate: GHSA-rpw4-54j3-4h4q / GHSA-2vr4-cq9g-pvrc）。
+
+## [0.5.1] - 2026-09-28
+
+### Fixed
+
+- plugin manifest（`.claude-plugin/plugin.json` / `.cursor-plugin/plugin.json` / `.codex-plugin/plugin.json` / `gemini-extension.json`）の `version` が 0.1.1 のまま据え置かれていた。Claude Code は `plugin.json` の `version` でインストール済み plugin の更新を判定するため、0.4.0 / 0.5.0 の plugin 側の変更（skill 等）が既存の利用者に届いていなかった。0.5.1 に揃え、以後はリリースごとにタグと揃える（手順は `docs/ops.md`、ずれは `tests/plugin-manifest-version.test.ts` が検出する）。MCP サーバー本体は `npx -y bitbank-lab-mcp` で起動時に最新版を取得するため影響を受けていない。
+- Windows 上で `npm test` が 15 件失敗していたテスト側の POSIX 前提を解消した（@aobathree さんの #25 が原型）。あわせて jq ゲートの漏れと CI でのサイレント skip を塞ぎ、`checklist-verify` テストの bash 起動を `execFileSync` に統一した。
+- `.claude-plugin/marketplace.json` の plugin `source` を fork 固定の `{ "source": "github", "repo": "tjackiet/bitbank-lab-mcp" }` から相対パス `"./"` に変更。`bitbankinc/bitbank-lab-mcp` を marketplace として登録した場合も、plugin が fork ではなく登録元リポジトリ自身から解決されるようになった。あわせて同エントリと Claude Code / Cursor / Codex 向け plugin manifest の `homepage` / `repository`（Codex は `interface.websiteURL` も）を、README と npm（`package.json`）が案内する `bitbankinc/bitbank-lab-mcp` に揃えた。
+- `tests/patterns/no-forming-double-268.test.ts` の実データ B のトリップワイヤを組み合わせごとの `it` に分割し、遅い CI ランナーでグローバルの `testTimeout`（10 秒）を超えて落ちることがあった問題を解消した。
+
+### Docs
+
+- README / gitbook（クイックスタート・セットアップ・取引の安全設計）: Claude Desktop 向けの「取引注文・注文キャンセル実行」の設定例に `BITBANK_MCP_APPS_EXECUTE=1` を追加し、参照のみの設定例と区別できるようにした。確認トークンが `_meta` に載る条件（オプトインがあり、かつクライアントが elicitation 非対応で MCP Apps UI を宣言している場合）と、その場合の安全性がホストの挙動に依存することを明記した。撤去済みの `BITBANK_TRUST_HOST_APPROVAL` への言及を削除し、セットアップのオプション環境変数の表を `BITBANK_MCP_APPS_EXECUTE` に差し替えた。
 
 ## [0.5.0] - 2026-09-14
 
