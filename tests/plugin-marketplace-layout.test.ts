@@ -36,7 +36,7 @@ describe('marketplace の plugin の置き場所', () => {
 	});
 
 	for (const entry of ENTRIES) {
-		describe(entry.name, () => {
+		describe(`plugin: ${entry.name}`, () => {
 			const source = typeof entry.source === 'string' ? entry.source : '';
 			const dir = path.resolve(PACKAGE_ROOT, source);
 
