@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
+import { macd as rawMacd } from '../lib/indicators.js';
+import { roundPriceAtLevel } from '../lib/price.js';
 import { toolDef } from '../src/handlers/analyzeIndicatorsHandler.js';
 import { GetIndicatorsInputSchema } from '../src/schemas.js';
-import analyzeIndicators, { clearIndicatorCache, computeOBV, ema } from '../tools/analyze_indicators.js';
+import analyzeIndicators, { clearIndicatorCache, computeOBV, ema, macd } from '../tools/analyze_indicators.js';
 import { assertFail, assertOk } from './_assertResult.js';
 import { requireDefined } from './helpers/assert.js';
 
@@ -662,6 +664,18 @@ describe('analyze_indicators', () => {
 			assertOk(res);
 			expect(res.meta.warning).toBeUndefined();
 		});
+	});
+});
+
+describe('macd (exported)', () => {
+	it('過去の値の桁は同じ足の終値で決め、最新の終値の桁が変わっても過去の値を潰さない', () => {
+		// 500 円台で推移したあと最後だけ 1,000 円台に上がる。最新の終値で桁を決めると過去の値も小数 2 桁になる。
+		const values = [...Array.from({ length: 60 }, (_, i) => 500 + Math.sin(i / 5) * 0.05), 1000];
+		const raw = rawMacd(values);
+		const res = macd(values);
+		const k = 50;
+		expect(res.hist[k]).toBe(roundPriceAtLevel(raw.hist[k], values[k], 2));
+		expect(res.hist[k]).not.toBe(roundPriceAtLevel(raw.hist[k], 1000, 2));
 	});
 });
 

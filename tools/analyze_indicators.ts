@@ -78,9 +78,9 @@ export function clearIndicatorCache(): void {
 	indicatorCache.clear();
 }
 
-// 価格の系列を小数 2 桁に固定すると数円のペアで有効数字が 3 桁ほどしか残らないので、価格の水準の桁（最低 2 桁）で丸める。MACD のような値幅は refPrice に価格を渡す。
-function toPriceSeries(values: number[], refPrice?: number): NumericSeries {
-	return values.map((v) => (Number.isFinite(v) ? roundPriceAtLevel(v, refPrice ?? v, 2) : null));
+// 価格の系列を小数 2 桁に固定すると数円のペアで有効数字が 3 桁ほどしか残らないので、価格の水準の桁（最低 2 桁）で丸める。MACD のような値幅は refPrices に各足の価格を渡す。
+function toPriceSeries(values: number[], refPrices?: readonly number[]): NumericSeries {
+	return values.map((v, i) => (Number.isFinite(v) ? roundPriceAtLevel(v, refPrices?.[i] ?? v, 2) : null));
 }
 
 export function sma(values: number[], period: number = SMA_DEFAULT_PERIOD): NumericSeries {
@@ -116,11 +116,11 @@ export function macd(
 	signal = MACD_SIGNAL,
 ): { line: NumericSeries; signal: NumericSeries; hist: NumericSeries } {
 	const raw = rawMacd(values, fast, slow, signal);
-	const priceLevel = values.at(-1);
+	// 最新の終値の水準で決めると、価格の桁が変わったときに過去の値の桁まで変わり、小さい値が 0 になってクロスが消えるので、同じ足の終値で決める。
 	return {
-		line: toPriceSeries(raw.line, priceLevel),
-		signal: toPriceSeries(raw.signal, priceLevel),
-		hist: toPriceSeries(raw.hist, priceLevel),
+		line: toPriceSeries(raw.line, values),
+		signal: toPriceSeries(raw.signal, values),
+		hist: toPriceSeries(raw.hist, values),
 	};
 }
 
