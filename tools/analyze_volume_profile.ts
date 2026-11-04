@@ -1,7 +1,7 @@
 import type { z } from 'zod';
 import { toDisplayTime, toIsoWithTz } from '../lib/datetime.js';
-import { formatPair, formatPercent, formatPrice, formatPriceAtLevel } from '../lib/formatter.js';
-import { roundPriceAtLevel } from '../lib/price.js';
+import { formatPair, formatPercent, formatPrice, formatPriceAtLevel, formatPriceDecimals } from '../lib/formatter.js';
+import { priceDecimals, roundAtDecimalDigits, roundPriceAtLevel } from '../lib/price.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import {
 	applyTxLimit,
@@ -129,9 +129,9 @@ function priceRangeOf(txs: Tx[]): { low: number; high: number } {
 	return { low, high };
 }
 
-// 小数 2 桁に固定すると数円のペアの価格帯や POC の桁が落ちる（1 円未満では 0 になる）ので、価格の水準の桁（最低 2 桁）で丸める。値幅は refPrice に価格を渡す。
-function roundProfilePrice(value: number, refPrice: number = value): number {
-	return roundPriceAtLevel(value, refPrice, 2);
+// 小数 2 桁に固定すると数円のペアの VWAP やσの桁が落ちる（1 円未満では 0 になる）ので、値の水準の桁（最低 2 桁）で丸める。
+function roundProfilePrice(value: number): number {
+	return roundPriceAtLevel(value, value, 2);
 }
 
 function calcVolumeProfile(txs: Tx[], bins: number, valueAreaPct: number) {
@@ -239,12 +239,16 @@ function calcVolumeProfile(txs: Tx[], bins: number, valueAreaPct: number) {
 		}
 	}
 
-	const fmtBin = (b: (typeof profileBins)[0]) => `${formatPriceAtLevel(b.low)}〜${formatPriceAtLevel(b.high)}`;
+	// 価格帯の幅が細かいと価格の水準の桁では隣の価格帯と同じ数字になるので、幅の 1 桁下までは残す。
+	const widthDigits = step > 0 ? 1 - Math.floor(Math.log10(step)) : 0;
+	const roundBin = (v: number) => roundAtDecimalDigits(v, Math.max(2, priceDecimals(v), widthDigits));
+	const fmtBinPrice = (v: number) => formatPriceDecimals(v, Math.max(priceDecimals(v), widthDigits));
+	const fmtBin = (b: (typeof profileBins)[0]) => `${fmtBinPrice(b.low)}〜${fmtBinPrice(b.high)}`;
 
 	return {
 		bins: profileBins.map((b, _i) => ({
-			low: roundProfilePrice(b.low),
-			high: roundProfilePrice(b.high),
+			low: roundBin(b.low),
+			high: roundBin(b.high),
 			label: fmtBin(b),
 			buyVolume: Number(b.buyVolume.toFixed(8)),
 			sellVolume: Number(b.sellVolume.toFixed(8)),
@@ -258,13 +262,13 @@ function calcVolumeProfile(txs: Tx[], bins: number, valueAreaPct: number) {
 						: ('balanced' as const),
 		})),
 		poc: {
-			price: roundProfilePrice(pocPrice),
+			price: roundBin(pocPrice),
 			volume: Number(pocVol.toFixed(8)),
 			binIndex: pocIdx,
 		},
 		valueArea: {
-			high: roundProfilePrice(profileBins[vaHigh].high),
-			low: roundProfilePrice(profileBins[vaLow].low),
+			high: roundBin(profileBins[vaHigh].high),
+			low: roundBin(profileBins[vaLow].low),
 			volume: Number(vaVol.toFixed(8)),
 			pct: totalVolume > 0 ? Number(((vaVol / totalVolume) * 100).toFixed(1)) : 0,
 		},
@@ -407,7 +411,7 @@ export default async function analyzeVolumeProfile(
 		const data = {
 			vwap: {
 				price: roundProfilePrice(vwap),
-				stdDev: roundProfilePrice(stdDev, vwap),
+				stdDev: roundProfilePrice(stdDev),
 				bands: {
 					upper2sigma: roundProfilePrice(vwap + 2 * stdDev),
 					upper1sigma: roundProfilePrice(vwap + stdDev),

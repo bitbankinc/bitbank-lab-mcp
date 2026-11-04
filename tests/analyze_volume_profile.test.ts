@@ -50,6 +50,37 @@ function mockFailResult(errorType = 'network', summary = 'network failed') {
 describe('analyze_volume_profile', () => {
 	const mockedGetTransactions = vi.mocked(getTransactions);
 
+	it('価格帯の幅が呼び値より細かくても、隣の価格帯と同じ数字にしない', async () => {
+		const prices = Array.from({ length: 20 }, (_, i) => (i % 2 === 0 ? 31.2345 : 31.2346));
+		mockedGetTransactions.mockResolvedValue(asMockResult(mockTxResult(buildTxs(prices))));
+
+		const res = await analyzeVolumeProfile('btc_jpy', 0, 10, 20, 0.7);
+
+		assertOk(res);
+		const bins = res.data.profile.bins;
+		expect(new Set(bins.map((b) => b.low)).size).toBe(bins.length);
+		expect(new Set(bins.map((b) => b.label)).size).toBe(bins.length);
+	});
+
+	it('σ が呼び値より小さくても構造化データで 0 にしない', async () => {
+		const prices = [...Array.from({ length: 9 }, () => 31.2345), 31.2346];
+		mockedGetTransactions.mockResolvedValue(
+			asMockResult(
+				mockTxResult(
+					buildTxs(
+						prices,
+						Array.from({ length: 10 }, () => 1),
+					),
+				),
+			),
+		);
+
+		const res = await analyzeVolumeProfile('btc_jpy', 0, 10, 4, 0.7);
+
+		assertOk(res);
+		expect(res.data.vwap.stdDev).toBeGreaterThan(0);
+	});
+
 	it('1 円未満の価格でも価格帯・POC・Value Area・VWAP を 0 に潰さない', async () => {
 		const prices = Array.from({ length: 20 }, (_, i) => 0.0012 + (i % 5) * 0.00001);
 		mockedGetTransactions.mockResolvedValue(asMockResult(mockTxResult(buildTxs(prices))));
