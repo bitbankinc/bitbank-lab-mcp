@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PatternFilterEnum, PatternTypeEnum } from '../../src/schema/patterns.js';
+import { PatternCandidateTypeEnum, PatternFilterEnum, PatternTypeEnum } from '../../src/schema/patterns.js';
 import {
 	CANDIDATE_LABEL_COVERAGE,
 	candidateLabelCoverage,
@@ -56,6 +56,18 @@ describe('filterCandidatesByWant', () => {
 	it("分類前ラベル 'triangle' は無関係な種別の要求では残らない", () => {
 		for (const want of ['double_top', 'rising_wedge', 'bull_pennant']) {
 			expect(filterCandidatesByWant([cand('triangle')], new Set([want])), want).toEqual([]);
+		}
+	});
+
+	it("分類前ラベル 'wedge' は上昇・下降ウェッジのどちらの要求でも残る", () => {
+		for (const want of ['rising_wedge', 'falling_wedge']) {
+			expect(filterCandidatesByWant([cand('wedge')], new Set([want])), want).toHaveLength(1);
+		}
+	});
+
+	it("分類前ラベル 'wedge' は三角形や無関係な種別の要求では残らない", () => {
+		for (const want of ['triangle', 'triangle_symmetrical', 'double_top', 'bull_pennant']) {
+			expect(filterCandidatesByWant([cand('wedge')], new Set([want])), want).toEqual([]);
 		}
 	});
 
@@ -128,10 +140,9 @@ describe('schema との整合', () => {
 		}
 	});
 
-	it('candidate ラベル写像のキーは candidate.type として妥当（PatternFilterEnum の値）', () => {
-		for (const key of Object.keys(CANDIDATE_LABEL_COVERAGE)) {
-			expect(filterValues.has(key), `${key} は PatternFilterEnum に無い`).toBe(true);
-		}
+	it('candidate ラベル写像のキーが schema の umbrella ラベル（PatternCandidateTypeEnum の出力 type 以外）を過不足なく覆う', () => {
+		const umbrellaLabels = PatternCandidateTypeEnum.options.filter((v) => !outputTypes.has(v));
+		expect(Object.keys(CANDIDATE_LABEL_COVERAGE).sort()).toEqual([...umbrellaLabels].sort());
 	});
 
 	it('すべての出力 type は自分自身の要求で残る', () => {

@@ -42,6 +42,9 @@ export const PatternTypeEnum = z.enum(PATTERN_OUTPUT_TYPES);
 
 export const PatternFilterEnum = z.enum([...PATTERN_OUTPUT_TYPES, ...PATTERN_FILTER_ALIASES]);
 
+// 'wedge' は候補ラベルにだけ使い、入力の絞り込みでは受け付けない（入力の型を広げずに、ウェッジの走査の棄却を三角形と分けるため）。
+export const PatternCandidateTypeEnum = z.enum([...PATTERN_OUTPUT_TYPES, ...PATTERN_FILTER_ALIASES, 'wedge']);
+
 export const DetectPatternsInputSchema = BasePairInputSchema.extend({
 	type: CandleTypeEnum.optional().default('1day'),
 	limit: z
@@ -963,8 +966,7 @@ export const DetectPatternsOutputSchema = z.union([
 					candidates: z
 						.array(
 							z.object({
-								// 候補ラベルは方向分類前の 'flag' / 'pennant' / 'triangle' を含むため filter enum を使う。
-								type: PatternFilterEnum,
+								type: PatternCandidateTypeEnum,
 								accepted: z.boolean(),
 								reason: z.string().optional(),
 								status: z.string().optional(),

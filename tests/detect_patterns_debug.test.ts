@@ -352,6 +352,31 @@ describe('detect_patterns: triangle の分類前ラベル（#129）', () => {
 	});
 });
 
+describe('detect_patterns: wedge の分類前ラベル', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	// BTC 日足（90 本）では、ウェッジの走査が上下の線の傾きの向きがそろわない窓を回帰の当てはまり不足で 4 件棄却する。
+	const isWedgeScanReject = (c: { reason?: string }) => c.reason === 'r2_below_threshold';
+
+	it('上下の傾きの向きがそろわない窓の棄却は umbrella ラベル wedge で積まれ、ウェッジの要求で届く', async () => {
+		const res = await run(buildBtcJpy2026Candles(), { patterns: ['rising_wedge'] });
+		assertOk(res);
+		const rejects = (res.meta.debug?.candidates ?? []).filter((c) => c.type === 'wedge');
+		expect(rejects).toHaveLength(4);
+		expect(rejects.every(isWedgeScanReject)).toBe(true);
+	});
+
+	it('ウェッジの走査の棄却は三角形の要求では届かない', async () => {
+		const res = await run(buildBtcJpy2026Candles(), { patterns: ['triangle'] });
+		assertOk(res);
+		const cands = res.meta.debug?.candidates ?? [];
+		expect(cands.length, '三角形系の候補が 0 件では検証にならない').toBeGreaterThan(0);
+		expect(cands.filter(isWedgeScanReject)).toEqual([]);
+	});
+});
+
 describe('detect_patterns: pivot の価格基準（#125）', () => {
 	afterEach(() => {
 		vi.restoreAllMocks();

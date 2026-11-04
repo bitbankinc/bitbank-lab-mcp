@@ -4,6 +4,7 @@ import {
 	CandlePatternTypeEnum,
 	DetectedPatternSchema,
 	DetectPatternsInputSchema,
+	PatternCandidateTypeEnum,
 	PatternFilterEnum,
 	PatternTypeEnum,
 } from '../../src/schema/patterns.js';
@@ -67,6 +68,13 @@ describe('PatternFilterEnum', () => {
 	it('入力フィルタとして DetectPatternsInputSchema.patterns に渡せる', () => {
 		const parsed = DetectPatternsInputSchema.parse({ patterns: ['flag', 'pennant', 'triangle'] });
 		expect(parsed.patterns).toEqual(['flag', 'pennant', 'triangle']);
+	});
+});
+
+describe('PatternCandidateTypeEnum', () => {
+	it("debug の候補ラベル 'wedge' を受け入れるが、入力の絞り込みには無い", () => {
+		expect(PatternCandidateTypeEnum.parse('wedge')).toBe('wedge');
+		expect(() => PatternFilterEnum.parse('wedge')).toThrow();
 	});
 });
 

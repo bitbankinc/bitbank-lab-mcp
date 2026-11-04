@@ -577,7 +577,7 @@ function detectRegressionWedges(
 					? 'falling_wedge'
 					: upper.slope > 0 && lower.slope > 0
 						? 'rising_wedge'
-						: 'triangle_symmetrical';
+						: 'wedge';
 			debugCandidates.push({
 				type: dbgType,
 				accepted: false,
@@ -666,7 +666,7 @@ function detectRegressionWedges(
 					? 'falling_wedge'
 					: upper.slope > 0 && lower.slope > 0
 						? 'rising_wedge'
-						: 'triangle_symmetrical';
+						: 'wedge';
 			debugCandidates.push({
 				type: dbgType,
 				accepted: false,
