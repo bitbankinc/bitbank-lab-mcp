@@ -3,6 +3,7 @@ import path from 'node:path';
 import { buildCumulativeSteps } from '../../lib/depth-analysis.js';
 import { formatPair } from '../../lib/formatter.js';
 import getDepth from '../../lib/get-depth.js';
+import { EPSILON } from '../../lib/math.js';
 import { fail, ok } from '../../lib/result.js';
 import type { Pair, Result } from '../../src/schemas.js';
 import { buildDepthPaths } from './depth-paths.js';
@@ -45,7 +46,7 @@ export async function renderDepthChart(
 		const plotW = w - padding.left - padding.right;
 		const plotH = h - padding.top - padding.bottom;
 		const x = (price: number) =>
-			Number((padding.left + ((price - xMinP) * plotW) / Math.max(1, xMaxP - xMinP)).toFixed(effectivePrecision));
+			Number((padding.left + ((price - xMinP) * plotW) / Math.max(EPSILON, xMaxP - xMinP)).toFixed(effectivePrecision));
 		const y = (qty: number) => Number((h - padding.bottom - (qty * plotH) / maxQty).toFixed(effectivePrecision));
 
 		const { bidPath, askPath, bidFill, askFill } = buildDepthPaths(bidSteps, askSteps, x, y);

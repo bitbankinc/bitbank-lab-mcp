@@ -12,6 +12,7 @@ import { ensurePair } from '../lib/validate.js';
 import type { FailResult, OkResult, Pair } from '../src/schemas.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
 import { buildDepthPaths } from './chart/depth-paths.js';
+import { niceTicks } from './chart/svg-utils.js';
 
 type RenderData = { svg?: string; filePath?: string; summary?: Record<string, unknown> };
 type RenderMeta = {
@@ -88,14 +89,12 @@ export default async function renderDepthSvg(
 		const midDecimals = midPriceDecimals(bestBid, bestAsk);
 		const yAxis = `<line x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${h - padding.bottom}" stroke="#4b5563" stroke-width="1"/>`;
 		const xAxis = `<line x1="${padding.left}" y1="${h - padding.bottom}" x2="${w - padding.right}" y2="${h - padding.bottom}" stroke="#4b5563" stroke-width="1"/>`;
-		const yStep = maxQty <= 25 ? 5 : maxQty <= 50 ? 10 : 20;
-		const yMaxNice = Math.ceil(maxQty / yStep) * yStep;
-		const yTicks = [];
-		for (let v = 0; v <= yMaxNice; v += yStep) yTicks.push({ q: v, y: y(v) });
-		const yTickTexts = yTicks
+		// 数量が数百万になるペアがあり、桁をそのまま出すと左の余白に収まらない。
+		const fmtQtyAxis = new Intl.NumberFormat('en-US', { notation: 'compact', maximumSignificantDigits: 3 });
+		const yTickTexts = niceTicks(0, maxQty, 5)
 			.map(
-				(t) =>
-					`<text x="${padding.left - 8}" y="${t.y}" text-anchor="end" dominant-baseline="middle" fill="#e5e7eb" font-size="10">${Math.round(t.q)} ${baseCcy}</text>`,
+				(q) =>
+					`<text x="${padding.left - 8}" y="${y(q)}" text-anchor="end" dominant-baseline="middle" fill="#e5e7eb" font-size="10">${fmtQtyAxis.format(q)} ${baseCcy}</text>`,
 			)
 			.join('');
 		const xTicks = (() => {
@@ -106,10 +105,11 @@ export default async function renderDepthSvg(
 			}
 			return out;
 		})();
+		// 右端の目盛りは中央ぞろえだと右の余白（12px）からはみ出して切れる。
 		const xTickTexts = xTicks
 			.map(
-				(t) =>
-					`<text x="${t.x}" y="${h - padding.bottom + 14}" text-anchor="middle" fill="#e5e7eb" font-size="10">${fmtJPYAxis(t.p)}</text>`,
+				(t, i) =>
+					`<text x="${t.x}" y="${h - padding.bottom + 14}" text-anchor="${i === X_TICK_COUNT ? 'end' : 'middle'}" fill="#e5e7eb" font-size="10">${fmtJPYAxis(t.p)}</text>`,
 			)
 			.join('');
 		const legendDepth = `

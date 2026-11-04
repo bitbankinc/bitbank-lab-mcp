@@ -34,6 +34,14 @@ function depthOk(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+function yAxisTicks(svg: string): Array<{ y: number; label: string }> {
+	return [
+		...svg.matchAll(
+			/<text x="56" y="(-?[\d.]+)" text-anchor="end" dominant-baseline="middle" fill="#e5e7eb" font-size="10">([^<]+)<\/text>/g,
+		),
+	].map((m) => ({ y: Number(m[1]), label: m[2] }));
+}
+
 describe('render_depth_svg', () => {
 	const mockedGetDepth = vi.mocked(getDepth);
 
@@ -117,11 +125,45 @@ describe('render_depth_svg', () => {
 		// 横軸の目盛り（左端 = 最安の買い 31.15、右端 = 最高の売り 31.30）
 		const ticks = [
 			...svg.matchAll(
-				/<text x="([\d.]+)" y="[\d.]+" text-anchor="middle" fill="#e5e7eb" font-size="10">¥([^<]+)<\/text>/g,
+				/<text x="([\d.]+)" y="[\d.]+" text-anchor="(middle|end)" fill="#e5e7eb" font-size="10">¥([^<]+)<\/text>/g,
 			),
 		];
-		expect(ticks.map((m) => m[2])).toEqual(['31.15', '31.19', '31.23', '31.26', '31.3']);
+		expect(ticks.map((m) => m[3])).toEqual(['31.15', '31.19', '31.23', '31.26', '31.3']);
 		expect(Number(ticks.at(-1)?.[1]) - Number(ticks[0]?.[1])).toBeCloseTo(784, 0);
+		// 右端の目盛りだけ右ぞろえにして、右の余白からはみ出さないようにする
+		expect(ticks.map((m) => m[2])).toEqual(['middle', 'middle', 'middle', 'middle', 'end']);
+	});
+
+	it('数量軸の目盛りはプロット領域の中に収める（最大の数量より上に目盛りを出さない）', async () => {
+		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
+		const res = await renderDepthSvg({ pair: 'btc_jpy' });
+		assertOk(res);
+		const ticks = yAxisTicks(requireDefined(res.data.svg, 'svg'));
+		expect(ticks.map((t) => t.label)).toEqual(['0 BTC', '0.5 BTC', '1 BTC', '1.5 BTC', '2 BTC', '2.5 BTC', '3 BTC']);
+		// プロット領域の上端は padding.top = 84
+		for (const t of ticks) expect(t.y).toBeGreaterThanOrEqual(84);
+	});
+
+	it('数量が数百万になる安いペアでも、数量軸の目盛りは数本にとどめる', async () => {
+		mockedGetDepth.mockResolvedValueOnce(
+			asMockResult(
+				depthOk({
+					asks: [
+						['31.2347', '500000'],
+						['31.2500', '800000'],
+					],
+					bids: [
+						['31.2345', '1000000'],
+						['31.2000', '1200000'],
+						['31.1500', '1256789'],
+					],
+				}),
+			),
+		);
+		const res = await renderDepthSvg({ pair: 'doge_jpy' });
+		assertOk(res);
+		const ticks = yAxisTicks(requireDefined(res.data.svg, 'svg'));
+		expect(ticks.map((t) => t.label)).toEqual(['0 DOGE', '1M DOGE', '2M DOGE', '3M DOGE']);
 	});
 
 	it('preferFile=true でファイル保存', async () => {
