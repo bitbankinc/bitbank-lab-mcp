@@ -1,13 +1,3 @@
-// /depth 由来の価格を出力する全経路でここを共有する（経路ごとに丸めが違うと複数ツールのクロスチェックで mid が乖離する）。計算には丸め前の生 mid を使い、出力直前に丸める。
-
-export function isJpyPair(pair: string): boolean {
-	return pair.endsWith('_jpy');
-}
-
-export function roundPrice(value: number, jpyPair: boolean): number {
-	return jpyPair ? Math.round(value) : Number(value.toFixed(2));
-}
-
 // value * 10 ** digits は 2 進の乗算誤差で半刻みを取りこぼす（1.005 * 100 === 100.49999999999999）ので、10 進文字列の指数をずらして桁をシフトする。半刻みは円建て金額の Math.round と揃えて +∞ 方向。
 export function roundAtDecimalDigits(value: number, digits: number): number {
 	const shifted = Number(`${value}e${digits}`);
@@ -35,4 +25,26 @@ export function priceDecimals(refPrice: number): number {
 export function roundPriceAtLevel(value: number, refPrice: number = value, minDecimals = 0): number {
 	if (!Number.isFinite(value)) return value;
 	return roundAtDecimalDigits(value, Math.max(minDecimals, priceDecimals(refPrice)));
+}
+
+// 取引所の価格（気配・板・ローソク足）は呼び値の刻みに乗っているので、数値の小数の桁数がそのまま刻みの桁になる。
+export function fractionDigits(value: number): number {
+	if (!Number.isFinite(value)) return 0;
+	const [mantissa, exponent] = String(Math.abs(value)).split('e');
+	const decimals = mantissa.split('.')[1]?.length ?? 0;
+	return Math.max(0, decimals - Number(exponent ?? 0));
+}
+
+// 価格の水準の桁だけで丸めると、刻みの細かいペア（1,000 円台で 0.001 円刻みなど）で中値が最良気配の外に出るので、気配の桁より粗くしない。
+export function midPriceDecimals(bestBid: number, bestAsk: number): number {
+	return Math.max(priceDecimals((bestBid + bestAsk) / 2), fractionDigits(bestBid), fractionDigits(bestAsk));
+}
+
+// /depth 由来の中値を出す全経路でここを共有する（経路ごとに丸めが違うと複数ツールのクロスチェックで mid が乖離する）。計算には丸め前の生 mid を使い、出力直前に丸める。
+export function roundMidPrice(bestBid: number, bestAsk: number): number {
+	return roundAtDecimalDigits((bestBid + bestAsk) / 2, midPriceDecimals(bestBid, bestAsk));
+}
+
+export function roundSpread(bestBid: number, bestAsk: number): number {
+	return roundAtDecimalDigits(bestAsk - bestBid, Math.max(fractionDigits(bestBid), fractionDigits(bestAsk)));
 }

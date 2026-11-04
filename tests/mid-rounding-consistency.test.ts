@@ -1,8 +1,8 @@
-// LLM が複数ツールをクロスチェックするので、同一板の mid は経路（get_orderbook 全 mode / prepare_depth_data / lib/get-depth）によらず一致させる（丸め規約は lib/price.ts の roundPrice に集約）。
+// LLM が複数ツールをクロスチェックするので、同一板の mid は経路（get_orderbook 全 mode / prepare_depth_data / lib/get-depth）によらず一致させる（丸め規約は lib/price.ts の roundMidPrice に集約）。
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import getDepth from '../lib/get-depth.js';
-import { isJpyPair, roundPrice } from '../lib/price.js';
+import { fractionDigits, roundMidPrice, roundSpread } from '../lib/price.js';
 import getOrderbook from '../tools/get_orderbook.js';
 import prepareDepthData from '../tools/prepare_depth_data.js';
 import { asMockResult, assertOk } from './_assertResult.js';
@@ -26,22 +26,35 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe('lib/price — roundPrice / isJpyPair（丸め規約の単一ソース）', () => {
-	it('isJpyPair: _jpy 接尾辞のみ true', () => {
-		expect(isJpyPair('btc_jpy')).toBe(true);
-		expect(isJpyPair('eth_jpy')).toBe(true);
-		expect(isJpyPair('btc_usdt')).toBe(false);
+describe('lib/price — 中値とスプレッドの丸め（丸め規約の単一ソース）', () => {
+	it('fractionDigits: 数値の小数の桁数（指数表記も読む）', () => {
+		expect(fractionDigits(5_000_000)).toBe(0);
+		expect(fractionDigits(312.345)).toBe(3);
+		expect(fractionDigits(31.2346)).toBe(4);
+		expect(fractionDigits(1.5e-7)).toBe(8);
+		expect(fractionDigits(Number.NaN)).toBe(0);
 	});
 
-	it('JPY ペアは整数（四捨五入）に丸める — 円未満は無意味', () => {
-		expect(roundPrice(5_000_050.5, true)).toBe(5_000_051);
-		expect(roundPrice(5_000_050.4, true)).toBe(5_000_050);
-		expect(roundPrice(5_000_050, true)).toBe(5_000_050);
+	it('10 万円以上の中値は円の整数（半端は +∞ 方向）', () => {
+		expect(roundMidPrice(5_000_000, 5_000_101)).toBe(5_000_051);
+		expect(roundMidPrice(5_000_000, 5_000_100)).toBe(5_000_050);
 	});
 
-	it('非 JPY ペアは小数2桁に丸める', () => {
-		expect(roundPrice(123.456, false)).toBe(123.46);
-		expect(roundPrice(123.4, false)).toBe(123.4);
+	it('安いペアの中値を円の整数に潰さない', () => {
+		expect(roundMidPrice(312.345, 312.347)).toBe(312.346);
+		expect(roundMidPrice(31.2345, 31.2347)).toBe(31.2346);
+	});
+
+	// 1,000 円台で 0.001 円刻みのペアは有効数字が 7 桁ある。価格の水準の桁（6 桁）だけで丸めると 2,500.12 になり、最良の買い気配より下に出る。
+	it('刻みの細かいペアでも中値が最良気配の内側に収まる', () => {
+		const mid = roundMidPrice(2500.123, 2500.124);
+		expect(mid).toBeGreaterThanOrEqual(2500.123);
+		expect(mid).toBeLessThanOrEqual(2500.124);
+	});
+
+	it('スプレッドは気配の桁で丸め、2 進の誤差を残さない', () => {
+		expect(roundSpread(312.345, 312.346)).toBe(0.001);
+		expect(roundSpread(5_000_000, 5_000_101)).toBe(101);
 	});
 });
 
@@ -88,6 +101,46 @@ describe('mid 丸め規約 — ツール間整合（同一板 → 同一 mid）'
 		const depth = await getDepth('btc_jpy');
 		assertOk(depth);
 		expect(depth.summary).toContain(`中値: ${midText}`);
+	});
+
+	it('安いペア（0.0001 円刻み）: 全経路の mid が円の整数に潰れず一致し、本文も最後の桁まで出す', async () => {
+		mockDepth(
+			[
+				['31.2347', '1000'],
+				['31.2400', '2000'],
+			],
+			[
+				['31.2345', '1500'],
+				['31.2300', '2500'],
+			],
+		);
+
+		const summary = await getOrderbook({ pair: 'doge_jpy', mode: 'summary' });
+		const stats = await getOrderbook({ pair: 'doge_jpy', mode: 'statistics' });
+		const pressure = await getOrderbook({ pair: 'doge_jpy', mode: 'pressure' });
+		const raw = await getOrderbook({ pair: 'doge_jpy', mode: 'raw' });
+		const pdd = await prepareDepthData({ pair: 'doge_jpy' });
+		const depth = await getDepth('doge_jpy');
+		assertOk(summary);
+		assertOk(stats);
+		assertOk(pressure);
+		assertOk(raw);
+		assertOk(pdd);
+		assertOk(depth);
+
+		expect(summary.data.normalized.mid).toBe(31.2346);
+		expect(summary.data.normalized.spread).toBe(0.0002);
+		expect(stats.data.basic.currentPrice).toBe(31.2346);
+		expect(stats.data.basic.spread).toBe(0.0002);
+		expect(pressure.data.bands[0].baseMid).toBe(31.2346);
+		expect(pdd.data.mid).toBe(31.2346);
+		expect(pdd.data.spread).toBe(0.0002);
+		expect(pdd.data.bestBid).toBe(31.2345);
+		expect(pdd.data.bids[0][0]).toBe(31.2345);
+		for (const text of [summary.summary, raw.summary, depth.summary]) {
+			expect(text).toContain('中値: 31.2346円');
+			expect(text).toContain('31.2345円');
+		}
 	});
 
 	it('奇数 spread: 構造化 mid（summary / statistics / pressure / prepare_depth_data）が相互に一致', async () => {

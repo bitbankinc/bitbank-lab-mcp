@@ -142,7 +142,7 @@ describe('prepare_chart_data', () => {
 		expect(res.data.series ?? {}).not.toHaveProperty('RSI_14');
 	});
 
-	it('JPY ペアの candle 値は整数に丸められる', async () => {
+	it('10 万円以上のペアの candle 値は整数のまま', async () => {
 		mockFetch(makeOhlcvRows(600));
 		const res = await prepareChartData('btc_jpy', '1day', 10);
 		assertOk(res);
@@ -154,7 +154,7 @@ describe('prepare_chart_data', () => {
 		}
 	});
 
-	it('JPY ペアの indicator 値も整数に丸められる', async () => {
+	it('10 万円以上のペアの indicator 値は円の整数に丸められる', async () => {
 		mockFetch(makeOhlcvRows(600));
 		const res = await prepareChartData('btc_jpy', '1day', 100, ['SMA_20']);
 		assertOk(res);
@@ -164,6 +164,27 @@ describe('prepare_chart_data', () => {
 		for (const v of (sma ?? []).filter((v) => v !== null)) {
 			expect(Number.isInteger(v)).toBe(true);
 		}
+	});
+
+	it('安いペアの candle 値は取引所の価格のまま、指標と MACD も円の整数に潰さない', async () => {
+		const startMs = Date.UTC(2024, 0, 1);
+		const rows: OhlcvRow[] = Array.from({ length: 600 }, (_, i) => {
+			const base = 31 + Math.sin(i / 7) * 0.5;
+			return [base, base + 0.02, base - 0.02, base + 0.005]
+				.map((v) => v.toFixed(4))
+				.concat(['1000', String(startMs + i * 86_400_000)]) as OhlcvRow;
+		});
+		mockFetch(rows);
+		const res = await prepareChartData('doge_jpy', '1day', 30, ['SMA_20', 'MACD']);
+		assertOk(res);
+		const lastRow = rows.at(-1) as OhlcvRow;
+		expect(res.data.candles.at(-1)?.slice(0, 4)).toEqual(lastRow.slice(0, 4).map(Number));
+		const sma = (res.data.series?.SMA_20 ?? []).filter((v): v is number => v !== null);
+		expect(sma.length).toBeGreaterThan(0);
+		expect(sma.some((v) => !Number.isInteger(v))).toBe(true);
+		const hist = (res.data.subPanels?.MACD?.hist ?? []).filter((v): v is number => v !== null);
+		expect(hist.length).toBeGreaterThan(0);
+		expect(hist.some((v) => v !== 0)).toBe(true);
 	});
 
 	it('全 null 系列はレスポンスから除外される', async () => {

@@ -1,6 +1,12 @@
 import type { z } from 'zod';
 import { toIsoTime } from '../../lib/datetime.js';
-import { formatCurrency, formatPercent, formatPriceJPY, formatTrendArrow } from '../../lib/formatter.js';
+import {
+	formatCurrency,
+	formatExactPrice,
+	formatPercent,
+	formatPriceJPY,
+	formatTrendArrow,
+} from '../../lib/formatter.js';
 import { stddev } from '../../lib/math.js';
 import { prependProvisionalNote } from '../../lib/provisional-bar.js';
 import { extractUpstreamWarning, prependWarnings } from '../../lib/warning-propagation.js';
@@ -73,7 +79,7 @@ export function buildVolatilityDetailedText(input: VolDetailedInput, view: 'deta
 	const fmtCurr = (p: string, v: number | null) => formatCurrency(v, p);
 
 	const windowsList = rolling.map((r) => r.window).join('/');
-	const header = `${String(pair).toUpperCase()} [${String(type)}] close=${lastClose != null ? Number(lastClose).toLocaleString('ja-JP') : 'n/a'}\n`;
+	const header = `${String(pair).toUpperCase()} [${String(type)}] close=${lastClose != null ? formatExactPrice(Number(lastClose)) : 'n/a'}\n`;
 	const block1 = `【Volatility Metrics${ann ? ' (annualized)' : ''}, ${sampleSize ?? 'n/a'} samples】\nRV (std): ${fp(rvAnn)}\nATR: ${fmtCurr(pair, atrAbs)}\nParkinson: ${fp(pkAnn)}\nGarman-Klass: ${fp(gkAnn)}\nRogers-Satchell: ${fp(rsAnn)}`;
 
 	const maxW = rolling.length ? Math.max(...rolling.map((r) => r.window)) : null;

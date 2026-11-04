@@ -94,7 +94,7 @@ describe('isJpyQuotedPair', () => {
 	it("小文字 pair を従来どおり判定する（includes('jpy') 挙動の保存）", () => {
 		expect(isJpyQuotedPair('btc_jpy')).toBe(true);
 		expect(isJpyQuotedPair('eth_btc')).toBe(false);
-		// 既存の includes 判定は base 側 JPY も真になる。lib/price.ts の isJpyPair（endsWith('_jpy')）とは条件が違うので、ここで挙動を固定しておく
+		// 既存の includes 判定は base 側 JPY も真になる。ここで挙動を固定しておく
 		expect(isJpyQuotedPair('jpy_btc')).toBe(true);
 	});
 

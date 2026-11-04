@@ -3,7 +3,7 @@
 import { toIsoTime } from '../lib/datetime.js';
 import { buildCumulativeSteps } from '../lib/depth-analysis.js';
 import getDepth from '../lib/get-depth.js';
-import { isJpyPair, roundPrice } from '../lib/price.js';
+import { roundMidPrice, roundSpread } from '../lib/price.js';
 import { fail, failFromError, failFromValidation, ok, parseAsResult, toStructured } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import type { FailResult, OkResult, Pair } from '../src/schemas.js';
@@ -78,7 +78,6 @@ export default async function prepareDepthData(
 	if (!chk.ok) return failFromValidation(chk);
 
 	const maxLevels = Math.max(10, Math.min(1000, Math.floor(levels)));
-	const jpyPair = isJpyPair(chk.pair);
 
 	try {
 		const depth = await getDepth(chk.pair, { maxLevels });
@@ -101,8 +100,8 @@ export default async function prepareDepthData(
 		const bidStepsRaw = buildCumulativeSteps(bidsNum, 'bid');
 		const askStepsRaw = buildCumulativeSteps(asksNum, 'ask');
 
-		const bidSteps: Array<[number, number]> = bidStepsRaw.map(([p, q]) => [roundPrice(p, jpyPair), roundVolume(q)]);
-		const askSteps: Array<[number, number]> = askStepsRaw.map(([p, q]) => [roundPrice(p, jpyPair), roundVolume(q)]);
+		const bidSteps: Array<[number, number]> = bidStepsRaw.map(([p, q]) => [p, roundVolume(q)]);
+		const askSteps: Array<[number, number]> = askStepsRaw.map(([p, q]) => [p, roundVolume(q)]);
 
 		const bestBid = bidStepsRaw[0]?.[0] ?? null;
 		const bestAsk = askStepsRaw[0]?.[0] ?? null;
@@ -129,10 +128,10 @@ export default async function prepareDepthData(
 		const data: PrepareDepthDataResult = {
 			bids: bidSteps,
 			asks: askSteps,
-			bestBid: bestBid != null ? roundPrice(bestBid, jpyPair) : null,
-			bestAsk: bestAsk != null ? roundPrice(bestAsk, jpyPair) : null,
-			mid: mid != null ? roundPrice(mid, jpyPair) : null,
-			spread: spread != null ? roundPrice(spread, jpyPair) : null,
+			bestBid,
+			bestAsk,
+			mid: bestBid != null && bestAsk != null ? roundMidPrice(bestBid, bestAsk) : null,
+			spread: bestBid != null && bestAsk != null ? roundSpread(bestBid, bestAsk) : null,
 			spreadPct,
 			totalBidVolume: roundVolume(totalBidVolume),
 			totalAskVolume: roundVolume(totalAskVolume),
@@ -185,7 +184,7 @@ export const toolDef: ToolDefinition = {
 		'レスポンス形式: { bids: [[price, cumVolume], ...], asks: [[price, cumVolume], ...], bestBid, bestAsk, mid, spread, spreadPct, totalBidVolume, totalAskVolume, band: {pct, bidVolume, askVolume, ratio}, timestamp, isoTime }\n' +
 		'- bids は価格降順、asks は価格昇順\n' +
 		'- band は mid を中心とした ±bandPct 範囲の買い/売り量と比率（ratio = bidVolume / askVolume）\n' +
-		'- JPY ペアの価格は整数に丸め済み',
+		'- bids / asks / bestBid / bestAsk は取引所の価格のまま。mid と spread は丸め済み（10 万円以上は円の整数、安いペアほど小数の桁が増える）',
 	inputSchema: PrepareDepthDataInputSchema,
 	handler: async ({ pair, levels, bandPct }: { pair?: string; levels?: number; bandPct?: number }) => {
 		const result = await prepareDepthData({ pair, levels, bandPct });

@@ -1,9 +1,9 @@
 import { GetDepthOutputSchema } from '../src/schemas.js';
 import { toNum } from './conversions.js';
 import { estimateZones } from './depth-analysis.js';
-import { formatSummary, formatTimestampJST } from './formatter.js';
+import { formatExactPrice, formatSummary, formatTimestampJST } from './formatter.js';
 import { BITBANK_API_BASE, DEFAULT_RETRIES, fetchJsonWithRateLimit } from './http.js';
-import { isJpyPair, roundPrice } from './price.js';
+import { roundMidPrice } from './price.js';
 import { fail, failFromError, failFromValidation, ok } from './result.js';
 import { createMeta, ensurePair } from './validate.js';
 
@@ -27,13 +27,13 @@ export function buildDepthText(input: BuildDepthTextInput): string {
 		'',
 		summary,
 		`板の層数: 買い ${bids.length}層 / 売り ${asks.length}層`,
-		mid ? `中値: ${mid.toLocaleString('ja-JP')}円` : '',
+		mid ? `中値: ${formatExactPrice(mid)}円` : '',
 		'',
 		`🟢 買い板 (全${bids.length}層):`,
-		...bids.map(([p, s]: [unknown, unknown], i: number) => `  ${i + 1}. ${Number(p).toLocaleString('ja-JP')}円 ${s}`),
+		...bids.map(([p, s]: [unknown, unknown], i: number) => `  ${i + 1}. ${formatExactPrice(Number(p))}円 ${s}`),
 		'',
 		`🔴 売り板 (全${asks.length}層):`,
-		...asks.map(([p, s]: [unknown, unknown], i: number) => `  ${i + 1}. ${Number(p).toLocaleString('ja-JP')}円 ${s}`),
+		...asks.map(([p, s]: [unknown, unknown], i: number) => `  ${i + 1}. ${formatExactPrice(Number(p))}円 ${s}`),
 	]
 		.filter(Boolean)
 		.join('\n');
@@ -79,7 +79,7 @@ export default async function getDepth(pair: string, { timeoutMs = 3000, maxLeve
 		// best 気配は finite な数値のみ採用し、mid を NaN 化させない。
 		const bestAsk = toNum(asks[0]?.[0]);
 		const bestBid = toNum(bids[0]?.[0]);
-		const mid = bestBid != null && bestAsk != null ? roundPrice((bestBid + bestAsk) / 2, isJpyPair(chk.pair)) : null;
+		const mid = bestBid != null && bestAsk != null ? roundMidPrice(bestBid, bestAsk) : null;
 		const summary = formatSummary({
 			pair: chk.pair,
 			latest: mid ?? undefined,

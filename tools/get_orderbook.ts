@@ -1,9 +1,9 @@
 import { toNum } from '../lib/conversions.js';
 import { toIsoTime } from '../lib/datetime.js';
 import { estimateZones } from '../lib/depth-analysis.js';
-import { formatSummary, formatTimestampJST } from '../lib/formatter.js';
+import { formatExactPrice, formatPriceDecimals, formatSummary, formatTimestampJST } from '../lib/formatter.js';
 import { BITBANK_API_BASE, DEFAULT_RETRIES, fetchJsonWithRateLimit } from '../lib/http.js';
-import { isJpyPair, roundPrice } from '../lib/price.js';
+import { midPriceDecimals, roundMidPrice, roundSpread } from '../lib/price.js';
 import { fail, failFromError, failFromValidation, ok, parseAsResult } from '../lib/result.js';
 import { createMeta, ensurePair, validateLimit } from '../lib/validate.js';
 import type { GetOrderbookData, GetOrderbookMeta, OrderbookLevelWithCum } from '../src/schemas.js';
@@ -54,11 +54,10 @@ function buildSummary(pair: string, bidsNum: NumLevel[], asksNum: NumLevel[], to
 	const bids = toLevelsWithCum(bidsNum, topN);
 	const asks = toLevelsWithCum(asksNum, topN);
 
-	const jpyPair = isJpyPair(pair);
 	const bestAsk = asks[0]?.price ?? null;
 	const bestBid = bids[0]?.price ?? null;
-	const spread = bestAsk != null && bestBid != null ? Number((bestAsk - bestBid).toFixed(0)) : null;
-	const mid = bestAsk != null && bestBid != null ? roundPrice((bestAsk + bestBid) / 2, jpyPair) : null;
+	const spread = bestAsk != null && bestBid != null ? roundSpread(bestBid, bestAsk) : null;
+	const mid = bestAsk != null && bestBid != null ? roundMidPrice(bestBid, bestAsk) : null;
 
 	const summary = formatSummary({
 		pair,
@@ -72,17 +71,17 @@ function buildSummary(pair: string, bidsNum: NumLevel[], asksNum: NumLevel[], to
 		summary,
 		'',
 		`📊 板情報 (上位${topN}層):`,
-		`中値: ${mid?.toLocaleString('ja-JP') ?? 'N/A'}円`,
-		`スプレッド: ${spread?.toLocaleString('ja-JP') ?? 'N/A'}円`,
+		`中値: ${mid != null ? formatExactPrice(mid) : 'N/A'}円`,
+		`スプレッド: ${spread != null ? formatExactPrice(spread) : 'N/A'}円`,
 		'',
 		`🟢 買い板 (Bids): ${bids.length}層`,
 		...bids.map(
-			(b, i) => `  ${i + 1}. ${b.price.toLocaleString('ja-JP')}円 ${b.size.toFixed(4)} (cum:${b.cumSize.toFixed(4)})`,
+			(b, i) => `  ${i + 1}. ${formatExactPrice(b.price)}円 ${b.size.toFixed(4)} (cum:${b.cumSize.toFixed(4)})`,
 		),
 		'',
 		`🔴 売り板 (Asks): ${asks.length}層`,
 		...asks.map(
-			(a, i) => `  ${i + 1}. ${a.price.toLocaleString('ja-JP')}円 ${a.size.toFixed(4)} (cum:${a.cumSize.toFixed(4)})`,
+			(a, i) => `  ${i + 1}. ${formatExactPrice(a.price)}円 ${a.size.toFixed(4)} (cum:${a.cumSize.toFixed(4)})`,
 		),
 	]
 		.filter(Boolean)
@@ -107,12 +106,11 @@ function buildSummary(pair: string, bidsNum: NumLevel[], asksNum: NumLevel[], to
 
 function buildPressure(pair: string, bidsRaw: RawLevel[], asksRaw: RawLevel[], bandsPct: number[], timestamp: number) {
 	const baseCcy = pair.split('_')[0]?.toUpperCase() ?? '';
-	const jpyPair = isJpyPair(pair);
 	const bestAsk = Number(asksRaw?.[0]?.[0] ?? NaN);
 	const bestBid = Number(bidsRaw?.[0]?.[0] ?? NaN);
 	// 帯域境界の計算には丸め前の生 mid を使い、出力（baseMidOut）のみ共通の丸め規約に通す。
 	const baseMid = Number.isFinite(bestAsk) && Number.isFinite(bestBid) ? (bestAsk + bestBid) / 2 : null;
-	const baseMidOut = baseMid != null ? roundPrice(baseMid, jpyPair) : null;
+	const baseMidOut = baseMid != null ? roundMidPrice(bestBid, bestAsk) : null;
 
 	function sumInBand(levels: RawLevel[], low: number, high: number) {
 		let s = 0;
@@ -214,16 +212,16 @@ function buildStatistics(
 	timestamp: number,
 ) {
 	const baseCcy = pair.split('_')[0]?.toUpperCase() ?? '';
-	const jpyPair = isJpyPair(pair);
 	const bestBid = bidsNum.length ? Math.max(...bidsNum.map(([p]) => p)) : null;
 	const bestAsk = asksNum.length ? Math.min(...asksNum.map(([p]) => p)) : null;
 	const mid = bestBid != null && bestAsk != null ? (bestBid + bestAsk) / 2 : null;
+	const zoneDecimals = bestBid != null && bestAsk != null ? midPriceDecimals(bestBid, bestAsk) : 0;
 
 	const basic = {
-		currentPrice: mid != null ? roundPrice(mid, jpyPair) : null,
+		currentPrice: bestBid != null && bestAsk != null ? roundMidPrice(bestBid, bestAsk) : null,
 		bestBid: bestBid != null ? Number(bestBid) : null,
 		bestAsk: bestAsk != null ? Number(bestAsk) : null,
-		spread: bestBid != null && bestAsk != null ? Number(bestAsk) - Number(bestBid) : null,
+		spread: bestBid != null && bestAsk != null ? roundSpread(bestBid, bestAsk) : null,
 		spreadPct: bestBid != null && bestAsk != null && mid ? (Number(bestAsk) - Number(bestBid)) / Number(mid) : null,
 	};
 
@@ -293,7 +291,7 @@ function buildStatistics(
 			const dom = bVol > aVol * 1.2 ? 'bid' : aVol > bVol * 1.2 ? 'ask' : 'balanced';
 			const note = dom === 'bid' ? '強い買いサポート' : dom === 'ask' ? '強い売り圧力' : undefined;
 			zones.push({
-				priceRange: `${Math.round(lo).toLocaleString('ja-JP')} - ${Math.round(hi).toLocaleString('ja-JP')}`,
+				priceRange: `${formatPriceDecimals(lo, zoneDecimals)} - ${formatPriceDecimals(hi, zoneDecimals)}`,
 				bidVolume: Number(bVol.toFixed(4)),
 				askVolume: Number(aVol.toFixed(4)),
 				dominance: dom,
@@ -307,7 +305,7 @@ function buildStatistics(
 		.filter(([, sz]) => sz >= threshold)
 		.slice(0, 20)
 		.map(([p, sz]) => ({
-			price: Math.round(p),
+			price: p,
 			size: Number(sz.toFixed(3)),
 			distance: mid ? Number((((p - mid) / mid) * 100).toFixed(2)) : null,
 		}));
@@ -315,7 +313,7 @@ function buildStatistics(
 		.filter(([, sz]) => sz >= threshold)
 		.slice(0, 20)
 		.map(([p, sz]) => ({
-			price: Math.round(p),
+			price: p,
 			size: Number(sz.toFixed(3)),
 			distance: mid ? Number((((p - mid) / mid) * 100).toFixed(2)) : null,
 		}));
@@ -341,7 +339,7 @@ function buildStatistics(
 		`📸 ${formatTimestampJST(timestamp)}`,
 		'',
 		`=== ${String(pair).toUpperCase()} 板統計分析 ===`,
-		`💰 現在価格: ${basic.currentPrice != null ? `${basic.currentPrice.toLocaleString('ja-JP')}円` : 'n/a'}`,
+		`💰 現在価格: ${basic.currentPrice != null ? `${formatExactPrice(basic.currentPrice)}円` : 'n/a'}`,
 		basic.spread != null ? `   スプレッド: ${basic.spread}円 (${((basic.spreadPct || 0) * 100).toFixed(6)}%)` : '',
 		'',
 		'📊 板の厚み分析:',
@@ -358,11 +356,11 @@ function buildStatistics(
 		'🐋 大口注文:',
 		...largeBids.map(
 			(o) =>
-				`買い板: ${o.price.toLocaleString('ja-JP')}円に${o.size} ${baseCcy} (${o.distance != null ? `${(o.distance >= 0 ? '+' : '') + o.distance}%` : ''})`,
+				`買い板: ${formatExactPrice(o.price)}円に${o.size} ${baseCcy} (${o.distance != null ? `${(o.distance >= 0 ? '+' : '') + o.distance}%` : ''})`,
 		),
 		...largeAsks.map(
 			(o) =>
-				`売り板: ${o.price.toLocaleString('ja-JP')}円に${o.size} ${baseCcy} (${o.distance != null ? `${(o.distance >= 0 ? '+' : '') + o.distance}%` : ''})`,
+				`売り板: ${formatExactPrice(o.price)}円に${o.size} ${baseCcy} (${o.distance != null ? `${(o.distance >= 0 ? '+' : '') + o.distance}%` : ''})`,
 		),
 		'',
 		`💡 総合評価: ${overall}（${strength}）`,
@@ -389,10 +387,9 @@ function buildRaw(
 	asksRaw: RawLevel[],
 	timestamp: number,
 ) {
-	const jpyPair = isJpyPair(pair);
 	const bestAsk = asksRaw[0]?.[0] != null ? Number(asksRaw[0][0]) : null;
 	const bestBid = bidsRaw[0]?.[0] != null ? Number(bidsRaw[0][0]) : null;
-	const mid = bestBid != null && bestAsk != null ? roundPrice((bestBid + bestAsk) / 2, jpyPair) : null;
+	const mid = bestBid != null && bestAsk != null ? roundMidPrice(bestBid, bestAsk) : null;
 
 	const bidsNum: NumLevel[] = bidsRaw.map(([p, s]) => [Number(p), Number(s)]);
 	const asksNum: NumLevel[] = asksRaw.map(([p, s]) => [Number(p), Number(s)]);
@@ -408,13 +405,13 @@ function buildRaw(
 		'',
 		summary,
 		`板の層数: 買い ${bidsRaw.length}層 / 売り ${asksRaw.length}層`,
-		mid ? `中値: ${mid.toLocaleString('ja-JP')}円` : '',
+		mid ? `中値: ${formatExactPrice(mid)}円` : '',
 		'',
 		`🟢 買い板 (全${bidsRaw.length}層):`,
-		...bidsRaw.map(([p, s], i) => `  ${i + 1}. ${Number(p).toLocaleString('ja-JP')}円 ${s}`),
+		...bidsRaw.map(([p, s], i) => `  ${i + 1}. ${formatExactPrice(Number(p))}円 ${s}`),
 		'',
 		`🔴 売り板 (全${asksRaw.length}層):`,
-		...asksRaw.map(([p, s], i) => `  ${i + 1}. ${Number(p).toLocaleString('ja-JP')}円 ${s}`),
+		...asksRaw.map(([p, s], i) => `  ${i + 1}. ${formatExactPrice(Number(p))}円 ${s}`),
 	]
 		.filter(Boolean)
 		.join('\n');
