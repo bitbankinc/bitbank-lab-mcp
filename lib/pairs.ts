@@ -1,6 +1,7 @@
 import { TtlCache } from './cache.js';
 import { toNum } from './conversions.js';
 import { getErrorMessage, isAbortError } from './error.js';
+import { roundAtDecimalDigits } from './price.js';
 
 /** private API のホストだが認証不要。 */
 export const SPOT_PAIRS_URL = 'https://api.bitbank.cc/v1/spot/pairs';
@@ -178,18 +179,6 @@ export function roundToPriceDigits(
 	const rounded = roundAtDecimalDigits(value, digits);
 	// 巨大値が Infinity に飛んだ場合は丸めを諦めて生値を返す。
 	return Number.isFinite(rounded) ? rounded : value;
-}
-
-// value * 10 ** digits は 2 進の乗算誤差で半刻みを取りこぼす（1.005 * 100 === 100.49999999999999）ので、10 進文字列の指数をずらして桁をシフトする。半刻みは円建て金額の Math.round と揃えて +∞ 方向。
-function roundAtDecimalDigits(value: number, digits: number): number {
-	const shifted = Number(`${value}e${digits}`);
-	if (Number.isFinite(shifted)) {
-		const back = Number(`${Math.round(shifted)}e${-digits}`);
-		if (Number.isFinite(back)) return back;
-	}
-	// 指数表記に化けると文字列が不正になり NaN になるので、その場合だけ素朴な乗算に落とす。
-	const factor = 10 ** digits;
-	return Math.round(value * factor) / factor;
 }
 
 export interface OrderConstraintsInput {

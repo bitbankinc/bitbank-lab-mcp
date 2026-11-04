@@ -1,5 +1,6 @@
 import { EPSILON } from '../../lib/math.js';
 import { generatePatternDiagram, type PatternDiagramData } from '../../lib/pattern-diagrams.js';
+import { roundPriceAtLevel } from '../../lib/price.js';
 import { MIN_CONFIDENCE } from '../patterns/config.js';
 import { patternBarRange } from './bar-thresholds.js';
 import { finalizeConf, periodScoreBars } from './helpers.js';
@@ -395,7 +396,7 @@ function evaluateCompletedTriple(
 	);
 	const avgMain = (a.price + b.price + c.price) / 3;
 	const patternHeight = side === 'top' ? avgMain - nlAvg : nlAvg - avgMain;
-	const target = Math.round(side === 'top' ? nlAvg - patternHeight : nlAvg + patternHeight);
+	const target = roundPriceAtLevel(side === 'top' ? nlAvg - patternHeight : nlAvg + patternHeight, nlAvg);
 	const completionFields = tripleCompletionFields({
 		isCompleted,
 		candles,
@@ -695,7 +696,7 @@ function tryFormingTriple(ctx: DetectContext, side: ReversalSide): DeduplicableP
 			{ x: lastIdx, y: avgNeck },
 		];
 
-		const target = Math.round(top ? avgNeck - height : avgNeck + height);
+		const target = roundPriceAtLevel(top ? avgNeck - height : avgNeck + height, avgNeck);
 
 		// idxs は棄却エントリと同じ 3 点にそろえ、ネックラインの 2 点は pts にだけ載せる。
 		pcand({ type, accepted: true, status: 'forming', idxs: [...idxs], pts: structurePts() });

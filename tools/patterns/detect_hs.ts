@@ -1,5 +1,6 @@
 import { EPSILON } from '../../lib/math.js';
 import { generatePatternDiagram } from '../../lib/pattern-diagrams.js';
+import { roundPriceAtLevel } from '../../lib/price.js';
 import { patternBarRange } from './bar-thresholds.js';
 import { finalizeConf, periodScoreDays } from './helpers.js';
 import { clamp01, near, relDev } from './regression.js';
@@ -143,7 +144,7 @@ export function necklineProjectionTarget(args: {
 	if (height === undefined) return undefined;
 	const nlAtAnchor = necklineAtOr(neckline, anchorIdx, fallbackNecklinePrice);
 	if (!Number.isFinite(nlAtAnchor)) return undefined;
-	return Math.round(direction === 'down' ? nlAtAnchor - height : nlAtAnchor + height);
+	return roundPriceAtLevel(direction === 'down' ? nlAtAnchor - height : nlAtAnchor + height, nlAtAnchor);
 }
 
 function necklineAtOr(neckline: NecklinePt[], i: number, fallback: number): number {

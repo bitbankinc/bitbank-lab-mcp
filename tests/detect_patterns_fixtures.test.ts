@@ -93,6 +93,36 @@ describe('detect_patterns fixtures', () => {
 		expect(res.meta.count).toBe(1);
 	});
 
+	it('1 円未満のペアでも目標価格・ネックライン・事後の値動きを円の整数に潰さない', async () => {
+		const candles = buildCompletedDoubleTopCandles().map((c) => ({
+			...c,
+			open: c.open / 1000,
+			high: c.high / 1000,
+			low: c.low / 1000,
+			close: c.close / 1000,
+		}));
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
+
+		const res = await detectPatterns('btc_jpy', '1day', 26, {
+			patterns: ['double_top'],
+			swingDepth: 2,
+			tolerancePct: 0.02,
+			includeCompleted: true,
+			includeForming: false,
+		});
+		assertOk(res);
+		expect(res.data.patterns).toHaveLength(1);
+		expect(res.data.patterns[0]).toMatchObject({
+			breakoutTarget: 0.0905,
+			aftermath: {
+				theoreticalTarget: 0.09,
+				priceMove: { days3: { high: 0.103, low: 0.092 } },
+			},
+		});
+		expect(res.summary).toContain('ネックライン: 0.11円 → 0.11円');
+		expect(res.summary).toContain('ターゲット価格: 0.0905円');
+	});
+
 	// この synthetic fixture は「確定 2 谷 + 中間の山が揃い、ネックライン突破を待っている」形なので `near_completion`（issue #262）。
 	it('synthetic fixture から near_completion の double_bottom を completed なしで返せる', async () => {
 		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildFormingDoubleBottomCandles())));

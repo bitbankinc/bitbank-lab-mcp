@@ -7,10 +7,14 @@ import {
 } from '../../tools/patterns/config.js';
 import { detectDoubles } from '../../tools/patterns/detect_doubles.js';
 import { detectHeadAndShoulders } from '../../tools/patterns/detect_hs.js';
+import { detectPennantsFlags } from '../../tools/patterns/detect_pennants.js';
+import { detectTriangles } from '../../tools/patterns/detect_triangles.js';
 import { detectTriples } from '../../tools/patterns/detect_triples.js';
+import { detectWedges } from '../../tools/patterns/detect_wedges.js';
 import { detectSwingPoints, filterPeaks, filterValleys } from '../../tools/patterns/swing.js';
 import type { CandleData, DetectContext, DetectResult } from '../../tools/patterns/types.js';
 import { buildBtcJpy1hour202608Candles } from '../fixtures/btc_jpy_1hour_2026_08.js';
+import { buildBtcJpy1hour202609Candles } from '../fixtures/btc_jpy_1hour_2026_09.js';
 
 function buildCtx(candles: CandleData[], type: string): DetectContext {
 	const { swingDepth, tolerancePct, minBarsBetweenSwings, headProminencePct } = resolveParams(type, {});
@@ -39,8 +43,10 @@ function scaleTo(candles: CandleData[], maxPrice: number): CandleData[] {
 	return candles.map((c) => ({ ...c, open: c.open * k, high: c.high * k, low: c.low * k, close: c.close * k }));
 }
 
+const patternKey = (p: DetectResult['patterns'][number]) => `${p.type}|${p.status}|${p.range?.start}|${p.range?.end}`;
+
 function signature(result: DetectResult): string[] {
-	return result.patterns.map((p) => `${p.type}|${p.status}|${p.range?.start}|${p.range?.end}`).sort();
+	return result.patterns.map(patternKey).sort();
 }
 
 describe('価格の水準によらず同じ判定になる', () => {
@@ -56,5 +62,32 @@ describe('価格の水準によらず同じ判定になる', () => {
 		for (const maxPrice of [0.5, 0.05]) {
 			expect(signature(detect(buildCtx(scaleTo(candles, maxPrice), type)))).toEqual(base);
 		}
+	});
+});
+
+describe('目標価格と旗竿の値幅は価格と同じ比率で縮む', () => {
+	it.each([
+		['detectDoubles', detectDoubles, () => buildBtcJpy1hour202608Candles().slice(200, 290)],
+		['detectTriples', detectTriples, () => buildBtcJpy1hour202608Candles().slice(0, 90)],
+		['detectHeadAndShoulders', detectHeadAndShoulders, () => buildBtcJpy1hour202608Candles().slice(150, 240)],
+		['detectTriangles', detectTriangles, () => buildBtcJpy1hour202608Candles().slice(40, 130)],
+		['detectWedges', detectWedges, () => buildBtcJpy1hour202609Candles().slice(110, 200)],
+		['detectPennantsFlags', detectPennantsFlags, () => buildBtcJpy1hour202608Candles().slice(160, 250)],
+	] as const)('%s: 最高値を 0.05 円に縮めても、円の整数に潰れず元の値の同じ比率になる', (_name, detect, build) => {
+		const candles = build();
+		const k = 0.05 / Math.max(...candles.map((c) => c.high));
+		const withTarget = (r: DetectResult) =>
+			r.patterns.filter((p) => p.breakoutTarget != null).sort((a, b) => patternKey(a).localeCompare(patternKey(b)));
+		const base = withTarget(detect(buildCtx(candles, '1hour')));
+		const scaled = withTarget(detect(buildCtx(scaleTo(candles, 0.05), '1hour')));
+		expect(base.length).toBeGreaterThan(0);
+		expect(scaled.map(patternKey)).toEqual(base.map(patternKey));
+		const ratios = base.flatMap((p, i) =>
+			(['breakoutTarget', 'flagpoleHeight'] as const)
+				.filter((key) => p[key] != null)
+				.map((key) => Number(scaled[i][key]) / k / Number(p[key])),
+		);
+		expect(ratios.length).toBeGreaterThanOrEqual(base.length);
+		for (const r of ratios) expect(r).toBeCloseTo(1, 4);
 	});
 });

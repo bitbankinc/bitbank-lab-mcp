@@ -1,4 +1,5 @@
-import { formatFixed, formatInt, formatPctFromRatio, formatRounded } from '../../lib/formatter.js';
+import { formatFixed, formatInt, formatPctFromRatio, formatPriceDecimals, formatRounded } from '../../lib/formatter.js';
+import { priceDecimals } from '../../lib/price.js';
 import { toStructured } from '../../lib/result.js';
 import type { PatternEntry } from '../../tools/patterns/types.js';
 import type { McpResponse } from '../tool-definition.js';
@@ -317,10 +318,21 @@ export function formatDebugView(
 	const cands: CandidateDebug[] = Array.isArray(meta?.debug?.candidates) ? meta.debug.candidates : [];
 	const reductionLine = buildReductionLine(meta);
 
+	// スイングと候補の点は同じペアの価格なので、最大のものの水準で桁をそろえる。
+	const priceLevel = [
+		...swings.map((s) => s.price),
+		...cands.flatMap((c) => (Array.isArray(c.points) ? c.points.map((p) => p.price) : [])),
+	].reduce((max: number, v) => {
+		const n = Math.abs(Number(v));
+		return Number.isFinite(n) && n > max ? n : max;
+	}, 0);
+	const decimals = priceDecimals(priceLevel);
+	const yen = (v: unknown) => formatPriceDecimals(Number(v), decimals);
+
 	const swingLines = swings.map((s) => {
 		// intraday では時刻まで出す（#200）。1hour 等は 24 本が同じ日付ラベルに潰れる。
 		const dateStr = s.isoTime ? toDateOrTime(s.isoTime, tz, type) : 'n/a';
-		return `- ${s.kind} idx=${s.idx} price=${Math.round(Number(s.price)).toLocaleString('ja-JP')} (${dateStr})`;
+		return `- ${s.kind} idx=${s.idx} price=${yen(s.price)} (${dateStr})`;
 	});
 
 	const candLines = cands.map((c, i: number) => {
@@ -333,9 +345,7 @@ export function formatDebugView(
 		const statusStr = status ? ` status=${status}` : '';
 		// 方向が無いときは null と書いても情報が増えないので行ごと出さない。
 		const dirStr = dir ? ` breakoutDirection=${dir}` : '';
-		const pts = Array.isArray(c.points)
-			? c.points.map((p) => `${p.role}@${p.idx}:${Math.round(Number(p.price)).toLocaleString('ja-JP')}`).join(', ')
-			: '';
+		const pts = Array.isArray(c.points) ? c.points.map((p) => `${p.role}@${p.idx}:${yen(p.price)}`).join(', ') : '';
 		const indices = Array.isArray(c.indices) ? ` indices=[${c.indices.join(',')}]` : '';
 		const detailsStr = formatCandidateDetails(c);
 		return `${i + 1}. ${tag} ${c.type}${reason}${statusStr}${dirStr}${indices}${pts ? `\n   ${pts}` : ''}${detailsStr}`;

@@ -1,3 +1,4 @@
+import { priceDecimals, roundAtDecimalDigits, roundPriceAtLevel } from '../../lib/price.js';
 import { cappedBarsForDays } from './bar-thresholds.js';
 import { barsPerDay, calcATR, deduplicatePatterns, finalizeConf } from './helpers.js';
 import { clamp01, robustFit } from './regression.js';
@@ -479,13 +480,15 @@ export function detectPennantsFlags(ctx: DetectContext): DetectResult {
 		const outcome = hasBreakout ? (isExpectedBreakout ? 'success' : 'failure') : undefined;
 		const poleStartPrice = candles[pole.poleStart].close;
 		const poleChangePct = pole.magnitude / Math.max(1e-12, poleStartPrice);
+		// 傾き（円/本）は表示と同じく価格の桁の 2 桁下まで残す。6 桁より減らすと BTC の値が変わる。
+		const slopeDecimals = Math.max(6, priceDecimals(poleStartPrice) + 2);
 
 		let breakoutTarget: number | undefined;
 		let targetReach: TargetReachResult = omittedTargetReach('not_broken_out');
 		if (hasBreakout && breakoutDirection) {
 			const bp = candles[breakoutIdx].close;
 			breakoutTarget = breakoutDirection === 'up' ? bp + poleRange : bp - poleRange;
-			breakoutTarget = Math.round(breakoutTarget);
+			breakoutTarget = roundPriceAtLevel(breakoutTarget, bp);
 			targetReach = computeTargetReach(candles, breakoutIdx, bp, breakoutTarget, breakoutDirection, poleRange);
 		}
 
@@ -497,16 +500,16 @@ export function detectPennantsFlags(ctx: DetectContext): DetectResult {
 			...(status === 'invalid' ? { invalidReason: BREAKOUT_AGAINST_EXPECTATION } : {}),
 			poleDirection: pole.poleUp ? 'up' : 'down',
 			priorTrendDirection: pole.poleUp ? 'bullish' : 'bearish',
-			flagpoleHeight: Math.round(poleRange),
+			flagpoleHeight: roundPriceAtLevel(poleRange, poleStartPrice),
 			expectedBreakoutDirection,
 			poleStartDate: poleStartIso,
 			poleEndDate: poleEndIso,
 			poleChangePct: Number(poleChangePct.toFixed(4)),
 			poleBars: pole.poleLen,
 			poleATRMult: Number(pole.atrMult.toFixed(2)),
-			flagUpperSlope: Number(upperLine.slope.toFixed(6)),
-			flagLowerSlope: Number(lowerLine.slope.toFixed(6)),
-			spreadAvg: Number(spread.spreadAvg.toFixed(2)),
+			flagUpperSlope: roundAtDecimalDigits(upperLine.slope, slopeDecimals),
+			flagLowerSlope: roundAtDecimalDigits(lowerLine.slope, slopeDecimals),
+			spreadAvg: roundPriceAtLevel(spread.spreadAvg, poleStartPrice, 2),
 			spreadStability: Number(spread.spreadStability.toFixed(3)),
 			breakoutDirection: breakoutDirection ?? undefined,
 			outcome,

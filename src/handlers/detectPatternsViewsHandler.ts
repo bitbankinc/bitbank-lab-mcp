@@ -1,7 +1,8 @@
 // 構造化データ（range / confirmation.date 等）の日付は後方互換のため UTC ISO のまま。表示だけを tz で整形する。
 import { formatDateOrTimeInTz } from '../../lib/datetime.js';
-import { formatInt, formatPctFromRatio } from '../../lib/formatter.js';
+import { formatInt, formatPctFromRatio, formatPriceDecimals } from '../../lib/formatter.js';
 import { toStructured } from '../../lib/result.js';
+import { patternPriceDecimals } from '../../tools/patterns/helpers.js';
 import { BREAKOUT_AGAINST_EXPECTATION, levelSpreadMetrics } from '../../tools/patterns/structural.js';
 import { formatStructureGateSkipLine, formatTriplePositionLines } from '../../tools/patterns/structure-diagnostics.js';
 import type { Pivot } from '../../tools/patterns/swing.js';
@@ -232,7 +233,7 @@ export function toDateOrTime(iso: string | undefined, tz: string, type: string):
 	return formatDateOrTimeInTz(iso, tz, type) ?? 'n/a';
 }
 
-function buildPeriodLines(p: PatternEntry, legacyRange: string, tz: string, type: string): string[] {
+function buildPeriodLines(p: PatternEntry, legacyRange: string, tz: string, type: string, decimals: number): string[] {
 	const hasNew = !!(p?.structureRange || p?.confirmation || p?.precedingTrend);
 	if (!hasNew) return [`   - 期間: ${legacyRange}`];
 
@@ -258,7 +259,7 @@ function buildPeriodLines(p: PatternEntry, legacyRange: string, tz: string, type
 
 	if (p.confirmation?.type === 'neckline_breakout') {
 		const priceStr = Number.isFinite(p.confirmation.price)
-			? `${Math.round(p.confirmation.price).toLocaleString('ja-JP')}円`
+			? `${formatPriceDecimals(p.confirmation.price, decimals)}円`
 			: 'n/a';
 		lines.push(`   - ブレイク確認: ${toDateOrTime(p.confirmation.date, tz, type)}（${priceStr}）`);
 	} else if (p.confirmation?.type === 'not_confirmed') {
@@ -282,15 +283,20 @@ function buildPeriodLines(p: PatternEntry, legacyRange: string, tz: string, type
 	return lines.length > 0 ? lines : [`   - 期間: ${legacyRange}`];
 }
 
+// 生の価格は toLocaleString の既定（小数 3 桁）より桁を減らさない。ここで丸めると BTC でも表示が変わる。
+function rawYen(v: number, decimals: number): string {
+	return v.toLocaleString('ja-JP', { maximumFractionDigits: Math.max(3, decimals) });
+}
+
 // 判定は高安・報告値は終値なので両方を出す。片方だけだと出力から判定を検算できない（#125）。
-function formatPivotPrices(pv: Pivot): string {
-	const yen = (v: number) => `${Math.round(v).toLocaleString('ja-JP')}円`;
+function formatPivotPrices(pv: Pivot, decimals: number): string {
+	const yen = (v: number) => `${formatPriceDecimals(v, decimals)}円`;
 	const close = Number(pv?.price);
 	const extreme = Number(pv?.extremePrice);
 	const basisLabel = pv?.kind === 'L' ? '安値' : '高値';
 	if (!Number.isFinite(close)) return 'n/a';
 	if (!Number.isFinite(extreme)) return `(${yen(close)})`;
-	if (Math.round(close) === Math.round(extreme)) return `${basisLabel} ${yen(extreme)}（判定は${basisLabel}基準）`;
+	if (yen(close) === yen(extreme)) return `${basisLabel} ${yen(extreme)}（判定は${basisLabel}基準）`;
 	return `終値 ${yen(close)} / ${basisLabel} ${yen(extreme)}（判定は${basisLabel}基準）`;
 }
 
@@ -424,11 +430,12 @@ export function formatPatternLine(
 	meta: PatternMeta,
 	tz: string = 'Asia/Tokyo',
 	type: string = '1day',
+	decimals: number = patternPriceDecimals([p]),
 ): string {
 	const name = String(p?.type || 'unknown');
 	const conf = p?.confidence != null ? Number(p.confidence).toFixed(2) : 'n/a';
 	const range = p?.range ? `${toDateOrTime(p.range.start, tz, type)} ~ ${toDateOrTime(p.range.end, tz, type)}` : 'n/a';
-	const periodLines = buildPeriodLines(p, range, tz, type);
+	const periodLines = buildPeriodLines(p, range, tz, type, decimals);
 
 	const confNum = Number(p?.confidence ?? NaN);
 	let lowConfWarning: string | null = null;
@@ -443,7 +450,7 @@ export function formatPatternLine(
 	if (Array.isArray(p?.pivots) && p.pivots.length) {
 		const prices = p.pivots.map((v) => Number(v?.price)).filter(Number.isFinite);
 		if (prices.length)
-			priceRange = `${Math.min(...prices).toLocaleString('ja-JP')}円 - ${Math.max(...prices).toLocaleString('ja-JP')}円`;
+			priceRange = `${rawYen(Math.min(...prices), decimals)}円 - ${rawYen(Math.max(...prices), decimals)}円`;
 	}
 
 	let neckline: string | null = null;
@@ -453,9 +460,7 @@ export function formatPatternLine(
 			y2 = Number(b?.y);
 		if (Number.isFinite(y1) && Number.isFinite(y2)) {
 			neckline =
-				y1 === y2
-					? `${y1.toLocaleString('ja-JP')}円（水平）`
-					: `${y1.toLocaleString('ja-JP')}円 → ${y2.toLocaleString('ja-JP')}円`;
+				y1 === y2 ? `${rawYen(y1, decimals)}円（水平）` : `${rawYen(y1, decimals)}円 → ${rawYen(y2, decimals)}円`;
 		}
 	}
 
@@ -472,7 +477,7 @@ export function formatPatternLine(
 				if (!pv) continue;
 				const d = idxToIso[Number(pv.idx)] || '';
 				const date = toDateOrTime(d || undefined, tz, type);
-				pivotLines.push(`   - ${roleLabels[i]}: ${date} ${formatPivotPrices(pv)}`);
+				pivotLines.push(`   - ${roleLabels[i]}: ${date} ${formatPivotPrices(pv, decimals)}`);
 			}
 		}
 	}
@@ -484,7 +489,7 @@ export function formatPatternLine(
 			const bpx = Number(p.breakout.price);
 			const bIso = idxToIso[bidx];
 			const bdate = bIso ? toDateOrTime(String(bIso), tz, type) : 'n/a';
-			const bprice = Number.isFinite(bpx) ? Math.round(bpx).toLocaleString('ja-JP') : 'n/a';
+			const bprice = Number.isFinite(bpx) ? formatPriceDecimals(bpx, decimals) : 'n/a';
 			breakoutLine = `   - ブレイク: ${bdate} (${bprice}円)`;
 		}
 	} catch {
@@ -547,7 +552,7 @@ export function formatPatternLine(
 					`先行トレンド: ${p.priorTrendDirection === 'bullish' ? '強気（上昇トレンド）' : '弱気（下降トレンド）'}`,
 				);
 			if (p.flagpoleHeight != null)
-				parts.push(`フラッグポール値幅: ${Math.round(Number(p.flagpoleHeight)).toLocaleString('ja-JP')}円`);
+				parts.push(`フラッグポール値幅: ${formatPriceDecimals(Number(p.flagpoleHeight), decimals)}円`);
 			if (p.poleStartDate && p.poleEndDate && p.poleChangePct != null) {
 				const psd = toDateOrTime(p.poleStartDate, tz, type);
 				const ped = toDateOrTime(p.poleEndDate, tz, type);
@@ -560,11 +565,13 @@ export function formatPatternLine(
 				parts.push(`旗竿 ATR 倍率: ${p.poleATRMult.toFixed(2)}x`);
 			}
 			if (p.flagUpperSlope != null && p.flagLowerSlope != null) {
-				parts.push(`チャネル傾き: 上限=${p.flagUpperSlope.toFixed(2)}, 下限=${p.flagLowerSlope.toFixed(2)}（円/本）`);
+				parts.push(
+					`チャネル傾き: 上限=${p.flagUpperSlope.toFixed(decimals + 2)}, 下限=${p.flagLowerSlope.toFixed(decimals + 2)}（円/本）`,
+				);
 			}
 			if (p.spreadAvg != null && p.spreadStability != null) {
 				const stabPct = (p.spreadStability * 100).toFixed(0);
-				parts.push(`平均チャネル幅: ${Math.round(p.spreadAvg).toLocaleString('ja-JP')}円（平行度: ${stabPct}%）`);
+				parts.push(`平均チャネル幅: ${formatPriceDecimals(p.spreadAvg, decimals)}円（平行度: ${stabPct}%）`);
 			}
 			if (p.expectedBreakoutDirection) {
 				parts.push(`期待ブレイク方向: ${p.expectedBreakoutDirection === 'up' ? '上方' : '下方'}`);
@@ -611,7 +618,7 @@ export function formatPatternLine(
 			pattern_height: 'パターン高さ投影',
 			neckline_projection: 'ネックライン投影',
 		};
-		targetLine = `   - ターゲット価格: ${Math.round(Number(p.breakoutTarget)).toLocaleString('ja-JP')}円（${(p.targetMethod && methodJa[p.targetMethod]) || p.targetMethod}）`;
+		targetLine = `   - ターゲット価格: ${formatPriceDecimals(Number(p.breakoutTarget), decimals)}円（${(p.targetMethod && methodJa[p.targetMethod]) || p.targetMethod}）`;
 		if (progressLine) targetLine += `\n${progressLine}`;
 	} else if (progressLine) {
 		targetLine = progressLine;
@@ -676,7 +683,8 @@ export function formatFullView(
 	effectiveParamsLine: string = '',
 	type: string = '1day',
 ): McpResponse {
-	const body = pats.map((p, i) => formatPatternLine(p, i, 'full', meta, tz, type)).join('\n\n');
+	const decimals = patternPriceDecimals(pats);
+	const body = pats.map((p, i) => formatPatternLine(p, i, 'full', meta, tz, type, decimals)).join('\n\n');
 	const overlayNote = res?.data?.overlays
 		? '\n\nチャート連携: structuredContent.data.overlays を render_chart_svg.overlays に渡すと注釈/範囲を描画できます。'
 		: '';
@@ -704,7 +712,10 @@ export function formatDetailedView(
 	type: string = '1day',
 ): McpResponse {
 	const top = pats.slice(0, DETAILED_VIEW_PATTERN_LIMIT);
-	const body = top.length ? top.map((p, i) => formatPatternLine(p, i, 'detailed', meta, tz, type)).join('\n\n') : '';
+	const decimals = patternPriceDecimals(pats);
+	const body = top.length
+		? top.map((p, i) => formatPatternLine(p, i, 'detailed', meta, tz, type, decimals)).join('\n\n')
+		: '';
 	// pats.length < 上限 のときは行ごと出さない（省略が起こり得ない）。ちょうど上限のときだけ cap で切られたかの区別がつかないので明示する（#196）。
 	const patternsNote =
 		pats.length >= DETAILED_VIEW_PATTERN_LIMIT

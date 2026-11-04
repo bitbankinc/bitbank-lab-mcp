@@ -1,6 +1,7 @@
 import { log } from '../../lib/logger.js';
 import { EPSILON } from '../../lib/math.js';
 import { generatePatternDiagram, type PatternDiagramData } from '../../lib/pattern-diagrams.js';
+import { roundPriceAtLevel } from '../../lib/price.js';
 import { patternBarRange } from './bar-thresholds.js';
 import { calcATR, deduplicatePatterns } from './helpers.js';
 import { linearRegressionWithR2 } from './regression.js';
@@ -415,7 +416,7 @@ function buildRegressionEntry(
 		if (Number.isFinite(breakInfo.breakPrice)) {
 			const bp = breakInfo.breakPrice as number;
 			breakoutTarget = breakoutDirection === 'up' ? bp + patternHeight : bp - patternHeight;
-			breakoutTarget = Math.round(breakoutTarget);
+			breakoutTarget = roundPriceAtLevel(breakoutTarget, bp);
 			targetReach = computeTargetReach(
 				candles,
 				breakInfo.breakIdx,
@@ -1124,7 +1125,7 @@ function formingTarget(
 		const bp = Number(candles[breakoutIdx]?.close);
 		if (Number.isFinite(bp)) {
 			fBreakoutTarget = breakoutDirection === 'up' ? bp + fPatternHeight : bp - fPatternHeight;
-			fBreakoutTarget = Math.round(fBreakoutTarget);
+			fBreakoutTarget = roundPriceAtLevel(fBreakoutTarget, bp);
 			fTargetReach = computeTargetReach(candles, breakoutIdx, bp, fBreakoutTarget, breakoutDirection, fPatternHeight);
 		} else {
 			fTargetReach = omittedTargetReach('invalid_breakout_price');
