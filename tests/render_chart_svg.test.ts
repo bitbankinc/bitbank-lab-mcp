@@ -335,6 +335,43 @@ describe('render_chart_svg', () => {
 		expect(res.data.filePath).toBeDefined();
 	});
 
+	it('style=depth: 価格の幅が 1 円未満の安いペアでも、板を横軸いっぱいに描く', async () => {
+		mockedDepth.mockResolvedValueOnce(
+			asMockResult({
+				ok: true,
+				summary: 'ok',
+				data: {
+					asks: [
+						['31.2347', '1000'],
+						['31.3000', '3000'],
+					],
+					bids: [
+						['31.2345', '1500'],
+						['31.1500', '3500'],
+					],
+				},
+				meta: {},
+			}),
+		);
+		const res = await renderChartSvg({ pair: 'doge_jpy', type: '1day', style: 'depth' });
+		assertOk(res);
+		const xs = [...String(res.data.svg).matchAll(/<path d="M ([^"]+)" fill="none"/g)].flatMap((m) =>
+			m[1].split(' L ').map((pt) => Number(pt.split(',')[0])),
+		);
+		// プロット領域の幅は 860 - 64 - 12 = 784
+		expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(784, 0);
+	});
+
+	it.each([
+		['asks', { asks: [], bids: [['31.2345', '1500']] }],
+		['bids', { asks: [['31.2347', '1000']], bids: [] }],
+	])('style=depth: %s が空の片側だけの板は描かずに fail を返す', async (_side, data) => {
+		mockedDepth.mockResolvedValueOnce(asMockResult({ ok: true, summary: 'ok', data, meta: {} }));
+		const res = await renderChartSvg({ pair: 'doge_jpy', type: '1day', style: 'depth' });
+		assertFail(res);
+		expect(res.summary).toContain('asks/bids の両方が必要');
+	});
+
 	it('depth チャートで getDepth 失敗 → fail 結果', async () => {
 		mockedDepth.mockResolvedValueOnce(asMockResult({ ok: false, summary: 'depth error', meta: { errorType: 'api' } }));
 		const res = await renderChartSvg({ pair: 'btc_jpy', type: '1day', style: 'depth' });
