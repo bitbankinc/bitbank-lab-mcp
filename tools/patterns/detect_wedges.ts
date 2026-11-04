@@ -641,7 +641,11 @@ function detectRegressionWedges(
 			const absLo = Math.abs(lower.slope);
 			const slopeRatioHL = absHi / Math.max(EPSILON, absLo);
 			const slopeRatioLH = absLo / Math.max(EPSILON, absHi);
-			let failureReason: 'slope_ratio_too_small' | 'slopes_too_flat' | 'wrong_side_steeper' = 'slope_ratio_too_small';
+			let failureReason:
+				| 'slope_ratio_too_small'
+				| 'slopes_too_flat'
+				| 'wrong_side_steeper'
+				| 'slopes_not_same_direction' = 'slope_ratio_too_small';
 			if (upper.slope > 0 && lower.slope > 0) {
 				if (absHi < (params.minSlope ?? 0.0001) || absLo < (params.minSlope ?? 0.0001)) {
 					failureReason = 'slopes_too_flat';
@@ -659,7 +663,7 @@ function detectRegressionWedges(
 					failureReason = 'slope_ratio_too_small';
 				}
 			} else {
-				failureReason = 'slope_ratio_too_small';
+				failureReason = 'slopes_not_same_direction';
 			}
 			const dbgType =
 				upper.slope < 0 && lower.slope < 0
@@ -880,7 +884,7 @@ function checkFormingShape(
 		return {
 			ok: false,
 			debug: {
-				type: upperLine.slope < 0 ? 'falling_wedge' : 'rising_wedge',
+				type: 'wedge',
 				accepted: false,
 				reason: 'slopes_not_same_direction',
 				indices: [startIdx, endIdx],
