@@ -1,7 +1,7 @@
 import type { z } from 'zod';
 import { toDisplayTime, toIsoWithTz } from '../lib/datetime.js';
 import { formatPair, formatPercent, formatPrice, formatPriceAtLevel, formatPriceDecimals } from '../lib/formatter.js';
-import { priceDecimals, roundAtDecimalDigits, roundPriceAtLevel } from '../lib/price.js';
+import { fractionDigits, priceDecimals, roundAtDecimalDigits, roundPriceAtLevel } from '../lib/price.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import {
 	applyTxLimit,
@@ -100,22 +100,24 @@ async function fetchTransactions(pair: string, resolved?: TxTimeRangeResolved, l
 	};
 }
 
+// 価格をそのまま足すと、全約定が同じ価格でも VWAP に丸め誤差が乗って σ が 0 にならないので、最初の約定価格からの差で計算する。
 function calcVwap(txs: Tx[]) {
-	let sumPV = 0;
+	const ref = txs[0]?.price ?? 0;
+	let sumDV = 0;
 	let sumV = 0;
 	for (const t of txs) {
-		sumPV += t.price * t.amount;
+		sumDV += (t.price - ref) * t.amount;
 		sumV += t.amount;
 	}
-	const vwap = sumV > 0 ? sumPV / sumV : 0;
+	const meanDiff = sumV > 0 ? sumDV / sumV : 0;
 
 	let sumWeightedSqDiff = 0;
 	for (const t of txs) {
-		sumWeightedSqDiff += t.amount * (t.price - vwap) ** 2;
+		sumWeightedSqDiff += t.amount * (t.price - ref - meanDiff) ** 2;
 	}
 	const stdDev = sumV > 0 ? Math.sqrt(sumWeightedSqDiff / sumV) : 0;
 
-	return { vwap, stdDev };
+	return { vwap: sumV > 0 ? ref + meanDiff : 0, stdDev };
 }
 
 // Math.min(...prices) は数万件で RangeError（stack overflow）になりうるのでループで求める。
@@ -408,15 +410,18 @@ export default async function analyzeVolumeProfile(
 		const totalVolume = txs.reduce((s, t) => s + t.amount, 0);
 		const { low: priceLow, high: priceHigh } = priceRangeOf(txs);
 
+		// σ が呼び値より小さいとバンドが価格の水準の桁では VWAP と同じ数字になるので、σ の 1 桁下までは残す。
+		const sigmaDigits = stdDev > 0 ? 1 - Math.floor(Math.log10(stdDev)) : 0;
+		const roundBand = (v: number) => roundAtDecimalDigits(v, Math.max(2, priceDecimals(v), sigmaDigits));
 		const data = {
 			vwap: {
 				price: roundProfilePrice(vwap),
 				stdDev: roundProfilePrice(stdDev),
 				bands: {
-					upper2sigma: roundProfilePrice(vwap + 2 * stdDev),
-					upper1sigma: roundProfilePrice(vwap + stdDev),
-					lower1sigma: roundProfilePrice(vwap - stdDev),
-					lower2sigma: roundProfilePrice(vwap - 2 * stdDev),
+					upper2sigma: roundBand(vwap + 2 * stdDev),
+					upper1sigma: roundBand(vwap + stdDev),
+					lower1sigma: roundBand(vwap - stdDev),
+					lower2sigma: roundBand(vwap - 2 * stdDev),
 				},
 				currentPrice,
 				deviationPct,
@@ -446,6 +451,9 @@ export default async function analyzeVolumeProfile(
 
 		const pairDisplay = formatPair(chk.pair);
 		const fmtPx = (p: number) => formatPrice(p, chk.pair);
+		const fmtBand = (p: number) => `¥${formatPriceDecimals(p, Math.max(3, priceDecimals(p), sigmaDigits))}`;
+		// POC・Value Area は構造化データで価格帯の幅に合わせて丸め済みなので、その桁のまま出す。
+		const fmtBinPx = (p: number) => `¥${formatPriceDecimals(p, Math.max(3, priceDecimals(p), fractionDigits(p)))}`;
 		const rangeStr = `${toDisplayTime(startMs, tz) ?? '?'}〜${toDisplayTime(endMs, tz) ?? '?'}`;
 
 		const topBins = [...profile.bins].sort((a, b) => b.totalVolume - a.totalVolume).slice(0, 5);
@@ -469,14 +477,14 @@ export default async function analyzeVolumeProfile(
 			'',
 			'📊 VWAP:',
 			`  VWAP: ${fmtPx(vwap)} (σ=${fmtPx(stdDev)})`,
-			`  バンド: +2σ=${fmtPx(vwap + 2 * stdDev)} / +1σ=${fmtPx(vwap + stdDev)} / -1σ=${fmtPx(vwap - stdDev)} / -2σ=${fmtPx(vwap - 2 * stdDev)}`,
+			`  バンド: +2σ=${fmtBand(vwap + 2 * stdDev)} / +1σ=${fmtBand(vwap + stdDev)} / -1σ=${fmtBand(vwap - stdDev)} / -2σ=${fmtBand(vwap - 2 * stdDev)}`,
 			`  現在値: ${fmtPx(currentPrice)} (VWAP比 ${formatPercent(deviationPct, { sign: true })})`,
 			`  判定: ${positionLabel[position]}`,
 			'',
 			'📈 Volume Profile (出来高上位5帯):',
 			profileText,
-			`  POC: ${fmtPx(profile.poc.price)} (最大出来高価格帯)`,
-			`  Value Area: ${fmtPx(profile.valueArea.low)}〜${fmtPx(profile.valueArea.high)} (${profile.valueArea.pct}%)`,
+			`  POC: ${fmtBinPx(profile.poc.price)} (最大出来高価格帯)`,
+			`  Value Area: ${fmtBinPx(profile.valueArea.low)}〜${fmtBinPx(profile.valueArea.high)} (${profile.valueArea.pct}%)`,
 			'',
 			`💰 約定サイズ分布 (閾値: P25=${tradeSizes.thresholds.p25}, P75=${tradeSizes.thresholds.p75}, P95=${tradeSizes.thresholds.p95}):`,
 			`  分類基準: 小口≤P25, 中口P25–P75, 大口P75–P95, 特大口>P95`,
