@@ -3,8 +3,10 @@ import path from 'node:path';
 import { z } from 'zod';
 import { nowIso, toDisplayTime } from '../lib/datetime.js';
 import { buildCumulativeSteps } from '../lib/depth-analysis.js';
-import { formatPair } from '../lib/formatter.js';
+import { formatPair, formatPriceDecimals } from '../lib/formatter.js';
 import getDepth from '../lib/get-depth.js';
+import { EPSILON } from '../lib/math.js';
+import { midPriceDecimals, roundAtDecimalDigits, roundMidPrice } from '../lib/price.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { ensurePair } from '../lib/validate.js';
 import type { FailResult, OkResult, Pair } from '../src/schemas.js';
@@ -68,13 +70,14 @@ export default async function renderDepthSvg(
 		const plotW = w - padding.left - padding.right;
 		const plotH = h - padding.top - padding.bottom;
 		const x = (price: number) =>
-			Number((padding.left + ((price - xMinP) * plotW) / Math.max(1, xMaxP - xMinP)).toFixed(1));
+			Number((padding.left + ((price - xMinP) * plotW) / Math.max(EPSILON, xMaxP - xMinP)).toFixed(1));
 		const y = (qty: number) => Number((h - padding.bottom - (qty * plotH) / maxQty).toFixed(1));
-		const fmtJPYCompact = (p: number) => `¥${Math.round(p).toLocaleString('ja-JP')}`;
-		const fmtJPYAxis = (p: number) => {
-			const v = Math.round(p / 1000) * 1000;
-			return `¥${v.toLocaleString('ja-JP')}`;
-		};
+		const X_TICK_COUNT = 4;
+		const xTickStep = (xMaxP - xMinP) / X_TICK_COUNT;
+		// 目盛りの間隔の桁で出す（隣の目盛りと同じ数字にならない）。1,000 円刻みより粗くはしない。
+		const axisDigits = xTickStep > 0 ? Math.max(-3, -Math.floor(Math.log10(xTickStep))) : 0;
+		const fmtJPYAxis = (p: number) =>
+			`¥${roundAtDecimalDigits(p, axisDigits).toLocaleString('ja-JP', { maximumFractionDigits: Math.max(0, axisDigits) })}`;
 
 		const { bidPath, askPath, bidFill, askFill } = buildDepthPaths(bidSteps, askSteps, x, y);
 
@@ -82,6 +85,7 @@ export default async function renderDepthSvg(
 		const bestAsk = Number(asksSorted[0]?.[0] ?? 0);
 		const mid =
 			bestBid && bestAsk ? (bestBid + bestAsk) / 2 : (Number(bids[0]?.[0] ?? 0) + Number(asks[0]?.[0] ?? 0)) / 2;
+		const midDecimals = midPriceDecimals(bestBid, bestAsk);
 		const yAxis = `<line x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${h - padding.bottom}" stroke="#4b5563" stroke-width="1"/>`;
 		const xAxis = `<line x1="${padding.left}" y1="${h - padding.bottom}" x2="${w - padding.right}" y2="${h - padding.bottom}" stroke="#4b5563" stroke-width="1"/>`;
 		const yStep = maxQty <= 25 ? 5 : maxQty <= 50 ? 10 : 20;
@@ -96,9 +100,8 @@ export default async function renderDepthSvg(
 			.join('');
 		const xTicks = (() => {
 			const out: Array<{ p: number; x: number }> = [];
-			const N = 4;
-			for (let i = 0; i <= N; i++) {
-				const p = xMinP + ((xMaxP - xMinP) * i) / N;
+			for (let i = 0; i <= X_TICK_COUNT; i++) {
+				const p = xMinP + xTickStep * i;
 				out.push({ p, x: x(p) });
 			}
 			return out;
@@ -130,7 +133,7 @@ export default async function renderDepthSvg(
         <text x="${padding.left}" y="${padding.top - 22}">${nowJst} JST</text>
         <text x="${w - padding.right}" y="${padding.top - 8}" text-anchor="end">買い/売り 比率(±1%): ${Number.isFinite(ratio) ? ratio.toFixed(2) : '∞'}</text>
       </g>`;
-		const midLabel = `<text x="${x(mid)}" y="${padding.top + 12}" text-anchor="middle" fill="#e5e7eb" font-size="12">${fmtJPYCompact(mid)}</text>`;
+		const midLabel = `<text x="${x(mid)}" y="${padding.top + 12}" text-anchor="middle" fill="#e5e7eb" font-size="12">¥${formatPriceDecimals(mid, midDecimals)}</text>`;
 
 		const svg = `
     <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" style="background-color:#1f2937;color:#e5e7eb;font-family:sans-serif;max-width:100%;height:auto;">
@@ -164,9 +167,9 @@ export default async function renderDepthSvg(
 
 		const summary = {
 			pair,
-			currentPrice: Math.round(mid),
-			bestBid: Math.round(bestBid),
-			bestAsk: Math.round(bestAsk),
+			currentPrice: bestBid && bestAsk ? roundMidPrice(bestBid, bestAsk) : mid,
+			bestBid,
+			bestAsk,
 			bandPct: band,
 			bidDepth: Number(bidDepth.toFixed(4)),
 			askDepth: Number(askDepth.toFixed(4)),

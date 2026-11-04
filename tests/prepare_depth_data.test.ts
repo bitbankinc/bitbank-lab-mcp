@@ -165,7 +165,7 @@ describe('prepare_depth_data', () => {
 		expect(res.data.band.askVolume).toBeCloseTo(2.8);
 	});
 
-	it('JPY ペアの価格は整数に丸められる', async () => {
+	it('整数刻みの板では価格と中値が整数のまま', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
 		const res = await prepareDepthData({ pair: 'btc_jpy' });
 		assertOk(res);

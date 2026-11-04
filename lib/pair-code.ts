@@ -5,7 +5,7 @@ export function normalizePairCode(raw: string): string {
 	return raw.trim().toLowerCase();
 }
 
-// lib/price.ts の isJpyPair（endsWith）とは判定条件が違い、既存の includes('jpy') 挙動を保つ（統合しない）。ユーザー入力由来の pair も通るので判定側で正規化する。
+// 既存の includes('jpy') 挙動を保つので base 側の JPY も真になる。ユーザー入力由来の pair も通るので判定側で正規化する。
 export function isJpyQuotedPair(pair: string): boolean {
 	return normalizePairCode(pair).includes('jpy');
 }

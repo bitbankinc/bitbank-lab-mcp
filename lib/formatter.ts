@@ -1,6 +1,6 @@
 import { dayjs, toDisplayTime } from './datetime.js';
 import { isJpyQuotedPair } from './pair-code.js';
-import { roundAtDecimalDigits } from './price.js';
+import { fractionDigits, roundAtDecimalDigits } from './price.js';
 
 export function timeframeLabel(type: string): string {
 	const map: Record<string, string> = {
@@ -219,7 +219,7 @@ export function formatSummary(
 
 		// 全データは呼び出し元（get_candles.ts 等）がテキストに追記する
 	} else if (typeof latest === 'number') {
-		summary += ` 中値=${latest.toLocaleString('ja-JP')}${currency}`;
+		summary += ` 中値=${formatExactPrice(latest)}${currency}`;
 	}
 
 	const tail = extra ? ` ${extra}` : '';
@@ -229,4 +229,9 @@ export function formatSummary(
 // 桁数は呼び出し側が価格の水準から決める（priceDecimals）。小数の末尾の 0 は出さない。
 export function formatPriceDecimals(value: number, decimals: number): string {
 	return roundAtDecimalDigits(value, decimals).toLocaleString('ja-JP', { maximumFractionDigits: decimals });
+}
+
+// toLocaleString の既定は小数 3 桁で切るので、0.0001 円刻みのペアの気配や中値の最後の桁が落ちる。
+export function formatExactPrice(value: number): string {
+	return formatPriceDecimals(value, fractionDigits(value));
 }

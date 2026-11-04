@@ -89,6 +89,41 @@ describe('render_depth_svg', () => {
 		expect(requireDefined(s, 's').ratio).toBeGreaterThan(0);
 	});
 
+	it('安いペア（0.0001 円刻み）: 価格を円の整数に潰さず、横軸も板の幅いっぱいに描く', async () => {
+		mockedGetDepth.mockResolvedValueOnce(
+			asMockResult(
+				depthOk({
+					asks: [
+						['31.2347', '1000'],
+						['31.2500', '2000'],
+						['31.3000', '3000'],
+					],
+					bids: [
+						['31.2345', '1500'],
+						['31.2000', '2500'],
+						['31.1500', '3500'],
+					],
+				}),
+			),
+		);
+		const res = await renderDepthSvg({ pair: 'doge_jpy' });
+		assertOk(res);
+		const s = requireDefined(res.data.summary, 's');
+		expect(s.currentPrice).toBe(31.2346);
+		expect(s.bestBid).toBe(31.2345);
+		expect(s.bestAsk).toBe(31.2347);
+		const svg = requireDefined(res.data.svg, 'svg');
+		expect(svg).toContain('>¥31.2346</text>');
+		// 横軸の目盛り（左端 = 最安の買い 31.15、右端 = 最高の売り 31.30）
+		const ticks = [
+			...svg.matchAll(
+				/<text x="([\d.]+)" y="[\d.]+" text-anchor="middle" fill="#e5e7eb" font-size="10">¥([^<]+)<\/text>/g,
+			),
+		];
+		expect(ticks.map((m) => m[2])).toEqual(['31.15', '31.19', '31.23', '31.26', '31.3']);
+		expect(Number(ticks.at(-1)?.[1]) - Number(ticks[0]?.[1])).toBeCloseTo(784, 0);
+	});
+
 	it('preferFile=true でファイル保存', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
 		const res = await renderDepthSvg({ pair: 'btc_jpy', preferFile: true });
