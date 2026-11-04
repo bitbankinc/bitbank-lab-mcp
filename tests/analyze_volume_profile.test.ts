@@ -50,6 +50,19 @@ function mockFailResult(errorType = 'network', summary = 'network failed') {
 describe('analyze_volume_profile', () => {
 	const mockedGetTransactions = vi.mocked(getTransactions);
 
+	it('1 円未満の価格でも価格帯・POC・Value Area・VWAP を 0 に潰さない', async () => {
+		const prices = Array.from({ length: 20 }, (_, i) => 0.0012 + (i % 5) * 0.00001);
+		mockedGetTransactions.mockResolvedValue(asMockResult(mockTxResult(buildTxs(prices))));
+
+		const res = await analyzeVolumeProfile('btc_jpy', 0, 10, 4, 0.7);
+
+		assertOk(res);
+		expect(res.data.profile.poc.price).toBeGreaterThan(0.0011);
+		expect(res.data.profile.valueArea.low).toBeGreaterThan(0.0011);
+		expect(res.data.profile.bins[0].low).toBeGreaterThan(0.0011);
+		expect(res.data.vwap.price).toBeGreaterThan(0.0011);
+	});
+
 	afterEach(() => {
 		vi.resetAllMocks();
 	});

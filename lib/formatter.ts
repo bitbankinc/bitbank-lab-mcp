@@ -36,10 +36,13 @@ export function formatTimestampJST(ts?: number, tz: string = 'Asia/Tokyo'): stri
 }
 
 // toLocaleString の既定は小数 3 桁で切るので、100 円未満のペアの刻み（0.0001 円など）が落ちる。100 円以上は既定と同じ 3 桁。
+export function formatPriceNumber(value: number): string {
+	return value.toLocaleString('ja-JP', { maximumFractionDigits: Math.max(3, priceDecimals(value)) });
+}
+
 export function formatPrice(value: number | null | undefined, pair?: string): string {
 	if (value == null || !Number.isFinite(Number(value))) return 'N/A';
-	const n = Number(value);
-	const text = n.toLocaleString('ja-JP', { maximumFractionDigits: Math.max(3, priceDecimals(n)) });
+	const text = formatPriceNumber(Number(value));
 	const jpy = !pair || (typeof pair === 'string' && isJpyQuotedPair(pair));
 	return jpy ? `¥${text}` : text;
 }

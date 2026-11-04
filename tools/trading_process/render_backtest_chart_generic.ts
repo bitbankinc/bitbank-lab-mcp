@@ -493,7 +493,8 @@ function renderFullChart(data: GenericBacktestChartData): string {
 		const indAbsMax = Math.max(Math.abs(Math.min(...allIndValues, 0)), Math.abs(Math.max(...allIndValues, 0))) * 1.15;
 		const indMin = -indAbsMax;
 		const indMax = indAbsMax;
-		const indRange = Math.max(indMax - indMin, 1);
+		// 1 の下限を付けると、安いペアの MACD（±0.01 など）がパネルの下端に潰れる。
+		const indRange = indMax - indMin > 0 ? indMax - indMin : 1;
 		const indYScale = (v: number) => indBottom - ((v - indMin) / indRange) * indicatorHeight;
 
 		const indLines = indicatorOverlays.filter((o) => o.type === 'line');
