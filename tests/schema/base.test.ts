@@ -129,9 +129,9 @@ describe('TrendLabelEnum', () => {
 });
 
 describe('NumericSeriesSchema', () => {
-	it('数値配列を受け入れて小数2桁に丸める', () => {
-		const result = NumericSeriesSchema.parse([1.234, 2.567, 3.891]);
-		expect(result).toEqual([1.23, 2.57, 3.89]);
+	it('値の水準の桁（最低 2 桁）で丸める（1,000 以上は小数 2 桁、安い価格ほど桁が増える）', () => {
+		const result = NumericSeriesSchema.parse([15_234_567.891, 1234.5678, 1.2345678]);
+		expect(result).toEqual([15_234_567.89, 1234.57, 1.23457]);
 	});
 
 	it('null を保持する', () => {

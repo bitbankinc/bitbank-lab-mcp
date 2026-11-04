@@ -61,6 +61,31 @@ describe('analyze_indicators', () => {
 		expect(text.split('\n')[1]).not.toContain('現在');
 	});
 
+	it('安いペアの価格の指標を小数 2 桁で切らない（構造化データのスキーマでも切らない）', async () => {
+		const startMs = Date.UTC(2024, 0, 1);
+		const rows = Array.from({ length: 600 }, (_, i) => {
+			const base = 31 + Math.sin(i / 7) * 0.5;
+			return [base, base + 0.02, base - 0.02, base + 0.005]
+				.map((v) => v.toFixed(4))
+				.concat(['1000', String(startMs + i * 86_400_000)]);
+		});
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: 'OK',
+			json: async () => ({ success: 1, data: { candlestick: [{ type: '1day', ohlcv: rows }] } }),
+		}) as unknown as typeof fetch;
+
+		const res = await analyzeIndicators('doge_jpy', '1day', 60);
+		assertOk(res);
+		const decimals = (v: number) => String(v).split('.')[1]?.length ?? 0;
+		const sma = (res.data.chart.indicators.SMA_25 ?? []).filter((v): v is number => v != null);
+		expect(sma.length).toBeGreaterThan(0);
+		expect(Math.max(...sma.map(decimals))).toBeGreaterThan(2);
+		const hist = (res.data.chart.indicators.macd_series?.hist ?? []).filter((v): v is number => v != null);
+		expect(Math.max(...hist.map(decimals))).toBeGreaterThan(2);
+	});
+
 	it('正常系: 指標データとチャート時系列を返す', async () => {
 		const rows = makeOhlcvRows(600);
 		globalThis.fetch = vi.fn().mockResolvedValue({
@@ -641,13 +666,9 @@ describe('analyze_indicators', () => {
 });
 
 describe('ema (exported)', () => {
-	it('period <= 1 → 各値をそのまま toFixed(2) で返す', () => {
-		const values = [100.123, 200.456, 300.789];
-		const result = ema(values, 1);
-		expect(result).toHaveLength(3);
-		expect(result[0]).toBe(100.12);
-		expect(result[1]).toBe(200.46);
-		expect(result[2]).toBe(300.79);
+	it('period <= 1 → 各値を価格の水準の桁（最低 2 桁）で返す', () => {
+		const result = ema([15_234_567.891, 2500.12345, 31.2345678], 1);
+		expect(result).toEqual([15_234_567.89, 2500.12, 31.2346]);
 	});
 
 	it('period <= 1 (0) → 値をそのまま返す', () => {
