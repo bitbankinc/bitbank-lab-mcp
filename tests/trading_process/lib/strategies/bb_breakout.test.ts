@@ -2,10 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { bbBreakoutStrategy, validateParams } from '../../../../tools/trading_process/lib/strategies/bb_breakout.js';
 import type { Candle } from '../../../../tools/trading_process/types.js';
 
-/**
- * 指定した終値配列からローソク足を生成（簡易版）
- * open=close, high=close+1, low=close-1 で統一
- */
 function candlesFromCloses(closes: number[]): Candle[] {
 	return closes.map((c, i) => ({
 		time: `2024-01-${String(i + 1).padStart(2, '0')}`,
@@ -80,8 +76,7 @@ describe('bbBreakoutStrategy', () => {
 		});
 
 		it('下部バンド下回り→中央線上抜けで buy シグナルを生成', () => {
-			// BB period=5 で短い期間にしてテスト
-			// 安定 → 急落(下部バンド割れ) → 回復(中央線上抜け) のシナリオ
+			// BB period=5 の短い期間で、安定 → 急落（下部バンド割れ）→ 回復（中央線上抜け）のシナリオ
 			const prices = [
 				100,
 				100,

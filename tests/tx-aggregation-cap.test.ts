@@ -1,14 +1,4 @@
-/**
- * 内部集計ツールのキャップ解除回帰（get_flow_metrics / analyze_volume_profile）
- *
- * 旧実装は集計用の取得にも get_transactions の応答上限（1000 件）を掛けていたため、
- * 1 UTC 日 5,609〜8,040 件（BTC/JPY 実測）のうち末尾 1000 件（≒4〜5 時間分）しか
- * CVD / アグレッサー比 / VWAP / Volume Profile に入っていなかった。しかもその事実は
- * 出力のどこにも現れなかった。
- *
- * ここでは getTransactions をモックせず **上流 fetch だけ** をモックして、実際の
- * limit 適用ロジックを通したうえで集計値が全件ベースになることを固定する。
- */
+// getTransactions をモックせず上流 fetch だけをモックして、実際の limit 適用ロジックを通したうえで集計値が全件ベースになることを固定する。
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import analyzeVolumeProfile from '../tools/analyze_volume_profile.js';
 import getFlowMetrics, { toolDef } from '../tools/get_flow_metrics.js';
@@ -24,10 +14,7 @@ const LATEST_COUNT = 60;
 
 type RawTx = { transaction_id: number; price: string; amount: string; side: string; executed_at: string };
 
-/**
- * 約定を等間隔に生成する。
- * amount は buy=0.02 / sell=0.01 固定にして CVD・VWAP を解析的に検証できるようにする。
- */
+/** amount は buy=0.02 / sell=0.01 固定にして CVD・VWAP を解析的に検証できるようにする。 */
 function buildTxs(startMs: number, count: number, stepMs: number, idBase: number): RawTx[] {
 	return Array.from({ length: count }, (_, i) => ({
 		transaction_id: idBase + i,
@@ -65,7 +52,7 @@ function mockUpstream() {
 	});
 }
 
-/** buy 側 = 偶数 index。archive/latest ともに buy が 1 件多い（count が偶数なら半々） */
+/** buy 側 = 偶数 index。archive / latest とも count が偶数なので buy / sell は半々。 */
 const TOTAL_TRADES = ARCHIVE_COUNT + LATEST_COUNT;
 const BUY_TRADES = TOTAL_TRADES / 2;
 const EXPECTED_CVD = BUY_TRADES * 0.02 - BUY_TRADES * 0.01;
@@ -161,16 +148,7 @@ describe('内部集計のキャップ解除（1 UTC 日 2000 件超）', () => {
 	});
 });
 
-/**
- * カバレッジ申告の是正
- *
- * 旧実装の meta.actualRange.durationMinutes は先頭〜末尾の単純差分だった。JST 17:30 時点の
- * hours=24 では「直近約763分間分」と申告するが、実データがあるのは約5時間分のみで、
- * 間の空白区間がカバー済みとして計上されていた。
- *
- * 下記フィクスチャは実運用と同じ形（完了済み UTC 日アーカイブ → 空白 → latest 約60件）で、
- * 空白がカバー済みとして申告されないことを固定する。
- */
+// 実運用と同じ形（完了済み UTC 日アーカイブ → 空白 → latest 約60件）のフィクスチャで、空白がカバー済みとして申告されないことを固定する。
 describe('カバレッジ申告（hours=24, 進行中 UTC 日に穴があるケース）', () => {
 	afterEach(() => {
 		vi.useRealTimers();
@@ -200,7 +178,6 @@ describe('カバレッジ申告（hours=24, 進行中 UTC 日に穴があるケ�
 		expect(range?.segments).toBe(2);
 		expect(range?.requestedMinutes).toBe(1440);
 		expect(range?.coveragePct).toBeCloseTo(57.9, 1);
-		// 最大の欠損区間が時刻付きで出る
 		expect(range?.gaps?.[0].durationMinutes).toBe(EXPECTED_GAP_MIN);
 	});
 
@@ -212,12 +189,10 @@ describe('カバレッジ申告（hours=24, 進行中 UTC 日に穴があるケ�
 		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 24);
 
 		assertOk(res);
-		// 取得層 (meta.warning): 要求窓 / 実カバー / 欠損の 3 点
 		expect(res.meta.warning).toContain('カバレッジ');
 		expect(res.meta.warning).toContain('要求 1440分');
 		expect(res.meta.warning).toContain(`${EXPECTED_COVERED_MIN}分`);
 		expect(res.meta.warning).toContain(`欠損 ${EXPECTED_GAP_MIN}分`);
-		// 進行中 UTC 日のカバレッジ制約は従来どおり明示される
 		expect(res.meta.warning).toContain('進行中の UTC 日 (20260708)');
 		expect(res.meta.warning).toContain('直近約60件');
 		// 計算層 (meta.warnings): 集計値がカバー区間のみ由来であること。2 系統は混ぜない
@@ -235,7 +210,7 @@ describe('カバレッジ申告（hours=24, 進行中 UTC 日に穴があるケ�
 
 		assertOk(res);
 		expect(res.summary).toContain(`スパン1440分/実カバー${EXPECTED_COVERED_MIN}分`);
-		// 旧文言（穴の有無を問わず「直近約N分間分」で覆い隠していた）は出さない
+		// 穴の有無を問わず「直近約N分間分」として扱わせる文言は出さない
 		expect(res.summary).not.toContain('直近フローとして扱ってください');
 	});
 
@@ -284,9 +259,7 @@ describe('カバレッジ申告（hours=24, 進行中 UTC 日に穴があるケ�
 	it('要求窓をほぼ満たしていればカバレッジ warning は出ない（誤検知しない）', async () => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(NOW);
-		// アーカイブが窓の先頭〜UTC 日終端、latest が UTC 日開始〜現在を隙間なくカバーするケース。
-		// archive: 08:30 7/7 から 20 秒間隔で 2,790 件 → 23:59:40 7/7 まで
-		// latest:  00:00 7/8 から 5 分間隔で 103 件 → 08:30 7/8（= NOW）まで
+		// アーカイブが窓の先頭〜UTC 日終端、latest が UTC 日開始〜現在を隙間なくカバーする（archive: 08:30 7/7 から 20 秒間隔で 2,790 件 → 23:59:40 7/7、latest: 00:00 7/8 から 5 分間隔で 103 件 → 08:30 7/8 = NOW）。
 		const archiveFull = buildTxs(ARCHIVE_START, 2790, 20_000, 1);
 		const latestSpread = buildTxs(Date.UTC(2026, 6, 8, 0, 0, 0), 103, 300_000, 900_001);
 		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
@@ -307,15 +280,11 @@ describe('カバレッジ申告（hours=24, 進行中 UTC 日に穴があるケ�
 	});
 
 	it('内部欠損が無くても要求窓の8割未満なら不足を警告する（hours=4 実測の回帰）', async () => {
-		// 実測（2026-08-02, hours=4）: 窓が丸ごと進行中 UTC 日内にあり latest 約60件 ≒ 34分ぶん
-		// しか取れないケースで、内部ギャップがゼロのため旧実装は定量警告を一切出さなかった
-		// （原因を述べる「進行中の UTC 日…」の行のみで、14% というカバー率がどこにも出ない）。
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(NOW);
 		mockUpstream();
 
-		// NOW は UTC 08:30 → hours=4 の窓 (04:30〜08:30) は進行中 UTC 日内 → latest のみ。
-		// LATEST_TXS は 1 秒間隔 60 件 ≒ 1 分の連続区間（内部ギャップなし）。
+		// NOW は UTC 08:30 → hours=4 の窓 (04:30〜08:30) は進行中 UTC 日内 → latest のみ。LATEST_TXS は 1 秒間隔 60 件 ≒ 1 分の連続区間（内部ギャップなし）。
 		const res = await getFlowMetrics('btc_jpy', 100, undefined, 60_000, 'Asia/Tokyo', 4);
 
 		assertOk(res);
@@ -324,12 +293,10 @@ describe('カバレッジ申告（hours=24, 進行中 UTC 日に穴があるケ�
 		expect(range?.segments).toBe(1);
 		expect(range?.requestedMinutes).toBe(240);
 		expect(range?.coveragePct).toBeLessThan(5);
-		// 取得層: カバー率と、実データ区間の外側が未カバーである旨を定量表示
 		expect(res.meta.warning).toContain('カバレッジ: 要求 240分');
 		expect(res.meta.warning).toContain('外側');
 		expect(res.meta.warning).toContain('未カバー');
 		expect(res.meta.warning).not.toContain('欠損 0分');
-		// 計算層: 集計値が窓全体を代表しないこと
 		expect(res.meta.warnings?.[0]).toContain('集計値');
 		expect(res.meta.warnings?.[0]).toContain('要求した時間窓（240分）全体を代表する値ではありません');
 	});
@@ -354,16 +321,7 @@ describe('カバレッジ申告（hours=24, 進行中 UTC 日に穴があるケ�
 	});
 });
 
-/**
- * 欠損バケットの扱い（PR#8 のカバレッジ申告で露見した後続不具合）
- *
- * バケット分割は欠損区間をゼロ埋めするため、旧実装では
- *   (A) `total=0` が「約定ゼロ」なのか「データなし」なのか応答から判別できない
- *       （view=compact では欠損区間が黙って消える）
- *   (B) ゼロ埋めが Z スコアの母集団に入り、平均が押し下げられて欠損明けの
- *       通常バケットが偽スパイクとして検出される
- * という 2 つの誤読を生んでいた。
- */
+// バケット分割は欠損区間をゼロ埋めするので、(A) `total=0` が「約定ゼロ」か「データなし」か応答から判別できず、(B) ゼロ埋めが Z スコアの母集団に入ると平均が押し下げられて欠損明けの通常バケットが偽スパイクになる。
 describe('欠損バケット（hasData）', () => {
 	afterEach(() => {
 		vi.useRealTimers();
@@ -421,14 +379,13 @@ describe('欠損バケット（hasData）', () => {
 		if (!sample) throw new Error('data bucket should exist');
 		expect(sample.zscore).toBeCloseTo(Number(((sample.totalVolume - mean) / stdev).toFixed(2)), 2);
 
-		// 全バケット基準（旧実装）の平均は欠損ゼロ埋めで押し下げられる
+		// 全バケット基準の平均は欠損ゼロ埋めで押し下げられる
 		const meanAll = buckets.reduce((s, b) => s + b.totalVolume, 0) / buckets.length;
 		expect(meanAll).toBeLessThan(mean);
 	});
 
 	it('欠損明けの最初のバケットが偽スパイクにならない（同量の約定なら spike なし）', async () => {
 		// アーカイブ区間と latest 区間で 1 バケットあたりの出来高を揃えたフィクスチャ。
-		// 旧実装ではゼロ埋めで平均が下がり、欠損明けバケットの Z スコアが跳ねていた。
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(NOW);
 		const uniform = (startMs: number, count: number, idBase: number): RawTx[] =>
@@ -461,17 +418,7 @@ describe('欠損バケット（hasData）', () => {
 	});
 });
 
-/**
- * limit による切り捨ての申告
- *
- * 件数ベース取得（区間指定なし = 直近 N 件）は最新側 limit 件に切るが、旧実装はこれを
- * **無言で**行っていた。しかも `meta.actualRange` が「実カバー = スパン」を報告するため、
- * **完全にカバーしたように見えていた**（#8/#9 で入れたカバレッジ申告が、切り捨てには
- * 反応しなかった）。
- *
- * `date` 指定も当初は同じ経路で limit を適用していたが、現在は適用しない
- * （下の「date 指定: limit を適用しない」を参照）。
- */
+// 件数ベース取得（区間指定なし = 直近 N 件）は最新側 limit 件に切るが、`meta.actualRange` は「実カバー = スパン」を報告するので、切り捨てを別に申告しないと完全にカバーしたように見える。
 describe('limit 切り捨ての申告', () => {
 	afterEach(() => {
 		vi.useRealTimers();
@@ -556,24 +503,12 @@ describe('limit 切り捨ての申告', () => {
 	});
 });
 
-/**
- * date 指定: limit を適用しない
- *
- * `since` / `until` の導入で区間指定パラメータが 3 系統になった際、`limit` の扱いが
- * `date` だけ不揃いになっていた（`hours` / `since`・`until` は非適用、`date` は適用）。
- * 既定 `limit` は 100 なので `get_flow_metrics(date=20260801)` は「その UTC 日の**最新側
- * 100 件**」＝末尾約 20 分ぶんを返しており、日付を指定した意図とはまず一致しない。
- * 切り捨て自体は `meta.truncated` / warning で申告されていたが、既定の挙動として不適切
- * だった（上限 2000 に上げても 1 UTC 日 5,600〜8,000 件には届かない）。
- *
- * ここでも上流 fetch だけをモックし、実際の limit 適用ロジックを通す。
- */
+// 既定 `limit` は 100 なので、`date` に limit を適用すると「その UTC 日の最新側 100 件」＝末尾約 20 分ぶんになり、日付を指定した意図とまず一致しない（`hours` / `since`・`until` も非適用）。
 describe('date 指定: limit を適用しない（UTC 暦日の全件を集計）', () => {
 	/** 1 UTC 日（20260707）を 30 秒間隔で埋める。2,880 件 = limit 上限 2000 超 */
 	const FULL_DAY_COUNT = 2880;
 	const FULL_DAY_TXS = buildTxs(Date.UTC(2026, 6, 7, 0, 0, 0), FULL_DAY_COUNT, 30_000, 1);
 
-	/** 完了済み UTC 日 20260707 のアーカイブが 1 日を隙間なく埋めているケース */
 	function mockFullDayArchive() {
 		return vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
 			const u = String(url);
@@ -597,7 +532,6 @@ describe('date 指定: limit を適用しない（UTC 暦日の全件を集計�
 
 		assertOk(res);
 		expect(res.data.aggregates.totalTrades).toBe(FULL_DAY_COUNT);
-		// limit 上限（2000）を超える日でも切れない
 		expect(res.data.aggregates.totalTrades).toBeGreaterThan(2000);
 	});
 
@@ -658,7 +592,6 @@ describe('date 指定: limit を適用しない（UTC 暦日の全件を集計�
 		const res = await getFlowMetrics('btc_jpy', 100, '20260707', 60_000);
 
 		assertOk(res);
-		// 全件を集計したうえで、1 日 1440 分のうち 833 分しか実データが無いことが数値に出る
 		expect(res.data.aggregates.totalTrades).toBe(ARCHIVE_COUNT);
 		expect(res.meta.actualRange?.requestedMinutes).toBe(1440);
 		expect(res.meta.actualRange?.coveragePct).toBeCloseTo(57.8, 0);
@@ -666,14 +599,7 @@ describe('date 指定: limit を適用しない（UTC 暦日の全件を集計�
 		expect(res.meta.warnings?.[0]).toContain('集計値');
 	});
 
-	/**
-	 * アーカイブ未公開（進行中・未来の UTC 日）→ latest フォールバックの仕様。
-	 *
-	 * この分岐は「その日のデータ」を返していない。ここだけ limit を効かせると、同じ date
-	 * 指定でもアーカイブが公開済みか否か（＝呼んだ時刻と上流の公開タイミング）で limit が
-	 * 効いたり効かなかったりし、呼び出し側から区別できない非決定的な挙動になる。よって
-	 * **date 指定である限り取得元によらず limit は適用しない** = latest の全件を返す。
-	 */
+	/** ここだけ limit を効かせると、同じ date 指定でもアーカイブが公開済みか否か（呼んだ時刻と上流の公開タイミング）で limit が効いたり効かなかったりする非決定的な挙動になるので、date 指定である限り取得元によらず limit は適用しない。 */
 	it('アーカイブ未公開 → latest フォールバックでも limit を適用しない（latest の全件）', async () => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(NOW); // 進行中 UTC 日 = 20260708
@@ -682,7 +608,6 @@ describe('date 指定: limit を適用しない（UTC 暦日の全件を集計�
 		const res = await getFlowMetrics('btc_jpy', 10, '20260708', 60_000);
 
 		assertOk(res);
-		// limit=10 でも latest の全件（約60件）が集計される
 		expect(res.data.aggregates.totalTrades).toBe(LATEST_COUNT);
 		expect(res.meta.truncated).toBeUndefined();
 		expect(res.meta.totalAvailable).toBeUndefined();
@@ -711,8 +636,6 @@ describe('date 指定: limit を適用しない（UTC 暦日の全件を集計�
 		assertOk(res);
 		const range = res.meta.actualRange;
 		expect(range).toBeDefined();
-		// 1 UTC 日（1440分）を分母にすると「latest 約60件で 4% しか取れなかった」と読めてしまうが、
-		// そもそも要求日のデータではないのでカバー率を出す意味が無い
 		expect(range?.requestedMinutes).toBeUndefined();
 		expect(range?.coveragePct).toBeUndefined();
 	});

@@ -1,16 +1,4 @@
-/**
- * 構造図（`lib/pattern-diagrams.ts` の `generatePatternDiagram`）のピボットラベルが
- * intraday で時刻まで出ることを、**検出器を実際に走らせて**固定する（issue #233）。
- *
- * `tests/lib/pattern-diagrams.test.ts` は `generatePatternDiagram` に `type` を直接渡して
- * 整形そのものを検証している。本ファイルはその 1 段上——**各検出器が `ctx.type` を
- * 構造図まで配線しているか**を見る。issue #233 の欠陥は整形関数と配線の両方に跨っており、
- * 整形だけ直しても呼び出し元が `type` を渡さなければ症状は一切変わらない。
- *
- * 症状（実データで確認された 2 例）: 1hour の `triple_top`（形成期間 9/2 03:00〜22:00）で
- * 構造図の 5 点がすべて「9/2」になり、どの点がどの足かを区別できなかった。
- * 本文側（`detectPatternsViewsHandler.ts` の `toDateOrTime`）は時刻まで出ていた。
- */
+// 各検出器が `ctx.type` を構造図まで配線しているかを、検出器を実際に走らせて見る（整形そのものは `tests/lib/pattern-diagrams.test.ts` が見る。issue #233）。
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,11 +9,8 @@ import { getHsShoulderMaxPctForTf, getSizeThresholdsForTf } from '../../tools/pa
 import { detectDoubles } from '../../tools/patterns/detect_doubles.js';
 import { detectHeadAndShoulders } from '../../tools/patterns/detect_hs.js';
 import { detectTriples } from '../../tools/patterns/detect_triples.js';
-import { linearRegressionWithR2 } from '../../tools/patterns/regression.js';
 import type { Pivot } from '../../tools/patterns/swing.js';
 import type { CandleData, DetectContext } from '../../tools/patterns/types.js';
-
-// ── ヘルパー ──
 
 /** 1 時間足の固定タイムライン。現在時刻に依存させない（ラベルの期待値を書けるようにする）。 */
 const ANCHOR = '2026-09-02T13:00:00Z'; // JST 9/2 22:00
@@ -62,9 +47,6 @@ function buildCtx(opts: {
 		hsShoulderMaxPct: getHsShoulderMaxPctForTf(opts.type),
 		swingDepth: 7,
 		tz: 'Asia/Tokyo',
-		near: (a: number, b: number) => Math.abs(a - b) <= Math.max(a, b) * tol,
-		pct: (a: number, b: number) => ((b - a) / Math.max(1, a)) * 100,
-		lrWithR2: (pts) => linearRegressionWithR2(pts),
 	};
 }
 
@@ -83,7 +65,6 @@ function buildTriple(side: 'top' | 'bottom') {
 	const setValley = (i: number) => mkCandle(50 - i, valley + 1, valley + 3, valley, valley + 1);
 	for (const i of top ? [0, 20, 40] : [10, 30]) candles[i] = setPeak(i);
 	for (const i of top ? [10, 30] : [0, 20, 40]) candles[i] = setValley(i);
-	// ネックライン（top=谷平均 / bottom=山平均）を突破する終値を並べる
 	const nl = top ? valley : peak;
 	const brk = top ? Math.floor(nl * (1 - BREAKOUT_PCT)) : Math.ceil(nl * (1 + BREAKOUT_PCT));
 	for (let i = 41; i < 50; i++) candles[i] = mkCandle(50 - i, brk, brk + 3, brk - 3, brk);
@@ -229,7 +210,6 @@ describe('構造図の intraday 時刻ラベル（検出器からの配線。iss
 				const labels = pivotLabelDates(svg);
 				expect(labels.length).toBeGreaterThan(0);
 				for (const label of labels) expect(label).toMatch(/^\d+\/\d+ \d{2}:\d{2}$/);
-				// 同じ日付ラベルに潰れない（issue #233 の症状そのもの）。
 				expect(new Set(labels).size).toBe(labels.length);
 			}
 		});
@@ -246,12 +226,9 @@ describe('構造図の intraday 時刻ラベル（検出器からの配線。iss
 	}
 });
 
-// ── 配線の取りこぼし検知 ──
-
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DETECTOR_FILES = ['detect_doubles.ts', 'detect_triples.ts', 'detect_hs.ts', 'detect_wedges.ts'];
 
-/** `generatePatternDiagram(` から始まる呼び出し 1 件分の実引数テキストを取り出す。 */
 function callArguments(source: string, openIdx: number): string {
 	let depth = 0;
 	for (let i = openIdx; i < source.length; i++) {
@@ -266,11 +243,8 @@ function callArguments(source: string, openIdx: number): string {
 }
 
 describe('generatePatternDiagram の呼び出し元が type を渡している（tripwire）', () => {
-	// 上の機能テストは実際に検出できたパターンしか通らないので、relaxed / forming など
-	// 到達しにくい経路の配線漏れを取りこぼす。issue #233 の受け入れ条件は「1 箇所も
-	// 取りこぼさないこと」なので、呼び出し元を機械的に数える。
-	// 誤検知の性質: `type` という語が引数中にあるだけで通る緩い判定だが、
-	// 構造図の呼び出しに `type` を書く理由は本 issue の配線以外に無い。
+	// 上の機能テストは実際に検出できたパターンしか通らないので、relaxed / forming など到達しにくい経路の配線漏れを取りこぼす。呼び出し元を機械的に数える。
+	// `type` という語が引数中にあるだけで通る緩い判定だが、構造図の呼び出しに `type` を書く理由は本 issue の配線以外に無い。
 	it.each(DETECTOR_FILES)('%s の全呼び出しが options.type を渡す', (file) => {
 		const source = fs.readFileSync(path.join(PACKAGE_ROOT, 'tools', 'patterns', file), 'utf8');
 		const calls: string[] = [];

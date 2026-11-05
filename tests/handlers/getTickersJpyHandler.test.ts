@@ -19,8 +19,6 @@ afterEach(() => {
 	vi.clearAllMocks();
 });
 
-// ─── pure function tests ──────────────────────────────────────────────────────
-
 describe('buildTickersJpyRankedText', () => {
 	const makeTicker = (pair: string, changeN: number, volumeInJPY: number): NormalizedTicker => ({
 		pair,
@@ -100,8 +98,6 @@ describe('buildTickersJpyItemsText', () => {
 		expect(text).not.toContain('他');
 	});
 });
-
-// ─── handler tests ────────────────────────────────────────────────────────────
 
 describe('toolDef handler', () => {
 	const mockTickerData = (pairs: Array<{ pair: string; last: number; open: number; vol: number }>) => ({
@@ -197,8 +193,6 @@ describe('toolDef handler', () => {
 		expect(sc.data).toHaveProperty('ranked');
 	});
 });
-
-// ─── NaN / Infinity normalization (PR4) ───────────────────────────────────────
 
 describe('toolDef handler — NaN/Infinity normalization', () => {
 	const makeMockedRes = (data: unknown[]) => ({ ok: true, summary: 'ok', data, meta: {} });
@@ -437,7 +431,6 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 		);
 		const res = await toolDef.handler({ view: 'ranked', sortBy: 'change24h', order: 'desc', limit: 1 });
 		const sc = asMcp<Record<string, unknown>>(res).structuredContent;
-		// 正規化フィールドに NaN / Infinity がないことを確認
 		const json = JSON.stringify(sc);
 		expect(json).not.toContain('NaN');
 		expect(json).not.toContain('Infinity');

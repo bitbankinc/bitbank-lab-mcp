@@ -1,19 +1,3 @@
-/**
- * get_margin_trade_history — 信用取引の約定履歴を取得する Private API ツール。
- *
- * bitbank Private API `/v1/user/spot/trade_history` に `type=margin` を指定し、
- * 信用取引の約定（新規建て・決済）のみを取得して返す。
- *
- * - 自動ページネーション: count > PAGE_SIZE (1000) の場合、cursor ベースで
- *   複数回リクエストし全件取得を試みる（最大 MAX_PAGES ページ）。
- * - 現物混入フィルタ: `type=margin` が API に無視された場合に備え、
- *   レスポンスから `position_side != null` で margin 約定のみに絞る。
- * - isComplete フラグ: 全件取得できたかどうかを meta に含める。
- *
- * 注意: since を信用新規建て後の日時に指定した場合、
- * 対応する決済約定のみが返される可能性があります。
- */
-
 import { nowIso, parseIso8601, toIsoMs } from '../../lib/datetime.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
 import { normalizePairCodes } from '../../lib/pair-code.js';
@@ -23,7 +7,6 @@ import { GetMarginTradeHistoryInputSchema, GetMarginTradeHistoryOutputSchema } f
 import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
-/** bitbank /v1/user/spot/trade_history のレスポンス型（信用取引フィルタ時） */
 interface RawMarginTrade {
 	trade_id: number;
 	pair: string;
@@ -42,27 +25,9 @@ interface RawMarginTrade {
 	executed_at: number;
 }
 
-// ── ページネーション設定 ──
 const PAGE_SIZE = 1000;
 const MAX_PAGES = 10;
 
-/**
- * cursor ベースの自動ページネーション。
- *
- * order に応じてカーソル方向を切り替える:
- * - asc: `since` を最後の約定の executed_at で前進
- * - desc: `end` を最後の約定（= batch 末尾 = 最古）の executed_at で後退
- *
- * `paginateTrades` (get_my_trade_history) との違い:
- * - `type=margin` を毎回付与し、レスポンスから `position_side != null` で margin のみに絞る
- *   （API が type=margin を無視するケースへの保険、fetch.ts:paginateMarginTrades と同じ）。
- * - 終了条件はフィルタ前の生 batch.length で判定する（フィルタ後の長さで判定すると、
- *   現物比率が高いとき早期終了して次ページの信用約定を取り逃がす）。
- * - カーソル前進有無で進捗停止を検出する（同一ミリ秒の境界レコードでループしないよう）。
- *
- * 同一ミリ秒の境界レコードを取りこぼさないため、カーソルはインクリメントせず、
- * trade_id で重複排除する。since/end が外部指定されている場合でもページネーションする。
- */
 async function paginateMarginTrades(
 	client: BitbankPrivateClient,
 	baseParams: Record<string, string>,
@@ -83,8 +48,7 @@ async function paginateMarginTrades(
 			...(cursor ? { [cursorKey]: cursor } : {}),
 		};
 		const rawData = await client.get<{ trades: RawMarginTrade[] }>('/v1/user/spot/trade_history', params);
-		// 取得境界での pair 正規化（`lib/pair-code.ts`）。JPY 建て判定 → 価格フォーマットが
-		// 小文字前提のため、ここで揃える。
+		// JPY 建て判定と価格フォーマットが小文字前提なので、取得境界で pair を揃える。
 		const batch = normalizePairCodes(rawData.trades || []);
 		// type=margin が無視された場合に備え、position_side != null で margin 約定のみに絞る。
 		const marginOnly = batch.filter((t) => t.position_side != null);
@@ -92,12 +56,7 @@ async function paginateMarginTrades(
 		for (const t of newRecords) seenIds.add(t.trade_id);
 		all.push(...newRecords);
 
-		// 終了判定はフィルタ前の生 batch.length を使う。フィルタ後の長さで判定すると、
-		// 現物比率が高いとき早期終了して次ページの margin 約定を取り逃がす。
-		// 「期間内全件取得」(isComplete=true) を返せるのは、API 窓を使い切った
-		// (batch.length < PAGE_SIZE) かつ limit 超過で切り捨てが発生していない場合だけ。
-		// 例: count=1500 / page1=1000 全 margin + page2=800 全 margin の場合、
-		// all.length=1800 を slice(0, 1500) で 300 件捨てているので isComplete=false が正しい。
+		// 終了判定はフィルタ前の生 batch.length を使う。フィルタ後の長さで判定すると、現物比率が高いとき早期終了して次ページの margin 約定を取り逃がす。
 		const exhausted = batch.length < PAGE_SIZE;
 		if (all.length >= limit) {
 			return { trades: all.slice(0, limit), isComplete: exhausted && all.length === limit };
@@ -117,7 +76,6 @@ async function paginateMarginTrades(
 		cursor = nextCursor;
 	}
 
-	// MAX_PAGES 到達 → 打ち切り
 	return { trades: all.slice(0, limit), isComplete: false };
 }
 
@@ -135,7 +93,6 @@ export default async function getMarginTradeHistory(args: {
 		const baseParams: Record<string, string> = {};
 		if (pair) baseParams.pair = pair;
 
-		// ISO8601 → unix ms 変換
 		if (since) {
 			const parsed = parseIso8601(since);
 			if (!parsed) {
@@ -157,21 +114,14 @@ export default async function getMarginTradeHistory(args: {
 		let isComplete: boolean;
 
 		if (count <= PAGE_SIZE) {
-			// 単発リクエスト（API に order をそのまま渡す）
 			const params: Record<string, string> = { ...baseParams, type: 'margin' };
 			if (count !== 20) params.count = String(count);
 			if (order !== 'desc') params.order = order;
 			const rawData = await client.get<{ trades: RawMarginTrade[] }>('/v1/user/spot/trade_history', params);
-			// 取得境界での pair 正規化（paginateMarginTrades と同じ理由）。
 			const rawBatch = normalizePairCodes(rawData.trades);
-			// 公式 docs に type=margin パラメータの記載がなく、API が無視する可能性に備える。
-			// position_side は docs 上「信用取引の時のみ」付与されるため、これで margin 約定のみに絞る。
 			rawTrades = rawBatch.filter((t) => t.position_side != null);
-			// API 窓内の margin 約定を全部もらったかどうかは生 batch.length で判定する
-			// （フィルタ後の長さで判定すると、現物比率が高いとき誤って打ち切る）。
 			isComplete = rawBatch.length < count;
 		} else {
-			// 自動ページネーション（order に応じて asc + since / desc + end カーソルで取得）
 			const result = await paginateMarginTrades(client, baseParams, count, order);
 			rawTrades = result.trades;
 			isComplete = result.isComplete;
@@ -179,7 +129,6 @@ export default async function getMarginTradeHistory(args: {
 
 		const timestamp = nowIso();
 
-		// 約定データの整形
 		const trades = rawTrades.map((t) => ({
 			trade_id: t.trade_id,
 			pair: t.pair,
@@ -198,7 +147,6 @@ export default async function getMarginTradeHistory(args: {
 			executed_at: toIsoMs(t.executed_at) ?? String(t.executed_at),
 		}));
 
-		// サマリー文字列の生成
 		const lines: string[] = [];
 		const pairLabel = pair ? formatPair(pair) : '全ペア';
 		lines.push(`信用約定履歴: ${pairLabel} ${trades.length}件`);
@@ -225,7 +173,6 @@ export default async function getMarginTradeHistory(args: {
 				lines.push(`... 他 ${trades.length - 10}件`);
 			}
 
-			// 集計
 			const longCount = trades.filter((t) => t.position_side === 'long').length;
 			const shortCount = trades.filter((t) => t.position_side === 'short').length;
 			lines.push('');
@@ -249,14 +196,12 @@ export default async function getMarginTradeHistory(args: {
 
 		return GetMarginTradeHistoryOutputSchema.parse(ok(summary, data, meta));
 	} catch (err) {
-		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
 		return GetMarginTradeHistoryOutputSchema.parse(
 			failPrivateToolError(err, '信用約定履歴取得中に予期しないエラーが発生しました'),
 		);
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'get_margin_trade_history',
 	description:

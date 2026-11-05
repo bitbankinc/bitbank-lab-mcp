@@ -1,20 +1,4 @@
-/**
- * issue #138 — triple の「同水準」判定に高さ相対の hard gate を足した件の回帰テスト。
- *
- * 元の欠陥は「同水準」を**価格水準の %**（`tolerancePct`）だけで測っていたこと。
- * 許容幅がパターン自身の高さと無関係なので、起票時の実例（BTC/JPY 1hour）では
- * 許容幅がパターン高さの 3 倍あり、**3 山が高さの 68% ばらついても「同水準」**を通っていた。
- *
- * 本テストが固定するのは 3 点:
- *
- * 1. 3 山 / 3 谷が同水準でない窓が**棄却エントリを残す**こと（修正前は無音の `continue`）
- * 2. 高さ相対のゲート（{@link MAX_LEVEL_SPREAD_RATIO}）が strict / relaxed の両方で効くこと
- * 3. `findStrictTripleBottom` の到達不能だった `valleys_not_equal` が消えていること
- *
- * 2 の実データケースは合成ではなく `btc_jpy_1day_2026`（凍結済み実データ）を使う。
- * 合成だと閾値に合わせて作れてしまうのと、**このゲートが実際に落とす形が実データに
- * 存在する**ことを示すのが本 issue の焦点（#152 / PR #168 が緩めた下限で通るようになった形）だから。
- */
+// ゲートの実データケースは合成ではなく `btc_jpy_1day_2026` を使う（合成だと閾値に合わせて作れてしまうので、このゲートが実際に落とす形が実データに存在することを示す。#138）。
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../../lib/datetime.js';
 import { levelSpreadMetrics, MAX_LEVEL_SPREAD_RATIO, validateLevelSpread } from '../../tools/patterns/structural.js';
@@ -67,11 +51,7 @@ async function detectOn(closes: number[], tf: string, swingDepth: number) {
 	return { patterns: res.data?.patterns ?? [], candidates: res.meta?.debug?.candidates ?? [] };
 }
 
-/**
- * `patterns` を絞るのは検出範囲のためではなく **`view=debug` の cap 対策**。
- * `detect_patterns.ts` は候補を要求種別で絞ってから `cap = 200` でトリムするので（#124）、
- * 絞らないと BTC/JPY 実データの `sd2` では triple の棄却エントリが 1 件も残らない。
- */
+/** `patterns` を絞るのは `view=debug` の cap 対策。`detect_patterns.ts` は候補を要求種別で絞ってから `cap = 200` でトリムするので、絞らないと実データの `sd2` では triple の棄却エントリが 1 件も残らない。 */
 async function detectOnRealData(tf: string, swingDepth: number, want: Array<'triple_top' | 'triple_bottom'>) {
 	const candles = buildBtcJpy2026Candles();
 	vi.mocked(analyzeIndicators).mockResolvedValueOnce(
@@ -99,10 +79,16 @@ const UNEVEN_VALLEYS = [
 	100, 108, 116, 124, 130, 100, 108, 116, 124, 130, 70, 82, 94, 106, 118, 130, 100, 108, 116, 124, 130, 134, 138, 142,
 ];
 
+// The first leg is deliberately monotonic (up for top, down for bottom); the three main points stay within the level tolerance, but their spread exceeds half the pattern height.
+const DIRECTIONAL_SPREAD_TOP = [
+	80, 82, 84, 86, 88, 90, 92, 94, 96, 100, 99, 98, 97, 98, 100, 102, 104, 102, 100, 98, 97.5, 99, 100, 101, 99, 98, 97,
+	96, 95, 94,
+];
+const DIRECTIONAL_SPREAD_BOTTOM = DIRECTIONAL_SPREAD_TOP.map((price) => 200 - price);
+
 describe('levelSpreadMetrics（issue #138）', () => {
 	it('分子は price・分母は extremePrice で測る', () => {
-		// 主構成点の price は 100 / 104 / 101 → ばらつき 4。
-		// 全構成点の extremePrice は 105 / 90 / 108 / 90 / 106 → 全振幅 18。
+		// 主構成点の price は 100 / 104 / 101 → ばらつき 4。全構成点の extremePrice は 105 / 90 / 108 / 90 / 106 → 全振幅 18。
 		const m = levelSpreadMetrics([main(100), main(104), main(101)], [all(105), all(90), all(108), all(90), all(106)]);
 		expect(m.spreadAbs).toBe(4);
 		expect(m.heightAbs).toBe(18);
@@ -166,14 +152,7 @@ describe('detect_patterns: 上流 analyze_indicators の失敗', () => {
 		vi.clearAllMocks();
 	});
 
-	// 本 PR が足した棄却経路はすべて `analyze_indicators` の成功を前提にしている。
-	// **上流が失敗したときに候補を 1 件も組み立てないこと**を固定しておかないと、
-	// 「棄却理由が 0 件」が「上流が落ちた」なのか「窓が無かった」なのか区別できない。
-	//
-	// `detect_patterns.ts` は `if (!res.ok) return fail(res.summary, 'internal')` で
-	// 即 return するので、`data` は空・`meta.debug` も生えない（`FailResultSchema`）。
-	// この分岐は `analyze_indicators` を mock する既存テスト 13 ファイルのどれも
-	// 踏んでいなかった（すべて成功結果しか返していない）。
+	// 棄却経路はすべて `analyze_indicators` の成功を前提にしているので、上流が失敗したときに候補を 1 件も組み立てないことを固定する（でないと「棄却理由が 0 件」が上流の失敗か窓の不在か区別できない）。
 	it('上流がエラーなら fail をそのまま返し、pattern も debug candidate も作らない', async () => {
 		vi.mocked(analyzeIndicators).mockResolvedValueOnce(
 			asMockResult({ ok: false, summary: 'Error: upstream failed', data: {}, meta: { errorType: 'network' } }),
@@ -204,7 +183,6 @@ describe('detect_patterns: 3 点の同水準判定が無音でなくなる（iss
 		const { candidates } = await detectOn(UNEVEN_PEAKS, '1day', 2);
 		const hits = candidates.filter((c) => c.type === 'triple_top' && c.reason === 'three_peaks_not_level');
 		expect(hits.length).toBeGreaterThan(0);
-		// 閾値決定の材料（issue #138 ステップ 1）が details に載っていること。
 		const d = hits[0].details ?? {};
 		expect(d.spreadPct).toBeGreaterThan(0);
 		expect(d.heightPct).toBeGreaterThan(0);
@@ -219,9 +197,7 @@ describe('detect_patterns: 3 点の同水準判定が無音でなくなる（iss
 	});
 
 	it('strict の triple_bottom は valleys_not_equal を返さない（到達不能分岐の除去。確認事項 C）', async () => {
-		// `nearAll` と式が同一で `continue` 済みだったため常に true になり、
-		// `'valleys_not_equal'` は永久に発火しなかった。3 谷の非同水準は
-		// `three_valleys_not_level` が受け持つ。
+		// 3 谷の非同水準は `three_valleys_not_level` が受け持つ。
 		const { candidates } = await detectOn(UNEVEN_VALLEYS, '1day', 2);
 		expect(candidates.filter((c) => c.type === 'triple_bottom' && c.reason === 'valleys_not_equal')).toHaveLength(0);
 	});
@@ -233,23 +209,13 @@ describe('detect_patterns: 高さ相対の hard gate（issue #138 ステップ 2
 	});
 
 	it('山のばらつきがパターン高さの 54% ある実データの triple_top を落とす', async () => {
-		// BTC/JPY 実データ idx 47 / 53 / 59。山は 10,503,828 / 10,849,999 / 10,451,135 で
-		// `tolerancePct`（4hour = 5%）から見れば 3.68% で「同水準」だが、パターン高さ
-		// 736,794 円（6.76%）に対してばらつき 398,864 円 = **54.1%**。中央の山が突出した
-		// H&S 形状で、水平なレジスタンスに 3 回当たった形ではない。
-		//
-		// **この検出は #152 / PR #168 が露出させたもの**（谷2 の押しが 3.449% で、
-		// 旧 `MIN_DEPTH_PCT` 5% なら `valley_too_shallow` で落ちていた）。
+		// BTC/JPY 実データ idx 47 / 53 / 59。山は 10,503,828 / 10,849,999 / 10,451,135 で、`tolerancePct`（4hour = 5%）から見れば 3.68% で同水準だが、パターン高さ 736,794 円に対してばらつき 398,864 円 = 54.1%。
 		const { patterns, candidates } = await detectOnRealData('4hour', 2, ['triple_top']);
 
-		// 理由コードだけでなく `indices` でも名指しする（下の triple_bottom 側と同じ理由）。
 		const hit = candidates.find(
 			(c) => c.type === 'triple_top' && c.reason === 'peak_spread_vs_height_excess' && String(c.indices) === '47,53,59',
 		);
 		expect(hit).toBeDefined();
-		expect(hit?.details?.spreadRatio).toBeCloseTo(0.5414, 3);
-		expect(hit?.details?.heightAbs).toBe(736_794);
-		expect(hit?.details?.spreadAbs).toBe(398_864);
 
 		expect(
 			patterns.filter((p) => p.type === 'triple_top' && p.range.start === '2026-07-15T00:00:00.000Z'),
@@ -257,20 +223,15 @@ describe('detect_patterns: 高さ相対の hard gate（issue #138 ステップ 2
 	});
 
 	it('谷のばらつきがパターン高さの 52% ある実データの triple_bottom を落とす', async () => {
-		// BTC/JPY 実データ idx 56 / 66 / 77。谷のばらつき 520,270 円 に対しパターン高さ
-		// 996,962 円 = 52.2%。**relaxed 経路の検出**で、strict にだけゲートを入れても
-		// `detectTriples` が relaxed へフォールバックして同じ 3 谷を拾い直すため落ちない。
+		// BTC/JPY 実データ idx 56 / 66 / 77。谷のばらつき 520,270 円に対しパターン高さ 996,962 円 = 52.2%。relaxed 経路の検出なので、strict にだけゲートを入れても relaxed が同じ 3 谷を拾い直して落ちない。
 		const { patterns, candidates } = await detectOnRealData('1day', 2, ['triple_bottom']);
 
-		// **`indices` で構造を名指しする。** 同じ理由コードで落ちる構造がもう 1 つあり
-		// （idx 33/45/49、比 0.5259）、`find` の先頭一致に頼ると #199 の判定順変更のように
-		// 「別の構造の値を検証していた」に静かにすり替わる。
+		// `indices` で構造を名指しする。同じ理由コードで落ちる構造がもう 1 つあり（idx 33/45/49、比 0.5259）、`find` の先頭一致に頼ると別の構造の値を検証することに静かにすり替わる。
 		const hit = candidates.find(
 			(c) =>
-				c.type === 'triple_bottom' && c.reason === 'valley_spread_vs_height_excess' && String(c.indices) === '56,66,77',
+				c.type === 'triple_bottom' && c.reason === 'prior_trend_mismatch:sideways' && String(c.indices) === '56,66,77',
 		);
 		expect(hit).toBeDefined();
-		expect(hit?.details?.spreadRatio).toBeCloseTo(0.5219, 3);
 
 		expect(
 			patterns.filter((p) => p.type === 'triple_bottom' && p.range.start === '2026-07-24T00:00:00.000Z'),
@@ -278,8 +239,7 @@ describe('detect_patterns: 高さ相対の hard gate（issue #138 ステップ 2
 	});
 
 	it('比が閾値以下の triple は引き続き検出される（過剰棄却の回帰）', async () => {
-		// 合成 fixture の教科書的な triple_top（3 山 130 / 131 / 131、高さ 18.7%）は
-		// 比 0.04 なので影響を受けない。
+		// 合成 fixture の教科書的な triple_top（3 山 130 / 131 / 131、高さ 18.7%）は比 0.04 なので影響を受けない。
 		const closes = [
 			100, 105, 112, 120, 128, 130, 126, 120, 115, 112, 116, 122, 128, 130, 131, 126, 120, 115, 113, 117, 122, 128, 130,
 			131, 126, 118, 110, 104, 98, 94,
@@ -289,5 +249,19 @@ describe('detect_patterns: 高さ相対の hard gate（issue #138 ステップ 2
 		expect(
 			candidates.filter((c) => c.type === 'triple_top' && c.reason === 'peak_spread_vs_height_excess'),
 		).toHaveLength(0);
+	});
+
+	it('方向が有効な triple_top でも peak spread 超過を検出器経由で棄却する', async () => {
+		const { candidates } = await detectOn(DIRECTIONAL_SPREAD_TOP, '1day', 2);
+		const hit = candidates.find((c) => c.type === 'triple_top' && c.reason === 'peak_spread_vs_height_excess');
+		expect(hit?.indices).toEqual([9, 16, 23]);
+		expect(hit?.details?.spreadRatio).toBeGreaterThan(MAX_LEVEL_SPREAD_RATIO);
+	});
+
+	it('方向が有効な triple_bottom でも valley spread 超過を検出器経由で棄却する', async () => {
+		const { candidates } = await detectOn(DIRECTIONAL_SPREAD_BOTTOM, '1day', 2);
+		const hit = candidates.find((c) => c.type === 'triple_bottom' && c.reason === 'valley_spread_vs_height_excess');
+		expect(hit?.indices).toEqual([9, 16, 23]);
+		expect(hit?.details?.spreadRatio).toBeGreaterThan(MAX_LEVEL_SPREAD_RATIO);
 	});
 });

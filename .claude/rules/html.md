@@ -1,5 +1,6 @@
 ---
-globs: **/*.html
+paths:
+  - "**/*.html"
 ---
 
 # HTML 出力時の Tailwind CSS

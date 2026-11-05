@@ -1,9 +1,3 @@
-/**
- * resolve_fee.ts のユニットテスト。
- * /spot/pairs の taker レートから fee_bp を解決する分岐（explicit / dynamic / fallback）を検証する。
- * fetch モックは vi.spyOn(globalThis, 'fetch') を基本とし、afterEach で復元する（.claude/rules/testing.md）。
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearPairsSpecCache } from '../../../lib/pairs.js';
 import { DEFAULT_FEE_BP, resolveBacktestFeeBp } from '../../../tools/trading_process/lib/resolve_fee.js';

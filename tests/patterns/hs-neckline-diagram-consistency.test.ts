@@ -1,53 +1,13 @@
-/**
- * H&S / 逆 H&S の**構造図 SVG のネックラインラベル**が、同じ 1 件の出力の中の
- * 他のネックライン水準と食い違わないことを固定する（issue #226）。
- *
- * ## 何が壊れていたか
- *
- * relaxed 経路は水平ネックライン `nlY` を組み、ブレイク判定（`findHsBreakoutIdx`）・
- * 構造ゲート・ターゲット・出力フィールド（`neckline`）のすべてに使っている。ところが
- * 構造図にだけ **その経路では他に一切消費されていない** `nlAvg`
- * （＝ 2 定義点 `p1` / `p3` の平均）を渡していた。実測（`btc_jpy` / `1hour` /
- * `_fallback: relaxed_hs_x2.0_0.4` / 構成点 idx `[29,36,39,43,48]`）では
- * content 本文行 12,481,701 円に対し構造図だけが 12,509,065 円で、差 27,364 円。
- *
- * **欠陥は 2 層にまたがっていた**。呼び出し側（`detect_hs.ts`）が `nlAvg` を渡していただけでなく、
- * `generatePatternDiagram`（`lib/pattern-diagrams.ts`）が H&S / 逆 H&S に限って
- * **引数 `neckline.price` を読まず、`pivots[1]` / `pivots[3]` の平均を自前で再計算していた**。
- * 呼び出し側だけを直しても SVG は 1 文字も変わらない（再計算が値を上書きするため）ので、
- * 本テストは**両層を通した実際の SVG 文字列**を検査する。
- *
- * ## 判定は 1 つも変えていない
- *
- * `nlY` は `findHsBreakoutIdx` に渡す線の y そのもので、そちらへ寄せるとブレイク判定・
- * 検出結果が動く。本 issue は表示層のみの欠陥なので、直したのは
- * 「構造図に渡す / 構造図が読む値」だけ。
- *
- * ## strict 経路は `nlAvg` 据え置き
- *
- * strict の `neckline` は `[{x:p1.idx,y:p1.price},{x:p3.idx,y:p3.price}]` ＝ **傾きつきの線**で、
- * スカラー 1 つでは表せない。`nlAvg` はその代表値として筋が通り、構造ゲート
- * （`applyReversalGate`）と `fallbackNecklinePrice` でも同じ値が使われている。
- * **誤って strict まで `neckline[0].y` に寄せる変更**を止めるため、strict のラベルが
- * 2 定義点の平均であることも併せて固定する。
- *
- * ## 既存テストがこの欠陥を捕まえられなかった理由
- *
- * `tests/detect_patterns_data_patterns_regression.test.ts` は `structureDiagram` を
- * `artifact.identifier` だけに畳んで比較しており（tz 修正で意図的に変わる svg / title を
- * 落とすため）、**SVG の中身は誰も検査していない**。
- */
+// 欠陥は呼び出し側（`detect_hs.ts`）と `generatePatternDiagram` の 2 層にまたがっていたので、両層を通した実際の SVG 文字列を検査する（issue #226）。
+// strict 経路は傾きつきの線なので `nlAvg`（2 定義点の平均）のまま。誤って strict まで `neckline[0].y` に寄せる変更を止めるため、併せて固定する。
 import { describe, expect, it } from 'vitest';
 import { dayjs } from '../../lib/datetime.js';
 import { generatePatternDiagram } from '../../lib/pattern-diagrams.js';
 import { formatPatternLine } from '../../src/handlers/detectPatternsViewsHandler.js';
 import { getHsShoulderMaxPctForTf, getSizeThresholdsForTf } from '../../tools/patterns/config.js';
 import { detectHeadAndShoulders } from '../../tools/patterns/detect_hs.js';
-import { linearRegressionWithR2 } from '../../tools/patterns/regression.js';
 import type { Pivot } from '../../tools/patterns/swing.js';
 import type { CandleData, DetectContext, PatternEntry } from '../../tools/patterns/types.js';
-
-// ── ヘルパー ──
 
 /** 実データ（BTC/JPY）の桁で見るための倍率。サイズ検査は率なので判定には効かない。 */
 const SCALE = 125_000;
@@ -83,9 +43,6 @@ function buildCtx(opts: {
 		debugCandidates: [],
 		type: '1day',
 		swingDepth: 7,
-		near: (a: number, b: number) => Math.abs(a - b) <= Math.max(a, b) * tol,
-		pct: (a: number, b: number) => ((b - a) / Math.max(1, a)) * 100,
-		lrWithR2: (pts) => linearRegressionWithR2(pts),
 	};
 }
 
@@ -152,7 +109,6 @@ function yen(label: string): number {
 	return Number(label.replace(/,/g, ''));
 }
 
-/** 構造図 SVG のネックラインラベルの数値。 */
 function necklineFromSvg(svg: string): number {
 	const m = svg.match(/ネックライン: ([\d,]+)円/);
 	if (!m) throw new Error(`構造図 SVG にネックラインラベルが無い: ${svg.slice(0, 200)}`);
@@ -166,11 +122,7 @@ function necklineContentLine(text: string): string {
 	return line.trim();
 }
 
-/**
- * 検出器の出力 1 件を `PatternEntry` として取り出す。`neckline` / `structureDiagram` /
- * `_fallback` は `DeduplicablePattern` の任意拡張（`[key: string]: unknown`）側にあり、
- * `PatternEntry` で初めて型が付く——表示層（`formatPatternLine`）が受け取る型と同じ。
- */
+/** `neckline` / `structureDiagram` / `_fallback` は `DeduplicablePattern` の任意拡張側にあり、`PatternEntry` で初めて型が付く。 */
 function detectOne(ctx: DetectContext, type: string): PatternEntry {
 	const found = detectHeadAndShoulders(ctx).patterns.filter((p) => p.type === type);
 	expect(found.length, `${type} が検出されていない`).toBeGreaterThan(0);
@@ -179,15 +131,11 @@ function detectOne(ctx: DetectContext, type: string): PatternEntry {
 
 /** `formatPatternLine` の full view（ネックライン行と構造図ブロックが同時に出る唯一の経路）。 */
 function fullViewText(p: PatternEntry): string {
-	// `PatternMeta` は未 export なので引数型から取る（`meta` はピボット日付の解決にしか使わず、
-	// 本テストのピボットは `date` を持たないので空で足りる）。
+	// `PatternMeta` は未 export なので引数型から取る（`meta` はピボット日付の解決にしか使わず、本テストのピボットは `date` を持たないので空で足りる）。
 	return formatPatternLine(p, 0, 'full', {} as Parameters<typeof formatPatternLine>[3], 'Asia/Tokyo', '1day');
 }
 
-// ── fixture 値 ──
-//
-// 肩 100 : 105（差 4.76%）は strict の tolerance 4% を超え、relaxed の 6.4% と
-// hard cap 5% には収まる——`tests/patterns/detect_hs.test.ts` の relaxed fallback と同じ配置。
+// 肩 100 : 105（差 4.76%）は strict の tolerance 4% を超え、relaxed の 6.4% と hard cap 5% には収まる（`tests/patterns/detect_hs.test.ts` の relaxed fallback と同じ配置）。
 const RELAXED_HS = {
 	leftShoulder: 100 * SCALE,
 	rightShoulder: 105 * SCALE,
@@ -220,7 +168,6 @@ describe('H&S / 逆 H&S: 構造図のネックラインラベルが本文と一�
 		expect(necklineContentLine(text)).toBe(`- ネックライン: ${nlY.toLocaleString('ja-JP')}円（水平）`);
 		expect(necklineFromSvg(p.structureDiagram?.svg ?? '')).toBe(nlY);
 
-		// 同じ 1 件の出力に現れるネックライン水準が 1 種類しかないこと（#226 の症状そのもの）。
 		const all = [...text.matchAll(/ネックライン: ([\d,]+)円/g)].map((m) => yen(m[1]));
 		expect(all.length).toBe(2); // 本文行 + 構造図ラベル
 		expect(new Set(all)).toEqual(new Set([nlY]));
@@ -246,12 +193,7 @@ describe('H&S / 逆 H&S: 構造図のネックラインラベルが本文と一�
 		expect(new Set(all)).toEqual(new Set([nlY]));
 	});
 
-	// `nlY` は「両肩の間の最安の谷」（逆 H&S は最高の山）を `allValleys` / `allPeaks` から採るので、
-	// **式としては 2 定義点のどちらとも一致しない位置に出る**。本番配線
-	// （`detect_patterns.ts` は同一の `detectSwingPoints` 出力から `pivots` と `allValleys` を作る）では
-	// `p0`〜`p4` が `pivots` 上で連続するため間に別の谷が入らず、今日は必ず `min(p1, p3)` に落ちる。
-	// ここでは検出器の入力契約どおり `allValleys` に独立した谷を渡して、その位置が外側でも
-	// 構造図が追随することを固定する（`nlY` の採り方を変えたときに黙って壊れないように）。
+	// `nlY` は両肩の間の最安の谷を `allValleys` から採るので、式としては 2 定義点と一致しない位置に出うる。本番配線では今日は必ず `min(p1, p3)` に落ちるが、`nlY` の採り方を変えたときに黙って壊れないよう、外側でも構造図が追随することを固定する。
 	it('relaxed H&S: nlY が 2 定義点の外側でも構造図ラベルが追随する', () => {
 		const { candles, pivots } = buildHS(RELAXED_HS);
 		const deeper: Pivot = { idx: 22, price: 60 * SCALE, kind: 'L', extremePrice: 60 * SCALE };
@@ -289,8 +231,6 @@ describe('H&S / 逆 H&S: 構造図のネックラインラベルが本文と一�
 		expect(necklineContentLine(fullViewText(p))).toBe(`- ネックライン: ${nlY.toLocaleString('ja-JP')}円（水平）`);
 	});
 
-	// ── strict は据え置き（`nlAvg`） ──
-
 	it('strict H&S: 構造図ラベルは 2 定義点の平均（nlAvg）のまま', () => {
 		const opts = {
 			leftShoulder: 100 * SCALE,
@@ -303,8 +243,7 @@ describe('H&S / 逆 H&S: 構造図のネックラインラベルが本文と一�
 		const p = detectOne(buildCtx({ candles, pivots }), 'head_and_shoulders');
 		expect(p._fallback).toBeUndefined();
 
-		// strict の neckline は**傾きつき**なので、本文行は 2 点を「→」で並べる。
-		// 構造図はスカラー 1 つしか描けないため、代表値として平均を出す（strict の設計）。
+		// strict の neckline は傾きつきなので本文行は 2 点を「→」で並べ、構造図はスカラー 1 つしか描けないので代表値として平均を出す。
 		expect(p.neckline).toEqual([
 			{ x: 15, y: opts.valley1 },
 			{ x: 45, y: opts.valley2 },
@@ -339,8 +278,6 @@ describe('H&S / 逆 H&S: 構造図のネックラインラベルが本文と一�
 		);
 	});
 
-	// ── 図の層の単体契約 ──
-
 	it('generatePatternDiagram: H&S / 逆H&S が引数 neckline.price をラベルに出す（自前の再計算をしない）', () => {
 		const range = { start: '2026-08-01T00:00:00Z', end: '2026-08-06T00:00:00Z' };
 		const hsPivots = [
@@ -350,11 +287,10 @@ describe('H&S / 逆 H&S: 構造図のネックラインラベルが本文と一�
 			{ idx: 3, price: 12_481_701, kind: 'L' as const, date: '2026-08-04T00:00:00Z' },
 			{ idx: 4, price: 13_100_000, kind: 'H' as const, date: '2026-08-05T00:00:00Z' },
 		];
-		// issue #226 実測の値。旧実装は引数を無視して 2 定義点の平均 12,509,065 を描いていた。
+		// issue #226 実測の値。
 		expect(
 			necklineFromSvg(generatePatternDiagram('head_and_shoulders', hsPivots, { price: 12_481_701 }, range).svg),
 		).toBe(12_481_701);
-		// 2 定義点の外側でも引数がそのまま出る。
 		expect(
 			necklineFromSvg(generatePatternDiagram('head_and_shoulders', hsPivots, { price: 11_000_000 }, range).svg),
 		).toBe(11_000_000);

@@ -1,11 +1,4 @@
-/**
- * E2E テスト用サーバーエントリポイント
- *
- * 環境変数 MOCK_RESPONSES に JSON を渡すと、URL パターンに応じて
- * fetch をモックした状態でサーバーを起動する。
- *
- * 例: MOCK_RESPONSES='{"btc_jpy/ticker": {...}}' tsx tests/e2e/mock-server-entry.ts
- */
+// 環境変数 MOCK_RESPONSES に JSON を渡すと、URL パターンに応じて fetch をモックした状態でサーバーを起動する（例: MOCK_RESPONSES='{"btc_jpy/ticker": {...}}' tsx tests/e2e/mock-server-entry.ts）。
 
 const mockMap: Record<string, unknown> = {};
 
@@ -34,5 +27,4 @@ if (Object.keys(mockMap).length > 0) {
 	}) as typeof fetch;
 }
 
-// 本体サーバーを起動
 await import('../../src/server.js');

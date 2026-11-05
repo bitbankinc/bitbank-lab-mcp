@@ -1,5 +1,6 @@
 import { calendarDateFromIso, dayjs } from '../lib/datetime.js';
-import { formatSummary } from '../lib/formatter.js';
+import { formatExactPrice, formatPriceAtLevel, formatSummary } from '../lib/formatter.js';
+import { roundPriceAtLevel } from '../lib/price.js';
 import { fail, failFromError, failFromValidation } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { AnalyzeSupportResistanceInputSchema, AnalyzeSupportResistanceOutputSchema } from '../src/schemas.js';
@@ -47,7 +48,6 @@ type SrCandle = {
 	volume?: number;
 };
 
-/** 足の時刻 ms（timestamp 優先）。無効なら null。 */
 function srCandleMs(c: SrCandle): number | null {
 	if (c.timestamp != null && Number.isFinite(c.timestamp)) return c.timestamp;
 	if (c.isoTime) {
@@ -57,7 +57,7 @@ function srCandleMs(c: SrCandle): number | null {
 	return null;
 }
 
-/** 表示・集計用の暦日（既定 JST）。isoTime の UTC 日付切り出しは使わない。 */
+/** isoTime の UTC 日付切り出しは使わない（暦日は既定 JST）。 */
 function srCalendarDate(c: SrCandle): string {
 	return calendarDateFromIso(c.timestamp ?? c.isoTime) ?? '';
 }
@@ -68,14 +68,12 @@ function isSrCandleAfter(c: SrCandle, cutoff: dayjs.Dayjs): boolean {
 	return dayjs(ms).isAfter(cutoff);
 }
 
-/** 構造化出力用 ISO（timestamp 優先で導出）。 */
 function srCandleIso(c: SrCandle): string {
 	const ms = srCandleMs(c);
 	if (ms != null) return dayjs(ms).toISOString();
 	return c.isoTime ?? '';
 }
 
-/** スイングポイント（ピボット）を検出: 左右 depth 本より高値/安値が突出した足 */
 function detectSwingPoints(
 	candles: SrCandle[],
 	depth: number = 5,
@@ -87,7 +85,6 @@ function detectSwingPoints(
 	const swingLows: Array<{ index: number; date: string; price: number; bounceStrength: number }> = [];
 
 	for (let i = depth; i < candles.length - depth; i++) {
-		// スイングハイ: 左右 depth 本より高値が高い
 		let isSwingHigh = true;
 		for (let j = i - depth; j <= i + depth; j++) {
 			if (j === i) continue;
@@ -105,7 +102,6 @@ function detectSwingPoints(
 			});
 		}
 
-		// スイングロー: 左右 depth 本より安値が低い
 		let isSwingLow = true;
 		for (let j = i - depth; j <= i + depth; j++) {
 			if (j === i) continue;
@@ -127,7 +123,6 @@ function detectSwingPoints(
 	return { swingHighs, swingLows };
 }
 
-/** 近接するスイングポイントを %ベースでクラスタリング（凝集型） */
 function clusterSwingPoints(
 	points: Array<{ date: string; price: number; bounceStrength: number }>,
 	tolerance: number,
@@ -152,12 +147,11 @@ function clusterSwingPoints(
 	clusters.push(current);
 
 	return clusters.map((c) => ({
-		level: Math.round(c.prices.reduce((a, b) => a + b, 0) / c.prices.length),
+		level: roundPriceAtLevel(c.prices.reduce((a, b) => a + b, 0) / c.prices.length),
 		points: c.points,
 	}));
 }
 
-/** スイングポイントベースで S/R レベルを検出し、各レベルのタッチ回数をカウント */
 function findPriceLevels(
 	candles: SrCandle[],
 	tolerance: number,
@@ -178,7 +172,6 @@ function findPriceLevels(
 		tolerance,
 	);
 
-	// 各サポートレベルに対してゾーン内のタッチを全ローソク足からカウント
 	const supports = new Map<number, TouchEvent[]>();
 	for (const cluster of supportClusters) {
 		const zoneMin = cluster.level * (1 - tolerance);
@@ -202,7 +195,6 @@ function findPriceLevels(
 		supports.set(cluster.level, touches);
 	}
 
-	// 各レジスタンスレベルに対してゾーン内のタッチを全ローソク足からカウント
 	const resistances = new Map<number, TouchEvent[]>();
 	for (const cluster of resistanceClusters) {
 		const zoneMin = cluster.level * (1 - tolerance);
@@ -238,7 +230,6 @@ function detectRecentBreak(
 	const recentCutoff = dayjs().subtract(recentDays, 'day');
 	const recentCandles = candles.filter((c) => isSrCandleAfter(c, recentCutoff));
 
-	// 偽ブレイクアウト検出用の平均出来高
 	const avgVolume = candles.reduce((sum, c) => sum + (c.volume || 0), 0) / (candles.length || 1);
 
 	for (let i = 0; i < recentCandles.length; i++) {
@@ -274,7 +265,6 @@ function detectNewSupport(
 
 	const newSupports: Array<{ price: number; date: string; volumeBoost: boolean; note: string }> = [];
 
-	// 平均出来高計算
 	const avgVolume = recentCandles.reduce((sum, c) => sum + (c.volume || 0), 0) / recentCandles.length;
 
 	for (let i = 1; i < recentCandles.length - 1; i++) {
@@ -282,17 +272,13 @@ function detectNewSupport(
 		const prev = recentCandles[i - 1];
 		const next = recentCandles[i + 1];
 
-		// 安値が2日以上連続で切り上がっているかチェック
 		if (current.low < prev.low && next.low > current.low) {
-			// その最安値を以降割っていないかチェック
 			const subsequentCandles = recentCandles.slice(i + 1);
 			const lowestSubsequent = Math.min(...subsequentCandles.map((c) => c.low));
 
 			if (lowestSubsequent >= current.low * 0.999) {
-				// 0.1%の許容誤差
 				const volumeBoost = (current.volume || 0) > avgVolume * 1.5;
 
-				// V字反発の検出
 				const prevDrop = ((current.close - prev.close) / prev.close) * 100;
 				const nextRise = ((next.close - current.close) / current.close) * 100;
 				let note = '新サポート形成（安値切り上げ）';
@@ -325,18 +311,14 @@ function detectRoleReversal(
 	const newResistances = new Map<number, string>();
 	const newSupports = new Map<number, string>();
 
-	// 崩壊したサポート → レジスタンス転換
 	for (const [level, breakInfo] of brokenSupports.entries()) {
 		if (level > currentPrice) {
-			// 現在価格より上
 			newResistances.set(level, `元サポート（${breakInfo.date}に崩壊）→ レジスタンス転換`);
 		}
 	}
 
-	// 突破されたレジスタンス → サポート転換
 	for (const [level, breakInfo] of brokenResistances.entries()) {
 		if (level < currentPrice) {
-			// 現在価格より下
 			newSupports.set(level, `元レジスタンス（${breakInfo.date}に突破）→ サポート転換`);
 		}
 	}
@@ -344,7 +326,6 @@ function detectRoleReversal(
 	return { newResistances, newSupports };
 }
 
-/** タッチの直近性スコアを計算（半減期ベースの指数減衰） */
 function computeRecencyScore(touches: TouchEvent[], referenceDate: string, halfLifeDays: number = 30): number {
 	const ref = dayjs(referenceDate);
 	return touches.reduce((score, t) => {
@@ -353,7 +334,6 @@ function computeRecencyScore(touches: TouchEvent[], referenceDate: string, halfL
 	}, 0);
 }
 
-/** ロールリバーサル後のプルバック確認 */
 function hasPullbackConfirmation(
 	level: number,
 	type: 'support_to_resistance' | 'resistance_to_support',
@@ -366,10 +346,8 @@ function hasPullbackConfirmation(
 	const afterBreak = candles.slice(breakIdx + 1);
 
 	if (type === 'support_to_resistance') {
-		// 旧サポート崩壊 → レジスタンス転換: 高値がレベル付近に達したが終値はレベル以下
 		return afterBreak.some((c) => c.high >= level * (1 - tolerance) && c.close < level);
 	} else {
-		// 旧レジスタンス突破 → サポート転換: 安値がレベル付近に達したが終値はレベル以上
 		return afterBreak.some((c) => c.low <= level * (1 + tolerance) && c.close > level);
 	}
 }
@@ -388,14 +366,11 @@ function calculateStrength(opts: {
 	let strength = 1;
 
 	if (formationType === 'new_formation') {
-		// 新形成は基本★★
 		strength = 2;
 		if (volumeBoost) strength = 3;
 	} else if (formationType === 'role_reversal') {
-		// ロールリバーサルは基本★、プルバック確認で★★
 		strength = pullbackConfirmed ? 2 : 1;
 	} else {
-		// 従来型：接触回数ベース
 		if (touchCount >= 5) strength = 3;
 		else if (touchCount >= 3) strength = 2;
 		else strength = 1;
@@ -403,13 +378,10 @@ function calculateStrength(opts: {
 		// 直近性スコアで強化（半減期30日、スコア1.5 ≈ 直近2回相当）
 		if (recencyScore >= 1.5 && touchCount >= 3) strength = Math.min(3, strength + 1);
 
-		// 反発の大きさで強化（平均反発2%以上）
 		if (avgBounceStrength >= 2.0 && strength < 3) strength += 1;
 
-		// 出来高補強
 		if (volumeBoost && strength < 3) strength += 1;
 
-		// 直近崩壊で減格
 		if (hasRecentBreak && strength > 1) strength -= 1;
 	}
 
@@ -424,7 +396,6 @@ export default async function analyzeSupportResistance(
 	if (!chk.ok) return failFromValidation(chk, AnalyzeSupportResistanceOutputSchema);
 
 	try {
-		// ローソク足データ取得
 		const candlesRes = await getCandles(chk.pair, '1day', undefined, lookbackDays + 10);
 		if (!candlesRes.ok) {
 			return AnalyzeSupportResistanceOutputSchema.parse(
@@ -437,19 +408,15 @@ export default async function analyzeSupportResistance(
 			return AnalyzeSupportResistanceOutputSchema.parse(fail('No candle data available', 'data'));
 		}
 
-		// lookbackDays 範囲のローソク足のみを分析対象にする（バッファは除外）
 		const analysisCandles = candles.length > lookbackDays ? candles.slice(-lookbackDays) : candles;
 
 		const currentCandle = analysisCandles[analysisCandles.length - 1];
 		const currentPrice = currentCandle.close;
 
-		// 価格レベル検出（lookbackDays 範囲のみ）
 		const { supports, resistances } = findPriceLevels(analysisCandles, tolerance);
 
-		// 新サポート形成の検出
 		const newSupports = detectNewSupport(analysisCandles, 10);
 
-		// 崩壊・突破を記録
 		const brokenSupports = new Map<number, { date: string; price: number }>();
 		const brokenResistances = new Map<number, { date: string; price: number }>();
 
@@ -467,7 +434,6 @@ export default async function analyzeSupportResistance(
 			}
 		}
 
-		// ロールリバーサル検出
 		const { newResistances, newSupports: roleReversalSupports } = detectRoleReversal(
 			brokenSupports,
 			brokenResistances,
@@ -475,14 +441,11 @@ export default async function analyzeSupportResistance(
 			currentPrice,
 		);
 
-		// 平均出来高計算
 		const avgVolume =
 			analysisCandles.reduce((sum: number, c: SrCandle) => sum + (c.volume || 0), 0) / analysisCandles.length;
 
-		// サポートレベルを評価
 		const supportLevels: SupportResistanceLevel[] = [];
 
-		// A. 従来型サポート（崩壊していないもの）
 		for (const [level, touches] of supports.entries()) {
 			const pctFromCurrent = ((level - currentPrice) / currentPrice) * 100;
 
@@ -524,7 +487,6 @@ export default async function analyzeSupportResistance(
 			});
 		}
 
-		// B. 新形成サポート
 		for (const newSup of newSupports) {
 			const pctFromCurrent = ((newSup.price - currentPrice) / currentPrice) * 100;
 			if (pctFromCurrent >= 0 || Math.abs(pctFromCurrent) > 20) continue;
@@ -556,7 +518,6 @@ export default async function analyzeSupportResistance(
 			});
 		}
 
-		// C. ロールリバーサル（元レジスタンス → サポート転換）
 		for (const [level, note] of roleReversalSupports.entries()) {
 			const pctFromCurrent = ((level - currentPrice) / currentPrice) * 100;
 			if (pctFromCurrent >= 0 || Math.abs(pctFromCurrent) > 20) continue;
@@ -592,10 +553,8 @@ export default async function analyzeSupportResistance(
 			});
 		}
 
-		// レジスタンスレベルを評価
 		const resistanceLevels: SupportResistanceLevel[] = [];
 
-		// A. 従来型レジスタンス（突破されていないもの）
 		for (const [level, touches] of resistances.entries()) {
 			const pctFromCurrent = ((level - currentPrice) / currentPrice) * 100;
 
@@ -637,7 +596,6 @@ export default async function analyzeSupportResistance(
 			});
 		}
 
-		// B. ロールリバーサル（元サポート → レジスタンス転換）
 		for (const [level, note] of newResistances.entries()) {
 			const pctFromCurrent = ((level - currentPrice) / currentPrice) * 100;
 			if (pctFromCurrent <= 0 || Math.abs(pctFromCurrent) > 20) continue;
@@ -673,7 +631,6 @@ export default async function analyzeSupportResistance(
 			});
 		}
 
-		// ソート（現在価格に近い順、同じ距離なら強度順）
 		supportLevels.sort((a, b) => {
 			const distA = Math.abs(a.pctFromCurrent);
 			const distB = Math.abs(b.pctFromCurrent);
@@ -692,11 +649,9 @@ export default async function analyzeSupportResistance(
 			return distA - distB;
 		});
 
-		// 有効なレベルのみ出力（topN個まで、無理に埋めない）
 		const topSupports = supportLevels.slice(0, Math.min(supportLevels.length, topN));
 		const topResistances = resistanceLevels.slice(0, Math.min(resistanceLevels.length, topN));
 
-		// ラベルを付与（タイプに関わらず統一表記）
 		topSupports.forEach((level) => {
 			level.label = `サポート`;
 		});
@@ -705,22 +660,17 @@ export default async function analyzeSupportResistance(
 			level.label = `レジスタンス`;
 		});
 
-		// content生成（LLMが読みやすいフォーマット）
 		const formatLevel = (level: SupportResistanceLevel, type: 'support' | 'resistance') => {
-			// 3段階表記：★☆☆ / ★★☆ / ★★★
 			const stars = '★'.repeat(level.strength) + '☆'.repeat(3 - level.strength);
-			let text = `${level.label}: ${level.price.toLocaleString('ja-JP')}円（${level.pctFromCurrent > 0 ? '+' : ''}${level.pctFromCurrent.toFixed(1)}%）強度：${stars}\n`;
+			let text = `${level.label}: ${formatPriceAtLevel(level.price)}円（${level.pctFromCurrent > 0 ? '+' : ''}${level.pctFromCurrent.toFixed(1)}%）強度：${stars}\n`;
 
-			// 形成タイプに応じた平易な説明
 			if (level.formationType === 'new_formation') {
-				// 新形成サポート
 				text += `  - 背景: ${level.note || '直近で底を打ち、安値を切り上げ中'}\n`;
 				if (level.volumeBoost) {
 					text += `  - 特徴: 大出来高での反発（平均の1.5倍以上）\n`;
 				}
 				text += `  - 意義: 直近の最安値、形成されたばかりの下支え\n`;
 			} else if (level.formationType === 'role_reversal') {
-				// ロールリバーサル
 				if (type === 'support') {
 					text += `  - 背景: ${level.note || '以前に上抜けした価格帯。現在は「上抜け後の下支え」として機能する可能性'}\n`;
 					if (level.strength >= 2) {
@@ -737,7 +687,6 @@ export default async function analyzeSupportResistance(
 					}
 				}
 			} else {
-				// 従来型
 				text += `  - 実績: ${level.touchCount}回の反応`;
 				if (level.touches.length > 0) {
 					const dates = level.touches
@@ -754,7 +703,7 @@ export default async function analyzeSupportResistance(
 			}
 
 			if (level.recentBreak) {
-				text += `  - ⚠️ 直近の崩壊: ${level.recentBreak.date}に${Math.abs(level.recentBreak.breakPct).toFixed(1)}%${type === 'support' ? '下抜け' : '上抜け'}（${type === 'support' ? '最安' : '最高'}${level.recentBreak.price.toLocaleString('ja-JP')}円）\n`;
+				text += `  - ⚠️ 直近の崩壊: ${level.recentBreak.date}に${Math.abs(level.recentBreak.breakPct).toFixed(1)}%${type === 'support' ? '下抜け' : '上抜け'}（${type === 'support' ? '最安' : '最高'}${formatExactPrice(level.recentBreak.price)}円）\n`;
 				text += `  - 評価: 崩壊実績により信頼性低下、${type === 'support' ? '再割れ' : '再突破'}リスク高\n`;
 			}
 
@@ -763,7 +712,7 @@ export default async function analyzeSupportResistance(
 
 		const displayPair = chk.pair.replace('_', '/').toUpperCase();
 		let contentText = `${displayPair} サポート・レジスタンス分析（過去${lookbackDays}日）\n`;
-		contentText += `現在価格: ${currentPrice.toLocaleString('ja-JP')}円\n`;
+		contentText += `現在価格: ${formatExactPrice(currentPrice)}円\n`;
 		contentText += `分析日時: ${srCalendarDate(currentCandle)}\n\n`;
 
 		contentText += `【サポートライン】\n`;
@@ -833,7 +782,6 @@ export default async function analyzeSupportResistance(
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'analyze_support_resistance',
 	description:

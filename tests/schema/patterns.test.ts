@@ -4,6 +4,7 @@ import {
 	CandlePatternTypeEnum,
 	DetectedPatternSchema,
 	DetectPatternsInputSchema,
+	PatternCandidateTypeEnum,
 	PatternFilterEnum,
 	PatternTypeEnum,
 } from '../../src/schema/patterns.js';
@@ -67,6 +68,13 @@ describe('PatternFilterEnum', () => {
 	it('入力フィルタとして DetectPatternsInputSchema.patterns に渡せる', () => {
 		const parsed = DetectPatternsInputSchema.parse({ patterns: ['flag', 'pennant', 'triangle'] });
 		expect(parsed.patterns).toEqual(['flag', 'pennant', 'triangle']);
+	});
+});
+
+describe('PatternCandidateTypeEnum', () => {
+	it("debug の候補ラベル 'wedge' を受け入れるが、入力の絞り込みには無い", () => {
+		expect(PatternCandidateTypeEnum.parse('wedge')).toBe('wedge');
+		expect(() => PatternFilterEnum.parse('wedge')).toThrow();
 	});
 });
 
@@ -162,11 +170,20 @@ describe('DetectedPatternSchema', () => {
 			},
 		});
 		expect(result.structureRange?.end).toBe('2025-09-26');
-		expect(result.confirmation?.type).toBe('neckline_breakout');
-		if (result.confirmation?.type === 'neckline_breakout') {
-			expect(result.confirmation.idx).toBe(31);
-		}
+		expect(result.confirmation).toMatchObject({ type: 'neckline_breakout', idx: 31 });
 		expect(result.precedingTrend?.direction).toBe('down');
+	});
+
+	it('structureGate.skipped に先行値幅の未評価理由を受け入れる', () => {
+		for (const skipped of ['no_prior_extreme', 'insufficient_history'] as const) {
+			const result = DetectedPatternSchema.parse({
+				type: 'triple_top',
+				confidence: 0.8,
+				range: { start: '2025-09-01', end: '2025-10-02' },
+				structureGate: { skipped },
+			});
+			expect(result.structureGate?.skipped).toBe(skipped);
+		}
 	});
 
 	it('confirmation=not_confirmed を受け入れる', () => {
@@ -195,10 +212,7 @@ describe('DetectedPatternSchema', () => {
 		expect(result.precedingTrend?.direction).toBe('insufficient_data');
 	});
 
-	// #189: 宣言が無かったため `parse()` が黙って落としていたフィールド。
-	// parity テスト（`tests/detect_patterns_meta_schema_parity.test.ts`）は
-	// **ツールを 1 回走らせて出たキー**で見ているので、フィクスチャが relaxed 経路を
-	// 踏まなくなると検証ごと消える。スキーマ単体でも生存を固定しておく。
+	// parity テスト（`tests/detect_patterns_meta_schema_parity.test.ts`）はツールを 1 回走らせて出たキーで見るので、フィクスチャが relaxed 経路を踏まなくなると検証ごと消える。スキーマ単体でも生存を固定しておく（#189）。
 	it('_fallback（relaxed 経路の provenance）を受け入れ、parse 後も残す', () => {
 		const result = DetectedPatternSchema.parse({
 			type: 'triple_top',
@@ -260,12 +274,7 @@ describe('CandlePatternTypeEnum', () => {
 	});
 });
 
-/**
- * ターゲット到達系フィールドの**範囲宣言**（issue #288 Phase 2）。
- *
- * docstring が「常に 1 以上」「0〜TARGET_REACH_MAX_BARS」と言っているのに Zod が任意の整数を
- * 通す状態は、宣言と振る舞いがずれたまま気づけない形なので、境界をここで固定する。
- */
+/** docstring が「常に 1 以上」「0〜TARGET_REACH_MAX_BARS」と言っているのに Zod が任意の整数を通すと、宣言と振る舞いがずれたまま気づけないので境界をここで固定する（#288 Phase 2）。 */
 describe('DetectedPatternSchema: ターゲット到達系の範囲（#288 Phase 2）', () => {
 	const base = {
 		type: 'triangle_ascending' as const,
@@ -306,8 +315,7 @@ describe('DetectedPatternSchema: ターゲット到達系の範囲（#288 Phase 
 		expect(parsed.targetOppositeBreakoutInWindow?.[0]?.barsAfterBreakout).toBe(1);
 	});
 
-	// `toBreakoutRef` が種別を読み取れなかったときの防御分岐。**列挙に混ぜず literal で足してある**
-	// ので、「列挙外の種別」と「種別が読めなかった」が区別できる。
+	// `toBreakoutRef` が種別を読み取れなかったときの防御分岐。列挙に混ぜず literal で足してあるので、「列挙外の種別」と「種別が読めなかった」が区別できる。
 	it("種別が読めなかったことの申告 'unknown' は受け入れる", () => {
 		const parsed = DetectedPatternSchema.parse({
 			...base,
@@ -325,7 +333,7 @@ describe('DetectedPatternSchema: ターゲット到達系の範囲（#288 Phase 
 		).toThrow();
 	});
 
-	// **0 本後は「自分と同じ足」**で、交絡の定義（開区間 / 右端のみ閉じる）では起きない。
+	// 0 本後は「自分と同じ足」で、交絡の定義（開区間 / 右端のみ閉じる）では起きない。
 	it.each([0, -1])('barsAfterBreakout=%i は拒否する（常に 1 以上）', (bars) => {
 		expect(() =>
 			DetectedPatternSchema.parse({

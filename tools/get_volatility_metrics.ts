@@ -23,50 +23,25 @@ import getCandles from './get_candles.js';
 
 type Candle = { open: number; high: number; low: number; close: number; isoTime?: string | null };
 
-/**
- * aggregates.atr に使う Wilder ATR の期間（TradingView・MT4 デフォルト）。
- * ドキュメント文字列・実装の両方を 1 箇所に固定するための定数。
- */
+/** 期間 14 は TradingView・MT4 の既定値。footer の文字列と実装の両方がこの定数を使う。 */
 export const WILDER_ATR_PERIOD = 14;
 
-/**
- * 年率実現ボラ（rv_std_ann）に対する volatile / calm 判定閾値。
- *
- * 実現ボラを母集団分散(n) → 標本分散(n-1, Bessel 補正)へ変更した後も **据え置く**。根拠:
- * これらは aggregate rv_std（全サンプルの標準偏差）を年率換算した値に対する閾値である。
- * aggregate のサンプル数は標準 limit=200 では returns 約 199 本で、Bessel 補正
- * `√(n/(n-1))` は n≈199 のとき約 1.0025（+0.25%）にすぎない。最小サンプル（20 本 →
- * 19 returns）でも +2.74% に留まり、0.3 / 0.8 の判定境界を実質的に跨がない。
- * 「小窓ほど上振れ」する影響は rolling 側に限定され、aggregate の n は十分大きいため、
- * 母集団分散時代の 0.8 / 0.3 をそのまま用いても整合する。閾値変更は不要。
- */
+// 標本分散（n-1）への変更後も据え置く。aggregate のサンプル数では Bessel 補正は約 +0.25%（最小でも +2.74%）で、判定境界を実質跨がない。
 export const VOLATILE_RV_ANN_THRESHOLD = 0.8;
 export const CALM_RV_ANN_THRESHOLD = 0.3;
 
-/**
- * 年率実現ボラ rvStdAnn から volatile / calm タグを判定する純粋関数。
- *
- * annualize フラグに依らず常に年率値で判定する（rv_std / rolling / annualized で
- * 閾値の基準を一貫させるため）。`VOLATILE/CALM_RV_ANN_THRESHOLD` の据え置き根拠も参照。
- */
+// annualize フラグに依らず常に年率値で判定する（rv_std / rolling / annualized で基準を揃える）。
 export function classifyRealizedVolTags(rvStdAnn: number): string[] {
 	if (rvStdAnn >= VOLATILE_RV_ANN_THRESHOLD) return ['volatile'];
 	if (rvStdAnn <= CALM_RV_ANN_THRESHOLD) return ['calm'];
 	return [];
 }
 
-/**
- * summary / detailed / full 共通の 4 行フッタ（含まれるもの / 含まれないもの / ATR の定義 / 補完ツール）。
- *
- * 階梯上の view（summary < detailed < full）は下位 view の定型情報を落とさない
- * （docs/internal/view-vocabulary-unification.md §3-2 規約 3）。detailed / full の本文は
- * `src/handlers/getVolatilityMetricsHandler.ts` の buildVolatilityDetailedText が組み立てるため、
- * 文言の二重管理（＝片方だけ更新されて view 間で食い違う）を避けてここを単一ソースにする。
- */
+// detailed / full の本文を組む getVolatilityMetricsHandler.ts もこの文言を使う単一ソース（view 間で食い違わせない）。
 export const VOLATILITY_METRICS_FOOTER =
 	`---\n📌 含まれるもの: ボラティリティ指標（RV・Parkinson・GK・RS・ATR）、ローリング分析` +
 	`\n📌 含まれないもの: 価格の方向性・トレンド、出来高フロー、板情報、テクニカル指標` +
-	`\n📌 ATR の定義: aggregates.atr は Wilder ATR（RMA ベース、period=${WILDER_ATR_PERIOD}、TradingView・MT4 標準と一致）。ローリングではボラ変化を RV / Parkinson で追跡してください。` +
+	`\n📌 ATR の定義: aggregates.atr は Wilder ATR（RMA ベース、period=${WILDER_ATR_PERIOD}、TradingView 標準と一致）。ローリングではボラ変化を RV / Parkinson で追跡してください。` +
 	`\n📌 補完ツール: get_candles（価格OHLCV）, analyze_indicators（方向性指標）, get_flow_metrics（出来高フロー）`;
 
 export interface RollingEntry {
@@ -91,7 +66,6 @@ export interface BuildVolatilityMetricsTextInput {
 	rolling: RollingEntry[];
 }
 
-/** テキスト組み立て（ボラティリティ詳細）— テスト可能な純粋関数 */
 export function buildVolatilityMetricsText(input: BuildVolatilityMetricsTextInput): string {
 	const { baseSummary, aggregates: a, rolling } = input;
 	const aggLines = [
@@ -216,7 +190,6 @@ export default async function getVolatilityMetrics(
 			return GetVolMetricsOutputSchema.parse(fail('有効なOHLCデータ不足（最低20本必要）', 'user'));
 		}
 
-		// 取得層の不完全性を集約: 上流 get_candles の fetchWarning + 自前スキップ件数
 		const warningLines: string[] = [];
 		if (cRes.meta.warning) warningLines.push(cRes.meta.warning);
 		if (skippedOhlc > 0) {
@@ -229,20 +202,16 @@ export default async function getVolatilityMetrics(
 		}
 		const fetchWarning = warningLines.length > 0 ? warningLines.join('\n') : undefined;
 
-		// 最新足が形成中（未確定）か。realtime 取得（date 未指定）では最新足は現在形成中の足。
-		// 有効足の最新 ts（ts.at(-1)）を起点に判定する。
 		const provisional = isLatestBarProvisional(ts.at(-1), String(type));
 
 		const ret = logReturns(close, useLog);
 		const rvInst = ret.map((r) => Math.abs(r));
 
-		// Per-candle components for OHLC-based estimators（lib/volatility.ts に委譲）
 		const pkSeries = parkinsonComponents(high, low);
 		const gkSeries = garmanKlassComponents(open, high, low, close);
 		const rsSeries = rogersSatchellComponents(open, high, low, close);
 
-		// Aggregates over whole sample (use returns length for rv)
-		// 実現ボラはサンプルからの母分散推定 → 標本分散（n-1, Bessel 補正）を採用。
+		// 実現ボラはサンプルからの母分散推定なので標本分散（n-1）を使う。
 		const rvStd = stddev(ret, true);
 		// Parkinson/GK/RS are per-candle estimators (not return-based), so use full series
 		const pkMean = pkSeries.reduce((s, v) => s + v, 0) / Math.max(1, pkSeries.length);
@@ -252,14 +221,12 @@ export default async function getVolatilityMetrics(
 		const garmanKlass = componentMeanToVol(gkMean, 'garmanKlass');
 		const rogersSatchell = componentMeanToVol(rsMean, 'rogersSatchell');
 
-		// ATR aggregate: Wilder ATR (RMA-based, period=WILDER_ATR_PERIOD 固定、TradingView/MT4 標準)。
 		const atrAggLatest = wilderAtr(high, low, close, WILDER_ATR_PERIOD).at(-1);
 		const atrAgg = Number.isFinite(atrAggLatest) ? (atrAggLatest as number) : 0;
 
 		const annFactor = withAnn ? Math.sqrt(periodsPerYear(type)) : 1;
 		const rvStdAnn = withAnn ? rvStd * annFactor : undefined;
 
-		// Rolling per requested windows
 		const rollingOut: Array<{
 			window: number;
 			rv_std: number;
@@ -291,8 +258,6 @@ export default async function getVolatilityMetrics(
 			});
 		}
 
-		// Tags: always use annualized RV for consistent thresholds regardless of annualize flag.
-		// 実現ボラの標本分散(n-1)化後も閾値は据え置き（根拠は classifyRealizedVolTags / 各閾値定数を参照）。
 		const rvRefAnn = rvStdAnn ?? rvStd * Math.sqrt(periodsPerYear(type));
 		const tags: string[] = classifyRealizedVolTags(rvRefAnn);
 
@@ -339,14 +304,12 @@ export default async function getVolatilityMetrics(
 			latest: close.at(-1),
 			extra: `rv=${(rvRefAnn).toFixed(3)}(ann)${tags.length ? ` ${tags.join(',')}` : ''}`,
 		});
-		// テキスト summary にボラティリティ詳細を含める（LLM が structuredContent.data を読めない対策）
 		const bodySummary = buildVolatilityMetricsText({
 			baseSummary: baseSummaryVol,
 			aggregates: data.aggregates,
 			rolling: rollingOut,
 		});
-		// 形成中足の注記（warning 2 系統とは別系統）→ 上流 fetchWarning の順で summary 先頭に連結する。
-		// 順序は ⚠️ warning → ℹ️ 注記 → 本文（warning を最優先で見せる）。
+		// 順序は ⚠️ warning → ℹ️ 注記 → 本文。
 		const summaryWithNote = prependProvisionalNote(bodySummary, provisional, { separator: '\n' });
 		const summary = fetchWarning ? `${fetchWarning}\n${summaryWithNote}` : summaryWithNote;
 

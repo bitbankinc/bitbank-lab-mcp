@@ -1,20 +1,5 @@
-/**
- * tests/handlers/detectPatternsHandler.wiring.test.ts
- *
- * `DetectPatternsInputSchema` ⇔ `detectPatternsHandler` の配線契約テスト（issue #151）。
- *
- * handler は入力を**分割代入で受けてから** `detectPatterns()` に手で並べ直している。
- * 分割代入は「列挙し忘れたプロパティ」を型エラーにしないので、スキーマにフィールドを
- * 足しても handler に書き忘れた瞬間、**typecheck も既存テストも通ったまま値だけが
- * 落ちる**。#151（`headProminencePct` が MCP 経由で届かず常に時間軸オート値に落ちていた）が
- * まさにこれで、スキーマ・core・検出器の 3 層は正しく通っていたのに handler の分割代入
- * だけが欠けていた。
- *
- * そこで「スキーマのキー集合」と「handler が core へ渡す opts のキー集合」の対応を
- * ここで機械的に固定する。core に渡さないキーは `NOT_FORWARDED` に理由付きで列挙する
- * （`tests/patterns/invariants.test.ts` の到達性 allowlist と同じ idiom。
- * 行が stale になったら落ちるようにしておく）。
- */
+// handler は入力を分割代入で受けてから `detectPatterns()` に手で並べ直しており、分割代入は列挙し忘れたプロパティを型エラーにしないので、スキーマにフィールドを足して handler に書き忘れると typecheck も既存テストも通ったまま値だけが落ちる（#151）。
+// そこでスキーマのキー集合と handler が core へ渡す opts のキー集合の対応を機械的に固定し、core に渡さないキーは `NOT_FORWARDED` に理由付きで列挙する（stale になった行は落ちる）。
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../tools/detect_patterns.js', () => ({
@@ -31,7 +16,6 @@ afterEach(() => {
 	vi.clearAllMocks();
 });
 
-/** handler が `DetectPatternsOutputSchema.parse` を通せる最小の ok 結果。 */
 function makeOkResult() {
 	return {
 		ok: true,
@@ -41,17 +25,12 @@ function makeOkResult() {
 	};
 }
 
-/**
- * **全キーにスキーマ既定値と異なる値**を入れた入力。
- *
- * 既定値と同じ値を置くと「渡っていないのに偶然一致する」ため配線の検証にならない。
- * 下の網羅テストがスキーマのキー集合との一致を強制するので、スキーマにフィールドを
- * 足したらここにも値を足すことになる。
- */
+/** 既定値と同じ値を置くと「渡っていないのに偶然一致する」ので、全キーにスキーマ既定値と異なる値を入れる（下の網羅テストがスキーマのキー集合との一致を強制する）。 */
 const FULL_INPUT = {
 	pair: 'eth_jpy',
 	type: '4hour',
 	limit: 120,
+	date: '20250831',
 	patterns: ['head_and_shoulders'],
 	swingDepth: 4,
 	tolerancePct: 0.03,
@@ -66,12 +45,7 @@ const FULL_INPUT = {
 	tz: 'UTC',
 } as const;
 
-/**
- * **意図的に** `detectPatterns()` の opts へ渡さないキーと、その理由。
- *
- * 行を足すときは理由を必ず書くこと。下の stale 検出テストが
- * 「実際には渡るようになった行」を落とす。
- */
+/** 行を足すときは理由を必ず書く。下の stale 検出テストが「実際には渡るようになった行」を落とす。 */
 const NOT_FORWARDED: ReadonlyArray<{ key: string; reason: string }> = [
 	{ key: 'pair', reason: 'ensurePair で正規化して第 1 位置引数として渡す（opts ではない）' },
 	{ key: 'type', reason: '第 2 位置引数として渡す（opts ではない）' },
@@ -84,7 +58,6 @@ const NOT_FORWARDED: ReadonlyArray<{ key: string; reason: string }> = [
 
 const notForwarded = new Map(NOT_FORWARDED.map((e) => [e.key, e]));
 
-/** handler を 1 回呼び、`detectPatterns()` に渡された opts（第 4 引数）を返す。 */
 async function captureForwardedOpts(): Promise<Record<string, unknown>> {
 	mockedDetectPatterns.mockResolvedValueOnce(makeOkResult() as never);
 	const parsed = DetectPatternsInputSchema.parse(FULL_INPUT);

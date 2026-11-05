@@ -28,14 +28,8 @@ import type {
 	VolumeStatsSchema,
 } from './market-data.js';
 
-// ═══════════════════════════════════════════════════════════════════
-// Inferred Types — single source of truth (replaces domain.d.ts)
-// ═══════════════════════════════════════════════════════════════════
-
-/** e.g., "btc_jpy" */
 export type Pair = `${string}_${string}`;
 
-// --- Core data types ---
 export type CandleType = z.infer<typeof CandleTypeEnum>;
 export type Candle = z.infer<typeof CandleSchema>;
 export type NumericSeries = z.output<typeof NumericSeriesSchema>;
@@ -45,7 +39,6 @@ export type OrderbookLevelWithCum = z.infer<typeof OrderbookLevelWithCumSchema>;
 export type OrderbookNormalized = z.infer<typeof OrderbookNormalizedSchema>;
 export type TrendLabel = z.infer<typeof TrendLabelEnum>;
 
-// --- Indicator series ---
 export type IchimokuSeries = z.infer<typeof IchimokuSeriesSchema>;
 export type BollingerBandsSeries = z.infer<typeof BollingerBandsSeriesSchema>;
 export type SmaSeriesFixed = z.infer<typeof SmaSeriesFixedSchema>;
@@ -55,7 +48,6 @@ export type ChartMeta = z.infer<typeof ChartMetaSchema>;
 export type ChartPayload = z.infer<typeof ChartPayloadSchema>;
 export type IndicatorsInternal = z.infer<typeof IndicatorsInternalSchema>;
 
-// --- Tool DTOs ---
 export type GetIndicatorsData = z.infer<typeof GetIndicatorsDataSchema>;
 export type GetIndicatorsMeta = z.infer<typeof GetIndicatorsMetaSchema>;
 export type GetTickerData = z.infer<typeof GetTickerDataSchemaOut>;
@@ -68,14 +60,12 @@ export type KeyPoint = z.infer<typeof KeyPointSchema>;
 export type KeyPoints = z.infer<typeof KeyPointsSchema>;
 export type VolumeStats = z.infer<typeof VolumeStatsSchema>;
 
-// --- Chart / render options ---
 export type BbMode = 'default' | 'extended';
 export type IchimokuMode = 'default' | 'extended';
 export type ChartStyle = 'candles' | 'line' | 'depth';
 export type IchimokuOptions = { mode?: IchimokuMode };
 export type RenderChartSvgOptions = z.input<typeof RenderChartSvgInputSchema>;
 
-// --- Result pattern ---
 export interface OkResult<T = Record<string, unknown>, M = Record<string, unknown>> {
 	ok: true;
 	summary: string;
@@ -92,6 +82,5 @@ export interface FailResult<M = Record<string, unknown>> {
 
 export type Result<T = unknown, M = unknown> = OkResult<T, M> | FailResult<M>;
 
-// --- Candle validation ---
 export type ValidateCandleDataData = z.infer<typeof ValidateCandleDataDataSchema>;
 export type ValidateCandleDataMeta = z.infer<typeof ValidateCandleDataMetaSchema>;

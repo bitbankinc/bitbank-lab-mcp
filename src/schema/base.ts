@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { roundPriceAtLevel } from '../../lib/price.js';
 
 export const CandleTypeEnum = z.enum([
 	'1min',
@@ -14,9 +15,9 @@ export const CandleTypeEnum = z.enum([
 	'1month',
 ]);
 
-// ── Shared base schemas ──
+export const CANDLE_DATE_DESCRIPTION =
+	'type により形式が異なる: 1min/5min/15min/30min/1hour は YYYYMMDD、4hour/8hour/12hour/1day/1week/1month は YYYY（YYYYMMDD も先頭4桁として互換受理）。date は tz（既定 Asia/Tokyo）の暦日として解釈し、指定日の終端以前を対象にします。';
 
-/** レートリミット情報スキーマ（レスポンスヘッダから抽出、ヘッダ未提供時は省略） */
 export const RateLimitSchema = z
 	.object({
 		remaining: z.number().describe('残りリクエスト数'),
@@ -25,79 +26,36 @@ export const RateLimitSchema = z
 	})
 	.optional();
 
-/** pair + fetchedAt: 全 Meta スキーマの共通ベース */
+/** 取得層の不完全性（partial fetch など）。計算層の `warnings` と混ぜず、別フィールドで出す（.claude/rules/tools.md）。 */
+export const warningField = { warning: z.string().optional() };
+
+/** 計算層の不完全性（指標のバー数不足など）。 */
+export const warningsField = { warnings: z.array(z.string()).optional() };
+
+/** 最新足が未確定（形成中）なら true（lib/provisional-bar.ts）。 */
+export const provisionalField = { provisional: z.boolean().optional() };
+
 export const BaseMetaSchema = z.object({
 	pair: z.string(),
 	fetchedAt: z.string(),
 	rateLimit: RateLimitSchema,
 });
 
-/** pair デフォルト入力: z.string().optional().default('btc_jpy') */
 export const BasePairInputSchema = z.object({ pair: z.string().optional().default('btc_jpy') });
 
 /**
- * **オフセット付き** ISO8601 の絶対時刻。秒・小数秒は省略可、小数秒の桁数は任意。
- * 例: `2026-08-01T00:00:00Z` / `2026-08-01T09:00:00+09:00` / `2026-08-01T00:00Z` /
- * `2026-08-01T00:00:00.5Z`
- *
- * 絶対時刻の入力に `YYYYMMDD` を採らないのは、暦日の基準がツール間で割れている
- * （`get_transactions` / `get_flow_metrics` は UTC 暦日、`get_candles` /
- * `validate_candle_data` は `tz` 引数の暦日）ため。オフセットを必須にすると
- * 「どの暦で解釈されるか」が入力そのものから一意に決まり、取り違えが起きない。
- *
- * キャプチャグループ（1: 日付+HH:mm / 2: 秒 / 3: 小数秒の桁 / 4: オフセット）は
- * `lib/tx-fetch.ts` の `parseAbsoluteIso` が正準形 `.SSS` へ揃えるのに使う。**この
- * パターンで受理する形は、すべて正準化後に `parseIso8601`（strict）が通ること。**
- * 揃えないと「スキーマは通るが parse で落ちて『存在しない日付・時刻』と誤報する」
- * 入力が生まれる（実際 `.5Z` / `.12Z` がそうだった: `parseIso8601` の strict format は
- * `.SSS` の 3 桁のみ）。小数秒はミリ秒精度に切り捨てる（ISO8601 の小数秒は 10 進小数
- * なので `.5` = 500ms）。
- *
- * Zod の `.regex()` はグループを無視するため、入力検証の挙動には影響しない。
+ * キャプチャグループ（1: 日付+HH:mm / 2: 秒 / 3: 小数秒 / 4: オフセット）は `lib/tx-fetch.ts` の `parseAbsoluteIso` が `.SSS` へ正準化するのに使う。
+ * このパターンで受理する形は、すべて正準化後に `parseIso8601`（strict）を通ること（揃えないと、スキーマは通るのに parse で落ちる）。
  */
 export const ISO8601_WITH_OFFSET_PATTERN =
 	/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?::(\d{2})(?:\.(\d+))?)?(Z|[+-]\d{2}:\d{2})$/;
 
-/**
- * 約定集計ツール（`get_flow_metrics` / `analyze_volume_profile`）の `since`〜`until` に
- * 指定できる最大範囲（日）。
- *
- * 根拠: 完了済み UTC 日アーカイブは 1 日 = 1 リクエストで、BTC/JPY の 1 UTC 日は実測
- * 5,609〜8,040 件。上限 7 日なら最大 8 リクエスト・約 56,000 件を並列取得し、dedup 用の
- * Set と正規化済み配列をメモリに載せることになる。ここまでは実用範囲だが、これを超えると
- * リクエスト数・レスポンス parse・dedup がまとめて膨らみ、MCP 応答のタイムアウトにも近づく。
- * より長い期間は日次・週次に分割して呼ぶこと。
- *
- * 超過の判定は `lib/tx-fetch.ts` の `resolveTxTimeRange`（user エラー）。定数をこちらに
- * 置いているのは、この値が入力スキーマの description にも現れるため（schema 層は lib に
- * 依存しない方向を保つ）。
- */
+/** 超過の判定は `lib/tx-fetch.ts` の `resolveTxTimeRange`。定数をこちらに置くのは、入力スキーマの description にも現れるため（schema 層は lib に依存しない）。 */
 export const MAX_TX_RANGE_DAYS = 7;
 
-/**
- * 約定集計ツール（`get_flow_metrics` / `analyze_volume_profile`）の**件数ベース取得**で
- * `limit` に指定できる最大件数。件数ベース取得＝区間指定パラメータ（`date` / `hours` /
- * `since`・`until`）をどれも渡さない呼び出しのこと。区間指定はいずれも `limit` を適用せず
- * 区間の全件を集計するため、`limit` の用途は「直近 N 件」だけである。
- *
- * 2000 を据え置く根拠:
- * - **十分に長い**: BTC/JPY の 1 UTC 日は実測 5,609〜8,040 件なので、2,000 件 ≒ 6〜8.5 時間分。
- *   これより長い窓を「件数」で表現しても要求は曖昧になるだけで、時間で指定するほうが一意
- *   （`hours` / `since`・`until` は `limit` を適用しない）。
- * - **取得コストが跳ねない**: 件数ベースは latest（約60件）+ 完了済み UTC 日アーカイブの補完で
- *   賄う。`lib/tx-fetch.ts` の `fetchSupplementTxs` は `limit > 500` のとき 2 日ぶんを補完する
- *   （約 11,000〜16,000 件）ので、2,000 件はその 2 リクエストで確実に満たせる。上限を上げると
- *   3 日目以降のアーカイブ取得が必要になり、リクエスト数と rate limit を消費する割に、
- *   同じ範囲は `since`・`until` で切り捨てなく取れる。
- * - **下げる実益がない**: 応答は時間バケット / 価格帯の集計なのでトークン量は件数に比例しない。
- *   下げても得るものが無い一方、既存の呼び出しを壊す。
- *
- * 判定は各ツールの `validateLimit(limit, 1, MAX_TX_COUNT_LIMIT)`。定数をこちらに置いている
- * のは、この値が入力スキーマの `.max()` と description の両方に現れるため。
- */
+/** 区間指定（`date` / `hours` / `since`・`until`）は `limit` を適用しないので、`limit` の用途は件数ベース取得（直近 N 件）だけ。 */
 export const MAX_TX_COUNT_LIMIT = 2000;
 
-/** 約定集計ツール共通: 絶対時刻区間の開始（含む） */
 export const TX_RANGE_SINCE_SCHEMA = z
 	.string()
 	.regex(ISO8601_WITH_OFFSET_PATTERN)
@@ -109,7 +67,6 @@ export const TX_RANGE_SINCE_SCHEMA = z
 			`hours / date とは併用不可。since〜until は最大 ${MAX_TX_RANGE_DAYS} 日。指定時は limit を適用しない（区間の全件を集計）`,
 	);
 
-/** 約定集計ツール共通: 絶対時刻区間の終端（含まない） */
 export const TX_RANGE_UNTIL_SCHEMA = z
 	.string()
 	.regex(ISO8601_WITH_OFFSET_PATTERN)
@@ -121,75 +78,32 @@ export const TX_RANGE_UNTIL_SCHEMA = z
 			'since 無しの until 単独指定は user エラー。未来時刻も user エラー（現在時刻までを対象にするなら until を省略する）',
 	);
 
-// === view の共通語彙（docs/internal/view-vocabulary-unification.md §3-2 / §3-3） ===
-
-/**
- * 全ツール共通の `view` 契約。各ツールの `view` description の先頭に置く。
- *
- * `content[0].text` が LLM への唯一のチャネル（`.claude/rules/tools.md`）なので、
- * 軽い view は「短い表示」ではなく「LLM が明細を受け取らない」を意味する。
- * そのため各 view には「この view では〇〇が content に出ない」を必ず併記する（§3-2 規約 5）。
- *
- * **`structuredContent` について「view に依存しない」とは書かない。** §3-2 規約 4 が禁じているのは
- * *削る*ことだけで、**その view でしか計算しないデータを*足す*のは許容**されている
- * （`detect_patterns(detailed)` の `usage_example` / `(debug)` の `data.candidates`、
- * `detect_macd_cross(detailed)` の `data.resultsDetailed` / `data.screenedDetailed`）。
- * 「依存しない」と書くと、これらのツールで description が実装に対して嘘になる——
- * 呼び出し側が「`resultsDetailed` は `view` を問わず入る」と誤解する。
- * 足すツールは各 view の説明に**何を足すか**を明記すること。
- */
+/** `structuredContent` について「view に依存しない」とは書かない。view でしか計算しないデータを足すツールがあり、description が実装に対して嘘になる。 */
 export const VIEW_CONTRACT_NOTE =
 	'view は content の量を制御します。量は summary < detailed < full の順で、full は常にそのツールの最重量です。' +
 	'view が structuredContent から**フィールドを削ることはありません**' +
 	'（その view でしか計算しないデータを足すツールはあり、その場合は当該 view の説明に明記しています）。' +
 	'content[0].text は LLM への唯一のチャネルなので、軽い view は「短い表示」ではなく「LLM が明細を受け取らない」を意味します。';
 
-/**
- * deprecated な `view` 値を削除する目標バージョン（§6-4 の決定: 最低 1 リリース かつ 3 ヶ月）。
- * 0.2.0 で alias として導入し、0.4.0 で削除する。
- */
 export const DEPRECATED_VIEW_REMOVAL_TARGET = '0.4.0';
 
-/** deprecated な `view` 値の description に付ける定型文（写像先と削除目標バージョンを明示する）。 */
 export function deprecatedViewNote(replacement: string): string {
 	return `非推奨。${replacement} を使うこと。${DEPRECATED_VIEW_REMOVAL_TARGET} で削除予定`;
 }
 
-/**
- * deprecated な**出力フィールド**（別名として残した旧フィールド）を削除する目標バージョン。
- *
- * 猶予期間の考え方は `view` の alias と同じ（§6-4: 最低 1 リリース かつ 3 ヶ月）で、
- * `0.2.0` で alias として導入し `0.4.0` で削除する。値は `DEPRECATED_VIEW_REMOVAL_TARGET` と
- * 同じだが定数を分けているのは、削除の単位が別（enum 値 / 出力フィールド）で、片方だけ
- * 期日を動かしたくなったときに巻き添えにしないため。
- *
- * **削除目標バージョンを書かない alias は作らないこと。** 期日の無い別名は「いつ消せるのか」
- * が誰にも分からなくなり、恒久的な二重出力として残る。
- */
+/** 値は `DEPRECATED_VIEW_REMOVAL_TARGET` と同じだが、削除の単位（enum 値 / 出力フィールド）が別なので、片方だけ期日を動かせるよう定数を分けている。 */
 export const DEPRECATED_FIELD_REMOVAL_TARGET = '0.4.0';
 
-/**
- * deprecated な出力フィールドの description に付ける定型文（写像先と削除目標バージョンを明示する）。
- *
- * `view` の alias（`deprecatedViewNote`）は**入力**の別名で、旧値を渡すと新しい挙動に正規化される。
- * こちらは**出力**の別名で、旧フィールドは新フィールドと**同じ値**を出し続ける（符号も単位も同一）。
- */
 export function deprecatedFieldNote(replacement: string): string {
 	return `**非推奨**（${replacement} の別名）。同じ値を返します。${DEPRECATED_FIELD_REMOVAL_TARGET} で削除予定なので ${replacement} へ移行してください`;
 }
 
-/**
- * `format` パラメータの共通 description（§3-3）。
- *
- * `format=json` は**トークン削減オプションではない**。同じデータを pretty JSON にすると
- * 散文の圧縮形式より必ず増える（実測で約 7.4 倍。§2-0）。
- */
+/** `format=json` はトークン削減オプションではない（同じデータを pretty JSON にすると散文より増える）。 */
 export const FORMAT_PARAM_NOTE =
 	'content の形式。text（既定）: 散文 / json: pretty JSON。' +
 	'json は機械可読性のために**トークンを払う**オプションで、同じデータでも text より必ず多くなります（削減オプションではありません）。' +
 	'量は format ではなく view と limit が決めます。';
 
-/** 全ツール共通のエラー分岐 */
 export const FailResultSchema = z.object({
 	ok: z.literal(false),
 	summary: z.string(),
@@ -197,7 +111,6 @@ export const FailResultSchema = z.object({
 	meta: z.object({ errorType: z.string() }).passthrough(),
 });
 
-/** ok/fail Result union を生成するヘルパー */
 export function toolResultSchema<D extends z.ZodTypeAny, M extends z.ZodTypeAny>(data: D, meta: M) {
 	return z.union([z.object({ ok: z.literal(true), summary: z.string(), data, meta }), FailResultSchema]);
 }
@@ -213,18 +126,12 @@ export const TrendLabelEnum = z.enum([
 	'insufficient_data',
 ]);
 
-// === Shared output schemas (partial) ===
+// 小数 2 桁に固定すると数円のペアの価格の系列の桁が落ちるので、値の水準の桁（最低 2 桁）で丸める。RSI など 0〜100 の系列は計算側で 2 桁に丸め済み。
 export const NumericSeriesSchema = z
 	.array(z.union([z.number(), z.null()]))
-	.transform((arr) => arr.map((v) => (v == null ? null : Number(Number(v).toFixed(2)))));
+	.transform((arr) => arr.map((v) => (v == null ? null : roundPriceAtLevel(Number(v), Number(v), 2))));
 
-/**
- * ローソク足スキーマ
- * volume: base 通貨建ての合算取引量（買い+売り区別なし）。
- *   例: btc_jpy → BTC 単位、eth_jpy → ETH 単位。
- *   bitbank /candlestick API の OHLCV[4] をそのまま使用。
- *   公式アプリの Volume バー（買い/売り色分け）とは集計方法が異なる。
- */
+/** volume は base 通貨建てで買い売りを区別しない（/candlestick の OHLCV[4] をそのまま使う）。公式アプリの Volume バーとは集計方法が異なる。 */
 export const CandleSchema = z.object({
 	open: z.number(),
 	high: z.number(),

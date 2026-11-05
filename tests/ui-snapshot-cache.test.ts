@@ -1,10 +1,3 @@
-/**
- * src/ui-snapshot-cache.ts のユニットテスト。
- *
- * MCP Apps ウィジェットの pull 型 hydration に使うスナップショットの
- * 保存・取得・TTL・セッション境界を検証する。
- */
-
 import { afterEach, describe, expect, it } from 'vitest';
 import {
 	_resetUiSnapshots,
@@ -58,7 +51,6 @@ describe('ui-snapshot-cache', () => {
 		const now = 1_000_000;
 		storeUiSnapshot(URI, { ok: true }, { nowMs: now });
 		expect(getUiSnapshot(URI, { nowMs: now + TTL_MS + 1 })).toBeNull();
-		// 期限切れエントリは削除され、以降も null のまま
 		expect(getUiSnapshot(URI, { nowMs: now })).toBeNull();
 	});
 

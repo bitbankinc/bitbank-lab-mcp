@@ -33,14 +33,10 @@ describe('get_flow_metrics', () => {
 		globalThis.fetch = originalFetch;
 	});
 
-	// ─── inputSchema ──────────────────────────────────────
-
 	it('inputSchema: hours は 0.1 以上のみ許可する', () => {
 		const parse = () => toolDef.inputSchema.parse({ pair: 'btc_jpy', hours: 0.05 });
 		expect(parse).toThrow();
 	});
-
-	// ─── 基本 ─────────────────────────────────────────────
 
 	it('正常系: 集計値 totalTrades / buyTrades / sellTrades が計算される', async () => {
 		mockFetch(txPayload());
@@ -67,8 +63,6 @@ describe('get_flow_metrics', () => {
 		expect(res.data.aggregates.finalCvd).toBeCloseTo(0.2, 4);
 	});
 
-	// ─── バケット分割 ─────────────────────────────────────
-
 	it('バケット分割: 異なる bucketMs でバケット数が変わる', async () => {
 		mockFetch(txPayload());
 		// 3件のtx: 0, 60000, 120000ms → bucketMs=60000 で 3バケット
@@ -85,8 +79,6 @@ describe('get_flow_metrics', () => {
 		expect(res.data.series.buckets.length).toBe(1);
 	});
 
-	// ─── スパイク検出 ─────────────────────────────────────
-
 	it('スパイク検出: zscoreベースでspike分類される', async () => {
 		// 多数の小バケット＋1件の巨大バケットでzscoreを上げる
 		const txs: Array<{ price: string; amount: string; side: string; executed_at: string }> = [];
@@ -98,7 +90,6 @@ describe('get_flow_metrics', () => {
 				executed_at: String(1_700_000_000_000 + i * 60_000),
 			});
 		}
-		// 最後のバケットに大量取引 → zscoreが非常に高くなる
 		txs.push({ price: '5000000', amount: '50.0', side: 'buy', executed_at: String(1_700_000_000_000 + 20 * 60_000) });
 		txs.push({
 			price: '5000000',
@@ -127,8 +118,6 @@ describe('get_flow_metrics', () => {
 		expect(spiked.length).toBe(0);
 	});
 
-	// ─── hours パラメータ ─────────────────────────────────
-
 	it('hours: 時間範囲ベースで取得し meta に mode=time_range を設定', async () => {
 		// hours 指定時は日付ごとに getTransactions を呼ぶ → 全部同じレスポンス
 		const nowMs = Date.now();
@@ -144,8 +133,7 @@ describe('get_flow_metrics', () => {
 	});
 
 	it('hours: latest のみ失敗しても date が成功していれば ok（警告付き）', async () => {
-		// 時間窓が完了済み UTC 日 (20260707) にかかるよう固定時刻で実行
-		// （dates の列挙は UTC 暦日基準になったため、壁時計依存だと mid-day に dates=[] になる）
+		// 時間窓が完了済み UTC 日 (20260707) にかかるよう固定時刻で実行する（dates の列挙は UTC 暦日基準なので、壁時計依存だと mid-day に dates=[] になる）。
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(Date.UTC(2026, 6, 8, 0, 30, 0));
 		try {
@@ -221,8 +209,6 @@ describe('get_flow_metrics', () => {
 		}
 	});
 
-	// ─── 空データ ─────────────────────────────────────────
-
 	it('取引0件の場合は aggregates が全て0', async () => {
 		mockFetch({ success: 1, data: { transactions: [] } });
 		const res = await getFlowMetrics('btc_jpy', 3, '20240101');
@@ -230,8 +216,6 @@ describe('get_flow_metrics', () => {
 		expect(res.data.aggregates.totalTrades).toBe(0);
 		expect(res.data.series.buckets).toHaveLength(0);
 	});
-
-	// ─── 全買い/全売り ────────────────────────────────────
 
 	it('全て buy の場合の集計', async () => {
 		const txs = Array.from({ length: 3 }, (_, i) => ({
@@ -247,8 +231,6 @@ describe('get_flow_metrics', () => {
 		expect(res.data.aggregates.aggressorRatio).toBe(1);
 		expect(res.data.aggregates.finalCvd).toBeCloseTo(0.3, 4);
 	});
-
-	// ─── エラー系 ─────────────────────────────────────────
 
 	it('API異常系: date 指定時に上流失敗なら fail を返す', async () => {
 		globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed')) as unknown as typeof fetch;
@@ -267,8 +249,6 @@ describe('get_flow_metrics', () => {
 		const res = await getFlowMetrics('invalid_pair');
 		assertFail(res);
 	});
-
-	// ─── toolDef.handler view パラメータ ──────────────────
 
 	it('handler: view=buckets で直近N件のバケットをテキスト返却', async () => {
 		mockFetch(txPayload());
@@ -298,8 +278,7 @@ describe('get_flow_metrics', () => {
 		expect(res.content[0].text).toContain('All buckets');
 	});
 
-	// view は content だけを変える。structuredContent は宣言スキーマ
-	// （GetFlowMetricsDataSchemaOut は series.buckets を必須で宣言）どおり全バケットを保つ。
+	// structuredContent は宣言スキーマ（GetFlowMetricsDataSchemaOut は series.buckets を必須で宣言）どおり全バケットを保つ。
 	it('handler: view=summary でも structuredContent には全バケットが入る（content からは省く）', async () => {
 		mockFetch(txPayload());
 		const res = asMcp<{ ok: boolean; data: { series: { buckets: FlowMetricsBucket[] } } }>(
@@ -314,7 +293,6 @@ describe('get_flow_metrics', () => {
 		expect(res.structuredContent.ok).toBe(true);
 		expect('buckets' in res.structuredContent.data.series).toBe(true);
 		expect(res.structuredContent.data.series.buckets).toHaveLength(3);
-		// content テキストにもバケット行が含まれない
 		expect(res.content[0].text).not.toContain('📋 全');
 	});
 
@@ -342,9 +320,7 @@ describe('get_flow_metrics', () => {
 		const buckets = res.structuredContent.data.series.buckets;
 		// structuredContent は絞らない: 先頭 + 欠損 19 + 末尾 = 21 バケット全件
 		expect(buckets).toHaveLength(21);
-		// 欠損バケットは黙って消えない
 		expect(buckets.some((b) => b.hasData === false)).toBe(true);
-		// content では連続する欠損が 1 行の区間表記に畳まれる
 		expect(res.content[0].text).toMatch(/⋯ 欠損 .+〜.+（19バケット, データなし）/);
 		expect(res.content[0].text).toContain('no-data buckets shown as ranges');
 	});
@@ -375,7 +351,6 @@ describe('get_flow_metrics', () => {
 		// 0/1/2/3/4 分の 5 バケット全件。真のゼロ（1・3 分目）も structuredContent には残る
 		expect(buckets).toHaveLength(5);
 		expect(buckets.every((b) => b.hasData !== false)).toBe(true);
-		// content 側は従来どおり非ゼロの 3 件だけ
 		expect(res.content[0].text).toContain('Non-zero 3/5 buckets:');
 	});
 
@@ -385,9 +360,6 @@ describe('get_flow_metrics', () => {
 		expect(res.ok).toBe(false);
 	});
 
-	// === 形成中足（provisional）注記は対象外 ===
-	// 本ツールは OHLC ローソク足ではなく約定（transactions）を時間バケットに集計するため、
-	// 「最新足が未確定（形成中）」の概念が存在しない。note を付与しないことを固定する。
 	it('形成中足注記は付与しない（約定バケットのため対象外）', async () => {
 		mockFetch(txPayload());
 		const res = await getFlowMetrics('btc_jpy', 3, '20240101', 60_000);
@@ -396,8 +368,6 @@ describe('get_flow_metrics', () => {
 		expect((res.meta as { provisional?: boolean }).provisional).toBeUndefined();
 	});
 });
-
-// ─── buildFlowMetricsText 単体テスト ─────────────────
 
 describe('buildFlowMetricsText', () => {
 	it('基本的なテキスト構造を含む', () => {
@@ -513,11 +483,7 @@ describe('buildFlowMetricsText', () => {
 	});
 });
 
-// ── JST 早朝（UTC 日付境界前）の取得回帰 ──
-// 障害再現: 2026-07-08 08:31 JST（= 2026-07-07 23:31 UTC）に analyze_market_signal 経由の
-// getFlowMetrics(limit=300) が「supplement 404 → 過半数失敗」で全滅した。
-// 原因: /transactions/{YYYYMMDD} は UTC 暦日アーカイブ（UTC 日完了後に公開）なのに、
-// 補完日付を JST の「昨日」で組んでいた（JST 早朝の「JST 昨日」= 進行中の UTC 日 → 必ず 404）。
+// /transactions/{YYYYMMDD} は UTC 暦日アーカイブ（UTC 日完了後に公開）なので、補完日付を JST の「昨日」で組むと、JST 早朝は進行中の UTC 日を要求して必ず 404 になる。
 
 describe('JST 早朝の補完取得（UTC 日付境界回帰）', () => {
 	const originalFetch = globalThis.fetch;
@@ -528,7 +494,6 @@ describe('JST 早朝の補完取得（UTC 日付境界回帰）', () => {
 		vi.restoreAllMocks();
 	});
 
-	/** nowMs 直近の約定 count 件（重複しない ts）を生成 */
 	const recentTxs = (nowMs: number, count: number) =>
 		Array.from({ length: count }, (_, i) => ({
 			price: String(5_000_000 + i),
@@ -581,7 +546,6 @@ describe('JST 早朝の補完取得（UTC 日付境界回帰）', () => {
 		expect(res.data.aggregates.totalTrades).toBe(60);
 		expect(res.meta.warning).toContain('⚠️');
 		expect(res.meta.warning).toContain('20260706');
-		// 件数不足の明示
 		expect(res.meta.warning).toContain('300件');
 	});
 

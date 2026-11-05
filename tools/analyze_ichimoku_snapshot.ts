@@ -1,5 +1,8 @@
 import type { z } from 'zod';
+import { formatPriceNumber } from '../lib/formatter.js';
+import { currentCloudSpans } from '../lib/indicators.js';
 import { avg } from '../lib/math.js';
+import { roundPriceAtLevel } from '../lib/price.js';
 import { isLatestBarProvisional, prependProvisionalNote } from '../lib/provisional-bar.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
@@ -53,7 +56,6 @@ export interface BuildIchimokuSnapshotTextInput {
 		momentum: string;
 	};
 	cloudHistory: Array<{ barsAgo: number; position: string }>;
-	// Raw numeric data for 数値データ section
 	currentSpanA: number | null;
 	currentSpanB: number | null;
 	futureSpanA: number | null;
@@ -61,7 +63,6 @@ export interface BuildIchimokuSnapshotTextInput {
 	tkDistPct: number | null;
 }
 
-/** テキスト組み立て（一目均衡表スナップショット表示）— テスト可能な純粋関数 */
 export function buildIchimokuSnapshotText(input: BuildIchimokuSnapshotTextInput): string {
 	const {
 		pair,
@@ -97,7 +98,7 @@ export function buildIchimokuSnapshotText(input: BuildIchimokuSnapshotTextInput)
 	} = input;
 	const lines: string[] = [];
 	lines.push(`${String(pair).toUpperCase()} ${String(type)} 一目均衡表分析`);
-	if (close != null) lines.push(`価格: ${Number(close).toLocaleString('ja-JP')}円`);
+	if (close != null) lines.push(`価格: ${formatPriceNumber(Number(close))}円`);
 	lines.push('');
 	lines.push('【基本配置】');
 	if (pricePosition !== 'unknown') {
@@ -111,35 +112,32 @@ export function buildIchimokuSnapshotText(input: BuildIchimokuSnapshotTextInput)
 				: null;
 		const clrPct = clr != null && close != null && close !== 0 ? Number(((clr / close) * 100).toFixed(2)) : null;
 		lines.push(
-			`・価格位置: ${pricePosition.replace('_', ' ')}${clr != null ? ` (クリアランス: ${clr >= 0 ? '+' : ''}${clr.toLocaleString('ja-JP')}円${clrPct != null ? `, ${clrPct}%` : ''})` : ''}`,
+			`・価格位置: ${pricePosition.replace('_', ' ')}${clr != null ? ` (クリアランス: ${clr >= 0 ? '+' : ''}${formatPriceNumber(clr)}円${clrPct != null ? `, ${clrPct}%` : ''})` : ''}`,
 		);
 	}
 	if (tenkan != null)
 		lines.push(
-			`・転換線: ${Number(tenkan).toLocaleString('ja-JP')}円${close != null ? ` (価格比 ${Number(((tenkan - close) / close) * 100).toFixed(1)}%)` : ''}`,
+			`・転換線: ${formatPriceNumber(Number(tenkan))}円${close != null ? ` (価格比 ${Number(((tenkan - close) / close) * 100).toFixed(1)}%)` : ''}`,
 		);
-	if (kijun != null) lines.push(`・基準線: ${Number(kijun).toLocaleString('ja-JP')}円`);
+	if (kijun != null) lines.push(`・基準線: ${formatPriceNumber(Number(kijun))}円`);
 	if (tenkan != null && kijun != null)
 		lines.push(
-			`・転換線と基準線: ${tenkanKijun === 'bullish' ? '強気' : tenkanKijun === 'bearish' ? '弱気' : '中立'}配置${tkDist != null ? ` (転換線が${Math.abs(tkDist).toLocaleString('ja-JP')}円${tenkan > (kijun as number) ? '上' : '下'})` : ''}`,
+			`・転換線と基準線: ${tenkanKijun === 'bullish' ? '強気' : tenkanKijun === 'bearish' ? '弱気' : '中立'}配置${tkDist != null ? ` (転換線が${formatPriceNumber(Math.abs(tkDist))}円${tenkan > (kijun as number) ? '上' : '下'})` : ''}`,
 		);
 	lines.push('');
 	lines.push('【雲の状態（今日の雲）】');
 	lines.push(`・雲の方向: ${direction}`);
 	if (thickness != null)
 		lines.push(
-			`・雲の厚み: ${thickness.toLocaleString('ja-JP')}円${thicknessPct != null ? ` (${thicknessPct}%)` : ''} - ${strength ?? 'n/a'}の強度`,
+			`・雲の厚み: ${formatPriceNumber(thickness)}円${thicknessPct != null ? ` (${thicknessPct}%)` : ''} - ${strength ?? 'n/a'}の強度`,
 		);
 	if (cloudTop != null && cloudBottom != null)
-		lines.push(
-			`・雲の範囲: ${Number(cloudBottom).toLocaleString('ja-JP')}円 ~ ${Number(cloudTop).toLocaleString('ja-JP')}円`,
-		);
-	// 26日後の雲（将来の参考情報）
+		lines.push(`・雲の範囲: ${formatPriceNumber(Number(cloudBottom))}円 ~ ${formatPriceNumber(Number(cloudTop))}円`);
 	if (futureCloudTop != null && futureCloudBottom != null) {
 		lines.push('');
 		lines.push('【26日後の雲（先行スパン）】');
 		lines.push(
-			`・雲の範囲: ${Number(futureCloudBottom).toLocaleString('ja-JP')}円 ~ ${Number(futureCloudTop).toLocaleString('ja-JP')}円`,
+			`・雲の範囲: ${formatPriceNumber(Number(futureCloudBottom))}円 ~ ${formatPriceNumber(Number(futureCloudTop))}円`,
 		);
 		if (close != null) {
 			const futurePos = close > futureCloudTop ? '雲の上' : close < futureCloudBottom ? '雲の下' : '雲の中';
@@ -150,7 +148,7 @@ export function buildIchimokuSnapshotText(input: BuildIchimokuSnapshotTextInput)
 	lines.push('【遅行スパン】');
 	if (chikouSpan.position)
 		lines.push(
-			`・位置: 26本前の価格より${chikouSpan.position === 'above' ? '上' : '下'}${chikouSpan.distance != null ? ` (${chikouSpan.distance >= 0 ? '+' : ''}${chikouSpan.distance.toLocaleString('ja-JP')}円)` : ''}`,
+			`・位置: 26本前の価格より${chikouSpan.position === 'above' ? '上' : '下'}${chikouSpan.distance != null ? ` (${chikouSpan.distance >= 0 ? '+' : ''}${formatPriceNumber(chikouSpan.distance)}円)` : ''}`,
 		);
 	lines.push('');
 	lines.push('【シグナル分析】');
@@ -172,7 +170,6 @@ export function buildIchimokuSnapshotText(input: BuildIchimokuSnapshotTextInput)
 		);
 	lines.push(`・総合評価: ${overallSignal.replace('_', ' ')} (信頼度: ${overallConfidence})`);
 
-	// Phase 3 content additions
 	lines.push('');
 	lines.push('【今後の注目ポイント】');
 	if (scenarios?.scenarios) {
@@ -180,23 +177,23 @@ export function buildIchimokuSnapshotText(input: BuildIchimokuSnapshotTextInput)
 		const bear = scenarios.scenarios.bearish;
 		if (bull)
 			lines.push(
-				`・上昇シナリオ: ${bull.condition} → ${Number(bull.target).toLocaleString('ja-JP')}円 (可能性: ${bull.probability})`,
+				`・上昇シナリオ: ${bull.condition} → ${formatPriceNumber(Number(bull.target))}円 (可能性: ${bull.probability})`,
 			);
 		if (bear)
 			lines.push(
-				`・下落シナリオ: ${bear.condition} → ${Number(bear.target).toLocaleString('ja-JP')}円 (可能性: ${bear.probability})`,
+				`・下落シナリオ: ${bear.condition} → ${formatPriceNumber(Number(bear.target))}円 (可能性: ${bear.probability})`,
 			);
 	}
 	lines.push('');
 	lines.push('・重要価格:');
 	if (scenarios?.keyLevels?.support?.length) {
 		lines.push(
-			`  - サポート: ${scenarios.keyLevels.support.map((x: number) => `${Number(x).toLocaleString('ja-JP')}円`).join('、')}`,
+			`  - サポート: ${scenarios.keyLevels.support.map((x: number) => `${formatPriceNumber(Number(x))}円`).join('、')}`,
 		);
 	}
 	if (scenarios?.keyLevels?.resistance?.length) {
 		lines.push(
-			`  - レジスタンス: ${scenarios.keyLevels.resistance.map((x: number) => `${Number(x).toLocaleString('ja-JP')}円`).join('、')}`,
+			`  - レジスタンス: ${scenarios.keyLevels.resistance.map((x: number) => `${formatPriceNumber(Number(x))}円`).join('、')}`,
 		);
 	}
 	if (Array.isArray(scenarios?.watchPoints)) {
@@ -205,7 +202,6 @@ export function buildIchimokuSnapshotText(input: BuildIchimokuSnapshotTextInput)
 		for (const wp of scenarios.watchPoints) lines.push(`  - ${wp}`);
 	}
 
-	// Phase 4 trend content (optional)
 	if (trend) {
 		lines.push('');
 		lines.push('【トレンド分析】');
@@ -215,7 +211,6 @@ export function buildIchimokuSnapshotText(input: BuildIchimokuSnapshotTextInput)
 		lines.push(`・モメンタム: ${m === 'accelerating' ? '加速中' : m === 'decelerating' ? '減速中' : '安定'}`);
 	}
 
-	// structuredContent.data の数値詳細もテキストに含める（LLM が読めない対策）
 	lines.push('');
 	lines.push('【数値データ】');
 	lines.push(`転換線: ${tenkan} / 基準線: ${kijun}`);
@@ -255,52 +250,32 @@ export default async function analyzeIchimokuSnapshot(
 				fail(indRes?.summary || 'indicators failed', (indRes?.meta as { errorType?: string })?.errorType || 'internal'),
 			) as ReturnType<typeof fail>;
 
-		// 上流 analyze_indicators の meta.warning（取得層）と meta.warnings（計算層）を別系統で伝播する。
 		const { warning, warnings } = extractUpstreamWarning(indRes.meta);
 
-		// 最新足が形成中（未確定）か。価格位置・転換線/基準線・遅行スパン等は最新足の終値に依存するため、
-		// analyze_indicators と同じ流儀で最新足 ts から判定し注記を出す（warning 2 系統とは別系統の情報注記）。
+		// 価格位置・転換線 / 基準線・遅行スパンは最新足の終値に依存するので、形成中なら注記を出す。
 		const provisional = isLatestBarProvisional(indRes.data.normalized.at(-1)?.timestamp, String(type));
 
 		const latest = indRes.data.indicators;
 		const close = indRes.data.normalized.at(-1)?.close ?? null;
 		const tenkan = latest.ICHIMOKU_conversion ?? null;
 		const kijun = latest.ICHIMOKU_base ?? null;
-		// 🚨 CRITICAL: 先行スパンの理解
-		// - spanA/spanB（latest.ICHIMOKU_spanA/B）: 「今日計算された先行スパン」→ 26日後に表示される雲
-		// - 「今日の雲」を判定するには、26本前に計算された先行スパンの値を使う必要がある
+		// latest.ICHIMOKU_spanA/B は 26 本後に表示される雲で、今日の雲は ichi_series の 26 本前の値を使う。
 		const futureSpanA = latest.ICHIMOKU_spanA ?? null; // 26日後の雲用
 		const futureSpanB = latest.ICHIMOKU_spanB ?? null; // 26日後の雲用
 
-		// 時系列データから「今日の雲」の位置を取得
-		// ichi_series.spanA/spanB は時系列データで、最新の値が「今日計算された値」
-		// 「今日の雲」は26本前に計算された値なので、配列の末尾から26本前を参照
 		const series = indRes.data.indicators.ichi_series;
-		let currentSpanA: number | null = null;
-		let currentSpanB: number | null = null;
-		if (series && Array.isArray(series.spanA) && Array.isArray(series.spanB)) {
-			// 配列の長さが26以上あれば、26本前（今日の雲）の値を取得
-			// 先行スパンは26期間先にプロットされるため、今日の雲 = 26期間前に計算された値
-			const len = Math.min(series.spanA.length, series.spanB.length);
-			if (len >= 26) {
-				currentSpanA = series.spanA[len - 26] ?? null;
-				currentSpanB = series.spanB[len - 26] ?? null;
-			}
-		}
+		const { spanA: currentSpanA, spanB: currentSpanB } = currentCloudSpans(series);
 
 		const chikou = Array.isArray(indRes?.data?.indicators?.ichi_series?.chikou)
 			? (indRes.data.indicators.ichi_series.chikou.at(-1) ?? null)
 			: null;
 
-		// 🚨 「今日の雲」（現在価格と比較する用）
 		const cloudTop = currentSpanA != null && currentSpanB != null ? Math.max(currentSpanA, currentSpanB) : null;
 		const cloudBottom = currentSpanA != null && currentSpanB != null ? Math.min(currentSpanA, currentSpanB) : null;
 
-		// 「26日後の雲」（将来の参考情報）
 		const futureCloudTop = futureSpanA != null && futureSpanB != null ? Math.max(futureSpanA, futureSpanB) : null;
 		const futureCloudBottom = futureSpanA != null && futureSpanB != null ? Math.min(futureSpanA, futureSpanB) : null;
 
-		// Assessments without visual claims - 「今日の雲」を使って判定
 		let pricePosition: 'above_cloud' | 'in_cloud' | 'below_cloud' | 'unknown' = 'unknown';
 		if (close != null && cloudTop != null && cloudBottom != null) {
 			if (close > cloudTop) pricePosition = 'above_cloud';
@@ -315,9 +290,7 @@ export default async function analyzeIchimokuSnapshot(
 			else tenkanKijun = 'neutral';
 		}
 
-		// Slope of cloud via last two spanA/spanB points when available
 		let cloudSlope: 'rising' | 'falling' | 'flat' | 'unknown' = 'unknown';
-		// series は上で既に定義済み
 		if (series && Array.isArray(series.spanA) && Array.isArray(series.spanB)) {
 			const a1 = series.spanA.at(-1),
 				a2 = series.spanA.at(-2);
@@ -330,7 +303,6 @@ export default async function analyzeIchimokuSnapshot(
 			}
 		}
 
-		// Cloud metrics - 「今日の雲」の厚みを使用
 		const thickness =
 			currentSpanA != null && currentSpanB != null
 				? Math.abs((currentSpanA as number) - (currentSpanB as number))
@@ -342,13 +314,15 @@ export default async function analyzeIchimokuSnapshot(
 		const strength =
 			thicknessPct == null ? null : thicknessPct >= 2 ? 'strong' : thicknessPct >= 0.8 ? 'moderate' : 'weak';
 
-		// Tenkan-Kijun detail
 		const tkRel = tenkan != null && kijun != null ? (tenkan > kijun ? 'bullish' : 'bearish') : null;
-		const tkDist = tenkan != null && kijun != null ? Number(((tenkan as number) - (kijun as number)).toFixed(0)) : null;
+		// 距離は価格の差なので、値自体ではなく価格の水準で桁を決める。
+		const tkDist =
+			tenkan != null && kijun != null
+				? roundPriceAtLevel((tenkan as number) - (kijun as number), close ?? (tenkan as number))
+				: null;
 		const tkDistPct =
 			tkDist != null && close != null && close !== 0 ? Number(((tkDist / close) * 100).toFixed(2)) : null;
 
-		// Chikou span detail: compare to price 26 bars ago
 		let chikouSpan: { position: 'above' | 'below' | null; distance: number | null; clearance: number | null } = {
 			position: null,
 			distance: null,
@@ -358,7 +332,7 @@ export default async function analyzeIchimokuSnapshot(
 		if (Array.isArray(candles) && candles.length >= 27 && close != null) {
 			const ref = candles.at(-27)?.close ?? null;
 			if (ref != null) {
-				const dist = Number((close - ref).toFixed(0));
+				const dist = roundPriceAtLevel(close - ref, close);
 				chikouSpan = { position: close >= ref ? 'above' : 'below', distance: dist, clearance: dist };
 			}
 		}
@@ -371,8 +345,7 @@ export default async function analyzeIchimokuSnapshot(
 		if (cloudSlope === 'rising') tags.push('cloud_rising');
 		if (cloudSlope === 'falling') tags.push('cloud_falling');
 
-		// Signals (Phase 2)
-		// 三役: 価格>雲上、転換>基準、遅行>当時価格(近似: 現在価格>26本前)
+		// 三役: 価格 > 雲上、転換 > 基準、遅行 > 当時価格（近似: 現在価格 > 26 本前）。
 		const sanpukuConditions = {
 			priceAboveCloud: pricePosition === 'above_cloud',
 			tenkanAboveKijun: tenkan != null && kijun != null ? tenkan > (kijun as number) : false,
@@ -393,7 +366,6 @@ export default async function analyzeIchimokuSnapshot(
 			conditions: sanpukuConditions,
 		};
 
-		// 直近クロス検出（転換線と基準線のクロスを簡易に）
 		const recentCrosses: Array<{ type: 'golden_cross' | 'death_cross'; barsAgo: number; description: string }> = [];
 		const spanTenkan = indRes?.data?.indicators?.ichi_series?.tenkan as number[] | undefined;
 		const spanKijun = indRes?.data?.indicators?.ichi_series?.kijun as number[] | undefined;
@@ -410,7 +382,6 @@ export default async function analyzeIchimokuSnapshot(
 			}
 		}
 
-		// 雲のねじれ（spanAとspanBの順位が入れ替わる）
 		let kumoTwist = {
 			detected: false as boolean,
 			barsAgo: undefined as number | undefined,
@@ -436,7 +407,6 @@ export default async function analyzeIchimokuSnapshot(
 			}
 		}
 
-		// 総合評価（簡易）
 		const bullishScore = Number(
 			(sanpuku.kouten ? 1 : 0) +
 				(pricePosition === 'above_cloud' ? 0.5 : 0) +
@@ -452,7 +422,6 @@ export default async function analyzeIchimokuSnapshot(
 		const overallConfidence: 'high' | 'medium' | 'low' =
 			sanpuku.kouten || sanpuku.gyakuten ? 'high' : recentCrosses.length ? 'medium' : 'low';
 
-		// Phase 4: 時系列（雲位置の履歴とトレンド強度）
 		const cloudHistory: Array<{ barsAgo: number; position: 'above' | 'in' | 'below' }> = [];
 		if (Array.isArray(candles) && cloudTop != null && cloudBottom != null) {
 			for (let i = 0; i < Math.min(lookback, candles.length); i++) {
@@ -464,7 +433,6 @@ export default async function analyzeIchimokuSnapshot(
 				}
 			}
 		}
-		// 簡易トレンド強度: 直近/中期での雲クリアランス平均
 		const avgOrZero = (arr: number[]) => avg(arr) ?? 0;
 		let shortTerm = 0,
 			mediumTerm = 0;
@@ -525,12 +493,12 @@ export default async function analyzeIchimokuSnapshot(
 				scenarios: {
 					bullish: {
 						condition: '転換線が基準線を上抜け',
-						target: close != null ? Math.round((close as number) * 1.07) : 0,
+						target: close != null ? roundPriceAtLevel((close as number) * 1.07) : 0,
 						probability: 'medium',
 					},
 					bearish: {
 						condition: '雲突入（雲上限割れ）',
-						target: cloudBottom != null ? Math.round((cloudBottom as number) * 0.97) : 0,
+						target: cloudBottom != null ? roundPriceAtLevel((cloudBottom as number) * 0.97) : 0,
 						probability: 'low',
 					},
 				},
@@ -600,7 +568,6 @@ export default async function analyzeIchimokuSnapshot(
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'analyze_ichimoku_snapshot',
 	description:

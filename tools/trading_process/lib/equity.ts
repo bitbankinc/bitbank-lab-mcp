@@ -1,28 +1,4 @@
-/**
- * lib/equity.ts - エクイティカーブ・ドローダウン計算
- *
- * 【計算仕様（含み損益ベース）】
- *
- * ■ エクイティ
- * - 初期値: 1.0（= 100%）
- * - ポジション非保有時: 前回の確定エクイティを維持
- * - ポジション保有中: entry_price から current_close までの含み損益を反映
- *   equity = confirmed_equity * (current_close / entry_price)
- * - トレード決済時: confirmed_equity を更新
- * - 末尾未決済ポジション (openPosition): entry_time 以降を最終バーまでマーク・トゥ・マーケット延長。
- *   confirmedEquity は更新されないため confirmed_pct には反映されないが、equity_pct には反映される。
- *   `entry_fee_multiplier` を entry 時に entryEquity に乗算することで片道手数料を即時反映する
- *   （exit-side fee は未発生のため適用しない）。
- *
- * ■ ドローダウン
- * - 定義: (peak_equity - current_equity) / peak_equity * 100
- * - 常に 0 以上の値
- * - 新しいピークを更新すると DD = 0 に戻る
- *
- * ■ 表示用
- * - equity_pct: (equity - 1) * 100 で表示
- * - drawdown_pct: 0以上の下落幅[%]。表示時に -XX% とする
- */
+// 末尾未決済ポジションは entry_time 以降を最終バーまで含み損益で延長し、confirmed_pct には反映しない（entry 側の片道手数料だけを即時反映する）。
 
 import type { Candle, DrawdownPoint, EquityPoint, Trade } from '../types.js';
 
@@ -33,21 +9,10 @@ export interface EquityResult {
 	max_drawdown: number;
 }
 
-/**
- * 末尾で未決済のロングポジション。`executeTradesFromSignals` が
- * sell シグナルなしで終わった場合に返す。
- */
 export interface OpenPosition {
 	entry_time: string;
 	entry_price: number;
-	/**
-	 * Entry 側の手数料乗数（= 1 - fee_bp/10000）。
-	 * entry_time バーで entryEquity に即時乗算され、保有中の equity_pct に
-	 * 片道手数料分のマイナスが反映される。
-	 *
-	 * 確定トレードは net_return で往復手数料を exit 時にまとめて控除するため
-	 * 同型のフィールドは不要。未決済ポジションのみエントリー時に明示する。
-	 */
+	/** 確定トレードは exit 時に往復手数料をまとめて控除するので、同型のフィールドは未決済ポジションだけが持つ。 */
 	entry_fee_multiplier: number;
 }
 
@@ -57,22 +22,11 @@ interface PositionInfo {
 	entryEquity: number; // エントリー時点の確定エクイティ
 }
 
-/**
- * トレード結果からエクイティカーブとドローダウンを計算（含み損益ベース）
- *
- * @param trades トレード配列
- * @param candles ローソク足配列
- * @param openPosition 末尾で未決済のポジション。指定すると entry_time 以降が
- *   最終バーまでマーク・トゥ・マーケット延長され、equity_pct / drawdown_pct
- *   に含み損益が反映される。confirmed_pct には反映されない。
- * @returns エクイティカーブ、ドローダウンカーブ、最大ドローダウン
- */
 export function calculateEquityAndDrawdown(
 	trades: Trade[],
 	candles: Candle[],
 	openPosition: OpenPosition | null = null,
 ): EquityResult {
-	// トレードを entry_time と exit_time でマッピング
 	const tradeByEntryTime = new Map<string, Trade>();
 	const tradeByExitTime = new Map<string, Trade>();
 	for (const t of trades) {
@@ -89,7 +43,6 @@ export function calculateEquityAndDrawdown(
 	let position: PositionInfo | null = null;
 
 	for (const candle of candles) {
-		// エントリーチェック（確定トレード）
 		const entryTrade = tradeByEntryTime.get(candle.time);
 		if (entryTrade && !position) {
 			position = {
@@ -99,10 +52,6 @@ export function calculateEquityAndDrawdown(
 			};
 		}
 
-		// エントリーチェック（末尾未決済ポジション）
-		// exit は持たないので tradeByExitTime には登録されず、以降のバーで
-		// マーク・トゥ・マーケットが続き confirmedEquity は更新されない。
-		// entry_fee_multiplier で entry 時に片道手数料を即時反映する。
 		if (openPosition && !position && candle.time === openPosition.entry_time) {
 			position = {
 				isLong: true,
@@ -111,27 +60,22 @@ export function calculateEquityAndDrawdown(
 			};
 		}
 
-		// 現在のエクイティを計算
 		let currentEquity: number;
 		if (position) {
-			// ポジション保有中: 含み損益を反映
 			const unrealizedReturn = candle.close / position.entryPrice;
 			currentEquity = position.entryEquity * unrealizedReturn;
 		} else {
-			// ポジション非保有: 確定エクイティを維持
 			currentEquity = confirmedEquity;
 		}
 
 		// エグジットチェック（エクイティ計算後に処理）
 		const exitTrade = tradeByExitTime.get(candle.time);
 		if (exitTrade && position) {
-			// 確定エクイティを更新（手数料込み）
 			confirmedEquity = position.entryEquity * exitTrade.net_return;
 			currentEquity = confirmedEquity; // 決済時は確定値を使用
 			position = null;
 		}
 
-		// 表示用エクイティ [%] = (equity - 1) * 100
 		const equityPct = (currentEquity - 1) * 100;
 		const confirmedPct = (confirmedEquity - 1) * 100;
 		equity_curve.push({
@@ -140,12 +84,10 @@ export function calculateEquityAndDrawdown(
 			confirmed_pct: Number(confirmedPct.toFixed(4)),
 		});
 
-		// ピーク更新
 		if (currentEquity > peakEquity) {
 			peakEquity = currentEquity;
 		}
 
-		// ドローダウン計算
 		let drawdownPct = 0;
 		if (peakEquity > 0) {
 			drawdownPct = ((peakEquity - currentEquity) / peakEquity) * 100;

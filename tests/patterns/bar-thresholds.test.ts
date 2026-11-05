@@ -1,14 +1,3 @@
-/**
- * tests/patterns/bar-thresholds.test.ts
- *
- * `patterns/bar-thresholds.ts`（日数閾値 → バー数の換算）の契約テスト。
- *
- * 検証するのは 3 点:
- *   1. clamp の両端（構造的下限 / 上限）が実際に効いていること
- *   2. `PATTERN_BARS_CAP_MULTIPLIER` が「既定 limit=90 で全組み合わせが到達可能」を
- *      満たす唯一の整数倍率であること（1 は clamp が潰れ、3 以上は flag / pennant が届かない）
- *   3. 最大側が最小側を下回らないこと（反転するとそのパターン種別が丸ごと 0 件になる）
- */
 import { describe, expect, it } from 'vitest';
 import { CandleTypeEnum } from '../../src/schema/base.js';
 import {
@@ -72,9 +61,7 @@ describe('PATTERN_BARS_CAP_MULTIPLIER', () => {
 	});
 
 	it('3 以上では flag / pennant が既定 limit（90 本）に届かなくなる', () => {
-		// flag / pennant の要求本数は poleMinBars + consMinBars + 1。
-		// 旗竿 1 日 / 保ち合い 2 日を換算した値が両方とも上限に張り付く時間足
-		// （15min / 30min）で、倍率 3 だと 3 × 17 × 2 + 1 = 103 本 > 90 本になる。
+		// flag / pennant の要求本数は poleMinBars + consMinBars + 1。旗竿 1 日 / 保ち合い 2 日を換算した値が両方とも上限に張り付く時間足（15min / 30min）で、倍率 3 だと 3 × 17 × 2 + 1 = 103 本 > 90 本になる。
 		const requiredAt = (tf: string, multiplier: number): number => {
 			const cap = structuralFloorBars(tf) * multiplier;
 			const pole = Math.min(cap, Math.max(2, Math.round(1 * barsPerDay(tf))));
@@ -156,14 +143,12 @@ describe('patternBarRange', () => {
 	});
 
 	it('最大側は上限（cap）を意図的に超える — cap は最小側だけの制約', () => {
-		// cap の役割は「最小要求バー数が既定 limit（90）に収まること」だけ。最大側にも掛けると
-		// cap が効く時間足で minBars === maxBars になり、レンジ判定が等値判定に退化する。
+		// 最大側にも掛けると、cap が効く時間足で minBars === maxBars になり、レンジ判定が等値判定に退化する。
 		for (const tf of ['1hour', '4hour']) {
 			const { minBars, maxBars } = patternBarRange(tf, 21, 90);
 			expect(minBars, `${tf}: 最小側は cap に張り付く`).toBe(patternBarsCap(tf));
 			expect(maxBars, `${tf}: 最大側は cap を超える（意図的）`).toBeGreaterThan(patternBarsCap(tf));
 		}
-		// cap が効かない 1day では、本モジュール導入前と同じ [25, 90] のまま
 		expect(patternBarRange('1day', 25, 90)).toEqual({ minBars: 25, maxBars: 90 });
 		expect(patternBarsCap('1day')).toBe(46); // cap を最大側に掛けると 90 → 46 に狭まってしまう
 	});

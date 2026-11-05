@@ -1,26 +1,3 @@
-/**
- * PR5: Phase 2 final audit — public market data tools
- *
- * 対象ツール（src/tool-registry.ts 基準）:
- * | 公開ツール名         | 実装ファイル                                   |
- * |---------------------|-----------------------------------------------|
- * | get_ticker          | tools/get_ticker.ts                           |
- * | get_tickers_jpy     | src/handlers/getTickersJpyHandler.ts (handler)|
- * |                     | tools/get_tickers_jpy.ts (inner fetch)        |
- * | get_orderbook       | tools/get_orderbook.ts                        |
- * | get_transactions    | tools/get_transactions.ts                     |
- * | get_candles         | tools/get_candles.ts                          |
- * | prepare_depth_data  | tools/prepare_depth_data.ts                   |
- * | (internal helper)   | lib/get-depth.ts (prepare_depth_data 経由)    |
- *
- * 監査観点:
- * 1. 公開 tool 実体の対応表をテスト/コメントに固定する
- * 2. Public market data output に NaN / Infinity / -Infinity が出ない（再帰検査）
- * 3. JSON.stringify / JSON.parse 往復後も schema と意味が壊れない
- * 4. timestamp 欠損時の Date.now() fallback を upstream fail に寄せる
- * 5. warning / partial / drop / 件数 / timestamp が LLM 可視な content に出ている
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import getDepth from '../lib/get-depth.js';
 import {
@@ -42,9 +19,6 @@ import prepareDepthData from '../tools/prepare_depth_data.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
 import { tickerBtcJpy } from './fixtures/bitbank-api.js';
 
-// ── 共通ヘルパー ─────────────────────────────────────────────
-
-/** value 配下を再帰的に走査し、NaN / Infinity / -Infinity の存在パスを返す */
 function findNonFiniteNumbers(value: unknown, path = '$'): string[] {
 	const found: string[] = [];
 	if (typeof value === 'number') {
@@ -65,11 +39,7 @@ function findNonFiniteNumbers(value: unknown, path = '$'): string[] {
 	return found;
 }
 
-/**
- * content[].text を全て改行結合して返す（handler の戻り値が McpResponse 型のとき）。
- * 「LLM 可視 content」を監査する観点では content[1] 以降にぶら下がる warning 等も拾う必要があるため、
- * content[0] のみではなく全テキストブロックを連結する。
- */
+/** LLM 可視の content を監査するので、content[1] 以降にぶら下がる warning 等も拾えるよう全テキストブロックを連結する。 */
 function getContentText(res: { content?: Array<{ type: string; text: string }> }): string {
 	return (res.content ?? [])
 		.map((c) => c.text)
@@ -77,7 +47,6 @@ function getContentText(res: { content?: Array<{ type: string; text: string }> }
 		.join('\n');
 }
 
-/** 共通の fetch モック（ok レスポンス） */
 function mockFetchJson(payload: unknown, headers: Record<string, string> = {}) {
 	return vi.spyOn(globalThis, 'fetch').mockResolvedValue(
 		asMockResult<Response>({
@@ -89,8 +58,6 @@ function mockFetchJson(payload: unknown, headers: Record<string, string> = {}) {
 		}),
 	);
 }
-
-// ── フィクスチャ ─────────────────────────────────────────────
 
 const TS = 1_700_000_000_000;
 
@@ -131,15 +98,8 @@ function validOhlcv(count = 3): unknown[][] {
 	]);
 }
 
-// ── 1. 公開 tool 実体の対応表 ─────────────────────────────
-
 describe('PR5 audit / 1. public tool ↔ impl file mapping', () => {
-	/**
-	 * src/tool-registry.ts allToolDefs に登録されている名前と、PR5 Phase 2 監査対象の
-	 * 6 ツール（public market data）が一致することを固定する。
-	 * 監査内では lib/get-depth.ts は内部ヘルパーなので tool 名は持たないが、
-	 * prepare_depth_data 経由で fetch される実装として下記コメントで明示する。
-	 */
+	// lib/get-depth.ts は tool 名を持たない内部ヘルパーなので、ここには入れず prepare_depth_data 経由の実装として扱う。
 	const EXPECTED_PUBLIC_MARKET_DATA_TOOLS = [
 		'get_ticker',
 		'get_tickers_jpy',
@@ -167,8 +127,6 @@ describe('PR5 audit / 1. public tool ↔ impl file mapping', () => {
 		}
 	});
 });
-
-// ── 2. JSON safety: NaN / Infinity / -Infinity が出ない ────
 
 describe('PR5 audit / 2. JSON safety (NaN / Infinity / -Infinity 再帰検査)', () => {
 	beforeEach(() => {
@@ -226,7 +184,6 @@ describe('PR5 audit / 2. JSON safety (NaN / Infinity / -Infinity 再帰検査)',
 		const res = await getOrderbook({ pair: 'btc_jpy', mode: 'statistics' });
 		assertOk(res);
 		expect(findNonFiniteNumbers({ data: res.data, meta: res.meta })).toEqual([]);
-		// ratio は null に正規化されていることを確認（buildStatistics の責務）
 		// biome-ignore lint/suspicious/noExplicitAny: deep property access for assertion
 		const ranges = (res.data as any).ranges as Array<{ ratio: number | null }>;
 		for (const r of ranges) {
@@ -267,7 +224,6 @@ describe('PR5 audit / 2. JSON safety (NaN / Infinity / -Infinity 再帰検査)',
 		const res = await getCandles('btc_jpy', '1day', '2024', 14);
 		assertOk(res);
 		expect(findNonFiniteNumbers({ data: res.data, meta: res.meta })).toEqual([]);
-		// volumeStats.changePct は null（前週ゼロのケース）
 		// biome-ignore lint/suspicious/noExplicitAny: deep property access for assertion
 		const vs = (res.data as any).volumeStats;
 		expect(vs?.changePct).toBeNull();
@@ -331,8 +287,6 @@ describe('PR5 audit / 2. JSON safety (NaN / Infinity / -Infinity 再帰検査)',
 	});
 });
 
-// ── 3. JSON.stringify / JSON.parse 往復後の schema 整合 ────
-
 describe('PR5 audit / 3. JSON round-trip preservation', () => {
 	beforeEach(() => {
 		process.env.BITBANK_PAIRS_MODE = 'off';
@@ -346,9 +300,7 @@ describe('PR5 audit / 3. JSON round-trip preservation', () => {
 
 	function assertRoundTrip<T>(res: T, schema: { parse: (v: unknown) => unknown }, invariants: (parsed: T) => void) {
 		const wire = JSON.parse(JSON.stringify(res));
-		// schema が wire 形式（NaN/Infinity 不在）を受理する
 		expect(() => schema.parse(wire)).not.toThrow();
-		// 重要フィールドの意味が壊れていない
 		invariants(wire as T);
 	}
 
@@ -470,21 +422,8 @@ describe('PR5 audit / 3. JSON round-trip preservation', () => {
 	});
 });
 
-// ── 4. timestamp 欠損時の fallback 棚卸し ───────────────────
-
 describe('PR5 audit / 4. timestamp fallback inventory (Date.now -> upstream fail)', () => {
-	/**
-	 * 旧実装で Date.now() フォールバックがあった箇所:
-	 *   - lib/get-depth.ts:95 — `Number(d.timestamp ?? d.timestamp_ms ?? Date.now())`
-	 *   - tools/get_orderbook.ts:504 — `toNum(d.timestamp ?? d.timestamp_ms) ?? Date.now()`
-	 *   - tools/prepare_depth_data.ts:164 — `Number(depth.data.timestamp ?? Date.now())`
-	 *
-	 * 全て上流 timestamp の欠損ケース。受信時刻 (Date.now) で代用すると古いデータを
-	 * 最新かのように見せてしまうため、PR5 で upstream fail に倒すよう変更した。
-	 *
-	 * fetchedAt（受信時刻）は引き続き meta に含まれるため、データ取得時刻の情報自体は
-	 * 失われない。timestamp（観測時刻）と fetchedAt（受信時刻）の意味分離が明確になる。
-	 */
+	// 上流 timestamp の欠損を受信時刻（Date.now）で代用すると古いデータを最新かのように見せてしまうので、upstream fail に倒す（受信時刻は fetchedAt として meta に残る）。
 	afterEach(() => {
 		vi.restoreAllMocks();
 	});
@@ -551,8 +490,7 @@ describe('PR5 audit / 4. timestamp fallback inventory (Date.now -> upstream fail
 	});
 
 	it('get_ticker: upstream timestamp 欠損 → normalized.timestamp は null（既存契約を維持）', async () => {
-		// get_ticker は元から Date.now() fallback を持たず、null を保持する設計。
-		// schema 上 timestamp は z.number().nullable() なので null 許容。
+		// get_ticker は Date.now() fallback を持たず null を保持する（schema 上 timestamp は z.number().nullable()）。
 		mockFetchJson({
 			success: 1,
 			data: { ...tickerBtcJpy.data, timestamp: null },
@@ -564,8 +502,7 @@ describe('PR5 audit / 4. timestamp fallback inventory (Date.now -> upstream fail
 	});
 
 	it('get_transactions: 行 timestamp 欠損 → 該当行は drop + warning', async () => {
-		// get_transactions は行単位 drop が既存仕様（行ごとに欠損し得るため）。
-		// upstream fail にせず、件数を warning で surface する。
+		// get_transactions は行ごとに欠損し得るので行単位 drop が既存仕様。upstream fail にせず、件数を warning で surface する。
 		mockFetchJson(
 			txFixture([
 				{ transaction_id: 1, price: '5000000', amount: '0.01', side: 'buy' /* executed_at なし */ },
@@ -578,8 +515,6 @@ describe('PR5 audit / 4. timestamp fallback inventory (Date.now -> upstream fail
 		expect(res.meta?.warning).toContain('1件');
 	});
 });
-
-// ── 5. content visibility: warning / drop / count / timestamp ──
 
 describe('PR5 audit / 5. content visibility (warning / drop / count / timestamp が LLM に見える)', () => {
 	beforeEach(() => {
@@ -604,7 +539,6 @@ describe('PR5 audit / 5. content visibility (warning / drop / count / timestamp 
 		const res = await getOrderbook({ pair: 'btc_jpy', mode: 'summary', topN: 2 });
 		assertOk(res);
 		expect(res.summary).toMatch(/📸/);
-		// 上位N層表記
 		expect(res.summary).toContain('上位');
 	});
 
@@ -616,19 +550,15 @@ describe('PR5 audit / 5. content visibility (warning / drop / count / timestamp 
 				{ transaction_id: 3, price: '5000200', amount: '0.03', side: 'buy', executed_at: TS + 2 },
 			]),
 		);
-		// toolDef.handler 経由（content/meta の整合を検証）
 		const def = allToolDefs.find((t) => t.name === 'get_transactions');
 		expect(def).toBeDefined();
 		// biome-ignore lint/style/noNonNullAssertion: assertion above guarantees def is defined
 		const out = await def!.handler({ pair: 'btc_jpy', limit: 10, view: 'summary' });
-		// view=summary は OkResult 形式そのまま返す
 		// biome-ignore lint/suspicious/noExplicitAny: handler returns Result | McpResponse union
 		const r = out as any;
 		expect(r.ok).toBe(true);
 		expect(r.summary).toContain('期間');
-		// 件数表記
 		expect(r.summary).toMatch(/直近取引\s*2\s*件|フィルタ後\s*\d+件/);
-		// warning が summary に含まれる
 		expect(r.summary).toContain('1件');
 	});
 
@@ -656,19 +586,15 @@ describe('PR5 audit / 5. content visibility (warning / drop / count / timestamp 
 		const res = await getCandles('btc_jpy', '1day', '2024', 3);
 		assertOk(res);
 		expect(res.summary).toContain('全3件のOHLCV');
-		// 各 OHLCV 行に isoTime か isoTimeLocal が含まれる
 		const tzMatches = res.summary.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/g);
 		expect(tzMatches?.length).toBeGreaterThanOrEqual(3);
 	});
 
 	it('get_candles: fetchWarning は summary の先頭に出る', async () => {
-		// fetchWarning は multi-year/multi-day で発生するが、ここでは単年なので
-		// 別のテストで fetchWarning 経路を直接モックするのは困難。代わりに、警告経路の
-		// 既存パスが summary の先頭に来ることを文字列形式で確認する。
+		// fetchWarning は multi-year/multi-day で発生し、単年では直接モックしにくいので、ここでは正常系で summary の冒頭が ⚠️ にならないことだけを見る。
 		mockFetchJson(candlesFixture(validOhlcv(3)));
 		const res = await getCandles('btc_jpy', '1day', '2024', 3);
 		assertOk(res);
-		// 正常系では fetchWarning なし、summary の冒頭は pair 名で始まる
 		expect(res.summary.startsWith('⚠️')).toBe(false);
 	});
 
@@ -692,10 +618,8 @@ describe('PR5 audit / 5. content visibility (warning / drop / count / timestamp 
 		// biome-ignore lint/suspicious/noExplicitAny: handler returns McpResponse
 		const r = out as any;
 		const text = getContentText(r);
-		// timestamp / isoTime が data JSON に含まれている
 		expect(text).toContain('"timestamp"');
 		expect(text).toContain('"isoTime"');
-		// warning が summary に表れる
 		expect(text).toContain('⚠️');
 		expect(text).toContain('1件');
 	});
@@ -736,7 +660,6 @@ describe('PR5 audit / 5. content visibility (warning / drop / count / timestamp 
 		// biome-ignore lint/suspicious/noExplicitAny: handler returns McpResponse
 		const r = out as any;
 		const text = getContentText(r);
-		// 件数とソート条件が text に出る
 		expect(text).toContain('全');
 		expect(text).toContain('ペア取得');
 		expect(text).toContain('sortBy=change24h');

@@ -65,6 +65,31 @@ function makeInput(overrides?: Partial<BuildIndicatorsTextInput>): BuildIndicato
 }
 
 describe('buildIndicatorsText', () => {
+	it('安いペアの価格・SMA・BB・一目・MACD・雲の厚さを円の整数に潰さない', () => {
+		const text = buildIndicatorsText(
+			makeInput({
+				close: 31.2345,
+				sma25: 30.98765,
+				bbMid: 31.0123456,
+				tenkan: 31.111111,
+				macdHist: 0.0123456,
+				cloudThickness: 0.456789,
+			}),
+		);
+		expect(text).toContain('31.2345円');
+		expect(text).toContain('SMA(25): 30.9877円');
+		expect(text).toContain('middle: 31.0123円');
+		expect(text).toContain('転換線: 31.1111円');
+		expect(text).toContain('hist=0.0123');
+		expect(text).toContain('雲の厚さ: 0.4568円');
+	});
+
+	it('MACD と雲の厚さは価格の水準で桁を決めるので、BTC では 10 万円未満でも円の整数のまま', () => {
+		const text = buildIndicatorsText(makeInput({ macdHist: 45.6, cloudThickness: 12345.6 }));
+		expect(text).toContain('hist=46');
+		expect(text).toContain('雲の厚さ: 12,346円');
+	});
+
 	it('ヘッダー: ペア名・時間足・時刻を含む', () => {
 		const text = buildIndicatorsText(makeInput());
 		expect(text).toContain('=== BTC_JPY 1day 分析 ===');

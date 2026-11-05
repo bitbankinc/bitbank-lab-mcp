@@ -1,18 +1,12 @@
-/**
- * preview_cancel_order ツールのユニットテスト。
- * 確認トークン発行・注文詳細フェッチ・プレビューメッセージ生成を検証する。
- *
- * BitbankPrivateClient はシングルトンで `globalThis.fetch` をコンストラクタで bind するため、
- * 各テストで `vi.resetModules()` + 動的 import + 先に fetch を差し替える順序を厳守する。
- */
+// BitbankPrivateClient はシングルトンで globalThis.fetch をコンストラクタで bind するので、各テストで resetModules → fetch の差し替え → 動的 import の順を守る。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OrderStatusEnum, TERMINAL_ORDER_STATUSES } from '../../src/private/schemas.js';
 import { assertFail, assertOk } from '../_assertResult.js';
+import { requireDefined } from '../helpers/assert.js';
 
 const originalFetch = globalThis.fetch;
 
-/** get_order が返すモック注文 */
 function mockOrder(overrides: Record<string, unknown> = {}) {
 	return {
 		success: 1,
@@ -33,7 +27,6 @@ function mockOrder(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-/** preview の中で呼ばれる get_order だけをモックする */
 function mockGetOrderOnce(payload?: Record<string, unknown>) {
 	const fn = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(payload ?? mockOrder()), { status: 200 }));
 	globalThis.fetch = fn as unknown as typeof fetch;
@@ -64,11 +57,10 @@ describe('preview_cancel_order', () => {
 		const result = await previewCancelOrder({ pair: 'btc_jpy', order_id: 2001 });
 
 		assertOk(result);
-		// confirmation_token / expires_at はスキーマ上 optional だが、内部関数 previewCancelOrder() は必ず生成する
 		expect(result.data.confirmation_token).toBeTypeOf('string');
-		expect(result.data.confirmation_token!.length).toBeGreaterThan(0);
+		expect(requireDefined(result.data.confirmation_token, 'result.data.confirmation_token').length).toBeGreaterThan(0);
 		expect(result.data.expires_at).toBeTypeOf('number');
-		expect(result.data.expires_at!).toBeGreaterThan(Date.now());
+		expect(requireDefined(result.data.expires_at, 'result.data.expires_at')).toBeGreaterThan(Date.now());
 	});
 
 	it('summary にペア名（BTC/JPY）と注文IDが含まれる', async () => {
@@ -242,9 +234,7 @@ describe('preview_cancel_order', () => {
 			const result = await previewCancelOrder({ pair: 'btc_jpy', order_id: 2001 });
 
 			assertOk(result);
-			// 注文詳細は取得できなかったので order は含まれない
 			expect(result.data.order).toBeUndefined();
-			// 確認トークンは発行され、サマリの基本情報は出る
 			expect(result.data.confirmation_token).toBeTypeOf('string');
 			expect(result.summary).toContain('2001');
 		});
@@ -260,10 +250,7 @@ describe('終端状態のガード（#28）', () => {
 		['CANCELED_PARTIALLY_FILLED', 'この注文は既にキャンセル済みです（status: CANCELED_PARTIALLY_FILLED）'],
 	];
 
-	/**
-	 * 拒否リスト方式の要点。ここを許可リスト（UNFILLED / PARTIALLY_FILLED だけ許す）に
-	 * 反転させると INACTIVE / TRIGGERED を誤って拒否する（#28）。
-	 */
+	/** 拒否リスト方式の要点。許可リスト（UNFILLED / PARTIALLY_FILLED だけ許す）に反転させると INACTIVE / TRIGGERED を誤って拒否する（#28）。 */
 	const CANCELABLE_STATUSES = ['INACTIVE', 'UNFILLED', 'PARTIALLY_FILLED', 'TRIGGERED'];
 
 	it.each(TERMINAL_CASES)('%s は fail を返し confirmation_token を発行しない', async (status, message) => {
@@ -289,8 +276,7 @@ describe('終端状態のガード（#28）', () => {
 
 	it('OrderStatusEnum の全値が「終端で拒否」か「プレビューを通る」のどちらか一方に分類される', async () => {
 		const statuses = OrderStatusEnum.options;
-		// クライアントはコンストラクタで globalThis.fetch を bind するため、
-		// import 前に全ケース分のレスポンスをキューしておく（テストごとの再 import は afterEach の resetModules 任せ）。
+		// クライアントはコンストラクタで globalThis.fetch を bind するので、import 前に全ケース分のレスポンスをキューしておく。
 		const fetchMock = vi.fn();
 		for (const status of statuses) {
 			fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(mockOrder({ status })), { status: 200 }));
@@ -374,13 +360,10 @@ describe('preview_cancel_order — handler (toolDef)', () => {
 
 		const text = result.content[0]?.text ?? '';
 		const data = result.structuredContent?.data;
-		// structuredContent.data.preview は残るが confirmation_token / expires_at は含まれない
 		expect(data?.preview).toBeDefined();
 		expect(data?.confirmation_token).toBeUndefined();
 		expect(data?.expires_at).toBeUndefined();
-		// content[0].text にもトークン文字列・「confirmation_token」表記を出さない
 		expect(text).not.toContain('confirmation_token');
-		// 実行不可通知の案内文があること
 		expect(text).toContain('このホストでは取引実行に対応していません');
 	});
 
@@ -452,10 +435,8 @@ describe('preview_cancel_order — handler (toolDef)', () => {
 		};
 
 		expect(result.content[0]?.text).toContain('取り消し');
-		// decline 時の structuredContent にも confirmation_token / expires_at は含まれない
 		expect(result.structuredContent?.data?.confirmation_token).toBeUndefined();
 		expect(result.structuredContent?.data?.expires_at).toBeUndefined();
-		// fetch は get_order の 1 回のみ。cancel_order は呼ばれていない。
 		expect(fetchMock.mock.calls).toHaveLength(1);
 	});
 });

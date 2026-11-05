@@ -14,8 +14,6 @@ afterEach(() => {
 	vi.clearAllMocks();
 });
 
-// ─── helpers ──────────────────────────────────────────────────────────────────
-
 function makeOkResult(opts: { svg?: string; summary?: string } = {}) {
 	return {
 		ok: true,
@@ -38,8 +36,6 @@ function makeOkResult(opts: { svg?: string; summary?: string } = {}) {
 		},
 	};
 }
-
-// ─── tests ────────────────────────────────────────────────────────────────────
 
 describe('runBacktestHandler', () => {
 	it('エラー時に content テキストに Error: が含まれる', async () => {

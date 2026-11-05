@@ -1,66 +1,40 @@
-/**
- * lib/fetch_candles.ts - バックテスト用ローソク足取得
- *
- * 【データ品質保証】
- * - time でソート（古い順）
- * - time をキーに重複排除
- * - 数値 NaN / time欠損は除外
- */
-
 import { diffCalendarDays, endOfDayMs } from '../../../lib/calendar.js';
 import { calendarDateFromIso, dayjs } from '../../../lib/datetime.js';
 import getCandles from '../../get_candles.js';
 import type { BacktestRange, Candle, Period, Timeframe } from '../types.js';
 
-/**
- * 絶対範囲指定（`start_date` / `end_date`）と「今日」を解釈する暦。
- *
- * bitbank の日足が JST 0:00 区切りのため固定で、実行環境の TZ には依存しない。
- */
+// bitbank の日足が JST 0:00 区切りなので固定し、実行環境の TZ に依存させない。
 const BACKTEST_CALENDAR_TZ = 'Asia/Tokyo';
 
-// 期間 → 必要本数のマッピング（バックテスト対象期間）
-// 1D: 日足 → 1M=30, 3M=90, 6M=180, 1Y=365, 2Y=730, 3Y=1095
-// 4H: 4時間足 → 1M=180, 3M=540, 6M=1080, 1Y=2190, 2Y=4380, 3Y=6570
-// 1H: 1時間足 → 1M=720, 3M=2160, 6M=4320, 1Y=8760, 2Y=17520, 3Y=26280
 const PERIOD_TO_BARS: Record<Timeframe, Record<Period, number>> = {
 	'1D': { '1M': 30, '3M': 90, '6M': 180, '1Y': 365, '2Y': 730, '3Y': 1095 },
 	'4H': { '1M': 180, '3M': 540, '6M': 1080, '1Y': 2190, '2Y': 4380, '3Y': 6570 },
 	'1H': { '1M': 720, '3M': 2160, '6M': 4320, '1Y': 8760, '2Y': 17520, '3Y': 26280 },
 };
 
-// timeframe → get_candles の type マッピング
 const TIMEFRAME_TO_CANDLE_TYPE: Record<Timeframe, string> = {
 	'1D': '1day',
 	'4H': '4hour',
 	'1H': '1hour',
 };
 
-// timeframe → 1日あたりのバー数（絶対範囲指定時の本数推定に使う）
 const BARS_PER_DAY: Record<Timeframe, number> = {
 	'1D': 1,
 	'4H': 6,
 	'1H': 24,
 };
 
-// timeframe → getCandles から取得可能な上限本数
-// （複数年/複数日取得時の maxLimit と整合させる）
+// getCandles の複数年 / 複数日取得の maxLimit と整合させる。
 const MAX_FETCHABLE_BARS: Record<Timeframe, number> = {
 	'1D': 5000,
 	'4H': 5000,
 	'1H': 10000,
 };
 
-/**
- * 期間に対応するバックテスト対象本数を取得
- */
 export function getPeriodBars(timeframe: Timeframe, period: Period): number {
 	return PERIOD_TO_BARS[timeframe]?.[period] ?? 90;
 }
 
-/**
- * ローソク足データのバリデーション
- */
 function isValidCandle(candle: Candle): boolean {
 	if (!candle.time || candle.time.trim() === '') return false;
 
@@ -136,9 +110,6 @@ async function fetchRawCandles(pair: string, timeframe: Timeframe, fetchLimit: n
 	return normalizeAndClean(normalized as NormalizedCandle[]);
 }
 
-/**
- * 直近 N 本（period 指定）でローソク足を取得
- */
 async function fetchByPeriod(
 	pair: string,
 	timeframe: Timeframe,
@@ -150,7 +121,6 @@ async function fetchByPeriod(
 		throw new Error(`Unsupported timeframe/period: ${timeframe}/${period}`);
 	}
 
-	// 必要な本数: バックテスト期間 + ウォームアップ + バッファ
 	const neededBars = periodBars + warmupBars + 10;
 	const maxBars = MAX_FETCHABLE_BARS[timeframe];
 	const fetchLimit = Math.min(
@@ -169,13 +139,6 @@ async function fetchByPeriod(
 	return uniqueCandles.slice(startIdx);
 }
 
-/**
- * 絶対日付範囲でローソク足を取得
- * start_date - warmupBars 本前 〜 end_date までを返す
- *
- * 【タイムゾーン】
- * `start` / `end` ("YYYY-MM-DD") は **JST (Asia/Tokyo)** として解釈する（`BACKTEST_CALENDAR_TZ`）。
- */
 async function fetchByAbsoluteRange(
 	pair: string,
 	timeframe: Timeframe,
@@ -197,16 +160,13 @@ async function fetchByAbsoluteRange(
 	const barsPerDay = BARS_PER_DAY[timeframe];
 	const maxBars = MAX_FETCHABLE_BARS[timeframe];
 
-	// 今日から start_date まで遡る日数（最低 0）。当日ぶんを含めるので暦日差 + 1。
-	// ミリ秒差を 86400000 で割らないのは lib/calendar の diffCalendarDays と同じ理由
-	// （DST を挟む暦では 23h / 25h の日が出て 1 日ずれる）。
+	// 当日ぶんを含めるので暦日差 + 1。ミリ秒差を 86400000 で割らない（DST で 1 日ずれる）。
 	const daysFromTodayToStart = Math.max(0, diffCalendarDays(startMs, Date.now(), BACKTEST_CALENDAR_TZ) + 1);
 	const neededBars = daysFromTodayToStart * barsPerDay + warmupBars + 20;
 	const fetchLimit = Math.min(neededBars, maxBars);
 
 	const uniqueCandles = await fetchRawCandles(pair, timeframe, fetchLimit);
 
-	// 最古ローソク足が start_date より新しい → 要求レンジのデータ不足
 	const fetchHitCap = fetchLimit >= maxBars;
 	const earliestFetchedMs =
 		uniqueCandles.length > 0 ? dayjs(uniqueCandles[0].time).valueOf() : Number.POSITIVE_INFINITY;
@@ -226,7 +186,6 @@ async function fetchByAbsoluteRange(
 		);
 	}
 
-	// end_date より後を除外
 	const inRange = uniqueCandles.filter((c) => dayjs(c.time).valueOf() <= endMs);
 	if (inRange.length === 0) {
 		throw new Error(
@@ -234,13 +193,11 @@ async function fetchByAbsoluteRange(
 		);
 	}
 
-	// start_date 以降の最初のインデックス
 	const firstAtOrAfterStart = inRange.findIndex((c) => dayjs(c.time).valueOf() >= startMs);
 	if (firstAtOrAfterStart === -1) {
 		throw new Error(`No candle data on or after start_date (${start})`);
 	}
 
-	// ウォームアップ分の本数が start_date より前に確保できているか検証
 	if (firstAtOrAfterStart < warmupBars) {
 		throw new Error(
 			`Insufficient warmup data: need ${warmupBars} bars before ${start} for indicator calculation, ` +
@@ -249,20 +206,10 @@ async function fetchByAbsoluteRange(
 		);
 	}
 
-	// ウォームアップ分だけ start_date より前を含める
 	const warmupStartIdx = firstAtOrAfterStart - warmupBars;
 	return inRange.slice(warmupStartIdx);
 }
 
-/**
- * バックテスト用にローソク足を取得
- *
- * @param pair 通貨ペア
- * @param timeframe 時間軸
- * @param range 期間指定（period 直近 N 本 / absolute 日付範囲）
- * @param warmupBars ウォームアップ用に追加で必要な本数（長期 SMA 等）
- * @returns ローソク足配列（古い順、ウォームアップ込み）
- */
 export async function fetchCandlesForBacktest(
 	pair: string,
 	timeframe: Timeframe,

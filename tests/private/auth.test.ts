@@ -1,14 +1,4 @@
-/**
- * auth.ts の署名テストベクタ。
- *
- * 既知の入力（秘密鍵・requestTime・timeWindow・パス・ボディ）から
- * 期待される署名を検証する。実 API キーは使わない。
- *
- * ACCESS-TIME-WINDOW 方式:
- *   署名対象 = requestTime + timeWindow + path/body
- *
- * @see https://github.com/bitbankinc/bitbank-api-docs/blob/master/rest-api.md
- */
+// 実 API キーは使わない。
 
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -19,8 +9,6 @@ import {
 	sign,
 } from '../../src/private/auth.js';
 
-// テストベクタ: 固定の秘密鍵から手計算した署名
-// 検証方法: echo -n "<message>" | openssl dgst -sha256 -hmac "<secret>"
 const TEST_SECRET = 'test_secret_key_for_signing_12345'; // gitleaks:allow（公開テストベクタ）
 
 describe('auth.ts 署名テストベクタ', () => {
@@ -59,13 +47,6 @@ describe('auth.ts 署名テストベクタ', () => {
 	});
 
 	describe('公式ドキュメントのテストベクタ検証', () => {
-		// 公式ドキュメント記載の例:
-		// SECRET = "hoge"
-		// ACCESS_REQUEST_TIME = 1721121776490
-		// ACCESS_TIME_WINDOW = 1000
-		// GET /v1/user/assets
-		// 署名対象 = "17211217764901000/v1/user/assets"
-		// 期待署名 = "9ec5745960d05573c8fb047cdd9191bd0c6ede26f07700bb40ecf1a3920abae8"
 		it('GET: 公式ドキュメントの署名例と一致する', () => {
 			const message = buildGetMessage('1721121776490', '1000', '/v1/user/assets');
 			expect(message).toBe('17211217764901000/v1/user/assets');
@@ -73,12 +54,6 @@ describe('auth.ts 署名テストベクタ', () => {
 			expect(signature).toBe('9ec5745960d05573c8fb047cdd9191bd0c6ede26f07700bb40ecf1a3920abae8');
 		});
 
-		// POST の公式例:
-		// SECRET = "hoge"
-		// ACCESS_REQUEST_TIME = 1721121776490
-		// ACCESS_TIME_WINDOW = 1000
-		// BODY = '{"pair": "xrp_jpy", "price": "20", "amount": "1","side": "buy", "type": "limit"}'
-		// 期待署名 = "7868665738ae3f8a796224e0413c1351ddd7ec2af121db12815c0a5b74b8764c"
 		it('POST: 公式ドキュメントの署名例と一致する', () => {
 			const body = '{"pair": "xrp_jpy", "price": "20", "amount": "1","side": "buy", "type": "limit"}';
 			const message = buildPostMessage('1721121776490', '1000', body);

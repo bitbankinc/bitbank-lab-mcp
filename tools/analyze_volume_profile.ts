@@ -1,17 +1,7 @@
-/**
- * analyze_volume_profile — 約定データから Volume Profile + VWAP + 約定サイズ分布を算出
- *
- * 内部で getTransactions を呼び出し、get_flow_metrics と同様のマージ戦略で
- * 約定データを収集。そこから3つの指標を導出する:
- *
- * 1. VWAP (出来高加重平均価格) + ±1σ/2σ バンド
- * 2. Volume Profile (価格帯別出来高分布 + POC + Value Area)
- * 3. Trade Size Distribution (約定サイズ別の分類 + 大口偏り)
- */
-
 import type { z } from 'zod';
 import { toDisplayTime, toIsoWithTz } from '../lib/datetime.js';
-import { formatPair, formatPercent, formatPrice } from '../lib/formatter.js';
+import { formatPair, formatPercent, formatPrice, formatPriceAtLevel, formatPriceDecimals } from '../lib/formatter.js';
+import { fractionDigits, priceDecimals, roundAtDecimalDigits, roundPriceAtLevel } from '../lib/price.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import {
 	applyTxLimit,
@@ -29,9 +19,9 @@ import {
 	resolveTxTimeRange,
 	sortTxsAsc,
 	type Tx,
-	type TxFetcher,
 	type TxLimitApplication,
 	type TxTimeRangeResolved,
+	unlimitedTxFetcher,
 } from '../lib/tx-fetch.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import {
@@ -44,37 +34,12 @@ import {
 import type { ToolDefinition } from '../src/tool-definition.js';
 import getTransactions from './get_transactions.js';
 
-/** get_transactions の応答件数上限（public ツールの limit 上限と同値）。 */
-const PUBLIC_TX_LIMIT = 1000;
-
 type FetchResult =
 	| { ok: true; txs: Tx[]; fetchWarning?: string; limitApplication?: TxLimitApplication }
 	| { ok: false; errorType: string; summary: string };
 
-/**
- * 内部集計用の約定フェッチャ。
- *
- * `get_transactions` の応答上限（1000 件）は MCP 応答のサイズ制限であってフェッチ制限では
- * ないため、集計用途では外す（`unlimited`）。本ツールの出力は価格帯別プロファイル（bins 固定）
- * とサイズ分布なので全件を集計してもトークンは増えない一方、キャップしたままだと 1 UTC 日
- * （BTC/JPY で実測 5,609〜8,040 件）の末尾 4〜5 時間分しか VWAP / POC / Value Area に
- * 入らなかった。public ツール `get_transactions` 側の応答上限は変更していない。
- */
-function internalTxFetcher(pair: string): TxFetcher {
-	// limit は unlimited 指定時に無視されるが、万一オプションが外れても旧挙動
-	// （応答上限 1000 件）へ縮退するよう public 上限を渡しておく。
-	return (date) => getTransactions(pair, PUBLIC_TX_LIMIT, date, undefined, { unlimited: true });
-}
-
-/**
- * 約定を取得する。完了済み UTC 日アーカイブの列挙 + latest 補完 + dedup マージは
- * lib/tx-fetch.ts に集約されており、本関数は失敗ハンドリングの方針
- * （全滅 fail / 過半数 fail / 部分失敗 warning）だけを持つ。
- *
- * @param resolved 時間範囲ベース取得の解決済み区間。undefined なら件数ベース取得。
- */
 async function fetchTransactions(pair: string, resolved?: TxTimeRangeResolved, limit?: number): Promise<FetchResult> {
-	const txFetcher = internalTxFetcher(pair);
+	const txFetcher = unlimitedTxFetcher(getTransactions, pair);
 
 	if (resolved) {
 		const range = await fetchTxTimeRange(txFetcher, resolved, { nowMs: resolved.nowMs });
@@ -97,15 +62,13 @@ async function fetchTransactions(pair: string, resolved?: TxTimeRangeResolved, l
 		};
 	}
 
-	// Count-based
 	const lim = limit ?? 500;
 	const latest = await fetchLatestTxs(txFetcher);
 	if (latest.txs.length === 0) {
 		const upstreamErr = extractUpstreamError([latest.result]);
 		if (upstreamErr) return { ok: false, ...upstreamErr };
 	}
-	// 取得は無制限だが limit はユーザーの明示要求なので最新側 limit 件に切る。
-	// 黙って切ると集計値が部分データ由来であることが応答から分からないため申告する。
+	// 取得は無制限だが limit はユーザーの明示要求なので最新側 limit 件に切り、切ったことを申告する。
 	if (latest.txs.length >= lim) {
 		const applied = applyTxLimit(sortTxsAsc(latest.txs), lim);
 		return {
@@ -121,9 +84,7 @@ async function fetchTransactions(pair: string, resolved?: TxTimeRangeResolved, l
 		const upstreamErr = extractUpstreamError(results);
 		if (upstreamErr) return { ok: false, ...upstreamErr };
 	}
-	// 補完は best-effort: 何かしら取得できていれば fail せず、部分失敗は警告で明示する
-	// （latest 成功 + 補完失敗を「過半数失敗」として全体 fail すると、正当に取得できた
-	// 直近データまで捨ててしまう。補完アーカイブは公開遅延等で 404 になり得る）。
+	// 補完は best-effort。取得できた直近データまで捨てないよう、補完失敗では fail せず警告で明示する（補完アーカイブは公開遅延等で 404 になりうる）。
 	const applied = applyTxLimit(sortTxsAsc(merged.txs), lim);
 	return {
 		ok: true,
@@ -139,36 +100,27 @@ async function fetchTransactions(pair: string, resolved?: TxTimeRangeResolved, l
 	};
 }
 
-// ── VWAP Calculation ──
-
+// 価格をそのまま足すと、全約定が同じ価格でも VWAP に丸め誤差が乗って σ が 0 にならないので、最初の約定価格からの差で計算する。
 function calcVwap(txs: Tx[]) {
-	let sumPV = 0;
+	const ref = txs[0]?.price ?? 0;
+	let sumDV = 0;
 	let sumV = 0;
 	for (const t of txs) {
-		sumPV += t.price * t.amount;
+		sumDV += (t.price - ref) * t.amount;
 		sumV += t.amount;
 	}
-	const vwap = sumV > 0 ? sumPV / sumV : 0;
+	const meanDiff = sumV > 0 ? sumDV / sumV : 0;
 
-	// Weighted standard deviation
 	let sumWeightedSqDiff = 0;
 	for (const t of txs) {
-		sumWeightedSqDiff += t.amount * (t.price - vwap) ** 2;
+		sumWeightedSqDiff += t.amount * (t.price - ref - meanDiff) ** 2;
 	}
 	const stdDev = sumV > 0 ? Math.sqrt(sumWeightedSqDiff / sumV) : 0;
 
-	return { vwap, stdDev };
+	return { vwap: sumV > 0 ? ref + meanDiff : 0, stdDev };
 }
 
-// ── Volume Profile Calculation ──
-
-/**
- * 約定列の価格レンジ。
- *
- * `Math.min(...prices)` はスプレッド引数が数万件になると RangeError（stack overflow）に
- * なり得る。内部取得のキャップ解除で 1 UTC 日 8,000 件超を扱うようになったため、
- * ループで求める。
- */
+// Math.min(...prices) は数万件で RangeError（stack overflow）になりうるのでループで求める。
 function priceRangeOf(txs: Tx[]): { low: number; high: number } {
 	let low = Number.POSITIVE_INFINITY;
 	let high = Number.NEGATIVE_INFINITY;
@@ -179,13 +131,16 @@ function priceRangeOf(txs: Tx[]): { low: number; high: number } {
 	return { low, high };
 }
 
+// 小数 2 桁に固定すると数円のペアの VWAP やσの桁が落ちる（1 円未満では 0 になる）ので、値の水準の桁（最低 2 桁）で丸める。
+function roundProfilePrice(value: number): number {
+	return roundPriceAtLevel(value, value, 2);
+}
+
 function calcVolumeProfile(txs: Tx[], bins: number, valueAreaPct: number) {
 	const { low: priceLow, high: priceHigh } = priceRangeOf(txs);
 	const range = priceHigh - priceLow;
 
-	// Guard against zero range (all trades at same price)
 	if (range === 0) {
-		// All trades at same price — single-bin profile with exact price
 		const singleBin = { low: priceLow, high: priceLow, buyVolume: 0, sellVolume: 0, totalVolume: 0 };
 		for (const t of txs) {
 			if (t.side === 'buy') singleBin.buyVolume += t.amount;
@@ -193,14 +148,13 @@ function calcVolumeProfile(txs: Tx[], bins: number, valueAreaPct: number) {
 			singleBin.totalVolume += t.amount;
 		}
 		const totalVolume = singleBin.totalVolume;
-		const isJpy = true;
 		const fmtSingle = () => {
-			const p = isJpy ? Math.round(priceLow).toLocaleString('ja-JP') : priceLow.toFixed(2);
+			const p = formatPriceAtLevel(priceLow);
 			return `${p}〜${p}`;
 		};
 		const binResult = {
-			low: Number(priceLow.toFixed(2)),
-			high: Number(priceLow.toFixed(2)),
+			low: roundProfilePrice(priceLow),
+			high: roundProfilePrice(priceLow),
 			label: fmtSingle(),
 			buyVolume: Number(singleBin.buyVolume.toFixed(8)),
 			sellVolume: Number(singleBin.sellVolume.toFixed(8)),
@@ -216,13 +170,13 @@ function calcVolumeProfile(txs: Tx[], bins: number, valueAreaPct: number) {
 		return {
 			bins: [binResult],
 			poc: {
-				price: Number(priceLow.toFixed(2)),
+				price: roundProfilePrice(priceLow),
 				volume: Number(totalVolume.toFixed(8)),
 				binIndex: 0,
 			},
 			valueArea: {
-				high: Number(priceLow.toFixed(2)),
-				low: Number(priceLow.toFixed(2)),
+				high: roundProfilePrice(priceLow),
+				low: roundProfilePrice(priceLow),
 				volume: Number(totalVolume.toFixed(8)),
 				pct: 100,
 			},
@@ -248,7 +202,6 @@ function calcVolumeProfile(txs: Tx[], bins: number, valueAreaPct: number) {
 		});
 	}
 
-	// Distribute trades into bins
 	for (const t of txs) {
 		let idx = Math.floor((t.price - adjustedLow) / step);
 		if (idx >= bins) idx = bins - 1;
@@ -260,7 +213,6 @@ function calcVolumeProfile(txs: Tx[], bins: number, valueAreaPct: number) {
 
 	const totalVolume = profileBins.reduce((s, b) => s + b.totalVolume, 0);
 
-	// POC (Point of Control): bin with highest volume
 	let pocIdx = 0;
 	let pocVol = 0;
 	for (let i = 0; i < profileBins.length; i++) {
@@ -271,7 +223,6 @@ function calcVolumeProfile(txs: Tx[], bins: number, valueAreaPct: number) {
 	}
 	const pocPrice = (profileBins[pocIdx].low + profileBins[pocIdx].high) / 2;
 
-	// Value Area: expand from POC until covering valueAreaPct of total volume
 	const targetVol = totalVolume * valueAreaPct;
 	let vaVol = profileBins[pocIdx].totalVolume;
 	let vaLow = pocIdx;
@@ -290,17 +241,16 @@ function calcVolumeProfile(txs: Tx[], bins: number, valueAreaPct: number) {
 		}
 	}
 
-	const isJpy = true; // This tool always operates on JPY pairs primarily
-	const fmtBin = (b: (typeof profileBins)[0]) => {
-		const lo = isJpy ? Math.round(b.low).toLocaleString('ja-JP') : b.low.toFixed(2);
-		const hi = isJpy ? Math.round(b.high).toLocaleString('ja-JP') : b.high.toFixed(2);
-		return `${lo}〜${hi}`;
-	};
+	// 価格帯の幅が細かいと価格の水準の桁では隣の価格帯と同じ数字になるので、幅の 1 桁下までは残す。
+	const widthDigits = step > 0 ? 1 - Math.floor(Math.log10(step)) : 0;
+	const roundBin = (v: number) => roundAtDecimalDigits(v, Math.max(2, priceDecimals(v), widthDigits));
+	const fmtBinPrice = (v: number) => formatPriceDecimals(v, Math.max(priceDecimals(v), widthDigits));
+	const fmtBin = (b: (typeof profileBins)[0]) => `${fmtBinPrice(b.low)}〜${fmtBinPrice(b.high)}`;
 
 	return {
 		bins: profileBins.map((b, _i) => ({
-			low: Number(b.low.toFixed(2)),
-			high: Number(b.high.toFixed(2)),
+			low: roundBin(b.low),
+			high: roundBin(b.high),
 			label: fmtBin(b),
 			buyVolume: Number(b.buyVolume.toFixed(8)),
 			sellVolume: Number(b.sellVolume.toFixed(8)),
@@ -314,20 +264,18 @@ function calcVolumeProfile(txs: Tx[], bins: number, valueAreaPct: number) {
 						: ('balanced' as const),
 		})),
 		poc: {
-			price: Number(pocPrice.toFixed(2)),
+			price: roundBin(pocPrice),
 			volume: Number(pocVol.toFixed(8)),
 			binIndex: pocIdx,
 		},
 		valueArea: {
-			high: Number(profileBins[vaHigh].high.toFixed(2)),
-			low: Number(profileBins[vaLow].low.toFixed(2)),
+			high: roundBin(profileBins[vaHigh].high),
+			low: roundBin(profileBins[vaLow].low),
 			volume: Number(vaVol.toFixed(8)),
 			pct: totalVolume > 0 ? Number(((vaVol / totalVolume) * 100).toFixed(1)) : 0,
 		},
 	};
 }
-
-// ── Trade Size Distribution ──
 
 function calcTradeSizeDistribution(txs: Tx[]) {
 	const amounts = txs.map((t) => t.amount).sort((a, b) => a - b);
@@ -361,7 +309,6 @@ function calcTradeSizeDistribution(txs: Tx[]) {
 		};
 	});
 
-	// Large trade bias (大口 + 特大口)
 	const largeTxs = txs.filter((t) => t.amount > p75);
 	const largeBuyVol = largeTxs.filter((t) => t.side === 'buy').reduce((s, t) => s + t.amount, 0);
 	const largeSellVol = largeTxs.filter((t) => t.side === 'sell').reduce((s, t) => s + t.amount, 0);
@@ -389,8 +336,6 @@ function calcTradeSizeDistribution(txs: Tx[]) {
 	};
 }
 
-// ── Main ──
-
 export default async function analyzeVolumeProfile(
 	pair: string = 'btc_jpy',
 	hours?: number,
@@ -406,8 +351,6 @@ export default async function analyzeVolumeProfile(
 	try {
 		const since = range?.since;
 		const until = range?.until;
-		// 時間範囲ベース（hours = 相対窓 / since・until = 絶対区間）か件数ベースかを先に決める。
-		// 排他判定・形式検証・最大範囲チェックは lib/tx-fetch.ts に集約。
 		let resolvedRange: TxTimeRangeResolved | undefined;
 		if (since != null || until != null || (hours != null && hours > 0)) {
 			const resolved = resolveTxTimeRange({ since, until, hours });
@@ -429,7 +372,6 @@ export default async function analyzeVolumeProfile(
 		const profile = calcVolumeProfile(txs, bins, valueAreaPct);
 		const tradeSizes = calcTradeSizeDistribution(txs);
 
-		// VWAP position classification
 		const dev = currentPrice - vwap;
 		const deviationPct = vwap > 0 ? Number(((dev / vwap) * 100).toFixed(2)) : 0;
 		const position =
@@ -451,16 +393,12 @@ export default async function analyzeVolumeProfile(
 			below_2sigma: '大幅に割安（-2σ超）→ 短期反発期待',
 		};
 
-		// Time range info。
-		// 先頭〜末尾の単純差分（durationMin）だけでは、アーカイブ未公開区間などの穴を
-		// 「カバー済み」に見せてしまうため、実データがある区間の合計も併せて出す。
 		const startMs = txs[0].timestampMs;
 		const endMs = txs[txs.length - 1].timestampMs;
 		const coverage = computeTxCoverage(txs);
 		const durationMin = coverage?.spanMinutes ?? Math.round((endMs - startMs) / 60_000);
 		const requestedMin = resolvedRange?.requestedMinutes;
 		const coverageWarning = buildTxCoverageWarning(coverage, { requestedMinutes: requestedMin, tz });
-		// 取得層（部分失敗・カバレッジ欠損）と計算層（集計値がカバー区間のみ由来）は別系統。
 		const fetchWarnings = [fetchResult.fetchWarning, coverageWarning].filter(Boolean) as string[];
 		const dataWarning = fetchWarnings.length > 0 ? fetchWarnings.join('\n') : undefined;
 		const coverageIncomplete =
@@ -472,15 +410,18 @@ export default async function analyzeVolumeProfile(
 		const totalVolume = txs.reduce((s, t) => s + t.amount, 0);
 		const { low: priceLow, high: priceHigh } = priceRangeOf(txs);
 
+		// σ が呼び値より小さいとバンドが価格の水準の桁では VWAP と同じ数字になるので、VWAP とバンドは σ の 1 桁下までは残す。
+		const sigmaDigits = stdDev > 0 ? 1 - Math.floor(Math.log10(stdDev)) : 0;
+		const roundBand = (v: number) => roundAtDecimalDigits(v, Math.max(2, priceDecimals(v), sigmaDigits));
 		const data = {
 			vwap: {
-				price: Number(vwap.toFixed(2)),
-				stdDev: Number(stdDev.toFixed(2)),
+				price: roundBand(vwap),
+				stdDev: roundProfilePrice(stdDev),
 				bands: {
-					upper2sigma: Number((vwap + 2 * stdDev).toFixed(2)),
-					upper1sigma: Number((vwap + stdDev).toFixed(2)),
-					lower1sigma: Number((vwap - stdDev).toFixed(2)),
-					lower2sigma: Number((vwap - 2 * stdDev).toFixed(2)),
+					upper2sigma: roundBand(vwap + 2 * stdDev),
+					upper1sigma: roundBand(vwap + stdDev),
+					lower1sigma: roundBand(vwap - stdDev),
+					lower2sigma: roundBand(vwap - 2 * stdDev),
 				},
 				currentPrice,
 				deviationPct,
@@ -508,9 +449,11 @@ export default async function analyzeVolumeProfile(
 			},
 		};
 
-		// Build summary text
 		const pairDisplay = formatPair(chk.pair);
 		const fmtPx = (p: number) => formatPrice(p, chk.pair);
+		const fmtBand = (p: number) => `¥${formatPriceDecimals(p, Math.max(3, priceDecimals(p), sigmaDigits))}`;
+		// POC・Value Area は構造化データで価格帯の幅に合わせて丸め済みなので、その桁のまま出す。
+		const fmtBinPx = (p: number) => `¥${formatPriceDecimals(p, Math.max(3, priceDecimals(p), fractionDigits(p)))}`;
 		const rangeStr = `${toDisplayTime(startMs, tz) ?? '?'}〜${toDisplayTime(endMs, tz) ?? '?'}`;
 
 		const topBins = [...profile.bins].sort((a, b) => b.totalVolume - a.totalVolume).slice(0, 5);
@@ -523,7 +466,6 @@ export default async function analyzeVolumeProfile(
 
 		// 取得層 → 計算層の順で本文の前に出す（.claude/rules/tools.md の 2 系統ルール）
 		const summaryLines: string[] = [...(dataWarning ? [dataWarning] : []), ...calcWarnings.map((w) => `⚠️ ${w}`)];
-		// 欠損がある場合は「◯分間」ではなくスパン/実カバーを並記する（穴をカバー済みと申告しない）
 		const durationLabel =
 			coverage && coverage.gaps.length > 0
 				? `スパン${coverage.spanMinutes}分/実カバー${coverage.coveredMinutes}分`
@@ -534,15 +476,15 @@ export default async function analyzeVolumeProfile(
 			`期間: ${rangeStr}`,
 			'',
 			'📊 VWAP:',
-			`  VWAP: ${fmtPx(vwap)} (σ=${fmtPx(stdDev)})`,
-			`  バンド: +2σ=${fmtPx(vwap + 2 * stdDev)} / +1σ=${fmtPx(vwap + stdDev)} / -1σ=${fmtPx(vwap - stdDev)} / -2σ=${fmtPx(vwap - 2 * stdDev)}`,
+			`  VWAP: ${fmtBand(vwap)} (σ=${fmtPx(stdDev)})`,
+			`  バンド: +2σ=${fmtBand(vwap + 2 * stdDev)} / +1σ=${fmtBand(vwap + stdDev)} / -1σ=${fmtBand(vwap - stdDev)} / -2σ=${fmtBand(vwap - 2 * stdDev)}`,
 			`  現在値: ${fmtPx(currentPrice)} (VWAP比 ${formatPercent(deviationPct, { sign: true })})`,
 			`  判定: ${positionLabel[position]}`,
 			'',
 			'📈 Volume Profile (出来高上位5帯):',
 			profileText,
-			`  POC: ${fmtPx(profile.poc.price)} (最大出来高価格帯)`,
-			`  Value Area: ${fmtPx(profile.valueArea.low)}〜${fmtPx(profile.valueArea.high)} (${profile.valueArea.pct}%)`,
+			`  POC: ${fmtBinPx(profile.poc.price)} (最大出来高価格帯)`,
+			`  Value Area: ${fmtBinPx(profile.valueArea.low)}〜${fmtBinPx(profile.valueArea.high)} (${profile.valueArea.pct}%)`,
 			'',
 			`💰 約定サイズ分布 (閾値: P25=${tradeSizes.thresholds.p25}, P75=${tradeSizes.thresholds.p75}, P95=${tradeSizes.thresholds.p95}):`,
 			`  分類基準: 小口≤P25, 中口P25–P75, 大口P75–P95, 特大口>P95`,
@@ -559,14 +501,12 @@ export default async function analyzeVolumeProfile(
 		].join('\n');
 
 		const metaExtra: Record<string, unknown> = { count: txs.length };
-		// 絶対区間指定は要求区間そのものを申告する（hours の相対窓と区別できるようにする）
 		if (resolvedRange?.mode === 'absolute') {
 			metaExtra.mode = 'absolute_range';
 			metaExtra.range = { since: resolvedRange.sinceIso, until: resolvedRange.untilIso };
 		}
 		if (dataWarning) metaExtra.warning = dataWarning;
 		if (calcWarnings.length > 0) metaExtra.warnings = calcWarnings;
-		// limit による切り捨ての明示（get_flow_metrics / get_transactions と対応）
 		if (fetchResult.limitApplication) {
 			metaExtra.totalAvailable = fetchResult.limitApplication.totalAvailable;
 			metaExtra.truncated = fetchResult.limitApplication.truncated;
@@ -584,7 +524,6 @@ export default async function analyzeVolumeProfile(
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'analyze_volume_profile',
 	description:
@@ -601,9 +540,7 @@ export const toolDef: ToolDefinition = {
 		const parsed = AnalyzeVolumeProfileInputSchema.parse(rawInput);
 		return analyzeVolumeProfile(
 			parsed.pair,
-			// hours はスキーマ既定値（4）を持つが、**明示指定されたときだけ**相対窓として扱う
-			// （既存挙動。省略時は既定値 4 を使わず件数ベース = limit にフォールバックする）。
-			// 副次的に、since/until 指定時は hours が undefined になるため排他エラーにならない。
+			// hours は明示指定されたときだけ相対窓にする（省略時はスキーマ既定値 4 を使わず件数ベースにする。既存挙動）。
 			'hours' in rawInput ? parsed.hours : undefined,
 			parsed.limit,
 			parsed.bins,

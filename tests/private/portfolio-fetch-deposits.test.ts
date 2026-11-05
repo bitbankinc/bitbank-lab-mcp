@@ -1,9 +1,4 @@
-/**
- * portfolio/fetch の paginateDeposits カーソル挙動のユニットテスト。
- *
- * 100 件バッチの末尾レコードが未確認入金（status:'FOUND' / confirmed_at 欠落）でも、
- * 常在する found_at にフォールバックしてページネーションが早期終了しないことを検証する。
- */
+// 100 件バッチの末尾が未確認入金（confirmed_at 欠落）でも、found_at にフォールバックしてページネーションが早期終了しないこと。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchDepositWithdrawal } from '../../src/handlers/portfolio/fetch.js';
@@ -43,7 +38,6 @@ describe('portfolio/fetch paginateDeposits — confirmed_at 欠落フォール�
 							amount: '1.0',
 							status: isLast ? 'FOUND' : 'DONE',
 							found_at: 1709900000000 + i * 1000,
-							// 末尾の未確認入金には confirmed_at を付与しない
 							...(isLast ? {} : { confirmed_at: 1709900000000 + i * 1000 + 100 }),
 						};
 					});
@@ -106,7 +100,6 @@ describe('portfolio/fetch paginateDeposits — confirmed_at 欠落フォール�
 		const result = await fetchDepositWithdrawal(client);
 
 		expect(result).not.toBeNull();
-		// 暗号資産/JPY 各 50 件 = 100 件、ともに 1 ページで完了
 		expect(result?.deposits.length).toBe(100);
 		expect(result?.isComplete).toBe(true);
 	});

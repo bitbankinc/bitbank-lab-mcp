@@ -1,17 +1,4 @@
-/**
- * issue #141 の回帰テスト — 外れ値除去の上限を BTC/JPY 日足の**実データ**で固定する。
- *
- * fixture は `tests/fixtures/btc_jpy_1day_2026.ts`（2026-05-29〜08-26 の 90 本）。
- *
- * `robustFit` は `line.r2 >= minR2` になるまで最悪残差の点を除き続ける。除去の上限が
- * 「minPoints(3) 個が残るまで」しか無かったため、**閾値をぎりぎり超えるまで捨てた線**が
- * 成立していた。この fixture では 34 点中 18 点を捨てた `triangle_symmetrical` が
- * `r2Upper 0.602 / r2Lower 0.648`（閾値 0.6 の直上）でスキャン窓の 88%（idx 0〜81）を
- * 占めていた。
- *
- * 合成 fixture では閾値の妥当性を検証できない（除去率が最大 14.3% にしか達しない）ので、
- * 上限の値はここで実データに対して固定する。
- */
+// 合成 fixture では除去率が上限に届かず閾値の妥当性を検証できないので、上限の値は実データ（`btc_jpy_1day_2026`）に対して固定する（#141）。
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BTC_JPY_1DAY_2026_OHLC, buildBtcJpy2026Candles } from '../fixtures/btc_jpy_1day_2026.js';
 
@@ -89,9 +76,7 @@ describe('issue #141 外れ値除去の上限 — BTC/JPY 日足 実データ回
 			// 分類前の棄却なので umbrella ラベルで積む（`poor_trendline_fit` と同じ契約）。
 			expect(rejected.every((c) => c.type === 'triangle')).toBe(true);
 
-			// 18 点を捨てていた候補 [0,81] は上ライン 6/15・下ライン 12/19 で、
-			// **下ラインだけが**上限を超える。合算除去率（18/34 = 0.53）ではなく
-			// ライン単位で見ていることの実データ上の裏付け。
+			// 18 点を捨てていた候補 [0,81] は上ライン 6/15・下ライン 12/19 で、下ラインだけが上限を超える（合算除去率 18/34 = 0.53 ではなくライン単位で見ている）。
 			const target = rejected.find((c) => c.indices?.[0] === 0 && c.indices?.[1] === 80);
 			const d = target?.details as Record<string, number | string> | undefined;
 			expect(d, 'idx [0,80] の棄却が届いていない').toBeDefined();
@@ -120,8 +105,7 @@ describe('issue #141 外れ値除去の上限 — BTC/JPY 日足 実データ回
 				(c) => c.accepted && String(c.type).startsWith('triangle'),
 			);
 			expect(accepted.length).toBeGreaterThan(0);
-			// 閾値パラメータ経由ではなくリテラル 0.5 で固定する——パラメータを読むと
-			// 上限を緩めたときにこのテストが一緒に緩んで意味を失う。
+			// 閾値パラメータ経由ではなくリテラル 0.5 で固定する。パラメータを読むと上限を緩めたときにこのテストが一緒に緩んで意味を失う。
 			const over = accepted.filter((c) => {
 				const d = c.details as {
 					outlierPeaksRemoved: number;
@@ -142,21 +126,12 @@ describe('issue #141 外れ値除去の上限 — BTC/JPY 日足 実データ回
 					const d = c.details as { outlierPeaksRemoved: number; outlierValleysRemoved: number };
 					return d.outlierPeaksRemoved + d.outlierValleysRemoved;
 				});
-			// main の最大は 18（窓の 88% を占めていた候補）。
-			// **12 は 0 にはならない**——idx [24,82] の ascending が上 6/12・下 6/14 と
-			// 上下ともちょうど 50% で、上限（境界は通す側）を通る。除去数の絶対値ではなく
-			// 割合で切っている以上ここは残る。窓幅そのものを問う話は #141 の範囲外。
+			// 12 は 0 にはならない。idx [24,82] の ascending は上 6/12 = 50% がちょうど上限（境界は通す側）で、下 6/14 ≈ 42.9% は上限未満なので通る。
 			expect(Math.max(...removals)).toBe(12);
 		});
 	});
 
-	/**
-	 * #141 が「pivots に同一 idx の重複がある」として併記した件。
-	 *
-	 * **これは重複ではない。** 配列のキーは `idx` ではなく `(idx, kind)` で、
-	 * relaxed swing（`swingDepth=1`）では**外側バー**が高値としても安値としても極値になる。
-	 * dedup すると片方の極値が消えるので、そうしないことをここで固定する。
-	 */
+	// 配列のキーは `idx` ではなく `(idx, kind)` で、relaxed swing（`swingDepth=1`）では外側バーが高値としても安値としても極値になる。dedup すると片方の極値が消える。
 	describe('外側バーは高値・安値の両方の極値になる（重複ではない）', () => {
 		it('idx=38 は前後 2 本を包む外側バー', () => {
 			const [, high, low] = BTC_JPY_1DAY_2026_OHLC[38];
@@ -176,8 +151,7 @@ describe('issue #141 外れ値除去の上限 — BTC/JPY 日足 実データ回
 				.map((p) => (p.pivots ?? []).filter((v) => v.idx === 38))
 				.filter((vs) => vs.length > 0);
 			expect(at38PerPattern.length, 'idx=38 を含む三角形が無い').toBeGreaterThan(0);
-			// 条件分岐の中で expect を呼ばない（vitest/no-conditional-expect）。
-			// 各パターンの idx=38 を「kind → price」に畳んでから 1 度だけ突き合わせる。
+			// 条件分岐の中で expect を呼ばない（vitest/no-conditional-expect）ので、各パターンの idx=38 を「kind → price」に畳んでから 1 度だけ突き合わせる。
 			const shapes = at38PerPattern.map((vs) =>
 				vs
 					.map((v) => `${v.kind}:${v.price}`)

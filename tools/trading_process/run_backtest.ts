@@ -1,9 +1,3 @@
-/**
- * run_backtest.ts - 汎用バックテストエントリーポイント
- *
- * 任意の戦略を指定してバックテストを実行
- */
-
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { dayjs, formatDateInTz } from '../../lib/datetime.js';
@@ -21,13 +15,8 @@ import {
 } from './render_backtest_chart_generic.js';
 import type { BacktestRange, Period, Timeframe } from './types.js';
 
-// Claude.ai のデフォルト出力ディレクトリ
 const DEFAULT_OUTPUT_DIR = DEFAULT_CHART_OUTPUT_DIR;
 
-/**
- * 書き込み可能なディレクトリを確保
- * /mnt/user-data/outputs を優先し、ディレクトリが存在しない場合は作成を試みる
- */
 function ensureOutputDir(dir: string): void {
 	try {
 		if (!existsSync(dir)) {
@@ -42,20 +31,16 @@ export interface RunBacktestInput {
 	pair: string;
 	timeframe?: Timeframe;
 	period?: Period;
-	/** 任意の開始日（ISO 8601: YYYY-MM-DD）。指定時は period より優先 */
 	start_date?: string;
-	/** 任意の終了日（ISO 8601: YYYY-MM-DD）。指定時は period より優先 */
 	end_date?: string;
 	strategy: StrategyConfig;
 	fee_bp?: number;
 	execution?: 't+1_open';
-	/** 出力ディレクトリ（デフォルト: /mnt/user-data/outputs/）。許可 root 配下のみ（lib/validate.ts の ensureAllowedOutputDir） */
+	/** 許可 root 配下のみ（lib/validate.ts の ensureAllowedOutputDir）。 */
 	outputDir?: string;
-	/** PNG ファイルを生成する（デフォルト: false、ファイルシステム非共有のため） */
+	/** 既定は false（ファイルシステム非共有のため）。 */
 	savePng?: boolean;
-	/** SVG 文字列を返す（デフォルト: true） */
 	includeSvg?: boolean;
-	/** チャート詳細度: 'default' = 軽量（エクイティ+DD）, 'full' = 4段チャート（デフォルト: 'default'） */
 	chartDetail?: ChartDetail;
 }
 
@@ -63,11 +48,8 @@ export interface RunBacktestOutput {
 	ok: true;
 	summary: string;
 	data: BacktestEngineResult;
-	/** PNG ファイルのパス（savePng: true の場合） */
 	chartPath?: string;
-	/** SVG 文字列（includeSvg: true の場合のみ） */
 	svg?: string;
-	/** PNG 生成エラー（エラー発生時のみ） */
 	pngError?: string;
 }
 
@@ -79,9 +61,6 @@ export interface RunBacktestError {
 
 export type RunBacktestResult = RunBacktestOutput | RunBacktestError;
 
-/**
- * 汎用バックテストを実行
- */
 export default async function runBacktest(input: RunBacktestInput): Promise<RunBacktestResult> {
 	try {
 		const {
@@ -99,7 +78,6 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 			chartDetail = 'default', // 軽量チャートをデフォルトに
 		} = input;
 
-		// 戦略を取得
 		const strategy = getStrategy(strategyConfig.type);
 		if (!strategy) {
 			return {
@@ -119,8 +97,7 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 		}
 		const params = validation.normalizedParams;
 
-		// 出力ディレクトリをバリデーション（savePng 時のみ・fetch 前に弾く）。
-		// LLM 指定の任意パスへの書き込みを許可 root 配下に制限する。
+		// fetch 前に弾き、LLM 指定の任意パスへの書き込みを許可 root 配下に制限する。
 		let resolvedOutputDir: string | undefined;
 		if (savePng) {
 			const dirCheck = ensureAllowedOutputDir(outputDir);
@@ -130,8 +107,7 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 			resolvedOutputDir = dirCheck.dir;
 		}
 
-		// 必要なバー数を params から動的に計算（ユーザーが long / slow / signal 等を
-		// デフォルトより大きく指定した場合でもウォームアップを十分確保するため）
+		// long / slow / signal 等をデフォルトより大きく指定してもウォームアップが足りるよう、必要バー数は params から計算する。
 		const requiredBars = strategy.computeRequiredBars(params);
 
 		// 期間指定: start_date / end_date が揃っていれば absolute、そうでなければ period
@@ -140,8 +116,6 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 				? { type: 'absolute', start: start_date, end: end_date }
 				: { type: 'period', value: period };
 
-		// ローソク足の取得と手数料の解決を並行実行（fee 解決は失敗してもフォールバックで止まらない）。
-		// fee_bp 明示指定時は override 最優先、未指定時のみ /spot/pairs の taker レートから解決する。
 		const [candles, resolvedFee] = await Promise.all([
 			fetchCandlesForBacktest(pair, timeframe, range, requiredBars),
 			resolveBacktestFeeBp(pair, fee_bp),
@@ -154,7 +128,6 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 			};
 		}
 
-		// バックテストエンジン入力（normalizedParams を渡して二重 merge の余地を無くす）
 		const engineInput: BacktestEngineInput = {
 			pair,
 			timeframe,
@@ -167,10 +140,8 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 			effective_bars: candles.length,
 		};
 
-		// バックテスト実行
 		const result = runBacktestEngine(candles, strategy, engineInput);
 
-		// チャート描画用データ
 		const chartInput = {
 			pair,
 			timeframe,
@@ -181,7 +152,6 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 			fee_source: resolvedFee.source,
 		};
 
-		// チャート描画（savePng または includeSvg が有効な場合のみ）
 		let svg: string | undefined;
 		if (savePng || includeSvg) {
 			const chartData: GenericBacktestChartData = {
@@ -196,7 +166,6 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 			svg = renderBacktestChartGeneric(chartData, chartDetail);
 		}
 
-		// サマリーテキスト生成
 		const summaryBody = result
 			? generateSummaryText(
 					{
@@ -212,20 +181,16 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 				)
 			: '';
 
-		// フォールバック時は warning を content / summary 先頭に伝播する
-		// （.claude/rules/tools.md の warning-propagation ルールに準拠）。
 		const summaryText = prependWarnings(summaryBody, resolvedFee.warning ? { warning: resolvedFee.warning } : null, {
 			separator: '\n\n',
 		});
 
-		// 結果を構築
 		const output: RunBacktestOutput = {
 			ok: true,
 			summary: summaryText,
 			data: result,
 		};
 
-		// PNG ファイル保存（savePng: true の場合のみ）
 		if (savePng && svg && resolvedOutputDir) {
 			try {
 				ensureOutputDir(resolvedOutputDir);
@@ -242,7 +207,6 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 			}
 		}
 
-		// SVG 文字列を含める場合
 		if (includeSvg && svg) {
 			output.svg = svg;
 		}
@@ -254,20 +218,15 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 	}
 }
 
-/** summary 表示用の暦日（JST）。trade/candle の time フィールド自体は UTC ISO のまま。 */
+/** trade / candle の time フィールド自体は UTC ISO のまま（表示だけ JST の暦日にする）。 */
 function isoDateForDisplay(time: string | undefined): string {
 	if (!time) return '';
 	const ms = dayjs(time).valueOf();
 	return formatDateInTz(ms, 'Asia/Tokyo') ?? time.split('T')[0];
 }
 
-/** content text の equity/drawdown サンプリング上限点数 */
 const DEFAULT_CURVE_SAMPLE_POINTS = 200;
 
-/**
- * 均等サンプリング。最初と最後の点を必ず含める。
- * curve.length <= maxPoints の場合はそのまま返す。
- */
 function sampleCurve<T>(curve: T[], maxPoints: number): T[] {
 	if (curve.length <= maxPoints) return curve;
 	if (maxPoints <= 2) return [curve[0], curve[curve.length - 1]];
@@ -285,12 +244,10 @@ function sampleCurve<T>(curve: T[], maxPoints: number): T[] {
 	return result;
 }
 
-/** bp 値を表示用に丸める（小数の桁あふれを抑え、末尾ゼロを落とす）。 */
 function roundBp(bp: number): number {
 	return Number(bp.toFixed(2));
 }
 
-/** 手数料の由来ラベル（summary 表示用）。 */
 function feeSourceLabel(source: FeeSource | undefined): string {
 	switch (source) {
 		case 'dynamic':
@@ -302,9 +259,6 @@ function feeSourceLabel(source: FeeSource | undefined): string {
 	}
 }
 
-/**
- * サマリーテキストを生成
- */
 function generateSummaryText(data: GenericBacktestChartData, chartDetail: ChartDetail): string {
 	const { candles, input, summary, trades, equity_curve, drawdown_curve } = data;
 	const lines: string[] = [];
@@ -314,7 +268,6 @@ function generateSummaryText(data: GenericBacktestChartData, chartDetail: ChartD
 	lines.push(`Period: ${input.period} (${input.timeframe})`);
 	lines.push(`Strategy: ${input.strategyName}`);
 	lines.push(`Parameters: ${JSON.stringify(input.strategyParams)}`);
-	// 手数料の表示（由来を併記）。小数 bp は末尾ゼロを落として表示する。
 	const feeBp = roundBp(input.fee_bp);
 	const sourceLabel = feeSourceLabel(input.fee_source);
 	lines.push(`Fee: ${feeBp} bp (round-trip: ${roundBp(input.fee_bp * 2)} bp) [${sourceLabel}]`);
@@ -333,7 +286,6 @@ function generateSummaryText(data: GenericBacktestChartData, chartDetail: ChartD
 	lines.push('');
 	lines.push(`--- Summary (Compound) ---`);
 	lines.push(`Total P&L: ${summary.total_pnl_pct >= 0 ? '+' : ''}${summary.total_pnl_pct.toFixed(2)}%`);
-	// B&H 起点は tradable 区間の t+1 open（= warmup 終了直後の翌バー）
 	const bhStartIdx = summary.warmup_bars + 1;
 	const bhStartDate = isoDateForDisplay(candles[bhStartIdx]?.time);
 	const bhEndDate = isoDateForDisplay(summary.evaluation_end);
@@ -360,7 +312,6 @@ function generateSummaryText(data: GenericBacktestChartData, chartDetail: ChartD
 		}
 	}
 
-	// エクイティ／ドローダウン曲線を content に含めて LLM・呼出側で再描画可能にする
 	if (equity_curve.length > 0) {
 		const sampled = chartDetail === 'full' ? equity_curve : sampleCurve(equity_curve, DEFAULT_CURVE_SAMPLE_POINTS);
 		const lightPoints = sampled.map((p) => ({

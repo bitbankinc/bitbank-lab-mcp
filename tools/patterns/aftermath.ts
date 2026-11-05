@@ -1,15 +1,7 @@
-/**
- * パターン事後分析 (aftermath)
- *
- * パターン完成後のブレイクアウト確認・理論目標価格・リターン計算を行う。
- */
-
 import { avg as avgRaw, median as medianRaw } from '../../lib/math.js';
+import { roundPriceAtLevel } from '../../lib/price.js';
 import type { AftermathResult, CandleData, PatternEntry } from './types.js';
 
-// ---------------------------------------------------------------------------
-// ネックライン補間
-// ---------------------------------------------------------------------------
 export function necklineValue(p: PatternEntry, idx: number): number | null {
 	const nl = Array.isArray(p?.neckline) && p.neckline.length === 2 ? p.neckline : null;
 	if (!nl) return null;
@@ -28,9 +20,6 @@ export function necklineValue(p: PatternEntry, idx: number): number | null {
 	return Number.isFinite(a?.y) ? Number(a.y) : Number.isFinite(b?.y) ? Number(b.y) : null;
 }
 
-// ---------------------------------------------------------------------------
-// 事後分析
-// ---------------------------------------------------------------------------
 const BULLISH_TYPES = [
 	'double_bottom',
 	'inverse_head_and_shoulders',
@@ -40,7 +29,6 @@ const BULLISH_TYPES = [
 	'bull_pennant',
 ];
 const BEARISH_TYPES = ['double_top', 'head_and_shoulders', 'triangle_descending', 'bear_flag', 'bear_pennant'];
-// Note: legacy 'pennant' / 'flag' (poleDirection-driven) は後方互換のため動的判定で扱う。
 
 export function analyzeAftermath(
 	p: PatternEntry,
@@ -55,10 +43,8 @@ export function analyzeAftermath(
 		if (!Number.isFinite(baseClose)) return null;
 		const nlAtEnd = necklineValue(p, endIdx);
 		const pType = String(p?.type);
-		// Legacy 'pennant' / 'flag' は poleDirection で方向を決める。
-		const isLegacyPoleDriven = pType === 'pennant' || pType === 'flag';
-		const bullish = isLegacyPoleDriven ? p?.poleDirection === 'up' : BULLISH_TYPES.includes(pType);
-		const bearish = isLegacyPoleDriven ? p?.poleDirection === 'down' : BEARISH_TYPES.includes(pType);
+		const bullish = BULLISH_TYPES.includes(pType);
+		const bearish = BEARISH_TYPES.includes(pType);
 		if (!Number.isFinite(nlAtEnd as number)) return null;
 		let breakoutConfirmed = false;
 		let breakoutDate: string | undefined;
@@ -90,11 +76,10 @@ export function analyzeAftermath(
 			const ret = ((closeTo - baseClose) / baseClose) * 100;
 			priceMove[`days${h}`] = {
 				return: Number(ret.toFixed(2)),
-				high: Number(hi.toFixed(0)),
-				low: Number(lo.toFixed(0)),
+				high: roundPriceAtLevel(hi, baseClose),
+				low: roundPriceAtLevel(lo, baseClose),
 			};
 		}
-		// theoretical target
 		let theoreticalTarget = NaN;
 		const nl = nlAtEnd as number;
 		const pivotPrices = Array.isArray(p?.pivots)
@@ -124,7 +109,6 @@ export function analyzeAftermath(
 				}
 			}
 		}
-		// outcome message
 		function outcomeMessage(): string {
 			if (!breakoutConfirmed) return 'ネックライン未突破（パターン不発）';
 			if (targetReached) return '成功（理論目標価格到達）';
@@ -134,8 +118,7 @@ export function analyzeAftermath(
 			const arr = [r3, r7, r14].filter((v: unknown) => typeof v === 'number') as number[];
 			if (!arr.length) return '評価不可（事後データ不足）';
 			const best = arr.reduce((m, v) => (Math.abs(v) > Math.abs(m) ? v : m), 0);
-			const isBullish = isLegacyPoleDriven ? p?.poleDirection === 'up' : BULLISH_TYPES.includes(String(p?.type));
-			const expected = isBullish ? 1 : -1;
+			const expected = bullish ? 1 : -1;
 			const actual = best > 0 ? 1 : -1;
 			if (expected === actual && Math.abs(best) > 3)
 				return `部分成功（ブレイクアウト後${best > 0 ? '+' : ''}${best.toFixed(1)}%、目標未達）`;
@@ -149,7 +132,7 @@ export function analyzeAftermath(
 			breakoutConfirmed,
 			priceMove,
 			targetReached,
-			theoreticalTarget: Number.isFinite(theoreticalTarget) ? Math.round(theoreticalTarget) : null,
+			theoreticalTarget: Number.isFinite(theoreticalTarget) ? roundPriceAtLevel(theoreticalTarget, nl) : null,
 			outcome,
 			daysToTarget,
 		};
@@ -158,9 +141,6 @@ export function analyzeAftermath(
 	}
 }
 
-// ---------------------------------------------------------------------------
-// 統計ビルド
-// ---------------------------------------------------------------------------
 export function buildStatistics(
 	patterns: PatternEntry[],
 	candles: CandleData[],

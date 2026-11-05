@@ -2,22 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
 import { getHsShoulderMaxPctForTf, getSizeThresholdsForTf } from '../tools/patterns/config.js';
 import { detectDoubles } from '../tools/patterns/detect_doubles.js';
-import { linearRegressionWithR2 } from '../tools/patterns/regression.js';
 import type { Pivot } from '../tools/patterns/swing.js';
 import type { CandleData, DetectContext } from '../tools/patterns/types.js';
-
-// ── ヘルパー ──
+import { requireDefined } from './helpers/assert.js';
 
 function iso(daysAgo: number): string {
 	return dayjs().subtract(daysAgo, 'day').startOf('day').toISOString();
 }
 
-/** ベースライン candle を生成 */
 function mkCandle(daysAgo: number, o: number, h: number, l: number, c: number): CandleData {
 	return { open: o, high: h, low: l, close: c, isoTime: iso(daysAgo) };
 }
 
-/** DetectContext を組み立てる */
 function buildCtx(opts: {
 	candles: CandleData[];
 	pivots: Pivot[];
@@ -27,7 +23,7 @@ function buildCtx(opts: {
 	want?: Set<string>;
 	includeForming?: boolean;
 	type?: string;
-	/** 最小ピボット間隔。既定 5 は旧 `MIN_PIVOT_DISTANCE_BARS` と同値（既存ケースの挙動を保つ）。 */
+	/** 既定 5 は既存ケースの挙動を保つための値。 */
 	minDist?: number;
 }): DetectContext {
 	const tol = opts.tolerancePct ?? 0.04;
@@ -46,16 +42,10 @@ function buildCtx(opts: {
 		sizeThresholds: getSizeThresholdsForTf(opts.type ?? '1day'),
 		hsShoulderMaxPct: getHsShoulderMaxPctForTf(opts.type ?? '1day'),
 		swingDepth: 7,
-		near: (a: number, b: number) => Math.abs(a - b) <= Math.max(a, b) * tol,
-		pct: (a: number, b: number) => ((b - a) / Math.max(1, a)) * 100,
-		lrWithR2: (pts) => linearRegressionWithR2(pts),
 	};
 }
 
-/**
- * ダブルトップのローソク足とピボットを生成:
- * peak1(idx=0) → valley(idx=10) → peak2(idx=20) → breakout(idx=25)
- */
+/** peak1(idx=0) → valley(idx=10) → peak2(idx=20) → breakout(idx=25) */
 function buildDoubleTop(opts?: { peak1?: number; valley?: number; peak2?: number; breakoutClose?: number }) {
 	const p1 = opts?.peak1 ?? 200;
 	const v = opts?.valley ?? 170;
@@ -63,23 +53,17 @@ function buildDoubleTop(opts?: { peak1?: number; valley?: number; peak2?: number
 	const brk = opts?.breakoutClose ?? 160; // < neckline(170) * 0.985
 
 	const candles: CandleData[] = [];
-	// idx 0-4: peak1 付近
 	for (let i = 0; i < 5; i++) candles.push(mkCandle(50 - i, p1 - 2, p1, p1 - 5, p1 - 2));
-	// idx 5-9: 下落
 	for (let i = 0; i < 5; i++) {
 		const price = p1 - ((p1 - v) * (i + 1)) / 5;
 		candles.push(mkCandle(45 - i, price + 2, price + 5, price - 2, price));
 	}
-	// idx 10-14: valley 付近
 	for (let i = 0; i < 5; i++) candles.push(mkCandle(40 - i, v + 2, v + 5, v, v + 2));
-	// idx 15-19: 上昇
 	for (let i = 0; i < 5; i++) {
 		const price = v + ((p2 - v) * (i + 1)) / 5;
 		candles.push(mkCandle(35 - i, price - 2, price + 2, price - 5, price));
 	}
-	// idx 20-24: peak2 付近
 	for (let i = 0; i < 5; i++) candles.push(mkCandle(30 - i, p2 - 2, p2, p2 - 5, p2 - 3));
-	// idx 25-29: breakout（下落）
 	for (let i = 0; i < 5; i++) candles.push(mkCandle(25 - i, brk + 5 - i, brk + 8 - i, brk - 2, brk));
 
 	const pivots: Pivot[] = [
@@ -92,10 +76,7 @@ function buildDoubleTop(opts?: { peak1?: number; valley?: number; peak2?: number
 	return { candles, pivots };
 }
 
-/**
- * ダブルボトムのローソク足とピボットを生成:
- * valley1(idx=0) → peak(idx=10) → valley2(idx=20) → breakout(idx=25)
- */
+/** valley1(idx=0) → peak(idx=10) → valley2(idx=20) → breakout(idx=25) */
 function buildDoubleBottom(opts?: { valley1?: number; peak?: number; valley2?: number; breakoutClose?: number }) {
 	const v1 = opts?.valley1 ?? 100;
 	const p = opts?.peak ?? 130;
@@ -103,23 +84,17 @@ function buildDoubleBottom(opts?: { valley1?: number; peak?: number; valley2?: n
 	const brk = opts?.breakoutClose ?? 140; // > neckline(130) * 1.015
 
 	const candles: CandleData[] = [];
-	// idx 0-4: valley1 付近
 	for (let i = 0; i < 5; i++) candles.push(mkCandle(50 - i, v1 + 2, v1 + 5, v1, v1 + 2));
-	// idx 5-9: 上昇
 	for (let i = 0; i < 5; i++) {
 		const price = v1 + ((p - v1) * (i + 1)) / 5;
 		candles.push(mkCandle(45 - i, price - 2, price + 2, price - 5, price));
 	}
-	// idx 10-14: peak 付近
 	for (let i = 0; i < 5; i++) candles.push(mkCandle(40 - i, p - 2, p, p - 5, p - 2));
-	// idx 15-19: 下落
 	for (let i = 0; i < 5; i++) {
 		const price = p - ((p - v2) * (i + 1)) / 5;
 		candles.push(mkCandle(35 - i, price + 2, price + 5, price - 2, price));
 	}
-	// idx 20-24: valley2 付近
 	for (let i = 0; i < 5; i++) candles.push(mkCandle(30 - i, v2 + 2, v2 + 5, v2, v2 + 2));
-	// idx 25-29: breakout（上昇）
 	for (let i = 0; i < 5; i++) candles.push(mkCandle(25 - i, brk - 3 + i, brk + 2, brk - 5, brk));
 
 	const pivots: Pivot[] = [
@@ -132,8 +107,94 @@ function buildDoubleBottom(opts?: { valley1?: number; peak?: number; valley2?: n
 	return { candles, pivots };
 }
 
+/** 元の fixture は先頭から始まるため、通常経路では先行トレンドが `insufficient_data` になる。 */
+function withPrecedingTrend(
+	pattern: ReturnType<typeof buildDoubleTop> | ReturnType<typeof buildDoubleBottom>,
+	direction: 'up' | 'down' | 'sideways',
+) {
+	const precedingBars = 20;
+	const firstClose = pattern.candles[0].close;
+	const leading = Array.from({ length: precedingBars }, (_, i) => {
+		const progress = i / (precedingBars - 1);
+		const start = direction === 'up' ? firstClose * 0.8 : direction === 'down' ? firstClose * 1.2 : firstClose;
+		const close = start + (firstClose - start) * progress;
+		return mkCandle(70 - i, close, close + 3, close - 3, close);
+	});
+
+	return {
+		candles: [...leading, ...pattern.candles],
+		pivots: pattern.pivots.map((pivot) => ({ ...pivot, idx: pivot.idx + precedingBars })),
+	};
+}
+
+/** 第2ピーク／第2谷の直後に反対側へ戻し、再進入 invalid ではなく先行トレンドを検証できる形にする。 */
+function withCleanBreakoutPath(candles: CandleData[], secondPivotIdx: number, side: 'top' | 'bottom'): CandleData[] {
+	const closes = side === 'top' ? [190, 185, 180, 175] : [110, 115, 120, 125];
+	return candles.map((candle, idx) => {
+		const close = closes[idx - secondPivotIdx - 1];
+		if (close === undefined) return candle;
+		return { ...candle, open: close, high: close + 3, low: close - 3, close };
+	});
+}
+
 describe('detectDoubles', () => {
-	// ── ダブルトップ（完成済み） ─────────────────────────
+	describe('反転に必要な先行トレンド', () => {
+		it('横ばいの二山はダブルトップとして確定しない', () => {
+			const pattern = buildDoubleTop();
+			const prepended = withPrecedingTrend({ ...pattern, pivots: pattern.pivots.slice(0, 3) }, 'sideways');
+			const candles = withCleanBreakoutPath(prepended.candles, prepended.pivots[2].idx, 'top');
+			const { pivots } = prepended;
+			const ctx = buildCtx({ candles, pivots });
+			const result = detectDoubles(ctx);
+
+			expect(result.patterns.filter((pattern) => pattern.type === 'double_top')).toHaveLength(0);
+			expect(
+				ctx.debugCandidates.some(
+					(candidate) => candidate.type === 'double_top' && candidate.reason === 'prior_trend_mismatch:sideways',
+				),
+			).toBe(true);
+		});
+
+		it('上昇後の二山はダブルトップとして確定できる', () => {
+			const pattern = buildDoubleTop();
+			const prepended = withPrecedingTrend({ ...pattern, pivots: pattern.pivots.slice(0, 3) }, 'up');
+			const candles = withCleanBreakoutPath(prepended.candles, prepended.pivots[2].idx, 'top');
+			const { pivots } = prepended;
+			const result = detectDoubles(buildCtx({ candles, pivots }));
+			const doubleTop = result.patterns.find((pattern) => pattern.type === 'double_top');
+
+			expect(doubleTop?.precedingTrend?.direction).toBe('up');
+			expect(doubleTop?.status).toBeUndefined();
+		});
+
+		it('横ばいの二谷はダブルボトムとして確定しない', () => {
+			const pattern = buildDoubleBottom();
+			const prepended = withPrecedingTrend({ ...pattern, pivots: pattern.pivots.slice(0, 3) }, 'sideways');
+			const candles = withCleanBreakoutPath(prepended.candles, prepended.pivots[2].idx, 'bottom');
+			const { pivots } = prepended;
+			const ctx = buildCtx({ candles, pivots });
+			const result = detectDoubles(ctx);
+
+			expect(result.patterns.filter((pattern) => pattern.type === 'double_bottom')).toHaveLength(0);
+			expect(
+				ctx.debugCandidates.some(
+					(candidate) => candidate.type === 'double_bottom' && candidate.reason === 'prior_trend_mismatch:sideways',
+				),
+			).toBe(true);
+		});
+
+		it('下降後の二谷はダブルボトムとして確定できる', () => {
+			const pattern = buildDoubleBottom();
+			const prepended = withPrecedingTrend({ ...pattern, pivots: pattern.pivots.slice(0, 3) }, 'down');
+			const candles = withCleanBreakoutPath(prepended.candles, prepended.pivots[2].idx, 'bottom');
+			const { pivots } = prepended;
+			const result = detectDoubles(buildCtx({ candles, pivots }));
+			const doubleBottom = result.patterns.find((pattern) => pattern.type === 'double_bottom');
+
+			expect(doubleBottom?.precedingTrend?.direction).toBe('down');
+			expect(doubleBottom?.status).toBeUndefined();
+		});
+	});
 
 	it('H-L-H パターンでネックライン下抜け → ダブルトップ検出', () => {
 		const { candles, pivots } = buildDoubleTop();
@@ -155,12 +216,12 @@ describe('detectDoubles', () => {
 		const { candles, pivots } = buildDoubleTop({ peak1: 200, valley: 170, peak2: 200 });
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectDoubles(ctx);
-		const dt = result.patterns.find((p) => p.type === 'double_top');
-
-		if (dt) {
-			// avgPeak=200, neckline=170, target = 170 - (200-170) = 140
-			expect(dt.breakoutTarget).toBe(140);
-		}
+		const dt = requireDefined(
+			result.patterns.find((p) => p.type === 'double_top'),
+			'double_top',
+		);
+		// avgPeak=200, neckline=170, target = 170 - (200-170) = 140
+		expect(dt.breakoutTarget).toBe(140);
 	});
 
 	it('ネックライン未下抜け → ダブルトップ不検出（debugCandidates に no_breakout）', () => {
@@ -212,8 +273,6 @@ describe('detectDoubles', () => {
 		expect(tooShallow).toBeDefined();
 	});
 
-	// ── ダブルボトム（完成済み） ─────────────────────────
-
 	it('L-H-L パターンでネックライン上抜け → ダブルボトム検出', () => {
 		const { candles, pivots } = buildDoubleBottom();
 		const ctx = buildCtx({ candles, pivots });
@@ -227,16 +286,32 @@ describe('detectDoubles', () => {
 		expect(result.found?.double_bottom).toBe(true);
 	});
 
+	it.each([
+		['double_top', buildDoubleTop],
+		['double_bottom', buildDoubleBottom],
+	] as const)('完成した %s の採用候補（debug）は、上下どちらもブレイク足を indices と points に含める', (type, build) => {
+		const { candles, pivots } = build();
+		const ctx = buildCtx({ candles, pivots });
+		const result = detectDoubles(ctx);
+
+		const breakoutIdx = requireDefined(result.patterns.find((p) => p.type === type)?.breakout, 'breakout').idx;
+		const accepted = ctx.debugCandidates.filter((d) => d.type === type && d.accepted);
+		expect(accepted.map((d) => d.indices?.at(-1))).toContain(breakoutIdx);
+		expect(accepted.flatMap((d) => d.points ?? []).filter((p) => p.role === 'breakout')).toEqual([
+			expect.objectContaining({ idx: breakoutIdx }),
+		]);
+	});
+
 	it('ダブルボトムのターゲット価格 = neckline + (neckline - avgValley)', () => {
 		const { candles, pivots } = buildDoubleBottom({ valley1: 100, peak: 130, valley2: 100 });
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectDoubles(ctx);
-		const db = result.patterns.find((p) => p.type === 'double_bottom');
-
-		if (db) {
-			// avgValley=100, neckline=130, target = 130 + (130-100) = 160
-			expect(db.breakoutTarget).toBe(160);
-		}
+		const db = requireDefined(
+			result.patterns.find((p) => p.type === 'double_bottom'),
+			'double_bottom',
+		);
+		// avgValley=100, neckline=130, target = 130 + (130-100) = 160
+		expect(db.breakoutTarget).toBe(160);
 	});
 
 	it('ネックライン未上抜け → ダブルボトム不検出', () => {
@@ -279,8 +354,6 @@ describe('detectDoubles', () => {
 		expect(tooShallow).toBeDefined();
 	});
 
-	// ── want フィルタ ────────────────────────────────────
-
 	it('want に無関係なパターンのみの場合は検出しない', () => {
 		const { candles, pivots } = buildDoubleTop();
 		// double_top/bottom 以外の want → 全体ブロックをスキップ
@@ -289,13 +362,8 @@ describe('detectDoubles', () => {
 		expect(result.patterns).toHaveLength(0);
 	});
 
-	// ── relaxed fallback ─────────────────────────────────
-
 	it('通常判定で不検出 → relaxed (x1.3) で検出', () => {
-		// tolerance=2%, peak差=5/205=2.44% → 通常は peaks_not_equal、relaxed(2%*1.3=2.6%)で検出。
-		// relaxed の許容幅は DOUBLE_LEVEL_MAX_PCT(3%) の hard cap で頭打ちになるため、
-		// cap を超える peak 差（旧 200/210 = 4.76%）では relaxed も必ず落ちる
-		// （peaks_not_equal_structural）。差は cap 内に収める必要がある。
+		// tolerance=2%, peak差=5/205=2.44% → 通常は peaks_not_equal、relaxed(2%*1.3=2.6%)で検出。relaxed の許容幅は DOUBLE_LEVEL_MAX_PCT(3%) の hard cap で頭打ちになるので、差は cap 内に収める必要がある。
 		const { candles, pivots } = buildDoubleTop({ peak1: 200, peak2: 205 });
 		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.02 });
 		const result = detectDoubles(ctx);
@@ -308,8 +376,7 @@ describe('detectDoubles', () => {
 	});
 
 	it('relaxed fallback でダブルボトムを検出', () => {
-		// tolerance=2%, valley差=2.5/102.5=2.44% → 通常は valleys_not_equal、relaxed(2.6%)で検出。
-		// ダブルトップ側と同じく DOUBLE_LEVEL_MAX_PCT(3%) の hard cap 内に収める。
+		// tolerance=2%, valley差=2.5/102.5=2.44% → 通常は valleys_not_equal、relaxed(2.6%)で検出。ダブルトップ側と同じく DOUBLE_LEVEL_MAX_PCT(3%) の hard cap 内に収める。
 		const { candles, pivots } = buildDoubleBottom({ valley1: 100, valley2: 102.5, peak: 130, breakoutClose: 140 });
 		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.02 });
 		const result = detectDoubles(ctx);
@@ -319,8 +386,6 @@ describe('detectDoubles', () => {
 		expect(db[0]._fallback).toContain('relaxed');
 		expect(ctx.debugCandidates.some((d) => d.type === 'double_bottom' && d.reason === 'valleys_not_equal')).toBe(true);
 	});
-
-	// ── ピボット不足 ─────────────────────────────────────
 
 	it('ピボット < 3 個では空結果', () => {
 		const candles = Array.from({ length: 30 }, (_, i) => mkCandle(30 - i, 100, 102, 98, 100));
@@ -332,8 +397,6 @@ describe('detectDoubles', () => {
 		const result = detectDoubles(ctx);
 		expect(result.patterns).toHaveLength(0);
 	});
-
-	// ── 間隔不足 ─────────────────────────────────────────
 
 	it('ピボット間隔 < ctx.minDist → スキップ', () => {
 		const candles = Array.from({ length: 30 }, (_, i) => mkCandle(30 - i, 100, 102, 98, 100));
@@ -348,17 +411,8 @@ describe('detectDoubles', () => {
 		expect(result.patterns).toHaveLength(0);
 	});
 
-	// ── issue #130: 偽陰性を生んでいた 3 点の回帰 ─────────
-
 	describe('issue #130 の回帰', () => {
-		/**
-		 * **最小ピボット間隔は `ctx.minDist` を使う。**
-		 *
-		 * 以前は検出器ローカルの `MIN_PIVOT_DISTANCE_BARS = 5` が `ctx.minDist` を上書きしており、
-		 * 公開パラメータ `minBarsBetweenSwings` が double にだけ効かなかった
-		 * （`detect_triples` / `detect_hs` は当時から `ctx.minDist` を使っている）。
-		 * 日足の既定は 4、1時間足は 2 なので、既定パラメータでも常に上書きが起きていた。
-		 */
+		// 最小ピボット間隔は `ctx.minDist` を使う（公開パラメータ `minBarsBetweenSwings` を検出器ローカルの定数で上書きしない）。
 		it('間隔 3 本は minDist=5 では落ち、minDist=2 では検出される', () => {
 			// valley1(idx=0, 100) → peak(idx=3, 130) → valley2(idx=6, 100) → breakout(idx=8〜, 140)
 			const candles: CandleData[] = [
@@ -388,13 +442,7 @@ describe('detectDoubles', () => {
 			expect((db[0].pivots ?? []).map((v) => v.idx)).toEqual([0, 3, 6]);
 		});
 
-		/**
-		 * **サイズ検査は `extremePrice`（高安）基準。**
-		 *
-		 * 終値が圧縮されヒゲが大きい区間では、終値基準の値幅が実際の 1/6 になる。
-		 * この fixture は終値基準で `MIN_PATTERN_HEIGHT_PCT`(3%) / `MIN_DEPTH_PCT`(5%) を
-		 * 両方割るが、高安基準なら両方通る——BTC/JPY 日足 2026-08-03〜08-14 と同じ形。
-		 */
+		// サイズ検査は `extremePrice`（高安）基準。この fixture は終値基準で `MIN_PATTERN_HEIGHT_PCT`(3%) / `MIN_DEPTH_PCT`(5%) を両方割るが、高安基準なら両方通る（BTC/JPY 日足 2026-08-03〜08-14 と同じ形）。
 		it('終値基準では閾値割れでも高安基準なら検出される', () => {
 			// valley1(close 100 / low 95) → peak(close 102 / high 108) → valley2(close 100.5 / low 95.5)
 			const candles: CandleData[] = [
@@ -423,19 +471,10 @@ describe('detectDoubles', () => {
 			const result = detectDoubles(ctx);
 			const db = result.patterns.filter((p) => p.type === 'double_bottom');
 			expect(db).toHaveLength(1);
-			// サイズ検査で落ちた痕跡が残っていないこと（旧実装はここで pattern_too_small を積んだ）
 			expect(ctx.debugCandidates.map((c) => c.reason)).not.toContain('pattern_too_small');
 		});
 
-		/**
-		 * **窓の最後の 3 ピボットも走査対象。**
-		 *
-		 * 旧 `for (let i = 0; i < pivots.length - 3; i++)` は 4 ピボットぶんの端点を要求しており、
-		 * 3 ピボットのパターンでは**最後の 1 組が必ず走査から漏れていた**
-		 * （`detect_triples` は `i <= n - 3`、`detect_hs` は 5 ピボットに対し `i < n - 4` で正しい）。
-		 * 第2構成点が窓の最後のピボットになる形——つまり**最も直近のダブルトップ / ボトム**が
-		 * 構造的に検出できなかった。
-		 */
+		// 窓の最後の 3 ピボットも走査対象（第2構成点が窓の最後のピボットになる形＝最も直近のダブルトップ / ボトムを取りこぼさない）。
 		it('第2構成点が最後のピボットでも検出される（後続ピボット不要）', () => {
 			const { candles, pivots } = buildDoubleBottom();
 			// 4 本目（breakout 後のピボット）を落として 3 ピボットだけにする
@@ -449,20 +488,7 @@ describe('detectDoubles', () => {
 		});
 	});
 
-	// ── 形成中経路は double に無い（issue #262 / #268 案 C）────────────────
-	//
-	// **`形成中ダブルトップ: 確定ピーク + 谷 + 現在価格がピーク付近` と
-	// `forming double_top: structureRange あり, confirmation=not_confirmed` を削除した。**
-	// `tryFormingDoubleTop` が #268 案 C で消えたので、`status: 'forming'` の `double_top` を
-	// 作れる入力が存在しない。同じ形（山1 + 谷 + 最新足が山の水準）は完成済み経路の
-	// 構成点 3 点が揃うまで候補にならず、揃った時点で `near_completion` になる。
-	// `structureRange` / `confirmation: 'not_confirmed'` の回帰は下の `near_completion` の
-	// テストが引き継いでいる。「1 件も出ない」ことは
-	// `tests/patterns/no-forming-double-268.test.ts` のトリップワイヤが固定する。
-
-	// `includeForming=false` では未ブレイク構造（`near_completion` / `expired` / `invalid`）も
-	// 出ない。`forming` は #268 案 C 以降 double では構造的に出ないので、このテストが見ているのは
-	// **`includeForming` のスイッチが効いていること**になった（`status` の名前は据え置き）。
+	// `forming` は double では構造的に出ないので、このテストが見ているのは `includeForming` のスイッチが効いていること（未ブレイク構造の `near_completion` / `expired` / `invalid` も出ない）。
 	it('includeForming=false では未ブレイク構造も形成中も検出しない', () => {
 		const candles: CandleData[] = [];
 		for (let i = 0; i < 50; i++) candles.push(mkCandle(50 - i, 150, 155, 145, 150));
@@ -483,23 +509,10 @@ describe('detectDoubles', () => {
 		expect(forming).toHaveLength(0);
 	});
 
-	// ── ブレイク待ちのダブルボトム（issue #262 で `forming` → `near_completion`）──────────
-
-	/**
-	 * **期待値を `forming` から `near_completion` に変えた（issue #262）。**
-	 * この形（確定 2 谷 + 中間の山 + 未ブレイク）は構造が完成していてネックライン突破を
-	 * 待っている段階で、`forming`（＝最終構成点がまだ形成中）ではない。旧 `tryFormingDoubleBottom`
-	 * の誤ラベルを完成済み経路の `near_completion` に付け替えた。
-	 *
-	 * `completionPct` の検査を落としたのも同じ理由——完成度スコアは形成中経路の概念で、
-	 * triple / H&S の `near_completion` も持っていない。
-	 */
+	// この形（確定 2 谷 + 中間の山 + 未ブレイク）は構造が完成してネックライン突破を待っている段階なので `near_completion`。完成度スコア（`completionPct`）は形成中経路の概念で、triple / H&S の `near_completion` も持っていない。
 	it('ブレイク待ちダブルボトム: 確定谷2つ + 現在価格がネックライン付近 → near_completion', () => {
 		const candles: CandleData[] = [];
-		// 谷1 より前はネックライン(130)より上で推移させる。構造ゲート（issue #126）は
-		// 「谷1 前にネックライン水準を終値で下抜けた事象」を要求するので、
-		// 旧 fixture のように終値がネックラインとぴったり同値のまま横ばいだと、
-		// そもそも下抜けという事象が存在せず棄却される。
+		// 構造ゲート（issue #126）は「谷1 前にネックライン水準を終値で下抜けた事象」を要求するので、谷1 より前はネックライン(130)より上で推移させる。
 		for (let i = 0; i < 50; i++) candles.push(mkCandle(50 - i, 140, 145, 135, 140));
 		// valley1
 		candles[10] = mkCandle(40, 102, 105, 100, 102);
@@ -507,10 +520,7 @@ describe('detectDoubles', () => {
 		candles[20] = mkCandle(30, 128, 130, 125, 128);
 		// valley2
 		candles[30] = mkCandle(20, 103, 105, 100, 103);
-		// 谷2 以降は**ネックライン(130)を超えない**まま推移させる（issue #262）。
-		// 旧 fixture は idx 31〜39 が終値 140 のままで、実際には完成済みパスが idx 31 で
-		// ブレイクを拾っていた——`forming` の重複報告がまさにこの PR の動機なので、
-		// 「ブレイク待ち」を見たいこのテストでは埋め直す。
+		// 「ブレイク待ち」を見たいので、谷2 以降はネックライン(130)を超えないまま推移させる（超えると完成済みパスがブレイクを拾う）。
 		for (let i = 31; i < 50; i++) candles[i] = mkCandle(50 - i, 125, 128, 122, 126);
 
 		const pivots: Pivot[] = [
@@ -529,15 +539,11 @@ describe('detectDoubles', () => {
 		const nearCompletion = result.patterns.filter((p) => p.type === 'double_bottom' && p.status === 'near_completion');
 		expect(nearCompletion.length).toBeGreaterThanOrEqual(1);
 		expect(result.patterns.filter((p) => p.type === 'double_bottom' && p.status === 'forming')).toHaveLength(0);
-		if (nearCompletion.length > 0) {
-			expect(nearCompletion[0].breakoutTarget).toBeDefined();
-			expect(nearCompletion[0].targetMethod).toBe('neckline_projection');
-			// 未ブレイクなので進捗は測れないことを名乗る（#224 症状 2）
-			expect(nearCompletion[0].targetProgressOmittedReason).toBe('not_broken_out');
-		}
+		expect(nearCompletion.length).toBeGreaterThan(0);
+		expect(nearCompletion[0].breakoutTarget).toBeDefined();
+		expect(nearCompletion[0].targetMethod).toBe('neckline_projection');
+		expect(nearCompletion[0].targetProgressOmittedReason).toBe('not_broken_out');
 	});
-
-	// ── structureRange / confirmation / precedingTrend（誤読防止のための分離フィールド） ──
 
 	it('completed double_top: structureRange=peak1〜peak2, confirmation=breakoutIdx, precedingTrend あり', () => {
 		const { candles, pivots } = buildDoubleTop();
@@ -555,12 +561,12 @@ describe('detectDoubles', () => {
 
 		// confirmation: ネックライン下抜け（idx=25 が最初の breakout）
 		expect(dt.confirmation).toBeDefined();
-		expect(dt.confirmation?.type).toBe('neckline_breakout');
-		if (dt.confirmation?.type === 'neckline_breakout') {
-			expect(dt.confirmation.idx).toBe(dt.breakoutBarIndex);
-			expect(dt.confirmation.date).toBe(candles[dt.breakoutBarIndex as number].isoTime);
-			expect(dt.confirmation.price).toBe(Number(candles[dt.breakoutBarIndex as number].close));
-		}
+		expect(dt.confirmation).toMatchObject({
+			type: 'neckline_breakout',
+			idx: dt.breakoutBarIndex,
+			date: candles[dt.breakoutBarIndex as number].isoTime,
+			price: Number(candles[dt.breakoutBarIndex as number].close),
+		});
 
 		// precedingTrend: end は peak1（startIdx=0）の isoTime
 		expect(dt.precedingTrend).toBeDefined();
@@ -582,30 +588,23 @@ describe('detectDoubles', () => {
 		expect(db.structureRange?.start).toBe(candles[0].isoTime);
 		expect(db.structureRange?.end).toBe(candles[20].isoTime);
 
-		expect(db.confirmation?.type).toBe('neckline_breakout');
-		if (db.confirmation?.type === 'neckline_breakout') {
-			expect(db.confirmation.idx).toBe(db.breakoutBarIndex);
-			expect(db.confirmation.date).toBe(candles[db.breakoutBarIndex as number].isoTime);
-		}
+		expect(db.confirmation).toMatchObject({
+			type: 'neckline_breakout',
+			idx: db.breakoutBarIndex,
+			date: candles[db.breakoutBarIndex as number].isoTime,
+		});
 
 		expect(db.precedingTrend).toBeDefined();
 		expect(db.precedingTrend?.end).toBe(candles[0].isoTime);
 	});
 
-	/**
-	 * **期待値を `forming` から `near_completion` に変えた（issue #262）。** 理由は上の
-	 * 「ブレイク待ちダブルボトム」の docstring を参照。`structureRange` が 2 谷で閉じることは
-	 * 変わらない（完成済み経路の `structureRange` も第1〜第2構成点で閉じる）。**`range.end` は
-	 * 最新足ではなく谷2 になった**——`detect_triples` の `near_completion` と同じ取り方。
-	 */
+	// `range.end` は最新足ではなく谷2（`detect_triples` の `near_completion` と同じ取り方）。
 	it('near_completion double_bottom: structureRange / range とも valley1〜valley2 で閉じる', () => {
 		const candles: CandleData[] = [];
-		// 谷1 前をネックライン(130)より上にするのは上の fixture と同じ理由（issue #126）
 		for (let i = 0; i < 50; i++) candles.push(mkCandle(50 - i, 140, 145, 135, 140));
 		candles[10] = mkCandle(40, 102, 105, 100, 102);
 		candles[20] = mkCandle(30, 128, 130, 125, 128);
 		candles[30] = mkCandle(20, 103, 105, 100, 103);
-		// 谷2 以降が未ブレイクであることは上の fixture と同じ理由（issue #262）
 		for (let i = 31; i < 50; i++) candles[i] = mkCandle(50 - i, 125, 128, 122, 126);
 
 		const pivots: Pivot[] = [
@@ -634,12 +633,9 @@ describe('detectDoubles', () => {
 		expect(nearCompletion.breakoutBarIndex).toBeUndefined();
 	});
 
-	// ── targetReachedPct / targetReached (high/low ベース) ───
-
 	it('double_top: breakout 後に low が target 方向に動いた場合 high/low ベースで pct を算出', () => {
 		// target=140, breakoutPrice=160, postBreak low=150 → (160-150)/(160-140)*100 = 50%
 		const { candles, pivots } = buildDoubleTop({ peak1: 200, valley: 170, peak2: 200, breakoutClose: 160 });
-		// 最後の candle の low を 150 に設定（target=140 方向に半分進行）
 		const last = candles.length - 1;
 		candles[last] = { ...candles[last], low: 150 };
 
@@ -656,11 +652,8 @@ describe('detectDoubles', () => {
 	});
 
 	it('double_top: 一度 target 到達後に close が戻る → high/low ベースで targetReached=true', () => {
-		// target=140, breakoutPrice=160
-		// 中間 idx=27 で low=130 (<= target 140) → 到達
-		// 末尾 idx=29 は close=160 まで recovery
+		// target=140, breakoutPrice=160。中間 idx=27 で low=130 (<= target 140) → 到達、末尾 idx=29 は close=160 まで recovery
 		const { candles, pivots } = buildDoubleTop({ peak1: 200, valley: 170, peak2: 200, breakoutClose: 160 });
-		// 中間 idx=27 で low=130 (target=140 を割り込む)
 		candles[27] = { ...candles[27], low: 130 };
 
 		const ctx = buildCtx({ candles, pivots });
@@ -677,9 +670,7 @@ describe('detectDoubles', () => {
 	});
 
 	it('double_top: ブレイク close が既に target を下回る（オーバーシュート）→ targetReached=true & pct>=100', () => {
-		// target=140, breakClose=130 → breakoutPrice=130 < target 140
-		// 旧式: (extremePrice - 130) / (140 - 130) は分母 +10、extremePrice<130 で分子マイナス → pct<0
-		// 新式: clamp により reached=true なら pct>=100
+		// target=140, breakClose=130 → breakoutPrice=130 < target 140 で既に到達済み。clamp により reached=true なら pct>=100
 		const { candles, pivots } = buildDoubleTop({ peak1: 200, valley: 170, peak2: 200, breakoutClose: 130 });
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectDoubles(ctx);
@@ -694,8 +685,7 @@ describe('detectDoubles', () => {
 	});
 
 	it('double_top: ブレイク close == target（距離ゼロ）→ 進捗を出さず理由を申告する', () => {
-		// target=140, breakClose=140 → breakoutPrice == target → targetDistance=0。
-		// #210 の退化ガードで target 進捗系は出さず、理由だけを申告する（breakoutTarget は出る）。
+		// target=140, breakClose=140 → breakoutPrice == target → targetDistance=0。#210 の退化ガードで target 進捗系は出さず、理由だけを申告する（breakoutTarget は出る）。
 		const { candles, pivots } = buildDoubleTop({ peak1: 200, valley: 170, peak2: 200, breakoutClose: 140 });
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectDoubles(ctx);
@@ -712,9 +702,7 @@ describe('detectDoubles', () => {
 	});
 
 	it('double_bottom: 一度 target 到達後に close が戻る → high/low ベースで targetReached=true', () => {
-		// target=160, breakoutPrice=140
-		// 中間 idx=27 で high=170 (>= target 160) → 到達
-		// 末尾 idx=29 は close=140 まで recovery
+		// target=160, breakoutPrice=140。中間 idx=27 で high=170 (>= target 160) → 到達、末尾 idx=29 は close=140 まで recovery
 		const { candles, pivots } = buildDoubleBottom({ valley1: 100, peak: 130, valley2: 100, breakoutClose: 140 });
 		candles[27] = { ...candles[27], high: 170 };
 

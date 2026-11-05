@@ -1,15 +1,4 @@
-/**
- * MCP Apps（SEP-1865）ホスト向け `_meta` 経由 execute 経路のセキュリティ回帰。
- *
- * ADR-0007「テストで固定する不変条件」1〜8 に対応する。**最重要は
- * 「content / structuredContent にトークンが出ない」**（ここが破れると設計が崩壊する）。
- *
- * 設計の要点:
- *   - トークンはツール結果 `_meta` にのみ載る。LLM は `_meta` を読めない（計測済み）ため、
- *     「トークンを提示できるか」が iframe 起源と LLM 起源を分ける唯一の判定基準になる
- *   - 有効化は 2 段の AND（運用者のオプトイン AND MCP Apps UI 宣言 + MIME 型）
- *   - elicitation 対応ホストには一切載せない（優先順位の不変条件）
- */
+// ADR-0007「テストで固定する不変条件」1〜8 の回帰。最重要は content / structuredContent にトークンが出ないこと（LLM が読めない `_meta` にしか載らないことが認可の根拠）。
 
 import { isInputRequiredResult } from '@modelcontextprotocol/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -32,7 +21,6 @@ type HandlerResult = {
 	_meta?: Record<string, unknown>;
 };
 
-/** MCP Apps UI を宣言するホストの ctx（initialize 経由）。 */
 function appUiCtx(mimeTypes: unknown = [APP_RESOURCE_MIME_TYPE]): Record<string, unknown> {
 	return {
 		server: {
@@ -41,7 +29,6 @@ function appUiCtx(mimeTypes: unknown = [APP_RESOURCE_MIME_TYPE]): Record<string,
 	};
 }
 
-/** MCP Apps UI 宣言を per-request envelope で渡す ctx。 */
 function envelopeCtx(clientCapabilities: unknown, initCapabilities?: unknown): Record<string, unknown> {
 	return {
 		...(initCapabilities !== undefined ? { server: { getClientCapabilities: () => initCapabilities } } : {}),
@@ -134,6 +121,12 @@ function countOrderApiCalls(): number {
 	}).length;
 }
 
+/** 取引系 API（/v1/user/spot/ 配下。取消を含む）の呼び出し回数。拒否の経路では照会も含めて 1 回も呼ばない。 */
+function countSpotApiCalls(): number {
+	const fetchMock = globalThis.fetch as unknown as { mock: { calls: Array<[unknown]> } };
+	return fetchMock.mock.calls.filter((c) => String(c[0]).includes('/v1/user/spot/')).length;
+}
+
 beforeEach(() => {
 	process.env = { ...originalEnv };
 	process.env.BITBANK_API_KEY = 'test_key';
@@ -162,7 +155,6 @@ const PREVIEW_CASES = [
 	},
 ] as const;
 
-/** `_meta` に載ったトークンを取り出す（無ければ undefined）。 */
 function metaToken(result: HandlerResult): string | undefined {
 	return (result._meta?.[META_KEY] as { confirmation_token?: string } | undefined)?.confirmation_token;
 }
@@ -178,10 +170,8 @@ describe('不変条件 1: content / structuredContent にトークンが出な�
 			const token = metaToken(result);
 			expect(token).toBeTypeOf('string');
 
-			// 本体: content / structuredContent のどこにもトークン値が現れない
 			expect(JSON.stringify(result.content)).not.toContain(token);
 			expect(JSON.stringify(result.structuredContent)).not.toContain(token);
-			// フィールド名としても露出しない
 			expect(JSON.stringify(result.structuredContent)).not.toContain('confirmation_token');
 			expect(JSON.stringify(result.content)).not.toContain('confirmation_token');
 		});
@@ -297,18 +287,14 @@ describe('不変条件 5: elicitation 対応ホストにはオプトイン on �
 				},
 			};
 			const result = await toolDef.handler(c.args as never, ctx);
-			// elicitation 経路が実際に選ばれたことを確認する。これが無いと、ハンドラが
-			// エラーで落ちた場合でも「トークンが無い」だけでテストが通ってしまう。
+			// elicitation 経路が選ばれたことを確かめる（無いとハンドラがエラーで落ちても「トークンが無い」だけで通ってしまう）。
 			expect(isInputRequiredResult(result)).toBe(true);
 			expect(metaToken(result as HandlerResult)).toBeUndefined();
 			expect(JSON.stringify(result)).not.toContain('confirmation_token');
 		});
 	}
 
-	// pull 型 hydration（get_ui_snapshot）は preview とは**別リクエスト**なので、
-	// 「elicitation 非対応と判定したあとだけ `_meta` を付ける」という preview 側の構造では
-	// 守れない。スナップショットはリクエスト A（elicitation 非宣言）で作られ、リクエスト B
-	// （elicitation 宣言）から読み出せてしまうため、取得側でも同じ条件を課す必要がある。
+	// get_ui_snapshot は preview とは別リクエストなので、「elicitation 非対応と判定したあとだけ `_meta` を付ける」preview 側の構造では守れず、取得側でも同じ条件を課す。
 	const SNAPSHOT_URI = 'ui://order/confirm.html';
 
 	async function seedTokenSnapshot() {
@@ -382,7 +368,7 @@ describe('不変条件 6: トークン無しの直接呼び出しは direct_exec
 			};
 			expect(result.ok).toBe(false);
 			expect(result.meta?.errorType).toBe('direct_execute_forbidden');
-			expect(countOrderApiCalls()).toBe(0);
+			expect(countSpotApiCalls()).toBe(0);
 		});
 
 		it(`${c.name}: ゲート on でもトークン無しなら拒否され API を呼ばない`, async () => {
@@ -394,7 +380,7 @@ describe('不変条件 6: トークン無しの直接呼び出しは direct_exec
 			};
 			expect(result.ok).toBe(false);
 			expect(result.meta?.errorType).toBe('direct_execute_forbidden');
-			expect(countOrderApiCalls()).toBe(0);
+			expect(countSpotApiCalls()).toBe(0);
 		});
 	}
 
@@ -431,10 +417,7 @@ describe('不変条件 7: 不正・期限切れ・使用済み・別注文のト
 
 	it('改ざんされたトークンは token_invalid', async () => {
 		const payload = await mintOrderToken();
-		// 末尾 1 文字を**必ず別の文字**に差し替える。固定文字（例: 常に '0'）にすると、
-		// HMAC hex の末尾が元からその文字だったとき改ざん後が原文と一致し、正しく検証が
-		// 通ってしまう（`expiresAt` が実行ごとに変わるため約 1/16 でランダムに落ちる）。
-		// `tests/private/request-state.test.ts` の tamper と同じ書き方に揃える。
+		// 末尾 1 文字は必ず別の文字に差し替える。固定文字だと HMAC hex の末尾が元からその文字のとき改ざんにならず、約 1/16 で落ちる。
 		const token = payload.confirmation_token;
 		const tampered = `${token.slice(0, -1)}${token.endsWith('0') ? '1' : '0'}`;
 		const { toolDef } = await import('../../tools/private/create_order.js');
@@ -509,6 +492,69 @@ describe('不変条件 7: 不正・期限切れ・使用済み・別注文のト
 	});
 });
 
+describe('execute ハンドラのゲートの配線（3 ツール共通）', () => {
+	const WIRING_CASES = [
+		{
+			name: 'create_order',
+			load: () => import('../../tools/private/create_order.js'),
+			loadPreview: () => import('../../tools/private/preview_order.js'),
+			args: ORDER_ARGS,
+			uri: 'ui://order/confirm.html',
+		},
+		{
+			name: 'cancel_order',
+			load: () => import('../../tools/private/cancel_order.js'),
+			loadPreview: () => import('../../tools/private/preview_cancel_order.js'),
+			args: CANCEL_ARGS,
+			uri: 'ui://cancel/confirm.html',
+		},
+		{
+			name: 'cancel_orders',
+			load: () => import('../../tools/private/cancel_orders.js'),
+			loadPreview: () => import('../../tools/private/preview_cancel_orders.js'),
+			args: CANCEL_BULK_ARGS,
+			uri: 'ui://cancel/confirm.html',
+		},
+	] as const;
+
+	beforeEach(() => {
+		process.env.BITBANK_MCP_APPS_EXECUTE = '1';
+	});
+
+	for (const c of WIRING_CASES) {
+		it(`${c.name}: ゲート on でも token_expires_at が数値でなければ拒否され API を呼ばない`, async () => {
+			const { toolDef } = await c.load();
+			const result = (await toolDef.handler(
+				{ ...c.args, confirmation_token: 'x', token_expires_at: String(Date.now() + 60_000) } as never,
+				appUiCtx(),
+			)) as { ok: boolean; meta?: { errorType?: string } };
+			expect(result.ok).toBe(false);
+			expect(result.meta?.errorType).toBe('direct_execute_forbidden');
+			expect(countSpotApiCalls()).toBe(0);
+		});
+
+		it(`${c.name}: preview のトークンで実行でき、呼び出し元セッションの確認カードだけを消す`, async () => {
+			const { toolDef: previewDef } = await c.loadPreview();
+			const preview = (await previewDef.handler(c.args as never, appUiCtx())) as HandlerResult;
+			const payload = preview._meta?.[META_KEY] as { confirmation_token: string; expires_at: number };
+
+			const { storeUiSnapshot, getUiSnapshot } = await import('../../src/ui-snapshot-cache.js');
+			storeUiSnapshot(c.uri, { ok: true, summary: 'session-a' }, { sessionId: 'session-a' });
+			storeUiSnapshot(c.uri, { ok: true, summary: 'session-b' }, { sessionId: 'session-b' });
+
+			const { toolDef } = await c.load();
+			const result = (await toolDef.handler(
+				{ ...c.args, confirmation_token: payload.confirmation_token, token_expires_at: payload.expires_at } as never,
+				{ ...appUiCtx(), sessionId: 'session-a' },
+			)) as { ok: boolean };
+
+			expect(result.ok).toBe(true);
+			expect(getUiSnapshot(c.uri, { sessionId: 'session-a' })).toBeNull();
+			expect(getUiSnapshot(c.uri, { sessionId: 'session-b' })).not.toBeNull();
+		});
+	}
+});
+
 describe('不変条件 8: get_ui_snapshot の `_meta` はゲートと期限に従う', () => {
 	const RESOURCE_URI = 'ui://order/confirm.html';
 
@@ -530,7 +576,6 @@ describe('不変条件 8: get_ui_snapshot の `_meta` はゲートと期限に�
 		const { toolDef } = await import('../../tools/get_ui_snapshot.js');
 		const result = (await toolDef.handler({ resource_uri: RESOURCE_URI }, appUiCtx())) as HandlerResult;
 		expect(metaToken(result)).toBe('tok_seed');
-		// structuredContent 側には出ない
 		expect(JSON.stringify(result.structuredContent)).not.toContain('tok_seed');
 	});
 
@@ -572,6 +617,16 @@ describe('`_meta` 経路の案内文言', () => {
 		expect(text).not.toContain('このホストでは取引実行に対応していません');
 		expect(text).not.toContain(metaToken(result));
 	});
+
+	for (const c of PREVIEW_CASES) {
+		it(`${c.name}: 確認の期限は ORDER_CONFIRM_TTL_MS の値で案内する`, async () => {
+			process.env.BITBANK_MCP_APPS_EXECUTE = '1';
+			process.env.ORDER_CONFIRM_TTL_MS = '120000';
+			const { toolDef } = await c.load();
+			const result = (await toolDef.handler(c.args as never, appUiCtx())) as HandlerResult;
+			expect(result.content?.[0]?.text ?? '').toContain('確認は 120 秒で期限切れ');
+		});
+	}
 
 	it('ゲート off では従来どおり「実行に対応していません」を案内する', async () => {
 		const { toolDef } = await import('../../tools/private/preview_order.js');

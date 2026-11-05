@@ -2,9 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
 
-// 既存のテストは fetch モックで analyze_indicators の全フローを通すため、
-// default export は actual 実装の passthrough にする。warning 伝播テストでは
-// mockResolvedValueOnce で 1 回だけ上書きする（次回呼び出しから actual に戻る）。
+// 既存のテストは fetch モックで analyze_indicators の全フローを通すので default export は actual の passthrough にし、warning 伝播テストでは mockResolvedValueOnce で 1 回だけ上書きする。
 vi.mock('../tools/analyze_indicators.js', async (importOriginal) => {
 	const actual = await importOriginal<typeof import('../tools/analyze_indicators.js')>();
 	return {
@@ -45,18 +43,7 @@ function makeTrendingOhlcvRows(count: number): OhlcvRow[] {
 	return rows;
 }
 
-/**
- * 最後の1本だけ大きく偏らせることで特定の zScore を生成するヘルパー。
- * BB period=20 の場合、直近20本のうち19本が baseClose で
- * 最後の1本が baseClose + deviation のとき:
- *   mean ≈ baseClose + deviation/20
- *   std  ≈ deviation * sqrt(19) / 20
- *   halfWidth = 2*std = deviation * sqrt(19) / 10
- *   zScore ≈ 2.18 (固定値 - D の大きさに依存しない)
- *
- * deviationMultiplier はベースの偏差を調整するが zScore 値自体は変わらない。
- * より小さな zScore を得るには異なる構造のデータが必要。
- */
+/** 直近 20 本のうち 19 本が baseClose、最後の 1 本が baseClose + deviation のとき zScore ≈ 2.18 で、deviation の大きさ（deviationMultiplier）には依存しない。 */
 function makeHighZscoreRows(count: number, deviationMultiplier = 1, direction: 1 | -1 = 1): OhlcvRow[] {
 	const startMs = Date.UTC(2024, 0, 1);
 	const baseClose = 10_000_000;
@@ -70,17 +57,12 @@ function makeHighZscoreRows(count: number, deviationMultiplier = 1, direction: 1
 	return rows;
 }
 
-/**
- * 後半で bandWidth が縮小するデータ（decreasing volatility_trend 用）:
- * 前半は高ボラ、後半は低ボラ（フラット）にする。
- */
 function makeDecreasingVolRows(count: number): OhlcvRow[] {
 	const startMs = Date.UTC(2024, 0, 1);
 	const baseClose = 10_000_000;
 	const rows: OhlcvRow[] = [];
 	for (let i = 0; i < count; i++) {
 		const ts = startMs + i * 86_400_000;
-		// 前半: 高ボラ（交互に上下）、後半: フラット
 		const halfPoint = Math.floor(count * 0.6);
 		const close = i < halfPoint ? baseClose + (i % 2 === 0 ? 500_000 : -500_000) : baseClose;
 		rows.push([String(close), String(close), String(close), String(close), '1.0', String(ts)]);
@@ -88,10 +70,7 @@ function makeDecreasingVolRows(count: number): OhlcvRow[] {
 	return rows;
 }
 
-/**
- * 高ボラリティ相場: bandWidthPct > 30% (wide) にするために
- * 交互に大きく上下するデータ。
- */
+/** bandWidthPct > 30% (wide) にするために交互に大きく上下するデータ。 */
 function makeHighVolRows(count: number): OhlcvRow[] {
 	const startMs = Date.UTC(2024, 0, 1);
 	const baseClose = 10_000_000;
@@ -104,12 +83,22 @@ function makeHighVolRows(count: number): OhlcvRow[] {
 	return rows;
 }
 
-/** 強い上昇トレンド: 急激な価格上昇で close が upper band を超える */
+// 終値を中心値から ±swingPct(i) で交互に振る。σ が中心値 × swingPct になるので、バンド幅 ≈ 4 × swingPct × 100（%）。
+function makeAlternatingRows(count: number, swingPct: (i: number) => number): OhlcvRow[] {
+	const startMs = Date.UTC(2024, 0, 1);
+	const center = 10_000_000;
+	const rows: OhlcvRow[] = [];
+	for (let i = 0; i < count; i++) {
+		const close = center * (1 + (i % 2 === 0 ? swingPct(i) : -swingPct(i)));
+		rows.push([String(close), String(close), String(close), String(close), '1.0', String(startMs + i * 86_400_000)]);
+	}
+	return rows;
+}
+
 function makeStrongUptrendRows(count: number): OhlcvRow[] {
 	const startMs = Date.UTC(2024, 0, 1);
 	const rows: OhlcvRow[] = [];
 	for (let i = 0; i < count; i++) {
-		// 最後の数本だけ急激に上昇させる
 		const base =
 			i < count - 5 ? 10_000_000 + i * 1_000 : 10_000_000 + (count - 5) * 1_000 + (i - (count - 5)) * 500_000;
 		rows.push([
@@ -124,12 +113,10 @@ function makeStrongUptrendRows(count: number): OhlcvRow[] {
 	return rows;
 }
 
-/** 強い下降トレンド: 急激な価格下落で close が lower band を超える */
 function makeStrongDowntrendRows(count: number): OhlcvRow[] {
 	const startMs = Date.UTC(2024, 0, 1);
 	const rows: OhlcvRow[] = [];
 	for (let i = 0; i < count; i++) {
-		// 最後の数本だけ急激に下落させる
 		const base =
 			i < count - 5 ? 10_000_000 + i * 1_000 : 10_000_000 + (count - 5) * 1_000 - (i - (count - 5)) * 500_000;
 		rows.push([
@@ -153,12 +140,7 @@ function mockFetch(rows: OhlcvRow[]) {
 	}) as unknown as typeof fetch;
 }
 
-/**
- * 年ごとに異なるデータを返す fetch モック。
- * analyzeIndicators が 2 年分のデータを並列取得するため、
- * URL に含まれる年を見て year2026Rows または year2025Rows を返す。
- * これにより BB ウィンドウ内のスパイク本数を制御できる。
- */
+/** analyzeIndicators が 2 年分のデータを並列取得するので、URL に含まれる年を見て返し分け、BB ウィンドウ内のスパイク本数を制御する。 */
 function mockFetchByYear(year2026Rows: OhlcvRow[], year2025Rows: OhlcvRow[]) {
 	globalThis.fetch = vi.fn().mockImplementation(async (url: unknown) => {
 		const rows = String(url).includes('/2026') ? year2026Rows : year2025Rows;
@@ -171,10 +153,6 @@ function mockFetchByYear(year2026Rows: OhlcvRow[], year2025Rows: OhlcvRow[]) {
 	}) as unknown as typeof fetch;
 }
 
-/**
- * 指定した closesFn(i) で close 値を決めたローを count 本生成する。
- * startMs にはミリ秒単位の開始タイムスタンプを渡す。
- */
 function makeTimestampedRows(count: number, closeFn: (i: number) => number, startMs: number): OhlcvRow[] {
 	return Array.from({ length: count }, (_, i) => {
 		const close = closeFn(i);
@@ -183,11 +161,6 @@ function makeTimestampedRows(count: number, closeFn: (i: number) => number, star
 	});
 }
 
-/**
- * 2026 年分のローを生成する（Jan 1 - Apr 2 = 91 日）。
- * 2025 年分のフラットローも生成して返す。
- * mockFetchByYear と組み合わせて使う。
- */
 function make2026And2025Rows(
 	closeFn2026: (i: number) => number,
 	base2025 = 10_000_000,
@@ -247,14 +220,10 @@ describe('analyze_bb_snapshot', () => {
 		expect(res.data.signals).not.toContain('Band width expanded (100th percentile) - high volatility phase');
 	});
 
-	// ── Invalid pair ──────────────────────────────────────────────────
-
 	it('無効な pair を渡すと ok: false を返す', async () => {
 		const res = await analyzeBbSnapshot('invalid_pair', '1day', 120, 'default');
 		assertFail(res);
 	});
-
-	// ── Default mode: position branches ──────────────────────────────
 
 	it('near_middle: close が BB middle 付近なら near_middle になる', async () => {
 		// 2026 データ: 交互 ±D の後、最終本は平均値 ≈ middle → |zScore| ≈ 0 → near_middle
@@ -268,7 +237,6 @@ describe('analyze_bb_snapshot', () => {
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'default');
 		assertOk(res);
-		// last close がほぼ mean なので |zScore| < 0.3 → near_middle
 		expect(res.data.interpretation.position).toBe('near_middle');
 		expect(res.data.signals).toContain('Price consolidating near middle band');
 	});
@@ -303,8 +271,6 @@ describe('analyze_bb_snapshot', () => {
 		expect(['upper_zone', 'near_middle', 'at_upper']).toContain(position);
 	});
 
-	// ── Default mode: bandwidth_state branches ────────────────────────
-
 	it('bandwidth_state: フラット相場では squeeze になる', async () => {
 		const rows = makeFlatOhlcvRows(400, 10_000_000);
 		mockFetch(rows);
@@ -324,8 +290,6 @@ describe('analyze_bb_snapshot', () => {
 		expect(['squeeze', 'normal', 'expanding', 'wide']).toContain(res.data.interpretation.bandwidth_state);
 	});
 
-	// ── Tags: above_upper_band_risk / below_lower_band_risk ───────────
-
 	it('above_upper_band_risk タグ: 強い上昇で zScore > 1 のとき付与される可能性がある', async () => {
 		const rows = makeStrongUptrendRows(400);
 		mockFetch(rows);
@@ -336,22 +300,17 @@ describe('analyze_bb_snapshot', () => {
 		expect(Array.isArray(res.data.tags)).toBe(true);
 	});
 
-	// ── volatility_trend branches ─────────────────────────────────────
-
 	it('volatility_trend: timeseries が 10 本未満なら stable', async () => {
-		// 少ないデータで呼び出す
 		const rows = makeFlatOhlcvRows(60, 10_000_000);
 		mockFetch(rows);
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'default');
 		assertOk(res);
-		// timeseries が最大 30 本だが BB 計算期間が 20 なので timeseries は存在する
-		// timeseries.length < 10 であれば stable が返る
+		// timeseries が 10 本未満なら stable が返るので、3 値のどれかであることだけを見る。
 		expect(['stable', 'increasing', 'decreasing']).toContain(res.data.interpretation.volatility_trend);
 	});
 
 	it('volatility_trend: 増加傾向のデータで increasing が返る可能性がある', async () => {
-		// 後半だけ急激に広がるデータ
 		const rows = makeStrongUptrendRows(400);
 		mockFetch(rows);
 
@@ -360,31 +319,25 @@ describe('analyze_bb_snapshot', () => {
 		expect(['stable', 'increasing', 'decreasing']).toContain(res.data.interpretation.volatility_trend);
 	});
 
-	// ── Signals ───────────────────────────────────────────────────────
-
 	it('No extreme positioning detected: シグナルが何もなければデフォルトシグナルが付く', async () => {
-		// 緩やかなトレンドでシグナルが少ない状態を試みる
 		const rows = makeTrendingOhlcvRows(400);
 		mockFetch(rows);
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
 		assertOk(res);
-		// signals 配列に何らかの要素があることを確認
 		expect(res.data.signals.length).toBeGreaterThan(0);
 	});
 
 	it('Band width around typical levels シグナル: bandwidth_state が normal のとき付与', async () => {
-		const rows = makeTrendingOhlcvRows(400);
+		// バンド幅 ≈ 12%（normal は 8% 超 18% 以下）
+		const rows = makeAlternatingRows(400, () => 0.03);
 		mockFetch(rows);
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
 		assertOk(res);
-		if (res.data.interpretation.bandwidth_state === 'normal') {
-			expect(res.data.signals).toContain('Band width around typical levels');
-		}
+		expect(res.data.interpretation.bandwidth_state).toBe('normal');
+		expect(res.data.signals).toContain('Band width around typical levels');
 	});
-
-	// ── Extended mode ─────────────────────────────────────────────────
 
 	it('extended mode: mode が extended で返る', async () => {
 		const rows = makeTrendingOhlcvRows(400);
@@ -417,7 +370,6 @@ describe('analyze_bb_snapshot', () => {
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'extended');
 		assertOk(res);
-		// 緩やかな上昇: |zScore| <= 1 → within_1σ
 		expect(res.data.position_analysis?.current_zone).toBe('within_1σ');
 	});
 
@@ -438,11 +390,8 @@ describe('analyze_bb_snapshot', () => {
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'extended');
 		assertOk(res);
 		expect(res.data.bb).toHaveProperty('zScore');
-		// extended mode の bb は bands プロパティを持つ
-		if ('bands' in res.data.bb) {
-			expect(res.data.bb.bands).toHaveProperty('+2σ');
-			expect(res.data.bb.bands).toHaveProperty('-2σ');
-		}
+		expect(res.data.bb).toHaveProperty(['bands', '+2σ']);
+		expect(res.data.bb).toHaveProperty(['bands', '-2σ']);
 	});
 
 	it('extended mode: extreme_events が返る', async () => {
@@ -460,8 +409,6 @@ describe('analyze_bb_snapshot', () => {
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'extended');
 		expect(res.ok).toBe(false);
 	});
-
-	// ── buildBbDefaultText (pure function) ────────────────────────────
 
 	it('buildBbDefaultText: signals が空なら "- None" が含まれる', () => {
 		const text = buildBbDefaultText({
@@ -633,10 +580,7 @@ describe('analyze_bb_snapshot', () => {
 		expect(text).toContain('Volatility Trend: n/a');
 	});
 
-	// ── context: timeseries null/empty branches ───────────────────────
-
 	it('context: データが少なく timeseries が空でも ok になる', async () => {
-		// 最小限のデータ（BB 計算に必要な 20 本ギリギリ）
 		const rows = makeFlatOhlcvRows(60, 10_000_000);
 		mockFetch(rows);
 
@@ -646,8 +590,6 @@ describe('analyze_bb_snapshot', () => {
 		expect(res.data).toHaveProperty('context');
 	});
 
-	// ── Signals: percentile < 20 / > 80 ──────────────────────────────
-
 	it('signals: percentile < 20 のとき breakout setup シグナルが付く可能性', async () => {
 		// フラット相場: bandWidthPct が非常に低く percentile < 20 になりやすい
 		const rows = makeFlatOhlcvRows(400, 10_000_000);
@@ -655,11 +597,9 @@ describe('analyze_bb_snapshot', () => {
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
 		assertOk(res);
-		// フラット相場では bandWidthPct が全部ほぼ等しく percentile が 0 付近になる
 		const hasBreakout = res.data.signals.some((s: string) => s.includes('compressed') && s.includes('percentile'));
 		const hasHighVol = res.data.signals.some((s: string) => s.includes('expanded') && s.includes('percentile'));
 		const hasNoExtreme = res.data.signals.includes('No extreme positioning detected');
-		// いずれかのシグナルが存在するはず
 		expect(hasBreakout || hasHighVol || hasNoExtreme || res.data.signals.length > 0).toBe(true);
 	});
 
@@ -671,8 +611,6 @@ describe('analyze_bb_snapshot', () => {
 		assertOk(res);
 		expect(res.data.signals.length).toBeGreaterThan(0);
 	});
-
-	// ── toolDef handler ───────────────────────────────────────────────
 
 	it('toolDef.handler: 正常に呼び出せる', async () => {
 		const rows = makeTrendingOhlcvRows(400);
@@ -690,8 +628,6 @@ describe('analyze_bb_snapshot', () => {
 		expect(res).toBeDefined();
 	});
 
-	// ── Invalid pair: failFromValidation path ────────────────────────────
-
 	it('invalid pair (形式不正): failFromValidation を経由して ok: false を返す', async () => {
 		// invalid_pair は ALLOWED_PAIRS に存在しないため failFromValidation が呼ばれる
 		const res = await analyzeBbSnapshot('not_a_real_pair', '1day', 120, 'default');
@@ -704,10 +640,7 @@ describe('analyze_bb_snapshot', () => {
 		assertFail(res);
 	});
 
-	// ── Default mode: lower_zone (z between -0.3 and -1.8) ──────────────
-
 	it('lower_zone: わずかに下落した場合に lower_zone になる', async () => {
-		// 最後だけ少し下げて -0.3 < z < 0 を狙う
 		const rows = makeHighZscoreRows(400, 0.05, -1);
 		mockFetch(rows);
 
@@ -717,8 +650,6 @@ describe('analyze_bb_snapshot', () => {
 		expect(['lower_zone', 'near_middle', 'at_lower']).toContain(position);
 	});
 
-	// ── bandwidth_state: wide (bw > 30) ──────────────────────────────────
-
 	it('bandwidth_state: 高ボラ相場では wide または expanding になる', async () => {
 		const rows = makeHighVolRows(400);
 		mockFetch(rows);
@@ -727,8 +658,6 @@ describe('analyze_bb_snapshot', () => {
 		assertOk(res);
 		expect(['expanding', 'wide']).toContain(res.data.interpretation.bandwidth_state);
 	});
-
-	// ── Tags: above_upper_band_risk / below_lower_band_risk ──────────────
 
 	it('above_upper_band_risk タグ: zScore > 1 のとき付与される', async () => {
 		// deviationMultiplier=1 で zScore ≈ 2.18 となる
@@ -749,8 +678,6 @@ describe('analyze_bb_snapshot', () => {
 		expect(res.data.tags).toContain('below_lower_band_risk');
 	});
 
-	// ── volatility_trend: decreasing ─────────────────────────────────────
-
 	it('volatility_trend: 前半高ボラ → 後半フラットで decreasing が返る', async () => {
 		const rows = makeDecreasingVolRows(400);
 		mockFetch(rows);
@@ -760,8 +687,6 @@ describe('analyze_bb_snapshot', () => {
 		expect(['stable', 'increasing', 'decreasing']).toContain(res.data.interpretation.volatility_trend);
 	});
 
-	// ── Signals: percentile < 20 (breakout setup) ────────────────────────
-
 	it('signals: bandWidth が非常に低い場合 breakout setup シグナルが付く', async () => {
 		// フラット相場: bandWidthPct がほぼ 0 → percentile < 20 → breakout setup
 		const rows = makeFlatOhlcvRows(400, 10_000_000);
@@ -769,34 +694,26 @@ describe('analyze_bb_snapshot', () => {
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
 		assertOk(res);
-		// フラット相場では全バンド幅が均等に低い → percentile がほぼ 0 または 50
-		// そのためシグナルが存在することのみを確認
+		// フラット相場では全バンド幅が均等に低く percentile がほぼ 0 または 50 になるので、シグナルが存在することのみを確認する。
 		expect(res.data.signals.length).toBeGreaterThan(0);
 	});
 
-	// ── Signals: percentile > 80 (high volatility phase) ─────────────────
-
-	it('signals: bandWidth が高い場合 high volatility phase シグナルが付く可能性', async () => {
-		const rows = makeHighVolRows(400);
+	it('signals: bandWidth が過去より高い場合 high volatility phase シグナルが付く', async () => {
+		// 直近 20 本だけ振れ幅を広げ、今のバンド幅を期間内の上位 20% に入れる
+		const rows = makeAlternatingRows(400, (i) => (i >= 380 ? 0.1 : 0.01));
 		mockFetch(rows);
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
 		assertOk(res);
-		// 高ボラ相場では percentile > 80 になりやすい
 		const hasHighVol = res.data.signals.some((s: string) => s.includes('high volatility phase'));
 		const hasSomeSignal = res.data.signals.length > 0;
 		expect(hasSomeSignal).toBe(true);
-		// high volatility phase シグナルが付くことを確認（付かない場合でもテスト通過）
-		if (hasHighVol) {
-			expect(res.data.signals.some((s: string) => s.includes('percentile'))).toBe(true);
-		}
+		expect(hasHighVol).toBe(true);
+		expect(res.data.signals.some((s: string) => s.includes('percentile'))).toBe(true);
 	});
 
-	// ── Signals: No extreme positioning detected ──────────────────────────
-
 	it('signals: No extreme positioning detected シグナルが付く場合がある', async () => {
-		// トレンド相場かつ bandWidth が中程度のとき他のシグナルが付かない可能性がある
-		// このテストは signals 配列が空でないことを確認するだけ
+		// トレンド相場かつ bandWidth が中程度のとき他のシグナルが付かない可能性があるので、signals 配列が空でないことだけを確認する。
 		const rows = makeTrendingOhlcvRows(400);
 		mockFetch(rows);
 
@@ -804,8 +721,6 @@ describe('analyze_bb_snapshot', () => {
 		assertOk(res);
 		expect(res.data.signals.length).toBeGreaterThan(0);
 	});
-
-	// ── Extended mode: current_zone branches ─────────────────────────────
 
 	it('extended mode: zScore ≈ 2.18 → beyond_2σ の zone', async () => {
 		// 2026 年末にスパイク 1 本だけ → zScore ≈ 2.18 → beyond_2σ
@@ -843,12 +758,10 @@ describe('analyze_bb_snapshot', () => {
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'extended');
 		assertOk(res);
 		const zone = res.data.position_analysis?.current_zone;
-		// zScore ≈ 2.18 は beyond_2σ 範囲（2 < |z| <= 3）
 		expect(zone).toBe('beyond_2σ');
 	});
 
 	it('extended mode: 1σ_to_2σ を狙う（小さな偏差）', async () => {
-		// deviationMultiplier=0.6 で zScore ≈ 1.3 → 1σ_to_2σ
 		const rows = makeHighZscoreRows(400, 0.6, 1);
 		mockFetch(rows);
 
@@ -857,8 +770,6 @@ describe('analyze_bb_snapshot', () => {
 		const zone = res.data.position_analysis?.current_zone;
 		expect(['within_1σ', '1σ_to_2σ', 'beyond_2σ']).toContain(zone);
 	});
-
-	// ── Default mode: at_upper (z >= 1.8) ────────────────────────────────
 
 	it('default mode: at_upper → zScore >= 1.8 のとき at_upper になる', async () => {
 		const rows = makeHighZscoreRows(400, 1, 1);
@@ -881,18 +792,13 @@ describe('analyze_bb_snapshot', () => {
 		expect(['at_lower', 'lower_zone']).toContain(position);
 	});
 
-	// ── context: timeseries null/empty branches ───────────────────────────
-
 	it('context: bandWidthPct_30d_avg は timeseries が十分あれば計算される', async () => {
 		const rows = makeTrendingOhlcvRows(400);
 		mockFetch(rows);
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
 		assertOk(res);
-		// timeseries が存在する場合 bandWidthPct_30d_avg が計算されることを確認
-		if (res.data.context.bandWidthPct_30d_avg != null) {
-			expect(typeof res.data.context.bandWidthPct_30d_avg).toBe('number');
-		}
+		expect(typeof res.data.context.bandWidthPct_30d_avg).toBe('number');
 	});
 
 	it('context: current_vs_avg は null または文字列', async () => {
@@ -904,8 +810,6 @@ describe('analyze_bb_snapshot', () => {
 		const val = res.data.context.current_vs_avg;
 		expect(val === null || typeof val === 'string').toBe(true);
 	});
-
-	// ── buildBbDefaultText: volatility_trend branches ────────────────────
 
 	it('buildBbDefaultText: volatility_trend が increasing のとき Increasing が含まれる', () => {
 		const text = buildBbDefaultText({
@@ -1030,15 +934,10 @@ describe('analyze_bb_snapshot', () => {
 		expect(text).toContain('2024-01-02');
 	});
 
-	// ── 上流 warning の伝播（取得層 meta.warning / 計算層 meta.warnings） ──
 	describe('上流 warning の伝播', () => {
 		const mockedAnalyzeIndicators = vi.mocked(analyzeIndicators);
 
-		/**
-		 * BB が最小限に動くだけのモック応答を生成する。
-		 * fetch 経由ではなく analyzeIndicators を直接モックすることで、
-		 * meta.warning / meta.warnings の伝播だけを検証する。
-		 */
+		/** fetch 経由ではなく analyzeIndicators を直接モックして、meta.warning / meta.warnings の伝播だけを検証する。 */
 		function buildBbIndicatorsMock(metaExtra: Record<string, unknown> = {}) {
 			const len = 60;
 			const normalized = Array.from({ length: len }, (_, i) => ({
@@ -1139,8 +1038,6 @@ describe('analyze_bb_snapshot', () => {
 		});
 	});
 
-	// ── Year-aware mock: specific zone / position branches ──────────────
-
 	it('year-aware mock: at_upper (zScore ≈ 2.18 → at_upper)', async () => {
 		// 2025 フラット + 2026 最終本スパイク → zScore ≈ 2.18 → at_upper
 		const base = 10_000_000;
@@ -1221,8 +1118,6 @@ describe('analyze_bb_snapshot', () => {
 		expect(res.data.interpretation.bandwidth_state).toBe('wide');
 	});
 
-	// ── volatility_trend: increasing / decreasing ─────────────────────────
-
 	it('year-aware mock: volatility_trend increasing', async () => {
 		// 後半 10 本だけ大きな振動（高 bw）→ recent5 > prev5 → increasing
 		const base = 10_000_000;
@@ -1257,13 +1152,8 @@ describe('analyze_bb_snapshot', () => {
 		expect(res.data.signals).toContain('Volatility decreasing - potential squeeze forming');
 	});
 
-	// ── Signals: percentile < 20 (breakout) / > 80 (high vol) ────────────
-
 	it('year-aware mock: percentile > 80 → high volatility phase signal', async () => {
-		// percentile は「直近 30 本の bandWidthPct のうち最新値を下回る本数」で決まる。
-		// 途中で 1 度だけ振幅が段差状に増える系列だと、最終時点では 30 本すべてが
-		// 高ボラ側に入り切って bandWidth が横ばいになるため percentile は 80 に届かない。
-		// 振幅を単調増加させ、最新バーの bandWidth が窓内で最大になるようにする。
+		// percentile は「直近 30 本の bandWidthPct のうち最新値を下回る本数」で決まる。段差状に 1 度だけ振幅を増やすと最終時点で 30 本すべてが高ボラ側に入り切って 80 に届かないので、振幅を単調増加させて最新バーの bandWidth を窓内で最大にする。
 		const base = 10_000_000;
 		const { year2026, year2025 } = make2026And2025Rows((i) => {
 			const amplitude = 20_000 + i * 8_000; // 振幅を単調増加 → 20 期間 σ も単調増加
@@ -1295,12 +1185,7 @@ describe('analyze_bb_snapshot', () => {
 		expect(hasBreakout || hasHighVol || res.data.signals.length > 0).toBe(true);
 	});
 
-	// ── No extreme positioning detected ───────────────────────────────────
-
 	it('year-aware mock: No extreme positioning detected が付く', async () => {
-		// position=upper_zone, bw_state=squeeze, vol_trend=stable, context=nullでない場合
-		// (bw_state=squeeze かつ position が near_middle でない かつ vol_trend=stable
-		//  かつ percentile が 20〜80 なら "Band width X% vs 30-day average" が付く)
 		// timeseries < 10 本の場合 context が null → 全シグナルなし → "No extreme positioning detected"
 		const base = 10_000_000;
 		// 少量のデータで timeseries を短くする
@@ -1314,11 +1199,8 @@ describe('analyze_bb_snapshot', () => {
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 40, 'default');
 		assertOk(res);
-		// signals が何らかの値を持つことを確認
 		expect(res.data.signals.length).toBeGreaterThan(0);
 	});
-
-	// ── Extended mode: current_zone null / within_1σ ──────────────────────
 
 	it('extended mode: current_zone null → zScore が null のとき null', async () => {
 		// フラットデータ → std=0 → halfWidth=0 → zScore=null → current_zone=null
@@ -1342,8 +1224,6 @@ describe('analyze_bb_snapshot', () => {
 		expect(res.data.position_analysis?.current_zone).toBe('within_1σ');
 	});
 
-	// ── Tags: above_upper / below_lower (year-aware) ─────────────────────
-
 	it('year-aware mock: above_upper_band_risk タグが付く', async () => {
 		const base = 10_000_000;
 		const { year2026, year2025 } = make2026And2025Rows((i) => (i === 90 ? base + 5_000_000 : base), base);
@@ -1363,8 +1243,6 @@ describe('analyze_bb_snapshot', () => {
 		assertOk(res);
 		expect(res.data.tags).toContain('below_lower_band_risk');
 	});
-
-	// ── context: bandWidthPct_30d_avg / percentile calculation ───────────
 
 	it('year-aware mock: context.bandWidthPct_30d_avg が計算される', async () => {
 		// 十分な timeseries があるとき bandWidthPct_30d_avg が number になる
@@ -1398,7 +1276,6 @@ describe('analyze_bb_snapshot', () => {
 		expect(res.data.signals).toContain('Band width around typical levels');
 	});
 
-	// === 形成中足（provisional）注記 ===
 	// 親 describe の afterEach が fetch 復元 + clearIndicatorCache() を実行する。
 	describe('形成中足（provisional）注記', () => {
 		// 最新足 ts を当日 UTC 0 時に揃え、realtime 取得（date 未指定）相当＝形成中にする。

@@ -1,27 +1,10 @@
-/**
- * 入庫の原価算入件数（`priced_deposit_count` / `unpriced_deposit_count`）の契約テスト（#77）。
- *
- * `realized_pnl` は確定申告に使われうる数字なので、**その算出条件が出力から復元できる**ことが
- * このフィールドの存在理由。`structuredContent` を直読みする非 LLM クライアントにとって
- * description が唯一の手掛かりなので、意味づけを人手のレビューに委ねず機械的に固定する
- * （`.claude/rules/tools.md`「規約はテストで機械的に固定する」）。
- *
- * 固定するのは 3 点。
- * 1. **新設キーは既存キーの後ろに宣言されている。** `z.object` の parse は宣言順で
- *    オブジェクトを組み直すため、宣言位置がそのまま wire のキー順になる。
- * 2. **「原価は出したが不完全」の度合いであることが description に書いてある。**
- *    `cost_basis_reliable: true` と同時に成立しうる点まで含めて書かないと、消費者は
- *    `reliable: true` を「原価は完全」と読む。
- * 3. **合計への算入方針が description に書いてある。** 含めるのか除外するのかを
- *    黙って決めない（issue #77 仕様 4）。
- */
+// realized_pnl の算出条件を出力から復元できることを、description の文面で機械的に固定する（#77。structuredContent を直読みする非 LLM クライアントの唯一の手掛かり）。
 import { describe, expect, it } from 'vitest';
 import { AnalyzeMyPortfolioDataSchema } from '../../src/private/schemas.js';
 import { DEPRECATED_FIELD_REMOVAL_TARGET } from '../../src/schema/base.js';
 
 type Described = { description?: string };
 
-/** `holdings[]` の要素スキーマ（`HoldingPnlSchema`）の shape */
 function holdingShape(): Record<string, Described> {
 	const holdings = AnalyzeMyPortfolioDataSchema.shape.holdings as unknown as {
 		element: { shape: Record<string, Described> };
@@ -29,7 +12,6 @@ function holdingShape(): Record<string, Described> {
 	return holdings.element.shape;
 }
 
-/** `yearly_realized_pnl` / `monthly_realized_pnl`（optional）の shape */
 function periodRealizedPnlShape(field: 'yearly_realized_pnl' | 'monthly_realized_pnl'): Record<string, Described> {
 	const optional = AnalyzeMyPortfolioDataSchema.shape[field] as unknown as {
 		unwrap: () => { shape: Record<string, Described> };
@@ -37,7 +19,7 @@ function periodRealizedPnlShape(field: 'yearly_realized_pnl' | 'monthly_realized
 	return optional.unwrap().shape;
 }
 
-/** shape から description を取り出す。無ければ落とす（description 前提のテストが黙って通らないように） */
+/** description が無ければ落とす（description 前提のテストが黙って通らないように） */
 function descriptionOf(shape: Record<string, Described>, key: string): string {
 	const description = shape[key]?.description;
 	if (description == null) throw new Error(`description が無い: ${key}`);
@@ -64,9 +46,7 @@ describe('入庫の原価算入件数 — キー順', () => {
 			'cost_basis_reliable',
 		];
 		expect(keys.slice(0, beforeThisIssue.length)).toEqual(beforeThisIssue);
-		// #77 の 2 キーはその**直後**。末尾からの相対位置では固定しない——後続の issue が
-		// さらに後ろへキーを足す（#87 の reconstructed_qty / qty_invariant_tolerance）と
-		// 「既存キーの後ろ」という本来の主張と無関係に落ちるため。
+		// 末尾からの相対位置では固定しない。後続の issue がさらに後ろへキーを足すと、「既存キーの後ろ」という主張と無関係に落ちる。
 		expect(keys.slice(beforeThisIssue.length, beforeThisIssue.length + 2)).toEqual([
 			'priced_deposit_count',
 			'unpriced_deposit_count',
@@ -83,12 +63,10 @@ describe('入庫の原価算入件数 — キー順', () => {
 			'sell_count',
 			'period_start',
 			'period_end',
-			// #77 で追加。#85 で *_all_time へ改名し、旧名は同じ位置に alias として残す
+			// 旧名は同じ位置に alias として残す（#85）
 			'priced_deposit_count',
 			'unpriced_deposit_count',
-			// #80 で追加。以降も新設キーは末尾に足す
 			'realized_pnl_unavailable_reason',
-			// #85 で追加（canonical。期間スコープではないことを名前で明示）
 			'priced_deposit_count_all_time',
 			'unpriced_deposit_count_all_time',
 		]);
@@ -138,8 +116,7 @@ describe('入庫の原価算入件数 — description', () => {
 	});
 
 	it('unpriced_deposit_count は既存の理由コードと別軸であることを書いている', () => {
-		// `cost_basis_unavailable_reason` は「原価を出せなかった」理由、本フィールドは
-		// 「原価は出したが不完全」の度合い。混同すると enum に値を足す誤った設計に流れる。
+		// cost_basis_unavailable_reason は「原価を出せなかった」理由、本フィールドは「原価は出したが不完全」の度合い（混同すると enum に値を足す誤った設計に流れる）。
 		const description = descriptionOf(holdingShape(), 'unpriced_deposit_count');
 		expect(description).toContain('cost_basis_unavailable_reason');
 		expect(description).toContain('原価は出したが不完全');

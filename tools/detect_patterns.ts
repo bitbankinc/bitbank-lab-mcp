@@ -1,20 +1,25 @@
 import type { z } from 'zod';
 import { formatDateInTz, formatDateOrTimeInTz } from '../lib/datetime.js';
+import { formatPriceDecimals } from '../lib/formatter.js';
 import { fail, failFromError, ok } from '../lib/result.js';
 import { extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
 import { DetectPatternsOutputSchema, type PatternFilterEnum } from '../src/schemas.js';
 import analyzeIndicators from './analyze_indicators.js';
 import { buildStatistics } from './patterns/aftermath.js';
 import { filterCandidatesByWant } from './patterns/candidate-filter.js';
-import { getHsShoulderMaxPctForTf, getSizeThresholdsForTf, resolveParams } from './patterns/config.js';
-// --- 各パターン検出モジュール ---
+import {
+	getHsShoulderMaxPctForTf,
+	getPriorTrendParamsForTf,
+	getSizeThresholdsForTf,
+	resolveParams,
+} from './patterns/config.js';
 import { detectDoubles } from './patterns/detect_doubles.js';
 import { detectHeadAndShoulders } from './patterns/detect_hs.js';
 import { detectPennantsFlags } from './patterns/detect_pennants.js';
 import { detectTriangles } from './patterns/detect_triangles.js';
 import { detectTriples } from './patterns/detect_triples.js';
 import { detectWedges } from './patterns/detect_wedges.js';
-import { globalDedup } from './patterns/helpers.js';
+import { globalDedup, patternPriceDecimals } from './patterns/helpers.js';
 import {
 	excludeTriplesSharingHsMainPoints,
 	mainPointKind,
@@ -22,19 +27,21 @@ import {
 } from './patterns/mutual-exclusion.js';
 import { buildPeriodBlock, buildScanRange } from './patterns/period.js';
 import { rankPatterns } from './patterns/ranking.js';
-import { linearRegressionWithR2, near as nearFn, pct as pctFn } from './patterns/regression.js';
 import { buildScanWindowWarning } from './patterns/scan-window.js';
+import { REVERSAL_HISTORY_WARMUP_BARS } from './patterns/structural.js';
+import { formatStructureGateSkipLine, formatTriplePositionLines } from './patterns/structure-diagnostics.js';
 import { type Candle, detectSwingPoints, filterPeaks, filterValleys } from './patterns/swing.js';
 import { annotateTargetBreakoutConfounders, type TargetBreakoutConfounder } from './patterns/target-confounders.js';
 import { formatTargetProgressLine } from './patterns/target-reach.js';
-import { type CandDebugEntry, type DeduplicablePattern, type DetectContext, pushCand } from './patterns/types.js';
+import {
+	type CandDebugEntry,
+	type DeduplicablePattern,
+	type DetectContext,
+	type PatternEntry,
+	pushCand,
+} from './patterns/types.js';
 
-/**
- * flag / pennant 系パターン固有の検証メタデータ。
- * `PatternEntry` には optional として既に定義されているが、
- * `DeduplicablePattern` 経由で扱う summary 生成セクションでは型情報が落ちるため
- * ここで再宣言してキャストに使う。
- */
+/** PatternEntry と同じ形。DeduplicablePattern 経由の summary 生成では型情報が落ちるのでキャストに使う。 */
 interface FlagFamilyMetadata {
 	poleStartDate?: string;
 	poleEndDate?: string;
@@ -48,7 +55,6 @@ interface FlagFamilyMetadata {
 	expectedBreakoutDirection?: 'up' | 'down';
 }
 
-/** Summary generation section で使う拡張型（DeduplicablePattern + パターン固有フィールド） */
 interface SummaryPattern extends DeduplicablePattern {
 	type: string;
 	confidence: number;
@@ -64,9 +70,7 @@ interface SummaryPattern extends DeduplicablePattern {
 	targetReachedPct?: number;
 	targetReached?: boolean;
 	targetProgressOmittedReason?: string;
-	// ターゲット到達の事実 + 交絡（issue #288 Phase 2）。**`content` の文言に要るので
-	// ここにも宣言する**——`DeduplicablePattern` の index signature 経由だと `unknown` になり、
-	// `formatTargetProgressLine` の引数型に通らない。
+	// DeduplicablePattern の index signature 経由だと unknown になり formatTargetProgressLine に通らないので、ここにも宣言する（#288）。
 	targetFirstReachBars?: number;
 	targetFirstReachDate?: string;
 	targetScanBars?: number;
@@ -80,22 +84,83 @@ interface SummaryPattern extends DeduplicablePattern {
 	isTrendContinuation?: boolean;
 	timeframe?: string;
 	timeframeLabel?: string;
+	structureGate?: { skipped?: 'no_prior_extreme' | 'insufficient_history' };
 }
 
-/**
- * detect_patterns - チャートパターン検出（完成済み＋形成中）
- *
- * 設計思想:
- * - 目的: チャートパターンを検出し、統計的に信頼性の高いデータを提供
- * - 特徴: swingDepth パラメータによる厳密なスイング検出でパターン品質を重視
- * - ブレイク検出: ATR * 0.5 バッファ、最初の明確なブレイクで終点を確定
- * - 用途: 「過去の成功率は？」「典型的な期間は？」「aftermath は？」
- *
- * オプション:
- * - includeCompleted: true (デフォルト) → 完成済みパターンを検出
- * - includeForming: true → 形成中パターンも検出（早期警告向け）
- * - includeInvalid: true → 無効化済み（invalid）と期限切れ（expired）も検出
- */
+const REVERSAL_PATTERN_TYPES = new Set([
+	'double_top',
+	'double_bottom',
+	'triple_top',
+	'triple_bottom',
+	'head_and_shoulders',
+	'inverse_head_and_shoulders',
+]);
+const PIPELINE_REJECTION_REASONS = new Set(['reversal_history_insufficient', TRIPLE_HS_EXCLUSION_REASON]);
+
+// identifier は開始日までしか持たない（#200）ので、同じ日に始まる同種のパターンが並ぶとぶつかる。並べた後の 2 つ目以降に連番を付けて、結果の中で一意にする。
+function uniquifyDiagramIdentifiers(patterns: DeduplicablePattern[]): DeduplicablePattern[] {
+	const seen = new Map<string, number>();
+	return patterns.map((p) => {
+		const diagram = p.structureDiagram as PatternEntry['structureDiagram'];
+		if (!diagram?.artifact) return p;
+		const n = (seen.get(diagram.artifact.identifier) ?? 0) + 1;
+		seen.set(diagram.artifact.identifier, n);
+		if (n === 1) return p;
+		return {
+			...p,
+			structureDiagram: {
+				...diagram,
+				artifact: { ...diagram.artifact, identifier: `${diagram.artifact.identifier}-${n}` },
+			},
+		};
+	});
+}
+
+// 継続系には先行反転トレンドの要件が無いので対象にしない。
+function filterReversalPatternsWithoutHistory(
+	patterns: DeduplicablePattern[],
+	debugCandidates: CandDebugEntry[],
+	availableBars: number,
+): { patterns: DeduplicablePattern[]; excluded: number } {
+	// REVERSAL_HISTORY_WARMUP_BARS 以下の窓では scan-window 警告を優先し、短い fixture や小窓の後方互換を保つ。
+	if (availableBars <= REVERSAL_HISTORY_WARMUP_BARS) return { patterns, excluded: 0 };
+	let excluded = 0;
+	const kept: DeduplicablePattern[] = [];
+	for (const pattern of patterns) {
+		if (!pattern.type || !REVERSAL_PATTERN_TYPES.has(pattern.type)) {
+			kept.push(pattern);
+			continue;
+		}
+		const firstPivotIdx = pattern.pivots?.[0]?.idx;
+		const structureSkipped = (pattern.structureGate as { skipped?: string } | undefined)?.skipped;
+		const precedingTrend = pattern.precedingTrend as { direction?: string } | undefined;
+		const historyUnverified =
+			structureSkipped === 'no_prior_extreme' ||
+			structureSkipped === 'insufficient_history' ||
+			precedingTrend?.direction === 'insufficient_data';
+		if (
+			typeof firstPivotIdx !== 'number' ||
+			!Number.isInteger(firstPivotIdx) ||
+			firstPivotIdx >= REVERSAL_HISTORY_WARMUP_BARS ||
+			!historyUnverified
+		) {
+			kept.push(pattern);
+			continue;
+		}
+		excluded += 1;
+		debugCandidates.push({
+			type: pattern.type,
+			accepted: false,
+			reason: 'reversal_history_insufficient',
+			indices: [firstPivotIdx as number],
+			details: {
+				firstPivotIdx,
+				requiredBars: REVERSAL_HISTORY_WARMUP_BARS,
+			},
+		});
+	}
+	return { patterns: kept, excluded };
+}
 
 export default async function detectPatterns(
 	pair: string = 'btc_jpy',
@@ -105,26 +170,22 @@ export default async function detectPatterns(
 		swingDepth: number;
 		tolerancePct: number;
 		minBarsBetweenSwings: number;
-		/**
-		 * H&S / 逆H&S 専用: 頭の最小突出率（issue #149）。未指定なら tolerancePct と同じ
-		 * 時間軸オート値を使う。tolerancePct とは向きが逆で、大きいほど判定が厳しくなる。
-		 */
+		/** tolerancePct とは向きが逆で、大きいほど判定が厳しくなる（#149）。 */
 		headProminencePct: number;
 		strictPivots: boolean;
 		patterns: Array<z.infer<typeof PatternFilterEnum>>;
 		requireCurrentInPattern: boolean;
 		currentRelevanceDays: number;
-		// 統合オプション
+		/** get_candles と同じ終端アンカー。 */
+		date: string;
 		includeForming: boolean;
 		includeCompleted: boolean;
 		includeInvalid: boolean;
 		view: 'summary' | 'detailed' | 'full' | 'debug';
-		/** 表示日付のタイムゾーン（既定: 'Asia/Tokyo'）。空文字も Asia/Tokyo にフォールバック。*/
 		tz: string;
 	}> = {},
 ) {
 	try {
-		// --- パラメータ解決（patterns/config.ts から） ---
 		const {
 			swingDepth,
 			tolerancePct,
@@ -132,15 +193,7 @@ export default async function detectPatterns(
 			headProminencePct,
 			sources: paramSources,
 		} = resolveParams(type, opts);
-		// 解決後の実効パラメータ（**入力値ではない**）。
-		// #184 まで出力スキーマに宣言が無く parse() が黙って strip していたため、
-		// どのクライアントにも届いていなかった。宣言は src/schema/patterns.ts の
-		// EffectiveParamsSchema、キーの網羅は tests/detect_patterns_meta_schema_parity.test.ts。
-		// 4 つ目の headProminencePct は #149 / PR #153 の追随漏れ（#184 欠陥 A）。
-		//
-		// **`ok()` を返す経路が 2 つある**（通常 / 'insufficient data' の早期 return）ので、
-		// ここで 1 回だけ組んで両方に渡す。片方に足し忘れると「足りるときだけ実効値が出る」
-		// という candle 本数依存の申告漏れになる——欠陥 A と同じ追随漏れのクラス。
+		// ok() を返す経路が 2 つある（通常 / insufficient data）ので 1 回だけ組んで両方に渡す（片方だけだと candle 本数依存の申告漏れになる。#184）。
 		const effectiveParams = {
 			swingDepth: { value: swingDepth, source: paramSources.swingDepth },
 			minBarsBetweenSwings: { value: minDist, source: paramSources.minBarsBetweenSwings },
@@ -148,27 +201,20 @@ export default async function detectPatterns(
 			headProminencePct: { value: headProminencePct, source: paramSources.headProminencePct },
 		};
 		const strictPivots = opts.strictPivots !== false; // 既定: 厳格
-		// 統合オプション
 		const includeForming = opts.includeForming ?? false;
 		const includeCompleted = opts.includeCompleted ?? true;
 		const includeInvalid = opts.includeInvalid ?? false;
-		// 表示日付の TZ（既定: Asia/Tokyo）。formatDateInTz が空文字 / 不正値を Asia/Tokyo にフォールバックする。
 		const tz = opts.tz ?? 'Asia/Tokyo';
 		const want = new Set(opts.patterns || []);
-		// 'triangle' が指定された場合は3種を含む互換挙動
 		if (want.has('triangle')) {
 			want.add('triangle_ascending');
 			want.add('triangle_descending');
 			want.add('triangle_symmetrical');
 		}
 
-		const res = await analyzeIndicators(pair, type, limit);
+		const res = await analyzeIndicators(pair, type, limit, opts.date, tz);
 		if (!res.ok) return DetectPatternsOutputSchema.parse(fail(res.summary || 'failed', 'internal'));
 
-		// 上流 analyze_indicators の meta を取り込む（取得層 / 計算層は別系統）。
-		// - res.meta.warning  → 取得層（get_candles の multi-year/multi-day 部分失敗等）
-		// - res.meta.warnings → 計算層（SMA_200 がデータ不足等）
-		// data.warnings は本ツール独自の検出系警告で、上流とは別フィールドで保持する。
 		const upstream = extractUpstreamWarning(res.meta);
 
 		const allCandles = res.data.chart.candles as Array<{
@@ -179,37 +225,30 @@ export default async function detectPatterns(
 			isoTime?: string;
 		}>;
 
-		// analyze_indicators は「表示窓 limit 本」の前に指標の warmup 分を足した配列を返す
-		// （SMA_200 / EMA_200 のぶん fetchCount = limit + 199）。その先頭 warmup 本数が
-		// `chart.meta.pastBuffer` で、表示窓を得る側が slice する契約になっている
-		// （render_chart_svg の `items.slice(pastBuffer)` が同じ idiom）。
-		//
-		// 本ツールはこれを無視して全件をスキャンしていたため、`limit=200` の要求に対して
-		// 399 本を走査し、ヘッダの `{limit}本から` が虚偽表示になっていた。
-		// pastBuffer が無い場合は 0 に畳む（= 全件）——上流の形が変わっても落とさないため。
+		// analyze_indicators は warmup 分を足した配列を返すので、表示窓は pastBuffer を slice して得る（render_chart_svg と同じ。全件を走査するとヘッダの {limit}本から が虚偽になる）。
 		const pastBuffer = Math.max(0, Math.trunc(res.data.chart.meta?.pastBuffer ?? 0));
-		// Array.isArray を先に見る——不正な上流応答でも従来どおり 'insufficient data' に落とす
-		// （slice を先に呼ぶと例外になり、graceful path が失われる）。
+		// Array.isArray を先に見る（slice を先に呼ぶと不正な上流応答で例外になり insufficient data に落ちない）。
 		const candles = Array.isArray(allCandles) && pastBuffer > 0 ? allCandles.slice(pastBuffer) : allCandles;
 
-		// 検出器に実際に渡す配列のレンジ。slice 後の配列から出す。
 		const scan = buildScanRange(candles);
+		if (scan && opts.date) scan.anchorDate = opts.date;
 		if (!Array.isArray(candles) || candles.length < 20) {
 			return DetectPatternsOutputSchema.parse(
 				ok(
 					'insufficient data',
 					{ patterns: [] },
-					// パラメータは既に解決済みなので、足りなかった側の応答でも実効値は申告できる。
-					// 落とすと candle 本数によって meta の形が変わる（#184 決定事項 1「常に出す」の穴）。
-					// reduction も同じ理由で常に出す（#200）。この経路は検出器を一切呼ばないので全段 0。
+					// 足りない側の応答でも実効値と reduction は常に出す（candle 本数で meta の形を変えない。#184, #200）。
 					{
 						pair,
 						type,
 						count: 0,
+						...(upstream.warning ? { warning: upstream.warning } : {}),
+						...(upstream.warnings && upstream.warnings.length > 0 ? { warnings: upstream.warnings } : {}),
 						...(scan ? { scan } : {}),
 						effective_params: effectiveParams,
 						reduction: {
 							detected: 0,
+							reversalHistoryExcluded: 0,
 							dedupMerged: 0,
 							currentFiltered: 0,
 							lifecycleExcluded: 0,
@@ -222,10 +261,8 @@ export default async function detectPatterns(
 			);
 		}
 
-		// 1) Swing points（patterns/swing.ts から）
 		const pivots = detectSwingPoints(candles as Candle[], { swingDepth, strictPivots });
 
-		// debug buffers
 		const debugSwings = pivots.map((p) => ({
 			idx: p.idx,
 			price: p.price,
@@ -234,7 +271,6 @@ export default async function detectPatterns(
 		}));
 		const debugCandidates: CandDebugEntry[] = [];
 
-		// --- 共有コンテキスト構築 ---
 		const ctx: DetectContext = {
 			candles,
 			pivots,
@@ -242,68 +278,53 @@ export default async function detectPatterns(
 			allValleys: filterValleys(pivots),
 			tolerancePct,
 			headProminencePct,
-			// 反転パターンのサイズ検査の下限（issue #152）。**時間足の解決はここ 1 箇所だけ。**
-			// `structural.ts` / 各検出器は純粋関数側なので `tf` を知らない。
+			// 時間足の解決はここ 1 箇所だけ（structural.ts と各検出器は tf を知らない。#152）。
 			sizeThresholds: getSizeThresholdsForTf(type),
-			// H&S / 逆 H&S の肩の同水準判定の上限（issue #244 Phase 2）。**時間足の解決はここ 1 箇所だけ。**
-			// 窓生成（`outerShoulderOk`）は `HS_SHOULDER_MAX_PCT`（5%）のまま——理由は
-			// `getHsShoulderMaxPctForTf` の docstring（無音の偽陰性を避けるため窓生成は緩く残す）。
+			// 窓生成（outerShoulderOk）は HS_SHOULDER_MAX_PCT のまま緩く残す（無音の偽陰性を避けるため。#244）。
 			hsShoulderMaxPct: getHsShoulderMaxPctForTf(type),
+			priorTrendParams: getPriorTrendParamsForTf(type),
 			minDist,
 			want,
 			includeForming,
 			debugCandidates,
 			type,
 			swingDepth,
-			near: (a: number, b: number) => nearFn(a, b, tolerancePct),
-			pct: pctFn,
-			lrWithR2: linearRegressionWithR2,
-			// 構造図（generatePatternDiagram）の日付整形専用（issue #200 要件 F-2）。
-			// 検出ロジックは tz を一切参照しない——表示専用の値をここで通すだけ。
+			// ctx.tz は構造図の日付整形専用で、各検出器の判定には使わない。
 			tz,
 		};
 
-		// --- 各パターン検出を実行 ---
 		let patterns: DeduplicablePattern[] = [];
 
-		// 2) Double top/bottom
 		const doubles = detectDoubles(ctx);
 		patterns.push(...doubles.patterns);
 
-		// 3) Head & Shoulders
 		const hs = detectHeadAndShoulders(ctx);
 		patterns.push(...hs.patterns);
 
-		// 4) Triangles + Pennant (Trendoscope 2-stage: triangle → pole check → pennant reclassification)
 		const triangles = detectTriangles(ctx);
 		patterns.push(...triangles.patterns);
 
-		// 4b-4d) Wedges
 		const wedges = detectWedges(ctx);
 		patterns.push(...wedges.patterns);
 
-		// 5) Flag detection (parallel channel with pole; pennant is now handled by detectTriangles)
 		const flags = detectPennantsFlags(ctx);
 		patterns.push(...flags.patterns);
 
-		// 6) Triple Top / Triple Bottom
 		const triples = detectTriples(ctx);
 		patterns.push(...triples.patterns);
 
-		// --- 縮小段の件数申告（issue #200 要件 E） ---
-		// 検出結果は 3 段で縮小するが、旧実装はどの段で何件減ったかを一切申告していなかった
-		// （1hour の H&S で accepted 76 件 → data.patterns 2 件のような縮小が「理由不明」に見えた）。
-		// 件数は各段の直前直後で `.length` を取るだけで、フィルタの判定ロジック自体は変えない
-		// （本 PR は検出結果 data.patterns を 1 件も変えないことが受け入れ条件）。
-		// 集計は必ずここ 1 箇所で行う——2 箇所で別々に数えると見出しと実体が食い違う事故が
-		// 過去に起きている（#180 の `resolveTrimCounts` docstring）。
-		const reductionDetected = patterns.length;
+		const detectedBeforeHistoryFilter = patterns.length;
+		const historyFiltered = filterReversalPatternsWithoutHistory(patterns, debugCandidates, candles.length);
+		patterns = historyFiltered.patterns;
+		const reductionReversalHistoryExcluded = historyFiltered.excluded;
 
-		// グローバル重複排除: 全パターン種別横断で期間が70%以上重複する同一タイプを統合
+		// 集計は必ずここ 1 箇所で行う（2 箇所で数えると見出しと実体が食い違う。#180）。
+		const reductionDetected = detectedBeforeHistoryFilter;
+
+		const reductionBeforeDedup = patterns.length;
 		patterns = globalDedup(patterns);
-		const reductionDedupMerged = reductionDetected - patterns.length;
+		const reductionDedupMerged = reductionBeforeDedup - patterns.length;
 
-		// Optional filter: only patterns whose end is within N days from now (current relevance)
 		const reductionBeforeCurrentFilter = patterns.length;
 		{
 			const requireCurrent = !!opts.requireCurrentInPattern;
@@ -316,27 +337,20 @@ export default async function detectPatterns(
 				? Number(opts.currentRelevanceDays)
 				: defaultDaysByType(String(type));
 			if (requireCurrent && patterns.length) {
-				const nowMs = Date.now();
+				const anchoredMs = opts.date && scan ? Date.parse(scan.end) : Number.NaN;
+				const referenceMs = Number.isFinite(anchoredMs) ? anchoredMs : Date.now();
 				const inDays = (iso?: string) => {
 					if (!iso) return Infinity;
 					const t = Date.parse(iso);
 					if (!Number.isFinite(t)) return Infinity;
-					return Math.abs(nowMs - t) / 86400000;
+					return Math.abs(referenceMs - t) / 86400000;
 				};
 				patterns = patterns.filter((p) => inDays(p?.range?.end) <= maxAgeDays);
 			}
 		}
 		const reductionCurrentFiltered = reductionBeforeCurrentFilter - patterns.length;
 
-		// status を 3 つの排他バケットに分け、対応する include* が立っているものだけ残す。
-		//
-		// **3 つは独立した包含スイッチで、入れ子ではない。** 旧実装は
-		// 「completed バケットに invalid を入れてから includeInvalid で引き算する」形だったため、
-		// `includeCompleted: false` + `includeInvalid: true` が**どちらも返さない**という
-		// 到達不能な組み合わせを作っていた（`includeInvalid` の説明文は「含める」と読める）。
-		//
-		// `expired`（issue #126）は「形成中だったが突破確認窓を使い切った」終端状態なので、
-		// forming 側ではなく invalid と同じバケットに入れる。
+		// 3 つの include* は独立した包含スイッチで入れ子ではない。expired は突破確認窓を使い切った終端状態なので invalid と同じバケットに入れる（#126）。
 		const filteredPatterns = patterns.filter((p) => {
 			const isForming = p.status === 'forming' || p.status === 'near_completion';
 			const isInvalid = p.status === 'invalid' || p.status === 'expired';
@@ -347,37 +361,20 @@ export default async function detectPatterns(
 		const reductionLifecycleExcluded = patterns.length - filteredPatterns.length;
 		patterns = filteredPatterns;
 
-		// --- triple × H&S の型間排他（issue #218 Phase 2）---
-		//
-		// 主構成点を 2 点以上共有する `triple_*` と H&S 系が二重に出ていた（Phase 1 実測で
-		// 構造単位 18 ペア）。H&S は `headProminencePct` のゲートを通過している = 中央の構成点が
-		// 両隣と明確に違うことが**検証済み**で、triple の前提「3 点が同水準」とは両立しない。
-		// 同じ点集合が両方を満たすなら証拠がある側が正しいので triple を落とす。
-		// 判定・スコープ・閾値を持たない理由は `patterns/mutual-exclusion.ts` の冒頭が単一ソース。
-		//
-		// **置く位置はライフサイクル絞り込みの後でなければならない。** 先に置くと、triple を
-		// 落とした後で根拠にした H&S が `includeForming` 等の絞り込みで消え、**どちらも残らない**。
-		// 後に置けば「実際に出力される H&S」だけが根拠になる。
+		// ライフサイクル絞り込みの後に置く。先に置くと triple を落とした後で根拠の H&S が絞り込みで消え、どちらも残らない（#218）。
 		const tripleHsExclusion = excludeTriplesSharingHsMainPoints(patterns);
 		const reductionTripleHsExcluded = patterns.length - tripleHsExclusion.kept.length;
-		// 比較対象になった H&S の件数（issue #224 症状 1）。`tripleHsExcluded` の 0 は
-		// 「比較して該当なし」と「H&S が集合に無く比較できなかった」の 2 通りあり、この値が
-		// 0 なら後者。再計算せず関数の申告をそのまま載せる（#180 の resolveTrimCounts と同じ理由）。
+		// 0 なら「比較して該当なし」ではなく「H&S が集合に無く比較できなかった」。再計算せず関数の申告をそのまま載せる（#224）。
 		const reductionTripleHsCandidateCount = tripleHsExclusion.hsCandidateCount;
 		patterns = tripleHsExclusion.kept;
-		// 落とした理由を `view=debug` に残す（issue #218 の決定性要件）。**どの H&S と何点共有したかを
-		// 含める**——含めないと「accepted だったはずの triple が data.patterns に居ない」理由を
-		// 追えなくなる。検出器が積んだ accepted エントリはそのまま残るので、同じ構成点の候補が
-		// accepted 1 件 + 本 reason の rejected 1 件で並ぶのが正常な見え方。
+		// どの H&S と何点共有したかを含める（含めないと accepted だった triple が data.patterns に居ない理由を追えない。#218）。
 		for (const ex of tripleHsExclusion.excluded) {
 			pushCand(ctx, {
 				type: String(ex.triple.type),
 				accepted: false,
 				reason: TRIPLE_HS_EXCLUSION_REASON,
 				idxs: ex.tripleMainIdxs,
-				// `pivots` は主構成点とネックライン定義点（v1 / v2）の混在リスト（#224 症状 3）。
-				// `idxs` は `mainPointIdxs()` が `kind` で主構成点に絞っているので、`pts` の role も
-				// 同じ表（`mainPointKind`）から決める——全点を `main` と名乗ると `idxs` と食い違う。
+				// idxs は mainPointIdxs が kind で主構成点に絞っているので、pts の role も同じ表から決める（全点を main と名乗ると食い違う）。
 				pts: (ex.triple.pivots ?? []).map((pv) => ({
 					role: pv.kind === mainPointKind(String(ex.triple.type)) ? 'main' : 'neckline',
 					idx: pv.idx,
@@ -391,21 +388,13 @@ export default async function detectPatterns(
 			});
 		}
 
-		// --- ターゲット到達の交絡申告（issue #288 Phase 2）---
-		//
-		// **`data.patterns` に載る集合が確定してから**付ける。`globalDedup` と型間排他より前に
-		// 置くと、後で消えるパターンを「他パターンのブレイク」として数えてしまう。
-		// 基準集合・区間・方向の定義は `patterns/target-confounders.ts` が単一ソース
-		// （accepted のみ / 到達側は開区間・方向不問 / 未到達側は逆方向のみ）。
-		// **判定フィールドは 1 つも触らない**——追加は 2 キーだけで、既存キーは動かない。
+		// data.patterns に載る集合が確定してから付ける（globalDedup と型間排他より前だと、後で消えるパターンを数える）。基準集合・区間・方向は patterns/target-confounders.ts が単一ソース。
 		annotateTargetBreakoutConfounders(patterns);
 
-		// detected = dedupMerged + currentFiltered + lifecycleExcluded + tripleHsExcluded + output
-		// （waterfall の不変条件）。`tripleHsCandidateCount` は件数の減少ではなく比較対象の
-		// 申告なので**この等式の外**。
-		// tests/detect_patterns_meta_schema_parity.test.ts が実データでこの等式を固定する。
+		// detected = reversalHistoryExcluded + dedupMerged + currentFiltered + lifecycleExcluded + tripleHsExcluded + output（tripleHsCandidateCount は等式の外。テストが実データで固定する）。
 		const reduction = {
 			detected: reductionDetected,
+			reversalHistoryExcluded: reductionReversalHistoryExcluded,
 			dedupMerged: reductionDedupMerged,
 			currentFiltered: reductionCurrentFiltered,
 			lifecycleExcluded: reductionLifecycleExcluded,
@@ -417,7 +406,6 @@ export default async function detectPatterns(
 		// statistics と data.patterns の対象集合を一致させるため、フィルタ後の patterns に対して実行する。
 		const { statistics } = buildStatistics(patterns, candles);
 
-		// 時間足ラベル（各パターンに注入 + summary 用）
 		const tfMap: Record<string, string> = {
 			'1min': '1分足',
 			'5min': '5分足',
@@ -433,25 +421,20 @@ export default async function detectPatterns(
 		};
 		const tfLabel = tfMap[String(type)] || String(type);
 
-		// 全パターンに timeframe / timeframeLabel を付与（LLM が個別パターンから時間足を即座に読み取れるようにする）
 		for (const p of patterns) {
 			p.timeframe = String(type);
 			p.timeframeLabel = tfLabel;
 		}
 
-		// 表示・返却前に優先度順にソートする（completed → confirmed → confidence → 直近性）。
-		// content と structuredContent.data.patterns / overlays が同じ並び順を共有することで
-		// 低 confidence の H&S 等が上位表示される問題を防ぐ。
+		// content と structuredContent が同じ並び順を共有するよう、表示・返却前に並べる。
 		patterns = rankPatterns(patterns);
+		patterns = uniquifyDiagramIdentifiers(patterns);
 
-		// --- ここから先は SummaryPattern として扱う（検出モジュールが付与した固有フィールドにアクセスするため） ---
 		const summaryPatterns = patterns as SummaryPattern[];
 
-		// overlays: パターン範囲をそのまま帯描画できるように提供
 		const ranges = summaryPatterns.map((p) => ({ start: p.range.start, end: p.range.end, label: p.type }));
 		const warnings: Array<{ type: string; message: string; suggestedParams?: Record<string, unknown> }> = [];
-		// 窓が構造上足りていない（= 検出 0 件が「パターンが無い」ではなく「張れない」）ケースを先に申告する。
-		// low_detection_count の「tolerancePct を緩めろ」は、窓が足りていない状況では的外れな助言になる。
+		// 窓が足りないときに low_detection_count の「tolerancePct を緩めろ」は的外れなので、先に申告する。
 		const scanWindowWarning = buildScanWindowWarning({
 			type: String(type),
 			bars: candles.length,
@@ -466,44 +449,19 @@ export default async function detectPatterns(
 				suggestedParams: { tolerancePct: 0.03, minBarsBetweenSwings: 2 },
 			});
 		}
-		// --- debug 候補を要求種別で絞る（#124） ---
-		// 各検出器は want を「分類・出力の時点」でしか見ておらず、走査中の候補は無条件に push される。
-		// 絞らずに下の cap トリムへ渡すと、要求していない種別の候補が枠を食い潰して
-		// **要求した種別の棄却理由が押し出される**。トリムより前に 1 箇所で落とす。
-		// want は上の alias 展開（'triangle' → 3 種）済み。残りの alias は候補フィルタ側で扱う。
+		// cap トリムより前に 1 箇所で落とす。絞らないと要求していない種別の候補が枠を食い潰し、要求した種別の棄却理由が押し出される（#124）。
 		const relevantCandidates = filterCandidatesByWant(debugCandidates, want);
 
-		// --- サイズ抑制: debug 配列を上限でトリム（view未指定で返却が肥大化しやすいため） ---
-		// ただし accepted を優先的に残す（accepted → rejected の順で cap まで）
 		const cap = 200;
 		const swingsTrimmed = Array.isArray(debugSwings) ? debugSwings.slice(0, cap) : [];
 		const acc = relevantCandidates.filter((c) => !!c?.accepted);
-		// 型間排他（#218）の棄却は**検出器の棄却理由ではなく「accepted になった候補が output に
-		// 居ない理由」**なので、accepted と同じ優先度で残す。検出器の棄却と一緒に末尾へ積むと、
-		// この段は最後に push されるため**実データでは必ず cap で押し出される**
-		// （実測: 実データ B の 1hour で候補 1,994 件 / cap 200）——消えた理由を追うという
-		// `view=debug` の目的そのものが果たせなくなる。#180 の「押し出しは棄却理由から始まる」は維持。
-		const pipelineRej = relevantCandidates.filter((c) => !c?.accepted && c?.reason === TRIPLE_HS_EXCLUSION_REASON);
-		const rej = relevantCandidates.filter((c) => !c?.accepted && c?.reason !== TRIPLE_HS_EXCLUSION_REASON);
+		// 履歴不足段と型間排他の棄却は accepted と同じ優先度で残す（末尾に積むと実データでは必ず cap で押し出される。#218）。
+		const pipelineRej = relevantCandidates.filter(
+			(c) => !c?.accepted && PIPELINE_REJECTION_REASONS.has(c?.reason ?? ''),
+		);
+		const rej = relevantCandidates.filter((c) => !c?.accepted && !PIPELINE_REJECTION_REASONS.has(c?.reason ?? ''));
 		const candidatesTrimmed: CandDebugEntry[] = [...acc, ...pipelineRej, ...rej].slice(0, cap);
-		// --- トリムの申告（#180 案 1） ---
-		// 配列を黙って切り詰めると、呼び出し側は 200 件を受け取っても全件か一部か判別できない。
-		// トリムは accepted を先に並べてから切るので、**押し出しは rejected 側から始まる**。
-		// `view=debug` の目的（なぜ検出されなかったかを理由コードで追う。#144 / #145）は
-		// まさにその rejected の理由コードなので、目的の情報から先に censored される。
-		// cap の値は変えず、件数だけを申告する（#218 で**順序に 1 段だけ**手を入れた。すぐ上を参照）。
-		//
-		// **「押し出されたのは全部 rejected」と言い切れるのは `acc.length + pipelineRej.length <= cap`
-		// のときだけ。** 超えれば accepted / 型間排他の棄却も押し出される（本リポジトリの標準コーパス
-		// 800 ケースでは accepted の最大が 20 件・排他は 1 ケースあたり最大 1 件で一度も起きていないが、
-		// **コードが保証しているのは順序だけ**）。
-		// 判別は「返した配列に `accepted: false` が 1 件でも残っているか」でできるので、
-		// 表示側（`formatDebugView`）がそこで文言を分ける。ここでフィールドを増やさない。
-		//
-		// **総数は絞り込み（#124 の `filterCandidatesByWant`）後の `relevantCandidates` を数える。**
-		// トリムされる母集団そのものなので「自分が要求した種別の棄却理由が censored されたか」に
-		// 直接答える。絞り込み前（`debugCandidates.length`）は出さない——絞り込みは cap を守るための
-		// 仕組みで、「`patterns` を広げればもっと見える」は偽（広げるほど押し出しは増える）。
+		// 総数は絞り込み後の relevantCandidates を数える（トリムされる母集団そのもの。#180）。
 		const debugTrimmed = {
 			swings: swingsTrimmed,
 			candidates: candidatesTrimmed,
@@ -513,18 +471,16 @@ export default async function detectPatterns(
 			swingsOmitted: Array.isArray(debugSwings) ? Math.max(0, debugSwings.length - swingsTrimmed.length) : 0,
 		};
 
-		// summary 生成: LLM が content から読み取れるように詳細を含める
+		const decimals = patternPriceDecimals(summaryPatterns);
+		const yen = (v: number) => formatPriceDecimals(v, decimals);
 		const patternSummaries = summaryPatterns
 			.map((p, idx) => {
-				// range.start/end は UTC ISO 文字列。表示は呼び出し側 tz（既定 Asia/Tokyo）で整形する。
 				const startMs = p.range?.start ? Date.parse(p.range.start) : NaN;
 				const endMs = p.range?.end ? Date.parse(p.range.end) : NaN;
 				const startDate = formatDateInTz(startMs, tz) ?? '?';
 				const endDate = formatDateInTz(endMs, tz) ?? '?';
 				let detail = `${idx + 1}. ${p.type}【${tfLabel}】(パターン整合度: ${p.confidence})\n   - 時間足: ${tfLabel}（${type}）\n   - 期間: ${startDate} ~ ${endDate}`;
 
-				// 低 confidence の警告ラベル（confidence < 0.6 は形状不十分、< 0.3 は除外候補レベル）。
-				// 「重要」「強いシグナル」「参考材料」扱いを防ぐため、明示的に警告する。
 				const confNum = Number(p.confidence ?? NaN);
 				if (Number.isFinite(confNum) && confNum < 0.6) {
 					if (confNum < 0.3) {
@@ -534,7 +490,6 @@ export default async function detectPatterns(
 					}
 				}
 
-				// status（全パターン共通）
 				if (p.status) {
 					const statusJa: Record<string, string> = {
 						completed: '完成（ブレイクアウト確認済み）',
@@ -545,12 +500,14 @@ export default async function detectPatterns(
 					detail += `\n   - 状態: ${statusJa[p.status] || p.status}`;
 				}
 
-				// ブレイクアウト情報（全パターン共通）
+				const structureGateSkipLine = formatStructureGateSkipLine(p.structureGate?.skipped);
+				if (structureGateSkipLine) detail += `\n${structureGateSkipLine}`;
+				for (const positionLine of formatTriplePositionLines(p.type, p.pivots)) detail += `\n${positionLine}`;
+
 				if (p.breakoutDirection && p.outcome) {
 					const directionJa = p.breakoutDirection === 'up' ? '上方' : '下方';
 					const outcomeJa = p.outcome === 'success' ? '成功' : '失敗';
 
-					// パターン別の期待方向と意味付け
 					const expectedDirMap: Record<string, string | undefined> = {
 						falling_wedge: '上方',
 						rising_wedge: '下方',
@@ -566,8 +523,8 @@ export default async function detectPatterns(
 					const expectedDir = expectedDirMap[p.type];
 
 					const meaningMap: Record<string, Record<string, string>> = {
-						falling_wedge: { success: '強気転換', failure: '弱気継続' },
-						rising_wedge: { success: '弱気転換', failure: '強気継続' },
+						falling_wedge: { success: '強気転換', failure: '上方転換シナリオ無効化' },
+						rising_wedge: { success: '弱気転換', failure: '下方転換シナリオ無効化' },
 						triangle_ascending: { success: '上方ブレイク（強気）', failure: '下方ブレイク（弱気転換）' },
 						triangle_descending: { success: '下方ブレイク（弱気）', failure: '上方ブレイク（強気転換）' },
 						pennant: {
@@ -586,27 +543,16 @@ export default async function detectPatterns(
 					detail += `\n   - パターン結果: ${outcomeJa}（${meaning}）`;
 				}
 
-				// ネックライン/トレンドラインがある場合（用語正規化ラベルを使用）
 				if (p.neckline && Array.isArray(p.neckline) && p.neckline.length >= 2) {
 					const label = p.trendlineLabel || 'ネックライン';
-					detail += `\n   - ${label}: ${Math.round(p.neckline[0]?.y || 0).toLocaleString('ja-JP')}円 → ${Math.round(p.neckline[1]?.y || 0).toLocaleString('ja-JP')}円`;
+					detail += `\n   - ${label}: ${yen(p.neckline[0]?.y || 0)}円 → ${yen(p.neckline[1]?.y || 0)}円`;
 				}
 
-				// ウェッジ固有: Apex（頂点）情報
 				if ((p.type === 'falling_wedge' || p.type === 'rising_wedge') && p.daysToApex != null) {
 					detail += `\n   - Apex（収束点）まで: ${p.daysToApex}本`;
 				}
 
-				// ターゲット価格情報（全パターン共通）
-				//
-				// **ターゲット行は `breakoutTarget` の有無で握り潰さない。** `targetProgressOmittedReason:
-				// 'no_target'` は「ターゲット価格そのものが出せなかった」ことの申告なので、
-				// **理由を出すべき唯一のケースで `breakoutTarget` が必ず無い。** 価格行のガードの中に
-				// 進捗行を入れていると、その 1 経路だけが content から消える（#224 症状 2 と同じ形が
-				// 呼び出し側に残っていた。#288 Phase 2 のレビュー指摘）。
-				//
-				// 日時は時間足に応じて粒度を変える（intraday は分まで）。
-				// **暦日に潰すと 1hour では 24 本が同じラベルになり、初到達の足を特定できない。**
+				// ターゲット行は breakoutTarget の有無で握り潰さない。no_target は breakoutTarget が必ず無いときの申告なので、価格行のガードに入れるとその経路だけが消える。
 				const progressLine = formatTargetProgressLine(p, {
 					formatDate: (iso) => formatDateOrTimeInTz(iso, tz, String(type)) ?? iso,
 				});
@@ -616,13 +562,11 @@ export default async function detectPatterns(
 						pattern_height: 'パターン高さ投影',
 						neckline_projection: 'ネックライン投影',
 					};
-					detail += `\n   - ターゲット価格: ${Math.round(p.breakoutTarget).toLocaleString('ja-JP')}円（${(p.targetMethod && methodJa[p.targetMethod]) || p.targetMethod || '不明'}）`;
+					detail += `\n   - ターゲット価格: ${yen(p.breakoutTarget)}円（${(p.targetMethod && methodJa[p.targetMethod]) || p.targetMethod || '不明'}）`;
 				}
 				if (progressLine) detail += `\n${progressLine}`;
 
-				// flag / pennant 固有フィールド（bull_*/bear_* 含む。legacy 'pennant' も処理）
 				if (
-					p.type === 'pennant' ||
 					p.type === 'bull_flag' ||
 					p.type === 'bear_flag' ||
 					p.type === 'bull_pennant' ||
@@ -635,9 +579,8 @@ export default async function detectPatterns(
 						detail += `\n   - 先行トレンド: ${p.priorTrendDirection === 'bullish' ? '強気（上昇トレンド）' : '弱気（下降トレンド）'}`;
 					}
 					if (p.flagpoleHeight != null) {
-						detail += `\n   - フラッグポール値幅: ${Math.round(p.flagpoleHeight).toLocaleString('ja-JP')}円`;
+						detail += `\n   - フラッグポール値幅: ${yen(p.flagpoleHeight)}円`;
 					}
-					// pole の検証情報
 					const pAny = p as SummaryPattern & FlagFamilyMetadata;
 					if (pAny.poleStartDate && pAny.poleEndDate && pAny.poleChangePct != null) {
 						const psd = formatDateInTz(Date.parse(pAny.poleStartDate), tz) ?? pAny.poleStartDate;
@@ -651,11 +594,11 @@ export default async function detectPatterns(
 						detail += `\n   - 旗竿 ATR 倍率: ${pAny.poleATRMult.toFixed(2)}x`;
 					}
 					if (pAny.flagUpperSlope != null && pAny.flagLowerSlope != null) {
-						detail += `\n   - チャネル傾き: 上限=${pAny.flagUpperSlope.toFixed(2)}, 下限=${pAny.flagLowerSlope.toFixed(2)}（円/本）`;
+						detail += `\n   - チャネル傾き: 上限=${pAny.flagUpperSlope.toFixed(decimals + 2)}, 下限=${pAny.flagLowerSlope.toFixed(decimals + 2)}（円/本）`;
 					}
 					if (pAny.spreadAvg != null && pAny.spreadStability != null) {
 						const stabPct = (pAny.spreadStability * 100).toFixed(0);
-						detail += `\n   - 平均チャネル幅: ${Math.round(pAny.spreadAvg).toLocaleString('ja-JP')}円（平行度: ${stabPct}%）`;
+						detail += `\n   - 平均チャネル幅: ${yen(pAny.spreadAvg)}円（平行度: ${stabPct}%）`;
 					}
 					if (pAny.expectedBreakoutDirection) {
 						detail += `\n   - 期待ブレイク方向: ${pAny.expectedBreakoutDirection === 'up' ? '上方' : '下方'}`;
@@ -673,7 +616,6 @@ export default async function detectPatterns(
 			})
 			.join('\n\n');
 
-		// aftermath 統計をテキストに含める（LLM が structuredContent.data を読めない対策）
 		const statsText =
 			statistics && Object.keys(statistics).length > 0
 				? '\n\n【統計情報】\n' +
@@ -681,11 +623,9 @@ export default async function detectPatterns(
 						.map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
 						.join('\n')
 				: '';
-		// スキャン範囲（検出器に渡した足）＋ 検出パターン分布期間（パターンの range 分布）。
-		// 2 行は別の量なので分けて出す（詳細は patterns/period.ts）。tz 表示、構造化データは UTC ISO のまま。
+		// スキャン範囲とパターン分布期間は別の量なので 2 行に分けて出す。
 		const periodBlock = buildPeriodBlock(scan, type, summaryPatterns, tz);
 		const periodText = periodBlock ? `\n${periodBlock}` : '';
-		// タイプ別件数を集約（例: rising_wedge×3, falling_wedge×2）
 		const typeCounts: Record<string, number> = {};
 		for (const p of summaryPatterns) {
 			typeCounts[p.type] = (typeCounts[p.type] || 0) + 1;
@@ -699,9 +639,7 @@ export default async function detectPatterns(
 			`\n\n---\n📌 含まれるもの: チャートパターン検出（種類・整合度・期間）、ブレイク情報、統計` +
 			`\n📌 含まれないもの: 出来高によるパターン確認、テクニカル指標値、板情報` +
 			`\n📌 補完ツール: analyze_indicators（指標でパターンを裏付け）, get_flow_metrics（出来高確認）, get_orderbook（板情報）`;
-		// summary 先頭に warning を別行で連結（separator='\n'）。上流（取得層 / 計算層）→ 検出層の順。
-		// LLM が summary だけ見ても不完全性に気づけるようにするためで、
-		// data.warnings は structuredContent 側にしか無く LLM から見えない（`.claude/rules/tools.md`）。
+		// 順序は上流（取得層 / 計算層）→ 検出層。data.warnings は structuredContent にしか無く LLM から見えない。
 		const summaryWithScanWarning = prependWarnings(
 			baseSummary,
 			scanWindowWarning ? { warnings: [scanWindowWarning.message] } : undefined,

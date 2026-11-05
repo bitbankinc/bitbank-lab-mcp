@@ -66,9 +66,7 @@ describe('GetCandlesInputSchema', () => {
 	});
 
 	it('deprecated alias（items）を受理し、enum 外は拒否する', () => {
-		// alias 期間中も enum は**閉じたまま**であること。ここを固定しないと、
-		// 誰かが view を z.string() に緩めてもテストが通り、ハンドラ側の
-		// alias 正規化が「唯一の受理経路」でなくなったことに気づけない。
+		// alias 期間中も enum は閉じたままであること。ここを固定しないと、誰かが view を z.string() に緩めてもテストが通り、ハンドラ側の alias 正規化が唯一の受理経路でなくなったことに気づけない。
 		expect(GetCandlesInputSchema.parse({ pair: 'btc_jpy', type: '1day', view: 'items' }).view).toBe('items');
 		expect(() => GetCandlesInputSchema.parse({ pair: 'btc_jpy', type: '1day', view: 'summary' })).toThrow();
 		expect(() => GetCandlesInputSchema.parse({ pair: 'btc_jpy', type: '1day', format: 'yaml' })).toThrow();
@@ -110,9 +108,7 @@ describe('GetTransactionsInputSchema', () => {
 		const result = GetTransactionsInputSchema.parse({});
 		expect(result.pair).toBe('btc_jpy');
 		expect(result.limit).toBe(100);
-		// default は summary → full に変わったが**挙動は不変**（docs/internal/view-vocabulary-unification.md §3-5）。
-		// 旧 summary は名前に反して「全件列挙」で実体が full だったため、名前だけを階梯に合わせた。
-		// 旧値は 0.4.0 まで alias として受理し続ける（写像テストは tests/view-alias-mapping.test.ts）。
+		// 旧 default の summary は名前に反して全件列挙で実体が full だったので、挙動を変えずに名前だけを階梯に合わせた（docs/internal/view-vocabulary-unification.md §3-5）。
 		expect(result.view).toBe('full');
 		expect(result.format).toBe('text');
 	});

@@ -61,11 +61,7 @@ export default async function detectWhaleEvents(
 			'2hour': { type: '5min', limit: 24 },
 		};
 		const lb = lbMap[lookback] || lbMap['1hour'];
-		// NOTE: 形成中足（provisional）注記は対象外。
-		// 本ツールの主分析は「現在の板（orderbook depth）」のスナップショットであり、ローソク足の
-		// 最新値（終値・RSI・ATR 等）を確定値として提示するものではない。candles は lookback 区間の
-		// 概況（先頭→末尾の close 変化率 priceChange）を添えるためだけに使い、最新足の終値そのものを
-		// 指標値として出力しない。よって lib/provisional-bar.ts の「最新足は未確定」注記は意味を成さず付与しない。
+		// 主分析は板のスナップショットで、最新足の終値を指標値として出さないので形成中足（provisional）の注記は付けない。
 		const candlesRes = await getCandles(chk.pair, lb.type, undefined, lb.limit);
 		if (!candlesRes?.ok)
 			return fail(
@@ -97,7 +93,6 @@ export default async function detectWhaleEvents(
 			.sort((a, b) => Math.abs(a.distancePct || 0) - Math.abs(b.distancePct || 0))
 			.slice(0, 20);
 
-		// Visualization: buy/sell balance
 		const totalVol = buyVol + sellVol;
 		const buyPct = totalVol > 0 ? buyVol / totalVol : 0;
 		const sellPct = totalVol > 0 ? sellVol / totalVol : 0;
@@ -105,7 +100,6 @@ export default async function detectWhaleEvents(
 		const buyBars = '█'.repeat(Math.max(0, Math.round(buyPct * barLen)));
 		const sellBars = '█'.repeat(Math.max(0, Math.round(sellPct * barLen)));
 
-		// Distance stats
 		const buyDists = largeBids
 			.map((o) => (mid ? ((o.price - mid) / mid) * 100 : null))
 			.filter((x): x is number => x != null);
@@ -173,7 +167,6 @@ export default async function detectWhaleEvents(
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'detect_whale_events',
 	description:

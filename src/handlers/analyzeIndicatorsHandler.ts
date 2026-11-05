@@ -1,8 +1,15 @@
 import type { z } from 'zod';
-import { nowIso, toDisplayTime } from '../../lib/datetime.js';
-import { formatDeviation, formatPercent, formatPriceJPY, formatTrendSymbol } from '../../lib/formatter.js';
+import { nowIso, resolveTz, toDisplayTime } from '../../lib/datetime.js';
+import {
+	formatDeviation,
+	formatExactPrice,
+	formatPercent,
+	formatPriceAtLevel,
+	formatPriceJPY,
+	formatTrendSymbol,
+} from '../../lib/formatter.js';
 import { ICHIMOKU_SHIFT, RSI_OVERBOUGHT, RSI_OVERSOLD } from '../../lib/indicator-config.js';
-import { lastCrossover } from '../../lib/indicators.js';
+import { currentCloudSpans, lastCrossover } from '../../lib/indicators.js';
 import { EPSILON } from '../../lib/math.js';
 import { prependProvisionalNote } from '../../lib/provisional-bar.js';
 import { toStructured } from '../../lib/result.js';
@@ -11,28 +18,24 @@ import analyzeIndicators from '../../tools/analyze_indicators.js';
 import { GetIndicatorsInputSchema } from '../schemas.js';
 import type { ToolDefinition } from '../tool-definition.js';
 
-// ── テキスト組み立て: 純粋エクスポート関数 ──
-
 export interface BuildIndicatorsTextInput {
 	pair: string;
 	type: string;
 	nowJst: string;
+	timeContext?: string;
 	close: number | null;
 	prev: number | null;
 	deltaPrev: { amt: number; pct: number } | null;
 	deltaLabel: string;
 	trend: string;
-	// RSI
 	rsi: number | null;
 	recentRsiFormatted: string[];
 	rsiUnitLabel: string;
-	// MACD
 	macdLine: number | null;
 	macdSignal: number | null;
 	macdHist: number | null;
 	lastMacdCross: { type: 'golden' | 'dead'; barsAgo: number } | null;
 	divergence: string | null;
-	// SMA
 	sma25: number | null;
 	sma75: number | null;
 	sma200: number | null;
@@ -41,7 +44,6 @@ export interface BuildIndicatorsTextInput {
 	s200Slope: number | null;
 	arrangement: string;
 	crossInfo: string | null;
-	// BB
 	bbMid: number | null;
 	bbUp: number | null;
 	bbLo: number | null;
@@ -49,7 +51,6 @@ export interface BuildIndicatorsTextInput {
 	bandWidthPct: number | null;
 	bwTrend: string | null;
 	sigmaHistory: Array<{ off: number; z: number } | null> | null;
-	// Ichimoku
 	tenkan: number | null;
 	kijun: number | null;
 	spanA: number | null;
@@ -64,12 +65,10 @@ export interface BuildIndicatorsTextInput {
 	toCloudDistance: number | null;
 	ichimokuConvSlope: number | null;
 	ichimokuBaseSlope: number | null;
-	// Stoch
 	stochK: number | null;
 	stochD: number | null;
 	stochPrevK: number | null;
 	stochPrevD: number | null;
-	// OBV
 	obvVal: number | null;
 	obvSma20: number | null;
 	obvTrend: string | null;
@@ -82,6 +81,7 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 		pair,
 		type,
 		nowJst,
+		timeContext,
 		close,
 		prev,
 		deltaPrev,
@@ -145,13 +145,12 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	};
 
 	const lines: string[] = [];
-	// Header with time and 24h change
 	lines.push(`=== ${String(pair).toUpperCase()} ${String(type)} 分析 ===`);
-	lines.push(`${nowJst} 現在`);
+	lines.push(timeContext ?? `${nowJst} 現在`);
 	const chgLine = deltaPrev ? `(${deltaLabel}: ${formatPercent(deltaPrev.pct, { sign: true, digits: 1 })})` : '';
-	lines.push(deltaPrev ? `${formatPriceJPY(close)} ${chgLine}` : formatPriceJPY(close));
+	const closeStr = close != null ? `${formatExactPrice(close)}円` : 'n/a';
+	lines.push(deltaPrev ? `${closeStr} ${chgLine}` : closeStr);
 	lines.push('');
-	// 総合判定（簡潔）
 	lines.push('【総合判定】');
 	const trendText =
 		trend === 'strong_downtrend' ? '強い下降トレンド ⚠️' : trend === 'uptrend' ? '上昇トレンド' : '中立/レンジ';
@@ -171,7 +170,6 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 		`  リスク: BB幅=${bandWidthPct != null ? `${bandWidthPct}%` : 'n/a'} → ${bwState}${bwTrend ? `（${bwTrend}）` : ''}`,
 	);
 	lines.push('');
-	// Momentum
 	lines.push('【モメンタム】');
 	lines.push(`  RSI(14): ${rsi ?? 'n/a'} → ${rsiInterp(rsi)}`);
 	if (recentRsiFormatted.length >= 2) {
@@ -179,8 +177,8 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 		lines.push('');
 		lines.push(`    ${recentRsiFormatted.join(' → ')}`);
 	}
-	const fmtMacd = (v: number | null) =>
-		v == null || !Number.isFinite(v) ? 'n/a' : Math.round(v).toLocaleString('ja-JP');
+	// MACD は価格の差なので、値自体ではなく価格の水準で桁を決める。
+	const fmtMacd = (v: number | null) => (v == null || !Number.isFinite(v) ? 'n/a' : formatPriceAtLevel(v, close ?? v));
 	const macdLineFmt = fmtMacd(macdLine);
 	const macdSignalFmt = fmtMacd(macdSignal);
 	const macdHistFmt = fmtMacd(macdHist);
@@ -193,7 +191,6 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	lines.push(`    ・${crossStr}`);
 	lines.push(`    ・ダイバージェンス: ${divergence ?? 'なし'}`);
 	lines.push('');
-	// Trend (SMA)
 	lines.push('【トレンド（移動平均線）】');
 	lines.push(`  配置: ${arrangement}`);
 	lines.push(`  SMA(25): ${formatPriceJPY(sma25)} (${vsCurPct(sma25)}) ${formatTrendSymbol(s25Slope)}`);
@@ -201,7 +198,6 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	lines.push(`  SMA(200): ${formatPriceJPY(sma200)} (${vsCurPct(sma200)}) ${formatTrendSymbol(s200Slope)}`);
 	if (crossInfo) lines.push(`  ${crossInfo}`);
 	lines.push('');
-	// Volatility (BB)
 	lines.push('【ボラティリティ（ボリンジャーバンド±2σ）】');
 	lines.push(
 		`  現在位置: ${sigmaZ != null ? `${sigmaZ}σ` : 'n/a'} → ${sigmaZ != null ? (sigmaZ <= -1 ? '売られすぎ' : sigmaZ >= 1 ? '買われすぎ' : '中立') : '—'}`,
@@ -220,10 +216,8 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 		if (curZ != null) lines.push(`    ・現在: ${curZ}σ`);
 	}
 	lines.push('');
-	// Ichimoku
 	lines.push('【一目均衡表】');
-	// 'unknown' は ichi_series 不足等でデータが取れない場合。'中立' に丸めるとデータ欠落が
-	// 「雲の中（中立）」として誤って表示されてしまうので、明示的に「データ不足」と出す。
+	// 'unknown' は中立に丸めない。丸めるとデータ欠落が「雲の中（中立）」と表示される。
 	lines.push(
 		`  現在位置: ${
 			cloudPos === 'below_cloud'
@@ -241,13 +235,12 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	lines.push(`  先行スパンB: ${formatPriceJPY(spanB)} (${vsCurPct(spanB)})`);
 	if (cloudThickness != null)
 		lines.push(
-			`  雲の厚さ: ${Math.round(cloudThickness).toLocaleString('ja-JP')}円（${cloudThicknessPct != null ? `${cloudThicknessPct.toFixed(1)}%` : 'n/a'}）`,
+			`  雲の厚さ: ${formatPriceJPY(cloudThickness, close)}（${cloudThicknessPct != null ? `${cloudThicknessPct.toFixed(1)}%` : 'n/a'}）`,
 		);
 	if (chikouBull != null) lines.push(`  遅行スパン: ${chikouBull ? '価格より上 → 強気' : '価格より下 → 弱気'}`);
 	if (threeSignals) lines.push(`  三役判定: ${threeSignals.judge}`);
 	if (toCloudDistance != null && cloudPos === 'below_cloud') lines.push(`  雲突入まで: ${toCloudDistance.toFixed(1)}%`);
 	lines.push('');
-	// Stochastic RSI
 	lines.push('【ストキャスティクスRSI】');
 	if (stochK != null && stochD != null) {
 		lines.push(`  %K: ${Number(stochK).toFixed(1)}  %D: ${Number(stochD).toFixed(1)}`);
@@ -272,7 +265,6 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 		lines.push('  データ不足');
 	}
 	lines.push('');
-	// OBV
 	lines.push('【OBV (On-Balance Volume)】');
 	if (obvVal != null) {
 		lines.push(`  現在値: ${Number(obvVal).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${obvUnit}`.trim());
@@ -289,7 +281,6 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 						: 'OBV ≈ SMA → 出来高中立';
 			lines.push(`  トレンド: ${obvTrendLabel}`);
 		}
-		// Divergence check: price direction vs OBV direction over recent bars
 		if (obvPrev != null && prev != null && close != null) {
 			const priceUp = Number(close) > Number(prev);
 			const priceDn = Number(close) < Number(prev);
@@ -314,8 +305,6 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	lines.push('詳細は structuredContent.data.indicators / chart を参照。');
 	return lines.join('\n');
 }
-
-// ── IIFE → 名前付き純粋関数 ──
 
 function calcDeltaPrev(close: number | null, prev: number | null): { amt: number; pct: number } | null {
 	if (close == null || prev == null || !Number.isFinite(prev) || prev === 0) return null;
@@ -357,7 +346,6 @@ function detectDivergence(
 	histSeries: number[] | null,
 	lookback: number,
 ): string | null {
-	// simple divergence check over last N bars using linear slope
 	const N = Math.min(lookback, candles.length);
 	if (N < 5) return null;
 	const pxA = Number(candles.at(-N)?.close ?? NaN),
@@ -483,8 +471,8 @@ export const toolDef: ToolDefinition = {
 	description:
 		'[Technical Indicators / RSI / MACD / SMA] テクニカル指標の総合分析。最新値・トレンド判定・シグナルをテキストで返す。十分な limit を指定（例: 日足200本）。\n\n描画 → prepare_chart_data / render_chart_svg。バックテスト → run_backtest。',
 	inputSchema: GetIndicatorsInputSchema,
-	handler: async ({ pair, type, limit }: z.infer<typeof GetIndicatorsInputSchema>) => {
-		const res = await analyzeIndicators(pair, type, limit);
+	handler: async ({ pair, type, date, tz, limit }: z.infer<typeof GetIndicatorsInputSchema>) => {
+		const res = await analyzeIndicators(pair, type, limit, date, tz);
 		if (!res.ok) return res;
 		const ind = (res?.data?.indicators ?? {}) as Record<string, number | null | undefined> & {
 			OBV_trend?: string | null;
@@ -495,7 +483,11 @@ export const toolDef: ToolDefinition = {
 		}>;
 		const close = candles.at(-1)?.close ?? null;
 		const prev = candles.at(-2)?.close ?? null;
-		const nowJst = toDisplayTime(undefined) ?? nowIso();
+		const effectiveTz = resolveTz(tz);
+		const nowJst = toDisplayTime(undefined, effectiveTz) ?? nowIso();
+		const latestTimestamp = Number((candles.at(-1) as { timestamp?: number } | undefined)?.timestamp);
+		const anchoredTime = date && Number.isFinite(latestTimestamp) ? toDisplayTime(latestTimestamp, effectiveTz) : null;
+		const timeContext = date ? `${anchoredTime ?? date} 時点（終端 date=${date} 指定）` : undefined;
 		const deltaPrev = calcDeltaPrev(close, prev);
 		const deltaLabel = calcDeltaLabel(type);
 		const rsi = ind.RSI_14 ?? null;
@@ -518,17 +510,11 @@ export const toolDef: ToolDefinition = {
 		const macdLine = ind.MACD_line ?? null;
 		const macdSignal = ind.MACD_signal ?? null;
 		const macdHist = ind.MACD_hist ?? null;
-		// 🚨 「今日の雲」は ichi_series.spanA/B の末尾 ICHIMOKU_SHIFT(26) 本前を参照する。
-		// ind.ICHIMOKU_spanA/B は「今日計算された先行スパン」＝ 26 本後にプロットされる雲なので、
-		// 価格と比較する「今日の雲」判定には使えない（26 本ズレる）。
+		// 今日の雲は ichi_series の末尾 26 本前を見る。ind.ICHIMOKU_spanA/B は 26 本後にプロットされる雲なので使えない。
 		const ichiSeries = (
 			ind as { ichi_series?: { tenkan?: number[]; kijun?: number[]; spanA?: number[]; spanB?: number[] } }
 		).ichi_series;
-		const ichiSpanASeries = Array.isArray(ichiSeries?.spanA) ? ichiSeries.spanA : null;
-		const ichiSpanBSeries = Array.isArray(ichiSeries?.spanB) ? ichiSeries.spanB : null;
-		const ichiLen = ichiSpanASeries && ichiSpanBSeries ? Math.min(ichiSpanASeries.length, ichiSpanBSeries.length) : 0;
-		const spanA = ichiLen >= ICHIMOKU_SHIFT ? (ichiSpanASeries?.[ichiLen - ICHIMOKU_SHIFT] ?? null) : null;
-		const spanB = ichiLen >= ICHIMOKU_SHIFT ? (ichiSpanBSeries?.[ichiLen - ICHIMOKU_SHIFT] ?? null) : null;
+		const { spanA, spanB } = currentCloudSpans(ichiSeries);
 		const tenkan = ind.ICHIMOKU_conversion ?? null;
 		const kijun = ind.ICHIMOKU_base ?? null;
 		const cloudTop = spanA != null && spanB != null ? Math.max(spanA, spanB) : null;
@@ -542,9 +528,7 @@ export const toolDef: ToolDefinition = {
 						: 'in_cloud'
 				: 'unknown';
 		const trend = res?.data?.trend ?? 'unknown';
-		// 🚨 本番の指標オブジェクト（computeAllIndicators）は flat 構造で `series` キーを持たない。
-		// slope / cross / divergence 計算用に flat キーから series マップを構築する。
-		// （以前は存在しない ind.series.* を参照し、シグナルが恒常的に欠落していた）
+		// 本番の指標オブジェクトは flat 構造で series キーを持たないので、flat キーから series マップを組む。
 		const macdSeries = (ind as { macd_series?: { line?: number[]; signal?: number[]; hist?: number[] } }).macd_series;
 		const bb2Series = (ind as { bb2_series?: { upper?: number[]; middle?: number[]; lower?: number[] } }).bb2_series;
 		const series: Record<string, number[] | null> = {
@@ -560,7 +544,6 @@ export const toolDef: ToolDefinition = {
 			ICHIMOKU_conversion: ichiSeries?.tenkan ?? null,
 			ICHIMOKU_base: ichiSeries?.kijun ?? null,
 		};
-		// Helpers: slope and last cross
 		const slopeOf = (seriesKey: string, n = 5): number | null => {
 			const arr = Array.isArray(series[seriesKey]) ? series[seriesKey] : null;
 			if (!arr || arr.length < 2) return null;
@@ -572,7 +555,6 @@ export const toolDef: ToolDefinition = {
 		};
 		const lastMacdCross = lastCrossover(series.MACD_line, series.MACD_signal);
 		const divergence = detectDivergence(candles, series.MACD_hist, 14);
-		// SMA arrangement and deviations
 		const curNum = Number(close ?? NaN);
 		const s25n = Number(sma25 ?? NaN),
 			s75n = Number(sma75 ?? NaN),
@@ -581,7 +563,6 @@ export const toolDef: ToolDefinition = {
 		const s25Slope = slopeOf('SMA_25', 5),
 			s75Slope = slopeOf('SMA_75', 5),
 			s200Slope = slopeOf('SMA_200', 7);
-		// BB width trend and sigma history (last 5-7 bars)
 		const bbSeries = {
 			upper: series.BB_upper,
 			lower: series.BB_lower,
@@ -589,7 +570,6 @@ export const toolDef: ToolDefinition = {
 		};
 		const bwTrend = calcBandWidthTrend(bbSeries);
 		const sigmaHistory = calcSigmaHistory(candles, bbSeries);
-		// Ichimoku extras: cloud thickness, chikou proxy, three signals, distance to cloud
 		const cloudThickness = cloudTop != null && cloudBot != null ? cloudTop - cloudBot : null;
 		const cloudThicknessPct =
 			cloudThickness != null && close != null && Number.isFinite(close)
@@ -598,9 +578,7 @@ export const toolDef: ToolDefinition = {
 		const chikouBull = calcChikouBull(candles, close);
 		const threeSignals = calcThreeSignals(cloudPos, tenkan, kijun, chikouBull);
 		const toCloudDistance = calcCloudDistance(close, cloudTop, cloudBot, cloudPos);
-		// Simple cross info (SMA 25/75)
 		const crossInfo = findSmaCross(series.SMA_25, series.SMA_75);
-		// Stochastic RSI and OBV values
 		const stochK = ind.STOCH_RSI_K ?? null;
 		const stochD = ind.STOCH_RSI_D ?? null;
 		const stochPrevK = ind.STOCH_RSI_prevK ?? null;
@@ -614,6 +592,7 @@ export const toolDef: ToolDefinition = {
 			pair,
 			type,
 			nowJst,
+			timeContext,
 			close,
 			prev,
 			deltaPrev,
@@ -666,9 +645,7 @@ export const toolDef: ToolDefinition = {
 			obvPrev,
 			obvUnit: (pair ?? '').split('_')[0]?.toUpperCase() ?? '',
 		});
-		// 形成中足の注記（meta.provisional）と上流 fetchWarning（meta.warning: 取得層）/
-		// 指標不足（meta.warnings[]: 計算層）を content 先頭に別行で出す。
-		// 順序は ⚠️ warning → ℹ️ 注記 → 本文（warning を最優先で見せる）。
+		// 順序は warning → 注記 → 本文（warning を最優先で見せる）。
 		const withNote = prependProvisionalNote(body, (res.meta as { provisional?: boolean })?.provisional === true);
 		const text = prependWarnings(withNote, res.meta as { warning?: string; warnings?: string[] });
 		return { content: [{ type: 'text', text }], structuredContent: toStructured(res) };

@@ -1,5 +1,6 @@
 import { calendarDateFromIso } from '../lib/datetime.js';
 import { formatPair, formatPercent, formatPrice, timeframeLabel } from '../lib/formatter.js';
+import { roundPriceAtLevel } from '../lib/price.js';
 import { fail, failFromError, failFromValidation } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
@@ -8,15 +9,9 @@ import { AnalyzeFibonacciInputSchema, AnalyzeFibonacciOutputSchema } from '../sr
 import type { ToolDefinition } from '../src/tool-definition.js';
 import getCandles from './get_candles.js';
 
-// ── Constants ──
-
-/** Standard Fibonacci retracement ratios */
 const RETRACEMENT_RATIOS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0];
 
-/** Standard Fibonacci extension ratios */
 const EXTENSION_RATIOS = [1.272, Math.SQRT2, 1.618, 2.0, 2.618];
-
-// ── Types ──
 
 interface NormalizedCandle {
 	open: number;
@@ -51,13 +46,6 @@ interface LevelStat {
 	confidence: 'high' | 'medium' | 'low';
 }
 
-// ── Swing Detection ──
-
-/**
- * Detect the most significant swing high and swing low within the given candle range.
- * Uses a simple approach: find the highest high and lowest low, then determine trend
- * based on which came first.
- */
 function detectSignificantSwings(candles: NormalizedCandle[]): {
 	swingHigh: SwingPoint;
 	swingLow: SwingPoint;
@@ -83,15 +71,10 @@ function detectSignificantSwings(candles: NormalizedCandle[]): {
 		index: lowestIdx,
 	};
 
-	// Trend is determined by which swing came last:
-	// If the low came after the high → downtrend (price fell from high to low)
-	// If the high came after the low → uptrend (price rose from low to high)
 	const trend: 'up' | 'down' = lowestIdx > highestIdx ? 'down' : 'up';
 
 	return { swingHigh, swingLow, trend };
 }
-
-// ── Fibonacci Level Calculation ──
 
 function calculateLevels(
 	swingHigh: SwingPoint,
@@ -103,13 +86,11 @@ function calculateLevels(
 	const range = swingHigh.price - swingLow.price;
 
 	return ratios.map((ratio) => {
-		// In downtrend: retracement goes up from low
-		// In uptrend: retracement goes down from high
 		const price = trend === 'down' ? swingLow.price + range * ratio : swingHigh.price - range * ratio;
 
 		const distancePct = ((price - currentPrice) / currentPrice) * 100;
 
-		return { ratio, price: Math.round(price), distancePct: Number(distancePct.toFixed(2)), isNearest: false };
+		return { ratio, price: roundPriceAtLevel(price), distancePct: Number(distancePct.toFixed(2)), isNearest: false };
 	});
 }
 
@@ -123,14 +104,11 @@ function calculateExtensions(
 	const range = swingHigh.price - swingLow.price;
 
 	return ratios.map((ratio) => {
-		// Extensions project beyond the swing points
-		// Uptrend: project above swingHigh  → swingLow + range * ratio
-		// Downtrend: project below swingLow → swingHigh - range * ratio
 		const price = trend === 'up' ? swingLow.price + range * ratio : swingHigh.price - range * ratio;
 
 		const distancePct = ((price - currentPrice) / currentPrice) * 100;
 
-		return { ratio, price: Math.round(price), distancePct: Number(distancePct.toFixed(2)), isNearest: false };
+		return { ratio, price: roundPriceAtLevel(price), distancePct: Number(distancePct.toFixed(2)), isNearest: false };
 	});
 }
 
@@ -169,12 +147,6 @@ function findPosition(
 	return { aboveLevel, belowLevel, nearestLevel };
 }
 
-// ── Historical Reaction Statistics (Feature #3) ──
-
-/**
- * Analyze how price has historically reacted at each Fibonacci level.
- * Uses past candle data to count bounces vs breakthroughs at each level zone.
- */
 function calculateLevelStats(candles: NormalizedCandle[], levels: FibLevel[], tolerancePct: number = 0.5): LevelStat[] {
 	return levels.map((level) => {
 		const zone = level.price * (tolerancePct / 100);
@@ -190,13 +162,11 @@ function calculateLevelStats(candles: NormalizedCandle[], levels: FibLevel[], to
 		for (let i = 0; i < candles.length; i++) {
 			const candle = candles[i];
 
-			// Check if price touched the zone
 			const touchedZone = candle.low <= zoneMax && candle.high >= zoneMin;
 			if (!touchedZone) continue;
 
 			samplesCount++;
 
-			// Count dwell bars (how many consecutive bars stayed in zone)
 			let dwell = 1;
 			for (let j = i + 1; j < candles.length; j++) {
 				if (candles[j].low <= zoneMax && candles[j].high >= zoneMin) {
@@ -207,23 +177,19 @@ function calculateLevelStats(candles: NormalizedCandle[], levels: FibLevel[], to
 			}
 			dwellBars.push(dwell);
 
-			// Check what happened after touching the zone (look ahead 5 bars)
 			const lookAhead = Math.min(i + dwell + 5, candles.length - 1);
 			if (lookAhead <= i + dwell) continue;
 
 			const afterCandle = candles[lookAhead];
 			const returnPct = ((afterCandle.close - candle.close) / candle.close) * 100;
 
-			// Determine if it bounced (reversed) or broke through
 			const priceWasAbove = candle.close > level.price;
 			const priceStayedAbove = afterCandle.close > level.price;
 
 			if (priceWasAbove === priceStayedAbove) {
-				// Bounced back to same side
 				bounceCount++;
 				bounceReturns.push(Math.abs(returnPct));
 			} else {
-				// Broke through
 				breakthroughReturns.push(returnPct);
 			}
 
@@ -237,7 +203,6 @@ function calculateLevelStats(candles: NormalizedCandle[], levels: FibLevel[], to
 		const avgBreakthroughReturnPct =
 			breakthroughReturns.length > 0 ? breakthroughReturns.reduce((a, b) => a + b, 0) / breakthroughReturns.length : 0;
 
-		// Median dwell bars
 		const sortedDwell = [...dwellBars].sort((a, b) => a - b);
 		const medianDwellBars = sortedDwell.length > 0 ? sortedDwell[Math.floor(sortedDwell.length / 2)] : 0;
 
@@ -254,8 +219,6 @@ function calculateLevelStats(candles: NormalizedCandle[], levels: FibLevel[], to
 		};
 	});
 }
-
-// ── Content Generation ──
 
 function generateContent(
 	pair: string,
@@ -286,7 +249,6 @@ function generateContent(
 	lines.push(`レンジ幅: ${formatPrice(range, pair)}`);
 	lines.push('');
 
-	// Current position
 	if (position.nearestLevel) {
 		lines.push(
 			`現在位置: ${(position.nearestLevel.ratio * 100).toFixed(1)}% 水準付近（距離 ${formatPercent(position.nearestLevel.distancePct, { sign: true })}）`,
@@ -302,7 +264,6 @@ function generateContent(
 	}
 	lines.push('');
 
-	// Retracement levels
 	if (mode !== 'extension') {
 		lines.push('【リトレースメント水準】');
 		for (const level of levels) {
@@ -314,7 +275,6 @@ function generateContent(
 		lines.push('');
 	}
 
-	// Extension levels
 	if (mode !== 'retracement' && extensions.length > 0) {
 		lines.push('【エクステンション水準】');
 		for (const ext of extensions) {
@@ -325,7 +285,6 @@ function generateContent(
 		lines.push('');
 	}
 
-	// Reaction stats — all levels with full detail
 	const meaningfulStats = levelStats.filter((s) => s.samplesCount >= 1);
 	if (meaningfulStats.length > 0) {
 		lines.push('【過去の反応実績（各水準の統計）】');
@@ -346,7 +305,6 @@ function generateContent(
 		}
 		lines.push('');
 
-		// Highlight best bounce
 		const bestBounce = [...meaningfulStats]
 			.filter((s) => s.samplesCount >= 2)
 			.sort((a, b) => b.bounceRate - a.bounceRate)[0];
@@ -373,8 +331,6 @@ function generateContent(
 	return [{ type: 'text', text: lines.join('\n') }];
 }
 
-// ── Main Handler ──
-
 export default async function analyzeFibonacci(opts: Record<string, unknown> = {}) {
 	const input = AnalyzeFibonacciInputSchema.parse(opts);
 	const pair = input.pair as string;
@@ -384,7 +340,6 @@ export default async function analyzeFibonacci(opts: Record<string, unknown> = {
 	if (!chk.ok) return failFromValidation(chk, AnalyzeFibonacciOutputSchema);
 
 	try {
-		// Fetch candle data for analysis period
 		const candlesRes = await getCandles(chk.pair, timeframe, undefined, lookbackDays + 10);
 		if (!candlesRes.ok) {
 			return AnalyzeFibonacciOutputSchema.parse(
@@ -392,7 +347,6 @@ export default async function analyzeFibonacci(opts: Record<string, unknown> = {
 			);
 		}
 
-		// 上流 get_candles の meta.warning（multi-year/multi-day 部分失敗 等の取得層警告）を伝播する。
 		const { warning: analysisWarning } = extractUpstreamWarning(candlesRes.meta);
 
 		const candles: NormalizedCandle[] = candlesRes.data.normalized || [];
@@ -402,7 +356,6 @@ export default async function analyzeFibonacci(opts: Record<string, unknown> = {
 
 		const currentPrice = candles[candles.length - 1].close;
 
-		// Detect swings
 		const { swingHigh, swingLow, trend } = detectSignificantSwings(candles);
 		const range = swingHigh.price - swingLow.price;
 
@@ -410,7 +363,6 @@ export default async function analyzeFibonacci(opts: Record<string, unknown> = {
 			return AnalyzeFibonacciOutputSchema.parse(fail('スイングハイとスイングローの差が検出できません', 'data'));
 		}
 
-		// Calculate levels
 		let levels: FibLevel[] = [];
 		let extensions: FibLevel[] = [];
 
@@ -425,8 +377,6 @@ export default async function analyzeFibonacci(opts: Record<string, unknown> = {
 
 		const position = findPosition(levels.length > 0 ? levels : extensions, currentPrice);
 
-		// Calculate historical reaction stats (Feature #3)
-		// Fetch extended history for statistics
 		let levelStats: LevelStat[] = [];
 		let historyWarning: string | undefined;
 		if (levels.length > 0) {
@@ -449,15 +399,12 @@ export default async function analyzeFibonacci(opts: Record<string, unknown> = {
 			levelStats = calculateLevelStats(historyCandles, levels);
 		}
 
-		// 取得層 warning を集約。analysis / history を行単位で split → trim → Set で重複排除する
-		// （部分一致行の重複も拾う）。
 		const warningLines = [analysisWarning, historyWarning]
 			.flatMap((w) => (w ? w.split('\n') : []))
 			.map((w) => w.trim())
 			.filter((w) => w.length > 0);
 		const warning = warningLines.length > 0 ? [...new Set(warningLines)].join('\n') : undefined;
 
-		// Generate content
 		const rawContent = generateContent(
 			chk.pair,
 			timeframe,
@@ -474,8 +421,7 @@ export default async function analyzeFibonacci(opts: Record<string, unknown> = {
 			lookbackDays,
 		);
 
-		// content[0].text 先頭に上流 warning を prepend する（JSON.stringify より前に出す）。
-		// .claude/rules/tools.md の「上流 warning の伝播」参照。
+		// JSON.stringify より前に上流 warning を出す。
 		const content =
 			warning && rawContent.length > 0
 				? [
@@ -525,7 +471,6 @@ export default async function analyzeFibonacci(opts: Record<string, unknown> = {
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'analyze_fibonacci',
 	description: `フィボナッチ・リトレースメント／エクステンション水準を自動計算。

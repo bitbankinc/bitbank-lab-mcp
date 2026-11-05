@@ -1,10 +1,3 @@
-/**
- * refresh_pairs_cache ツールのテスト。
- * - 成功時: content にペア数・取得時刻・主要ペアの taker/maker レートが含まれる
- * - 失敗時: fail() を返す（サーバーは継続）
- * モック規約: vi.spyOn(globalThis,'fetch') / afterEach restoreAllMocks（.claude/rules/testing.md）
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearPairsSpecCache } from '../lib/pairs.js';
 import refreshPairsCache, { toolDef } from '../tools/refresh_pairs_cache.js';

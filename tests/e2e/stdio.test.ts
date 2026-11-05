@@ -1,14 +1,4 @@
-/**
- * MCP stdio E2E テスト
- *
- * 実際にサーバーをサブプロセスで起動し、MCP クライアントから
- * tools/list, tools/call を送って応答を検証する。
- * 外部 API は mock-server-entry.ts 経由でモック。
- *
- * サブプロセスが起動直後に異常終了すると、connect() は opaque な
- * "Connection closed" を投げる。原因特定のため stderr をテスト側で
- * 収集し、connect 失敗時にエラーメッセージへ畳み込む。
- */
+// サブプロセスが起動直後に異常終了すると connect() は opaque な "Connection closed" しか投げないので、stderr をテスト側で収集して connect 失敗時のエラーメッセージに畳み込む。
 import { existsSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -48,17 +38,11 @@ function createTransport(mockResponses: Record<string, unknown> = {}, env: Recor
 	});
 }
 
-/**
- * transport.stderr の Readable を購読し、累積した文字列を返すクロージャを返す。
- * 子プロセスが initialize を返す前に死んだ場合、Client.connect() は
- * "Connection closed" としか言わないため、stderr バッファを必ず捕捉してエラーに添える。
- */
 function captureStderr(transport: StdioClientTransport): () => string {
 	const chunks: string[] = [];
 	const stream = transport.stderr;
 	if (stream) {
-		// SDK の型は Stream（setEncoding を持たない基底クラス）。実体は Readable なので
-		// instanceof で絞り込んでから設定する。絞り込めなくても下の Buffer 分岐で吸収できる。
+		// SDK の型は Stream（setEncoding を持たない基底クラス）だが実体は Readable なので、instanceof で絞り込んでから設定する（絞り込めなくても下の Buffer 分岐で吸収できる）。
 		if (stream instanceof Readable) {
 			stream.setEncoding('utf8');
 		}
@@ -85,7 +69,6 @@ async function connectWithDiagnostics(client: Client, transport: StdioClientTran
 	}
 }
 
-/** content からテキストを抽出するヘルパー */
 function extractText(result: Awaited<ReturnType<Client['callTool']>>): string {
 	return (result.content as Array<{ type: string; text: string }>)
 		.filter((c) => c.type === 'text')
@@ -93,9 +76,6 @@ function extractText(result: Awaited<ReturnType<Client['callTool']>>): string {
 		.join('\n');
 }
 
-// ============================================================
-// tools/list
-// ============================================================
 describe('MCP stdio E2E', () => {
 	describe('tools/list', () => {
 		let client: Client;
@@ -127,9 +107,6 @@ describe('MCP stdio E2E', () => {
 		});
 	});
 
-	// ============================================================
-	// get_ticker
-	// ============================================================
 	describe('get_ticker', () => {
 		let client: Client;
 
@@ -172,9 +149,6 @@ describe('MCP stdio E2E', () => {
 		});
 	});
 
-	// ============================================================
-	// get_orderbook
-	// ============================================================
 	describe('get_orderbook', () => {
 		let client: Client;
 
@@ -208,13 +182,9 @@ describe('MCP stdio E2E', () => {
 		});
 	});
 
-	// ============================================================
-	// mid 丸め規約の経路間整合（同一 /depth → 同一 mid）
-	// ============================================================
 	describe('mid 丸め規約の経路間整合（E2E / 奇数 spread）', () => {
 		let client: Client;
 		// bestAsk=15500001 / bestBid=15490000 → mid_raw=15495000.5。JPY は整数丸めで 15,495,001。
-		// 修正前は summary が小数 15,495,000.5、prepare_depth_data が 15495001 と乖離していた。
 		const oddDepth = {
 			success: 1,
 			data: {
@@ -252,15 +222,13 @@ describe('MCP stdio E2E', () => {
 			const pdd = await client.callTool({ name: 'prepare_depth_data', arguments: { pair: 'btc_jpy' } });
 			const pddText = extractText(pdd);
 
-			// 円表記の経路（summary / statistics / pressure）は全て整数 15,495,001 を表示する。
 			expect(summary).toContain('15,495,001');
 			expect(stats).toContain('15,495,001');
 			expect(pressure).toContain('15,495,001');
-			// JSON 経路（prepare_depth_data）は生の整数。
 			expect(pddText).toContain('"mid":15495001');
 			assertOkQuality(pdd);
 
-			// 旧バグの小数 mid（クロスチェック乖離の原因）がどの経路にも出ないこと。
+			// 小数 mid（クロスチェック乖離の原因）がどの経路にも出ないこと。
 			for (const t of [summary, stats, pressure, pddText]) {
 				expect(t).not.toContain('15,495,000.5');
 				expect(t).not.toContain('15495000.5');
@@ -268,9 +236,6 @@ describe('MCP stdio E2E', () => {
 		});
 	});
 
-	// ============================================================
-	// get_candles
-	// ============================================================
 	describe('get_candles', () => {
 		let client: Client;
 
@@ -288,32 +253,21 @@ describe('MCP stdio E2E', () => {
 				arguments: { pair: 'btc_jpy', type: '1day', limit: 5 },
 			});
 			const text = extractText(result);
-			// OHLCV データがテキストに含まれる
 			expect(text).toContain('BTC/JPY');
 			expect(text).toContain('OHLCV');
 			assertOkQuality(result);
 		});
 
 		it('バリデーションエラー: 不正な type は SDK 側で弾かれる', async () => {
-			try {
-				const result = await client.callTool({
-					name: 'get_candles',
-					arguments: { pair: 'btc_jpy', type: 'invalid' },
-				});
-				// SDK が resolve した場合（新しいバージョン）
-				expect(result.isError).toBe(true);
-				const text = extractText(result);
-				expect(text).toMatch(/invalid/i);
-			} catch (err) {
-				// SDK が reject した場合（古いバージョン）
-				expect(String(err)).toMatch(/invalid/i);
-			}
+			const result = await client.callTool({
+				name: 'get_candles',
+				arguments: { pair: 'btc_jpy', type: 'invalid' },
+			});
+			expect(result.isError).toBe(true);
+			expect(extractText(result)).toMatch(/invalid/i);
 		});
 	});
 
-	// ============================================================
-	// get_transactions
-	// ============================================================
 	describe('get_transactions', () => {
 		let client: Client;
 
@@ -348,9 +302,6 @@ describe('MCP stdio E2E', () => {
 		});
 	});
 
-	// ============================================================
-	// get_tickers_jpy
-	// ============================================================
 	describe('get_tickers_jpy', () => {
 		let client: Client;
 
@@ -371,9 +322,6 @@ describe('MCP stdio E2E', () => {
 		});
 	});
 
-	// ============================================================
-	// get_flow_metrics（内部で get_transactions を呼ぶ）
-	// ============================================================
 	describe('get_flow_metrics', () => {
 		let client: Client;
 
@@ -391,16 +339,12 @@ describe('MCP stdio E2E', () => {
 				arguments: { pair: 'btc_jpy', limit: 3 },
 			});
 			const text = extractText(result);
-			// CVD やアグレッサー比率がテキストに含まれる
 			expect(text).toContain('CVD');
 			expect(text).toContain('BTC/JPY');
 			assertOkQuality(result);
 		});
 	});
 
-	// ============================================================
-	// get_volatility_metrics（内部で get_candles を呼ぶ）
-	// ============================================================
 	describe('get_volatility_metrics', () => {
 		let client: Client;
 
@@ -426,9 +370,6 @@ describe('MCP stdio E2E', () => {
 		});
 	});
 
-	// ============================================================
-	// analyze_indicators（内部で get_candles を呼ぶ、26本以上必要）
-	// ============================================================
 	describe('analyze_indicators', () => {
 		let client: Client;
 
@@ -447,15 +388,11 @@ describe('MCP stdio E2E', () => {
 			});
 			const text = extractText(result);
 			expect(text).toMatch(/BTC[_/]JPY/);
-			// RSI, MACD, SMA のいずれかが含まれる
 			expect(text).toMatch(/RSI|MACD|SMA/);
 			assertOkQuality(result);
 		});
 	});
 
-	// ============================================================
-	// detect_patterns（内部で get_candles を呼ぶ、20本以上必要）
-	// ============================================================
 	describe('detect_patterns', () => {
 		let client: Client;
 
@@ -479,9 +416,6 @@ describe('MCP stdio E2E', () => {
 		});
 	});
 
-	// ============================================================
-	// detect_macd_cross（内部で analyze_indicators → get_candles）
-	// ============================================================
 	describe('detect_macd_cross', () => {
 		let client: Client;
 
@@ -505,9 +439,6 @@ describe('MCP stdio E2E', () => {
 		});
 	});
 
-	// ============================================================
-	// detect_whale_events（内部で getDepth + getCandles(5min)）
-	// ============================================================
 	describe('detect_whale_events', () => {
 		let client: Client;
 
@@ -537,9 +468,6 @@ describe('MCP stdio E2E', () => {
 		});
 	});
 
-	// ============================================================
-	// analyze_market_signal（内部で candles + transactions + indicators）
-	// ============================================================
 	describe('analyze_market_signal', () => {
 		let client: Client;
 

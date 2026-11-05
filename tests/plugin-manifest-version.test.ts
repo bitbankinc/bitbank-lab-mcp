@@ -53,7 +53,7 @@ const PLUGIN_MANIFESTS: string[] = [
 /** CHANGELOG で最後に切ったリリースのバージョン（`## [x.y.z] - YYYY-MM-DD` の最初の 1 つ）。 */
 function latestReleasedVersion(): string | undefined {
 	const changelog = fs.readFileSync(path.join(PACKAGE_ROOT, 'CHANGELOG.md'), 'utf8');
-	return changelog.match(/^## \[(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)\] - \d{4}-\d{2}-\d{2}$/m)?.[1];
+	return changelog.match(/^## \[(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\] - \d{4}-\d{2}-\d{2}$/m)?.[1];
 }
 
 describe('plugin manifest の version', () => {

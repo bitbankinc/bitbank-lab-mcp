@@ -95,9 +95,7 @@ describe('detect_whale_events', () => {
 		expect(res.summary).not.toContain('BTC');
 	});
 
-	// ── 新規追加テスト ──
-	// beforeEach で resetAllMocks を呼び、前テストが消費しなかった
-	// mockResolvedValueOnce キューをフラッシュしてテスト間の干渉を防ぐ
+	// 前テストが消費しなかった mockResolvedValueOnce キューを resetAllMocks でフラッシュして、テスト間の干渉を防ぐ。
 	describe('branch coverage', () => {
 		beforeEach(() => {
 			vi.resetAllMocks();
@@ -267,7 +265,6 @@ describe('detect_whale_events', () => {
 
 			const res = await detectWhaleEvents('btc_jpy', '1hour', 0.61);
 			assertOk(res);
-			// priceChange = 0 → summary に "0.00%" が含まれる
 			expect(res.summary).toContain('価格変化: 0.00%');
 		});
 
@@ -280,7 +277,6 @@ describe('detect_whale_events', () => {
 			assertOk(res);
 			expect(res.data.stats.buyVolume).toBe(0);
 			expect(res.data.stats.sellVolume).toBe(0);
-			// バーが空の場合 0% と表示される
 			expect(res.summary).toContain('(0%)');
 		});
 
@@ -328,9 +324,6 @@ describe('detect_whale_events', () => {
 			expect(res.meta?.errorType).toBe('internal');
 		});
 
-		// === 形成中足（provisional）注記は対象外 ===
-		// 主分析は板スナップショットであり、candles は lookback の概況（priceChange）にしか使わない。
-		// 最新足が形成中（ts ≈ now）でも note を付与しないことを固定する。
 		it('板スナップショットのため形成中足注記は付与しない', async () => {
 			mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
 			mockedGetCandles.mockResolvedValueOnce(

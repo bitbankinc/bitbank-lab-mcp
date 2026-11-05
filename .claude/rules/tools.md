@@ -1,5 +1,9 @@
 ---
-globs: tools/**/*.ts, src/handlers/**/*.ts, src/tool-registry.ts, src/private/**/*.ts
+paths:
+  - "tools/**/*.ts"
+  - "src/handlers/**/*.ts"
+  - "src/tool-registry.ts"
+  - "src/private/**/*.ts"
 ---
 
 # MCP ツール追加・修正

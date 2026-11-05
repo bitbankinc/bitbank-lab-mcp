@@ -163,7 +163,6 @@ describe('mergeChunks', () => {
 		vi.restoreAllMocks();
 	});
 
-	/** タイムスタンプ付き OHLCV 行を生成するヘルパー */
 	const row = (ts: number): [string, string, string, string, string, string] => [
 		'100',
 		'110',
@@ -183,7 +182,6 @@ describe('mergeChunks', () => {
 
 		expect(merged.failedKeys).toEqual([]);
 		expect(merged.rows).toHaveLength(4);
-		// timestamp 昇順
 		expect(merged.rows.map((r) => Number(r[5]))).toEqual([1000, 2000, 3000, 4000]);
 	});
 
@@ -357,7 +355,6 @@ describe('mergeChunks', () => {
 });
 
 describe('dedupeByTimestamp', () => {
-	/** OHLCV 行を生成するヘルパー */
 	const row = (o: number, h: number, l: number, c: number, v: number, ts: number): OhlcvRow => [
 		String(o),
 		String(h),
@@ -401,7 +398,6 @@ describe('dedupeByTimestamp', () => {
 		const r0 = row(100, 110, 90, 105, 3, 1000);
 		const r1 = row(100, 110, 90, 105, 5, 1000);
 		expect(dedupeByTimestamp([r0, r1])).toEqual([r1]);
-		// 順序逆でも同じ結果
 		expect(dedupeByTimestamp([r1, r0])).toEqual([r1]);
 	});
 
@@ -414,9 +410,7 @@ describe('dedupeByTimestamp', () => {
 	});
 
 	it('同一 ts × 3 件で a→b→c が連鎖する → 最終 1 件', () => {
-		// r0: 全 0 OHLC（priority a で除外）
-		// r1: 非ゼロ OHLC, v=3（priority b で r2 に負ける）
-		// r2: 非ゼロ OHLC, v=5（最終勝者）
+		// r0: 全 0 OHLC（priority a で除外）、r1: 非ゼロ OHLC, v=3（priority b で r2 に負ける）、r2: 非ゼロ OHLC, v=5（最終勝者）
 		const r0 = row(0, 0, 0, 0, 10, 1000);
 		const r1 = row(100, 110, 90, 105, 3, 1000);
 		const r2 = row(100, 110, 90, 105, 5, 1000);

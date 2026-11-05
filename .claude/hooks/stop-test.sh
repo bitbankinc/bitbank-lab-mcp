@@ -46,7 +46,7 @@ all_changes="$(printf '%s\n%s\n%s' "$changed" "$staged" "$untracked" | sort -u |
 
 if echo "$all_changes" | grep -qE '\.(ts|tsx)$'; then
   # テスト実行（tail で出力を抑制しつつ結果を表示）
-  test_out="$(npx vitest run --reporter=verbose 2>&1 | tail -20)" || true
+  test_out="$(npx --no-install vitest run --reporter=verbose 2>&1 | tail -20)" || true
 
   # 失敗があればフィードバック
   if echo "$test_out" | grep -qE 'Tests\s+.*failed'; then

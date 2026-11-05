@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { formatPair, formatPercent, formatPrice } from '../lib/formatter.js';
+import { roundPriceAtLevel } from '../lib/price.js';
 import { failFromError, failFromValidation } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { collectUpstreamWarnings, extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
@@ -12,8 +13,6 @@ const AnalyzeMtfFibonacciInputSchema = _BaseInputSchema.extend({
 
 import type { Pair } from '../src/schemas.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
-
-// ── Types ──
 
 interface FibLevel {
 	ratio: number;
@@ -29,18 +28,11 @@ interface ConfluenceZone {
 	distancePct: number;
 }
 
-// ── Confluence Detection ──
-
-/**
- * Find price zones where Fibonacci levels from different lookback periods cluster together.
- * A confluence zone indicates stronger support/resistance.
- */
 function detectConfluence(
 	periodResults: Array<{ lookbackDays: number; levels: FibLevel[] }>,
 	currentPrice: number,
 	tolerancePct: number = 1.0,
 ): ConfluenceZone[] {
-	// Collect all levels from all periods
 	const allLevels: Array<{ lookbackDays: number; ratio: number; price: number }> = [];
 
 	for (const period of periodResults) {
@@ -57,10 +49,8 @@ function detectConfluence(
 
 	if (allLevels.length < 2) return [];
 
-	// Sort by price
 	const sorted = [...allLevels].sort((a, b) => a.price - b.price);
 
-	// Cluster nearby levels using tolerance
 	const zones: ConfluenceZone[] = [];
 	const used = new Set<number>();
 
@@ -82,7 +72,6 @@ function detectConfluence(
 			}
 		}
 
-		// Only consider as confluence if levels from at least 2 different periods match
 		const uniquePeriods = new Set(cluster.map((c) => c.lookbackDays));
 		if (uniquePeriods.size < 2) continue;
 
@@ -96,20 +85,17 @@ function detectConfluence(
 			uniquePeriods.size >= 3 ? 'strong' : uniquePeriods.size >= 2 && cluster.length >= 3 ? 'moderate' : 'weak';
 
 		zones.push({
-			priceZone: [Math.round(zoneMin), Math.round(zoneMax)],
+			priceZone: [roundPriceAtLevel(zoneMin), roundPriceAtLevel(zoneMax)],
 			matchedLevels: cluster,
 			strength,
 			distancePct: Number(distancePct.toFixed(2)),
 		});
 	}
 
-	// Sort by distance from current price
 	zones.sort((a, b) => Math.abs(a.distancePct) - Math.abs(b.distancePct));
 
 	return zones;
 }
-
-// ── Content Generation ──
 
 function generateMtfContent(
 	pair: string,
@@ -124,7 +110,6 @@ function generateMtfContent(
 	lines.push(`現在価格: ${formatPrice(currentPrice, pair)}`);
 	lines.push('');
 
-	// Per-period summaries
 	for (const pr of periodResults) {
 		const d = pr.data;
 		const swingHigh = d.swingHigh as { price: number; date: string };
@@ -145,7 +130,6 @@ function generateMtfContent(
 		lines.push('');
 	}
 
-	// Confluence zones
 	if (confluence.length > 0) {
 		lines.push('【コンフルエンス（合流）ゾーン】');
 		for (const zone of confluence) {
@@ -171,17 +155,13 @@ function generateMtfContent(
 	return [{ type: 'text', text: lines.join('\n') }];
 }
 
-// ── Main Handler ──
-
 export default async function analyzeMtfFibonacci(pair: string = 'btc_jpy', lookbackDays: number[] = [30, 90, 180]) {
 	const chk = ensurePair(pair);
 	if (!chk.ok) return failFromValidation(chk, AnalyzeMtfFibonacciOutputSchema);
 
 	try {
-		// Deduplicate lookback periods
 		const uniqueDays = [...new Set(lookbackDays)];
 
-		// Run all lookback periods in parallel
 		const results = await Promise.all(
 			uniqueDays.map(async (days) => {
 				const res = await analyzeFibonacci({
@@ -195,13 +175,10 @@ export default async function analyzeMtfFibonacci(pair: string = 'btc_jpy', look
 			}),
 		);
 
-		// Build per-period data
 		const periods: Record<string, unknown> = {};
 		const periodSummaries: Array<{ lookbackDays: number; data: Record<string, unknown>; levels: FibLevel[] }> = [];
 		let currentPrice = 0;
 
-		// 子 analyze_fibonacci の meta.warning（get_candles 由来）/ 失敗期間 を集約。
-		// `[Nd]` prefix 付き 1 文字列に集約 → meta.warning
 		const warningSources: Array<{ source: string; warning?: string }> = [];
 		let hasFailure = false;
 
@@ -237,21 +214,18 @@ export default async function analyzeMtfFibonacci(pair: string = 'btc_jpy', look
 			}
 		}
 
-		// `[Nd]` prefix 付き 1 文字列に集約。失敗期間がある場合は信頼度低下警告も末尾に追記する。
 		const aggregatedWarning = collectUpstreamWarnings(warningSources);
 		const warningLines: string[] = [];
 		if (aggregatedWarning) warningLines.push(aggregatedWarning);
 		if (hasFailure) warningLines.push('⚠️ 一部期間のデータ取得失敗のため合流解釈の信頼度低');
 		const warning = warningLines.length > 0 ? warningLines.join('\n') : undefined;
 
-		// Detect confluence
 		const confluenceInput = periodSummaries.map((ps) => ({
 			lookbackDays: ps.lookbackDays,
 			levels: ps.levels,
 		}));
 		const confluence = detectConfluence(confluenceInput, currentPrice);
 
-		// Generate content + prepend upstream warning at the top (LLM が JSON より前に気づけるように)。
 		const rawContent = generateMtfContent(chk.pair, currentPrice, periodSummaries, confluence);
 		const content =
 			warning && rawContent.length > 0
@@ -293,7 +267,6 @@ export default async function analyzeMtfFibonacci(pair: string = 'btc_jpy', look
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'analyze_mtf_fibonacci',
 	description: `[Multi-Timeframe Fibonacci / Confluence] 複数期間フィボナッチ一括分析（MTF fibonacci / confluence zone）。複数ルックバック期間の水準を並列計算し、コンフルエンス（合流）ゾーンを自動検出。analyze_fibonacci を個別に呼ぶ必要なし。`,

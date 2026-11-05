@@ -75,11 +75,7 @@ function makeNormalized(n: number, startDate = '2024-01-01') {
 	}));
 }
 
-/**
- * bitbank の日足を模した UTC ISO 8601 (full ISO) を返すモック生成。
- * `get_candles` が `toIsoTime(ts)` で出力する形式と一致するため、
- * 環境依存（実行 TZ）の影響を受けない厳密な境界テストに用いる。
- */
+/** `get_candles` が `toIsoTime(ts)` で出力する UTC ISO 8601 (full ISO) と同じ形式にして、実行 TZ の影響を受けない厳密な境界テストに使う。 */
 function makeJstDailyCandles(n: number, startJstDate: string) {
 	const baseMs = dayjs.tz(startJstDate, 'Asia/Tokyo').valueOf();
 	const dayMs = 24 * 60 * 60 * 1000;
@@ -190,7 +186,6 @@ describe('fetchCandlesForBacktest', () => {
 			},
 		} as never);
 		const result = await fetchCandlesForBacktest('btc_jpy', '4H', { type: 'period', value: '1M' }, 5);
-		// Only the valid candle passes
 		expect(result.every((c) => !Number.isNaN(c.open))).toBe(true);
 	});
 
@@ -266,14 +261,12 @@ describe('fetchCandlesForBacktest', () => {
 			{ type: 'absolute', start: '2024-01-10', end: '2024-01-20' },
 			0,
 		);
-		// end より後 (2024-01-21+) は除外
 		for (const c of result) {
 			expect(dayjs(c.time).valueOf()).toBeLessThanOrEqual(dayjs('2024-01-20').endOf('day').valueOf());
 		}
 	});
 
 	it('absolute: start_date 以降のシグナル評価用に warmup 分を含めて返す', async () => {
-		// 2024-01-01 から 50 日分のデータ
 		vi.mocked(getCandles).mockResolvedValue({
 			ok: true,
 			summary: 'ok',
@@ -288,7 +281,6 @@ describe('fetchCandlesForBacktest', () => {
 		);
 		// 最初の候補は start_date より warmup 本前 = 2024-01-05 のはず
 		expect(result[0].time).toBe('2024-01-05');
-		// 最後は end_date 以下
 		expect(dayjs(result[result.length - 1].time).valueOf()).toBeLessThanOrEqual(
 			dayjs('2024-01-20').endOf('day').valueOf(),
 		);
@@ -356,8 +348,7 @@ describe('fetchCandlesForBacktest', () => {
 	});
 
 	it('absolute: 最古足が start_date と完全一致 → 通過する（off-by-one 境界）', async () => {
-		// 最古足が start_date (JST) と一致するケース。earliestFetchedMs > startMs ではないので通過する。
-		// 環境 TZ 非依存のテストにするため、bitbank の本物の出力形式 (UTC ISO 8601) でモックする。
+		// 最古足が start_date (JST) と一致するケース（earliestFetchedMs > startMs ではないので通過する）。環境 TZ 非依存にするため、bitbank の本物の出力形式 (UTC ISO 8601) でモックする。
 		const start = dayjs().tz('Asia/Tokyo').subtract(30, 'day').format('YYYY-MM-DD');
 		const end = dayjs.tz(start, 'Asia/Tokyo').add(10, 'day').format('YYYY-MM-DD');
 		const expectedFirstIso = dayjs.tz(start, 'Asia/Tokyo').toISOString();
@@ -420,9 +411,7 @@ describe('fetchCandlesForBacktest: 絶対範囲指定の TZ 非依存性', () =>
 			{ type: 'absolute', start: '2024-01-10', end: '2024-01-20' },
 			0,
 		);
-		// start_date を UTC として解釈してしまうと最古足 (JST 0:00 = UTC 前日 15:00)
-		// が startMs より前と判定され「Insufficient historical data」が出る。
-		// JST 0:00 として解釈されていれば最古足ぴったりから返る。
+		// start_date を UTC として解釈すると最古足 (JST 0:00 = UTC 前日 15:00) が startMs より前と判定され「Insufficient historical data」が出る。JST 0:00 として解釈されていれば最古足ぴったりから返る。
 		expect(result[0].time).toBe(expectedFirstIso);
 		// end_date も JST 23:59:59.999 として解釈される。JST 2024-01-20 = UTC 2024-01-19T15:00:00Z までが含まれる。
 		const lastMs = dayjs(result[result.length - 1].time).valueOf();

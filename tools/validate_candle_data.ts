@@ -36,14 +36,12 @@ export default async function validateCandleData(
 	const chk = ensurePair(pair);
 	if (!chk.ok) return failFromValidation(chk);
 
-	// ティア判定 → デフォルト閾値を決定（ユーザー指定があればそちらを優先）
 	const tier: PairTier = classifyPairTier(chk.pair);
 	const defaults = getTierDefaults(tier);
 	const priceSigma = priceSigmaOverride ?? defaults.priceSigma;
 	const volumeMultiplier = volumeMultiplierOverride ?? defaults.volumeMultiplier;
 
 	try {
-		// 1. 既存の getCandles でデータ取得
 		const candlesResult = await getCandles(chk.pair, type, date, limit, tz);
 		if (!candlesResult?.ok) {
 			return fail(
@@ -57,7 +55,6 @@ export default async function validateCandleData(
 			return fail('ローソク足データが空です', 'user');
 		}
 
-		// 2. CandleRow に変換（lib/candle-validate が要求する型）
 		const rows: CandleRow[] = normalized.map(
 			(c: { open: number; high: number; low: number; close: number; volume?: number; isoTime?: string | null }) => ({
 				open: c.open,
@@ -69,7 +66,6 @@ export default async function validateCandleData(
 			}),
 		);
 
-		// 3. 各バリデーション実行
 		const completeness = checkCompleteness(rows, type);
 		const duplicates = checkDuplicates(rows);
 		const integrity = checkIntegrity(rows);
@@ -83,7 +79,6 @@ export default async function validateCandleData(
 			defaults.zeroVolumePenaltyWeight,
 		);
 
-		// 4. LLM 向けテキスト構築
 		const summary = buildValidationText(chk.pair, type, tier, {
 			completeness,
 			duplicates,
@@ -93,7 +88,6 @@ export default async function validateCandleData(
 			qualityScore,
 		});
 
-		// 5. Result<T, M> で返す
 		const data: ValidateCandleDataData = {
 			completeness,
 			duplicates,
@@ -125,8 +119,6 @@ export default async function validateCandleData(
 	}
 }
 
-// ── テキスト構築 ──
-
 const TIER_LABELS: Record<PairTier, string> = {
 	major: '高流動性',
 	mid: '中流動性',
@@ -143,7 +135,6 @@ function buildValidationText(pair: string, type: string, tier: PairTier, r: Vali
 	lines.push(`品質スコア: ${r.qualityScore.score}/100 (${r.qualityScore.grade})`);
 	lines.push('');
 
-	// スコア内訳
 	const b = r.qualityScore.breakdown;
 	lines.push('--- スコア内訳 ---');
 	lines.push(`  完全性: ${b.completeness}/30`);
@@ -152,7 +143,6 @@ function buildValidationText(pair: string, type: string, tier: PairTier, r: Vali
 	lines.push(`  出来高健全性: ${b.volumeHealth}/20`);
 	lines.push('');
 
-	// 完全性
 	lines.push('--- 完全性 ---');
 	lines.push(
 		`  期待本数: ${r.completeness.expected} / 実際: ${r.completeness.actual} / 欠損: ${r.completeness.missing}`,
@@ -166,7 +156,6 @@ function buildValidationText(pair: string, type: string, tier: PairTier, r: Vali
 	}
 	lines.push('');
 
-	// 重複
 	lines.push('--- 重複 ---');
 	lines.push(`  重複件数: ${r.duplicates.count}`);
 	if (r.duplicates.timestamps.length > 0) {
@@ -176,7 +165,6 @@ function buildValidationText(pair: string, type: string, tier: PairTier, r: Vali
 	}
 	lines.push('');
 
-	// OHLCV 整合性
 	lines.push('--- OHLCV 整合性 ---');
 	lines.push(`  チェック済み: ${r.integrity.totalChecked} / 不正: ${r.integrity.invalidCount}`);
 	if (r.integrity.issues.length > 0) {
@@ -186,7 +174,6 @@ function buildValidationText(pair: string, type: string, tier: PairTier, r: Vali
 	}
 	lines.push('');
 
-	// 価格異常値
 	lines.push('--- 価格異常値 ---');
 	lines.push(`  検出数: ${r.priceAnomalies.anomalyCount}/${r.priceAnomalies.totalBars}本`);
 	if (r.priceAnomalies.stats) {
@@ -201,7 +188,6 @@ function buildValidationText(pair: string, type: string, tier: PairTier, r: Vali
 	}
 	lines.push('');
 
-	// 出来高異常値
 	lines.push('--- 出来高異常値 ---');
 	lines.push(
 		`  検出数: ${r.volumeAnomalies.anomalyCount} (ゼロ: ${r.volumeAnomalies.zeroCount}, スパイク: ${r.volumeAnomalies.spikeCount})`,
@@ -220,8 +206,6 @@ function buildValidationText(pair: string, type: string, tier: PairTier, r: Vali
 
 	return lines.join('\n');
 }
-
-// ── MCP ツール定義 ──
 
 export const toolDef: ToolDefinition = {
 	name: 'validate_candle_data',

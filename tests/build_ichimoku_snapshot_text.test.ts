@@ -55,6 +55,27 @@ function makeInput(overrides?: Partial<BuildIchimokuSnapshotTextInput>): BuildIc
 }
 
 describe('buildIchimokuSnapshotText', () => {
+	it('安いペアの価格・転換線・目標を小数 3 桁で切らない', () => {
+		const text = buildIchimokuSnapshotText(
+			makeInput({
+				close: 31.2345,
+				tenkan: 31.1234,
+				scenarios: {
+					scenarios: {
+						bullish: { condition: '雲の上を維持', target: 33.4209, probability: '60%' },
+						bearish: { condition: '基準線を割り込む', target: 29.8765, probability: '25%' },
+					},
+					keyLevels: { support: [30.1234], resistance: [32.5678] },
+					watchPoints: [],
+				},
+			}),
+		);
+		expect(text).toContain('価格: 31.2345円');
+		expect(text).toContain('・転換線: 31.1234円');
+		expect(text).toContain('→ 33.4209円');
+		expect(text).toContain('サポート: 30.1234円');
+	});
+
 	it('基本出力: ペア名と価格を含む', () => {
 		const text = buildIchimokuSnapshotText(makeInput());
 		expect(text).toContain('BTC_JPY 1day 一目均衡表分析');

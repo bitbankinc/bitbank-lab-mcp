@@ -59,7 +59,6 @@ describe('prependWarnings', () => {
 
 	it("separator: '\\n\\n'（デフォルト）で warning と本文の間に空行が入る", () => {
 		const text = prependWarnings('BODY', { warning: 'partial fetch' });
-		// "⚠️ partial fetch\n\nBODY" 形式
 		expect(text).toBe('⚠️ partial fetch\n\nBODY');
 	});
 

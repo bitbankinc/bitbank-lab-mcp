@@ -13,9 +13,6 @@ afterEach(() => {
 	globalThis.fetch = originalFetch;
 });
 
-// --- helpers -----------------------------------------------------------
-
-/** OHLCV row: [open, high, low, close, volume, timestamp_ms] */
 type OhlcvRow = [number, number, number, number, number, number];
 
 function makeOhlcvRows(
@@ -58,11 +55,7 @@ function mockFetchWithOhlcv(rows: OhlcvRow[]) {
 	});
 }
 
-// --- tests -------------------------------------------------------------
-
 describe('get_volatility_metrics', () => {
-	// === 1. Input validation =============================================
-
 	describe('入力バリデーション', () => {
 		it('不正な pair → ok: false', async () => {
 			const res = await getVolatilityMetrics('INVALID!!!', '1day', 30);
@@ -79,8 +72,6 @@ describe('get_volatility_metrics', () => {
 			expect(res.ok).toBe(false);
 		});
 	});
-
-	// === 2. Happy path ===================================================
 
 	describe('正常系（30本、annualize=true）', () => {
 		const rows = makeOhlcvRows(30);
@@ -123,17 +114,13 @@ describe('get_volatility_metrics', () => {
 			mockFetchWithOhlcv(rows);
 			const res = await getVolatilityMetrics('btc_jpy', '1day', 30);
 			assertOk(res);
-			for (const r of res.data.rolling) {
-				if (r.rv_std_ann != null) {
-					expect(r.rv_std_ann).toBeCloseTo(r.rv_std * Math.sqrt(365), 6);
-				}
+			const annualized = res.data.rolling.filter((r) => r.rv_std_ann != null);
+			expect(annualized.length).toBeGreaterThan(0);
+			for (const r of annualized) {
+				expect(r.rv_std_ann).toBeCloseTo(r.rv_std * Math.sqrt(365), 6);
 			}
 		});
 	});
-
-	// === 実現ボラの分散定義（標本 n-1, Bessel）の一貫性 ===================
-	//   Issue #638: 実現ボラは標本分散（n-1）を採用。
-	//   aggregate rv_std / rolling rv_std / annualized が同一定義で一貫することを検証する。
 
 	describe('分散定義（標本 n-1）の一貫性', () => {
 		const rows = makeOhlcvRows(60, { noise: 0.05 });
@@ -143,7 +130,6 @@ describe('get_volatility_metrics', () => {
 			const res = await getVolatilityMetrics('btc_jpy', '1day', 60, [14, 20, 30]);
 			assertOk(res);
 			const ret = res.data.series.ret;
-			// 標本分散（n-1）で計算した値と一致する
 			expect(res.data.aggregates.rv_std).toBeCloseTo(stddev(ret, true), 6);
 			// 母集団分散（n）より厳密に大きい（Bessel 補正が効いている証跡）
 			expect(stddev(ret, true)).toBeGreaterThan(stddev(ret));
@@ -166,18 +152,13 @@ describe('get_volatility_metrics', () => {
 			assertOk(res);
 			const ann = Math.sqrt(365);
 			expect(res.data.aggregates.rv_std_ann).toBeCloseTo(res.data.aggregates.rv_std * ann, 6);
-			for (const r of res.data.rolling) {
-				if (r.rv_std_ann != null) {
-					expect(r.rv_std_ann).toBeCloseTo(r.rv_std * ann, 6);
-				}
+			const annualized = res.data.rolling.filter((r) => r.rv_std_ann != null);
+			expect(annualized.length).toBeGreaterThan(0);
+			for (const r of annualized) {
+				expect(r.rv_std_ann).toBeCloseTo(r.rv_std * ann, 6);
 			}
 		});
 	});
-
-	// === volatile/calm 閾値の再ベースライン（標本分散 n-1 後）=============
-	//   実現ボラの標本分散(n-1, Bessel)化に伴う閾値整合確認。閾値は据え置き
-	//   （VOLATILE/CALM_RV_ANN_THRESHOLD）。境界値と、判定基準が「標本分散 rv_std × 年率」で
-	//   rv_std / rolling / annualized に一貫することを検証する。
 
 	describe('classifyRealizedVolTags（volatile/calm 閾値の境界値）', () => {
 		it('閾値定数は標本分散化後も据え置き（volatile=0.8 / calm=0.3）', () => {
@@ -217,7 +198,6 @@ describe('get_volatility_metrics', () => {
 			const rvAnn = res.data.aggregates.rv_std_ann as number;
 			// 閾値の判定基準は「標本分散(n-1) × sqrt(365)」で aggregate / annualized が一貫
 			expect(rvAnn).toBeCloseTo(stddev(ret, true) * ann, 6);
-			// tool が付ける tags は純粋関数の判定と完全一致する
 			expect(res.data.tags).toEqual(classifyRealizedVolTags(rvAnn));
 			expect(rvAnn).toBeGreaterThanOrEqual(VOLATILE_RV_ANN_THRESHOLD);
 			expect(res.data.tags).toContain('volatile');
@@ -250,8 +230,6 @@ describe('get_volatility_metrics', () => {
 		});
 	});
 
-	// === 3. annualize: false =============================================
-
 	describe('annualize: false', () => {
 		const rows = makeOhlcvRows(30);
 
@@ -272,8 +250,6 @@ describe('get_volatility_metrics', () => {
 			}
 		});
 	});
-
-	// === 4. Edge cases ===================================================
 
 	describe('エッジケース', () => {
 		it('ちょうど 20 本（最小）で ok: true', async () => {
@@ -309,8 +285,6 @@ describe('get_volatility_metrics', () => {
 		});
 	});
 
-	// === 5. Parkinson estimator correctness ==============================
-
 	describe('Parkinson estimator', () => {
 		it('全ローソク足の H/L 比から Parkinson が手計算と一致する', async () => {
 			const rows: OhlcvRow[] = [];
@@ -333,8 +307,6 @@ describe('get_volatility_metrics', () => {
 		});
 	});
 
-	// === 6. ATR correctness ==============================================
-
 	describe('ATR', () => {
 		it('ATR > 0 かつ合理的な範囲', async () => {
 			const rows = makeOhlcvRows(30);
@@ -352,9 +324,7 @@ describe('get_volatility_metrics', () => {
 			expect(res.data.aggregates.atr).toBeCloseTo(0, 2);
 		});
 
-		// 数値契約: aggregate ATR は Wilder ATR (RMA ベース、period=14 固定) と一致する。
-		// 初回値 = SMA(TR[1..14])、以降は ATR_n = (ATR_{n-1} * 13 + TR_n) / 14。
-		// TradingView・MT4 デフォルトの ATR と同じ。
+		// Wilder ATR (RMA ベース): 初回値 = SMA(TR[1..14])、以降は ATR_n = (ATR_{n-1} * 13 + TR_n) / 14（TradingView デフォルトの ATR と同じ）。
 		it('aggregate ATR は手計算した Wilder ATR (period=14 固定) と一致する', async () => {
 			const rows = makeOhlcvRows(60);
 			mockFetchWithOhlcv(rows);
@@ -368,14 +338,11 @@ describe('get_volatility_metrics', () => {
 			const period = 14;
 			const n = highs.length;
 
-			// 手計算 TR[i] for i >= 1
 			const tr: number[] = [];
 			for (let i = 1; i < n; i++) {
 				tr.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
 			}
-			// シード: SMA(TR[1..14])
 			let atr = tr.slice(0, period).reduce((a, b) => a + b, 0) / period;
-			// 以降は Wilder の RMA 漸化式
 			for (let i = period; i < tr.length; i++) {
 				atr = (atr * (period - 1) + tr[i]) / period;
 			}
@@ -383,7 +350,6 @@ describe('get_volatility_metrics', () => {
 			expect(res.data.aggregates.atr).toBeCloseTo(atr, 6);
 		});
 
-		// 数値契約: aggregate ATR は windows[0] の影響を受けず常に period=14。
 		it('aggregate ATR は windows[0] に関わらず period=14 固定', async () => {
 			const rows = makeOhlcvRows(60);
 			mockFetchWithOhlcv(rows);
@@ -395,7 +361,7 @@ describe('get_volatility_metrics', () => {
 			expect(res14.data.aggregates.atr).toBeCloseTo(res20.data.aggregates.atr, 8);
 		});
 
-		// 回帰テスト: rolling[].atr は削除済み（aggregates.atr の Wilder ATR を使う）
+		// Wilder ATR は rolling ではなく aggregates.atr で提供する。
 		it('rolling 各要素に atr フィールドが含まれない', async () => {
 			const rows = makeOhlcvRows(60);
 			mockFetchWithOhlcv(rows);
@@ -407,8 +373,6 @@ describe('get_volatility_metrics', () => {
 		});
 	});
 
-	// === 8. Network error ================================================
-
 	describe('ネットワークエラー', () => {
 		it('fetch 失敗 → ok: false', async () => {
 			globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
@@ -417,32 +381,16 @@ describe('get_volatility_metrics', () => {
 		});
 	});
 
-	// === 9. Handler tag threshold with annualize=false ===================
-	//    Handler (getVolatilityMetricsHandler) applies fixed thresholds
-	//    (0.5 for high_vol, 0.2 for low_vol) to rv values.
-	//    When annualize=false, per-period rv (~0.01-0.05 for daily) will
-	//    ALWAYS be below 0.2, making low_vol tag always appear.
-	//    This test documents the issue by calling the handler directly.
-
-	describe('Handler タグ閾値の annualize=false 問題', () => {
+	describe('annualize=false の per-period RV と handler のタグ閾値', () => {
 		it('annualize=false の per-period RV は常に handler 閾値 0.2 未満になる', async () => {
 			const rows = makeOhlcvRows(60, { noise: 0.05 });
 			mockFetchWithOhlcv(rows);
 			const res = await getVolatilityMetrics('btc_jpy', '1day', 60, [14, 20, 30], { annualize: false });
 			assertOk(res);
 			const rvStd = res.data.aggregates.rv_std;
-			// per-period daily RV is typically 0.01-0.05, far below handler threshold 0.2
 			expect(rvStd).toBeLessThan(0.2);
-			// This means the handler would ALWAYS add 'low_vol' tag for non-annualized data
-			// even when volatility is objectively high.
 		});
 	});
-
-	// === 10. sampleSize / meta.warning の数値契約 ========================
-	//   data.meta.sampleSize は close.length（スキップ後の実計算本数）と一致する。
-	//   正常時は警告無し、合成タイムスタンプ（Date.now()）も埋め込まれない。
-	//   不正 OHLC / isoTime 欠損 / 上流 fetchWarning の伝播は
-	//   get_volatility_metrics.warnings.test.ts で get_candles を mock してテストする。
 
 	describe('sampleSize の数値契約', () => {
 		it('正常時は data.meta.sampleSize === data.series.close.length（スキップ無し）', async () => {
@@ -452,7 +400,6 @@ describe('get_volatility_metrics', () => {
 			assertOk(res);
 			expect(res.data.meta.sampleSize).toBe(res.data.series.close.length);
 			expect(res.data.meta.sampleSize).toBe(30);
-			// 警告は無し
 			expect((res.meta as { warning?: string }).warning).toBeUndefined();
 		});
 
@@ -468,8 +415,6 @@ describe('get_volatility_metrics', () => {
 			}
 		});
 	});
-
-	// === 形成中足（provisional）注記 =====================================
 
 	describe('形成中足（provisional）', () => {
 		/** 末尾の足が「現在形成中」になるよう ts を当日 UTC 0 時に揃えた日足を作る。 */

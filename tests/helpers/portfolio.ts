@@ -1,15 +1,4 @@
-/**
- * analyze_my_portfolio 系テスト用のフィクスチャ取り出しヘルパ。
- */
-
-/**
- * holdings から指定 asset の保有を取り出す。
- *
- * `holdings.find(...)` の戻りは `T | undefined` なので、そのまま参照すると
- * 型エラーになるうえ、実際に見つからなかったときは「undefined のプロパティ参照」で
- * 落ちて原因が読めない。見つからない場合は探した asset と実際に載っている
- * asset 一覧を添えて落とす。
- */
+/** `holdings.find(...)` をそのまま参照すると、見つからなかったときに undefined のプロパティ参照で落ちて原因が読めないので、探した asset と実際に載っている asset 一覧を添えて落とす。 */
 export function holdingOf<T extends { asset: string }>(holdings: readonly T[], asset: string): T {
 	const found = holdings.find((h) => h.asset === asset);
 	if (found === undefined) {

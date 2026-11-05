@@ -8,7 +8,6 @@ describe('isLatestBarProvisional', () => {
 		// 1day: 当日 00:00 開始の足は 24h 後（翌日 00:00）まで形成中
 		const todayStart = Date.UTC(2026, 5, 15, 0, 0, 0);
 		expect(isLatestBarProvisional(todayStart, '1day', now)).toBe(true);
-		// 1hour: 直近 1 時間の足
 		const hourStart = Date.UTC(2026, 5, 15, 11, 0, 0);
 		expect(isLatestBarProvisional(hourStart, '1hour', now)).toBe(true);
 	});

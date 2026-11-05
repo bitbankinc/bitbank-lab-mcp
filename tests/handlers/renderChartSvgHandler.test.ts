@@ -13,8 +13,6 @@ afterEach(() => {
 	vi.clearAllMocks();
 });
 
-// ─── helpers ──────────────────────────────────────────────────────────────────
-
 function makeSvgResult(opts: {
 	svg?: string;
 	pair?: string;
@@ -40,8 +38,6 @@ function makeSvgResult(opts: {
 		},
 	};
 }
-
-// ─── tests ────────────────────────────────────────────────────────────────────
 
 describe('renderChartSvgHandler', () => {
 	it('不正な pair → ensurePair が失敗して ok:false を返す', async () => {

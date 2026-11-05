@@ -1,8 +1,6 @@
 import { z } from 'zod';
 import { BaseMetaSchema, CandleTypeEnum, toolResultSchema } from './base.js';
 
-// ── Input ──
-
 export const ValidateCandleDataInputSchema = z.object({
 	pair: z.string().optional().default('btc_jpy'),
 	type: CandleTypeEnum.optional().default('1day'),
@@ -30,8 +28,6 @@ export const ValidateCandleDataInputSchema = z.object({
 		.describe('出来高が全体平均の何倍を超えたらスパイクとみなすか。省略時はペアのティアに応じて自動設定'),
 	tz: z.string().optional().default('Asia/Tokyo').describe('タイムゾーン（デフォルト: Asia/Tokyo）'),
 });
-
-// ── Output sub-schemas ──
 
 const CompletenessSchema = z.object({
 	expected: z.number(),
@@ -110,8 +106,6 @@ const QualityScoreSchema = z.object({
 	}),
 	grade: z.enum(['A', 'B', 'C', 'D', 'F']),
 });
-
-// ── Output ──
 
 export const ValidateCandleDataDataSchema = z.object({
 	completeness: CompletenessSchema,

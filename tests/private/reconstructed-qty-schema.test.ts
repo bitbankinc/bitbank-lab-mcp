@@ -1,26 +1,9 @@
-/**
- * 復元数量と許容誤差（`reconstructed_qty` / `qty_invariant_tolerance`）の契約テスト（#87）。
- *
- * このフィールドの存在理由は **`cost_basis_reliable` の判定を消費者が検算できること**。
- * `structuredContent` を直読みする非 LLM クライアントにとって description が唯一の手掛かりなので、
- * 検算に要る式・出す条件・値の性質を人手のレビューに委ねず機械的に固定する
- * （`.claude/rules/tools.md`「規約はテストで機械的に固定する」）。
- *
- * 固定するのは 4 点。
- * 1. **新設キーは既存キーの後ろに宣言されている。** `z.object` の parse は宣言順で
- *    オブジェクトを組み直すため、宣言位置がそのまま wire のキー順になる。
- * 2. **許容誤差の式が書いてある。** これが無いと消費者は判定を再現できない
- *    （`amount_precision` は出力に含めていないので、式だけでも足りず値を出している）。
- * 3. **復元数量が実残高とは別物であること、差の読み方が書いてある。**
- * 4. **出す条件（抑止時は出す / JPY・`include_pnl=false` では出さない）と、
- *    `cost_basis_reliable=false` でも本判定で落ちたとは限らないことが書いてある。**
- */
+// cost_basis_reliable の判定を消費者が検算できることを、description の文面で機械的に固定する（#87）。
 import { describe, expect, it } from 'vitest';
 import { AnalyzeMyPortfolioDataSchema } from '../../src/private/schemas.js';
 
 type Described = { description?: string };
 
-/** `holdings[]` の要素スキーマ（`HoldingPnlSchema`）の shape */
 function holdingShape(): Record<string, Described> {
 	const holdings = AnalyzeMyPortfolioDataSchema.shape.holdings as unknown as {
 		element: { shape: Record<string, Described> };
@@ -28,7 +11,7 @@ function holdingShape(): Record<string, Described> {
 	return holdings.element.shape;
 }
 
-/** shape から description を取り出す。無ければ落とす（description 前提のテストが黙って通らないように） */
+/** description が無ければ落とす（description 前提のテストが黙って通らないように） */
 function descriptionOf(key: string): string {
 	const description = holdingShape()[key]?.description;
 	if (description == null) throw new Error(`description が無い: ${key}`);
@@ -93,7 +76,6 @@ describe('復元数量と許容誤差 — description', () => {
 		const description = descriptionOf('reconstructed_qty');
 		expect(description).toContain('**差がゼロでないこと自体は異常ではない**');
 		expect(description).toContain('許容誤差内でも差の分だけ cost_basis は不完全');
-		// API に現れない取引（販売所など）の推定が、差を出す最大の動機
 		expect(description).toContain('API に現れない取引');
 	});
 
@@ -114,8 +96,7 @@ describe('復元数量と許容誤差 — description', () => {
 		const description = descriptionOf('reconstructed_qty');
 		expect(description).toContain('原価計算の対象外（JPY / include_pnl=false）では省略');
 		expect(description).toContain('**原価を抑止した銘柄（cost_basis_unavailable_reason あり）では出す**');
-		// 売り切り銘柄は holdings に置き場が無い（#77 と同じ制約）。こちらは申告すべき判定結果が
-		// 無いので警告行を足していない、という判断まで書く
+		// 売り切り銘柄は holdings に置き場が無く（#77 と同じ制約）、申告すべき判定結果も無いので警告行を足していない、という判断まで書く
 		expect(description).toContain('売り切り銘柄は holdings に載らないため本値も出ない');
 		expect(description).toContain('警告行も足していない');
 	});

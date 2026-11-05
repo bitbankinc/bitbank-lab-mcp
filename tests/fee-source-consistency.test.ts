@@ -1,16 +1,3 @@
-/**
- * 手数料ソース横断テスト（リファレンス移植チェックリストのクローズ）。
- *
- * 「全ツールが一様に正しい手数料ソースを参照する」ことを担保する:
- *   1. 取引手数料リテラル / 直接 parse / `||` が lib/fees.ts・tests/ 以外に存在しない
- *      （.claude/hooks/post-ts-lint.sh Phase 4 と同じパターンの回帰防止）。
- *   2. 見積り側（resolveFeeRate / estimateOrderFee）が maker/taker・負リベート・campaign=0・
- *      取得失敗フォールバックを正しく扱う（lib/fees.ts 単一ソース）。
- *   3. preview_order の見積りで発注 POST が一切走らない（POST 非発火）。
- *
- * testing.md のモック規約に従い fetch は vi.spyOn / vi.fn で差し替え、afterEach で復元する。
- */
-
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,18 +8,11 @@ import { mockBitbankSuccess, mockSpotPairsResponse } from './fixtures/private-ap
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
-/**
- * 取引手数料の単一ソース強制パターン（post-ts-lint.sh Phase 4 と同一）:
- *   - 手数料定数 0.0012 のハードコード
- *   - *_fee_rate_quote を Number()/parseFloat() で直接 parse
- *   - *_fee_rate_quote を `||` で処理（campaign の 0 が fallback に化ける）
- */
+/** .claude/hooks/post-ts-lint.sh Phase 4 と同じパターン（`||` は campaign の 0 を fallback に化けさせる）。 */
 const FEE_PATTERN = /0\.0012|(Number|parseFloat)\([^)]*_fee_rate_quote|_fee_rate_quote.*\|\|/;
 
-/** 走査対象ディレクトリ（見積り側コードが置かれる場所）。 */
 const SCAN_DIRS = ['lib', 'tools', 'src'];
 
-/** *.ts を再帰収集する（node_modules は対象外）。 */
 function collectTsFiles(dir: string): string[] {
 	const out: string[] = [];
 	let entries: string[];
@@ -62,12 +42,10 @@ describe('手数料ソース横断 — enforcement 回帰防止（grep ベース
 			for (const file of collectTsFiles(join(REPO_ROOT, d))) {
 				// Windows の区切り文字（\）でも比較できるようスラッシュに正規化する
 				const rel = relative(REPO_ROOT, file).split(sep).join('/');
-				// 例外: lib/fees.ts 本体・tests/ 配下
 				if (rel === 'lib/fees.ts' || rel.startsWith('tests/') || rel.includes('/tests/')) continue;
 
 				const lines = readFileSync(file, 'utf8').split('\n');
 				lines.forEach((line, i) => {
-					// 行末 // allow-fee は除外
 					if (/\/\/ *allow-fee/.test(line)) return;
 					if (FEE_PATTERN.test(line)) {
 						violations.push(`${rel}:${i + 1}: ${line.trim()}`);
@@ -88,7 +66,6 @@ describe('手数料ソース横断 — enforcement 回帰防止（grep ベース
 	});
 });
 
-/** テスト用 PairSpec（フィクスチャ相当のデフォルト）。 */
 function makeSpec(overrides: Partial<PairSpec> = {}): PairSpec {
 	return {
 		name: 'btc_jpy',
@@ -122,7 +99,6 @@ function makeSpec(overrides: Partial<PairSpec> = {}): PairSpec {
 }
 
 describe('手数料ソース横断 — 見積りは全て lib/fees.ts 経由（一覧）', () => {
-	// maker/taker・負リベート・campaign=0・取得失敗フォールバックを 1 表で網羅する。
 	const cases: Array<{ label: string; spec: PairSpec | undefined; role: 'maker' | 'taker'; expected: number }> = [
 		{ label: 'taker 通常', spec: makeSpec({ taker_fee_rate_quote: '0.0012' }), role: 'taker', expected: 0.0012 },
 		{ label: 'maker 通常', spec: makeSpec({ maker_fee_rate_quote: '0.0001' }), role: 'maker', expected: 0.0001 },

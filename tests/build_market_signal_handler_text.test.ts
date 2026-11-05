@@ -3,6 +3,7 @@ import {
 	type BuildMarketSignalHandlerTextInput,
 	buildMarketSignalHandlerText,
 } from '../src/handlers/analyzeMarketSignalHandler.js';
+import { requireDefined } from './helpers/assert.js';
 
 function makeInput(overrides?: Partial<BuildMarketSignalHandlerTextInput>): BuildMarketSignalHandlerTextInput {
 	return {
@@ -87,7 +88,6 @@ describe('buildMarketSignalHandlerText', () => {
 		expect(text).not.toContain('主要因:');
 	});
 
-	// SMA section
 	it('SMA詳細: 3本の移動平均を表示', () => {
 		const text = buildMarketSignalHandlerText(makeInput());
 		expect(text).toContain('【SMA（移動平均線）詳細】');
@@ -107,7 +107,7 @@ describe('buildMarketSignalHandlerText', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
 				sma: {
-					...makeInput().sma!,
+					...requireDefined(makeInput().sma, 'makeInput().sma'),
 					arrangement: 'bearish',
 					current: 4_400_000,
 					values: { sma25: 4_500_000, sma75: 4_600_000, sma200: 4_700_000 },
@@ -121,7 +121,7 @@ describe('buildMarketSignalHandlerText', () => {
 	it('SMA配置: mixed → 方向感が弱い', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
-				sma: { ...makeInput().sma!, arrangement: 'mixed' },
+				sma: { ...requireDefined(makeInput().sma, 'makeInput().sma'), arrangement: 'mixed' },
 			}),
 		);
 		expect(text).toContain('混在');
@@ -131,6 +131,43 @@ describe('buildMarketSignalHandlerText', () => {
 	it('SMA null の場合はSMAセクションなし', () => {
 		const text = buildMarketSignalHandlerText(makeInput({ sma: null }));
 		expect(text).not.toContain('【SMA（移動平均線）詳細】');
+	});
+
+	it('SMA詳細: 現在価格が null なら現在価格の行を出さず、null / NaN の移動平均は n/a', () => {
+		const text = buildMarketSignalHandlerText(
+			makeInput({
+				sma: {
+					current: null,
+					values: { sma25: 4_900_000, sma75: null, sma200: Number.NaN },
+					deviations: { vs25: null, vs75: null, vs200: null },
+					arrangement: 'mixed',
+					recentCross: null,
+				},
+			}),
+		);
+		expect(text).toContain('【SMA（移動平均線）詳細】');
+		expect(text).not.toContain('現在価格:');
+		expect(text).toContain('- 短期（25日）: 4,900,000円');
+		expect(text).toContain('- 中期（75日）: n/a円');
+		expect(text).toContain('- 長期（200日）: n/a円');
+	});
+
+	it('SMA詳細: 現在価格が NaN でも現在価格の行を出さず、短期の移動平均が null なら n/a', () => {
+		const text = buildMarketSignalHandlerText(
+			makeInput({
+				sma: {
+					current: Number.NaN,
+					values: { sma25: null, sma75: 4_800_000, sma200: 4_500_000 },
+					deviations: { vs25: null, vs75: null, vs200: null },
+					arrangement: 'bullish',
+					recentCross: null,
+				},
+			}),
+		);
+		expect(text).toContain('【SMA（移動平均線）詳細】');
+		expect(text).not.toContain('現在価格:');
+		expect(text).toContain('- 短期（25日）: n/a円');
+		expect(text).toContain('- 長期（200日）: 4,500,000円');
 	});
 
 	it('SMA deviations を表示', () => {
@@ -144,7 +181,7 @@ describe('buildMarketSignalHandlerText', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
 				sma: {
-					...makeInput().sma!,
+					...requireDefined(makeInput().sma, 'makeInput().sma'),
 					deviations: { vs25: -1.5, vs75: -3.0, vs200: -8.0 },
 				},
 			}),
@@ -153,12 +190,11 @@ describe('buildMarketSignalHandlerText', () => {
 		expect(text).toContain('下');
 	});
 
-	// Recent cross
 	it('ゴールデンクロスを表示', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
 				sma: {
-					...makeInput().sma!,
+					...requireDefined(makeInput().sma, 'makeInput().sma'),
 					recentCross: { type: 'golden_cross', pair: '25/75', barsAgo: 5 },
 				},
 			}),
@@ -172,7 +208,7 @@ describe('buildMarketSignalHandlerText', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
 				sma: {
-					...makeInput().sma!,
+					...requireDefined(makeInput().sma, 'makeInput().sma'),
 					recentCross: { type: 'death_cross', pair: '25/75', barsAgo: 2 },
 				},
 			}),
@@ -185,7 +221,7 @@ describe('buildMarketSignalHandlerText', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
 				sma: {
-					...makeInput().sma!,
+					...requireDefined(makeInput().sma, 'makeInput().sma'),
 					recentCross: { type: 'golden_cross', pair: '50/100', barsAgo: 3 },
 				},
 			}),
@@ -198,7 +234,7 @@ describe('buildMarketSignalHandlerText', () => {
 			makeInput({
 				type: '4hour',
 				sma: {
-					...makeInput().sma!,
+					...requireDefined(makeInput().sma, 'makeInput().sma'),
 					recentCross: { type: 'golden_cross', pair: '25/75', barsAgo: 10 },
 				},
 			}),
@@ -206,7 +242,6 @@ describe('buildMarketSignalHandlerText', () => {
 		expect(text).toContain('10本前');
 	});
 
-	// Supplementary indicators
 	it('補足指標: RSI を表示', () => {
 		const text = buildMarketSignalHandlerText(makeInput());
 		expect(text).toContain('【補足指標】');
@@ -241,7 +276,7 @@ describe('buildMarketSignalHandlerText', () => {
 	it('一目均衡表: 雲の下', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
-				sma: { ...makeInput().sma!, current: 4_500_000 },
+				sma: { ...requireDefined(makeInput().sma, 'makeInput().sma'), current: 4_500_000 },
 				supplementary: { rsi: 55, ichimokuSpanA: 4_700_000, ichimokuSpanB: 4_600_000, macdHist: null },
 			}),
 		);
@@ -251,7 +286,7 @@ describe('buildMarketSignalHandlerText', () => {
 	it('一目均衡表: 雲の中', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
-				sma: { ...makeInput().sma!, current: 4_650_000 },
+				sma: { ...requireDefined(makeInput().sma, 'makeInput().sma'), current: 4_650_000 },
 				supplementary: { rsi: null, ichimokuSpanA: 4_700_000, ichimokuSpanB: 4_600_000, macdHist: null },
 			}),
 		);
@@ -287,7 +322,6 @@ describe('buildMarketSignalHandlerText', () => {
 		expect(text).not.toContain('【補足指標】');
 	});
 
-	// Breakdown
 	it('breakdownArray ありの場合: raw×weight=寄与 形式', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({
@@ -318,7 +352,6 @@ describe('buildMarketSignalHandlerText', () => {
 		expect(text).not.toContain('【内訳');
 	});
 
-	// Next actions
 	it('nextActions ありの場合', () => {
 		const text = buildMarketSignalHandlerText(
 			makeInput({

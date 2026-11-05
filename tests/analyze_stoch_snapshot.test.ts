@@ -19,8 +19,7 @@ import analyzeIndicators from '../tools/analyze_indicators.js';
 import analyzeStochSnapshot, { toolDef } from '../tools/analyze_stoch_snapshot.js';
 import getCandles from '../tools/get_candles.js';
 
-// 型は CandleSchema 由来にする。provisional 判定は最新足の timestamp を読むため、
-// リテラル推論のままだと最新足に timestamp を後付けするテストが型エラーになる。
+// 型は CandleSchema 由来にする。provisional 判定は最新足の timestamp を読むので、リテラル推論のままだと最新足に timestamp を後付けするテストが型エラーになる。
 function makeFlatCandles(count: number, close = 100): Candle[] {
 	return Array.from({ length: count }, (_, i) => ({
 		open: close,
@@ -303,8 +302,6 @@ describe('analyze_stoch_snapshot', () => {
 		expect(res.data.recentCrosses.length).toBeGreaterThan(0);
 	});
 
-	// ── 上流 warning の伝播（取得層 meta.warning / 計算層 meta.warnings） ──
-
 	describe('上流 warning の伝播', () => {
 		it('analyzeIndicators path（default params）: meta.warning（取得層）が tool の meta.warning と summary 先頭に伝播する', async () => {
 			const ind = buildIndicatorsOk();
@@ -393,8 +390,7 @@ describe('analyze_stoch_snapshot', () => {
 		});
 
 		it('getCandles path（custom params）: 上流 meta.warnings が紛れ込んでも drop されて meta.warnings は undefined のまま', async () => {
-			// getCandles は本来 warnings を出さないが、契約レベルでの回帰防止として
-			// 上流 meta に warnings が混入していても tool 出力には載らないことを保証する。
+			// getCandles は本来 warnings を出さないが、上流 meta に warnings が混入していても tool 出力には載らないことを契約レベルで保証する。
 			mockedGetCandles.mockResolvedValueOnce(
 				asMockResult({
 					ok: true,
@@ -417,15 +413,12 @@ describe('analyze_stoch_snapshot', () => {
 
 			assertOk(res);
 			expect(res.meta.warning).toBe('⚠️ partial fetch (multi-year)');
-			// getCandles path は取得層のみ。計算層 warnings は契約上 drop される。
 			expect(res.meta.warnings).toBeUndefined();
 			expect(res.summary).not.toContain('不正な計算層 warning');
 		});
 	});
 
-	// === 形成中足（provisional）注記 ===
-	// default パラメータは analyzeIndicators 経由、非デフォルトは getCandles 直叩き。
-	// 両 path で最新足 ts から判定されることを確認する。
+	// default パラメータは analyzeIndicators 経由、非デフォルトは getCandles 直叩きなので、両 path で最新足 ts から判定されることを確認する。
 	describe('形成中足（provisional）注記', () => {
 		function buildIndicatorsWithLatestTs(latestTsMs: number) {
 			const base = buildIndicatorsOk();

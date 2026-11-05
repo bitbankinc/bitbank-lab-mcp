@@ -1,13 +1,10 @@
 import { calendarDateFromIso, dayjs } from './datetime.js';
+import { roundPriceAtLevel } from './price.js';
 
 export type MaPrefix = 'SMA' | 'EMA';
 
-/** Slope detection threshold (0.2% deadband) */
 export const SLOPE_THRESHOLD = 0.002;
-/** Lookback window for recent cross detection */
 export const CROSS_LOOKBACK = 30;
-
-// ── Shared interfaces ──
 
 export interface MaLineEntry {
 	period: number;
@@ -44,8 +41,6 @@ export interface MaExtEntry {
 	slopePctPerDay?: number | null;
 	pricePosition?: 'above' | 'below' | 'equal';
 }
-
-// ── Shared functions ──
 
 export function slopeOfSeries(series: Array<number | null>): 'rising' | 'falling' | 'flat' {
 	const n = series.length;
@@ -112,7 +107,8 @@ export function detectCrossStatuses(
 				a: `${prefix}_${a}`,
 				b: `${prefix}_${b}`,
 				type: delta >= 0 ? 'golden' : 'dead',
-				delta: Number(delta.toFixed(2)),
+				// 移動平均線どうしの差なので、差自体ではなく価格の水準で桁を決める。
+				delta: roundPriceAtLevel(delta, va as number, 2),
 			});
 		}
 	}
@@ -198,7 +194,7 @@ export function computeMaExt(
 ): MaExtEntry {
 	const distancePct =
 		close != null && val != null && val !== 0 ? Number((((close - val) / val) * 100).toFixed(2)) : null;
-	const distanceAbs = close != null && val != null ? Number((close - val).toFixed(2)) : null;
+	const distanceAbs = close != null && val != null ? roundPriceAtLevel(close - val, close, 2) : null;
 	const slope = slopeOfSeries(series);
 	const rates = computeSlopeRates(series);
 	const slopePctPerBar = rates.pctPerBar != null ? Number(rates.pctPerBar.toFixed(3)) : null;

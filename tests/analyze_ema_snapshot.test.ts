@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
 import type { Candle } from '../src/schemas.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
+import { requireDefined } from './helpers/assert.js';
 
 vi.mock('../tools/analyze_indicators.js', async (importOriginal) => {
 	const actual = await importOriginal<typeof import('../tools/analyze_indicators.js')>();
@@ -19,7 +20,6 @@ import analyzeEmaSnapshot, { buildEmaSnapshotText, toolDef } from '../tools/anal
 import analyzeIndicators from '../tools/analyze_indicators.js';
 import getCandles from '../tools/get_candles.js';
 
-/** normalized 足のフィクスチャ型。timestamp は CandleSchema 上 optional。 */
 type NormalizedFixtureBar = Pick<Candle, 'close' | 'isoTime' | 'timestamp'>;
 
 function makeSeries(start: number, step: number, len: number) {
@@ -28,8 +28,7 @@ function makeSeries(start: number, step: number, len: number) {
 
 function buildIndicatorsOk() {
 	const len = 40;
-	// 型は CandleSchema 由来にする。provisional 判定は normalized.at(-1).timestamp を読むため、
-	// リテラル推論のままだと最新足に timestamp を後付けするテストが型エラーになる。
+	// 型は CandleSchema 由来にする。provisional 判定は normalized.at(-1).timestamp を読むので、リテラル推論のままだと最新足に timestamp を後付けするテストが型エラーになる。
 	const normalized: NormalizedFixtureBar[] = Array.from({ length: len }, (_, i) => ({
 		close: i === len - 1 ? 150 : 130,
 		isoTime: `2024-02-${String((i % 28) + 1).padStart(2, '0')}T00:00:00.000Z`,
@@ -143,7 +142,6 @@ describe('analyze_ema_snapshot', () => {
 
 		it('chart.candles が無い場合は normalized にフォールバックする', async () => {
 			const mocked = buildIndicatorsOk();
-			// Remove chart.candles but keep indicators
 			(mocked.data.chart as Record<string, unknown>).candles = undefined;
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(mocked));
 
@@ -160,15 +158,12 @@ describe('analyze_ema_snapshot', () => {
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(mocked));
 
 			const res = await analyzeEmaSnapshot('btc_jpy', '1day', 220, [12, 26, 50, 200]);
-			// Should still complete without throwing
 			expect(res.ok).toBeDefined();
 		});
 
 		it('chartInd にキーが無い場合は ema_{p}_series にフォールバックする', async () => {
 			const mocked = buildIndicatorsOk();
-			// Remove chart.indicators so chartInd[key] won't be present
 			mocked.data.chart.indicators = {} as typeof mocked.data.chart.indicators;
-			// Add ema_12_series to indicators
 			(mocked.data.indicators as Record<string, unknown>).ema_12_series = makeSeries(134, 0.2, 40);
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(mocked));
 
@@ -209,7 +204,6 @@ describe('analyze_ema_snapshot', () => {
 
 		it('chart.indicators が undefined の場合は空オブジェクトにフォールバックする', async () => {
 			const mocked = buildIndicatorsOk();
-			// Remove chart.indicators entirely to trigger ?? {} branch
 			delete (mocked.data.chart as Record<string, unknown>).indicators;
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(mocked));
 
@@ -297,7 +291,6 @@ describe('analyze_ema_snapshot', () => {
 			const res = await analyzeEmaSnapshot('btc_jpy', '4hour', 220, [5, 15]);
 
 			assertOk(res);
-			// slopePctPerDay should not be set for non-1day types
 			for (const key of Object.keys(res.data.emas ?? {})) {
 				expect((res.data.emas as Record<string, Record<string, unknown>>)[key]).not.toHaveProperty('slopePctPerDay');
 			}
@@ -362,7 +355,7 @@ describe('analyze_ema_snapshot', () => {
 			const res = await analyzeEmaSnapshot('btc_jpy', '1day', 220, [12, 26, 50, 200]);
 
 			assertOk(res);
-			expect(res.data.summary!.position).toBe('above_all');
+			expect(requireDefined(res.data.summary, 'res.data.summary').position).toBe('above_all');
 		});
 
 		it('close < all EMAs → below_all', async () => {
@@ -374,7 +367,7 @@ describe('analyze_ema_snapshot', () => {
 			const res = await analyzeEmaSnapshot('btc_jpy', '1day', 220, [12, 26, 50, 200]);
 
 			assertOk(res);
-			expect(res.data.summary!.position).toBe('below_all');
+			expect(requireDefined(res.data.summary, 'res.data.summary').position).toBe('below_all');
 		});
 
 		it('close between EMAs → between', async () => {
@@ -386,7 +379,7 @@ describe('analyze_ema_snapshot', () => {
 			const res = await analyzeEmaSnapshot('btc_jpy', '1day', 220, [12, 26, 50, 200]);
 
 			assertOk(res);
-			expect(res.data.summary!.position).toBe('between');
+			expect(requireDefined(res.data.summary, 'res.data.summary').position).toBe('between');
 		});
 	});
 
@@ -425,7 +418,6 @@ describe('analyze_ema_snapshot', () => {
 			const res = await analyzeEmaSnapshot('btc_jpy', '1day', 220, [12]);
 
 			assertOk(res);
-			// close === EMA for all, position is 'between' (not above_all, not below_all)
 			expect(res.data.summary?.position).toBe('between');
 		});
 	});
@@ -499,7 +491,6 @@ describe('analyze_ema_snapshot', () => {
 
 			assertOk(res);
 			const emaData = res.data.emas as Record<string, { slopePctPerDay?: number | null }>;
-			// At least one EMA should have slopePctPerDay set
 			const hasDay = Object.values(emaData).some((e) => 'slopePctPerDay' in e);
 			expect(hasDay).toBe(true);
 		});
@@ -601,7 +592,6 @@ describe('analyze_ema_snapshot', () => {
 			const crosses = res.data.recentCrosses as Array<{ type: string; date: string }>;
 			const golden = crosses.filter((c) => c.type === 'golden_cross');
 			expect(golden.length).toBeGreaterThan(0);
-			// date should be today's date (YYYY-MM-DD format)
 			expect(golden[0]?.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 		});
 	});
@@ -654,7 +644,6 @@ describe('analyze_ema_snapshot', () => {
 
 		it('close が null の場合 distancePct は null かつ formatSummary に undefined を渡す', async () => {
 			const mocked = buildIndicatorsOk();
-			// Make last normalized item have null close so close = null
 			(mocked.data.normalized as Array<Record<string, unknown>>)[mocked.data.normalized.length - 1].close = null;
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(mocked));
 
@@ -691,15 +680,12 @@ describe('analyze_ema_snapshot', () => {
 	describe('normalized が配列でない場合のフォールバック', () => {
 		it('chart.candles も normalized も配列でない場合 candles は空配列になる', async () => {
 			const mocked = buildIndicatorsOk();
-			// chart.candles を非配列にし、normalized を文字列にする
-			// → Array.isArray(normalized) = false → [] フォールバック (line 140)
-			// 文字列は .at() と .length を持つため line 134 と 141 はスローしない
+			// chart.candles を非配列にし normalized を文字列にして、Array.isArray(normalized) = false の [] フォールバックに入れる（文字列は .at() と .length を持つのでスローしない）。
 			(mocked.data.chart as Record<string, unknown>).candles = null;
 			(mocked.data as Record<string, unknown>).normalized = 'not-an-array';
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(mocked));
 
-			// normalized.at(-1) → 'y' (last char), .close → undefined, close = null
-			// normalizedLen = 'not-an-array'.length = 12
+			// normalized.at(-1) → 'y'（最後の文字）で .close は undefined → close = null、normalizedLen = 'not-an-array'.length = 12
 			const res = await analyzeEmaSnapshot('btc_jpy', '1day', 220, [12, 26, 50, 200]);
 			// Should complete (ok or fail) without throwing
 			expect(res.ok).toBeDefined();
@@ -789,8 +775,7 @@ describe('analyze_ema_snapshot', () => {
 		});
 
 		it('getCandles path（custom periods）: 上流 meta.warnings が紛れ込んでも drop されて meta.warnings は undefined のまま', async () => {
-			// getCandles は本来 warnings を出さないが、契約レベルでの回帰防止として
-			// 上流 meta に warnings が混入していても tool 出力には載らないことを保証する。
+			// getCandles は本来 warnings を出さないが、上流 meta に warnings が混入していても tool 出力には載らないことを契約レベルで保証する。
 			const candlesResult = buildCandlesOk();
 			candlesResult.meta = {
 				...candlesResult.meta,
@@ -804,7 +789,6 @@ describe('analyze_ema_snapshot', () => {
 
 			assertOk(res);
 			expect(res.meta.warning).toBe('⚠️ partial fetch (multi-year)');
-			// getCandles path は取得層のみ。計算層 warnings は契約上 drop される。
 			expect(res.meta.warnings).toBeUndefined();
 			expect(res.summary).not.toContain('不正な計算層 warning');
 		});
@@ -1032,9 +1016,7 @@ describe('analyze_ema_snapshot', () => {
 		});
 	});
 
-	// === 形成中足（provisional）注記 ===
-	// fixed-periods は analyzeIndicators 経由、custom-periods は getCandles 直叩き。
-	// 両 path で最新足 ts から判定されることを確認する。
+	// fixed-periods は analyzeIndicators 経由、custom-periods は getCandles 直叩きなので、両 path で最新足 ts から判定されることを確認する。
 	describe('形成中足（provisional）注記', () => {
 		function buildIndicatorsWithLatestTs(latestTsMs: number) {
 			const base = buildIndicatorsOk();

@@ -14,8 +14,7 @@ describe('computeOBV', () => {
 	});
 
 	it('手計算と一致する OBV', () => {
-		// close=[100, 105, 103, 108, 108]  volume=[10, 20, 15, 25, 30]
-		// OBV:  [0,  +20, 20-15=5, 5+25=30, 30(unchanged)]
+		// close=[100, 105, 103, 108, 108]  volume=[10, 20, 15, 25, 30] → OBV: [0, +20, 20-15=5, 5+25=30, 30(unchanged)]
 		const candles = [
 			makeCandle(100, 10),
 			makeCandle(105, 20), // up → +20

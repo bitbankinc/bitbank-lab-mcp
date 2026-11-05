@@ -18,7 +18,6 @@ const ALIGNMENT_ICON: Record<string, string> = {
 	unknown: '⚪',
 };
 
-/** 単調減少なら "25>75>200"、単調増加なら "200>75>25"、それ以外は "mixed"。 */
 function deriveSmaOrder(periods: number[], smaMap: Record<string, number | null> | undefined): string {
 	if (!smaMap) return 'mixed';
 	const uniq = [...new Set(periods)].sort((a, b) => a - b);
@@ -41,11 +40,9 @@ export default async function analyzeMtfSma(
 	if (!chk.ok) return failFromValidation(chk, AnalyzeMtfSmaOutputSchema);
 
 	try {
-		// Deduplicate timeframes to avoid redundant calls
 		const uniqueTimeframes = [...new Set(timeframes)];
 
-		// Run all timeframes in parallel — each triggers analyzeIndicators
-		// which has a 30s TTL cache, so same pair+type won't re-fetch.
+		// analyzeIndicators の TTL キャッシュがあるので、同じ pair + type は再取得しない。
 		const results = await Promise.all(
 			uniqueTimeframes.map(async (tf) => {
 				const res = await analyzeSmaSnapshot(chk.pair, tf, 220, periods);
@@ -53,13 +50,9 @@ export default async function analyzeMtfSma(
 			}),
 		);
 
-		// Build per-timeframe results (pick fields relevant to MTF view)
 		const byTimeframe: Record<string, unknown> = {};
 		const alignments: string[] = [];
 
-		// 子 analyze_sma_snapshot の meta.warning（取得層）/ meta.warnings（計算層）/ 失敗 TF を集約。
-		// 取得層 warning: `[tf]` prefix 付き 1 文字列に集約 → meta.warning
-		// 計算層 warnings: `[tf]` prefix 付き string[] に統合 → meta.warnings
 		const warningSources: Array<{ source: string; warning?: string }> = [];
 		const aggregatedWarnings: string[] = [];
 
@@ -110,7 +103,6 @@ export default async function analyzeMtfSma(
 		const warning = collectUpstreamWarnings(warningSources);
 		const warnings = aggregatedWarnings.length > 0 ? aggregatedWarnings : undefined;
 
-		// Confluence judgment — any unknown in requested timeframes → aligned=false, direction=unknown
 		let direction: 'bullish' | 'bearish' | 'mixed' | 'unknown';
 		let aligned: boolean;
 
@@ -134,12 +126,10 @@ export default async function analyzeMtfSma(
 			? `全時間軸が${dirLabel}方向で一致`
 			: `時間軸間で方向が分かれている（${timeframes.map((tf) => `${tf}:${tfEntry(tf)?.alignment}`).join(', ')})`;
 
-		// コンフルエンス解釈の信頼度低下警告: TF 取得不完全（unknown 含む）の場合に confluence.summary 先頭へ追記。
 		const hasUnknown = alignments.some((a) => a === 'unknown');
 		const confSummary = hasUnknown ? `⚠️ TF 取得不完全のため信頼度低 — ${baseConfSummary}` : baseConfSummary;
 
 		const baseSummaryText = `${timeframes.map((tf) => `${tf}: ${tfEntry(tf)?.alignment}`).join(' / ')} → ${confSummary}`;
-		// summary 先頭に上流 warning を別行で連結（separator='\n'）。
 		const summaryText = prependWarnings(baseSummaryText, { warning, warnings }, { separator: '\n' });
 
 		const data: z.infer<typeof AnalyzeMtfSmaDataSchemaOut> = {
@@ -161,7 +151,6 @@ export default async function analyzeMtfSma(
 
 type MtfSmaEntry = z.infer<typeof AnalyzeMtfSmaDataSchemaOut>['timeframes'][string];
 
-/** timeframe 1件分の構造化要約を組み立てる（LLM が content テキストから詳細表示を組めるよう） */
 function buildTimeframeLine(tf: string, entry: MtfSmaEntry | undefined): string {
 	if (!entry) return `${tf}: no data`;
 	const ent = entry as unknown as Record<string, unknown>;
@@ -186,7 +175,6 @@ function buildTimeframeLine(tf: string, entry: MtfSmaEntry | undefined): string 
 	return `${tf} ${icon} ${alignment} price=${price ?? 'n/a'} order=${smaOrder}\n    ${smaParts.join(' | ')}${recentStr}`;
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'analyze_mtf_sma',
 	description:

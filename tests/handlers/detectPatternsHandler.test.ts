@@ -13,8 +13,6 @@ afterEach(() => {
 	vi.clearAllMocks();
 });
 
-// ─── helpers ──────────────────────────────────────────────────────────────────
-
 function makeFailResult() {
 	return {
 		ok: false,
@@ -51,8 +49,6 @@ function makeOkResult(
 		},
 	};
 }
-
-// ─── tests ────────────────────────────────────────────────────────────────────
 
 describe('detectPatternsHandler', () => {
 	it('不正な pair → ok:false を返す', async () => {

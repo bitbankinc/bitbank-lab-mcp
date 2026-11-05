@@ -1,14 +1,4 @@
-/**
- * stop / stop_limit 注文のトリガー価格バリデーション。
- *
- * 現在価格（/ticker）と照らして、トリガー到達済み（=即時発動）になる注文を
- * 発注前に検出する。preview_order での事前チェックと、create_order での
- * 軽量な再チェック（market データの変化に追従）で共有する。
- *
- * /ticker 取得失敗時は null（違反なし）を返して上位の発注処理は継続させる。
- * 最終的に bitbank 本 API 側で同等の検証が行われるため、フォールバックでも
- * ガードは失われない。
- */
+// /ticker 取得失敗時は null（違反なし）で発注を続けさせる。bitbank 本 API 側でも同等の検証があるのでガードは失われない。
 
 import { toNum } from './conversions.js';
 import { formatPrice } from './formatter.js';

@@ -1,7 +1,3 @@
-/**
- * get_my_orders ツールのユニットテスト。
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertFail, assertOk } from '../_assertResult.js';
 import { mockBitbankError, mockBitbankSuccess, rawActiveOrdersResponse } from '../fixtures/private-api.js';
@@ -35,7 +31,6 @@ describe('get_my_orders', () => {
 
 		assertOk(result);
 		expect(result.data.orders).toHaveLength(3);
-		// ordered_at が ISO8601 に変換されている
 		for (const order of result.data.orders) {
 			expect(order.ordered_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 		}
@@ -250,8 +245,7 @@ describe('get_my_orders', () => {
 		const result = await getMyOrders({});
 
 		assertOk(result);
-		// INACTIVE は bitbank アプリで「未約定注文」として表示されるため、
-		// get_my_orders からも返す必要がある（PR #393 で誤って弾いていた回帰修正）。
+		// INACTIVE は bitbank アプリで未約定注文として表示されるので、get_my_orders からも返す。
 		expect(result.data.orders).toHaveLength(1);
 		expect(result.data.orders[0].order_id).toBe(56975061085);
 		expect(result.data.orders[0].status).toBe('INACTIVE');
@@ -519,11 +513,7 @@ describe('get_my_orders — 非 PrivateApiError の generic catch', () => {
 	});
 });
 
-/**
- * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
- * 揃えないと JPY 建て判定（`o.pair.includes('jpy')`）が外れ、指値・トリガー価格が
- * 円フォーマットされない。現行の小文字レスポンスに対しては何も変わらない（防御的正規化）。
- */
+/** pair を取得境界で小文字に揃えないと JPY 建て判定（o.pair.includes('jpy')）が外れ、指値・トリガー価格が円フォーマットされない。 */
 describe('get_my_orders — API pair の取得境界正規化', () => {
 	it('小文字レスポンスでは出力の pair 表記が変わらない', async () => {
 		setupFetchMock(mockBitbankSuccess(rawActiveOrdersResponse));
@@ -550,7 +540,7 @@ describe('get_my_orders — API pair の取得境界正規化', () => {
 
 		assertOk(result);
 		expect(result.data.orders.map((o) => o.pair)).toEqual(['btc_jpy', 'eth_jpy', 'btc_jpy']);
-		// 正規化前は指値・トリガー価格が生文字列のまま出ていた
+		// 正規化しないと指値・トリガー価格が生文字列のまま出る
 		expect(result.summary).toContain('¥14,000,000');
 		expect(result.summary).toContain('トリガー:¥13,000,000');
 		expect(result.summary).not.toContain(' 14000000');

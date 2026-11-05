@@ -41,8 +41,6 @@ describe('prepare_depth_data', () => {
 		vi.restoreAllMocks();
 	});
 
-	// ── スキーマ ─────────────────────────────────────────
-
 	it('inputSchema: levels < 10 を拒否', () => {
 		expect(() => toolDef.inputSchema.parse({ pair: 'btc_jpy', levels: 9 })).toThrow();
 	});
@@ -60,15 +58,12 @@ describe('prepare_depth_data', () => {
 	});
 
 	it('inputSchema: デフォルト値が適用される', () => {
-		// toolDef.inputSchema は ToolDefinition 上 ZodTypeAny に広がり parse が unknown を返すため、
-		// デフォルト値の検証は同一スキーマ（toolDef が参照している実体）を直接 parse して行う。
+		// toolDef.inputSchema は ToolDefinition 上 ZodTypeAny に広がり parse が unknown を返すので、デフォルト値の検証は toolDef が参照している同一スキーマを直接 parse して行う。
 		const parsed = PrepareDepthDataInputSchema.parse({});
 		expect(parsed.pair).toBe('btc_jpy');
 		expect(parsed.levels).toBe(200);
 		expect(parsed.bandPct).toBe(0.01);
 	});
-
-	// ── 正常系 ───────────────────────────────────────────
 
 	it('正常データで [price, cumulativeVolume] 配列を返す', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
@@ -79,7 +74,6 @@ describe('prepare_depth_data', () => {
 		expect(Array.isArray(res.data.asks)).toBe(true);
 		expect(res.data.bids).toHaveLength(5);
 		expect(res.data.asks).toHaveLength(5);
-		// 各要素は [price, cumulativeVolume] のタプル
 		for (const [p, q] of res.data.bids) {
 			expect(typeof p).toBe('number');
 			expect(typeof q).toBe('number');
@@ -171,7 +165,7 @@ describe('prepare_depth_data', () => {
 		expect(res.data.band.askVolume).toBeCloseTo(2.8);
 	});
 
-	it('JPY ペアの価格は整数に丸められる', async () => {
+	it('整数刻みの板では価格と中値が整数のまま', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
 		const res = await prepareDepthData({ pair: 'btc_jpy' });
 		assertOk(res);
@@ -207,8 +201,6 @@ describe('prepare_depth_data', () => {
 		expect(res.data.timestamp).toBe(1700000000000);
 		expect(res.data.isoTime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 	});
-
-	// ── エッジケース ─────────────────────────────────────
 
 	it('空配列: bids/asks 両方空 → fail', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk({ asks: [], bids: [] })));
@@ -285,8 +277,6 @@ describe('prepare_depth_data', () => {
 		expect(res.data.totalBidVolume).toBeCloseTo(1.0);
 	});
 
-	// ── NaN ガード（崩れた string 値の drop） ─────────────
-
 	it('NaN ガード: bids に "abc" 等の崩れた string が混入 → NaN 行が drop され、有効行で累積', async () => {
 		mockedGetDepth.mockResolvedValueOnce(
 			asMockResult(
@@ -313,7 +303,6 @@ describe('prepare_depth_data', () => {
 		expect(res.data.bids[1]).toEqual([9700, 1.0]); // 累積 0.3 + 0.7
 		expect(res.data.totalBidVolume).toBeCloseTo(1.0);
 
-		// drop 件数が meta.droppedRows に記録される
 		expect(res.meta.droppedRows).toEqual({ bids: 2, asks: 0 });
 		expect(typeof res.meta.warning).toBe('string');
 		expect(res.meta.warning).toContain('2件');
@@ -340,7 +329,6 @@ describe('prepare_depth_data', () => {
 		const res = await prepareDepthData({ pair: 'btc_jpy' });
 		assertOk(res);
 
-		// 再帰的に値を検査
 		const hasNonFinite = (v: unknown): boolean => {
 			if (typeof v === 'number') return !Number.isFinite(v);
 			if (Array.isArray(v)) return v.some(hasNonFinite);
@@ -413,11 +401,8 @@ describe('prepare_depth_data', () => {
 		assertOk(res);
 		expect(res.meta.droppedRows).toBeUndefined();
 		expect(res.meta.warning).toBeUndefined();
-		// summary に warning マークが付かない
 		expect(res.summary).not.toContain('⚠️');
 	});
-
-	// ── 出力スキーマ検証 ─────────────────────────────────
 
 	it('スキーマ検証: 正常データの出力が PrepareDepthDataOutputSchema.parse() を通る', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
@@ -460,14 +445,10 @@ describe('prepare_depth_data', () => {
 		expect(() => PrepareDepthDataOutputSchema.parse(res)).not.toThrow();
 	});
 
-	// ── 入力バリデーション ───────────────────────────────
-
 	it('不正な pair → fail', async () => {
 		const res = await prepareDepthData({ pair: 'invalid!!!' });
 		assertFail(res);
 	});
-
-	// ── API 異常系 ───────────────────────────────────────
 
 	it('getDepth 失敗 → fail を伝搬', async () => {
 		mockedGetDepth.mockResolvedValueOnce(
@@ -483,8 +464,6 @@ describe('prepare_depth_data', () => {
 		const res = await prepareDepthData({ pair: 'btc_jpy' });
 		assertFail(res);
 	});
-
-	// ── toolDef.handler（content テキスト） ─────────────
 
 	it('handler: content テキストに summary と JSON データを含む', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
@@ -520,10 +499,8 @@ describe('prepare_depth_data', () => {
 		const res = asMcp<{ ok: boolean; meta: { droppedRows?: { bids: number; asks: number }; warning?: string } }>(
 			await toolDef.handler({ pair: 'btc_jpy' }),
 		);
-		// content テキスト（LLM が読める部分）に drop 件数の警告が出る
 		expect(res.content[0].text).toContain('⚠️');
 		expect(res.content[0].text).toContain('1件');
-		// structuredContent.meta にも残る（プログラム読み取り用）
 		expect(res.structuredContent.meta.droppedRows).toEqual({ bids: 1, asks: 0 });
 		expect(typeof res.structuredContent.meta.warning).toBe('string');
 	});

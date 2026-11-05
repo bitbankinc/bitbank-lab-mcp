@@ -1,8 +1,3 @@
-/**
- * lib/pairs.ts のユニットテスト。
- * /spot/pairs 取得・キャッシュ・正規化と、validateOrderConstraints のすべての分岐を検証する。
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	clearPairsSpecCache,
@@ -37,8 +32,7 @@ function makePairSpec(overrides: Partial<PairSpec> = {}): PairSpec {
 		stop_margin_short_order: false,
 		stop_buy_order: false,
 		stop_sell_order: false,
-		// 手数料率は PairSpec の必須フィールド（欠損は null 表現）。
-		// 従来は base 側に無く ...overrides の Partial 経由で「埋まっているつもり」になっていた。
+		// 手数料率は PairSpec の必須フィールド（欠損は null 表現）なので base にも置く。
 		taker_fee_rate_quote: null,
 		maker_fee_rate_quote: null,
 		taker_fee_rate_base: null,
@@ -547,8 +541,7 @@ describe('fetchPairsSpec', () => {
 	});
 });
 
-// TTL 入力値の検証。Number('') === 0 など、誤った env で「キャッシュ実質無効」を
-// 招かないこと（resolvePairsTtlMs 経由でデフォルトにフォールバック）を保証する。
+// Number('') === 0 など誤った env で「キャッシュ実質無効」を招かず、resolvePairsTtlMs 経由でデフォルトにフォールバックすることを保証する。
 describe('BITBANK_SPOT_PAIRS_TTL_MS の入力値検証', () => {
 	const originalTtl = process.env.BITBANK_SPOT_PAIRS_TTL_MS;
 
@@ -630,8 +623,7 @@ describe('roundToPriceDigits', () => {
 	});
 
 	it('ちょうど半刻みの値を取りこぼさない（2 進の乗算誤差で下に落ちない）', () => {
-		// value * 10 ** digits を経由すると 1.005 * 100 === 100.49999999999999 となり
-		// 1.01 ではなく 1 が返っていた
+		// value * 10 ** digits を経由すると 1.005 * 100 === 100.49999999999999 となり、1.01 ではなく 1 が返る
 		const twoDigits = makePairSpec({ price_digits: 2 });
 		expect(roundToPriceDigits(1.005, twoDigits)).toBe(1.01);
 		expect(roundToPriceDigits(2.675, twoDigits)).toBe(2.68);

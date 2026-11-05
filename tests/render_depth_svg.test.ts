@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
+import { requireDefined } from './helpers/assert.js';
 
 vi.mock('../lib/get-depth.js', () => ({
 	default: vi.fn(),
@@ -7,8 +8,6 @@ vi.mock('../lib/get-depth.js', () => ({
 
 import getDepth from '../lib/get-depth.js';
 import renderDepthSvg, { toolDef } from '../tools/render_depth_svg.js';
-
-// ── ヘルパー ──
 
 function depthOk(overrides: Record<string, unknown> = {}) {
 	return {
@@ -35,18 +34,22 @@ function depthOk(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+function yAxisTicks(svg: string): Array<{ y: number; label: string }> {
+	return [
+		...svg.matchAll(
+			/<text x="56" y="(-?[\d.]+)" text-anchor="end" dominant-baseline="middle" fill="#e5e7eb" font-size="10">([^<]+)<\/text>/g,
+		),
+	].map((m) => ({ y: Number(m[1]), label: m[2] }));
+}
+
 describe('render_depth_svg', () => {
 	const mockedGetDepth = vi.mocked(getDepth);
 
 	afterEach(() => vi.clearAllMocks());
 
-	// ── スキーマ ─────────────────────────────────────────
-
 	it('inputSchema: depth.levels < 10 を拒否', () => {
 		expect(() => toolDef.inputSchema.parse({ pair: 'btc_jpy', depth: { levels: 9 } })).toThrow();
 	});
-
-	// ── 正常描画（inline） ───────────────────────────────
 
 	it('正常データで SVG を inline 返却', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
@@ -71,13 +74,21 @@ describe('render_depth_svg', () => {
 		expect(res.data.svg).not.toContain('BTC');
 	});
 
+	it('ヘッダーの時刻は時間帯の表記を 1 回だけ付ける', async () => {
+		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
+		const res = await renderDepthSvg({ pair: 'btc_jpy' });
+		assertOk(res);
+		const svg = requireDefined(res.data.svg, 'svg');
+		expect(svg).toMatch(/>\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2} JST<\/text>/);
+		expect(svg).not.toContain('JST JST');
+	});
+
 	it('SVG に板の深さヘッダー・買い売り比率・中央価格を含む', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
 		const res = await renderDepthSvg({ pair: 'btc_jpy' });
 		assertOk(res);
 		expect(res.data.svg).toContain('板の深さ');
 		expect(res.data.svg).toContain('比率');
-		// 中央価格ラベル
 		expect(res.data.svg).toContain('¥');
 	});
 
@@ -87,15 +98,101 @@ describe('render_depth_svg', () => {
 		assertOk(res);
 		const s = res.data.summary;
 		expect(s).toBeDefined();
-		expect(s!.currentPrice).toBe(10000); // (9900+10100)/2
-		expect(s!.bestBid).toBe(9900);
-		expect(s!.bestAsk).toBe(10100);
-		expect(s!.bidDepth).toBeGreaterThan(0);
-		expect(s!.askDepth).toBeGreaterThan(0);
-		expect(s!.ratio).toBeGreaterThan(0);
+		expect(requireDefined(s, 's').currentPrice).toBe(10000); // (9900+10100)/2
+		expect(requireDefined(s, 's').bestBid).toBe(9900);
+		expect(requireDefined(s, 's').bestAsk).toBe(10100);
+		expect(requireDefined(s, 's').bidDepth).toBeGreaterThan(0);
+		expect(requireDefined(s, 's').askDepth).toBeGreaterThan(0);
+		expect(requireDefined(s, 's').ratio).toBeGreaterThan(0);
 	});
 
-	// ── ファイル保存 ─────────────────────────────────────
+	it('安いペア（0.0001 円刻み）: 価格を円の整数に潰さず、横軸も板の幅いっぱいに描く', async () => {
+		mockedGetDepth.mockResolvedValueOnce(
+			asMockResult(
+				depthOk({
+					asks: [
+						['31.2347', '1000'],
+						['31.2500', '2000'],
+						['31.3000', '3000'],
+					],
+					bids: [
+						['31.2345', '1500'],
+						['31.2000', '2500'],
+						['31.1500', '3500'],
+					],
+				}),
+			),
+		);
+		const res = await renderDepthSvg({ pair: 'doge_jpy' });
+		assertOk(res);
+		const s = requireDefined(res.data.summary, 's');
+		expect(s.currentPrice).toBe(31.2346);
+		expect(s.bestBid).toBe(31.2345);
+		expect(s.bestAsk).toBe(31.2347);
+		const svg = requireDefined(res.data.svg, 'svg');
+		expect(svg).toContain('>¥31.2346</text>');
+		// 横軸の目盛り（左端 = 最安の買い 31.15、右端 = 最高の売り 31.30）
+		const ticks = [
+			...svg.matchAll(
+				/<text x="([\d.]+)" y="[\d.]+" text-anchor="(middle|end)" fill="#e5e7eb" font-size="10">¥([^<]+)<\/text>/g,
+			),
+		];
+		expect(ticks.map((m) => m[3])).toEqual(['31.15', '31.19', '31.23', '31.26', '31.3']);
+		expect(Number(ticks.at(-1)?.[1]) - Number(ticks[0]?.[1])).toBeCloseTo(784, 0);
+		// 右端の目盛りだけ右ぞろえにして、右の余白からはみ出さないようにする
+		expect(ticks.map((m) => m[2])).toEqual(['middle', 'middle', 'middle', 'middle', 'end']);
+	});
+
+	it('数量軸の目盛りはプロット領域の中に収める（最大の数量より上に目盛りを出さない）', async () => {
+		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
+		const res = await renderDepthSvg({ pair: 'btc_jpy' });
+		assertOk(res);
+		const ticks = yAxisTicks(requireDefined(res.data.svg, 'svg'));
+		expect(ticks.map((t) => t.label)).toEqual(['0 BTC', '0.5 BTC', '1 BTC', '1.5 BTC', '2 BTC', '2.5 BTC', '3 BTC']);
+		// プロット領域の上端は padding.top = 84
+		for (const t of ticks) expect(t.y).toBeGreaterThanOrEqual(84);
+	});
+
+	it('最大の数量が目盛りの境目のすぐ下でも、境目の目盛りをプロット領域の上に出さない', async () => {
+		mockedGetDepth.mockResolvedValueOnce(
+			asMockResult(
+				depthOk({
+					asks: [['10100', '1.0']],
+					bids: [
+						['9900', '1.49'],
+						['9800', '1.0'],
+					],
+				}),
+			),
+		);
+		const res = await renderDepthSvg({ pair: 'btc_jpy' });
+		assertOk(res);
+		const ticks = yAxisTicks(requireDefined(res.data.svg, 'svg'));
+		// 最大の数量 2.49 に対して niceTicks は 2.5 も返す（最大値の 1% 上まで）
+		expect(ticks.map((t) => t.label)).toEqual(['0 BTC', '0.5 BTC', '1 BTC', '1.5 BTC', '2 BTC']);
+	});
+
+	it('数量が数百万になる安いペアでも、数量軸の目盛りは数本にとどめる', async () => {
+		mockedGetDepth.mockResolvedValueOnce(
+			asMockResult(
+				depthOk({
+					asks: [
+						['31.2347', '500000'],
+						['31.2500', '800000'],
+					],
+					bids: [
+						['31.2345', '1000000'],
+						['31.2000', '1200000'],
+						['31.1500', '1256789'],
+					],
+				}),
+			),
+		);
+		const res = await renderDepthSvg({ pair: 'doge_jpy' });
+		assertOk(res);
+		const ticks = yAxisTicks(requireDefined(res.data.svg, 'svg'));
+		expect(ticks.map((t) => t.label)).toEqual(['0 DOGE', '1M DOGE', '2M DOGE', '3M DOGE']);
+	});
 
 	it('preferFile=true でファイル保存', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
@@ -113,8 +210,6 @@ describe('render_depth_svg', () => {
 		assertOk(res);
 		expect(res.data.filePath).toBeDefined();
 	});
-
-	// ── エラー系 ─────────────────────────────────────────
 
 	it('不正な pair → validation エラー', async () => {
 		const res = await renderDepthSvg({ pair: 'invalid!!!' as never });
@@ -169,8 +264,6 @@ describe('render_depth_svg', () => {
 		assertFail(res);
 	});
 
-	// ── デフォルトパラメータ ──────────────────────────────
-
 	it('引数なしでデフォルト（btc_jpy, 1day, 200レベル）が適用される', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
 		const res = await renderDepthSvg();
@@ -182,7 +275,6 @@ describe('render_depth_svg', () => {
 	it('depth.levels でレベル数を指定', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
 		await renderDepthSvg({ pair: 'btc_jpy', depth: { levels: 50 } });
-		// getDepth が指定レベルで呼ばれる
 		expect(mockedGetDepth).toHaveBeenCalledWith('btc_jpy', { maxLevels: 50 });
 	});
 
@@ -191,8 +283,6 @@ describe('render_depth_svg', () => {
 		await renderDepthSvg({ pair: 'btc_jpy', depth: { levels: 5 } });
 		expect(mockedGetDepth).toHaveBeenCalledWith('btc_jpy', { maxLevels: 10 });
 	});
-
-	// ── SVG 構造検証 ─────────────────────────────────────
 
 	it('SVG に Y軸目盛り（BTC）を含む', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));
@@ -215,8 +305,6 @@ describe('render_depth_svg', () => {
 		assertOk(res);
 		expect(res.data.svg).toContain('stroke-dasharray="4 4"');
 	});
-
-	// ── toolDef.handler ──────────────────────────────────
 
 	it('handler: inline SVG で content にチャートを含む', async () => {
 		mockedGetDepth.mockResolvedValueOnce(asMockResult(depthOk()));

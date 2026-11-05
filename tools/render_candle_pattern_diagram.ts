@@ -1,16 +1,7 @@
-/**
- * render_candle_pattern_diagram - 2本足パターンの視覚化SVG生成
- *
- * analyze_candle_patterns で検出されたパターンを初心者向けに視覚化します。
- * オレンジ色のハイライトで「前日」「確定日」を明示し、
- * 5日間のローソク足を並べて表示する構成です。
- */
-
 import { failFromError } from '../lib/result.js';
 import { RenderCandlePatternDiagramInputSchema, RenderCandlePatternDiagramOutputSchema } from '../src/schemas.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
 
-// ----- 型定義 -----
 interface DiagramCandle {
 	date: string;
 	open: number;
@@ -29,7 +20,7 @@ interface DiagramPattern {
 	direction?: 'bullish' | 'bearish';
 }
 
-// ----- 配色定義（bitbank準拠） -----
+// 配色は bitbank に合わせている。
 const COLORS = {
 	dark: {
 		background: '#1f2937',
@@ -55,11 +46,7 @@ const COLORS = {
 	},
 };
 
-// ----- レイアウト定数 -----
-// descBox 下端 = descBoxY + descBoxHeight、その下に最低 60px のバッファを確保し、
-// コンテナがアスペクト比で多少クリップしても説明文が切れないようにする。
-// candleSpacing / startX は candles 本数に応じて runtime で再計算する
-// （N<5 で右側余白が膨らむ / N=10 で右側にはみ出る問題を防ぐ）。
+// descBox の下に最低 60px のバッファを確保し、コンテナがアスペクト比で多少クリップしても説明文が切れないようにする。
 const LAYOUT = {
 	width: 800,
 	height: 480,
@@ -75,11 +62,6 @@ const LAYOUT = {
 	plotSideMargin: 30,
 };
 
-// ----- ヘルパー関数 -----
-
-/**
- * 価格をフォーマット（万円単位）
- */
 function formatPriceLabel(price: number): string {
 	if (price >= 10000000) {
 		return `${(price / 10000).toFixed(0)}万`;
@@ -87,13 +69,9 @@ function formatPriceLabel(price: number): string {
 	return price.toLocaleString('ja-JP');
 }
 
-/**
- * パターンの説明文を生成（パターン名に応じた固定説明文）
- */
 function getPatternDescription(pattern: DiagramPattern): string {
 	const { name } = pattern;
 
-	// パターン名に応じた固定の説明文マッピング
 	const descriptions: Record<string, string> = {
 		陽線包み線: '陽線包み線: 前日の陰線（赤）を翌日の陽線（緑）が完全に包む → 上昇転換のサイン',
 		陰線包み線: '陰線包み線: 前日の陽線（緑）を翌日の陰線（赤）が完全に包む → 下落転換のサイン',
@@ -108,8 +86,6 @@ function getPatternDescription(pattern: DiagramPattern): string {
 	return descriptions[name] || `${name}パターン`;
 }
 
-// ----- SVG生成関数 -----
-
 export default async function renderCandlePatternDiagram(opts: {
 	candles: DiagramCandle[];
 	pattern?: DiagramPattern;
@@ -117,21 +93,17 @@ export default async function renderCandlePatternDiagram(opts: {
 	theme?: 'dark' | 'light';
 }) {
 	try {
-		// 入力の正規化
 		const input = RenderCandlePatternDiagramInputSchema.parse(opts);
 		const { candles, pattern, theme = 'dark' } = input;
 		const colors = COLORS[theme];
 
-		// タイトル決定
 		const title = input.title || (pattern?.name ? `${pattern.name}パターン` : 'ローソク足チャート');
 
-		// === Y軸の動的スケーリング ===
 		const allPrices = candles.flatMap((c) => [c.high, c.low]);
 		const maxPrice = Math.max(...allPrices);
 		const minPrice = Math.min(...allPrices);
 		const priceRange = maxPrice - minPrice;
 
-		// 上下に10%の余白（priceRange が 0 の場合は固定余白を使用）
 		const padding = priceRange === 0 ? Math.max(Math.abs(maxPrice) * 0.1, 1) : priceRange * 0.1;
 		const yMax = maxPrice + padding;
 		const yMin = minPrice - padding;
@@ -140,14 +112,11 @@ export default async function renderCandlePatternDiagram(opts: {
 		const plotHeight = plotBottom - plotTop;
 		const ySpan = yMax - yMin; // padding により必ず > 0
 
-		// 価格 → Y座標の変換
 		const priceToY = (price: number): number => {
 			return plotTop + ((yMax - price) / ySpan) * plotHeight;
 		};
 
-		// === X軸の動的レイアウト ===
-		// candles 本数に応じて spacing を縮め、plot area 内で水平方向に中央寄せする。
-		// これにより N<5 で右側余白が膨らむ / N=10 で右にはみ出る問題を同時に解消する。
+		// candles 本数に応じて spacing を縮めて中央寄せする（N<5 で右側余白が膨らみ、N=10 で右にはみ出るのを防ぐ）。
 		const usablePlotWidth = LAYOUT.plotRight - LAYOUT.plotLeft - 2 * LAYOUT.plotSideMargin;
 		const candleCount = candles.length;
 		const candleSpacing =
@@ -156,20 +125,15 @@ export default async function renderCandlePatternDiagram(opts: {
 		const plotCenterX = (LAYOUT.plotLeft + LAYOUT.plotRight) / 2;
 		const startX = plotCenterX - totalCandleSpan / 2;
 
-		// === SVG生成開始 ===
 		const parts: string[] = [];
 
-		// フォント定義
 		const fontFamily = `'Noto Sans JP', sans-serif`;
 
-		// ヘッダー
-		// viewBox を必ず指定する。コンテナで width: 100% / height: auto などの CSS が当たっても
-		// アスペクト比を維持してスケールするため、下端が切れる事故を防げる。
+		// viewBox を必ず指定する（CSS で width: 100% 等が当たってもアスペクト比を保ち、下端が切れない）。
 		parts.push(
 			`<svg width="${LAYOUT.width}" height="${LAYOUT.height}" viewBox="0 0 ${LAYOUT.width} ${LAYOUT.height}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">`,
 		);
 
-		// Google Fonts インポート & グローバルスタイル
 		parts.push(`<defs>
       <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&amp;display=swap');
@@ -179,12 +143,10 @@ export default async function renderCandlePatternDiagram(opts: {
 
 		parts.push(`<rect width="${LAYOUT.width}" height="${LAYOUT.height}" fill="${colors.background}"/>`);
 
-		// タイトル
 		parts.push(
 			`<text x="${LAYOUT.width / 2}" y="35" text-anchor="middle" font-size="18" font-weight="bold" fill="${colors.text}">${escapeXml(title)}</text>`,
 		);
 
-		// グリッド線（横）
 		const gridCount = 5;
 		for (let i = 0; i <= gridCount; i++) {
 			const y = plotTop + (plotHeight / gridCount) * i;
@@ -193,7 +155,6 @@ export default async function renderCandlePatternDiagram(opts: {
 			);
 		}
 
-		// Y軸ラベル（価格）
 		for (let i = 0; i <= gridCount; i++) {
 			const y = plotTop + (plotHeight / gridCount) * i;
 			const price = yMax - ((yMax - yMin) / gridCount) * i;
@@ -202,18 +163,15 @@ export default async function renderCandlePatternDiagram(opts: {
 			);
 		}
 
-		// === ローソク足の描画 ===
 		for (let i = 0; i < candles.length; i++) {
 			const candle = candles[i];
 			const x = startX + i * candleSpacing;
 
-			// ヒゲ（高値〜安値）
 			const highY = priceToY(candle.high);
 			const lowY = priceToY(candle.low);
 			const wickColor = candle.type === 'bullish' ? colors.bullish : colors.bearish;
 			parts.push(`<line x1="${x}" y1="${highY}" x2="${x}" y2="${lowY}" stroke="${wickColor}" stroke-width="2"/>`);
 
-			// 実体（始値〜終値）
 			const openY = priceToY(candle.open);
 			const closeY = priceToY(candle.close);
 			const bodyTop = Math.min(openY, closeY);
@@ -221,7 +179,6 @@ export default async function renderCandlePatternDiagram(opts: {
 
 			const fill = candle.type === 'bullish' ? colors.bullish : colors.bearish;
 
-			// ハイライト判定
 			const isHighlighted = pattern?.involvedIndices.includes(i);
 			const strokeAttr = isHighlighted ? `stroke="${colors.highlight}" stroke-width="3"` : '';
 
@@ -229,7 +186,6 @@ export default async function renderCandlePatternDiagram(opts: {
 				`<rect x="${x - LAYOUT.candleWidth / 2}" y="${bodyTop}" width="${LAYOUT.candleWidth}" height="${bodyHeight}" fill="${fill}" ${strokeAttr}/>`,
 			);
 
-			// 日付ラベル
 			const dateColor = candle.isPartial ? colors.highlight : colors.text;
 			const partialMark = candle.isPartial ? ' ⚠' : '';
 			parts.push(
@@ -237,11 +193,9 @@ export default async function renderCandlePatternDiagram(opts: {
 			);
 		}
 
-		// === パターンハイライト ===
 		if (pattern) {
 			const [prevIndex, confirmedIndex] = pattern.involvedIndices;
 
-			// 「前日」ラベル
 			if (prevIndex >= 0 && prevIndex < candles.length) {
 				const prevX = startX + prevIndex * candleSpacing;
 				const prevY = priceToY(candles[prevIndex].high) - 20;
@@ -250,7 +204,6 @@ export default async function renderCandlePatternDiagram(opts: {
 				);
 			}
 
-			// 「確定日」ラベル
 			if (confirmedIndex >= 0 && confirmedIndex < candles.length) {
 				const confX = startX + confirmedIndex * candleSpacing;
 				const confY = priceToY(candles[confirmedIndex].high) - 20;
@@ -259,14 +212,10 @@ export default async function renderCandlePatternDiagram(opts: {
 				);
 			}
 
-			// 矢印と「包む」ラベル（包み線の場合）
-			// 「包む」の矢印は大きい方（確定日）から小さい方（前日）へ向かう
-			// 矢印は両方のローソク足の「間」（内側）に配置
 			if (pattern.name.includes('包み線') && prevIndex >= 0 && confirmedIndex >= 0) {
 				const prevX = startX + prevIndex * candleSpacing;
 				const confX = startX + confirmedIndex * candleSpacing;
 
-				// 矢印のY位置: 両方のローソク足の実体の下端の下に配置（重ならないように）
 				const prevBodyBottom = Math.max(priceToY(candles[prevIndex].open), priceToY(candles[prevIndex].close));
 				const confBodyBottom = Math.max(
 					priceToY(candles[confirmedIndex].open),
@@ -275,16 +224,13 @@ export default async function renderCandlePatternDiagram(opts: {
 				const maxBodyBottom = Math.max(prevBodyBottom, confBodyBottom);
 				const arrowY = maxBodyBottom + 15; // 実体の下端から15px下
 
-				// 矢印マーカー定義（淡いブルー）
-				// orient="auto"で線の方向に回転するため、右向き三角形を定義
-				// 線が右→左の場合、180度回転して左向き矢印になる
+				// orient="auto" で線の方向に回転するので右向き三角形で定義する（右→左の線では左向きになる）。
 				parts.push(`<defs>
           <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
             <polygon points="0 0, 10 3.5, 0 7" fill="${colors.arrow}"/>
           </marker>
         </defs>`);
 
-				// 矢印線: 確定日の左端 → 前日の右端（内側を通る短い矢印）
 				const halfWidth = LAYOUT.candleWidth / 2; // 20px
 				const gap = 10; // 実体からの距離
 				const confLeftEdge = confX - halfWidth; // 確定日の実体左端
@@ -295,14 +241,12 @@ export default async function renderCandlePatternDiagram(opts: {
 					`<line x1="${arrowStartX}" y1="${arrowY}" x2="${arrowEndX}" y2="${arrowY}" stroke="${colors.arrow}" stroke-width="2" marker-end="url(#arrowhead)"/>`,
 				);
 
-				// 「包む」ラベル: 矢印の下に配置（淡いブルー・太字）
 				const labelX = (arrowStartX + arrowEndX) / 2;
 				parts.push(
 					`<text x="${labelX}" y="${arrowY + 30}" text-anchor="middle" font-size="16" font-weight="bold" fill="${colors.arrow}">包む</text>`,
 				);
 			}
 
-			// 説明ボックス
 			const desc = getPatternDescription(pattern);
 			parts.push(
 				`<rect x="50" y="${LAYOUT.descBoxY}" width="${LAYOUT.width - 100}" height="${LAYOUT.descBoxHeight}" rx="5" fill="${colors.descBox}"/>`,
@@ -314,7 +258,6 @@ export default async function renderCandlePatternDiagram(opts: {
 			);
 		}
 
-		// SVG終了
 		parts.push('</svg>');
 
 		const svg = parts.join('\n');
@@ -340,7 +283,6 @@ export default async function renderCandlePatternDiagram(opts: {
 	}
 }
 
-// ----- XMLエスケープ -----
 function escapeXml(str: string): string {
 	return str
 		.replace(/&/g, '&amp;')
@@ -350,7 +292,6 @@ function escapeXml(str: string): string {
 		.replace(/'/g, '&apos;');
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'render_candle_pattern_diagram',
 	description: `[Candle Pattern Diagram / Education] ローソク足パターンの教育用構造図（candle pattern diagram / education / visualization）。analyze_candle_patterns の結果を初心者向けに視覚化。

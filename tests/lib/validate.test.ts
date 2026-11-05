@@ -14,6 +14,7 @@ import {
 	validateDate,
 	validateLimit,
 } from '../../lib/validate.js';
+import { assertFail } from '../_assertResult.js';
 
 describe('normalizePair', () => {
 	it('正規形式はそのまま返す', () => {
@@ -52,13 +53,13 @@ describe('ensurePair', () => {
 	});
 	it('不正形式で ok: false を返す', () => {
 		const res = ensurePair('invalid');
-		expect(res.ok).toBe(false);
-		if (!res.ok) expect(res.error.type).toBe('user');
+		assertFail(res);
+		expect(res.error.type).toBe('user');
 	});
 	it('存在しないペアで ok: false を返す', () => {
 		const res = ensurePair('zzz_jpy');
-		expect(res.ok).toBe(false);
-		if (!res.ok) expect(res.error.message).toContain('未対応');
+		assertFail(res);
+		expect(res.error.message).toContain('未対応');
 	});
 	it('null で ok: false を返す', () => {
 		const res = ensurePair(null);
@@ -67,11 +68,7 @@ describe('ensurePair', () => {
 });
 
 describe('ALLOWED_PAIRS は JPY 建てのみ（表示層が円前提のガード）', () => {
-	// 表示層（lib/formatter.ts ほか多数）が価格に「円」を直書きしているため、
-	// ALLOWED_PAIRS は現状すべて JPY クォート（*_jpy）でなければならない。
-	// 非JPYペア（例: eth_btc）を追加すると表示層が一斉に誤表記になる「サイレントな潜在バグ」。
-	// Pair 型は `${string}_${string}` で非JPYも型上は通るため、型では防げない。
-	// → 非JPYペアの追加には表示層の quote 通貨対応が先に必要。このテストがその番人。
+	// 表示層（lib/formatter.ts ほか多数）が価格に「円」を直書きしているので、ALLOWED_PAIRS は現状すべて JPY クォート（*_jpy）でなければならない（Pair 型は非 JPY も型上は通すので型では防げない）。非 JPY ペアの追加には表示層の quote 通貨対応が先に必要で、このテストがその番人。
 	it('quote 通貨が空（空集合）でないこと（番人の空振り防止）', () => {
 		expect(ALLOWED_PAIRS.size).toBeGreaterThan(0);
 	});
@@ -160,11 +157,9 @@ describe('ensureAllowedOutputDir', () => {
 
 	it('許可 root 外の絶対パスは拒否される', () => {
 		const res = ensureAllowedOutputDir('/etc/cron.d');
-		expect(res.ok).toBe(false);
-		if (!res.ok) {
-			expect(res.error.type).toBe('user');
-			expect(res.error.message).toContain('/etc/cron.d');
-		}
+		assertFail(res);
+		expect(res.error.type).toBe('user');
+		expect(res.error.message).toContain('/etc/cron.d');
 	});
 
 	it('.. によるトラバーサルは resolve 後のパスで拒否される', () => {

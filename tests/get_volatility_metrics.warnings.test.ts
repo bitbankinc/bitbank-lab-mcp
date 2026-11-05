@@ -51,12 +51,9 @@ function mockCandlesOk(normalized: Candle[], extraMeta: Record<string, unknown> 
 }
 
 describe('get_volatility_metrics: meta.warning / sampleSize (skip 経路)', () => {
-	// === 不正 OHLC のスキップ =============================================
-
 	describe('不正 OHLC のスキップ', () => {
 		it('不正 OHLC を含む場合、close 配列が短くなり meta.warning が立つ', async () => {
 			const normalized = makeCandles(35);
-			// 末尾 3 件の high を NaN に
 			for (let i = normalized.length - 3; i < normalized.length; i++) {
 				normalized[i].high = Number.NaN;
 			}
@@ -67,11 +64,9 @@ describe('get_volatility_metrics: meta.warning / sampleSize (skip 経路)', () =
 			// 35 - 3 = 32 本が有効
 			expect(res.data.series.close.length).toBe(32);
 			expect(res.data.meta.sampleSize).toBe(32);
-			// meta.warning にスキップ件数が記録される
 			const warning = (res.meta as { warning?: string }).warning;
 			expect(warning).toBeDefined();
 			expect(warning).toContain('3件の不正な OHLC');
-			// summary 先頭にも warning が連結される
 			expect(res.summary.startsWith('⚠️')).toBe(true);
 			expect(res.summary).toContain('3件の不正な OHLC');
 		});
@@ -86,12 +81,9 @@ describe('get_volatility_metrics: meta.warning / sampleSize (skip 経路)', () =
 		});
 	});
 
-	// === isoTime 欠損のスキップ（Date.now() 埋め込み廃止） ================
-
 	describe('isoTime 欠損のスキップ', () => {
 		it('isoTime 欠損ローソク足はスキップされ meta.warning が立つ', async () => {
 			const normalized = makeCandles(35);
-			// 末尾 2 件の isoTime を null に
 			for (let i = normalized.length - 2; i < normalized.length; i++) {
 				normalized[i].isoTime = null;
 			}
@@ -111,7 +103,6 @@ describe('get_volatility_metrics: meta.warning / sampleSize (skip 経路)', () =
 
 		it('isoTime が undefined（プロパティ自体欠損）でもスキップされる', async () => {
 			const normalized: Candle[] = makeCandles(30);
-			// 1 件の isoTime を消す
 			delete (normalized[5] as { isoTime?: string | null }).isoTime;
 			mockCandlesOk(normalized);
 
@@ -126,7 +117,6 @@ describe('get_volatility_metrics: meta.warning / sampleSize (skip 経路)', () =
 
 		it('isoTime 欠損時に Date.now() を埋めない（ts 配列は全て 2025 年起点）', async () => {
 			const normalized = makeCandles(30);
-			// 5 件の isoTime を null に
 			for (let i = 25; i < 30; i++) {
 				normalized[i].isoTime = null;
 			}
@@ -141,8 +131,6 @@ describe('get_volatility_metrics: meta.warning / sampleSize (skip 経路)', () =
 			}
 		});
 	});
-
-	// === 不正 OHLC と isoTime 欠損が混在 ==================================
 
 	it('OHLC 不正と isoTime 欠損の両方を含む場合、両方の警告が出る', async () => {
 		const normalized = makeCandles(40);
@@ -161,8 +149,6 @@ describe('get_volatility_metrics: meta.warning / sampleSize (skip 経路)', () =
 		expect(warning).toContain('2件の isoTime 欠損');
 	});
 
-	// === 上流 fetchWarning の伝播 =========================================
-
 	describe('上流 get_candles の fetchWarning 伝播', () => {
 		it('上流 meta.warning が vol の meta.warning に伝播する', async () => {
 			const upstreamWarning = '⚠️ 4年中1年の取得に失敗しました（2020年）。データが不完全な可能性があります。';
@@ -173,7 +159,6 @@ describe('get_volatility_metrics: meta.warning / sampleSize (skip 経路)', () =
 			const warning = (res.meta as { warning?: string }).warning;
 			expect(warning).toBeDefined();
 			expect(warning).toContain('4年中1年の取得に失敗');
-			// summary 先頭にも入る
 			expect(res.summary.startsWith('⚠️')).toBe(true);
 			expect(res.summary).toContain('4年中1年の取得に失敗');
 		});
@@ -197,7 +182,6 @@ describe('get_volatility_metrics: meta.warning / sampleSize (skip 経路)', () =
 			const res = await getVolatilityMetrics('btc_jpy', '1day', 30);
 			assertOk(res);
 			expect((res.meta as { warning?: string }).warning).toBeUndefined();
-			// summary も警告で始まらない
 			expect(res.summary.startsWith('⚠️')).toBe(false);
 		});
 	});

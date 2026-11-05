@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { toNum } from '../../lib/conversions.js';
 
 describe('toNum', () => {
-	// 正常系
 	it('数値文字列を number に変換する', () => {
 		expect(toNum('12345.67')).toBe(12345.67);
 		expect(toNum('0')).toBe(0);
@@ -16,7 +15,6 @@ describe('toNum', () => {
 		expect(toNum(-3.14)).toBe(-3.14);
 	});
 
-	// null / undefined
 	it('null は null を返す', () => {
 		expect(toNum(null)).toBeNull();
 	});
@@ -32,7 +30,6 @@ describe('toNum', () => {
 		expect(toNum('\t\n')).toBeNull();
 	});
 
-	// NaN / Infinity
 	it('NaN は null を返す', () => {
 		expect(toNum(NaN)).toBeNull();
 	});
@@ -42,7 +39,6 @@ describe('toNum', () => {
 		expect(toNum(-Infinity)).toBeNull();
 	});
 
-	// 数値に変換できない文字列
 	it('数値でない文字列は null を返す', () => {
 		expect(toNum('abc')).toBeNull();
 		expect(toNum('12.34.56')).toBeNull();

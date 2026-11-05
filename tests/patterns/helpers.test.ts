@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
 	barsPerDay,
+	deduplicatePatterns,
+	finalizeConf,
+	globalDedup,
+	PERIOD_SCORE_BAR_BUCKETS,
+	periodScoreBars,
+	periodScoreDays,
+} from '../../tools/patterns/helpers.js';
+import type { CandleData, DeduplicablePattern, TrendLine } from '../../tools/patterns/types.js';
+import {
 	calcAlternationScoreEx,
 	calcApex,
 	calcDurationScoreEx,
@@ -8,22 +17,12 @@ import {
 	calculatePatternScoreEx,
 	checkContainment,
 	checkConvergenceEx,
-	deduplicatePatterns,
 	detectWedgeBreak,
 	determineWedgeType,
 	evaluateTouchesEx,
-	finalizeConf,
 	generateWindows,
-	globalDedup,
-	PERIOD_SCORE_BAR_BUCKETS,
-	periodScoreBars,
-	periodScoreDays,
-} from '../../tools/patterns/helpers.js';
-import type { CandleData, DeduplicablePattern, TrendLine } from '../../tools/patterns/types.js';
+} from '../../tools/patterns/wedge-helpers.js';
 
-// ---------------------------------------------------------------------------
-// ヘルパー
-// ---------------------------------------------------------------------------
 function makeTrendLine(slope: number, intercept: number): TrendLine {
 	return { slope, intercept, valueAt: (x: number) => slope * x + intercept };
 }
@@ -38,9 +37,6 @@ function makeCandles(count: number, basePrice: number = 100): CandleData[] {
 	}));
 }
 
-// ---------------------------------------------------------------------------
-// generateWindows
-// ---------------------------------------------------------------------------
 describe('generateWindows', () => {
 	it('正しいウィンドウを生成する', () => {
 		const windows = generateWindows(20, 5, 10, 5);
@@ -58,9 +54,6 @@ describe('generateWindows', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// determineWedgeType
-// ---------------------------------------------------------------------------
 describe('determineWedgeType', () => {
 	it('両ライン上向き・下側が急 → rising_wedge', () => {
 		const result = determineWedgeType(0.001, 0.002, { slopeRatioMinRising: 1.2 });
@@ -83,9 +76,6 @@ describe('determineWedgeType', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// calcApex
-// ---------------------------------------------------------------------------
 describe('calcApex', () => {
 	it('収束するトレンドラインの Apex を計算', () => {
 		const upper = makeTrendLine(-0.5, 200); // 下降ライン
@@ -112,9 +102,6 @@ describe('calcApex', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// checkContainment
-// ---------------------------------------------------------------------------
 describe('checkContainment', () => {
 	it('全て境界内なら ratio=1', () => {
 		const candles = makeCandles(10, 100);
@@ -135,9 +122,6 @@ describe('checkContainment', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// checkConvergenceEx
-// ---------------------------------------------------------------------------
 describe('checkConvergenceEx', () => {
 	it('収束するラインで isConverging=true', () => {
 		const upper = makeTrendLine(-1, 200);
@@ -155,9 +139,6 @@ describe('checkConvergenceEx', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// evaluateTouchesEx
-// ---------------------------------------------------------------------------
 describe('evaluateTouchesEx', () => {
 	it('タッチポイントを検出する', () => {
 		const candles: readonly CandleData[] = Array.from({ length: 20 }, (_, i) => ({
@@ -176,9 +157,6 @@ describe('evaluateTouchesEx', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// calcAlternationScoreEx
-// ---------------------------------------------------------------------------
 describe('calcAlternationScoreEx', () => {
 	it('完全に交互なら 1', () => {
 		const touches = {
@@ -224,9 +202,6 @@ describe('calcAlternationScoreEx', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// calcInsideRatioEx
-// ---------------------------------------------------------------------------
 describe('calcInsideRatioEx', () => {
 	it('全て内側なら 1', () => {
 		const candles: readonly CandleData[] = [
@@ -246,9 +221,6 @@ describe('calcInsideRatioEx', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// calcDurationScoreEx
-// ---------------------------------------------------------------------------
 describe('calcDurationScoreEx', () => {
 	it('範囲内の中央値で最高スコア', () => {
 		const score = calcDurationScoreEx(57, { windowSizeMin: 25, windowSizeMax: 90 });
@@ -266,9 +238,6 @@ describe('calcDurationScoreEx', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// calculatePatternScoreEx
-// ---------------------------------------------------------------------------
 describe('calculatePatternScoreEx', () => {
 	it('全コンポーネント=1 なら 1', () => {
 		const components = {
@@ -308,9 +277,6 @@ describe('calculatePatternScoreEx', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// periodScoreDays
-// ---------------------------------------------------------------------------
 describe('periodScoreDays（暦日基準。double / H&S が使う）', () => {
 	it('ISO文字列なしは 0.7', () => {
 		expect(periodScoreDays()).toBe(0.7);
@@ -324,17 +290,13 @@ describe('periodScoreDays（暦日基準。double / H&S が使う）', () => {
 		expect(periodScoreDays('2024-01-01', '2024-01-20')).toBe(0.9);
 	});
 
-	// 30 日以上だけ 0.9 → 0.7 と下がる。**この非単調性は暦日版の仕様として固定する**
-	// （バー数版には引き継いでいない。理由は periodScoreBars の docstring）。
+	// 30 日以上だけ 0.9 → 0.7 と下がる。この非単調性は暦日版の仕様として固定する（バー数版には引き継いでいない）。
 	it('30日以上は 0.9 から 0.7 に下がる（非単調。引数なしと同じ中立値）', () => {
 		expect(periodScoreDays('2024-01-01', '2024-02-05')).toBe(0.7);
 		expect(periodScoreDays('2024-01-01', '2024-02-05')).toBe(periodScoreDays());
 	});
 });
 
-// ---------------------------------------------------------------------------
-// periodScoreBars（issue #199 候補 2。triple のみが使う）
-// ---------------------------------------------------------------------------
 describe('periodScoreBars（バー数基準。triple が使う）', () => {
 	it('境界は 12 / 18 / 26 バー', () => {
 		expect(PERIOD_SCORE_BAR_BUCKETS).toEqual([12, 18, 26]);
@@ -353,8 +315,7 @@ describe('periodScoreBars（バー数基準。triple が使う）', () => {
 		expect(periodScoreBars(bars)).toBe(expected);
 	});
 
-	// 暦日版と違い最長バケットで下がらない。ここが崩れると
-	// 「由来不明の段差をバー空間に持ち込まない」という #199 候補 2 の判断が黙って戻る。
+	// ここが崩れると「由来不明の段差をバー空間に持ち込まない」という #199 候補 2 の判断が黙って戻る。
 	it('単調非減少（暦日版の 0.9 → 0.7 の段差を引き継いでいない）', () => {
 		const scores = Array.from({ length: 60 }, (_, bars) => periodScoreBars(bars));
 		for (let i = 1; i < scores.length; i++) {
@@ -373,9 +334,6 @@ describe('periodScoreBars（バー数基準。triple が使う）', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// finalizeConf
-// ---------------------------------------------------------------------------
 describe('finalizeConf', () => {
 	it('head_and_shoulders はボーナス（*1.1）', () => {
 		const result = finalizeConf(0.8, 'head_and_shoulders');
@@ -401,9 +359,6 @@ describe('finalizeConf', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// detectWedgeBreak
-// ---------------------------------------------------------------------------
 describe('detectWedgeBreak', () => {
 	it('ブレイクがない場合は detected=false', () => {
 		const candles = makeCandles(50, 100);
@@ -426,13 +381,26 @@ describe('detectWedgeBreak', () => {
 		const lower = { valueAt: () => 80 };
 		const result = detectWedgeBreak(candles, 'falling_wedge', upper, lower, 0, 50, 59, 5);
 		expect(result.detected).toBe(true);
+		expect(result.breakIdx).toBe(51);
 		expect(result.breakPrice).toBeGreaterThan(120);
+	});
+
+	it('形成終端以前の境界外終値を過去のブレイクとして検出しない', () => {
+		const candles: CandleData[] = Array.from({ length: 60 }, (_, i) => ({
+			open: 100,
+			close: i === 40 ? 250 : 100,
+			high: i === 40 ? 260 : 110,
+			low: 90,
+			isoTime: `2024-01-${String(i + 1).padStart(2, '0')}`,
+		}));
+		const upper = { valueAt: () => 120 };
+		const lower = { valueAt: () => 80 };
+		const result = detectWedgeBreak(candles, 'falling_wedge', upper, lower, 0, 50, 59, 5);
+		expect(result.detected).toBe(false);
+		expect(result.breakIdx).toBe(-1);
 	});
 });
 
-// ---------------------------------------------------------------------------
-// deduplicatePatterns
-// ---------------------------------------------------------------------------
 describe('deduplicatePatterns', () => {
 	it('重複しないパターンはそのまま返す', () => {
 		const patterns = [
@@ -461,10 +429,7 @@ describe('deduplicatePatterns', () => {
 		expect(deduplicatePatterns([])).toEqual([]);
 	});
 
-	// ── statusScore 最優先（issue #133）──
-	// range.end は形成中では常に最新足なので、status より前に比較すると
-	// 形成中が完成済みを構造的に必ず押し出す。statusScore（ranking.ts が単一ソース）を
-	// 最優先し、同 status 内でのみ「新しいほうを採る」を適用する。
+	// range.end は形成中では常に最新足なので、status より前に比較すると形成中が完成済みを構造的に必ず押し出す（issue #133）。
 
 	it('形成中が range.end も confidence も上回っていても、完成済み（status 未設定）が勝つ', () => {
 		const completed: DeduplicablePattern = {
@@ -519,8 +484,6 @@ describe('deduplicatePatterns', () => {
 	});
 
 	// issue #142: 同 status 内の順序は confidence → range.end。`globalDedup` と同じ。
-	// #135 までは range.end が先で、最も新しく終わる 1 つに絞り込んだ時点で confidence が
-	// 一度も比較されなかった（= 広い窓の低品質候補が勝つ）。
 	it('同 status どうしでは confidence が高いほうが勝つ（range.end が古くても）', () => {
 		const older: DeduplicablePattern = {
 			type: 'double_top',
@@ -558,8 +521,6 @@ describe('deduplicatePatterns', () => {
 		expect(result[0].range?.end).toBe('2024-01-12');
 	});
 
-	// #133 / PR #135 の不変条件。#142 の入れ替えは statusScore の**下**なので、
-	// confidence をどれだけ高くしても形成中は完成済みを押し出せない。
 	it('形成中は confidence が高くても完成済みに勝てない（statusScore が最優先のまま）', () => {
 		const completed: DeduplicablePattern = {
 			type: 'double_top',
@@ -580,9 +541,6 @@ describe('deduplicatePatterns', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// globalDedup
-// ---------------------------------------------------------------------------
 describe('globalDedup', () => {
 	it('異なるカテゴリのパターンは残す', () => {
 		const patterns = [
@@ -606,10 +564,7 @@ describe('globalDedup', () => {
 		expect(globalDedup([])).toEqual([]);
 	});
 
-	// ── statusScore 最優先（issue #133）──
 	// rankPatterns と同じ規則（statusScore → confidence → range.end）。
-	// status を見ずに confidence を先に比べると、形成中（整合度 1.00 が付きやすい）が
-	// 突破確定済みの完成済み（同 0.96）を押し出す——issue #133 の実データそのもの。
 
 	it('形成中（confidence 1.00・range.end 最新）は完成済み（status 未設定・0.96）を押し出せない', () => {
 		const completed: DeduplicablePattern = {
@@ -689,9 +644,6 @@ describe('globalDedup', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// barsPerDay
-// ---------------------------------------------------------------------------
 describe('barsPerDay', () => {
 	it('1day は 1 を返す', () => {
 		expect(barsPerDay('1day')).toBe(1);

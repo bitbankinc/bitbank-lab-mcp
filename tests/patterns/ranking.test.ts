@@ -1,9 +1,3 @@
-/**
- * tools/patterns/ranking.ts の単体テスト
- *
- * detect_patterns が表示・返却前にパターンを優先度順にソートするための関数。
- * 優先度: status='completed' → confirmation='neckline_breakout' → confidence高 → 直近性
- */
 import { describe, expect, it } from 'vitest';
 import { rankPatterns, statusScore } from '../../tools/patterns/ranking.js';
 import type { DeduplicablePattern } from '../../tools/patterns/types.js';
@@ -25,9 +19,7 @@ function makePattern(overrides: Partial<TestPattern>): TestPattern {
 	};
 }
 
-// statusScore は rankPatterns と dedup（patterns/helpers.ts の deduplicatePatterns /
-// globalDedup）が共有する status 優先度の単一ソース（issue #133）。
-// 序列を変えるとソートと dedup の両方が同時に動くため、スケールをここで固定する。
+// statusScore は rankPatterns と dedup（deduplicatePatterns / globalDedup）が共有する単一ソースなので、序列を変えるとソートと dedup の両方が同時に動く（issue #133）。
 describe('statusScore', () => {
 	it('completed > status 未設定（完成済み扱い） > forming / near_completion > invalid / expired', () => {
 		expect(statusScore('completed')).toBe(3);

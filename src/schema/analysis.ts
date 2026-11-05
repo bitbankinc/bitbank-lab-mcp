@@ -5,14 +5,16 @@ import {
 	CandleTypeEnum,
 	FailResultSchema,
 	MAX_TX_COUNT_LIMIT,
+	provisionalField,
 	TrendLabelEnum,
 	TX_RANGE_SINCE_SCHEMA,
 	TX_RANGE_UNTIL_SCHEMA,
 	toolResultSchema,
 	VIEW_CONTRACT_NOTE,
+	warningField,
+	warningsField,
 } from './base.js';
 
-// === Volatility Metrics ===
 export const GetVolMetricsInputSchema = z.object({
 	pair: z.string(),
 	type: CandleTypeEnum,
@@ -81,15 +83,12 @@ export const GetVolMetricsDataSchemaOut = z.object({
 export const GetVolMetricsMetaSchemaOut = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number().int(),
-	/** 取得層の不完全性を示す警告（上流 get_candles の fetchWarning、不正OHLCスキップ、isoTime欠損等）。 */
-	warning: z.string().optional(),
-	/** 最新足が形成中（未確定）か。warning（取得層）とは別系統の情報フラグ。 */
-	provisional: z.boolean().optional(),
+	...warningField,
+	...provisionalField,
 });
 
 export const GetVolMetricsOutputSchema = toolResultSchema(GetVolMetricsDataSchemaOut, GetVolMetricsMetaSchemaOut);
 
-// === Analyze Market Signal ===
 export const AnalyzeMarketSignalDataSchemaOut = z.object({
 	score: z.number(),
 	recommendation: z.enum(['bullish', 'bearish', 'neutral']),
@@ -166,7 +165,6 @@ export const AnalyzeMarketSignalDataSchemaOut = z.object({
 		cvdSlope: z.number(),
 		horizon: z.number().int(),
 	}),
-	// Enriched SMA block for LLM-friendly grounding
 	sma: z
 		.object({
 			current: z.number().nullable(),
@@ -193,7 +191,6 @@ export const AnalyzeMarketSignalDataSchemaOut = z.object({
 				.optional(),
 		})
 		.optional(),
-	// Optional helper fields
 	recommendedTimeframes: z.array(z.string()).optional(),
 	refs: z.object({
 		flow: z.object({ aggregates: z.unknown(), lastBuckets: z.array(z.unknown()) }),
@@ -206,13 +203,8 @@ export const AnalyzeMarketSignalMetaSchemaOut = BaseMetaSchema.extend({
 	windows: z.array(z.number()),
 	bucketMs: z.number().int(),
 	flowLimit: z.number().int(),
-	/** 取得層の不完全性（上流 get_flow_metrics / get_volatility_metrics / analyze_indicators の meta.warning を集約）。 */
-	warning: z.string().optional(),
-	/**
-	 * 計算層の不完全性（上流の meta.warnings を `[flow] / [indicators]` prefix 付きで継承。
-	 * 集計値が約定のカバー区間のみ由来、SMA_200 データ不足 等）。
-	 */
-	warnings: z.array(z.string()).optional(),
+	...warningField,
+	...warningsField,
 });
 export const AnalyzeMarketSignalOutputSchema = toolResultSchema(
 	AnalyzeMarketSignalDataSchemaOut,
@@ -225,7 +217,6 @@ export const AnalyzeMarketSignalInputSchema = BasePairInputSchema.extend({
 	windows: z.array(z.number().int()).optional().default([14, 20, 30]),
 });
 
-// === Ichimoku numeric snapshot (no visual assumptions) ===
 export const AnalyzeIchimokuSnapshotInputSchema = BasePairInputSchema.extend({
 	type: CandleTypeEnum.optional().default('1day'),
 	limit: z.number().int().min(60).max(365).optional().default(120),
@@ -331,12 +322,9 @@ export const AnalyzeIchimokuSnapshotDataSchemaOut = z.object({
 export const AnalyzeIchimokuSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number().int(),
-	/** 取得層の不完全性（上流 get_candles / analyze_indicators の meta.warning を継承）。 */
-	warning: z.string().optional(),
-	/** 計算層の不完全性（analyze_indicators の meta.warnings を継承）。 */
-	warnings: z.array(z.string()).optional(),
-	/** 最新足が形成中（未確定）か。warning（取得層）/ warnings（計算層）とは別系統の情報フラグ。 */
-	provisional: z.boolean().optional(),
+	...warningField,
+	...warningsField,
+	...provisionalField,
 });
 
 export const AnalyzeIchimokuSnapshotOutputSchema = toolResultSchema(
@@ -344,14 +332,12 @@ export const AnalyzeIchimokuSnapshotOutputSchema = toolResultSchema(
 	AnalyzeIchimokuSnapshotMetaSchemaOut,
 );
 
-// === BB snapshot ===
 export const AnalyzeBbSnapshotInputSchema = BasePairInputSchema.extend({
 	type: CandleTypeEnum.optional().default('1day'),
 	limit: z.number().int().min(40).max(365).optional().default(120),
 	mode: z.enum(['default', 'extended']).optional().default('default'),
 });
 
-// analyze_bb_snapshot: support legacy (flat) and new (structured) data shapes
 const AnalyzeBbSnapshotDataSchemaLegacy = z.object({
 	latest: z.object({
 		close: z.number().nullable(),
@@ -368,7 +354,7 @@ const AnalyzeBbSnapshotDataSchemaStructured = z.object({
 	mode: z.enum(['default', 'extended']),
 	price: z.number().nullable(),
 	bb: z.union([
-		// default: middle/upper/lower
+		// mode=default
 		z.object({
 			middle: z.number().nullable(),
 			upper: z.number().nullable(),
@@ -376,7 +362,7 @@ const AnalyzeBbSnapshotDataSchemaStructured = z.object({
 			zScore: z.number().nullable(),
 			bandWidthPct: z.number().nullable(),
 		}),
-		// extended: bands map and bandWidthPct per band
+		// mode=extended
 		z.object({
 			middle: z.number().nullable(),
 			bands: z.record(z.string(), z.number().nullable()).optional(),
@@ -402,14 +388,10 @@ export const AnalyzeBbSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number().int(),
 	mode: z.enum(['default', 'extended']),
-	// allow additional meta injected by implementation
 	extra: z.object({}).passthrough().optional(),
-	/** 取得層の不完全性（上流 get_candles / analyze_indicators の meta.warning を継承）。 */
-	warning: z.string().optional(),
-	/** 計算層の不完全性（analyze_indicators の meta.warnings を継承）。 */
-	warnings: z.array(z.string()).optional(),
-	/** 最新足が形成中（未確定）か。warning（取得層）/ warnings（計算層）とは別系統の情報フラグ。 */
-	provisional: z.boolean().optional(),
+	...warningField,
+	...warningsField,
+	...provisionalField,
 });
 
 export const AnalyzeBbSnapshotOutputSchema = toolResultSchema(
@@ -417,7 +399,6 @@ export const AnalyzeBbSnapshotOutputSchema = toolResultSchema(
 	AnalyzeBbSnapshotMetaSchemaOut,
 );
 
-// === SMA snapshot ===
 export const AnalyzeSmaSnapshotInputSchema = BasePairInputSchema.extend({
 	type: CandleTypeEnum.optional().default('1day'),
 	limit: z.number().int().min(200).max(365).optional().default(220),
@@ -431,7 +412,6 @@ export const AnalyzeSmaSnapshotDataSchemaOut = z
 		crosses: z.array(z.object({ a: z.string(), b: z.string(), type: z.enum(['golden', 'dead']), delta: z.number() })),
 		alignment: z.enum(['bullish', 'bearish', 'mixed', 'unknown']),
 		tags: z.array(z.string()),
-		// Extended (optional): enriched summary and SMA analytics
 		summary: z
 			.object({
 				close: z.number().nullable(),
@@ -471,12 +451,9 @@ export const AnalyzeSmaSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number().int(),
 	periods: z.array(z.number().int()),
-	/** 取得層の不完全性（上流 get_candles / analyze_indicators の meta.warning を継承）。 */
-	warning: z.string().optional(),
-	/** 計算層の不完全性（analyze_indicators の meta.warnings を継承）。 */
-	warnings: z.array(z.string()).optional(),
-	/** 最新足が形成中（未確定）か。warning（取得層）/ warnings（計算層）とは別系統の情報フラグ。 */
-	provisional: z.boolean().optional(),
+	...warningField,
+	...warningsField,
+	...provisionalField,
 });
 
 export const AnalyzeSmaSnapshotOutputSchema = toolResultSchema(
@@ -484,7 +461,6 @@ export const AnalyzeSmaSnapshotOutputSchema = toolResultSchema(
 	AnalyzeSmaSnapshotMetaSchemaOut,
 );
 
-// === EMA snapshot ===
 export const AnalyzeEmaSnapshotInputSchema = BasePairInputSchema.extend({
 	type: CandleTypeEnum.optional().default('1day'),
 	limit: z.number().int().min(200).max(365).optional().default(220),
@@ -537,12 +513,9 @@ export const AnalyzeEmaSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number().int(),
 	periods: z.array(z.number().int()),
-	/** 取得層の不完全性（上流 get_candles / analyze_indicators の meta.warning を継承）。 */
-	warning: z.string().optional(),
-	/** 計算層の不完全性（analyze_indicators の meta.warnings を継承）。getCandles 直叩き path では undefined。 */
-	warnings: z.array(z.string()).optional(),
-	/** 最新足が形成中（未確定）か。warning（取得層）/ warnings（計算層）とは別系統の情報フラグ。 */
-	provisional: z.boolean().optional(),
+	...warningField,
+	...warningsField,
+	...provisionalField,
 });
 
 export const AnalyzeEmaSnapshotOutputSchema = toolResultSchema(
@@ -550,7 +523,6 @@ export const AnalyzeEmaSnapshotOutputSchema = toolResultSchema(
 	AnalyzeEmaSnapshotMetaSchemaOut,
 );
 
-// === Stochastic Oscillator snapshot ===
 export const AnalyzeStochSnapshotInputSchema = BasePairInputSchema.extend({
 	type: CandleTypeEnum.optional().default('1day'),
 	limit: z.number().int().min(40).max(365).optional().default(120),
@@ -593,12 +565,9 @@ export const AnalyzeStochSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 	type: CandleTypeEnum,
 	count: z.number().int(),
 	params: z.object({ kPeriod: z.number().int(), smoothK: z.number().int(), smoothD: z.number().int() }),
-	/** 取得層の不完全性（上流 get_candles / analyze_indicators の meta.warning を継承）。 */
-	warning: z.string().optional(),
-	/** 計算層の不完全性（analyze_indicators の meta.warnings を継承）。getCandles 直叩き path では undefined。 */
-	warnings: z.array(z.string()).optional(),
-	/** 最新足が形成中（未確定）か。warning（取得層）/ warnings（計算層）とは別系統の情報フラグ。 */
-	provisional: z.boolean().optional(),
+	...warningField,
+	...warningsField,
+	...provisionalField,
 });
 
 export const AnalyzeStochSnapshotOutputSchema = toolResultSchema(
@@ -606,7 +575,6 @@ export const AnalyzeStochSnapshotOutputSchema = toolResultSchema(
 	AnalyzeStochSnapshotMetaSchemaOut,
 );
 
-// === MTF SMA (Multi-Timeframe SMA Snapshot) ===
 export const AnalyzeMtfSmaInputSchema = BasePairInputSchema.extend({
 	timeframes: z.array(CandleTypeEnum).min(1).optional().default(['1hour', '4hour', '1day']),
 	periods: z.array(z.number().int()).optional().default([25, 75, 200]),
@@ -672,15 +640,12 @@ export const AnalyzeMtfSmaDataSchemaOut = z
 export const AnalyzeMtfSmaMetaSchemaOut = BaseMetaSchema.extend({
 	timeframes: z.array(z.string()),
 	periods: z.array(z.number().int()),
-	/** 取得層の不完全性。子 analyze_sma_snapshot の meta.warning / 失敗 TF の synthetic message を `[tf]` prefix 付きで集約。 */
-	warning: z.string().optional(),
-	/** 計算層の不完全性。子 analyze_sma_snapshot の meta.warnings を `[tf]` prefix 付きで継承。 */
-	warnings: z.array(z.string()).optional(),
+	...warningField,
+	...warningsField,
 });
 
 export const AnalyzeMtfSmaOutputSchema = toolResultSchema(AnalyzeMtfSmaDataSchemaOut, AnalyzeMtfSmaMetaSchemaOut);
 
-// === Support Resistance Analysis ===
 export const AnalyzeSupportResistanceInputSchema = BasePairInputSchema.extend({
 	lookbackDays: z.number().int().min(30).max(200).optional().default(90),
 	topN: z.number().int().min(1).max(5).optional().default(3),
@@ -743,8 +708,6 @@ export const AnalyzeSupportResistanceOutputSchema = z.union([
 	FailResultSchema,
 ]);
 
-// === Fibonacci Retracement/Extension Analysis ===
-
 export const AnalyzeFibonacciInputSchema = BasePairInputSchema.extend({
 	type: CandleTypeEnum.optional().default('1day'),
 	lookbackDays: z.number().int().min(14).max(365).optional().default(90),
@@ -794,8 +757,7 @@ export const AnalyzeFibonacciMetaSchemaOut = BaseMetaSchema.extend({
 	lookbackDays: z.number().int(),
 	mode: z.string(),
 	historyLookbackDays: z.number().int().optional(),
-	/** 取得層の不完全性（上流 get_candles の meta.warning を継承）。getCandles 直叩きのため warnings 配列は無し。 */
-	warning: z.string().optional(),
+	...warningField,
 }).passthrough();
 
 export const AnalyzeFibonacciOutputSchema = z.union([
@@ -808,8 +770,6 @@ export const AnalyzeFibonacciOutputSchema = z.union([
 	}),
 	FailResultSchema,
 ]);
-
-// === Multi-Timeframe Fibonacci Analysis ===
 
 export const AnalyzeMtfFibonacciInputSchema = BasePairInputSchema.extend({
 	lookbackDays: z.array(z.number().int().min(14).max(365)).optional().default([30, 90, 180]),
@@ -849,8 +809,7 @@ export const AnalyzeMtfFibonacciDataSchemaOut = z
 
 export const AnalyzeMtfFibonacciMetaSchemaOut = BaseMetaSchema.extend({
 	lookbackDays: z.array(z.number().int()),
-	/** 取得層の不完全性。子 analyze_fibonacci の meta.warning / 失敗期間の synthetic message を `[Nd]` prefix 付きで集約。 */
-	warning: z.string().optional(),
+	...warningField,
 }).passthrough();
 
 export const AnalyzeMtfFibonacciOutputSchema = z.union([
@@ -864,7 +823,6 @@ export const AnalyzeMtfFibonacciOutputSchema = z.union([
 	FailResultSchema,
 ]);
 
-// === Analyze Volume Profile (VWAP + Volume Profile + Trade Size Distribution) ===
 export const AnalyzeVolumeProfileInputSchema = BasePairInputSchema.extend({
 	hours: z
 		.number()
@@ -1001,18 +959,14 @@ export const AnalyzeVolumeProfileMetaSchemaOut = BaseMetaSchema.extend({
 		.boolean()
 		.optional()
 		.describe('limit により切り捨てが発生したか。true のとき集計値・timeRange は切り捨て後の区間のみが対象'),
-	/** 取得層の不完全性（部分失敗・アーカイブ未公開・カバレッジ欠損・limit 切り捨て） */
-	warning: z.string().optional(),
-	/** 計算層の不完全性（集計値が欠損を含む区間から算出されている 等） */
-	warnings: z.array(z.string()).optional(),
+	...warningField,
+	...warningsField,
 });
 
 export const AnalyzeVolumeProfileOutputSchema = toolResultSchema(
 	AnalyzeVolumeProfileDataSchemaOut,
 	AnalyzeVolumeProfileMetaSchemaOut,
 );
-
-// ── analyze_currency_strength ──
 
 export const AnalyzeCurrencyStrengthInputSchema = z.object({
 	topN: z.number().int().min(3).max(30).optional().default(10).describe('分析対象の上位ペア数（出来高順で選出）'),

@@ -52,7 +52,7 @@ vi.mock('../tools/trading_process/lib/svg_to_png.js', () => ({
 import { toolDef } from '../src/handlers/runBacktestHandler.js';
 import type { BacktestEngineResult } from '../tools/trading_process/lib/backtest_engine.js';
 import runBacktest from '../tools/trading_process/run_backtest.js';
-import { assertOk } from './_assertResult.js';
+import { assertFail, assertOk } from './_assertResult.js';
 
 function buildCandles(count: number) {
 	return Array.from({ length: count }, (_, i) => ({
@@ -284,7 +284,6 @@ describe('run_backtest', () => {
 		expect(res.summary).toContain('"drawdown_curve"');
 		expect(res.summary).toContain('"drawdown_pct"');
 
-		// JSON が valid に parse できる
 		const eqMatch = res.summary.match(/=== Equity Curve[^\n]*===\n(\{[^\n]*\})/);
 		expect(eqMatch).not.toBeNull();
 		const eqJson = JSON.parse((eqMatch as RegExpMatchArray)[1]) as {
@@ -335,7 +334,6 @@ describe('run_backtest', () => {
 		expect(eqJson.equity_curve.length).toBeLessThanOrEqual(200);
 		expect(eqJson.equity_curve.length).toBeGreaterThan(100);
 
-		// 最初と最後の点は必ず含まれる
 		const firstTime = dayjs.utc('2024-01-01').toISOString();
 		const lastTime = dayjs
 			.utc('2024-01-01')
@@ -452,11 +450,9 @@ describe('run_backtest', () => {
 			includeSvg: false,
 		});
 
-		expect(res.ok).toBe(false);
-		if (res.ok === false) {
-			expect(res.error).toContain('outputDir');
-			expect(res.error).toContain('/etc/cron.d');
-		}
+		assertFail(res);
+		expect(res.error).toContain('outputDir');
+		expect(res.error).toContain('/etc/cron.d');
 		expect(mocks.fetchCandlesForBacktest).not.toHaveBeenCalled();
 		expect(mocks.svgToPng).not.toHaveBeenCalled();
 	});
@@ -537,10 +533,8 @@ describe('run_backtest', () => {
 			includeSvg: false,
 		});
 
-		expect(res.ok).toBe(false);
-		if (res.ok === false) {
-			expect(res.error).toMatch(/Invalid strategy params/);
-		}
+		assertFail(res);
+		expect(res.error).toMatch(/Invalid strategy params/);
 		expect(mocks.fetchCandlesForBacktest).not.toHaveBeenCalled();
 		expect(mocks.runBacktestEngine).not.toHaveBeenCalled();
 	});
@@ -566,13 +560,11 @@ describe('run_backtest', () => {
 			includeSvg: false,
 		});
 
-		expect(res.ok).toBe(false);
-		if (res.ok === false) {
-			expect(res.error).toContain('sma_cross');
-			expect(res.error).toContain('short must be less than long');
-			expect(res.error).toContain('rsi_filter_max must be 0-100');
-			expect(res.error).toContain(';');
-		}
+		assertFail(res);
+		expect(res.error).toContain('sma_cross');
+		expect(res.error).toContain('short must be less than long');
+		expect(res.error).toContain('rsi_filter_max must be 0-100');
+		expect(res.error).toContain(';');
 	});
 
 	it('validate.normalizedParams が以降の処理（computeRequiredBars / engine input）に渡る', async () => {
@@ -606,9 +598,6 @@ describe('run_backtest', () => {
 		expect(engineInput.strategy.params).toEqual({ short: 5, long: 25 });
 	});
 
-	// -------------------------------------------------------------------------
-	// 手数料の動的解決（taker レート由来）
-	// -------------------------------------------------------------------------
 	function setupRsiStrategy() {
 		mocks.getStrategy.mockReturnValue({
 			name: 'RSI',
@@ -635,12 +624,9 @@ describe('run_backtest', () => {
 		});
 
 		assertOk(res);
-		// override が resolveBacktestFeeBp に渡る
 		expect(mocks.resolveBacktestFeeBp).toHaveBeenCalledWith('btc_jpy', 25);
-		// engine には解決後の fee_bp が渡る（既存と同一 fee_bp → 数値不変の前提）
 		const engineInput = mocks.runBacktestEngine.mock.calls[0][2];
 		expect(engineInput.fee_bp).toBe(25);
-		// summary に明示指定であることが表示される
 		expect(res.summary).toContain('Fee: 25 bp (round-trip: 50 bp)');
 		expect(res.summary).toContain('explicit: 明示指定');
 	});
@@ -683,7 +669,6 @@ describe('run_backtest', () => {
 		});
 
 		assertOk(res);
-		// warning は summary 先頭付近（タイトル行より前）に ⚠️ 付きで出る
 		const titleIdx = res.summary.indexOf('=== RSI Backtest Result ===');
 		const warnIdx = res.summary.indexOf('⚠️');
 		expect(warnIdx).toBeGreaterThanOrEqual(0);
@@ -707,7 +692,6 @@ describe('run_backtest', () => {
 		});
 
 		const engineInput = mocks.runBacktestEngine.mock.calls[0][2];
-		// 旧実装の固定 12bp と同じ値が engine に渡る → 損益計算は不変
 		expect(engineInput.fee_bp).toBe(12);
 	});
 });

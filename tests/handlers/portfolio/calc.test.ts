@@ -1,18 +1,4 @@
-/**
- * portfolio/calc — fee_amount_base を保有量・コスト基準に反映するロジックの検証。
- *
- * bitbank の現物手数料体系:
- *   買い: 手数料は base 通貨で発生（fee_amount_base > 0, fee_amount_quote = 0）
- *   売り: 手数料は quote 通貨で発生（fee_amount_quote > 0, fee_amount_base = 0）
- *
- * 旧実装は buy 側で fee_amount_base を無視していたため、保有量を過大に・
- * 平均取得単価を過小に記録していた。本テストは:
- *   - 買い側 fee_amount_base が holdingQty に反映されること
- *   - 売り側 fee_amount_quote が realized_pnl に従来通り反映されること
- *   - 保有復元では売り側 fee_amount_base も巻き戻されること（API 仕様上ゼロだが防御的に対称化）
- *   - fee_amount_base = 0 のときは旧挙動と等価であること
- * を、calcPnl / calcPeriodRealizedPnl / reconstructHoldingsAtDate の 3 関数で検証する。
- */
+// bitbank の現物手数料は、買いは base 通貨（fee_amount_base > 0）、売りは quote 通貨（fee_amount_quote > 0）で発生する。売り側 fee_amount_base は API 仕様上ゼロだが、防御的に保有量・保有復元の両方で対称に扱う。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../../../lib/datetime.js';
@@ -58,8 +44,8 @@ import type {
 	RawWithdrawal,
 } from '../../../src/handlers/portfolio/types.js';
 import { currentPriceOnly, withDailyPrices } from '../../_flowPricing.js';
+import { jstMs } from '../../helpers/time.js';
 
-/** 必須フィールドを既定値で埋めた RawTrade を生成する */
 function makeTrade(overrides: Partial<RawTrade> = {}): RawTrade {
 	return {
 		trade_id: 1,
@@ -77,7 +63,6 @@ function makeTrade(overrides: Partial<RawTrade> = {}): RawTrade {
 	};
 }
 
-/** 必須フィールドを既定値で埋めた RawWithdrawal を生成する */
 function makeWithdrawal(overrides: Partial<RawWithdrawal> = {}): RawWithdrawal {
 	return {
 		uuid: 'wd-1',
@@ -90,7 +75,6 @@ function makeWithdrawal(overrides: Partial<RawWithdrawal> = {}): RawWithdrawal {
 	};
 }
 
-/** 必須フィールドを既定値で埋めた RawDeposit を生成する */
 function makeDeposit(overrides: Partial<RawDeposit> = {}): RawDeposit {
 	return {
 		uuid: 'dep-1',
@@ -105,10 +89,7 @@ function makeDeposit(overrides: Partial<RawDeposit> = {}): RawDeposit {
 
 describe('calcPnl', () => {
 	it('買い 1 件、fee_amount_base > 0 で保有量が減少し平均取得単価が上昇する', () => {
-		// 1 BTC を 10_000_000 JPY で買い、手数料 0.001 BTC（base 側）
-		//   holdingCost = 1 * 10_000_000 + 0 = 10_000_000 JPY
-		//   holdingQty = 1 - 0.001 = 0.999 BTC
-		//   avg_buy_price = 10_000_000 / 0.999 ≈ 10_010_010.0100
+		// 1 BTC を 10_000_000 JPY で買い、手数料 0.001 BTC（base 側）→ holdingCost = 10_000_000、holdingQty = 0.999、avg_buy_price = 10_000_000 / 0.999 ≈ 10_010_010.0100
 		const trades: RawTrade[] = [
 			makeTrade({
 				side: 'buy',
@@ -126,13 +107,7 @@ describe('calcPnl', () => {
 	});
 
 	it('買い→売りで base/quote 両側の手数料が反映され realized_pnl が算出される', () => {
-		// 買い 1 BTC @ 10_000_000、fee_base=0.001
-		//   holdingQty = 0.999、holdingCost = 10_000_000
-		// 売り 0.999 BTC @ 11_000_000、fee_quote=10_000
-		//   avgCost  = 10_000_000 / 0.999
-		//   sellCost = 0.999 * avgCost = 10_000_000
-		//   sellRev  = 0.999 * 11_000_000 - 10_000 = 10_979_000
-		//   realized = 10_979_000 - 10_000_000 = 979_000
+		// 買い 1 BTC @ 10_000_000（fee_base=0.001）→ holdingQty = 0.999、売り 0.999 BTC @ 11_000_000（fee_quote=10_000）→ sellCost = 0.999 * (10_000_000 / 0.999) = 10_000_000、sellRev = 10_979_000、realized = 979_000
 		const trades: RawTrade[] = [
 			makeTrade({
 				trade_id: 1,
@@ -155,21 +130,14 @@ describe('calcPnl', () => {
 		];
 		const result = calcPnl(trades, 'btc');
 		expect(result.realized_pnl).toBe(979_000);
-		// 全量売却で保有ゼロ → avg/cost は undefined
 		expect(result.avg_buy_price).toBeUndefined();
 		expect(result.cost_basis).toBeUndefined();
 		expect(result.trade_count).toBe(2);
 	});
 
 	it('売り側 fee_amount_base > 0 でも数量・原価が対称に減る（reconstructed_qty の誤検知防止）', () => {
-		// 売りの feeBase は API 仕様上ゼロだが、防御方針（冒頭コメント）どおり非ゼロでも
-		// 口座から減る base 量 = qty + feeBase として扱う。reconstructHoldingsAtDate の
-		// 巻き戻し（qty + feeBase を加算）と対称でないと、reconstructed_qty が実残高より
-		// feeBase ぶん過大になり数量不変条件が誤検知する。
-		// 買い 1 BTC @ 10_000_000 → 売り 0.5 BTC @ 12_000_000、fee_base=0.002、fee_quote=3000
-		//   disposed  = 0.502、sellCost = 0.502 * 10_000_000 = 5_020_000
-		//   sellRev   = 0.5 * 12_000_000 - 3_000 = 5_997_000
-		//   realized  = 977_000、残 qty = 0.498、残 cost = 4_980_000（avg は 10_000_000 のまま）
+		// 売りの feeBase も冒頭の防御方針どおり口座から減る base 量 = qty + feeBase として扱う（reconstructHoldingsAtDate の巻き戻しと対称でないと、reconstructed_qty が実残高より feeBase ぶん過大になり数量不変条件が誤検知する）。
+		// 買い 1 BTC @ 10_000_000 → 売り 0.5 BTC @ 12_000_000（fee_base=0.002、fee_quote=3000）→ disposed = 0.502、sellCost = 5_020_000、sellRev = 5_997_000、realized = 977_000、残 qty = 0.498、残 cost = 4_980_000（avg は 10_000_000 のまま）
 		const trades: RawTrade[] = [
 			makeTrade({ trade_id: 1, executed_at: 1, side: 'buy', amount: '1', price: '10000000' }),
 			makeTrade({
@@ -190,7 +158,7 @@ describe('calcPnl', () => {
 	});
 
 	it('fee_amount_base = 0 の買いで旧挙動と等価な結果を返す', () => {
-		// 旧実装互換: fee_base=0 のとき holdingQty = qty、avg_buy_price = price
+		// fee_base=0 のとき holdingQty = qty、avg_buy_price = price
 		const trades: RawTrade[] = [
 			makeTrade({
 				side: 'buy',
@@ -208,12 +176,7 @@ describe('calcPnl', () => {
 	});
 
 	it('保有量を超える売りで原価は保有分のみ按分される（fee_base 反映後も同様）', () => {
-		// 買い 1 BTC @ 10_000_000、fee_base=0.001 → holdingQty=0.999, holdingCost=10_000_000
-		// 売り 2 BTC @ 11_000_000、fee_quote=20_000（保有 0.999 を超過）
-		//   coveredQty = min(2, 0.999) = 0.999
-		//   sellCost   = 0.999 * (10_000_000 / 0.999) = 10_000_000
-		//   sellRev    = 2 * 11_000_000 - 20_000 = 21_980_000
-		//   realized   = 21_980_000 - 10_000_000 = 11_980_000
+		// 買い 1 BTC @ 10_000_000（fee_base=0.001）→ holdingQty=0.999、売り 2 BTC @ 11_000_000（fee_quote=20_000、保有超過）→ coveredQty = 0.999、sellCost = 10_000_000、sellRev = 21_980_000、realized = 11_980_000
 		const trades: RawTrade[] = [
 			makeTrade({
 				trade_id: 1,
@@ -240,9 +203,7 @@ describe('calcPnl', () => {
 	});
 
 	it('年初前買い → 年初後売りの全履歴投入で「売値 - 平均取得単価」が realized_pnl になる', () => {
-		// バグ回帰防止: 年初前の買いを含めずに calcPnl を呼ぶと、年初後売却が
-		// 「保有ゼロでの売り」扱いとなり、売却代金ほぼ全額（5_999_500）が realized に積まれていた。
-		// 全履歴を渡せば原価が按分され、realized = 0.5 * (12_000_000 - 10_000_000) - 500 ≈ 999_500。
+		// 年初前の買いを含めずに calcPnl を呼ぶと、年初後の売却が「保有ゼロでの売り」扱いになり売却代金ほぼ全額（5_999_500）が realized に積まれるので、全履歴を渡して原価を按分する。
 		const trades: RawTrade[] = [
 			makeTrade({
 				trade_id: 1,
@@ -264,18 +225,13 @@ describe('calcPnl', () => {
 			}),
 		];
 		const result = calcPnl(trades, 'btc');
-		// holdingQty=1, holdingCost=10_000_000 → avgCost=10_000_000
-		// sellCost = 0.5 * 10_000_000 = 5_000_000
-		// sellRev  = 0.5 * 12_000_000 - 500 = 5_999_500
-		// realized = 5_999_500 - 5_000_000 = 999_500
+		// avgCost = 10_000_000 → sellCost = 5_000_000、sellRev = 0.5 * 12_000_000 - 500 = 5_999_500、realized = 999_500、残保有 0.5 BTC / 残原価 5_000_000
 		expect(result.realized_pnl).toBe(999_500);
-		// 残保有 0.5 BTC、残原価 5_000_000
 		expect(result.avg_buy_price).toBe(10_000_000);
 		expect(result.cost_basis).toBe(5_000_000);
 	});
 
 	it('年初前のみ買って当年売却なしの場合、cost_basis / avg_buy_price が正しく出る', () => {
-		// 全履歴入力での未売却ケース。realized_pnl は 0、保有分の原価が残る。
 		const trades: RawTrade[] = [
 			makeTrade({
 				trade_id: 1,
@@ -295,13 +251,7 @@ describe('calcPnl', () => {
 	});
 
 	it('年初前出庫 + 年初後売却で原価が按分減少し正しい realized_pnl になる', () => {
-		// 買い 1 BTC（年初前）→ 出庫 0.3 BTC（年初前、手数料 0.001）→ 売り 0.5 BTC（年初後）
-		// 出庫前: qty=1, cost=10_000_000 → avgCost=10_000_000
-		// 出庫: removed=0.301（0.3 + fee 0.001）。新 qty=0.699, cost=10_000_000 - 0.301*10_000_000=6_990_000
-		// 売り 0.5: avgCost=6_990_000/0.699=10_000_000
-		//   sellCost = 0.5 * 10_000_000 = 5_000_000
-		//   sellRev  = 0.5 * 12_000_000 - 0 = 6_000_000
-		//   realized = 1_000_000
+		// 買い 1 BTC（年初前）→ 出庫 0.3 BTC + fee 0.001（年初前）で qty=0.699, cost=6_990_000, avgCost=10_000_000 → 売り 0.5 BTC @ 12_000_000（年初後）で realized = 6_000_000 - 5_000_000 = 1_000_000
 		const trades: RawTrade[] = [
 			makeTrade({
 				trade_id: 1,
@@ -349,8 +299,6 @@ describe('calcPnl', () => {
 	});
 });
 
-// ── 数量不変条件（復元数量 vs 実残高） ──
-
 describe('qtyInvariantTolerance / qtyInvariantHolds', () => {
 	it('絶対項: 実残高が小さいときは最小数量単位 × 5 が下限になる', () => {
 		// onhand 0.00001（相対項 1e-8）< 絶対項 5e-8（precision 8）
@@ -382,13 +330,7 @@ describe('qtyInvariantTolerance / qtyInvariantHolds', () => {
 	});
 });
 
-/**
- * #57 (b): 暗号資産入庫を「入庫日の始値で取得した」とみなして原価に算入する。
- *
- * (b) より前は入庫が calcPnl のイベントに存在せず、入庫ぶんの保有が**原価ゼロ**で
- * 積まれていた（含み益が過大 / 売却時の実現損益が売却収入そのもの）。
- * ここでは「算入されること」と「算入しない条件」の両方を固定する。
- */
+// 暗号資産入庫は「入庫日の始値で取得した」とみなして原価に算入する（#57 (b)）。算入されることと算入しない条件の両方を固定する。
 describe('calcPnl — 入庫の原価算入', () => {
 	/** 2026-05-16 10:00 JST */
 	const DEPOSIT_MS = Date.UTC(2026, 4, 16, 1, 0, 0, 0);
@@ -398,7 +340,6 @@ describe('calcPnl — 入庫の原価算入', () => {
 
 	const deposit = makeDeposit({ uuid: 'dep-btc', asset: 'btc', amount: '0.5', confirmed_at: DEPOSIT_MS });
 
-	/** 入庫日の始値を解決できる pricing（現在価格は敢えて大きく離した値を置く） */
 	function datedPricing(currentPrice = 20_000_000) {
 		return withDailyPrices(
 			[{ asset: 'btc', atMs: DEPOSIT_MS, price: DEPOSIT_DAY_OPEN }],
@@ -432,7 +373,6 @@ describe('calcPnl — 入庫の原価算入', () => {
 		expect(res.unpriced_deposit_count).toBe(0);
 	});
 
-	/** 本 issue の眼目。現在価格を 2 倍に振っても原価が 1 円も動かないこと。 */
 	it('現在価格が動いても原価は動かない（入庫日の始値で固定）', () => {
 		const low = calcPnl([], 'btc', [], { deposits: [deposit], pricing: datedPricing(20_000_000) });
 		const high = calcPnl([], 'btc', [], { deposits: [deposit], pricing: datedPricing(40_000_000) });
@@ -440,11 +380,7 @@ describe('calcPnl — 入庫の原価算入', () => {
 		expect(high.avg_buy_price).toBe(low.avg_buy_price);
 	});
 
-	/**
-	 * 現在価格フォールバックを原価に使わない理由: 使うとその入庫ぶんの評価損益が常に
-	 * ゼロ付近に貼り付き、誤差が相場と連動して動く（#53 の機序 6 を cost_basis 側に持ち込む）。
-	 * 算入しない代わりに件数を申告し、数量不変条件の理由コードに載せる。
-	 */
+	/** 現在価格フォールバックを原価に使うと、その入庫ぶんの評価損益が常にゼロ付近に貼り付き誤差が相場と連動して動くので、算入しない代わりに件数を申告し、数量不変条件の理由コードに載せる。 */
 	it('入庫日の始値を解決できない入庫は算入せず unpriced_deposit_count で申告する', () => {
 		const res = calcPnl([], 'btc', [], {
 			deposits: [deposit],
@@ -498,9 +434,7 @@ describe('calcPnl — 入庫の原価算入', () => {
 		const res = calcPnl(trades, 'btc', [], { deposits: [deposit], pricing: datedPricing() });
 		// 売却時点で保有ゼロ → 収入がそのまま実現損益。入庫はその後に原価として積まれる
 		expect(res.realized_pnl).toBe(1_000_000);
-		// #89: 数量は代数和なので売却分を必ず引く（0.5 ではなく 0.4）。旧実装は保有ゼロでの売りを
-		// 数量から引かず 0.5 を返しており、その 0.1 は「API に現れない取得があった」証拠だったのに
-		// 復元数量が実残高側へ押し戻されて乖離が消えていた。原価側は従来どおり（cost_basis は不変）
+		// #89: 数量は代数和なので売却分を必ず引く（0.5 ではなく 0.4）。原価側（cost_basis）は変わらない
 		expect(res.reconstructed_qty).toBeCloseTo(0.4, 12);
 		expect(res.cost_basis).toBeCloseTo(4_000_000, 6);
 		expect(res.qty_clamp_count).toBe(1);
@@ -508,18 +442,7 @@ describe('calcPnl — 入庫の原価算入', () => {
 	});
 });
 
-/**
- * #89 の回帰: 実口座データの完全リプレイで確定した機序を最小フィクスチャで再現する。
- *
- * 実データ: 販売所の買い（API に現れない取得）が 0.00041693 BTC 欠けた口座で、
- * 売り 2 回がそれぞれリプレイ上の保有を超え、クランプが発火（吸収 0.0003 + 0.0001 = 0.0004）。
- * 旧実装（数量もクランプ）は復元数量を実残高側へ 0.0004 押し戻し、乖離が 0.00041693 →
- * 0.00001693（許容誤差 0.1% 未満）に圧縮されて cost_basis_reliable=true を素通りしていた。
- *
- * 本テストの数量はその実データの構造をそのまま使う（buy 0.0003 → sell 0.0006 → buy 0.0014 →
- * sell 0.0015 → buy 0.1073、価格は全イベント同一で固定）。手数料は 0 にして数量の挙動だけを見る
- * （手数料込みの対称性は冒頭の fee_amount_base 系テストで別途固定済み）。
- */
+// #89 の回帰。API に現れない取得（販売所の買い）が欠けた口座で、売り 2 回がそれぞれリプレイ上の保有を超えてクランプが発火する構造（buy 0.0003 → sell 0.0006 → buy 0.0014 → sell 0.0015 → buy 0.1073、価格は全イベント同一）を再現する。手数料は 0 にして数量の挙動だけを見る。
 describe('calcPnl — 数量の代数和追跡とクランプ申告（#89）', () => {
 	const trades: RawTrade[] = [
 		makeTrade({ trade_id: 1, executed_at: 1, side: 'buy', amount: '0.0003', price: '10000000' }),
@@ -546,8 +469,7 @@ describe('calcPnl — 数量の代数和追跡とクランプ申告（#89）', (
 	});
 
 	it('realized_pnl は原価側クランプ（保有分のみ按分）が従来どおり効くので変わらない', () => {
-		// sell1: coveredQty=min(0.0006,0.0003)=0.0003 → sellCost=3,000, sellRevenue=6,000 → +3,000
-		// sell2: coveredQty=min(0.0015,0.0014)=0.0014 → sellCost=14,000, sellRevenue=15,000 → +1,000
+		// sell1: coveredQty=min(0.0006,0.0003)=0.0003 → sellCost=3,000, sellRevenue=6,000 → +3,000、sell2: coveredQty=min(0.0015,0.0014)=0.0014 → sellCost=14,000, sellRevenue=15,000 → +1,000
 		const res = calcPnl(trades, 'btc');
 		expect(res.realized_pnl).toBe(4_000);
 		// 最後の買いだけが原価に残る（直前の 2 回の売りでそれぞれダストリセットされている）
@@ -574,9 +496,7 @@ describe('calcPnl — 数量の代数和追跡とクランプ申告（#89）', (
 	});
 
 	it('ダストリセットは代数和の負値を握り潰さない（原価のリセットと数量のリセットは別条件）', () => {
-		// 買い 0.1 → 売り 0.1 + 0.0000000000005（1e-12 未満の超過）: 原価側はダストで 0 にリセット
-		// されるが、代数和はその超過分ぶん厳密に負へ振れる（絶対値は 1e-12 未満なので
-		// normalizeQtyDust で 0 に畳まれる——これはダストの丸めであって「保有を超えた事実の隠蔽」ではない）
+		// 買い 0.1 → 売り 0.1 + 0.0000000000005（1e-12 未満の超過）: 原価側はダストで 0 にリセットされ、代数和はその超過分ぶん負へ振れるが絶対値が 1e-12 未満なので normalizeQtyDust で 0 に畳まれる（ダストの丸めであって保有を超えた事実の隠蔽ではない）
 		const res = calcPnl(
 			[
 				makeTrade({ trade_id: 1, executed_at: 1, side: 'buy', amount: '0.1', price: '10000000' }),
@@ -610,10 +530,7 @@ describe('calcPeriodRealizedPnl — 入庫の原価算入', () => {
 		expect(res.sell_count).toBe(1);
 	});
 
-	/**
-	 * depositCost を渡し忘れると入庫ぶんが原価ゼロで売られ、同じ売却の実現損益が
-	 * calcPnl と食い違う（期間集計だけ過大になる）。その差を固定しておく。
-	 */
+	/** depositCost を渡し忘れると入庫ぶんが原価ゼロで売られ、同じ売却の実現損益が calcPnl と食い違う（期間集計だけ過大になる）ので、その差を固定する。 */
 	it('depositCost を渡さないと同じ売却が原価ゼロ扱いになり calcPnl と食い違う', () => {
 		const withDeposit = calcPnl(sell, 'btc', [], { deposits: [deposit], pricing });
 		const without = calcPeriodRealizedPnl(sell, SINCE_MS, 'start', 'end', []);
@@ -621,11 +538,7 @@ describe('calcPeriodRealizedPnl — 入庫の原価算入', () => {
 		expect(without.realized_pnl).not.toBe(withDeposit.realized_pnl);
 	});
 
-	/**
-	 * 期間実現損益にも「何件の入庫を原価から除外したか」の申告が要る（#77）。
-	 * 件数は全履歴・全銘柄——移動平均法は期間開始前の入庫も原価に積むため、
-	 * `realized_pnl` の算出条件は期間内のイベントだけでは決まらない。
-	 */
+	/** 移動平均法は期間開始前の入庫も原価に積むので、期間実現損益の算出条件は期間内のイベントだけでは決まらず、原価から除外した入庫の件数は全履歴・全銘柄で申告する（#77）。 */
 	it('算入した入庫・算入できなかった入庫の件数を返す', () => {
 		const unpriced = makeDeposit({ uuid: 'dep-eth', asset: 'eth', amount: '3', confirmed_at: DEPOSIT_MS });
 		const res = calcPeriodRealizedPnl(sell, SINCE_MS, 'start', 'end', [], {
@@ -693,7 +606,6 @@ describe('unresolvedDepositReasonsByAsset / dominantUnresolvedDepositReason（#8
 		expect(dominantUnresolvedDepositReason(['deposit_price_chunk_truncated', 'deposit_price_fetch_failed'])).toBe(
 			'deposit_price_fetch_failed',
 		);
-		// 並び順に依存しない
 		expect(dominantUnresolvedDepositReason(['deposit_price_fetch_failed', 'deposit_price_chunk_truncated'])).toBe(
 			'deposit_price_fetch_failed',
 		);
@@ -713,12 +625,7 @@ describe('qtyMismatchReasonFor', () => {
 		expect(qtyMismatchReasonFor(makeDw(), false, 2, 0)).toBe('has_crypto_deposits');
 	});
 
-	/**
-	 * (b) の要点。入庫日の始値で原価に算入できた入庫は数量にも入っているので、
-	 * もはや乖離の説明にならない。dw.deposits に DONE 入庫が残っていても
-	 * has_crypto_deposits を立ててはいけない（立てると「入庫のせい」で
-	 * 打ち切り由来の乖離を取り違え、原価が出せない理由を誤って説明する）。
-	 */
+	/** 入庫日の始値で原価に算入できた入庫は数量にも入っていて乖離の説明にならないので、DONE 入庫が残っていても has_crypto_deposits を立てない（立てると打ち切り由来の乖離を「入庫のせい」と取り違え、原価が出せない理由を誤って説明する）。 */
 	it('入庫があっても全件を原価に算入できていれば has_crypto_deposits にならない', () => {
 		const dw = makeDw({ deposits: [makeDeposit({ uuid: 'd1', asset: 'eth', amount: '1' })] });
 		expect(qtyMismatchReasonFor(dw, false, 0, 0)).toBe('untracked_trade_suspected');
@@ -743,10 +650,7 @@ describe('qtyMismatchReasonFor', () => {
 		expect(qtyMismatchReasonFor(makeDw(), false, 0, 0)).toBe('untracked_trade_suspected');
 	});
 
-	/**
-	 * #89: 代数和が負になることは、API に現れない取得（販売所での買い等）があったことの
-	 * 直接証拠。他に手掛かりが無ければこれを理由コードにする。
-	 */
+	/** #89: 代数和が負になることは API に現れない取得（販売所での買い等）があったことの直接証拠なので、他に手掛かりが無ければこれを理由コードにする。 */
 	it('復元数量が負 → reconstructed_qty_negative', () => {
 		expect(qtyMismatchReasonFor(makeDw(), false, 0, -0.0004)).toBe('reconstructed_qty_negative');
 		expect(qtyMismatchReasonFor(null, false, 0, -1e-9)).toBe('reconstructed_qty_negative');
@@ -759,13 +663,7 @@ describe('qtyMismatchReasonFor', () => {
 	});
 });
 
-/**
- * 入庫はあるが約定履歴にも現在残高にも現れない銘柄の検出（issue #93 仕様 1）。
- *
- * 約定を起点にするループ（closed_positions の集計）も残高を起点にするループ（holdings）も、
- * 「約定・残高のどちらにも現れない」銘柄は対象にしない。入出金履歴（DONE の暗号資産入庫）を
- * 別経路の入力にすることで、この穴を埋める。
- */
+// 約定起点のループ（closed_positions の集計）も残高起点のループ（holdings）も「約定・残高のどちらにも現れない」銘柄を対象にしないので、入出金履歴（DONE の暗号資産入庫）を別経路の入力にしてその穴を埋める（#93 仕様 1）。
 describe('depositOnlyAssets', () => {
 	function makeDw(overrides: Partial<DepositWithdrawalData> = {}): DepositWithdrawalData {
 		return { deposits: [], withdrawals: [], warnings: [], allFailed: false, isComplete: true, ...overrides };
@@ -826,12 +724,7 @@ describe('depositOnlyAssets', () => {
 		expect(depositOnlyAssets(dw, new Set(), new Set())).toEqual(['arb', 'atom', 'oas']);
 	});
 
-	/**
-	 * 出庫だけで残高ゼロが説明できる、販売所と無関係なありふれたケース（他ウォレットへの
-	 * 送付など）を誤検知しないための除外（CodeRabbit review, PR #95）。量の多寡は見ない——
-	 * 出庫と販売所処分が同一銘柄に混在するケースは見逃す設計（取得漏れを見逃す方向にのみ
-	 * 誤り、無い懸念を警告する方向には誤らない）。
-	 */
+	/** 他ウォレットへの送付など、出庫だけで残高ゼロが説明できるありふれたケースを誤検知しないための除外。出庫と販売所処分が同一銘柄に混在するケースは見逃す設計（取得漏れを見逃す方向にのみ誤り、無い懸念を警告する方向には誤らない）。 */
 	it('DONE の出庫が 1 件でもある銘柄は除外する（出庫だけで残高ゼロが説明できるため）', () => {
 		const dw = makeDw({
 			deposits: [makeDeposit({ uuid: 'd1', asset: 'flr' })],
@@ -858,11 +751,7 @@ describe('depositOnlyAssets', () => {
 });
 
 describe('calcPeriodRealizedPnl — 期間内に売却した銘柄（#80）', () => {
-	/**
-	 * `realized_pnl` は全銘柄を単一タイムラインで合算した値なので、原価が欠けた銘柄が
-	 * **その期間に売却しているか**でしか壊れるかどうかを判定できない。抑止範囲を
-	 * 必要最小限に絞るための情報なので、期間内の売りだけを拾うことを固定する。
-	 */
+	/** `realized_pnl` は全銘柄を単一タイムラインで合算した値なので、原価が欠けた銘柄がその期間に売却しているかでしか壊れるかどうかを判定できない（抑止範囲を必要最小限に絞るための情報）。 */
 	it('期間内に売った銘柄だけを返す（期間外の売り・買い・入出庫は含めない）', () => {
 		const trades: RawTrade[] = [
 			// 期間外の売り（btc）
@@ -898,13 +787,7 @@ describe('calcPeriodRealizedPnl — 期間内に売却した銘柄（#80）', ()
 
 describe('calcPeriodRealizedPnl', () => {
 	it('期間前の買い fee_amount_base が期間内 sell の原価按分に反映される', () => {
-		// 期間前 (t=500): 買い 1 BTC @ 10_000_000、fee_base=0.001
-		//   h.qty = 0.999、h.cost = 10_000_000
-		// 期間内 (t=1500): 売り 0.5 BTC @ 12_000_000、fee_quote=5_000
-		//   avgCost  = 10_000_000 / 0.999 ≈ 10_010_010.0100
-		//   sellCost = 0.5 * avgCost     ≈ 5_005_005.0050
-		//   sellRev  = 0.5 * 12_000_000 - 5_000 = 5_995_000
-		//   realized ≈ 989_994.995 → Math.round → 989_995
+		// 期間前 (t=500): 買い 1 BTC @ 10_000_000（fee_base=0.001）→ qty = 0.999、cost = 10_000_000。期間内 (t=1500): 売り 0.5 BTC @ 12_000_000（fee_quote=5_000）→ sellCost ≈ 5_005_005.0050、sellRev = 5_995_000、realized ≈ 989_994.995 → Math.round → 989_995
 		const trades: RawTrade[] = [
 			makeTrade({
 				trade_id: 1,
@@ -931,12 +814,7 @@ describe('calcPeriodRealizedPnl', () => {
 	});
 
 	it('期間前の出庫が期間内 sell の平均原価に反映される（calcPnl と一致）', () => {
-		// 期間前 (t=100): 買い 1 BTC @ 10_000_000 → qty=1, cost=10_000_000
-		// 期間前 (t=500): 出庫 0.3 BTC + fee 0.001 → qty=0.699, cost=6_990_000, avgCost=10_000_000
-		// 期間内 (t=1500): 売り 0.5 BTC @ 12_000_000
-		//   sellCost = 0.5 * 10_000_000 = 5_000_000
-		//   sellRev  = 0.5 * 12_000_000 = 6_000_000
-		//   realized = 1_000_000
+		// 期間前: 買い 1 BTC @ 10_000_000 → 出庫 0.3 BTC + fee 0.001 で qty=0.699, cost=6_990_000, avgCost=10_000_000。期間内 (t=1500): 売り 0.5 BTC @ 12_000_000 → realized = 6_000_000 - 5_000_000 = 1_000_000
 		const trades: RawTrade[] = [
 			makeTrade({ trade_id: 1, executed_at: 100, side: 'buy', amount: '1', price: '10000000' }),
 			makeTrade({ trade_id: 2, executed_at: 1500, side: 'sell', amount: '0.5', price: '12000000' }),
@@ -956,8 +834,7 @@ describe('calcPeriodRealizedPnl', () => {
 	});
 
 	it('期間内 sell の fee_amount_base が calcPnl と同じ対称形で残数量・原価に反映される', () => {
-		// calcPnl 側の対称化と同一ケース（買い @ 期間前、売り fee_base=0.002 @ 期間内）。
-		// 実現損益は 977_000 で calcPnl と一致する（残数量・平均原価の整合を保つ）。
+		// calcPnl 側の対称化と同一ケース（買い @ 期間前、売り fee_base=0.002 @ 期間内）なので、実現損益は 977_000 で calcPnl と一致する。
 		const trades: RawTrade[] = [
 			makeTrade({ trade_id: 1, executed_at: 100, side: 'buy', amount: '1', price: '10000000' }),
 			makeTrade({
@@ -1009,7 +886,6 @@ describe('calcPeriodRealizedPnl', () => {
 	});
 
 	it('期間前 sell のみで sell_count=0 / realized_pnl=0（期間内に売却なし）', () => {
-		// エッジケース: 全 sell が sinceMs より前なら期間集計はゼロ
 		const trades: RawTrade[] = [
 			makeTrade({ trade_id: 1, executed_at: 100, side: 'buy', amount: '1', price: '10000000' }),
 			makeTrade({ trade_id: 2, executed_at: 500, side: 'sell', amount: '0.5', price: '11000000' }),
@@ -1022,10 +898,7 @@ describe('calcPeriodRealizedPnl', () => {
 
 describe('reconstructHoldingsAtDate', () => {
 	it('reverse buy で fee_amount_base が反映され、復元保有が 0 になり map から消える', () => {
-		// 現在保有: 0.999 BTC（買い qty=1, fee_base=0.001 の結果）
-		// sinceMs=1000、期間内 buy (t=2000) を逆算
-		//   期間前 BTC = 0.999 - (1 - 0.001) = 0 → map から削除
-		//   期間前 JPY = 0 + 1 * 10_000_000 + 0 = 10_000_000
+		// 現在保有 0.999 BTC（買い qty=1, fee_base=0.001 の結果）、sinceMs=1000 で期間内 buy (t=2000) を逆算 → 期間前 BTC = 0.999 - (1 - 0.001) = 0（map から削除）、期間前 JPY = 1 * 10_000_000 = 10_000_000
 		const currentHoldings = [{ asset: 'btc', amount: '0.999' }];
 		const trades: RawTrade[] = [
 			makeTrade({
@@ -1043,10 +916,7 @@ describe('reconstructHoldingsAtDate', () => {
 	});
 
 	it('reverse sell は fee_amount_base 追加後も従来通り動作する', () => {
-		// 現在保有: 1.5 BTC, 11_000_000 JPY（売り直後の状態を想定）
-		// 期間内 sell (t=2000): amount=0.5, price=12M, fee_quote=5000, fee_base=0
-		//   期間前 BTC = 1.5 + 0.5 = 2.0
-		//   期間前 JPY = 11_000_000 - 0.5 * 12_000_000 + 5_000 = 5_005_000
+		// 現在保有 1.5 BTC / 11_000_000 JPY、期間内 sell (t=2000): amount=0.5, price=12M, fee_quote=5000 → 期間前 BTC = 2.0、期間前 JPY = 11_000_000 - 0.5 * 12_000_000 + 5_000 = 5_005_000
 		const currentHoldings = [
 			{ asset: 'btc', amount: '1.5' },
 			{ asset: 'jpy', amount: '11000000' },
@@ -1068,11 +938,7 @@ describe('reconstructHoldingsAtDate', () => {
 	});
 
 	it('reverse sell で fee_amount_base > 0 のとき base 建て手数料も巻き戻される', () => {
-		// 売りの base 建て手数料は API 仕様上ゼロだが、非ゼロが来ても正しく扱う（防御的）。
-		// 期間内 sell (t=2000): amount=0.5, price=12M, fee_quote=5000, fee_base=0.002
-		//   売りで実際に減った BTC = 0.5 + 0.002 = 0.502
-		//   期間前 BTC = 1.5 + 0.5 + 0.002 = 2.002
-		//   期間前 JPY = 11_000_000 - 0.5 * 12_000_000 + 5_000 = 5_005_000（quote 側は不変）
+		// 期間内 sell (t=2000): amount=0.5, price=12M, fee_quote=5000, fee_base=0.002 → 売りで減った BTC = 0.502 なので期間前 BTC = 2.002、期間前 JPY = 5_005_000（quote 側は不変）
 		const currentHoldings = [
 			{ asset: 'btc', amount: '1.5' },
 			{ asset: 'jpy', amount: '11000000' },
@@ -1094,14 +960,8 @@ describe('reconstructHoldingsAtDate', () => {
 	});
 
 	it('買い・売り両方に fee_amount_base があるとき期初保有が正確に復元される', () => {
-		// 時系列（期初: 0.5 BTC / 20_000_000 JPY）:
-		//   buy  t=2000: amount=1,   price=10M, fee_base=0.001 → BTC 0.5+0.999=1.499, JPY 10_000_000
-		//   sell t=3000: amount=0.5, price=12M, fee_base=0.0005, fee_quote=3000
-		//                → BTC 1.499-0.5005=0.9985, JPY 10_000_000+5_997_000=15_997_000
-		// 逆算（新しい順）:
-		//   sell 巻き戻し: BTC 0.9985+0.5+0.0005=1.499, JPY 15_997_000-6_000_000+3_000=10_000_000
-		//   buy  巻き戻し: BTC 1.499-(1-0.001)=0.5,     JPY 10_000_000+10_000_000=20_000_000
-		// 売り側 feeBase を無視すると BTC が 0.4995 となり期初と一致しない。
+		// 期初 0.5 BTC / 20_000_000 JPY → buy t=2000（amount=1, price=10M, fee_base=0.001）で BTC 1.499 / JPY 10_000_000 → sell t=3000（amount=0.5, price=12M, fee_base=0.0005, fee_quote=3000）で BTC 0.9985 / JPY 15_997_000。
+		// 新しい順に巻き戻すと sell で BTC 1.499 / JPY 10_000_000、buy で BTC 0.5 / JPY 20_000_000 に戻る（売り側 feeBase を無視すると BTC が 0.4995 になり期初と一致しない）。
 		const currentHoldings = [
 			{ asset: 'btc', amount: '0.9985' },
 			{ asset: 'jpy', amount: '15997000' },
@@ -1131,9 +991,6 @@ describe('reconstructHoldingsAtDate', () => {
 	});
 
 	it('不正な amount を持つ currentHoldings エントリは Number.isFinite ガードで除外される', () => {
-		// 初期化ループの `Number.isFinite(amount) && amount > 0` ガードを検証:
-		//   - 有効値（正の有限数）のみが Map に入る
-		//   - NaN / 'abc' のような malformed string、負値、ゼロ、Infinity は除外
 		const currentHoldings = [
 			{ asset: 'btc', amount: '1.0' }, // 有効 → 保持
 			{ asset: 'eth', amount: 'NaN' }, // Number.isFinite=false → 除外
@@ -1153,10 +1010,6 @@ describe('reconstructHoldingsAtDate', () => {
 	});
 
 	it('amount / price が finite でない trade はスキップされ、他の trade と保有は影響を受けない', () => {
-		// 約定ループの `if (!Number.isFinite(qty) || !Number.isFinite(price)) continue` を検証:
-		//   - amount='NaN' の trade はスキップ → 保有は変化しない
-		//   - price='abc' の trade はスキップ → 保有は変化しない
-		// 関数が malformed 入力でクラッシュせず Map を返すことも併せて担保。
 		const currentHoldings = [{ asset: 'btc', amount: '0.999' }];
 		const trades: RawTrade[] = [
 			makeTrade({
@@ -1182,9 +1035,7 @@ describe('reconstructHoldingsAtDate', () => {
 	});
 
 	it('買い→出庫を経由した口座でも期初保有を過大に復元しない（途中ゼロ床クランプ禁止）', () => {
-		// 時系列: 0 BTC → buy 2 → withdrawal 1 → 現在 1 BTC（履歴と残高は整合）
-		// 両イベントより前へ巻き戻すと期初は 0。
-		// 旧実装は約定相で 1-2=-1 を delete してしまい、出庫相で 0+1=1 と過大復元していた。
+		// 0 BTC → buy 2 → withdrawal 1 → 現在 1 BTC（履歴と残高は整合）なので、両イベントより前へ巻き戻すと期初は 0（約定相で 1-2=-1 を delete すると、出庫相で 0+1=1 と過大復元する）。
 		const currentHoldings = [{ asset: 'btc', amount: '1' }];
 		const trades: RawTrade[] = [
 			makeTrade({
@@ -1217,9 +1068,7 @@ describe('reconstructHoldingsAtDate', () => {
 	});
 
 	it('入庫→出庫を経由した口座でも期初保有を過大に復元しない（入庫相の途中ゼロ床クランプ禁止）', () => {
-		// 時系列: 0 BTC → deposit 2 → withdrawal 1 → 現在 1 BTC（履歴と残高は整合）
-		// 両イベントより前へ巻き戻すと期初は 0。
-		// 旧実装は入庫相で 1-2=-1 を delete してしまい、出庫相で 0+1=1 と過大復元していた。
+		// 0 BTC → deposit 2 → withdrawal 1 → 現在 1 BTC（履歴と残高は整合）なので、両イベントより前へ巻き戻すと期初は 0（入庫相で 1-2=-1 を delete すると、出庫相で 0+1=1 と過大復元する）。
 		const currentHoldings = [{ asset: 'btc', amount: '1' }];
 		const dw: DepositWithdrawalData = {
 			deposits: [
@@ -1251,9 +1100,6 @@ describe('reconstructHoldingsAtDate', () => {
 	});
 });
 
-// ── 信用 PnL 集計 ──
-
-/** 必須フィールドを既定値で埋めた RawMarginTrade を生成する */
 function makeMarginTrade(overrides: Partial<RawMarginTrade> = {}): RawMarginTrade {
 	return {
 		trade_id: 1,
@@ -1435,14 +1281,7 @@ describe('calcPeriodMarginPnl', () => {
 	});
 });
 
-/**
- * `AccountPnl.spot_realized_pnl` / `total` は #80 の抑止で `undefined` になりうる
- * （`number | undefined`）ため、確定値どうしの検算にそのまま使うと TS18048 になる。
- *
- * `!` で潰すと抑止が誤って発火したときに `undefined + number = NaN` の比較失敗になり、
- * 「どのフィールドが出ていないのか」がテスト出力から読めない。先に `toBeDefined()` を
- * 表明してから絞ることで、失敗時はフィールド名つきのアサーション失敗として出る。
- */
+/** `spot_realized_pnl` / `total` は #80 の抑止で undefined になりうるので、`!` で潰さず先に `toBeDefined()` を表明してから絞る（潰すと undefined + number = NaN の比較失敗になり、どのフィールドが出ていないのかテスト出力から読めない）。 */
 function definedAmount(value: number | undefined, label: string): number {
 	expect(value, label).toBeDefined();
 	// expect() は TypeScript の型を絞らないので、表明が通ったことをここで型にも反映させる。
@@ -1473,11 +1312,7 @@ describe('buildAccountPnl', () => {
 		expect(result.total).toBe(1234);
 	});
 
-	/**
-	 * #72: `_cost` サフィックス無しの旧フィールドは **alias として残す**。
-	 * 同じ正値を出し続けるので、旧フィールドを読んでいる消費者は壊れない。
-	 * 削除目標は `DEPRECATED_FIELD_REMOVAL_TARGET`（`src/schema/base.ts`）。
-	 */
+	/** #72: `_cost` サフィックス無しの旧フィールドは alias として同じ正値を出し続ける（削除目標は `DEPRECATED_FIELD_REMOVAL_TARGET`）。 */
 	it('旧フィールド margin_interest / margin_fee は新フィールドと同じ正値を返す（alias）', () => {
 		const result = buildAccountPnl(1000, {
 			margin_realized_pnl: 500,
@@ -1491,10 +1326,7 @@ describe('buildAccountPnl', () => {
 		expect(result.margin_fee).toBe(50);
 	});
 
-	/**
-	 * JSON を直読みする消費者が `_cost` を**引き算**して total を再現できること。
-	 * 足し込むと符号が反転する（#72 の症状そのもの）ので、その向きも固定する。
-	 */
+	/** JSON を直読みする消費者が `_cost` を引き算して total を再現できること。足し込むと符号が反転する（#72 の症状）ので、その向きも固定する。 */
 	it('total は新フィールドで検算できる（コスト項は減算）', () => {
 		const result = buildAccountPnl(-2000, {
 			margin_realized_pnl: 8000,
@@ -1584,8 +1416,7 @@ describe('calcDepositWithdrawalSummary', () => {
 	}
 
 	it('年初前入金で形成された現在保有: 純投入額には年初前入金も含まれる', () => {
-		// 年初前に 1_000_000 JPY 入金 + 年初後に 500_000 JPY 入金 → 純投入 1_500_000
-		// 現在総資産 2_000_000 → account_return = 2_000_000 - 1_500_000 = 500_000 (+33.33%)
+		// 年初前に 1_000_000 JPY 入金 + 年初後に 500_000 JPY 入金 → 純投入 1_500_000、現在総資産 2_000_000 → account_return = 500_000 (+33.33%)
 		const dw = makeDwData({
 			deposits: [
 				makeDeposit({ uuid: 'd1', amount: '1000000', confirmed_at: 100 }),
@@ -1635,8 +1466,6 @@ describe('calcDepositWithdrawalSummary', () => {
 		expect(result.total_jpy_deposited).toBe(0);
 		expect(result.net_jpy_invested).toBe(0);
 	});
-
-	// ── 暗号資産出庫を元本の回収として純投入額から差し引く（#70） ──
 
 	describe('暗号資産出庫の減算', () => {
 		const prices = new Map([
@@ -1790,16 +1619,7 @@ describe('calcDepositWithdrawalSummary', () => {
 	});
 });
 
-// ── 入出庫日価格での JPY 換算（#57 (a)） ──
-
-/**
- * 暗号資産入出庫の JPY 換算を「入出庫日の 1day open」で固定する経路の検証。
- *
- * 本 issue の眼目は「現在価格が動いても入出庫の評価額が動かないこと」なので、
- * 各ケースで **現在価格だけを差し替えた 2 回の呼び出しが同じ値を返すこと**を軸に据える。
- * 値の一致を目視の数値比較ではなく 2 回実行の突き合わせで見るのは、
- * 「たまたま同じ数値になった」ではなく「現在価格に依存していない」を主張するため。
- */
+// 「現在価格が動いても入出庫の評価額が動かない」を主張するので、各ケースで現在価格だけを差し替えた 2 回の呼び出しが同じ値を返すことを見る（目視の数値比較では、たまたま同じ数値になったのと区別できない）。
 describe('入出庫日価格での JPY 換算', () => {
 	function makeDwData(overrides: Partial<DepositWithdrawalData> = {}): DepositWithdrawalData {
 		return { deposits: [], withdrawals: [], warnings: [], allFailed: false, isComplete: true, ...overrides };
@@ -1888,8 +1708,7 @@ describe('入出庫日価格での JPY 換算', () => {
 		});
 
 		it('現在価格しか無い場合は同じ入力でも現在価格に連動して動く（フォールバックの性質）', () => {
-			// 「入出庫日価格で固定する」ことの対偶。フォールバックが相場連動なのは既知の性質で、
-			// だからこそ basis / 件数で申告する必要がある。
+			// 「入出庫日価格で固定する」ことの対偶。フォールバックが相場連動なのは既知の性質で、だからこそ basis / 件数で申告する必要がある。
 			const cheap = calcPeriodNetFlow(dw, 0, currentPriceOnly(new Map([['btc', 10_000_000]])));
 			const rich = calcPeriodNetFlow(dw, 0, currentPriceOnly(new Map([['btc', 20_000_000]])));
 
@@ -1917,13 +1736,7 @@ describe('入出庫日価格での JPY 換算', () => {
 			expect(result.net_flow_jpy).toBe(Math.round(0.5 * FLOW_DAY_PRICE + 0.5 * 20_000_000));
 		});
 
-		/**
-		 * 取りこぼしのずれの向きは入庫・出庫で逆になる。
-		 * `netFlow` は入庫で加算・出庫で減算されるため、落ちた入庫は net_flow を過小に、
-		 * 落ちた出庫は過大にする。`adjusted_change_jpy = change_jpy - net_flow_jpy` なので
-		 * 調整後増減は常に net_flow と逆向きにずれる。スキーマ・型・warning の説明文が
-		 * この向きを取り違えないよう、実際の符号をテストで固定する。
-		 */
+		/** 落ちた入庫は net_flow を過小に、落ちた出庫は過大にし、`adjusted_change_jpy = change_jpy - net_flow_jpy` は常に net_flow と逆向きにずれるので、スキーマ・型・warning の説明文が向きを取り違えないよう実際の符号を固定する。 */
 		it('取りこぼしの向き: 入庫が落ちると net_flow は過小、出庫が落ちると過大', () => {
 			const priced = withDailyPrices([{ asset: 'btc', atMs: FLOW_MS, price: FLOW_DAY_PRICE }]);
 			// doge は日次価格も現在価格も無いので必ず落ちる
@@ -1947,17 +1760,14 @@ describe('入出庫日価格での JPY 換算', () => {
 			expect(withLostWithdrawal.net_flow_jpy).toBe(0);
 			expect(withLostWithdrawal.unpriced_assets).toEqual(['doge']);
 
-			// 同じ入出庫を価格解決できたときの値（＝真値）と直接突き合わせる。
-			// 「落ちると 0 になる」だけでは欠落しか示せず、過小/過大の向きは主張できない。
+			// 「落ちると 0 になる」だけでは欠落しか示せず過小 / 過大の向きは主張できないので、同じ入出庫を価格解決できたときの値（＝真値）と直接突き合わせる。
 			const resolvable = withDailyPrices([{ asset: 'doge', atMs: FLOW_MS, price: 20 }]);
 			const pricedDeposit = calcPeriodNetFlow(depositOnly, 0, resolvable);
 			const pricedWithdrawal = calcPeriodNetFlow(withdrawalOnly, 0, resolvable);
 			// 入庫は正、出庫は負に寄与する（向きが逆になることの根拠）
 			expect(pricedDeposit.net_flow_jpy).toBe(20_000);
 			expect(pricedWithdrawal.net_flow_jpy).toBe(-20_000);
-			// 入庫の取りこぼし → 真値より小さい（過小）
 			expect(Number(withLostDeposit.net_flow_jpy)).toBeLessThan(Number(pricedDeposit.net_flow_jpy));
-			// 出庫の取りこぼし → 真値より大きい（過大）
 			expect(Number(withLostWithdrawal.net_flow_jpy)).toBeGreaterThan(Number(pricedWithdrawal.net_flow_jpy));
 		});
 
@@ -2030,7 +1840,7 @@ describe('入出庫日価格での JPY 換算', () => {
 			expect(cheap.crypto_withdrawal_estimated_jpy).toBe(rich.crypto_withdrawal_estimated_jpy);
 			expect(cheap.net_jpy_invested).toBe(rich.net_jpy_invested);
 			expect(cheap.account_return_jpy).toBe(rich.account_return_jpy);
-			// 入庫日ではなく**出庫日**の始値で換算する（0.1 BTC × 900,000）
+			// 入庫日ではなく出庫日の始値で換算する（0.1 BTC × 900,000）
 			expect(cheap.crypto_withdrawal_estimated_jpy).toBe(900_000);
 			expect(cheap.net_jpy_invested).toBe(3_000_000 - 900_000);
 			expect(cheap.crypto_withdrawal_valuation).toEqual({
@@ -2081,7 +1891,6 @@ describe('入出庫日価格での JPY 換算', () => {
 				deposits: [makeDeposit({ uuid: 'd-btc', asset: 'btc', amount: '0.2', confirmed_at: FLOW_MS })],
 				withdrawals: [makeWithdrawal({ uuid: 'w-btc', asset: 'btc', amount: '0.1', requested_at: withdrawalDayMs })],
 			});
-			// 入庫日と出庫日で別の始値を持たせ、日付ごとに引き分けられていることを見る
 			const pricing = withDailyPrices(
 				[
 					{ asset: 'btc', atMs: FLOW_MS, price: FLOW_DAY_PRICE },
@@ -2120,10 +1929,7 @@ describe('入出庫日価格での JPY 換算', () => {
 			]);
 		});
 
-		/**
-		 * `kind` は `fetchFlowDatePrices` が年 chunk の予算を入庫用・出庫用に分けるための情報（#76）。
-		 * ここで取り違えると出庫が入庫の枠を食い、取得原価が実行ごとに変わる状態に戻る。
-		 */
+		/** `kind` は `fetchFlowDatePrices` が年 chunk の予算を入庫用・出庫用に分けるための情報（#76）で、取り違えると出庫が入庫の枠を食い、取得原価が実行ごとに変わる。 */
 		it('入庫は kind=deposit、出庫は kind=withdrawal を付ける', () => {
 			const targets = collectFlowValuationTargets(dw);
 			expect(targets.filter((t) => t.kind === 'deposit').map((t) => t.asset)).toEqual(['btc']);
@@ -2136,12 +1942,7 @@ describe('入出庫日価格での JPY 換算', () => {
 			expect(collectFlowValuationTargets(dw, since(FLOW_MS))).toHaveLength(2);
 		});
 
-		/**
-		 * 入庫と出庫で消費者が違う: 入庫は常に全履歴（純投入額・口座全体リターン・取得原価）、
-		 * 出庫は入出金分析セクションがある構成だけ全履歴で、無ければ期間集計だけが消費者になる。
-		 * 片方の下限で両方を絞ると、出力に出ない入出庫のために candle を取りに行ってしまう
-		 * （逆に反映先があるのに絞ると、その入出庫が黙って 0 円計上になる）。
-		 */
+		/** 入庫は常に全履歴（純投入額・口座全体リターン・取得原価）、出庫は入出金分析セクションがある構成だけ全履歴が消費者なので、片方の下限で両方を絞ると出力に出ない入出庫の candle を取りに行く（逆に反映先があるのに絞ると、その入出庫が黙って 0 円計上になる）。 */
 		it('入庫と出庫の下限を別々に適用する', () => {
 			// 入庫は全履歴、出庫だけ FLOW_MS より後に絞る → 出庫が落ちて入庫だけ残る
 			expect(collectFlowValuationTargets(dw, { withdrawalsSinceMs: FLOW_MS + 1 })).toEqual([
@@ -2190,18 +1991,9 @@ describe('入出庫日価格での JPY 換算', () => {
 			expect(summarizeFlowValuation(targets, currentPriceOnly())).toBeUndefined();
 		});
 
-		/**
-		 * `basis` と 2 つの件数の整合は**構築時に保証する**（`buildFlowValuationBreakdown` が唯一の
-		 * 生成経路）。スキーマ側で refine して弾く方針は取らない——`AnalyzeMyPortfolioOutputSchema`
-		 * の parse 失敗はレスポンス全体を fail に落とすため、ラベルの不整合を理由に
-		 * ポートフォリオ分析ごと失わせるのは割に合わない。代わりに不変条件をここで固定する。
-		 */
+		/** basis と 2 つの件数の整合は構築時（`buildFlowValuationBreakdown` が唯一の生成経路）に保証し、スキーマで refine しない（parse 失敗はレスポンス全体を fail に落とすので、ラベルの不整合でポートフォリオ分析ごと失わせない）。代わりに不変条件をここで固定する。 */
 		it('不変条件: basis は 2 つの件数から一意に決まり、件数は必ず非負整数', () => {
-			// `summarizeFlowValuation` は `kind` を読まない（換算方式は asset と atMs だけで決まる）が、
-			// 母集合の型は `FlowValuationTarget` なので入庫・出庫のどちらかを名乗る必要がある。
-			// 上の `targets` と揃えて入庫にする——この describe が見ているのは `deposit_date_price` /
-			// `current_price_fallback` の件数であって、入庫・出庫の区別（#76 の chunk 予算分離）は
-			// `collectFlowValuationTargets` の describe が別に固定している。
+			// `summarizeFlowValuation` は `kind` を読まないが母集合の型上どちらかを名乗る必要があるので、上の `targets` と揃えて入庫にする（入庫・出庫の区別は `collectFlowValuationTargets` の describe が固定している）。
 			const dated: FlowValuationTarget = { asset: 'btc', atMs: FLOW_MS, kind: 'deposit' };
 			const fallback: FlowValuationTarget = { asset: 'eth', atMs: FLOW_MS, kind: 'deposit' };
 			const pricing = withDailyPrices(
@@ -2209,9 +2001,11 @@ describe('入出庫日価格での JPY 換算', () => {
 				new Map([['eth', 400_000]]),
 			);
 
+			// 換算 0 件は内訳ごと落とす（'mixed' の 0/0 のような無意味な組み合わせを作らない）
+			expect(summarizeFlowValuation([], pricing)).toBeUndefined();
+
 			// (dated 件数, fallback 件数) の全組み合わせを網羅する
 			const cases: Array<{ input: typeof targets; dated: number; fallback: number }> = [
-				{ input: [], dated: 0, fallback: 0 },
 				{ input: [dated], dated: 1, fallback: 0 },
 				{ input: [fallback], dated: 0, fallback: 1 },
 				{ input: [dated, fallback], dated: 1, fallback: 1 },
@@ -2220,30 +2014,17 @@ describe('入出庫日価格での JPY 換算', () => {
 
 			for (const c of cases) {
 				const result = summarizeFlowValuation(c.input, pricing);
-				if (c.dated === 0 && c.fallback === 0) {
-					// 換算 0 件は内訳ごと落とす（'mixed' の 0/0 のような無意味な組み合わせを作らない）
-					expect(result).toBeUndefined();
-					continue;
-				}
 				expect(result).toBeDefined();
 				expect(result?.deposit_date_price_count).toBe(c.dated);
 				expect(result?.current_price_fallback_count).toBe(c.fallback);
 				expect(Number.isInteger(result?.deposit_date_price_count)).toBe(true);
 				expect(Number.isInteger(result?.current_price_fallback_count)).toBe(true);
-				// basis は件数から一意に決まる
 				const expected = c.fallback === 0 ? 'deposit_date_price' : c.dated === 0 ? 'current_price_fallback' : 'mixed';
 				expect(result?.basis).toBe(expected);
-				// 'mixed' は必ず両方が正
-				if (result?.basis === 'mixed') {
-					expect(c.dated).toBeGreaterThan(0);
-					expect(c.fallback).toBeGreaterThan(0);
-				}
 			}
 		});
 	});
 });
-
-// ── 期間ネットフロー ──
 
 describe('calcPeriodNetFlow', () => {
 	function makeDwData(overrides: Partial<DepositWithdrawalData> = {}): DepositWithdrawalData {
@@ -2303,8 +2084,7 @@ describe('calcPeriodNetFlow', () => {
 	});
 
 	it('dw が null: 0 ではなく未計測（null + measured=false）を返す', () => {
-		// 0 を返すと呼び出し側で「本当にフローがゼロ」と区別できず、
-		// adjusted_change = change - 0 がフローゼロ前提の確定値になってしまう。
+		// 0 を返すと呼び出し側で「本当にフローがゼロ」と区別できず、adjusted_change = change - 0 がフローゼロ前提の確定値になってしまう。
 		const result = calcPeriodNetFlow(null, 1000, currentPriceOnly());
 		expect(result).toEqual({ net_flow_jpy: null, withdrawal_fee_jpy: null, measured: false });
 	});
@@ -2369,10 +2149,7 @@ describe('calcPeriodNetFlow', () => {
 	});
 });
 
-// ── 入出金データの利用可否 ──
-
 describe('resolveDepositWithdrawalStatus / flowUnavailableReasonFor', () => {
-	/** 取得成功・警告なし・履歴 0 件を既定とする DepositWithdrawalData を組み立てる。 */
 	function makeDw(overrides: Partial<DepositWithdrawalData> = {}): DepositWithdrawalData {
 		return { deposits: [], withdrawals: [], warnings: [], allFailed: false, isComplete: true, ...overrides };
 	}
@@ -2380,8 +2157,7 @@ describe('resolveDepositWithdrawalStatus / flowUnavailableReasonFor', () => {
 	const someDeposit = { uuid: 'd', asset: 'jpy', amount: '1000', status: 'DONE', found_at: 1, confirmed_at: 1 };
 
 	it('include_deposit_withdrawal=false: セクションは not_requested でも理由コードは立たない', () => {
-		// 表示フラグは取得可否を握らない。損益を出す構成なら履歴は取得済みなので、
-		// 取得結果（ここでは取得成功・履歴あり）だけで原価の信頼性が決まる。
+		// 表示フラグは取得可否を握らない。損益を出す構成なら履歴は取得済みなので、取得結果（ここでは取得成功・履歴あり）だけで原価の信頼性が決まる。
 		const dw = makeDw({ deposits: [someDeposit] });
 		expect(resolveDepositWithdrawalStatus(false, dw)).toBe('not_requested');
 		expect(flowUnavailableReasonFor(dw)).toBeUndefined();
@@ -2416,9 +2192,7 @@ describe('resolveDepositWithdrawalStatus / flowUnavailableReasonFor', () => {
 	});
 
 	it('partial failure だが履歴が残っている: status は available のまま理由コードは dw_fetch_failed', () => {
-		// fetchDepositWithdrawal は 4 チャネルを個別に取得するため、暗号資産出庫チャネルだけ
-		// 落ちても他にレコードがあれば allFailed=false → available になる。
-		// このとき cost_basis を過大化させる当の出庫が欠けているので、原価は信頼できない。
+		// fetchDepositWithdrawal は 4 チャネルを個別に取得するので、暗号資産出庫チャネルだけ落ちても他にレコードがあれば available になるが、cost_basis を過大化させる当の出庫が欠けているので原価は信頼できない。
 		const dw = makeDw({ deposits: [someDeposit], warnings: ['暗号資産出庫履歴の取得に失敗: 10007'] });
 		const status = resolveDepositWithdrawalStatus(true, dw);
 		expect(status).toBe('available');
@@ -2434,18 +2208,14 @@ describe('resolveDepositWithdrawalStatus / flowUnavailableReasonFor', () => {
 	});
 
 	it('dw が null: status は fallback、理由コードは dw_fetch_failed', () => {
-		// 損益を出す構成では入出金履歴を常に取得するので、null は取得が落ちたときだけ。
-		// 表示フラグの値に関わらず「未取得」ではなく「取得失敗」として扱う。
+		// 損益を出す構成では入出金履歴を常に取得するので、null は取得が落ちたときだけ。理由コードは表示フラグに関わらず「未取得」ではなく「取得失敗」（dw_fetch_failed）にする。
 		expect(resolveDepositWithdrawalStatus(true, null)).toBe('fallback');
 		expect(resolveDepositWithdrawalStatus(false, null)).toBe('not_requested');
 		expect(flowUnavailableReasonFor(null)).toBe('dw_fetch_failed');
 	});
 });
 
-// ── 期間別パフォーマンス（評価額比較） ──
-
 describe('buildPeriodPerformance', () => {
-	/** boundaryPrices を 3 期間まとめて生成 */
 	function makeBoundaryPrices(
 		entries: Array<[string, { yearStart?: number; monthStart?: number; dayStart?: number }]>,
 	): CandlePriceData['boundaryPrices'] {
@@ -2470,8 +2240,7 @@ describe('buildPeriodPerformance', () => {
 	}
 
 	it('入出金なし: change_jpy = currentValue - startValue, adjusted_change_jpy == change_jpy', () => {
-		// 期初保有 1 BTC @ 10_000_000 = 10_000_000、現在 12_000_000
-		// 期間内に売買・入出金なし → 期初保有はそのまま現在保有と一致する
+		// 期初保有 1 BTC @ 10_000_000 = 10_000_000、現在 12_000_000。期間内に売買・入出金なしなので期初保有はそのまま現在保有と一致する
 		const ctx = makeCtx({
 			currentHoldings: [{ asset: 'btc', amount: '1' }],
 			// 「入出金なし」= 履歴 0 件を取得できた状態。null（未取得）とは区別する
@@ -2500,9 +2269,7 @@ describe('buildPeriodPerformance', () => {
 	});
 
 	it('入出金あり: net_flow を差し引いた adjusted_change が算出される', () => {
-		// 期初保有 1 BTC @ 10_000_000 = 10_000_000、現在 12_500_000
-		// 期間内に JPY 入金 500_000 → 単純増減 2_500_000 のうち 500_000 は入金由来。
-		// 調整後増減 = 2_500_000 - 500_000 = 2_000_000（市場由来）
+		// 期初保有 1 BTC @ 10_000_000 = 10_000_000、現在 12_500_000、期間内に JPY 入金 500_000 → 単純増減 2_500_000、調整後増減 = 2_500_000 - 500_000 = 2_000_000（市場由来）
 		const dw: DepositWithdrawalData = {
 			deposits: [{ uuid: 'd-jpy', asset: 'jpy', amount: '500000', status: 'DONE', found_at: 1500, confirmed_at: 1500 }],
 			withdrawals: [],
@@ -2530,12 +2297,7 @@ describe('buildPeriodPerformance', () => {
 	});
 
 	it('出金手数料: withdrawal_fee_jpy に集計され adjusted_change にコストとして残る', () => {
-		// 現在保有: JPY 900_000（市場変動なし、純粋に出金のみの口座を想定）
-		// 期間内 (t=1500): JPY 出金 100_000 + fee 1_000 → 口座から減ったのは 101_000
-		// reconstructHoldingsAtDate は完了出金を逆算: 期初 JPY = 900_000 + 100_000 + 1_000 = 1_001_000
-		// 単純増減 = 900_000 - 1_001_000 = -101_000
-		// net_flow = -100_000（元本のみ、fee 除外）
-		// 調整後増減 = -101_000 - (-100_000) = -1_000（fee がコストとして残る）
+		// 現在 JPY 900_000、期間内 (t=1500) に JPY 出金 100_000 + fee 1_000 → 期初 JPY = 1_001_000、単純増減 = -101_000、net_flow = -100_000（元本のみ）、調整後増減 = -1_000（fee がコストとして残る）
 		const dw: DepositWithdrawalData = {
 			deposits: [],
 			withdrawals: [{ uuid: 'w-jpy', asset: 'jpy', amount: '100000', fee: '1000', status: 'DONE', requested_at: 1500 }],
@@ -2559,8 +2321,7 @@ describe('buildPeriodPerformance', () => {
 	});
 
 	it('保有 0 ケース: start_value=0 で change_pct / adjusted_change_pct が undefined', () => {
-		// 期初保有なし、現在は入金 1_000_000 のみで保有形成
-		// → start_value_jpy = 0、change_pct / adjusted_change_pct は undefined（0 除算回避）
+		// 期初保有なし、現在は入金 1_000_000 のみで保有形成 → start_value_jpy = 0、change_pct / adjusted_change_pct は undefined（0 除算回避）
 		const dw: DepositWithdrawalData = {
 			deposits: [
 				{ uuid: 'd-jpy', asset: 'jpy', amount: '1000000', status: 'DONE', found_at: 1500, confirmed_at: 1500 },
@@ -2587,19 +2348,9 @@ describe('buildPeriodPerformance', () => {
 		expect(result.change_pct_unavailable_reason).toBe('start_value_zero');
 	});
 
-	/**
-	 * #71: 期初評価額が極小のとき増減率が意味を持たない。
-	 *
-	 * 分母がゼロでさえなければ通す従来のガードでは、年初にほぼ空だった口座に入金して運用を
-	 * 始めた場合に 5 桁の百分率（+26929.2% 等）が出る。抑止の基準は `MIN_START_VALUE_RATIO`
-	 * （期初評価額が現在評価額の 1% 未満）。以下のブロックはその境界と 3 期間の一致を固定する。
-	 */
+	// 分母がゼロでさえなければ通すガードでは、年初にほぼ空だった口座に入金して運用を始めると 5 桁の百分率が出るので、期初評価額が現在評価額の 1% 未満（`MIN_START_VALUE_RATIO`）なら率を抑止する（#71）。
 	describe('増減率の抑止（期初評価額が現在評価額に対して極小）', () => {
-		/**
-		 * JPY 単独口座で「現在 `currentValue` 円・うち `depositAmount` 円が期間中の入金」の
-		 * コンテキストを作る。期初評価額 = currentValue - depositAmount（入金を巻き戻した値）。
-		 * 価格解決を挟まないので期初評価額を 1 円単位で狙える。
-		 */
+		/** 期初評価額 = currentValue - depositAmount（入金を巻き戻した値）。価格解決を挟まないので期初評価額を 1 円単位で狙える。 */
 		function jpyDepositCtx(currentValue: number, depositAmount: number): PortfolioPerformanceContext {
 			const dw: DepositWithdrawalData = {
 				deposits: [
@@ -2627,8 +2378,7 @@ describe('buildPeriodPerformance', () => {
 		}
 
 		it('期初評価額が現在評価額の 1% 未満: 率を落として金額だけ残す（5 桁の百分率を出さない）', () => {
-			// issue #71 の実測構成: 期初 5,745 円 → 現在 1,552,826 円（差の 1,547,081 円は期間中の入金）。
-			// 従来ガードでは change_pct = +26929.2% が出ていた。
+			// 期初 5,745 円 → 現在 1,552,826 円（差の 1,547,081 円は期間中の入金）。
 			const result = buildPeriodPerformance(
 				{ key: 'yearly', startMs: 1000, startIso: 's' },
 				jpyDepositCtx(1_552_826, 1_547_081),
@@ -2707,8 +2457,7 @@ describe('buildPeriodPerformance', () => {
 		});
 
 		it('start_value_negligible では増減額の過大を申告しない（#105 回帰: 分子は正しい）', () => {
-			// 期初が本当に小さいだけで change_jpy は実際の増減そのもの。フラグを立てると
-			// 「読める値」を「読めない値」と誤って申告することになる。
+			// 期初が本当に小さいだけで change_jpy は実際の増減そのものなので、フラグを立てると「読める値」を「読めない値」と誤って申告することになる。
 			const result = buildPeriodPerformance(
 				{ key: 'yearly', startMs: 1000, startIso: 's' },
 				jpyDepositCtx(1_552_826, 1_547_081),
@@ -2732,8 +2481,7 @@ describe('buildPeriodPerformance', () => {
 		});
 
 		it('全額出金して現在評価額が 0 になった口座は抑止しない（-100% は意味のある率）', () => {
-			// 期初 1,000,000 → 全額出金して現在 0。相対基準は分母（期初）側を見るので、
-			// 現在評価額が小さいことを理由に率を落としてはいけない。
+			// 期初 1,000,000 → 全額出金して現在 0。相対基準は分母（期初）側を見るので、現在評価額が小さいことを理由に率を落としてはいけない。
 			const dw: DepositWithdrawalData = {
 				deposits: [],
 				withdrawals: [{ uuid: 'w-jpy', asset: 'jpy', amount: '1000000', fee: '0', status: 'DONE', requested_at: 1500 }],
@@ -2787,8 +2535,7 @@ describe('buildPeriodPerformance', () => {
 		}
 
 		it('daily: dayStart 欠損 → 率 undefined + start_boundary_unpriced + unpriced_start_assets', () => {
-			// issue #86 の機序: 当日足 open が未取得で暗号資産が期初評価から落ち、JPY だけになる。
-			// 63,314 円は 1% 閾値を超えるため start_value_negligible では抑止されなかった。
+			// 当日足 open が未取得で暗号資産が期初評価から落ち JPY だけになると、63,314 円は 1% 閾値を超えるので start_value_negligible では抑止されない（#86）。
 			const ctx = btcJpyStartCtx({ yearStart: 10_000_000, monthStart: 10_000_000 });
 			const result = buildPeriodPerformance({ key: 'daily', startMs: 1000, startIso: 'd' }, ctx);
 			expect(result.start_value_jpy).toBe(63_314);
@@ -2796,7 +2543,6 @@ describe('buildPeriodPerformance', () => {
 			expect(result.adjusted_change_pct).toBeUndefined();
 			expect(result.change_pct_unavailable_reason).toBe('start_boundary_unpriced');
 			expect(result.unpriced_start_assets).toEqual(['btc']);
-			// 過大な率が出ないこと（+2394% 型）
 			expect(JSON.stringify(result)).not.toMatch(/"change_pct":\s*\d{4,}/);
 		});
 
@@ -2911,10 +2657,8 @@ describe('buildPeriodPerformance', () => {
 		});
 
 		it('change_jpy は出したまま change_jpy_overstated=true を付ける（#105: 値 + フラグ）', () => {
-			// 期初 63,314 円（JPY のみ）→ 現在 1,563,314 円。差の 1,500,000 円は BTC が期初評価から
-			// 脱落した分そのものであって値動きではない。値は消さずフラグで申告する
-			// （change_jpy = current_value_jpy - start_value_jpy なので消費者が再計算できてしまい、
-			//   null 化は隠蔽にならず契約を壊すだけ）。
+			// 期初 63,314 円（JPY のみ）→ 現在 1,563,314 円。差の 1,500,000 円は BTC が期初評価から脱落した分そのものであって値動きではない。
+			// 値は消さずフラグで申告する（change_jpy = current_value_jpy - start_value_jpy なので消費者が再計算でき、null 化は隠蔽にならず契約を壊すだけ）。
 			const ctx = btcJpyStartCtx({ yearStart: 10_000_000, monthStart: 10_000_000 });
 			const result = buildPeriodPerformance({ key: 'daily', startMs: 1000, startIso: 'd' }, ctx);
 			expect(result.change_jpy).toBe(result.current_value_jpy - result.start_value_jpy);
@@ -2991,10 +2735,7 @@ describe('buildPeriodPerformance', () => {
 		});
 
 		it('現在価格も引けない保有: 過大と断定せず向き不明として扱う（CodeRabbit 回帰）', () => {
-			// 現在評価額は現在 ticker 価格を引けなかった保有を除外して積む（handler の totalJpyValue）。
-			// 期初・現在の両端から落ちる資産では、その資産の値動きがどちらにも入らないため
-			// ずれが過大とも過小とも言えない。ここで change_jpy_overstated を立てると、
-			// 抑止したはずの確定値（向き）を出してしまう。
+			// 現在評価額は現在 ticker 価格を引けなかった保有を除外して積む（handler の totalJpyValue）ので、期初・現在の両端から落ちる資産ではずれの向きが決まらず、change_jpy_overstated を立てると抑止したはずの確定値（向き）を出してしまう。
 			const ctx = makeCtx({
 				currentHoldings: [
 					{ asset: 'btc', amount: '0.1' },
@@ -3016,8 +2757,7 @@ describe('buildPeriodPerformance', () => {
 		});
 
 		it('過大が確定する資産と向き不明の資産が混在: 過大と断定しない', () => {
-			// btc は現在価格あり（現在側に載る = 過大が確定）、eth は現在価格なしで保有継続（向き不明）。
-			// 合計のずれの向きは決まらないので立てない。
+			// btc は現在価格あり（現在側に載る = 過大が確定）、eth は現在価格なしで保有継続（向き不明）なので、合計のずれの向きは決まらず立てない。
 			const ctx = makeCtx({
 				currentHoldings: [
 					{ asset: 'btc', amount: '0.1' },
@@ -3034,8 +2774,7 @@ describe('buildPeriodPerformance', () => {
 		});
 
 		it('期間中に売り切った資産は現在価格が無くても過大が確定する', () => {
-			// 現在保有ゼロ ＝ 現在評価額への寄与が本当に 0 なので現在側は正しく、
-			// 脱落するのは期初側だけ。向きは確定する。
+			// 現在保有ゼロ ＝ 現在評価額への寄与が本当に 0 なので現在側は正しく、脱落するのは期初側だけ。向きは確定する。
 			const soldTrade: RawTrade = {
 				order_id: 1,
 				trade_id: 1,
@@ -3085,24 +2824,9 @@ describe('buildPeriodPerformance', () => {
 		});
 	});
 
-	/**
-	 * 現在価格を解決できないときの増減率の抑止（#109）。
-	 *
-	 * `start_boundary_unpriced`（#86 / #97 / #105）の**対称形**。あちらは期初評価額（分母）が
-	 * 過小で増減額が過大、こちらは現在評価額（分子）が過小で増減額が過小になる。
-	 *
-	 * 最悪ケースは ticker（`tickers_jpy`）の全失敗。期初価格が資産ごとに年 chunk を引く
-	 * （＝部分失敗が普通）のと違い、現在価格は 1 回の取得で全銘柄ぶんを取るため、その 1 回が
-	 * 落ちると全暗号資産が一斉に脱落して現在評価額が JPY 残高だけに縮退する。
-	 */
+	// `start_boundary_unpriced` の対称形（あちらは期初評価額が過小で増減額が過大、こちらは現在評価額が過小で増減額が過小）。現在価格は 1 回の取得で全銘柄ぶんを取るので、その 1 回が落ちると全暗号資産が一斉に脱落して現在評価額が JPY 残高だけに縮退する（#109）。
 	describe('現在価格が解決できないときの増減率の抑止（#109）', () => {
-		/**
-		 * 期初は BTC / ETH とも始値が引ける口座。現在 ticker 価格だけを振って現在側の欠損を作る。
-		 *
-		 * `currentValue` は**価格を引けた銘柄だけ**を積む（handler の `totalJpyValue` と同じ規約）。
-		 * ここを手で揃えないと「現在評価額から落ちているのに合計には入っている」という
-		 * 実装ではありえない状態になり、テストが機序を写さなくなる。
-		 */
+		/** `currentValue` は handler の `totalJpyValue` と同じく価格を引けた銘柄だけを積む（手で揃えないと実装ではありえない状態になり、テストが機序を写さなくなる）。 */
 		function currentUnpricedCtx(currentPrices: Map<string, number>) {
 			const holdings: Array<[string, number]> = [
 				['btc', 0.1],
@@ -3130,8 +2854,7 @@ describe('buildPeriodPerformance', () => {
 		}
 
 		it('1 銘柄だけ現在価格が引けない: 率を抑止し理由コードと資産名を出す', () => {
-			// ETH だけ ticker から落ちる。期初評価額（BTC + ETH + JPY）は正しいまま、
-			// 現在評価額から ETH だけが抜けるので増減額はその分だけ過小になる。
+			// ETH だけ ticker から落ちる。期初評価額（BTC + ETH + JPY）は正しいまま現在評価額から ETH だけが抜けるので、増減額はその分だけ過小になる。
 			const ctx = currentUnpricedCtx(new Map([['btc', 15_000_000]]));
 			const result = buildPeriodPerformance({ key: 'daily', startMs: 1000, startIso: 'd' }, ctx);
 			expect(result.change_pct).toBeUndefined();
@@ -3155,10 +2878,7 @@ describe('buildPeriodPerformance', () => {
 		});
 
 		it('ticker 全失敗で全銘柄脱落: 巨額の偽損失に率を付けない（本 issue の核）', () => {
-			// `fetchTickerPricesMap` はエラーを握り潰して空 Map を返す（lib/tickers.ts）。
-			// その結果 currentValue は JPY 残高だけに縮退し、change_jpy は口座が消し飛んだ
-			// ように見える巨額のマイナスになる。ここに率を付けると #54 の -60.9% と同じ型の
-			// 「信頼できない確定値」になる。
+			// `fetchTickerPricesMap` はエラーを握り潰して空 Map を返す（lib/tickers.ts）ので、currentValue は JPY 残高だけに縮退し change_jpy は巨額のマイナスになる。ここに率を付けると信頼できない確定値になる。
 			const ctx = currentUnpricedCtx(new Map());
 			const result = buildPeriodPerformance({ key: 'daily', startMs: 1000, startIso: 'd' }, ctx);
 			// 期初 1,363,314（BTC 1,000,000 + ETH 300,000 + JPY 63,314）→ 現在は JPY だけ
@@ -3177,8 +2897,7 @@ describe('buildPeriodPerformance', () => {
 		});
 
 		it('期初側の欠損と同時成立: 優先順位どおり start_boundary_unpriced になり向きは確定しない', () => {
-			// BTC は期初始値も現在価格も引けない ＝ 両端から落ちる。ETH は両方引ける。
-			// 増減額のずれは過大とも過小とも言えないので、どちらのフラグも立てない。
+			// BTC は期初始値も現在価格も引けない ＝ 両端から落ちる、ETH は両方引ける。増減額のずれは過大とも過小とも言えないので、どちらのフラグも立てない。
 			const ctx = makeCtx({
 				currentHoldings: [
 					{ asset: 'btc', amount: '0.1' },
@@ -3202,8 +2921,7 @@ describe('buildPeriodPerformance', () => {
 		});
 
 		it('期初側と現在側で脱落資産が違っても向きは確定しない（合計のずれが決まらない）', () => {
-			// BTC は期初だけ落ちる（過大要因）、ETH は現在だけ落ちる（過小要因）。
-			// 片方だけ見てフラグを立てると、合計としては決まらない向きを確定値として出すことになる。
+			// BTC は期初だけ落ちる（過大要因）、ETH は現在だけ落ちる（過小要因）。片方だけ見てフラグを立てると、合計としては決まらない向きを確定値として出すことになる。
 			const ctx = makeCtx({
 				currentHoldings: [
 					{ asset: 'btc', amount: '0.1' },
@@ -3225,8 +2943,7 @@ describe('buildPeriodPerformance', () => {
 		});
 
 		it('start_value_negligible より優先する（増減額へ誘導しない側を必ず選ぶ）', () => {
-			// 期初がほぼ空 + 現在価格の欠損。start_value_negligible を選ぶと
-			// 「増減額で読んでください」という誘導が出るが、その増減額も壊れている。
+			// 期初がほぼ空 + 現在価格の欠損。start_value_negligible を選ぶと「増減額で読んでください」という誘導が出るが、その増減額も壊れている。
 			const ctx = makeCtx({
 				currentHoldings: [
 					{ asset: 'btc', amount: '0.1' },
@@ -3256,8 +2973,7 @@ describe('buildPeriodPerformance', () => {
 		});
 
 		it('start_value_zero より優先する（0 除算の説明より分子の欠損を先に出す）', () => {
-			// 期初保有ゼロ（全額が期間中の入金）+ 現在価格の欠損。start_value_zero を選ぶと
-			// 「増減額で読んでください」になるが、現在評価額が縮退した増減額は読めない。
+			// 期初保有ゼロ（全額が期間中の入金）+ 現在価格の欠損。start_value_zero を選ぶと「増減額で読んでください」になるが、現在評価額が縮退した増減額は読めない。
 			const depositMs = 1500;
 			const ctx = makeCtx({
 				currentHoldings: [
@@ -3347,9 +3063,7 @@ describe('buildPeriodPerformance', () => {
 	});
 
 	it('期間内に売買あり: reconstructHoldingsAtDate で期初保有が逆算される', () => {
-		// 現在保有 0.5 BTC、期間内 (t=2000) に 0.5 BTC 売却 → 期初は 1.0 BTC
-		// 期初評価 1.0 * 10_000_000 = 10_000_000、現在 0.5 * 12_000_000 = 6_000_000
-		// 売却で得た JPY が現在 JPY に乗っていない前提（保有テストの簡略化）
+		// 現在保有 0.5 BTC、期間内 (t=2000) に 0.5 BTC 売却 → 期初は 1.0 BTC で 10_000_000、現在 0.5 * 12_000_000 = 6_000_000（売却で得た JPY は現在 JPY に乗っていない前提で簡略化）
 		const trades: RawTrade[] = [
 			{
 				trade_id: 1,
@@ -3429,7 +3143,6 @@ describe('buildPeriodPerformance', () => {
 			currentValue: 13_500_000, // 1 BTC @ 12M + 5 ETH @ 300k
 		});
 		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
-		// ETH は boundary 不在で評価から除外 → 期初は BTC 分のみ
 		expect(result.start_value_jpy).toBe(10_000_000);
 		expect(result.change_jpy).toBe(3_500_000);
 	});
@@ -3464,8 +3177,7 @@ describe('buildPeriodPerformance', () => {
 	});
 
 	it('価格を引けない入出庫がある場合: unpriced_flow_assets が末尾に足される（既存キー順は不変）', () => {
-		// 期間内に DOGE 入庫があるが currentPrices に DOGE が無い
-		// → net_flow_jpy には計上されず、資産名だけが申告される
+		// 期間内に DOGE 入庫があるが currentPrices に DOGE が無い → net_flow_jpy には計上されず、資産名だけが申告される
 		const dw: DepositWithdrawalData = {
 			deposits: [{ uuid: 'd-doge', asset: 'doge', amount: '1000', status: 'DONE', found_at: 1500, confirmed_at: 1500 }],
 			withdrawals: [],
@@ -3505,9 +3217,7 @@ describe('buildPeriodPerformance', () => {
 	});
 
 	it('flowUnavailableReason あり: フロー 3 値が null + flow_measured=false + 理由コード', () => {
-		// dwData に中身があっても、理由コードが立っていれば未計測として扱う。
-		// allFailed / partial failure では dwData が空なので、そのまま集計すると
-		// 「フローゼロ」という確定値になり adjusted_change が嘘になる。
+		// allFailed / partial failure では dwData が空で、そのまま集計すると「フローゼロ」という確定値になり adjusted_change が嘘になるので、dwData に中身があっても理由コードが立っていれば未計測として扱う。
 		const ctx = makeCtx({
 			currentHoldings: [{ asset: 'btc', amount: '1' }],
 			dwData: makeEmptyDw(),
@@ -3532,8 +3242,7 @@ describe('buildPeriodPerformance', () => {
 	});
 
 	it('dwData が null で理由コード未指定: dw_fetch_failed に落ちる', () => {
-		// flow_measured=false なら必ず理由が付く、という契約を守る。
-		// 損益を出す構成では入出金履歴を常に取得するので、dwData が null なのは取得が落ちたとき。
+		// flow_measured=false なら必ず理由が付く、という契約を守る（損益を出す構成では入出金履歴を常に取得するので、dwData が null なのは取得が落ちたとき）。
 		const ctx = makeCtx({
 			currentHoldings: [{ asset: 'btc', amount: '1' }],
 			candlePriceData: {
@@ -3587,20 +3296,9 @@ describe('buildPeriodPerformance', () => {
 	});
 });
 
-/**
- * 当日損益（daily performance）の起点が JST 暦日の 0:00 であることを境界時刻で固定する。
- *
- * この起点は `fetchCandlePriceData` が日次価格マップのキーに使う JST 0:00 正規化、および
- * 資産推移の日次点の打ち止めと**同じ暦日境界でなければならない**（src/handlers/portfolio/
- * calendar.ts 参照）。UTC 暦日で計算してしまうと JST 09:00 を境に起点が 1 日ぶんずれ、
- * JST 深夜（UTC ではまだ前日）の当日損益が前日ぶんを含んだ値になる。
- */
+// 当日損益の起点（JST 暦日 0:00）は `fetchCandlePriceData` の日次価格マップのキーおよび資産推移の日次点の打ち止めと同じ暦日境界でなければならない（UTC 暦日で計算すると JST 09:00 を境に起点が 1 日ずれ、JST 深夜の当日損益が前日ぶんを含む）。
 describe('getJstPeriodBoundaries: JST 暦日境界', () => {
 	/** JST の壁時計時刻を epoch ms に変換する（JST は DST を持たないので UTC+9 固定）。 */
-	function jstMs(y: number, m: number, d: number, h = 0, min = 0, s = 0, ms = 0): number {
-		return Date.UTC(y, m - 1, d, h - 9, min, s, ms);
-	}
-
 	function boundariesAt(nowMs: number) {
 		vi.setSystemTime(nowMs);
 		return getJstPeriodBoundaries();
@@ -3670,8 +3368,7 @@ describe('getJstPeriodBoundaries: JST 暦日境界', () => {
 	});
 
 	it('起点は portfolioDayStartMs と一致する（日次価格キーとの共有契約）', () => {
-		// ここがずれると資産推移の日次点が dailyPrices を引けず、全点が現在価格
-		// フォールバックに落ちる（equitySeriesQuality が実態と乖離する）。
+		// ここがずれると資産推移の日次点が dailyPrices を引けず、全点が現在価格フォールバックに落ちる（equitySeriesQuality が実態と乖離する）。
 		const cases = [
 			jstMs(2026, 8, 2),
 			jstMs(2026, 8, 2) - 1,
@@ -3685,25 +3382,8 @@ describe('getJstPeriodBoundaries: JST 暦日境界', () => {
 	});
 });
 
-/**
- * 資産推移シリーズの入出金フローマーカー（`EquityPoint.flow_jpy`）。
- *
- * 月次資産推移は入出金があった期間でも単一の連続線として出るため、大口入金のある口座では
- * 「ずっと同額を保有していた」と誤読される（#53 の症状 7 後半）。グラフ化されると注記行は
- * 消える前提なので、フロー発生点を**データとして**返す。
- *
- * 本 describe が固定する契約:
- *   - 点にフローを寄せる向き（`value_jpy[i+1] - value_jpy[i] - flow_jpy[i]` が市場変動）
- *   - 日付キーが `portfolioDayStartMs`（JST 暦日境界）と揃うこと
- *   - フローが無い期間は従来と JSON 一致すること
- */
+// 月次資産推移は入出金があった期間でも単一の連続線として出て「ずっと同額を保有していた」と誤読されるので、フロー発生点をデータとして返す（グラフ化されると注記行は消える前提）。
 describe('buildEquitySeries — 入出金フローマーカー', () => {
-	/** JST の壁時計時刻を epoch ms に変換する（JST は DST を持たないので UTC+9 固定）。 */
-	function jstMs(y: number, m: number, d: number, h = 0, min = 0): number {
-		return Date.UTC(y, m - 1, d, h - 9, min);
-	}
-
-	/** JST 暦日 0:00 の連続点（日次シリーズ）を作る */
 	function dailyPoints(y: number, m: number, fromDay: number, toDay: number) {
 		const dates = [];
 		for (let d = fromDay; d <= toDay; d++) dates.push(dayjs(jstMs(y, m, d)).tz(PORTFOLIO_CALENDAR_TZ));
@@ -3739,12 +3419,7 @@ describe('buildEquitySeries — 入出金フローマーカー', () => {
 		expect(series[1].timestamp).toBe('2026-08-02T00:00:00+09:00');
 	});
 
-	/**
-	 * 向きの契約。`reconstructHoldingsAtDate` は「点の時刻以降」の入出金を巻き戻すため、
-	 * 8/2 の入金が評価額に現れるのは 8/3 の点から。flow_jpy を「この点から次の点まで」に
-	 * 取ることで、増減からフローを引いた残りが市場変動になる。
-	 * 逆向き（直前の点からこの点まで）に取ると、この式が 1 点ずれて成立しなくなる。
-	 */
+	/** `reconstructHoldingsAtDate` は点の時刻以降の入出金を巻き戻すので、8/2 の入金が評価額に現れるのは 8/3 の点から。flow_jpy を「この点から次の点まで」に取れば増減からフローを引いた残りが市場変動になる（逆向きだと 1 点ずれて成立しない）。 */
 	it('value_jpy[i+1] - value_jpy[i] - flow_jpy[i] が市場変動になる（JPY のみ保有なら 0）', () => {
 		const dw = makeDwData({
 			deposits: [makeDeposit({ asset: 'jpy', amount: '500000', confirmed_at: jstMs(2026, 8, 2, 10) })],
@@ -3781,11 +3456,7 @@ describe('buildEquitySeries — 入出金フローマーカー', () => {
 		expect(series[1]).not.toHaveProperty('flow_jpy');
 	});
 
-	/**
-	 * 出金手数料は flow_jpy に含めない（`*_performance.net_flow_jpy` と同一定義）。
-	 * 結果として増減からフローを引いた残差に手数料コストが残る。これは
-	 * `adjusted_change_jpy` の扱い（`PERFORMANCE_NOTE`）と揃えてある。
-	 */
+	/** 出金手数料は flow_jpy に含めない（`*_performance.net_flow_jpy` と同一定義）ので、増減からフローを引いた残差に手数料コストが残る（`adjusted_change_jpy` の扱いと揃えてある）。 */
 	it('出金は負値になり、出金手数料は残差に残る', () => {
 		const dw = makeDwData({
 			withdrawals: [
@@ -3807,10 +3478,7 @@ describe('buildEquitySeries — 入出金フローマーカー', () => {
 		expect(series[2].value_jpy - series[1].value_jpy - (series[1].flow_jpy ?? 0)).toBe(-550);
 	});
 
-	/**
-	 * 回帰（JSON レベル）。フローゼロの期間では従来の点と完全一致し、キーも増えない。
-	 * `toEqual` は undefined のプロパティを無視するので `JSON.stringify` で比較する。
-	 */
+	/** `toEqual` は undefined のプロパティを無視するので `JSON.stringify` で比較する。 */
 	it('フローが無い期間は従来の出力（timestamp / value_jpy のみ）と JSON 一致する', () => {
 		const dates = dailyPoints(2026, 8, 1, 3);
 		const withFlowArg = build(dates, makeDwData());
@@ -3835,22 +3503,14 @@ describe('buildEquitySeries — 入出金フローマーカー', () => {
 		expect(JSON.stringify(series)).not.toContain('flow_jpy');
 	});
 
-	/**
-	 * 履歴が欠けている構成では部分集合の合計を確定値として出さない。
-	 *
-	 * `*_performance` は同じ状態で「純入出金: 未計測」（`flow_measured=false`）を返すので、
-	 * 点だけが金額を主張すると 1 つの応答の中で矛盾する（#53 が潰している型の自己矛盾）。
-	 * 判定は `flowUnavailableReasonFor` と同一にしてあり、`allFailed` / `isComplete` だけを
-	 * 見る判定では塞げない **`warnings`（一部チャネル失敗）** も含む点をケースで固定する。
-	 */
+	// `*_performance` は同じ状態で `flow_measured=false` を返すので、点だけが金額を主張すると 1 つの応答の中で矛盾する。判定は `flowUnavailableReasonFor` と同一で、`allFailed` / `isComplete` だけでは塞げない `warnings`（一部チャネル失敗）も含む。
 	describe('履歴が欠けている構成では全点で落ちる', () => {
 		const deposits = [makeDeposit({ asset: 'jpy', amount: '500000', confirmed_at: jstMs(2026, 8, 2, 10) })];
 
 		it.each([
 			['件数上限による打ち切り（isComplete=false）', { isComplete: false }],
 			['全チャネル失敗（allFailed=true）', { allFailed: true }],
-			// 出庫チャネルだけが落ちると入金しか残らず「入金しかない口座」に見える。
-			// allFailed は false・isComplete は true なので、warnings を見ないと素通りする。
+			// 出庫チャネルだけが落ちると入金しか残らず「入金しかない口座」に見える。allFailed は false・isComplete は true なので、warnings を見ないと素通りする。
 			['一部チャネル失敗（warnings あり）', { warnings: ['出庫履歴の取得に失敗'] }],
 		])('%s', (_label, overrides: Partial<DepositWithdrawalData>) => {
 			const dw = makeDwData({ deposits, ...overrides });
@@ -3902,10 +3562,7 @@ describe('buildEquitySeries — 入出金フローマーカー', () => {
 		expect(JSON.stringify(series)).not.toContain('flow_jpy');
 	});
 
-	/**
-	 * 日付キーの暦。JST 深夜（UTC ではまだ前日）の入金が前日の点に落ちると、
-	 * マーカーと評価額の段差が 1 日ずれる。
-	 */
+	/** JST 深夜（UTC ではまだ前日）の入金が前日の点に落ちると、マーカーと評価額の段差が 1 日ずれる。 */
 	it('JST 深夜の入金は JST 暦日の点に寄る（UTC 暦日に落ちない）', () => {
 		const dw = makeDwData({
 			// JST 8/2 01:00 = 2026-08-01T16:00Z
@@ -3966,11 +3623,7 @@ describe('buildEquitySeries — 入出金フローマーカー', () => {
 			expect(series[1].flow_jpy).toBe(1_000_000);
 		});
 
-		/**
-		 * 価格を解決できない入出庫は計上しない（0 円として黙って混ぜない）。
-		 * 申告経路は同じ期間を張る `*_performance.unpriced_flow_assets` なので、
-		 * ここで専用のフィールドは増やさない。
-		 */
+		/** 価格を解決できない入出庫は 0 円として黙って混ぜない。申告経路は同じ期間を張る `*_performance.unpriced_flow_assets` なので、ここで専用のフィールドは増やさない。 */
 		it('価格を解決できない入出庫は計上しない（他の入出金は残る）', () => {
 			const dw = makeDwData({
 				deposits: [
@@ -3983,12 +3636,7 @@ describe('buildEquitySeries — 入出金フローマーカー', () => {
 			expect(series[1].flow_jpy).toBe(300_000);
 		});
 
-		/**
-		 * キーの不在は「入出金が無かった」ではない（`EquityPoint.flow_jpy` の
-		 * 「キーが無いことの意味」の (3)）。この区間には実際に入庫があるが、価格を解決できず
-		 * 計上対象が残らないためキーごと落ちる。落ちた資産名は
-		 * `*_performance.unpriced_flow_assets` が申告する。
-		 */
+		/** キーの不在は「入出金が無かった」ではない。この区間には入庫があるが、価格を解決できず計上対象が残らないためキーごと落ちる（落ちた資産名は `*_performance.unpriced_flow_assets` が申告する）。 */
 		it('区間の入出庫が全件価格解決できないとキーごと落ちる（0 円計上しない）', () => {
 			const dw = makeDwData({
 				deposits: [makeDeposit({ asset: 'btc', amount: '0.05', confirmed_at: jstMs(2026, 8, 2, 10) })],
@@ -4012,11 +3660,7 @@ describe('buildEquitySeries — 入出金フローマーカー', () => {
 		});
 	});
 
-	/**
-	 * 年次シリーズ（月次点）。日次点と同じ実装で、入出庫日はその月の点に寄る。
-	 * 逆向き（直前の点からこの点まで）に取ると 8 月のフローが `2026-08-01` ではなく
-	 * `2026-09-01` に載り、日付ラベルと発生月がずれる。
-	 */
+	/** 年次シリーズ（月次点）も日次点と同じ実装で、入出庫日はその月の点に寄る。逆向き（直前の点からこの点まで）に取ると 8 月のフローが `2026-09-01` に載り、日付ラベルと発生月がずれる。 */
 	describe('月次点（年次シリーズ）', () => {
 		function monthlyPoints(y: number, fromMonth: number, toMonth: number) {
 			const dates = [];

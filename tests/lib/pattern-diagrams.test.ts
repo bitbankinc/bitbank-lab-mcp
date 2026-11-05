@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { generatePatternDiagram, generateSupportResistanceDiagram } from '../../lib/pattern-diagrams.js';
 
-// ── ヘルパー ──
-
 const range = { start: '2026-01-10T00:00:00Z', end: '2026-02-15T00:00:00Z' };
 
 function pivot(idx: number, price: number, kind: 'H' | 'L', date?: string) {
@@ -10,8 +8,6 @@ function pivot(idx: number, price: number, kind: 'H' | 'L', date?: string) {
 }
 
 describe('generatePatternDiagram', () => {
-	// ── double_bottom ────────────────────────────────────
-
 	it('double_bottom の SVG にネックライン・谷・山の情報を含む', () => {
 		const result = generatePatternDiagram(
 			'double_bottom',
@@ -39,8 +35,6 @@ describe('generatePatternDiagram', () => {
 		expect(result.svg).toContain('stroke-dasharray="5,5"');
 	});
 
-	// ── double_top ───────────────────────────────────────
-
 	it('double_top の SVG にネックライン・山・谷の情報を含む', () => {
 		const result = generatePatternDiagram(
 			'double_top',
@@ -54,8 +48,6 @@ describe('generatePatternDiagram', () => {
 		expect(result.svg).toContain('山');
 		expect(result.svg).toContain('谷');
 	});
-
-	// ── inverse_head_and_shoulders ───────────────────────
 
 	it('inverse_head_and_shoulders の SVG に左肩・山・谷・右肩を含む', () => {
 		const result = generatePatternDiagram(
@@ -73,8 +65,6 @@ describe('generatePatternDiagram', () => {
 		expect(result.svg).toContain('ネックライン');
 	});
 
-	// ── head_and_shoulders ───────────────────────────────
-
 	it('head_and_shoulders の SVG に左肩・谷・山・右肩を含む', () => {
 		const result = generatePatternDiagram(
 			'head_and_shoulders',
@@ -89,8 +79,6 @@ describe('generatePatternDiagram', () => {
 		expect(result.svg).toContain('谷2');
 		expect(result.svg).toContain('山');
 	});
-
-	// ── triple_bottom ────────────────────────────────────
 
 	it('triple_bottom の SVG に谷1-3・山1-2・ネックラインを含む', () => {
 		const result = generatePatternDiagram(
@@ -108,8 +96,6 @@ describe('generatePatternDiagram', () => {
 		expect(result.svg).toContain('ネックライン');
 	});
 
-	// ── triple_top ───────────────────────────────────────
-
 	it('triple_top の SVG に山1-3・谷1-2・ネックラインを含む', () => {
 		const result = generatePatternDiagram(
 			'triple_top',
@@ -125,8 +111,6 @@ describe('generatePatternDiagram', () => {
 		expect(result.svg).toContain('谷2');
 	});
 
-	// ── falling_wedge ────────────────────────────────────
-
 	it('falling_wedge の SVG に収束点・上抜け期待を含む', () => {
 		const result = generatePatternDiagram('falling_wedge', [pivot(0, 100, 'L')], { price: 100 }, range);
 		expect(result.svg).toContain('フォーリングウェッジ');
@@ -135,8 +119,6 @@ describe('generatePatternDiagram', () => {
 		expect(result.artifact.title).toContain('フォーリングウェッジ');
 	});
 
-	// ── rising_wedge ─────────────────────────────────────
-
 	it('rising_wedge の SVG に収束点・下抜け期待を含む', () => {
 		const result = generatePatternDiagram('rising_wedge', [pivot(0, 200, 'H')], { price: 200 }, range);
 		expect(result.svg).toContain('ライジングウェッジ');
@@ -144,15 +126,11 @@ describe('generatePatternDiagram', () => {
 		expect(result.svg).toContain('下抜け期待');
 	});
 
-	// ── fallback ─────────────────────────────────────────
-
 	it('未実装パターンはフォールバック SVG を返す', () => {
 		const result = generatePatternDiagram('unknown_pattern', [pivot(0, 100, 'L')], { price: 100 }, range);
 		expect(result.svg).toContain('準備中');
 		expect(result.svg).toContain('unknown_pattern');
 	});
-
-	// ── artifact ─────────────────────────────────────────
 
 	it('artifact に identifier と title を含む', () => {
 		const result = generatePatternDiagram(
@@ -165,12 +143,8 @@ describe('generatePatternDiagram', () => {
 		expect(result.artifact.title).toContain('ダブルボトム構造図');
 	});
 
-	// ── tz（issue #200 要件 F-2: UTC/JST 不一致の修正） ────
-
 	describe('tz オプション', () => {
-		// 2026-08-27T15:00:00Z は JST（+9h）で 2026-08-28T00:00:00+09:00 になる、
-		// ちょうど暦日が変わる境界のピボット。旧実装（.utc() 固定）はここを 8/27 と表示していた
-		// （issue #200 の具体例: 「1hour の 8/28 00:00 JST が構造図では 8/27」）。
+		// 2026-08-27T15:00:00Z は JST（+9h）で 2026-08-28T00:00:00+09:00 になる、ちょうど暦日が変わる境界のピボット（.utc() 固定だと 8/27 と表示される。issue #200）。
 		const boundaryRange = { start: '2026-08-27T15:00:00Z', end: '2026-08-28T15:00:00Z' };
 		const boundaryPivots = [
 			pivot(0, 100, 'L', '2026-08-27T15:00:00Z'),
@@ -227,12 +201,8 @@ describe('generatePatternDiagram', () => {
 		});
 	});
 
-	// ── type（issue #233: intraday の 5 点が同じ日付ラベルに潰れる） ────
-
 	describe('type オプション（intraday の時刻表示）', () => {
-		// issue #233 の実データ再現ケース: triple_top の形成期間 9/2 03:00〜22:00 JST。
-		// 5 点すべてが同じ暦日に収まるため、旧実装（常に M/D）ではラベルが全部「9/2」になり、
-		// どの点がどの足かを特定できなかった（`head_and_shoulders` 9/1 04:00〜23:00 でも同様）。
+		// issue #233 の実データ再現ケース: triple_top の形成期間 9/2 03:00〜22:00 JST で 5 点すべてが同じ暦日に収まるので、常に M/D だとラベルが全部「9/2」になりどの点がどの足か特定できない。
 		const intradayRange = { start: '2026-09-01T18:00:00Z', end: '2026-09-02T13:00:00Z' };
 		/** JST 9/2 の 03:00 / 07:00 / 12:00 / 17:00 / 22:00 に並ぶ 5 点（すべて同じ暦日）。 */
 		const intradayDates = [
@@ -244,19 +214,12 @@ describe('generatePatternDiagram', () => {
 		];
 		const expectedTimes = ['03:00', '07:00', '12:00', '17:00', '22:00'];
 
-		/**
-		 * SVG のピボットラベル（`<text …>山1: 9/2 03:00</text>` 等）から日時部分だけを抜き出す。
-		 * `ネックライン: 179円` のような価格ラベルは `M/D` 形にマッチしないので拾わない。
-		 */
+		/** `ネックライン: 179円` のような価格ラベルは `M/D` 形にマッチしないので拾わない。 */
 		function pivotLabelDates(svg: string): string[] {
 			return [...svg.matchAll(/>[^<>]*?: (\d+\/\d+(?: \d{2}:\d{2})?)</g)].map((m) => m[1] as string);
 		}
 
-		/**
-		 * 各構造図関数のピボット並び（kind の順序）。`generatePatternDiagram` は
-		 * double 系だけ kind で拾い、他は位置で拾うため、ここを間違えるとラベルが空になる。
-		 * wedge 系はピボットラベルを描かない（タイトル＋レンジ表記のみ）ので 0 件。
-		 */
+		/** `generatePatternDiagram` は double 系だけ kind で拾い、他は位置で拾うので、ここを間違えるとラベルが空になる。wedge 系はピボットラベルを描かない（タイトル＋レンジ表記のみ）ので 0 件。 */
 		const CASES: Array<{ patternType: string; kinds: Array<'H' | 'L'>; labelCount: number }> = [
 			{ patternType: 'head_and_shoulders', kinds: ['H', 'L', 'H', 'L', 'H'], labelCount: 5 },
 			{ patternType: 'inverse_head_and_shoulders', kinds: ['L', 'H', 'L', 'H', 'L'], labelCount: 5 },
@@ -283,7 +246,7 @@ describe('generatePatternDiagram', () => {
 			it(`${patternType}: type=1hour でピボットラベルが HH:mm まで出て 5 点を区別できる`, () => {
 				const labels = pivotLabelDates(diagramFor(patternType, kinds, '1hour').svg);
 				expect(labels).toEqual(expectedTimes.slice(0, labelCount).map((t) => `9/2 ${t}`));
-				// 同じ暦日に潰れず、全ラベルが相異なる（本 issue の症状そのもの）。
+				// 同じ暦日に潰れず、全ラベルが相異なる。
 				expect(new Set(labels).size).toBe(labelCount);
 			});
 
@@ -361,8 +324,6 @@ describe('generatePatternDiagram', () => {
 			expect(result.artifact.title).toContain('(9/2 03:00-9/2 22:00)');
 		});
 	});
-
-	// ── 日付なしピボット ─────────────────────────────────
 
 	it('date が undefined のピボットでもクラッシュしない', () => {
 		const result = generatePatternDiagram(

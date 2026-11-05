@@ -1,8 +1,4 @@
-/*
- * MCP Apps 注文確認 UI のスタイル。
- * ホストが提供する CSS 変数（--color-background-primary 等）でテーマに追従する。
- * 非対応ホスト（変数未設定）向けにフォールバック値を用意している。
- */
+/* ホストの CSS 変数（--color-background-primary 等）が未設定のホスト向けに、フォールバック値を用意している。 */
 
 :root {
 	color-scheme: light dark;

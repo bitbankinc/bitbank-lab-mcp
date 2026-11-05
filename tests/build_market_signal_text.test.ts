@@ -145,7 +145,6 @@ describe('buildMarketSignalText', () => {
 		expect(text).toContain('RSI: n/a');
 	});
 
-	// buyPressure labels
 	it('buyPressure > 0.2 → 買い優勢', () => {
 		const text = buildMarketSignalText(makeInput({ factors: { ...makeInput().factors, buyPressure: 0.3 } }));
 		expect(text).toContain('買い優勢');
@@ -166,7 +165,6 @@ describe('buildMarketSignalText', () => {
 		expect(text).toContain('拮抗');
 	});
 
-	// momentum labels
 	it('momentum up → 上昇中', () => {
 		const text = buildMarketSignalText(makeInput({ factors: { ...makeInput().factors, momentumFactor: 0.5 } }));
 		expect(text).toMatch(/勢いの変化.*上昇中/);
@@ -182,7 +180,6 @@ describe('buildMarketSignalText', () => {
 		expect(text).toMatch(/勢いの変化.*横ばい/);
 	});
 
-	// volatility labels
 	it('低ボラ → 落ち着いている', () => {
 		const text = buildMarketSignalText(makeInput({ factors: { ...makeInput().factors, volatilityFactor: 0.5 } }));
 		expect(text).toContain('落ち着いている');

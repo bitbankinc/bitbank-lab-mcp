@@ -1,5 +1,3 @@
-// Barrel re-export — all domain schema modules
-
 export * from './analysis.js';
 export * from './backtest.js';
 export * from './base.js';

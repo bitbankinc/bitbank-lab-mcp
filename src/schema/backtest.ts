@@ -1,7 +1,5 @@
 import { z } from 'zod';
 
-// === Trading Process: Backtest Schemas ===
-
 export const BacktestTimeframeEnum = z.enum(['1D', '4H', '1H']);
 export const BacktestPeriodEnum = z.enum(['1M', '3M', '6M', '1Y', '2Y', '3Y']);
 
@@ -25,8 +23,6 @@ const DrawdownPointSchema = z.object({
 	time: z.string(),
 	drawdown_pct: z.number(),
 });
-
-// === Generic Backtest Schema ===
 
 export const StrategyTypeEnum = z.enum(['sma_cross', 'rsi', 'macd_cross', 'bb_breakout']);
 

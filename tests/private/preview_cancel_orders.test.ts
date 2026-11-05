@@ -1,11 +1,7 @@
-/**
- * preview_cancel_orders ツールのユニットテスト。
- * 一括キャンセルの確認トークン発行とプレビューメッセージ生成を検証する。
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import previewCancelOrders from '../../tools/private/preview_cancel_orders.js';
 import { assertOk } from '../_assertResult.js';
+import { requireDefined } from '../helpers/assert.js';
 
 beforeEach(() => {
 	process.env.BITBANK_API_KEY = 'test_key';
@@ -22,11 +18,10 @@ describe('preview_cancel_orders', () => {
 		const result = previewCancelOrders({ pair: 'btc_jpy', order_ids: [2001, 2002] });
 
 		assertOk(result);
-		// confirmation_token / expires_at はスキーマ上 optional だが、内部関数 previewCancelOrders() は必ず生成する
 		expect(result.data.confirmation_token).toBeTypeOf('string');
-		expect(result.data.confirmation_token!.length).toBeGreaterThan(0);
+		expect(requireDefined(result.data.confirmation_token, 'result.data.confirmation_token').length).toBeGreaterThan(0);
 		expect(result.data.expires_at).toBeTypeOf('number');
-		expect(result.data.expires_at!).toBeGreaterThan(Date.now());
+		expect(requireDefined(result.data.expires_at, 'result.data.expires_at')).toBeGreaterThan(Date.now());
 	});
 
 	it('summary にペア名と件数が含まれる', () => {
@@ -115,13 +110,10 @@ describe('preview_cancel_orders — handler (toolDef)', () => {
 
 		const text = result.content[0]?.text ?? '';
 		const data = result.structuredContent?.data;
-		// structuredContent.data.preview は残るが confirmation_token / expires_at は含まれない
 		expect(data?.preview).toBeDefined();
 		expect(data?.confirmation_token).toBeUndefined();
 		expect(data?.expires_at).toBeUndefined();
-		// content[0].text にもトークン文字列・「confirmation_token」表記を出さない
 		expect(text).not.toContain('confirmation_token');
-		// 実行不可通知の案内文があること
 		expect(text).toContain('このホストでは取引実行に対応していません');
 	});
 
@@ -182,7 +174,6 @@ describe('preview_cancel_orders — handler (toolDef)', () => {
 		};
 
 		expect(result.content[0]?.text).toContain('取り消し');
-		// decline 時の structuredContent にも confirmation_token / expires_at は含まれない
 		expect(result.structuredContent?.data?.confirmation_token).toBeUndefined();
 		expect(result.structuredContent?.data?.expires_at).toBeUndefined();
 		expect((fetchMock as unknown as { mock: { calls: unknown[] } }).mock.calls).toHaveLength(0);

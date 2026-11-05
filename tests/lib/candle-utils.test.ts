@@ -11,7 +11,6 @@ import {
 } from '../../lib/candle-utils.js';
 import type { Candle } from '../../src/schemas.js';
 
-/** テスト用ローソク足を生成するヘルパー */
 function candle(open: number, high: number, low: number, close: number): Candle {
 	return { open, high, low, close, timestamp: 1_000_000 };
 }

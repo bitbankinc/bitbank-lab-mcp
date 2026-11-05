@@ -4,22 +4,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { nowIso, today } from './datetime.js';
 
-/**
- * パッケージルート（`lib/` の 1 つ上）。
- * `package.json` の `files` が `bin/` `src/` `lib/` を並列に含むため、
- * 開発時も publish 後もこの相対関係は変わらない。
- */
+// package.json の files が bin / src / lib を並列に含むので、publish 後もこの相対関係は変わらない。
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-/**
- * ログ出力先。**cwd 相対（`./logs`）にしてはいけない。**
- *
- * MCP サーバーはホストが spawn するため cwd はホスト依存で、Claude Desktop（macOS）では
- * `/` になる。その状態で `./logs` を使うと `/logs` の作成が EACCES で失敗し、
- * 下の `catch` が例外を握り潰すため **`logTradeAction` の取引監査ログごと黙って消える**
- * （実際に 2026-08 のオプトイン運用で 1 行も残っていなかった）。
- * 明示指定が無い場合はパッケージルート基準で解決する。
- */
+// cwd 相対にしない。ホストが spawn するので cwd は / になりうり、作成失敗を下の catch が握り潰して取引監査ログごと消える。
 const LOG_DIR = process.env.LOG_DIR || path.join(PACKAGE_ROOT, 'logs');
 const LOG_LEVEL = (process.env.LOG_LEVEL || 'info').toLowerCase();
 const LEVELS: Record<string, number> = { error: 0, warn: 1, info: 2, debug: 3 };
@@ -37,16 +25,7 @@ function writeJsonl(file: string, obj: unknown) {
 /** 書き込み失敗の通知は 1 回だけ出す（失敗が続く環境で stderr を埋めないため） */
 let writeFailureNotified = false;
 
-/**
- * ログ書き込み失敗を運用者に伝える。ログ出力自体は best-effort のまま
- * （ツール実行やレスポンスは止めない）だが、**黙って捨てない**。
- *
- * 出力先は必ず **stderr**。stdio トランスポートでは stdout が JSON-RPC ストリーム
- * そのもので、混ぜるとプロトコルが壊れる（`src/env.ts` の dotenv `quiet` と同じ理由）。
- *
- * メッセージにはファイルパスと失敗理由のみを含め、ログレコード本文は載せない
- * （`.claude/rules/sensitive-data.md`）。
- */
+// 出力先は必ず stderr（stdio では stdout が JSON-RPC ストリーム）。ログレコード本文は載せない（sensitive-data）。
 function notifyWriteFailure(file: string, err: unknown): void {
 	if (writeFailureNotified) return;
 	writeFailureNotified = true;
@@ -57,25 +36,19 @@ function notifyWriteFailure(file: string, err: unknown): void {
 	);
 }
 
-/** テスト用: 通知済みフラグを戻す */
 export function _resetWriteFailureNotice(): void {
 	writeFailureNotified = false;
 }
 
-// ── チェーンハッシュ（取引操作ログ専用） ──
-
 let lastTradeHash = '0'.repeat(64);
 
-/** チェーンハッシュ付きで取引操作ログを書き込む */
 function writeTradeJsonl(file: string, record: Record<string, unknown>) {
 	ensureDir(path.dirname(file));
 	const withChain = { ...record, _prevHash: lastTradeHash };
 	const json = JSON.stringify(withChain);
 	const hash = createHash('sha256').update(json).digest('hex');
 	fs.appendFileSync(file, `${JSON.stringify({ ...withChain, _hash: hash })}\n`);
-	// 追記が成功したときだけチェーンを進める。先に進めてしまうと、書き込みに失敗した
-	// レコードの hash を次レコードの `_prevHash` が指すことになり、実際には改ざんが
-	// 無いのに verify_log_integrity がチェーン断絶として検出する。
+	// 追記が成功したときだけチェーンを進める。先に進めると、失敗したレコードを指す _prevHash で verify_log_integrity が断絶を誤検出する。
 	lastTradeHash = hash;
 }
 
@@ -92,17 +65,7 @@ export function log(level: 'error' | 'warn' | 'info' | 'debug', event: Record<st
 	}
 }
 
-/** ログ出力前に機密フィールドをマスクする */
-// 方針（残高・注文数量・価格）:
-// - SENSITIVE_KEYS は「認証・署名・確認トークン」系のみを対象とする。bitbank API キー／シークレット／
-//   confirmation_token のログ混入を防ぐのが主目的。
-// - balance / amount / price / free_amount 等はマスクしていない。ツール入力（例: create_order の amount）
-//   は maskSensitiveFields 後も数値文字列として jsonl に残り得る。これはサーバー管理者が MCP 利用者の
-//   操作監査・障害調査のためにローカルログを読む前提の設計であり、LOG_LEVEL=debug でも現状コードは
-//   `log('debug', …)` を呼ばない（閾値は THRESH のみ）。tool_run の result は ok/summary/meta のみで
-//   残高や約定一覧の data 本体は載せない。
-// - 取引操作の `logTradeAction` は amount/price を平文で含むが、改ざん検知用チェーンハッシュ付きの
-//   監査ログであり、集計・統計目的とは別レーンとして許容している。
+// SENSITIVE_KEYS は認証・署名・確認トークン系だけを対象にし、amount / price は管理者の監査用に平文で残す（logTradeAction はチェーンハッシュ付きの別レーン）。
 const SENSITIVE_KEYS = new Set(['confirmation_token', 'token', 'key', 'secret', 'apiKey', 'apiSecret']);
 
 function maskSensitiveFields(obj: unknown): unknown {
@@ -135,8 +98,6 @@ export function logError(tool: string, err: unknown, input: unknown): void {
 	});
 }
 
-// ── 取引操作ログ（チェーンハッシュ付き） ──
-
 export function logTradeAction(action: {
 	type: 'create_order' | 'cancel_order' | 'cancel_orders';
 	orderId?: number;
@@ -150,7 +111,7 @@ export function logTradeAction(action: {
 	positionSide?: string | null;
 	status: string;
 	confirmed: boolean;
-	/** どの経路から実行されたかの監査用ラベル（create_order / cancel_order / cancel_orders。二重発注や意図しないキャンセルの原因特定に使う） */
+	/** 二重発注や意図しないキャンセルの原因特定に使う監査用ラベル。 */
 	route?: 'elicitation' | 'ui-button' | 'direct-text';
 }) {
 	const date = today('YYYY-MM-DD');
@@ -164,8 +125,7 @@ export function logTradeAction(action: {
 	try {
 		writeTradeJsonl(file, record);
 	} catch (err) {
-		// best-effort: 監査ログの失敗で発注・取消そのものは止めない。ただし
-		// 「監査証跡が残っていない」ことに運用者が気づけるよう必ず通知する。
+		// 監査ログの失敗で発注・取消は止めないが、証跡が残っていないことに気づけるよう必ず通知する。
 		notifyWriteFailure(file, err);
 	}
 }

@@ -1,12 +1,3 @@
-/**
- * get_orders_info — 複数注文の詳細を一括取得する Private API ツール。
- *
- * bitbank Private API `POST /v1/user/spot/orders_info` を呼び出し、
- * 指定した複数の注文IDの詳細情報を返す。
- *
- * ※ 約定・キャンセルから3ヶ月以上経過した注文は結果に含まれない（エラーにはならない）。
- */
-
 import { nowIso, toIsoMs } from '../../lib/datetime.js';
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
 import { isJpyQuotedPair, normalizePairCodes } from '../../lib/pair-code.js';
@@ -18,8 +9,7 @@ import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
 export default async function getOrdersInfo(args: { pair: string; order_ids: number[] }) {
-	// 入力スキーマで弾けるケース（order_ids の上限 100 件など）を validation_error として返す。
-	// MCP 経由では SDK が自動検証するが、ツールを直接呼び出す経路でも単一ソースの Zod 制約を効かせる。
+	// MCP 経由では SDK が入力を検証するが、ツールを直接呼び出す経路でも単一ソースの Zod 制約を効かせる。
 	const parsed = GetOrdersInfoInputSchema.safeParse(args);
 	if (!parsed.success) {
 		return GetOrdersInfoOutputSchema.parse(
@@ -36,8 +26,7 @@ export default async function getOrdersInfo(args: { pair: string; order_ids: num
 		});
 
 		const timestamp = nowIso();
-		// 取得境界での pair 正規化（`lib/pair-code.ts`）。`data.orders[].pair` は小文字契約で返す。
-		// 表示・JPY 判定は引数の `pair`（ユーザー入力）を使うので、ここは出力契約のためだけ。
+		// `data.orders[].pair` は小文字契約で返す（表示・JPY 判定は引数の `pair` を使うので、この正規化は出力契約のためだけ）。
 		const orders = normalizePairCodes(rawData.orders);
 		const isJpy = isJpyQuotedPair(pair);
 
@@ -77,7 +66,6 @@ export default async function getOrdersInfo(args: { pair: string; order_ids: num
 			),
 		);
 	} catch (err) {
-		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
 		return GetOrdersInfoOutputSchema.parse(failPrivateToolError(err, '注文情報取得中に予期しないエラーが発生しました'));
 	}
 }

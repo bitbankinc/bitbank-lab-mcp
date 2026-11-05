@@ -1,17 +1,8 @@
-/**
- * analyze_my_portfolio — ポートフォリオ分析ツール（Phase 3 + Phase 4 拡張）。
- *
- * 保有資産・約定履歴・入出金履歴・テクニカル分析を統合し、
- * 損益状況とポートフォリオ全体の評価を LLM に提供する。
- * 入出金データがあれば口座全体のリターンを概算する。
- */
-
 import { toStructured } from '../../lib/result.js';
 import analyzeMyPortfolioHandler from '../../src/handlers/analyzeMyPortfolioHandler.js';
 import { AnalyzeMyPortfolioInputSchema } from '../../src/private/schemas.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'analyze_my_portfolio',
 	description:

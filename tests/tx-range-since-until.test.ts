@@ -1,17 +1,4 @@
-/**
- * since / until による絶対時刻区間指定（get_flow_metrics / analyze_volume_profile）
- *
- * 背景（実測 2026-08-02）: 過去の特定区間を全件取る手段が無かった。
- *   - hours（最大24）は**現在時刻起点**。過去の任意区間を指定できない。
- *   - date（UTC 暦日）は limit 上限 2000 で切り捨てられる。BTC/JPY の 1 UTC 日は
- *     5,600〜8,000 件あるため 1 日の 1/3 程度しか取れない
- *     （`get_flow_metrics(date=20260801, limit=2000)` が UTC 8/1 の 4,781 件のうち
- *     末尾 2,000 件＝8.3 時間分のみを返した）。
- *
- * ここでは getTransactions をモックせず **上流 fetch だけ** をモックし、実際の limit 適用
- * ロジックを通したうえで区間の全件が集計されることを固定する（tx-aggregation-cap.test.ts
- * と同じパターン）。
- */
+// getTransactions をモックせず上流 fetch だけをモックし、実際の limit 適用ロジックを通したうえで区間の全件が集計されることを固定する。
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import analyzeVolumeProfile from '../tools/analyze_volume_profile.js';
 import getFlowMetrics, { toolDef } from '../tools/get_flow_metrics.js';
@@ -56,7 +43,6 @@ function payload(txs: RawTx[]) {
 	return { success: 1, data: { transactions: txs } };
 }
 
-/** 上流 fetch のモック。呼ばれた URL を記録して呼び出し回数の固定に使う */
 function mockUpstream() {
 	const urls: string[] = [];
 	vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
@@ -114,7 +100,6 @@ describe('since/until: 過去の完了済み UTC 日を全件集計する', () =
 		expect(range?.coveragePct).toBeGreaterThanOrEqual(95);
 		expect(range?.gapMinutes).toBe(0);
 		expect(range?.segments).toBe(1);
-		// 取得層・計算層とも警告なし
 		expect(res.meta.warning).toBeUndefined();
 		expect(res.meta.warnings).toBeUndefined();
 	});
@@ -240,7 +225,6 @@ describe('since/until: 過去の完了済み UTC 日を全件集計する', () =
 		expect(res.meta.range).toEqual({ since: '2026-08-01T00:00:00.000Z', until: '2026-08-02T00:00:00.000Z' });
 		expect(res.meta.warning).toBeUndefined();
 		expect(res.meta.warnings).toBeUndefined();
-		// 過去区間のみなので latest は叩かない
 		expect(urls).toHaveLength(1);
 		expect(urls[0]).toMatch(/\/transactions\/20260801$/);
 	});
@@ -269,10 +253,8 @@ describe('since/until: 進行中 UTC 日にかかる区間', () => {
 		const range = res.meta.actualRange;
 		expect(range?.requestedMinutes).toBe(720);
 		expect(range?.coveragePct).toBeLessThan(5);
-		// 取得層: 進行中 UTC 日の制約 + カバー率の定量表示
 		expect(res.meta.warning).toContain('進行中の UTC 日 (20260802)');
 		expect(res.meta.warning).toContain('カバレッジ: 要求 720分');
-		// 計算層: 集計値が窓全体を代表しないこと
 		expect(res.meta.warnings?.[0]).toContain('要求した時間窓（720分）全体を代表する値ではありません');
 	});
 

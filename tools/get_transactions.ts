@@ -40,7 +40,6 @@ type NormalizedTxn = {
 	isoTime: string;
 };
 
-/** 約定フィルタ（limit 適用前に効く）。toolDef.handler と内部呼び出しの双方から使用。 */
 export type GetTransactionsFilters = {
 	minAmount?: number;
 	maxAmount?: number;
@@ -50,23 +49,10 @@ export type GetTransactionsFilters = {
 
 /** 内部呼び出し用オプション。MCP public ツールの handler からは指定しない。 */
 export type GetTransactionsOptions = {
-	/**
-	 * 応答件数上限（`limit`）を適用せず、取得・正規化した全件を返す。指定時 `limit` は無視される。
-	 *
-	 * 内部集計ツール（`get_flow_metrics` / `analyze_volume_profile`）専用の経路。
-	 * - これらの出力はバケット集計・プロファイル集計なので、全件を渡しても**トークンは増えない**。
-	 * - 逆に 1000 件キャップを掛けると 1 UTC 日（BTC/JPY で実測 5,609〜8,040 件）の
-	 *   末尾 4〜5 時間分しか集計に入らず、CVD / VWAP / Volume Profile が切り捨て後サンプル
-	 *   由来の値になる（しかもその事実が出力に現れない）。
-	 * - 本関数は元々レスポンス全件をパースしており、`limit` は最後の `slice` でしか効いていない。
-	 *   キャップは応答サイズ制限であってフェッチ制限ではないため、解除しても通信量は変わらない。
-	 *
-	 * MCP public ツールとしての応答上限（1000 件）は変更しない。
-	 */
+	/** 内部集計ツール専用。応答上限は MCP 応答のサイズ制限であってフェッチ制限ではなく、全件を渡しても集計出力のトークンは増えない。public の上限（1000 件）は変えない。 */
 	unlimited?: boolean;
 };
 
-/** meta.actualRange / meta.fetchedRange 用の時刻範囲（Asia/Tokyo 表記、失敗時は UTC ISO へフォールバック） */
 function toRange(startMs: number, endMs: number): { start: string; end: string } {
 	return {
 		start: toIsoWithTz(startMs, 'Asia/Tokyo') ?? toIsoMs(startMs) ?? '',
@@ -74,9 +60,6 @@ function toRange(startMs: number, endMs: number): { start: string; end: string }
 	};
 }
 
-/**
- * 取引サマリを生成
- */
 function formatTransactionsSummary(pair: string, transactions: NormalizedTxn[], buys: number, sells: number): string {
 	const pairDisplay = formatPair(pair);
 	const baseCurrency = pair.split('_')[0]?.toUpperCase() ?? '';
@@ -94,7 +77,6 @@ function formatTransactionsSummary(pair: string, transactions: NormalizedTxn[], 
 		const latestTxn = transactions[transactions.length - 1];
 		lines.push(`最新約定: ${fmtPx(latestTxn.price)}`);
 
-		// 買い/売り比率
 		const total = buys + sells;
 		const buyRatio = total > 0 ? Math.round((buys / total) * 100) : 0;
 		const sellRatio = 100 - buyRatio;
@@ -102,12 +84,10 @@ function formatTransactionsSummary(pair: string, transactions: NormalizedTxn[], 
 		const dominantRatio = buyRatio >= 60 ? buyRatio : buyRatio <= 40 ? sellRatio : buyRatio;
 		lines.push(`買い: ${buys}件 / 売り: ${sells}件（${dominant} ${dominantRatio}%）`);
 
-		// 出来高合計
 		const totalVolume = transactions.reduce((sum, t) => sum + t.amount, 0);
 		const volStr = totalVolume >= 1 ? totalVolume.toFixed(4) : totalVolume.toFixed(6);
 		lines.push(`出来高: ${volStr} ${baseCurrency}`);
 
-		// 期間
 		const oldest = transactions[0];
 		const newest = transactions[transactions.length - 1];
 		lines.push(`期間: ${formatTime(oldest.timestampMs)}〜${formatTime(newest.timestampMs)}`);
@@ -116,7 +96,6 @@ function formatTransactionsSummary(pair: string, transactions: NormalizedTxn[], 
 	return lines.join('\n');
 }
 
-/** 約定行を LLM 可視テキスト（content）用に整形する。default view / filter view で共用。 */
 function buildTxLines(transactions: NormalizedTxn[]): string[] {
 	return transactions.map((t, i) => {
 		const time = dayjs(t.timestampMs).tz('Asia/Tokyo').format('HH:mm:ss');
@@ -125,7 +104,6 @@ function buildTxLines(transactions: NormalizedTxn[]): string[] {
 	});
 }
 
-/** get_transactions が返すデータの「含む/含まない」と補完ツールの定型フッター。 */
 const TX_SCOPE_FOOTER =
 	`\n\n---\n📌 含まれるもの: 個別約定（時刻・売買方向・価格・数量）、買い/売り件数比率` +
 	`\n📌 含まれないもの: 集計済みフロー指標（CVD・Zスコア・スパイク）、OHLCV、板情報` +
@@ -159,9 +137,7 @@ export default async function getTransactions(
 		const { data: json, rateLimit } = await fetchJsonWithRateLimit(url, { timeoutMs: 4000, retries: DEFAULT_RETRIES });
 		const jsonObj = json as { success?: number; data?: { transactions?: TxnRaw[]; code?: number } };
 
-		// 上流レスポンスの success フラグを明示的に検証する。
-		// 公式 API は { success: 0|1, data: ... } 形式で、エラー時は success:0 を返す。
-		// optional chaining のフォールバックに任せると空配列として握りつぶされ ok を返してしまう。
+		// optional chaining のフォールバックに任せると success:0 が空配列として握りつぶされ ok を返すので、明示的に検証する。
 		if (jsonObj?.success !== 1) {
 			const code = jsonObj?.data?.code;
 			const codeStr = code != null ? `（code: ${code}）` : '';
@@ -204,9 +180,7 @@ export default async function getTransactions(
 		const fetchedRange =
 			totalFetched > 0 ? toRange(sorted[0].timestampMs, sorted[totalFetched - 1].timestampMs) : undefined;
 
-		// フィルタは limit の前に適用する。逆順（limit 後にフィルタ）だと「最新側 limit 件の中の
-		// 合致分」しか返らず、条件を絞るほどカバー期間が縮む（date 指定時は全日約 8,000 件の
-		// 末尾 limit 件しか対象にならない）。
+		// フィルタは limit の前に適用する（後だと最新側 limit 件の中の合致分しか返らず、条件を絞るほどカバー期間が縮む）。
 		const f = filters ?? {};
 		const hasFilter = f.minAmount != null || f.maxAmount != null || f.minPrice != null || f.maxPrice != null;
 		const matchedItems = hasFilter
@@ -230,8 +204,7 @@ export default async function getTransactions(
 					}
 				: undefined;
 
-		// 切り捨ての明示: 黙って切り捨てると「該当期間に約定がなかった」と「limit で切れた」が
-		// 応答上区別できず、カバレッジ誤認（欠損区間の見落とし）の原因になる。
+		// 黙って切ると「約定がなかった」と「limit で切れた」が区別できないので明示する。
 		const truncationWarning = truncated
 			? `⚠️ ${hasFilter ? '条件に合致する' : '取得した'}${matched}件のうち最新側${returned}件のみを返却しています` +
 				`（返却範囲: ${toDisplayTime(latest[0].timestampMs) ?? '?'}〜${toDisplayTime(latest[returned - 1].timestampMs) ?? '?'}` +
@@ -245,11 +218,7 @@ export default async function getTransactions(
 		const buys = latest.filter((t) => t.side === 'buy').length;
 		const sells = latest.length - buys;
 		const baseSummary = formatTransactionsSummary(chk.pair, latest, buys, sells);
-		// テキスト summary に全取引データを含める（LLM が structuredContent.data を読めない対策）。
-		// warning は約定行の列挙より前に出す（.claude/rules/tools.md）。
-		// ただし unlimited（内部集計呼び出し）は content として LLM に渡らないため、
-		// 数千件の約定行を組み立てない（文字列生成コストだけが増える）。失敗診断に使う
-		// warning は残す。
+		// unlimited（内部集計）は content として LLM に渡らないので約定行を組み立てない（warning は残す）。
 		const summary = unlimited
 			? baseSummary + (warningText ? `\n\n${warningText}` : '')
 			: baseSummary +
@@ -279,8 +248,7 @@ export default async function getTransactions(
 			),
 		);
 	} catch (e: unknown) {
-		// 失敗時は叩いた URL をエラーメッセージに含め、呼び出し側で原因を特定しやすくする。
-		// ただし AbortError は failFromError 側の timeout 判定で必要なのでそのまま渡す。
+		// AbortError は failFromError の timeout 判定に要るのでそのまま渡す。
 		if (e instanceof Error && e.name === 'AbortError') {
 			return failFromError(e, {
 				schema: GetTransactionsOutputSchema,
@@ -290,10 +258,7 @@ export default async function getTransactions(
 			});
 		}
 		const baseMsg = e instanceof Error && e.message ? e.message : typeof e === 'string' ? e : 'ネットワークエラー';
-		// 進行中・未来の UTC 日のアーカイブ 404 は bitbank 側の仕様（UTC 暦日完了後に公開）。
-		// 「なぜ 404 か」を呼び出し側で診断できるようヒントを付与する。
-		// URL 生成（上記）と同じ形式判定に揃える: YYYYMMDD 形式でない date は latest エンドポイントに
-		// フォールバックしており、その 404 にアーカイブ未公開ヒントを付けると誤誘導になる。
+		// YYYYMMDD でない date は latest にフォールバックしているので、その 404 にアーカイブ未公開のヒントを付けない（URL 生成と同じ形式判定に揃える）。
 		const isDateArchiveRequest = date != null && /^\d{8}$/.test(String(date));
 		const archiveHint =
 			isDateArchiveRequest && /404/.test(baseMsg) && !isArchiveExpectedPublished(String(date))
@@ -309,7 +274,6 @@ export default async function getTransactions(
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'get_transactions',
 	description:
@@ -335,9 +299,7 @@ export const toolDef: ToolDefinition = {
 		maxAmount?: number;
 		minPrice?: number;
 		maxPrice?: number;
-		// リテラルを手書きせず Zod スキーマから導出する。手書きにすると PR 5 で enum から
-		// alias（`summary` / `items`）を消しても型が変わらず、下の alias 分岐が黙って生き残る
-		// （§7-3 の PR 5 作業表）。
+		// 手書きのリテラルにすると enum から alias を消しても型が変わらず、下の alias 分岐が黙って生き残る（tools.md §7）。
 		view?: z.infer<typeof GetTransactionsInputSchema>['view'];
 		format?: z.infer<typeof GetTransactionsInputSchema>['format'];
 	}) => {
@@ -357,18 +319,13 @@ export const toolDef: ToolDefinition = {
 		const fBuys = items.filter((t: TxItem) => t.side === 'buy').length;
 		const fSells = items.length - fBuys;
 		const warningBlock = res.meta?.warning ? `\n\n${res.meta.warning}` : '';
-		// フィルタ時も個別約定行を summary に含める。content[0].text しか LLM に見えないため、
-		// 件数だけだとどの約定がヒットしたか不可視になる（非フィルタ経路と同じ並びで出す）。
+		// フィルタ時も個別約定行を含める（件数だけだとどの約定がヒットしたか LLM から見えない）。
 		const filteredBody =
 			items.length > 0 ? `\n\n📋 フィルタ後 ${items.length}件の取引:\n${buildTxLines(items).join('\n')}` : '';
 		const summary = hasFilter
 			? `${formatPair(pair ?? 'btc_jpy')} フィルタ後 ${items.length}件 (buy=${fBuys} sell=${fSells})${warningBlock}${filteredBody}${TX_SCOPE_FOOTER}`
 			: res.summary;
-		// deprecated alias を新語彙へ正規化する（§4-4）。正規化はここ 1 箇所だけ。
-		//  - `summary` → `full`: 旧既定値だが実体は全件列挙で、`full` と挙動は完全に同じ。
-		//    名前だけを階梯（summary < detailed < full）に合わせた。集計のみの軽量 summary は
-		//    「同じ語の意味を差し替えない」ため alias 削除後にのみ再導入する（§4-2）。
-		//  - `items` → `full` + `format=json`: 量ではなく形式の指定なので別パラメータへ切り出した。
+		// alias の正規化はここ 1 箇所だけ。軽量な summary は同じ語の意味を差し替えないよう alias 削除後にだけ再導入する。
 		const effectiveFormat: 'text' | 'json' = view === 'items' ? 'json' : (format ?? 'text');
 		if (effectiveFormat === 'json') {
 			const text = JSON.stringify(items, null, 2);

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
+import { requireDefined } from './helpers/assert.js';
 
 vi.mock('../tools/get_candles.js', () => ({
 	default: vi.fn(),
@@ -26,7 +27,6 @@ function mc(daysAgo: number, o: number, h: number, l: number, c: number, v = 100
 	return { isoTime: daysAgoIso(daysAgo), open: o, high: h, low: l, close: c, volume: v };
 }
 
-/** 固定日付のローソク足（as_of テスト用） */
 function mcFixed(dayOffset: number, o: number, h: number, l: number, c: number, v = 100): Candle {
 	return {
 		isoTime: dayjs.utc('2026-01-01').add(dayOffset, 'day').toISOString(),
@@ -42,7 +42,6 @@ function candlesOk(normalized: Candle[]) {
 	return { ok: true, summary: 'ok', data: { normalized }, meta: { count: normalized.length } };
 }
 
-/** meta に warning を持つ get_candles 結果（partial fetch 等） */
 function candlesOkWithWarning(normalized: Candle[], warning: string) {
 	return {
 		ok: true,
@@ -52,7 +51,6 @@ function candlesOkWithWarning(normalized: Candle[], warning: string) {
 	};
 }
 
-/** ベースライン陽線を n 本生成 */
 function bullishCandles(n: number, base = 100, step = 3): Candle[] {
 	return Array.from({ length: n }, (_, i) => {
 		const o = base + step * i;
@@ -60,7 +58,6 @@ function bullishCandles(n: number, base = 100, step = 3): Candle[] {
 	});
 }
 
-/** ベースライン陰線を n 本生成 */
 function bearishCandles(n: number, base = 130, step = 3): Candle[] {
 	return Array.from({ length: n }, (_, i) => {
 		const o = base - step * i;
@@ -72,8 +69,6 @@ describe('analyze_candle_patterns', () => {
 	const mockedGetCandles = vi.mocked(getCandles);
 
 	afterEach(() => vi.clearAllMocks());
-
-	// ── バリデーション・エラー系 ─────────────────────────
 
 	it('inputSchema: focus_last_n < 2 を拒否', () => {
 		expect(() => toolDef.inputSchema.parse({ focus_last_n: 1 })).toThrow();
@@ -94,12 +89,8 @@ describe('analyze_candle_patterns', () => {
 		expect(res.summary).toContain('不足');
 	});
 
-	// ── 1本足パターン ───────────────────────────────────
-
 	it('ハンマー: 長い下ヒゲ・小さい実体を検出', async () => {
-		// bodyRatio=[0.05,0.35], lower>=body*2, upper/range<=0.25, lower/range>=0.6
-		// O=80, H=100, L=0, C=85 → body=5, range=100, lower=80, upper=15
-		// bodyRatio=0.05, lower/range=0.8, strength=0.67
+		// bodyRatio=[0.05,0.35], lower>=body*2, upper/range<=0.25, lower/range>=0.6 に対し、O=80, H=100, L=0, C=85 → body=5, range=100, lower=80, upper=15（bodyRatio=0.05, lower/range=0.8, strength=0.67）
 		const candles = [...bullishCandles(3), mc(0, 80, 100, 0, 85)];
 
 		mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
@@ -116,8 +107,7 @@ describe('analyze_candle_patterns', () => {
 	});
 
 	it('シューティングスター: 長い上ヒゲ・小さい実体を検出', async () => {
-		// bodyRatio=[0.05,0.35], upper>=body*2, lower/range<=0.25, upper/range>=0.6
-		// O=20, H=100, L=0, C=15 → body=5, range=100, upper=80, lower=15
+		// bodyRatio=[0.05,0.35], upper>=body*2, lower/range<=0.25, upper/range>=0.6 に対し、O=20, H=100, L=0, C=15 → body=5, range=100, upper=80, lower=15
 		const candles = [...bullishCandles(3), mc(0, 20, 100, 0, 15)];
 
 		mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
@@ -188,12 +178,9 @@ describe('analyze_candle_patterns', () => {
 		});
 		assertOk(res);
 		const dojis = res.data.recent_patterns.filter((p: { pattern: string }) => p.pattern === 'doji');
-		if (dojis.length > 0) {
-			expect(dojis[0].direction).toBe('bullish');
-		}
+		expect(dojis.length).toBeGreaterThan(0);
+		expect(dojis[0].direction).toBe('bullish');
 	});
-
-	// ── 2本足パターン ───────────────────────────────────
 
 	it('陽線包み線 (bullish_engulfing) を検出', async () => {
 		const candles = [
@@ -311,8 +298,7 @@ describe('analyze_candle_patterns', () => {
 	});
 
 	it('かぶせ線 (dark_cloud_cover) の検出パスを通過', async () => {
-		// strength が構造的に 0.5 未満になるため強度フィルタで除外されるが、
-		// 検出ロジック自体はカバーされる
+		// strength が構造的に 0.5 未満になるため強度フィルタで除外されるが、検出ロジック自体はカバーされる
 		const candles = [
 			...bullishCandles(3),
 			mc(1, 100, 122, 98, 120), // 大陽線 body=20
@@ -347,8 +333,6 @@ describe('analyze_candle_patterns', () => {
 		assertOk(res);
 		// 検出されるが strength < 0.5 でフィルタされる
 	});
-
-	// ── 3本足パターン ───────────────────────────────────
 
 	it('明けの明星 (morning_star) を検出', async () => {
 		// 大陰線 → 小実体 → 大陽線
@@ -440,8 +424,6 @@ describe('analyze_candle_patterns', () => {
 		expect(found.length).toBeGreaterThanOrEqual(1);
 	});
 
-	// ── コンテキスト判定 ─────────────────────────────────
-
 	it('ボラティリティレベルを判定', async () => {
 		// 高ボラティリティ: range/price > 3%
 		const candles = [
@@ -460,12 +442,9 @@ describe('analyze_candle_patterns', () => {
 			history_lookback_days: 30,
 		});
 		assertOk(res);
-		if (res.data.recent_patterns.length > 0) {
-			expect(res.data.recent_patterns[0].local_context.volatility_level).toBeDefined();
-		}
+		expect(res.data.recent_patterns.length).toBeGreaterThan(0);
+		expect(res.data.recent_patterns[0].local_context.volatility_level).toBeDefined();
 	});
-
-	// ── 過去統計 ─────────────────────────────────────────
 
 	it('十分なサンプルがあれば history_stats を算出', async () => {
 		// 200本のデータでdojiが頻出するデータ
@@ -473,7 +452,6 @@ describe('analyze_candle_patterns', () => {
 		for (let i = 0; i < 200; i++) {
 			const base = 100 + Math.sin(i / 5) * 10;
 			if (i % 5 === 0) {
-				// doji: body/range < 5%
 				candles.push(mc(200 - i, base, base + 5, base - 5, base + 0.1));
 			} else {
 				candles.push(mc(200 - i, base, base + 6, base - 4, base + 3));
@@ -490,16 +468,15 @@ describe('analyze_candle_patterns', () => {
 		});
 		assertOk(res);
 		const dojis = res.data.recent_patterns.filter((p: { pattern: string }) => p.pattern === 'doji');
-		if (dojis.length > 0 && dojis[0].history_stats) {
-			expect(dojis[0].history_stats.occurrences).toBeGreaterThanOrEqual(5);
-			expect(dojis[0].history_stats.horizons).toBeDefined();
-		}
+		expect(dojis.length).toBeGreaterThan(0);
+		const stats = requireDefined(dojis[0].history_stats, 'dojis[0].history_stats');
+		expect(stats.occurrences).toBeGreaterThanOrEqual(5);
+		expect(stats.horizons).toBeDefined();
 	});
 
 	it('サンプル不足なら history_stats は null', async () => {
 		// 短期間データ → 過去パターン5回未満
 		const candles = Array.from({ length: 10 }, (_, i) => mc(10 - i, 100, 106, 94, 103));
-		// 最後に doji
 		candles[candles.length - 1] = mc(0, 100, 110, 90, 100.1);
 
 		mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
@@ -511,9 +488,8 @@ describe('analyze_candle_patterns', () => {
 		});
 		assertOk(res);
 		const dojis = res.data.recent_patterns.filter((p: { pattern: string }) => p.pattern === 'doji');
-		if (dojis.length > 0) {
-			expect(dojis[0].history_stats).toBeNull();
-		}
+		expect(dojis.length).toBeGreaterThan(0);
+		expect(dojis[0].history_stats).toBeNull();
 	});
 
 	it('as_of 指定時の history_stats は未来データを含めない', async () => {
@@ -538,7 +514,14 @@ describe('analyze_candle_patterns', () => {
 		expect(res.data.window.to).toBe('2026-01-21');
 	});
 
-	// ── 強度フィルタ ─────────────────────────────────────
+	it('as_of は get_candles と同じ tz の暦日で読み、その日の足を含めて翌日の足を含めない', async () => {
+		const candles = Array.from({ length: 40 }, (_, i) => mcFixed(i, 100 + i, 106 + i, 96 + i, 103 + i));
+		mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
+		const res = await analyzeCandlePatterns({ as_of: '2026-01-21', window_days: 5, history_lookback_days: 30 });
+		assertOk(res);
+		expect(mockedGetCandles).toHaveBeenCalledWith('btc_jpy', '1day', '20260121', expect.any(Number), 'Asia/Tokyo');
+		expect(res.data.window.to).toBe('2026-01-21');
+	});
 
 	it('strength < 0.5 のパターンはフィルタされる', async () => {
 		// range=0 の場合検出されない（strength=0）
@@ -550,8 +533,6 @@ describe('analyze_candle_patterns', () => {
 			expect(p.strength).toBeGreaterThanOrEqual(0.5);
 		}
 	});
-
-	// ── 未確定ローソク足 ─────────────────────────────────
 
 	it('allow_partial_patterns=false で最新未確定足を使ったパターンをスキップ', async () => {
 		// 最新ローソク足が「今日」→ 未確定
@@ -577,43 +558,77 @@ describe('analyze_candle_patterns', () => {
 			history_lookback_days: 30,
 		});
 		assertOk(res);
-		// 未確定足のパターンはスキップされる
 		for (const p of res.data.recent_patterns) {
 			expect(p.uses_partial_candle).toBe(false);
 			expect(p.status).toBe('confirmed');
 		}
 	});
 
-	it('allow_partial_patterns=true で未確定足パターンも検出', async () => {
-		const candles = [
-			mc(2, 100, 106, 94, 103),
-			mc(1, 103, 108, 95, 105),
-			{
-				isoTime: dayjs().startOf('day').toISOString(),
-				open: 105,
-				high: 115,
-				low: 95,
-				close: 105.1,
+	it('サマータイムの切り替わる日も、開始から 24 時間で確定する', async () => {
+		// 2026-11-01 は America/New_York で夏時間が終わる日。暦日で 1 日足すと 25 時間後になる。
+		const originalTz = process.env.TZ;
+		process.env.TZ = 'America/New_York';
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2026-11-02T00:30:00Z'));
+		try {
+			const candles = Array.from({ length: 3 }, (_, i) => ({
+				isoTime: dayjs.utc('2026-10-30').add(i, 'day').toISOString(),
+				open: 100 + i,
+				high: 110 + i,
+				low: 90 + i,
+				close: 100.1 + i,
 				volume: 100,
-			}, // doji（今日=未確定）
-		];
-
-		mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
-		const res = await analyzeCandlePatterns({
-			window_days: 3,
-			focus_last_n: 3,
-			patterns: ['doji'],
-			allow_partial_patterns: true,
-			history_lookback_days: 30,
-		});
-		assertOk(res);
-		const partials = res.data.recent_patterns.filter((p: { uses_partial_candle: boolean }) => p.uses_partial_candle);
-		if (partials.length > 0) {
-			expect(partials[0].status).toBe('forming');
+			}));
+			mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
+			const res = await analyzeCandlePatterns({
+				window_days: 3,
+				focus_last_n: 3,
+				patterns: ['doji'],
+				allow_partial_patterns: true,
+				history_lookback_days: 30,
+			});
+			assertOk(res);
+			expect(res.data.window.candles.at(-1)?.is_partial).toBe(false);
+		} finally {
+			vi.useRealTimers();
+			if (originalTz === undefined) delete process.env.TZ;
+			else process.env.TZ = originalTz;
 		}
 	});
 
-	// ── 日付正規化 ───────────────────────────────────────
+	// 最後の足（doji）は 2026-01-21T00:00Z 始まり。JST 0〜9 時（UTC 15〜24 時）も進行中として扱う。
+	it.each([
+		['UTC の日中（JST 21 時）', '2026-01-21T12:00:00Z', true],
+		['JST の日付が先に変わった時間帯（JST 01 時）', '2026-01-21T16:00:00Z', true],
+		['足が閉じた後', '2026-01-22T01:00:00Z', false],
+	])('最後の足は開始から 1 日たつまで未確定: %s', async (_label, now, partial) => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date(now));
+		try {
+			const candles = [
+				mcFixed(18, 100, 106, 94, 103),
+				mcFixed(19, 103, 108, 95, 105),
+				mcFixed(20, 105, 115, 95, 105.1), // doji
+			];
+			mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
+			const res = await analyzeCandlePatterns({
+				window_days: 3,
+				focus_last_n: 3,
+				patterns: ['doji'],
+				allow_partial_patterns: true,
+				history_lookback_days: 30,
+			});
+			assertOk(res);
+			const doji = requireDefined(
+				res.data.recent_patterns.find((p: { pattern: string }) => p.pattern === 'doji'),
+				'doji',
+			);
+			expect(doji.uses_partial_candle).toBe(partial);
+			expect(doji.status).toBe(partial ? 'forming' : 'confirmed');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 
 	it('as_of に ISO 形式を指定可能', async () => {
 		const candles = Array.from({ length: 10 }, (_, i) => mcFixed(i, 100, 106, 94, 103));
@@ -630,8 +645,6 @@ describe('analyze_candle_patterns', () => {
 		assertOk(res);
 		expect(res.meta?.date).toBe('20260105');
 	});
-
-	// ── パターン指定フィルタ ──────────────────────────────
 
 	it('patterns 指定で対象パターンを絞り込める', async () => {
 		const candles = [
@@ -651,8 +664,6 @@ describe('analyze_candle_patterns', () => {
 		}
 	});
 
-	// ── content / summary 生成 ───────────────────────────
-
 	it('検出ありの場合 content にパターン名を含む', async () => {
 		const candles = [
 			...bullishCandles(3),
@@ -667,9 +678,8 @@ describe('analyze_candle_patterns', () => {
 		});
 		assertOk(res);
 		const text = res.content?.map((c: { text: string }) => c.text).join('') ?? '';
-		if (res.data.recent_patterns.length > 0) {
-			expect(text).toContain('十字線');
-		}
+		expect(res.data.recent_patterns.length).toBeGreaterThan(0);
+		expect(text).toContain('十字線');
 	});
 
 	it('検出なしの場合も content を返す', async () => {
@@ -685,8 +695,6 @@ describe('analyze_candle_patterns', () => {
 		expect(res.content).toBeDefined();
 	});
 
-	// ── data 構造 ────────────────────────────────────────
-
 	it('data に pair / timeframe / window / recent_patterns を含む', async () => {
 		const candles = Array.from({ length: 5 }, (_, i) => mc(5 - i, 100, 106, 94, 103));
 		mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
@@ -700,8 +708,6 @@ describe('analyze_candle_patterns', () => {
 		expect(res.data.recent_patterns).toBeDefined();
 	});
 
-	// ── toolDef ──────────────────────────────────────────
-
 	it('toolDef.handler が analyzeCandlePatterns に委譲', async () => {
 		const candles = Array.from({ length: 5 }, (_, i) => mc(5 - i, 100, 106, 94, 103));
 		mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
@@ -709,8 +715,6 @@ describe('analyze_candle_patterns', () => {
 		expect(res).toBeDefined();
 		expect((res as { ok: boolean }).ok).toBe(true);
 	});
-
-	// ── 上流 warning の伝播（get_candles の取得層 meta.warning） ──────────
 
 	describe('上流 warning の伝播', () => {
 		it('get_candles の meta.warning が tool の meta.warning と summary 先頭に伝播する', async () => {
@@ -729,9 +733,7 @@ describe('analyze_candle_patterns', () => {
 				history_lookback_days: 30,
 			});
 			assertOk(res);
-			// meta に warning が伝播
 			expect(res.meta?.warning).toBe('⚠️ partial fetch (3日中1日の取得に失敗)');
-			// summary 先頭が warning 行
 			expect(res.summary.startsWith('⚠️ partial fetch')).toBe(true);
 		});
 
@@ -753,9 +755,7 @@ describe('analyze_candle_patterns', () => {
 			assertOk(res);
 			expect(res.content).toBeDefined();
 			const firstText = res.content?.[0]?.text ?? '';
-			// content 先頭が warning 行
 			expect(firstText.startsWith('⚠️ partial fetch')).toBe(true);
-			// warning は本文ヘッダーより前に出る
 			const idxWarning = firstText.indexOf('⚠️');
 			const idxHeader = firstText.indexOf('【ローソク足パターン分析結果】');
 			expect(idxWarning).toBeGreaterThanOrEqual(0);

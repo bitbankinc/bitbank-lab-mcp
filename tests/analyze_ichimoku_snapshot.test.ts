@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
+import { ICHIMOKU_SHIFT } from '../lib/indicator-config.js';
 import type { Candle } from '../src/schemas.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
+import { requireDefined } from './helpers/assert.js';
 
 vi.mock('../tools/analyze_indicators.js', () => ({
 	default: vi.fn(),
@@ -11,8 +13,7 @@ import analyzeIchimokuSnapshot, { toolDef } from '../tools/analyze_ichimoku_snap
 import analyzeIndicators from '../tools/analyze_indicators.js';
 
 function buildMockIndicatorSuccess() {
-	// 型は CandleSchema 由来にする。provisional 判定は normalized.at(-1).timestamp を読むため、
-	// リテラル推論のままだと最新足に timestamp を後付けするテストが型エラーになる。
+	// 型は CandleSchema 由来にする。provisional 判定は normalized.at(-1).timestamp を読むので、リテラル推論のままだと最新足に timestamp を後付けするテストが型エラーになる。
 	const normalized: Pick<Candle, 'close' | 'timestamp'>[] = Array.from({ length: 40 }, (_, i) => ({
 		close: i === 39 ? 80 : 120 - i,
 	}));
@@ -97,7 +98,7 @@ describe('analyze_ichimoku_snapshot', () => {
 		expect(res.data.assessment.pricePosition).toBe('below_cloud');
 		expect(res.data.assessment.tenkanKijun).toBe('bearish');
 		expect(res.data.assessment.cloudSlope).toBe('falling');
-		expect(res.data.signals!.overallSignal).toBe('strong_bearish');
+		expect(requireDefined(res.data.signals, 'res.data.signals').overallSignal).toBe('strong_bearish');
 	});
 
 	it('遅行スパンは spanB の有無に依存せず ichi_series.chikou から取得されるべき', async () => {
@@ -122,9 +123,9 @@ describe('analyze_ichimoku_snapshot', () => {
 
 		const res = await analyzeIchimokuSnapshot('btc_jpy', '1day', 120, 2);
 		assertOk(res);
-		expect(res.data.trend!.cloudHistory).toHaveLength(2);
-		expect(res.data.trend!.cloudHistory[0].barsAgo).toBe(0);
-		expect(res.data.trend!.cloudHistory[1].barsAgo).toBe(1);
+		expect(requireDefined(res.data.trend, 'res.data.trend').cloudHistory).toHaveLength(2);
+		expect(requireDefined(res.data.trend, 'res.data.trend').cloudHistory[0].barsAgo).toBe(0);
+		expect(requireDefined(res.data.trend, 'res.data.trend').cloudHistory[1].barsAgo).toBe(1);
 	});
 
 	it('強気条件（雲上 + 転換線>基準線 + 雲上昇）では overallSignal は strong_bullish', async () => {
@@ -149,7 +150,7 @@ describe('analyze_ichimoku_snapshot', () => {
 		assertOk(res);
 		expect(res.data.assessment.pricePosition).toBe('above_cloud');
 		expect(res.data.assessment.tenkanKijun).toBe('bullish');
-		expect(res.data.signals!.overallSignal).toContain('bullish');
+		expect(requireDefined(res.data.signals, 'res.data.signals').overallSignal).toContain('bullish');
 	});
 
 	it('雲の中（in_cloud）の判定', async () => {
@@ -196,10 +197,7 @@ describe('analyze_ichimoku_snapshot', () => {
 	});
 
 	it('toolDef.handler: content を組まず Result を素通しし、summary が LLM 可視テキストになる', async () => {
-		// このツールの handler は analyzeIchimokuSnapshot の Result をそのまま返す
-		// （analyze_bb_snapshot / analyze_sma_snapshot と同じ passthrough）。
-		// content[0].text は src/server.ts の respond() が summary から生成するので、
-		// LLM が受け取る情報量は summary そのもの。ここでは summary 側を検証する。
+		// handler は analyzeIchimokuSnapshot の Result をそのまま返し、content[0].text は respond() が summary から生成するので、summary 側を検証する。
 		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(buildMockIndicatorSuccess()));
 		const res = await toolDef.handler({
 			pair: 'btc_jpy',
@@ -210,15 +208,52 @@ describe('analyze_ichimoku_snapshot', () => {
 
 		expect(res).not.toHaveProperty('content');
 		assertOk(res);
-		// summary は 1 行のラベルではなく、数値データを含む本文であること
-		// （.claude/rules/tools.md: LLM は content[0].text しか読めない）。
+		// summary は 1 行のラベルではなく、数値データを含む本文であること（LLM は content[0].text しか読めない）。
 		expect(res.summary).toContain('一目均衡表分析');
-		// 見出しだけでなく、モックの入力値がそのまま数値として本文に出ていることまで見る
-		// （見出しだけの検証だと【数値データ】が空でも通ってしまう）。
+		// 見出しだけの検証だと【数値データ】が空でも通ってしまうので、モックの入力値がそのまま数値として本文に出ていることまで見る。
 		expect(res.summary).toContain('【数値データ】');
 		expect(res.summary).toContain('転換線: 90 / 基準線: 95');
 		expect(res.summary).toContain('雲(今日): spanA=100 spanB=110');
 		expect(res.summary.split('\n').length).toBeGreaterThan(1);
+	});
+
+	it('今日の雲（latest.spanA / spanB）は ichi_series の末尾から ICHIMOKU_SHIFT 本前の値', async () => {
+		const base = buildMockIndicatorSuccess();
+		const sSeries = base.data.indicators.ichi_series;
+		sSeries.spanA = Array.from({ length: 40 }, (_, i) => 1000 + i);
+		sSeries.spanB = Array.from({ length: 40 }, (_, i) => 500 + i);
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(base));
+
+		const res = await analyzeIchimokuSnapshot('btc_jpy', '1day', 120, 10);
+		assertOk(res);
+		expect(res.data.latest.spanA).toBe(1000 + 40 - ICHIMOKU_SHIFT);
+		expect(res.data.latest.spanB).toBe(500 + 40 - ICHIMOKU_SHIFT);
+	});
+
+	it('spanA と spanB の長さが違うときは、短い方の末尾から ICHIMOKU_SHIFT 本前を両方に使う', async () => {
+		const base = buildMockIndicatorSuccess();
+		const sSeries = base.data.indicators.ichi_series;
+		sSeries.spanA = Array.from({ length: 40 }, (_, i) => 1000 + i);
+		sSeries.spanB = Array.from({ length: 30 }, (_, i) => 500 + i);
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(base));
+
+		const res = await analyzeIchimokuSnapshot('btc_jpy', '1day', 120, 10);
+		assertOk(res);
+		expect(res.data.latest.spanA).toBe(1000 + 30 - ICHIMOKU_SHIFT);
+		expect(res.data.latest.spanB).toBe(500 + 30 - ICHIMOKU_SHIFT);
+	});
+
+	it('ichi_series が ICHIMOKU_SHIFT 本未満なら今日の雲は null', async () => {
+		const base = buildMockIndicatorSuccess();
+		const sSeries = base.data.indicators.ichi_series;
+		sSeries.spanA = Array.from({ length: ICHIMOKU_SHIFT - 1 }, (_, i) => 1000 + i);
+		sSeries.spanB = Array.from({ length: ICHIMOKU_SHIFT - 1 }, (_, i) => 500 + i);
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(base));
+
+		const res = await analyzeIchimokuSnapshot('btc_jpy', '1day', 120, 10);
+		assertOk(res);
+		expect(res.data.latest.spanA).toBeNull();
+		expect(res.data.latest.spanB).toBeNull();
 	});
 
 	it('雲データ不足時の cloud.direction は null（unknown を flat にしない）であるべき', async () => {
@@ -238,10 +273,8 @@ describe('analyze_ichimoku_snapshot', () => {
 		const res = await analyzeIchimokuSnapshot('btc_jpy', '1day', 120, 10);
 		assertOk(res);
 		expect(res.data.assessment.cloudSlope).toBe('unknown');
-		expect(res.data.cloud!.direction).toBeNull();
+		expect(requireDefined(res.data.cloud, 'res.data.cloud').direction).toBeNull();
 	});
-
-	// ── 上流 warning の伝播（取得層 meta.warning / 計算層 meta.warnings） ──────
 
 	it('上流 meta.warning（取得層）が tool の meta.warning と summary 先頭に伝播する', async () => {
 		const ind = buildMockIndicatorSuccess();
@@ -307,7 +340,6 @@ describe('analyze_ichimoku_snapshot', () => {
 		expect(res.summary.startsWith('⚠️')).toBe(false);
 	});
 
-	// === 形成中足（provisional）注記 ===
 	describe('形成中足（provisional）注記', () => {
 		// buildMockIndicatorSuccess() の最新足にのみ provisional 判定用 ts を載せる。
 		function buildIndicatorsWithLatestTs(latestTsMs: number) {

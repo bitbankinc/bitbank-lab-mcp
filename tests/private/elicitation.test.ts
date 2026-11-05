@@ -1,13 +1,3 @@
-/**
- * src/private/elicitation.ts のユニットテスト。
- *
- * 共通化された preview → ユーザー確認 → execute の MRTR フロー（capability 判定、
- * round 1 の input_required 生成、round 2 の requestState 検証と confirm 応答分岐、
- * `onConfirmed` の例外伝播）を独立して検証する。
- * 3 つの preview ツール（preview_order / preview_cancel_order / preview_cancel_orders）の
- * 動作確認は引き続き `tests/private/preview_*.test.ts` で行う。
- */
-
 import { isInputRequiredResult } from '@modelcontextprotocol/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ok } from '../../lib/result.js';
@@ -24,22 +14,17 @@ import { APP_RESOURCE_MIME_TYPE, MCP_APPS_UI_EXTENSION_ID } from '../../src/reso
 const ACTION = 'create_order';
 const BIND_ARGS = { pair: 'btc_jpy', amount: '0.01', side: 'buy', type: 'limit' } as Record<string, unknown>;
 
-/** elicitation 対応/非対応の 2025 系 fake サーバ */
 function makeServer(supportsElicitation = true) {
 	return {
 		getClientCapabilities: () => (supportsElicitation ? { elicitation: {} } : {}),
 	};
 }
 
-/** round 1 用 ctx（confirm 応答なし） */
 function round1Ctx(supportsElicitation = true): Record<string, unknown> {
 	return { server: makeServer(supportsElicitation) };
 }
 
-/**
- * round 2 用 ctx。requestState アクセサは verify フック通過後の decoded payload を返す想定。
- * state に null を渡すと「requestState なし」の再入を模す。
- */
+/** requestState アクセサは verify フック通過後の decoded payload を返す想定。state に null を渡すと requestState なしの再入になる。 */
 function round2Ctx(
 	confirmResponse: Record<string, unknown>,
 	state: Record<string, unknown> | null = {
@@ -59,10 +44,8 @@ function round2Ctx(
 
 const ACCEPT = { action: 'accept', content: { confirmed: true } };
 
-/** 恒久的な失敗（引数変更 / replay / 期限切れ）の案内文に必ず含まれる文言 */
 const INVALID_TEXT = '確認情報が無効なため実行しませんでした';
 
-/** 既定の fallback McpResponse */
 function makeFallback() {
 	return {
 		content: [{ type: 'text', text: 'FALLBACK_TEXT' }],
@@ -92,27 +75,18 @@ afterEach(() => {
 	vi.resetModules();
 });
 
-/**
- * 使用済み nonce の件数上限を差し替えた elicitation を読み直す。
- * 上限は request-state.ts の singleton 生成時に解決されるため、モジュールごと作り直す
- * （elicitation が import する request-state も同じリセット後の新インスタンスになる）。
- */
+/** nonce の件数上限は request-state.ts の singleton 生成時に解決されるので、モジュールごと読み直す。 */
 async function importWithMaxEntries(maxEntries: string) {
 	vi.resetModules();
 	vi.stubEnv('REPLAY_GUARD_MAX_ENTRIES', maxEntries);
 	return await import('../../src/private/elicitation.js');
 }
 
-/** nonce 以外は同一の round 2 state を作る（同じ action / 同じ引数の別確認） */
 function stateWithNonce(nonce: string): Record<string, unknown> {
 	return { action: ACTION, argsDigest: digestArgs(ACTION, BIND_ARGS), nonce };
 }
 
-/**
- * elicitation capability の宣言形 × form モード対応の判定表（#27）。
- * `declaresFormElicitation` の docstring の表と 1:1 で対応させる。
- * 取得元（initialize / envelope）によらず同じ判定になることを両側で回す。
- */
+/** elicitation capability の宣言形ごとの form モード判定表（#27）。取得元（initialize / envelope）の両側で回す。 */
 const FORM_MODE_CASES: Array<{ label: string; elicitation: unknown; expected: boolean }> = [
 	{ label: '欠落（undefined）', elicitation: undefined, expected: false },
 	{ label: 'null', elicitation: null, expected: false },
@@ -131,12 +105,10 @@ const FORM_MODE_CASES: Array<{ label: string; elicitation: unknown; expected: bo
 	{ label: 'elicitation が配列', elicitation: [], expected: false },
 ];
 
-/** initialize 時 capabilities で elicitation を宣言する ctx。 */
 function initCtx(elicitation: unknown): Record<string, unknown> {
 	return { server: { getClientCapabilities: () => ({ elicitation }) } };
 }
 
-/** per-request envelope で elicitation を宣言する ctx。 */
 function envelopeElicitCtx(elicitation: unknown): Record<string, unknown> {
 	return { mcpReq: { envelope: { clientCapabilities: { elicitation } } } };
 }
@@ -178,9 +150,7 @@ describe('clientSupportsElicitation', () => {
 		expect(clientSupportsElicitation(extra)).toBe(false);
 	});
 
-	// #27: 判定は「elicitation があるか」ではなく「form モードを扱えるか」。
-	// SEP-2322 の宣言形（{ form: {}, url: {} }）で url だけを宣言したホストに
-	// form リクエストを送ると処理できないため、非対応として扱う。
+	// #27: 判定は「elicitation があるか」ではなく「form モードを扱えるか」（url だけを宣言したホストに form リクエストを送っても処理できない）。
 	describe('form モードの宣言判定（#27）', () => {
 		for (const c of FORM_MODE_CASES) {
 			it(`initialize: ${c.label} → ${c.expected}`, () => {
@@ -259,7 +229,6 @@ describe('withElicitedConfirmation', () => {
 			const mrtr = result as unknown as { inputRequests: Record<string, unknown>; requestState?: string };
 			expect(mrtr.inputRequests).toHaveProperty('confirm');
 			expect(typeof mrtr.requestState).toBe('string');
-			// message には preview サマリ、スキーマには confirmTitle が載る
 			const json = JSON.stringify(result);
 			expect(json).toContain('preview summary');
 			expect(json).toContain('Confirm this action');
@@ -300,8 +269,7 @@ describe('withElicitedConfirmation', () => {
 			expect(data.preview).toEqual({ pair: 'btc_jpy' });
 		});
 
-		// #27: url モードだけを宣言したホストは form 形式の elicitation を処理できないため、
-		// 新しい分岐を作らず既存の fallback 経路（実行不可通知 / MCP Apps オプトイン時は `_meta`）へ倒す。
+		// #27: url モードだけのホストは新しい分岐を作らず、既存の fallback 経路（実行不可通知 / MCP Apps オプトイン時は `_meta`）へ倒す。
 		it('url モードのみを宣言したホストでは fallback を返す（input_required にしない）', async () => {
 			const onConfirmed = vi.fn();
 			const result = (await withElicitedConfirmation({
@@ -384,8 +352,7 @@ describe('withElicitedConfirmation', () => {
 		});
 
 		it('accept + confirmed=true で onConfirmed が fail を返した場合は Error: プレフィックス付きで返る', async () => {
-			// fail() ヘルパーは summary に自ら 'Error: ' を付けるため、ここでは prefix 付与
-			// ロジック自体を検証する目的で素の FailResult 形を渡す
+			// fail() ヘルパーは summary に自ら 'Error: ' を付けるので、prefix 付与ロジックを検証するため素の FailResult 形を渡す
 			const onConfirmed = vi
 				.fn()
 				.mockResolvedValue({ ok: false, summary: '発注に失敗しました', data: {}, meta: { errorType: 'api_error' } });
@@ -599,7 +566,6 @@ describe('withElicitedConfirmation', () => {
 	});
 
 	describe('round 2 — 使用済み nonce 記録の容量上限（fail-closed）', () => {
-		/** 容量テスト用: 指定 nonce で round 2（accept）を 1 回実行する */
 		async function confirmWith(
 			el: typeof import('../../src/private/elicitation.js'),
 			nonce: string,
@@ -720,7 +686,7 @@ describe('withElicitedConfirmation', () => {
 				},
 			})) as { content: { text: string }[]; structuredContent: Record<string, unknown> };
 
-			// 旧 trust-host 経路は撤去。常に safeFallback（token strip）を返す
+			// 常に safeFallback（token strip 済み）を返す
 			expect(result.content[0]?.text).toBe('FALLBACK_TEXT');
 			expect(result.structuredContent.confirmation_token).toBeUndefined();
 			expect(result.structuredContent.expires_at).toBeUndefined();

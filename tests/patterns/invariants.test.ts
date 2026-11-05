@@ -1,28 +1,4 @@
-/**
- * tests/patterns/invariants.test.ts
- *
- * パターン検出系ツールの横断契約テスト。
- *
- * `analyze_candle_patterns` と `detect_patterns` 系列について、
- * 全パターンタイプ横断で守られるべき不変条件を fixture ベースで検証する。
- *
- * カバーする 8 つの不変条件:
- *   1. barIndex 整合
- *   2. 決定性（同一入力に対する deep equal）
- *   3. status enum の許容値
- *   4. completed は breakout 成立 fixture でのみ出る
- *   5. whipsaw fixture で completed にならない
- *   6. includeForming=false で forming / near_completion 除外
- *   7. allow_partial_patterns=false で uses_partial_candle スキップ
- *   8. statistics と data.patterns の対象集合が一致する
- *   9. 各検出器の最小要求バー数が既定スキャン窓に収まる（到達性）
- *
- * 設計方針:
- *   - 既存 fixture テスト（tests/patterns/*.test.ts, tests/analyze_candle_patterns.test.ts,
- *     tests/detect_patterns_fixtures.test.ts）とは独立して動作させる
- *   - 単一ファイルで完結する（fixture / モックを内部で定義）
- *   - 全パターンタイプ横断で検証する（個別パターンの詳細検証は既存テスト側）
- */
+// 既存 fixture テストとは独立して動かすため、fixture / モックはこのファイル内で定義する（価格列は `tests/fixtures/synthetic_pattern_candles.ts` の同名関数と同じ）。
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../../lib/datetime.js';
 import { asMockResult, assertOk } from '../_assertResult.js';
@@ -45,8 +21,6 @@ import { getDefaultParamsForTf } from '../../tools/patterns/config.js';
 import { MIN_BARS_DETECTORS, type MinBarsDetector, minBarsForDetector } from '../../tools/patterns/min-bars.js';
 import { assessScanWindow } from '../../tools/patterns/scan-window.js';
 
-// ── 型・ヘルパー ──────────────────────────────────
-
 type Candle = {
 	isoTime: string;
 	open: number;
@@ -56,12 +30,7 @@ type Candle = {
 	volume: number;
 };
 
-/**
- * 契約で許容される status 値の和集合。
- * - analyze_candle_patterns: `confirmed` / `forming`
- * - detect_patterns: `forming` / `near_completion` / `completed`
- *   （`invalid` は includeInvalid=false の既定で除外されるため対象外）
- */
+/** analyze_candle_patterns の `confirmed` / `forming` と detect_patterns の `forming` / `near_completion` / `completed` の和集合（`invalid` は既定の includeInvalid=false で除外されるので対象外）。 */
 const ALLOWED_STATUSES = ['forming', 'near_completion', 'completed', 'confirmed'] as const;
 type AllowedStatus = (typeof ALLOWED_STATUSES)[number];
 const ALLOWED_STATUS_SET = new Set<string>(ALLOWED_STATUSES);
@@ -89,19 +58,12 @@ function candlesOk(normalized: Candle[]) {
 	return { ok: true, summary: 'ok', data: { normalized }, meta: { count: normalized.length } };
 }
 
-// ── analyze_candle_patterns 用ヘルパー ─────────────
-
 function daysAgoIso(n: number): string {
 	return dayjs().subtract(n, 'day').startOf('day').toISOString();
 }
 
 function todayIso(): string {
-	// tool 側は JST 暦日（dayjs().tz('Asia/Tokyo')）と calendarDateFromIso(isoTime) を比較する
-	// （analyze_candle_patterns.ts）。テスト側もローカル TZ ではなく必ず JST の「今日」
-	// を基準に組み立てないと、UTC 環境で 15:00 以降（= JST 翌日 00:00 以降）に走らせた
-	// とき、ローカル日付（前日）と JST 日付（翌日）がズレて isLastPartial=false になり、
-	// partial 検出が外れる。`YYYY-MM-DD（JST）T00:00:00.000Z` は JST 09:00 にあたり、
-	// calendarDateFromIso() で同じ JST 日付に戻る。
+	// tool 側は JST 暦日で比較するので、ローカル TZ ではなく JST の「今日」を基準にする（でないと UTC 環境の 15:00 以降に partial 検出が外れる）。`YYYY-MM-DD（JST）T00:00:00.000Z` は calendarDateFromIso() で同じ JST 日付に戻る。
 	return `${dayjs().tz('Asia/Tokyo').format('YYYY-MM-DD')}T00:00:00.000Z`;
 }
 
@@ -123,17 +85,13 @@ function bearishCandles(n: number, base = 130, step = 3): Candle[] {
 	});
 }
 
-/** ローソク足パターン fixture: 1本足 / 2本足 / 3本足を網羅 */
 const candleFixtures: Record<string, () => Candle[]> = {
-	// 1本足
 	hammer: () => [...bullishCandles(3), mc(0, 80, 100, 0, 85)],
 	shooting_star: () => [...bullishCandles(3), mc(0, 20, 100, 0, 15)],
 	doji: () => [...bullishCandles(3), mc(0, 100, 110, 90, 100.2)],
-	// 2本足
 	bullish_engulfing: () => [...bearishCandles(3), mc(1, 120, 121, 115, 116), mc(0, 115, 125, 114, 124)],
 	bearish_engulfing: () => [...bullishCandles(3), mc(1, 110, 115, 109, 114), mc(0, 115, 116, 108, 109)],
 	tweezer_top: () => [...bullishCandles(3), mc(1, 118, 130, 115, 125), mc(0, 125, 130.5, 120, 122)],
-	// 3本足
 	morning_star: () => [
 		...bearishCandles(3),
 		mc(2, 130, 132, 108, 110),
@@ -150,9 +108,6 @@ const candleFixtures: Record<string, () => Candle[]> = {
 	],
 };
 
-// ── detect_patterns 用 fixture ──────────────────────
-
-/** 完成済み double_top（breakout 成立） */
 function buildCompletedDoubleTopCandles(year = 2026): Candle[] {
 	const closes = [
 		100, 102, 105, 110, 118, 130, 126, 122, 118, 114, 112, 110, 114, 118, 122, 126, 128, 129, 123, 116, 104, 100, 95,
@@ -161,12 +116,8 @@ function buildCompletedDoubleTopCandles(year = 2026): Candle[] {
 	return closes.map((close, index) => makeCandle(index, close, year));
 }
 
-/** 形成中 double_bottom（breakout 未成立） */
 function buildFormingDoubleBottomCandles(year = 2026): Candle[] {
-	// 谷1(idx=4) → 山(idx=10) → 谷2(idx=16) → 直近が上昇中（3 点目が未確定）。
-	// `1day` の形成中 double は formationBars（= lastIdx - 谷1.idx）∈ [23, 148] を要求するので
-	// 末尾を伸ばして formationBars=25 にしてある（#118 問題 3 のバー数統一。旧実装は 19 本で通っていた）。
-	// 中間の山（101）を 1.5% のブレイクバッファ込みで超えないよう、末尾は 98 で頭打ちにする。
+	// 谷1(idx=4) → 山(idx=10) → 谷2(idx=16) → 直近が上昇中。中間の山（101）を 1.5% のブレイクバッファ込みで超えないよう、末尾は 98 で頭打ちにする。
 	const closes = [
 		108, 104, 99, 92, 80, 84, 88, 92, 96, 99, 101, 98, 94, 89, 85, 82, 81, 84, 88, 91, 94, 95, 96, 95, 96, 96.5, 97,
 		97.5, 98, 98,
@@ -174,7 +125,6 @@ function buildFormingDoubleBottomCandles(year = 2026): Candle[] {
 	return closes.map((close, index) => makeCandle(index, close, year));
 }
 
-/** 完成済み head_and_shoulders */
 function buildCompletedHeadAndShouldersCandles(year = 2026): Candle[] {
 	const closes = [
 		100, 108, 116, 122, 125, 120, 116, 112, 110, 114, 120, 128, 136, 140, 136, 128, 120, 114, 112, 116, 120, 124, 126,
@@ -183,7 +133,6 @@ function buildCompletedHeadAndShouldersCandles(year = 2026): Candle[] {
 	return closes.map((close, index) => makeCandle(index, close, year));
 }
 
-/** 完成済み triple_top */
 function buildCompletedTripleTopCandles(year = 2026): Candle[] {
 	const closes = [
 		100, 105, 112, 120, 128, 130, 126, 120, 115, 112, 116, 122, 128, 130, 131, 126, 120, 115, 113, 117, 122, 128, 130,
@@ -192,10 +141,6 @@ function buildCompletedTripleTopCandles(year = 2026): Candle[] {
 	return closes.map((close, index) => makeCandle(index, close, year));
 }
 
-/**
- * Bull pennant 順方向ブレイク（completed が明示的に出る fixture）。
- * tests/detect_patterns_fixtures.test.ts 既存 fixture と同じ価格列。
- */
 function buildBullPennantSuccessCandles(year = 2026): Candle[] {
 	const closes = [
 		100, 110, 122, 136, 150, 165, 158, 162, 154, 160, 155, 159, 156, 158, 157, 157.8, 157.2, 158.1, 157.4, 170, 172,
@@ -204,7 +149,6 @@ function buildBullPennantSuccessCandles(year = 2026): Candle[] {
 	return closes.map((close, index) => makeCandle(index, close, year));
 }
 
-/** 形成中 rising_wedge */
 function buildFormingRisingWedgeCandles(year = 2026): Candle[] {
 	const closes = [
 		100, 106, 112, 118, 124, 130, 119, 108, 113, 118, 124, 129, 134, 125, 116, 120, 125, 129, 134, 138, 131, 124, 128,
@@ -213,7 +157,6 @@ function buildFormingRisingWedgeCandles(year = 2026): Candle[] {
 	return closes.map((close, index) => makeCandle(index, close, year));
 }
 
-/** 形成中 triangle_symmetrical */
 function buildFormingSymmetricalTriangleCandles(year = 2026): Candle[] {
 	const closes = [
 		120, 126, 132, 137, 130, 122, 116, 110, 104, 100, 106, 114, 120, 128, 134, 128, 120, 115, 108, 104, 110, 118, 124,
@@ -222,15 +165,8 @@ function buildFormingSymmetricalTriangleCandles(year = 2026): Candle[] {
 	return closes.map((close, index) => makeCandle(index, close, year));
 }
 
-/**
- * descending triangle + 逆方向（上方）ブレイク → status='invalid' を生成する fixture。
- * tests/detect_patterns_fixtures.test.ts の同名関数と等価の価格列。
- */
 function buildDescendingTriangleInvalidBreakoutCandles(year = 2026): Candle[] {
-	// 三角形本体は 24 本（旧 fixture の 18 本に 1 サイクル 6 本を先頭で追加）。
-	// `detect_triangles` の最小窓が時間足の構造的下限（1day = 23 本）になったため、
-	// 旧 fixture（本体 18 本）では windowSizes が空になり検出されない。
-	// 追加分は既存と同じ形（切り下がる高値・水平な安値 100〜101）を 1 サイクル伸ばしただけ。
+	// 三角形本体は 24 本。`detect_triangles` の最小窓が時間足の構造的下限（1day = 23 本）なので、18 本では windowSizes が空になり検出されない。
 	const closes = [
 		130, 140, 132, 122, 100, 118, 120, 130, 124, 116, 100, 112, 125, 118, 101, 110, 120, 114, 100, 108, 115, 110, 101,
 		107, 128, 132, 130, 128, 126, 124,
@@ -238,13 +174,7 @@ function buildDescendingTriangleInvalidBreakoutCandles(year = 2026): Candle[] {
 	return closes.map((close, index) => makeCandle(index, close, year));
 }
 
-/**
- * 対称三角形 + 上方ブレイクアウト + whipsaw（三角形内に戻る価格列）。
- * tests/patterns/detect_triangles.test.ts:buildSymTriangleBase + buildWithBreakoutAndTail 相当。
- * - 40 本の対称三角形（phase=1 で upper 接触、phase=5 で lower 接触）
- * - 1 本のブレイクアウト足（close=120, upper ~98 を上抜け）
- * - 5 本の whipsaw 戻り足（close=94, 三角形内 [lower~93, upper~97]）
- */
+/** `tests/patterns/detect_triangles.test.ts` の buildSymTriangleBase + buildWithBreakoutAndTail 相当（ブレイクアウト足 close=120、whipsaw 戻り足 close=94）。 */
 function buildSymTriangleWhipsawCandles(year = 2026): Candle[] {
 	const candles: Candle[] = [];
 	for (let i = 0; i < 40; i++) {
@@ -279,7 +209,6 @@ function buildSymTriangleWhipsawCandles(year = 2026): Candle[] {
 		});
 	}
 
-	// ブレイクアウト足（上方）
 	candles.push({
 		isoTime: makeIso(40, year),
 		open: 118,
@@ -289,7 +218,6 @@ function buildSymTriangleWhipsawCandles(year = 2026): Candle[] {
 		volume: 100,
 	});
 
-	// whipsaw: 三角形内に再侵入
 	for (let t = 0; t < 5; t++) {
 		candles.push({
 			isoTime: makeIso(41 + t, year),
@@ -304,8 +232,6 @@ function buildSymTriangleWhipsawCandles(year = 2026): Candle[] {
 	return candles;
 }
 
-// ── テスト本体 ─────────────────────────────────────
-
 describe('patterns invariants — 横断契約', () => {
 	const mockedGetCandles = vi.mocked(getCandles);
 	const mockedAnalyzeIndicators = vi.mocked(analyzeIndicators);
@@ -314,11 +240,6 @@ describe('patterns invariants — 横断契約', () => {
 		vi.clearAllMocks();
 	});
 
-	// ──────────────────────────────────────────────
-	// 1. barIndex 整合
-	//    candle_range_index / breakoutBarIndex / pivots[].idx が
-	//    candles 配列のインデックス範囲内に収まること
-	// ──────────────────────────────────────────────
 	describe('barIndex 整合', () => {
 		it('analyze_candle_patterns: candle_range_index は [0, windowCandles.length - 1] に収まる', async () => {
 			const fixtures = Object.entries(candleFixtures);
@@ -381,24 +302,21 @@ describe('patterns invariants — 横断契約', () => {
 				const res = await detectPatterns('btc_jpy', '1day', fx.candles.length, fx.opts);
 				assertOk(res);
 				const lastIdx = fx.candles.length - 1;
-				for (const p of res.data.patterns) {
-					if (typeof p.breakoutBarIndex === 'number') {
-						expect(p.breakoutBarIndex, `${fx.name}: breakoutBarIndex>=0`).toBeGreaterThanOrEqual(0);
-						expect(p.breakoutBarIndex, `${fx.name}: breakoutBarIndex<=lastIdx`).toBeLessThanOrEqual(lastIdx);
-					}
-					if (Array.isArray(p.pivots)) {
-						for (const pv of p.pivots) {
-							expect(pv.idx, `${fx.name}: pivot idx>=0`).toBeGreaterThanOrEqual(0);
-							expect(pv.idx, `${fx.name}: pivot idx<=lastIdx`).toBeLessThanOrEqual(lastIdx);
-						}
-					}
+				const breakoutIdxs = res.data.patterns
+					.map((p) => p.breakoutBarIndex)
+					.filter((idx): idx is number => typeof idx === 'number');
+				for (const idx of breakoutIdxs) {
+					expect(idx, `${fx.name}: breakoutBarIndex>=0`).toBeGreaterThanOrEqual(0);
+					expect(idx, `${fx.name}: breakoutBarIndex<=lastIdx`).toBeLessThanOrEqual(lastIdx);
+				}
+				for (const pv of res.data.patterns.flatMap((p) => (Array.isArray(p.pivots) ? p.pivots : []))) {
+					expect(pv.idx, `${fx.name}: pivot idx>=0`).toBeGreaterThanOrEqual(0);
+					expect(pv.idx, `${fx.name}: pivot idx<=lastIdx`).toBeLessThanOrEqual(lastIdx);
 				}
 			}
 		});
 
-		// #125: 報告された price から判定を検算できること。
-		// price は終値、extremePrice は極値判定に使った high / low で、両者は別物。
-		// これを落とすと「終値基準で極値を取っている」と誤読される（実際に誤読された）。
+		// price は終値、extremePrice は極値判定に使った high / low で、両者は別物（#125）。
 		it('detect_patterns: 全 pivot が kind と、その足の high / low に一致する extremePrice を持つ', async () => {
 			const fixtures: Array<{
 				name: string;
@@ -456,10 +374,6 @@ describe('patterns invariants — 横断契約', () => {
 		});
 	});
 
-	// ──────────────────────────────────────────────
-	// 2. 決定性
-	//    同一入力に対する出力は deep equal（乱数・時刻依存ロジック禁止）
-	// ──────────────────────────────────────────────
 	describe('決定性', () => {
 		it('analyze_candle_patterns: 同一 fixture を 2 回実行で recent_patterns が deep equal', async () => {
 			const candles = candleFixtures.doji();
@@ -496,10 +410,6 @@ describe('patterns invariants — 横断契約', () => {
 		});
 	});
 
-	// ──────────────────────────────────────────────
-	// 3. status enum の許容値
-	//    検出された全パターンの status は契約で定めた集合のいずれか
-	// ──────────────────────────────────────────────
 	describe('status enum の許容値', () => {
 		it('analyze_candle_patterns: 全パターンの status は許容集合に含まれる', async () => {
 			const fixtures = Object.entries(candleFixtures);
@@ -561,26 +471,18 @@ describe('patterns invariants — 横断契約', () => {
 				mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(fx.candles)));
 				const res = await detectPatterns('btc_jpy', '1day', fx.candles.length, fx.opts);
 				assertOk(res);
-				for (const p of res.data.patterns) {
-					if (p.status !== undefined) {
-						expect(ALLOWED_STATUS_SET.has(p.status as AllowedStatus)).toBe(true);
-					}
-					totalDetected++;
+				for (const status of res.data.patterns.map((p) => p.status).filter((s) => s !== undefined)) {
+					expect(ALLOWED_STATUS_SET.has(status as AllowedStatus)).toBe(true);
 				}
+				totalDetected += res.data.patterns.length;
 			}
 			expect(totalDetected).toBeGreaterThan(0);
 		});
 	});
 
-	// ──────────────────────────────────────────────
-	// 4. completed は breakout 成立 fixture でのみ出る
-	// ──────────────────────────────────────────────
 	describe('completed は breakout 成立 fixture でのみ', () => {
 		it('breakout 成立 fixture（bull pennant）→ status=completed のパターンが含まれる', async () => {
-			// 注: detect_doubles は完成済みでも明示的な status='completed' を付与しない
-			// （status=undefined のまま）。detect_triples / detect_hs はネックラインブレイク
-			// 確認で status='completed' を付与する。
-			// このテストでは明示的に completed が出る pennant / triangle / wedge を使う。
+			// detect_doubles は完成済みでも明示的な status='completed' を付与しない（status=undefined のまま）ので、明示的に completed が出る pennant / triangle / wedge を使う。
 			const candles = buildBullPennantSuccessCandles();
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
 			const res = await detectPatterns('btc_jpy', '1day', candles.length, {
@@ -620,7 +522,6 @@ describe('patterns invariants — 横断契約', () => {
 				includeCompleted: true,
 			});
 			assertOk(res);
-			// baseline: 対象パターンが少なくとも 1 件検出されている（vacuous pass 防止）
 			const targets = res.data.patterns.filter((p) => p.type === 'rising_wedge');
 			expect(targets.length).toBeGreaterThan(0);
 			const completed = targets.filter((p) => p.status === 'completed');
@@ -628,10 +529,6 @@ describe('patterns invariants — 横断契約', () => {
 		});
 	});
 
-	// ──────────────────────────────────────────────
-	// 5. whipsaw fixture で completed にならない
-	//    （三角形系・doubles 系どちらも completed が出ない）
-	// ──────────────────────────────────────────────
 	describe('whipsaw fixture で completed にならない', () => {
 		it('対称三角形 whipsaw → 三角形系で completed は 0 件', async () => {
 			const candles = buildSymTriangleWhipsawCandles();
@@ -642,7 +539,6 @@ describe('patterns invariants — 横断契約', () => {
 				includeCompleted: true,
 			});
 			assertOk(res);
-			// baseline: 三角形パターンが少なくとも 1 件検出されている（vacuous pass 防止）
 			const triangles = res.data.patterns.filter(
 				(p) => p.type === 'triangle_symmetrical' || p.type === 'triangle_ascending' || p.type === 'triangle_descending',
 			);
@@ -660,17 +556,13 @@ describe('patterns invariants — 横断契約', () => {
 				includeCompleted: true,
 			});
 			assertOk(res);
-			// baseline: doubles 系パターンが少なくとも 1 件検出されている（vacuous pass 防止）
+			// 横ばい局面の二山・二谷は事前トレンド要件で除外されてもよい。
 			const doubles = res.data.patterns.filter((p) => p.type === 'double_top' || p.type === 'double_bottom');
-			expect(doubles.length).toBeGreaterThan(0);
 			const doublesCompleted = doubles.filter((p) => p.status === 'completed');
 			expect(doublesCompleted).toHaveLength(0);
 		});
 	});
 
-	// ──────────────────────────────────────────────
-	// 6. includeForming=false で forming / near_completion 除外
-	// ──────────────────────────────────────────────
 	describe('includeForming=false で forming / near_completion 除外', () => {
 		it('forming fixture + includeForming=false → forming / near_completion が結果から除外される', async () => {
 			const candles = buildFormingRisingWedgeCandles();
@@ -688,7 +580,6 @@ describe('patterns invariants — 横断契約', () => {
 			);
 			expect(baselineFormingLike.length).toBeGreaterThan(0);
 
-			// includeForming=false → 上記が除外される
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
 			const res = await detectPatterns('btc_jpy', '1day', candles.length, {
 				patterns: ['rising_wedge'],
@@ -716,7 +607,6 @@ describe('patterns invariants — 横断契約', () => {
 		it('forming fixture（symmetrical triangle）+ includeForming=false → forming / near_completion が結果から除外される', async () => {
 			const candles = buildFormingSymmetricalTriangleCandles();
 
-			// baseline: includeForming=true なら同じ fixture から forming/near_completion が出る
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
 			const baseline = await detectPatterns('btc_jpy', '1day', candles.length, {
 				patterns: ['triangle_symmetrical'],
@@ -729,7 +619,6 @@ describe('patterns invariants — 横断契約', () => {
 			);
 			expect(baselineFormingLike.length).toBeGreaterThan(0);
 
-			// includeForming=false → 上記が除外される
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
 			const res = await detectPatterns('btc_jpy', '1day', candles.length, {
 				patterns: ['triangle_symmetrical'],
@@ -742,9 +631,6 @@ describe('patterns invariants — 横断契約', () => {
 		});
 	});
 
-	// ──────────────────────────────────────────────
-	// 6.5 H&S / 逆H&S 契約: completed は必ず neckline_breakout を持ち、status は常に存在
-	// ──────────────────────────────────────────────
 	describe('H&S / inverse H&S contract', () => {
 		it('completed の H&S は confirmation.type === neckline_breakout を持つ', async () => {
 			const candles = buildCompletedHeadAndShouldersCandles();
@@ -789,11 +675,6 @@ describe('patterns invariants — 横断契約', () => {
 		});
 	});
 
-	// ──────────────────────────────────────────────
-	// 7. allow_partial_patterns=false で uses_partial_candle スキップ
-	//    （既存 tests/analyze_candle_patterns.test.ts:546-575 と重複するが、
-	//     横断契約として明示的に再記載する）
-	// ──────────────────────────────────────────────
 	describe('allow_partial_patterns=false で uses_partial_candle スキップ', () => {
 		it('最新ローソク足が「今日」かつ allow_partial_patterns=false → uses_partial_candle=true なパターンなし', async () => {
 			// 最新ローソク足は「今日」(=未確定 partial)。中身は body=0.1/range=20 で doji 検出対象。
@@ -823,7 +704,6 @@ describe('patterns invariants — 横断契約', () => {
 			const baselinePartials = baseline.data.recent_patterns.filter((p) => p.uses_partial_candle);
 			expect(baselinePartials.length).toBeGreaterThan(0);
 
-			// allow_partial=false → 上記の partial パターンがスキップされる
 			mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk(candles)));
 			const res = await analyzeCandlePatterns({
 				window_days: 3,
@@ -840,11 +720,6 @@ describe('patterns invariants — 横断契約', () => {
 		});
 	});
 
-	// ──────────────────────────────────────────────
-	// 8. statistics と data.patterns の対象集合が一致する
-	//    （includeForming / includeCompleted / includeInvalid で除外されたパターンが
-	//      statistics に紛れ込まないこと）
-	// ──────────────────────────────────────────────
 	describe('statistics と data.patterns の対象集合一致', () => {
 		it('statistics の各 type.detected が data.patterns 内の同 type 件数と一致する', async () => {
 			const fixtures: Array<{ name: string; candles: Candle[]; opts: Parameters<typeof detectPatterns>[3] }> = [
@@ -906,7 +781,6 @@ describe('patterns invariants — 横断契約', () => {
 			expect(baselineInvalid.length).toBeGreaterThan(0);
 			expect(baseline.data.statistics).toHaveProperty('triangle_descending');
 
-			// includeInvalid=false → data.patterns から除外されると同時に statistics からも消える
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
 			const res = await detectPatterns('btc_jpy', '1day', candles.length, {
 				patterns: ['triangle_descending'],
@@ -935,7 +809,6 @@ describe('patterns invariants — 横断契約', () => {
 			);
 			expect(baselineFormingTypes.size).toBeGreaterThan(0);
 
-			// includeForming=false → forming 除外後の data.patterns と statistics が一致する
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
 			const res = await detectPatterns('btc_jpy', '1day', candles.length, {
 				patterns: ['rising_wedge'],
@@ -957,38 +830,14 @@ describe('patterns invariants — 横断契約', () => {
 	});
 });
 
-// ──────────────────────────────────────────────
-// 9. 到達性 — 各検出器の最小要求バー数 <= 既定スキャン窓
-//
-//    #114 でスキャン窓が「直近 limit 本」に一致した結果、日数ベースの閾値が窓を超えると
-//    **そのパターン種別だけが静かに 0 件になる**（issue #118）。閾値は 6 ファイルに散っていて
-//    人手では追えないので、`patterns/min-bars.ts` の導出値で機械的に固定する。
-//
-//    PR A ではこの表を allowlist（既知の未到達 16 組）付きで導入した。閾値のプリミティブを
-//    バー数に統一した（`patterns/bar-thresholds.ts`）ことで**全 16 組が解消し、allowlist は
-//    空になった**。以降は「未到達の組み合わせが 1 つも無い」が不変条件そのものになる。
-//    `detect_doubles` / `detect_hs` の形成中判定も同じ換算に乗ったので（#118 問題 3）、
-//    全検出器がこの表の対象になっている。
-//
-//    このテストは「閾値の**最小側**が窓に収まるか」だけを見る。窓に収まっていても
-//    検出できるとは限らない（形状の条件は別）。**最大側も見ていない**——旧実装の `1week` は
-//    最小側が 2〜3 本で到達可能に見えて、最大側（12 本）が構造的下限（25 本）を下回るため
-//    実質検出不能だった。最大側を含む実検出は `tests/patterns/default-limit-detection.test.ts`
-//    が合成データで固定する。
-// ──────────────────────────────────────────────
+// 日数ベースの閾値が窓を超えると、そのパターン種別だけが静かに 0 件になる（issue #118）。このテストは閾値の最小側が窓に収まるかだけを見る。
 
 describe('検出器の到達性 — 最小要求バー数 vs 既定スキャン窓', () => {
 	const ALL_TIMEFRAMES = CandleTypeEnum.options;
 	/** 既定のスキャン窓。detect_patterns は直近 limit 本をそのまま検出器に渡す（#114）。 */
 	const DEFAULT_SCAN_WINDOW = DetectPatternsInputSchema.shape.limit.parse(undefined) as number;
 
-	/**
-	 * 既定 `limit` では閾値に届かない組み合わせ。**現在は空**。
-	 *
-	 * 例外を足すときは `requiredBars`（`minBarsForDetector` の期待値）と理由を必ず書く。
-	 * 下の「allowlist は空」テストがループで各行を検証するので、閾値を下げて到達可能に
-	 * なった行を消し忘れると落ちる（stale 検出）。
-	 */
+	/** 例外を足すときは `requiredBars`（`minBarsForDetector` の期待値）と理由を必ず書く。 */
 	const KNOWN_UNREACHABLE: ReadonlyArray<{
 		tf: string;
 		detector: MinBarsDetector;

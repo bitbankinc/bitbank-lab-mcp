@@ -1,4 +1,5 @@
 import { dayjs, isIntradayType, resolveTz, toIsoWithTz } from './datetime.js';
+import { formatPriceAtLevel } from './formatter.js';
 
 export interface PatternDiagramData {
 	svg: string;
@@ -47,38 +48,14 @@ function getPatternLabel(patternType: string): string {
 	}
 }
 
-/**
- * pivot / range の日付を「M/D」に整形する。
- *
- * issue #200 要件 F-2: 旧実装は `.utc()` 固定だったため、JST 09:00 より前のピボット
- * （UTC で見ると前日）が構造図とスイング一覧（`detectPatternsViewsHandler.ts`）で
- * 1 日ずれていた（例: 1hour の 8/28 00:00 JST が構造図では 8/27）。
- *
- * `tz` 未指定時は `resolveTz(undefined)` が `Asia/Tokyo` にフォールバックする
- * （呼び出し側 tz の既定値と同じ）。
- */
+// tz 未指定時は resolveTz が Asia/Tokyo に倒す（呼び出し側 tz の既定値と同じ）。
 function formatDateShort(iso: string | undefined, tz: string | undefined): string {
 	if (!iso) return '';
 	const d = dayjs(iso).tz(resolveTz(tz));
 	return `${d.month() + 1}/${d.date()}`;
 }
 
-/**
- * 構造図に出す 1 点の日時表示（issue #233）。
- *
- * intraday（1hour 等）では `M/D` だけだと 24 本が同じラベルに潰れ、5 つのピボットが
- * すべて「9/1」になってどの点がどの足かを特定できなかった（実データで
- * `head_and_shoulders` / `triple_top` の 2 例で再現）。本文側
- * （`detectPatternsViewsHandler.ts` の `toDateOrTime`）は既に時刻まで出しており、
- * 構造図だけが取り残されていた。`src/schema/patterns.ts` の `tz` description は
- * 構造図を明示的に対象へ含めているので、契約側は元から時刻表示を約束している。
- *
- * - intraday: `M/D HH:mm`
- * - 日足以上 / `type` 未指定: `M/D`（従来どおり。表示形式を変えない）
- *
- * 時間足の分類は `lib/datetime.ts` の `isIntradayType` を使う（本文側と同一実装。
- * ここで集合を持ち直すと 2 箇所が黙ってずれる）。
- */
+// 時間足の分類は lib/datetime.ts の isIntradayType を使う（本文側と同一実装。集合を持ち直すと 2 箇所が黙ってずれる）。
 function formatDateTime(iso: string | undefined, tz: string | undefined, type: string | undefined): string {
 	if (!iso) return '';
 	const short = formatDateShort(iso, tz);
@@ -89,28 +66,13 @@ function formatDateTime(iso: string | undefined, tz: string | undefined, type: s
 	return withTz ? `${short} ${withTz.slice(11, 16)}` : short;
 }
 
-/**
- * `artifact.identifier` 専用。**tz を通さない**（issue #200: identifier は表示ではなく
- * 成果物の ID なので、tz 対応で値を変えるとスナップショット等が動く。触らないこと）。
- */
+// identifier は表示ではなく成果物の ID なので tz を通さない（値を変えるとスナップショット等が動く。#200）。
 function formatDateIsoShort(iso?: string): string {
 	if (!iso) return '';
 	return String(iso).split('T')[0] || String(iso);
 }
 
-/**
- * パターン構造図（SVG）を生成する。
- *
- * `neckline.price` は**呼び出し側が持っているネックライン水準そのもの**を渡す。図の側で
- * 構成点から再計算してはいけない（issue #226）。relaxed H&S / 逆 H&S は 2 定義点の平均ではなく
- * **ブレイク判定（`findHsBreakoutIdx`）に渡す水平線の y** をネックラインとして持っており、
- * 再計算すると同じ 1 件の出力の中で**構造図だけ**が content 本文行・ターゲット・ブレイク判定と
- * 食い違う（実測で 27,364 円のずれ）。
- *
- * `triple_top` / `triple_bottom` は今も `pivots[1]` / `pivots[3]` の平均を再計算しているが、
- * 呼び出し側（`detect_triples.ts`）が渡す `nlAvg` がまさにその平均で、**渡し値と再計算値が
- * 一致している**ため食い違いは起きない。本 issue の範囲外として据え置く。
- */
+// neckline.price は呼び出し側の水準をそのまま使い、構成点から再計算しない（relaxed H&S は水平線の y を持つので、再計算すると図だけが本文・ブレイク判定と食い違う。#226）。
 export function generatePatternDiagram(
 	patternType: string,
 	pivots: Array<{ idx: number; price: number; kind: 'H' | 'L'; date?: string }>,
@@ -118,20 +80,8 @@ export function generatePatternDiagram(
 	range: { start: string; end: string },
 	options?: { isForming?: boolean; tz?: string; type?: string },
 ): PatternDiagramData {
-	// tz 対応方式（issue #200 要件 F-2、2 案のうち (a) を選択）:
-	// 検出層（detect_doubles / detect_triples / detect_hs / detect_wedges）は既に
-	// `DetectContext` 経由でスキャン共通値（sizeThresholds 等）を 1 箇所解決して各検出器に
-	// 配っており、tz もそれに倣って `ctx.tz` を通すだけで済む（呼び出し側の追加実装が
-	// `{ tz: ctx.tz }` を足すだけで、判定ロジックは 1 行も変わらない）。
-	// (b)（図側に生 ISO を持たせ、整形をハンドラ側に寄せる）は `PatternDiagramData` の形を
-	// 変える必要があり、SVG 文字列は生成時に日付を焼き込む構造（テンプレートリテラル）なので、
-	// 整形をハンドラ側に遅延するには SVG 生成そのものを検出時から表示時に移す作り替えが要る。
-	// (a) は既存の `PatternDiagramData` / `structureDiagram` スキーマを一切変えずに直せるため、
-	// こちらを採用した。
 	const tz = options?.tz;
-	// 時間足（issue #233）。intraday のときだけラベルに時刻（HH:mm）を足すための表示専用値で、
-	// 図の形状・座標・ネックライン計算には一切使わない。`tz` と同じく `ctx.type` を配線するだけ。
-	// 未指定時は従来どおり `M/D` になるので、渡さない呼び出し元の出力は 1 バイトも変わらない。
+	// type は表示専用で、図の形状・座標・ネックライン計算には使わない。
 	const type = options?.type;
 	const startDate = formatDateIsoShort(range.start);
 	const identifier = `${patternType}-diagram-${startDate}`;
@@ -147,7 +97,7 @@ export function generatePatternDiagram(
 		const valley1Date = formatDateTime(v1?.date, tz, type);
 		const peakDate = formatDateTime(pk?.date, tz, type);
 		const valley2Date = formatDateTime(v2?.date, tz, type);
-		const necklinePrice = Math.round(neckline.price).toLocaleString('ja-JP');
+		const necklinePrice = formatPriceAtLevel(neckline.price);
 		const svg = `<svg width="600" height="300" xmlns="http://www.w3.org/2000/svg">
   <rect width="600" height="300" fill="#f8f9fa"/>
   <line x1="50" y1="100" x2="550" y2="100" stroke="#666" stroke-width="2" stroke-dasharray="5,5"/>
@@ -175,7 +125,7 @@ export function generatePatternDiagram(
 		const peak1Date = formatDateTime(p1?.date, tz, type);
 		const valleyDate = formatDateTime(vl?.date, tz, type);
 		const peak2Date = formatDateTime(p2?.date, tz, type);
-		const necklinePrice = Math.round(neckline.price).toLocaleString('ja-JP');
+		const necklinePrice = formatPriceAtLevel(neckline.price);
 		const svg = `<svg width="600" height="300" xmlns="http://www.w3.org/2000/svg">
   <rect width="600" height="300" fill="#f8f9fa"/>
   <line x1="50" y1="200" x2="550" y2="200" stroke="#666" stroke-width="2" stroke-dasharray="5,5"/>
@@ -206,12 +156,9 @@ export function generatePatternDiagram(
 		const headDate = formatDateTime(head?.date, tz, type);
 		const p2Date = formatDateTime(peak2?.date, tz, type);
 		const rsDate = formatDateTime(rightShoulder?.date, tz, type);
-		// ネックライン水準は呼び出し側の値をそのまま出す（issue #226。上の docstring を参照）。
-		// strict 経路は `(peak1 + peak2) / 2` を渡してくるので、この経路の出力は 1 バイトも変わらない。
-		// **SVG 内の `<!-- Neckline (peaks average) -->` は据え置く**——strict の SVG を byte 単位で
-		// 不変に保つため（#226 の受け入れ条件）。relaxed では「平均」ではなく水平線の y になる。
+		// SVG 内の <!-- Neckline (peaks average) --> は strict の SVG を byte 単位で不変に保つため据え置く（relaxed では平均ではない。#226）。
 		const nlVal = neckline.price;
-		const necklinePrice = Math.round(nlVal).toLocaleString('ja-JP');
+		const necklinePrice = formatPriceAtLevel(nlVal);
 		const svg = `<svg width="600" height="300" xmlns="http://www.w3.org/2000/svg">
   <rect width="600" height="300" fill="#f8f9fa"/>
   <!-- Neckline (peaks average) -->
@@ -250,11 +197,8 @@ export function generatePatternDiagram(
 		const headDate = formatDateTime(head?.date, tz, type);
 		const v2Date = formatDateTime(valley2?.date, tz, type);
 		const rsDate = formatDateTime(rightShoulder?.date, tz, type);
-		// ネックライン水準は呼び出し側の値をそのまま出す（issue #226。上の docstring を参照）。
-		// strict 経路は `(valley1 + valley2) / 2` を渡してくるので、この経路の出力は 1 バイトも変わらない。
-		// **SVG 内の `<!-- Neckline (valleys average) -->` は据え置く**——理由は逆 H&S 側と同じ。
 		const nlVal = neckline.price;
-		const necklinePrice = Math.round(nlVal).toLocaleString('ja-JP');
+		const necklinePrice = formatPriceAtLevel(nlVal);
 		const svg = `<svg width="600" height="300" xmlns="http://www.w3.org/2000/svg">
   <rect width="600" height="300" fill="#f8f9fa"/>
   <!-- Neckline (valleys average) -->
@@ -294,7 +238,7 @@ export function generatePatternDiagram(
 		const p2Date = formatDateTime(peak2?.date, tz, type);
 		const v3Date = formatDateTime(valley3?.date, tz, type);
 		const nlVal = ((peak1?.price ?? 0) + (peak2?.price ?? 0)) / 2;
-		const necklinePrice = Math.round(nlVal).toLocaleString('ja-JP');
+		const necklinePrice = formatPriceAtLevel(nlVal);
 		const svg = `<svg width="600" height="300" xmlns="http://www.w3.org/2000/svg">
   <rect width="600" height="300" fill="#f8f9fa"/>
   <!-- Neckline (peaks average) -->
@@ -329,7 +273,7 @@ export function generatePatternDiagram(
 		const v2Date = formatDateTime(valley2?.date, tz, type);
 		const p3Date = formatDateTime(peak3?.date, tz, type);
 		const nlVal = ((valley1?.price ?? 0) + (valley2?.price ?? 0)) / 2;
-		const necklinePrice = Math.round(nlVal).toLocaleString('ja-JP');
+		const necklinePrice = formatPriceAtLevel(nlVal);
 		const svg = `<svg width="600" height="300" xmlns="http://www.w3.org/2000/svg">
   <rect width="600" height="300" fill="#f8f9fa"/>
   <!-- Neckline (valleys average) -->
@@ -352,11 +296,9 @@ export function generatePatternDiagram(
 	}
 
 	if (patternType === 'falling_wedge') {
-		// テンプレート図（600x300）。上側/下側の収束ライン、主要タッチ、アペックス、上抜け矢印を描画
-		// 傾きや位置はサンプル配置（視覚的分かりやすさ優先）
+		// 傾きや位置は実データではなくサンプル配置（視覚的分かりやすさ優先）。
 		const startShort = formatDateTime(range.start, tz, type);
 		const endShort = formatDateTime(range.end, tz, type);
-		// 主要タッチポイント（間引き想定、固定配置）
 		const touchPoints = [
 			{ x: 100, y: 80 },
 			{ x: 200, y: 100 },
@@ -393,7 +335,6 @@ export function generatePatternDiagram(
 	}
 
 	if (patternType === 'rising_wedge') {
-		// テンプレート図（600x300）。上側/下側の収束ライン、主要タッチ、アペックス、下抜け矢印を描画
 		const startShort = formatDateTime(range.start, tz, type);
 		const endShort = formatDateTime(range.end, tz, type);
 		const touchPoints = [
@@ -431,7 +372,6 @@ export function generatePatternDiagram(
 		return { svg, artifact: { identifier, title } };
 	}
 
-	// Fallback (other patterns not yet implemented)
 	const svg = `<svg width="600" height="300" xmlns="http://www.w3.org/2000/svg">
   <rect width="600" height="300" fill="#f8f9fa"/>
   <text x="300" y="150" text-anchor="middle" fill="#111" font-size="16">${getPatternLabel(patternType)} 構造図は準備中です</text>
@@ -451,7 +391,6 @@ export function generateSupportResistanceDiagram(
 	const identifier = `support-resistance-diagram-${Date.now()}`;
 	const title = `サポート・レジスタンス構造図`;
 
-	// 価格帯を正規化（現在価格を中心に配置）
 	const allLevels = [
 		...resistances.map((r) => ({ ...r, type: 'resistance' as const })),
 		{
@@ -465,27 +404,23 @@ export function generateSupportResistanceDiagram(
 		...supports.map((s) => ({ ...s, type: 'support' as const })),
 	].sort((a, b) => b.price - a.price); // 価格降順
 
-	// SVG設定
 	const width = 700;
 	const height = 600;
 	const margin = { top: 60, right: 150, bottom: 100, left: 100 };
 	const plotHeight = height - margin.top - margin.bottom;
 
-	// 価格レンジ計算
 	const maxPrice = allLevels[0].price;
 	const minPrice = allLevels[allLevels.length - 1].price;
 	const priceRange = maxPrice - minPrice;
 	const priceScale = plotHeight / priceRange;
 
-	// Y座標計算関数
 	const getY = (price: number) => {
 		return margin.top + (maxPrice - price) * priceScale;
 	};
 
-	// ライン描画データ生成
 	const lines = allLevels.map((level, _idx) => {
 		const y = getY(level.price);
-		const priceStr = Math.round(level.price).toLocaleString('ja-JP');
+		const priceStr = formatPriceAtLevel(level.price);
 		const pctStr =
 			level.pctFromCurrent !== 0 ? `(${level.pctFromCurrent > 0 ? '+' : ''}${level.pctFromCurrent.toFixed(1)}%)` : '';
 
@@ -517,7 +452,7 @@ export function generateSupportResistanceDiagram(
 			emoji = '📍';
 		}
 
-		const stars = level.strength > 0 ? ' ' + '★'.repeat(level.strength) + '☆'.repeat(3 - level.strength) : '';
+		const stars = level.strength > 0 ? ` ${'★'.repeat(level.strength)}${'☆'.repeat(3 - level.strength)}` : '';
 		const labelText = `${emoji} ${level.label}: ${priceStr}円 ${pctStr}${stars}`;
 
 		return {
@@ -532,7 +467,6 @@ export function generateSupportResistanceDiagram(
 		};
 	});
 
-	// 矢印と距離ラベル描画（隣接レベル間）
 	const arrows = [];
 	for (let i = 0; i < allLevels.length - 1; i++) {
 		const current = allLevels[i];
@@ -542,7 +476,6 @@ export function generateSupportResistanceDiagram(
 		const midY = (y1 + y2) / 2;
 		const pctDiff = Math.abs(((next.price - current.price) / current.price) * 100);
 
-		// 特殊な距離（空白地帯など）を強調
 		let distanceColor = '#666';
 		let distanceLabel = `${pctDiff.toFixed(1)}%`;
 
@@ -563,7 +496,6 @@ export function generateSupportResistanceDiagram(
 		});
 	}
 
-	// SVG生成
 	const lineElements = lines
 		.map(
 			(line, _idx) => `
@@ -593,7 +525,6 @@ export function generateSupportResistanceDiagram(
 		)
 		.join('');
 
-	// リスク距離の警告レベル判定
 	const nearestSupportPct = supports[0]?.pctFromCurrent || 0;
 	const nearestResistancePct = resistances[0]?.pctFromCurrent || 0;
 	const maxDownsidePct = supports[supports.length - 1]?.pctFromCurrent || 0;

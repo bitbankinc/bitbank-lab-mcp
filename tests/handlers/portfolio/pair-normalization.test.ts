@@ -1,21 +1,5 @@
-/**
- * portfolio — API が返す pair シンボルの取得境界正規化（`lib/pair-code.ts`）の統合テスト。
- *
- * `portfolio/calc.ts` の各関数は「pair は小文字」を前提に、`calcPnl` の
- * `t.pair === \`${asset}_jpy\`` 突き合わせ・`calcPeriodRealizedPnl` /
- * `reconstructHoldingsAtDate` の `t.pair.replace('_jpy', '')` による asset 導出を組んでいる。
- * 前提を担保するのは取得境界（`portfolio/fetch.ts` / `lib/tickers.ts`）だけなので、
- * 本テストは **fetch 層を通した結果を calc 層へ流す** 形で検証する。
- * calc 側に `.toLowerCase()` を撒く実装へ退行したらこのテストは意味を失うため、
- * 検証は必ず `paginateTrades` / `fetchTickerPricesMap` 経由で行うこと。
- *
- * pair 由来の破綻は asset 版より悪い: `'BTC_JPY'.replace('_jpy', '')` は**何も置換しない**ので
- * asset が `BTC_JPY` のまま Map キーになり、`lib/asset-code.ts` で正規化した `btc` と割れる。
- * `calcPnl` に至ってはエラーにならず「取引履歴なし」に見え、平均取得単価・実現損益が静かに消える。
- *
- * 現行 API は小文字を返す（`docs/internal/bitbank-api-fields.md`）ので、これは防御的正規化。
- * 併せて「小文字レスポンスでは出力が変わらない」回帰ケースも固定する。
- */
+// calc 層は「pair は小文字」を前提に組んでおり、前提を担保するのは取得境界（`portfolio/fetch.ts` / `lib/tickers.ts`）だけなので、検証は必ず `paginateTrades` / `fetchTickerPricesMap` 経由で fetch 層を通した結果を calc 層へ流す形で行う（calc 側に `.toLowerCase()` を撒く実装へ退行するとこのテストは意味を失う）。
+// `'BTC_JPY'.replace('_jpy', '')` は何も置換せず asset が `BTC_JPY` のまま Map キーになり、`calcPnl` はエラーにならず「取引履歴なし」に見えて平均取得単価・実現損益が静かに消える。現行 API は小文字を返すので、これは防御的正規化。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchTickerPricesMap } from '../../../lib/tickers.js';
@@ -52,7 +36,6 @@ afterEach(() => {
 const T_BUY = 1_710_000_000_000;
 const T_SELL = 1_710_000_100_000;
 
-/** `paginateTrades` を通して現物約定を取得する（取得境界を必ず経由させる）。 */
 async function fetchTrades(trades: unknown[]): Promise<RawTrade[]> {
 	const fetcher = (async () =>
 		new Response(JSON.stringify(mockBitbankSuccess({ trades })), { status: 200 })) as unknown as typeof fetch;
@@ -96,31 +79,22 @@ describe('取得境界での pair 正規化 — 損益（fetch → calc）', () 
 	it('大文字 BTC_JPY の約定でも calcPnl が該当約定を拾い、平均取得単価・実現損益が消えない', async () => {
 		const trades = await fetchTrades(tradesWithPair('BTC_JPY'));
 
-		// 取得境界を抜けた時点で小文字になっている
 		expect(trades.map((t) => t.pair)).toEqual(['btc_jpy', 'btc_jpy']);
 
 		const result = calcPnl(trades, 'btc');
 
-		// 正規化前は `t.pair === 'btc_jpy'` が 0 件マッチで「取引履歴なし」に見えていた
+		// 正規化されないと `t.pair === 'btc_jpy'` が 0 件マッチで「取引履歴なし」に見える
 		expect(result.trade_count).toBe(2);
 		expect(result.realized_pnl).toBe(1_000_000); // 0.5 * (12,000,000 - 10,000,000)
 		expect(result.avg_buy_price).toBe(10_000_000);
 		expect(result.cost_basis).toBe(5_000_000);
 	});
 
-	/**
-	 * `calcPeriodRealizedPnl` は pair から導出した asset をキーに holdings を積む。
-	 * 出庫側の asset は `lib/asset-code.ts` が小文字を保証しているので、pair 由来の asset が
-	 * 大文字（`BTC_JPY`）のままだと**両者が別キーになり出庫が原価按分に効かない**。
-	 * 単独の売買だけではキーが割れても算術が閉じてしまい検知できないため、
-	 * asset 側との join を必ず含めて検証する。
-	 */
+	/** 出庫側の asset は `lib/asset-code.ts` が小文字を保証しているので、pair 由来の asset が大文字のままだと別キーになり出庫が原価按分に効かない。単独の売買だけではキーが割れても算術が閉じて検知できないので、asset 側との join を必ず含める。 */
 	it('大文字 BTC_JPY の約定でも calcPeriodRealizedPnl が asset 側の出庫と join して集計する', async () => {
 		const trades = await fetchTrades(tradesWithPair('BTC_JPY'));
 
-		// 買い 1 BTC の後、売りの前に 0.8 BTC（0.7994 + 手数料 0.0006）を出庫する。
-		// 反映されれば売り時点の保有は 0.2 BTC / 原価 2,000,000 → 実現損益 6,000,000 - 2,000,000。
-		// キーが割れると 0.5 BTC 分の原価 5,000,000 が引かれて 1,000,000 になる。
+		// 買い 1 BTC の後、売りの前に 0.8 BTC（0.7994 + 手数料 0.0006）を出庫する。反映されれば売り時点の保有は 0.2 BTC / 原価 2,000,000 → 実現損益 6,000,000 - 2,000,000、キーが割れると 0.5 BTC 分の原価 5,000,000 が引かれて 1,000,000 になる。
 		const withdrawals = [
 			{
 				uuid: 'wd-btc-1',
@@ -164,11 +138,7 @@ describe('取得境界での pair 正規化 — 損益（fetch → calc）', () 
 		expect(result.trade_count).toBe(2);
 	});
 
-	/**
-	 * `calcPeriodRealizedPnl` は `t.pair.replace('_jpy', '')` で asset を導出し
-	 * `if (asset === 'jpy') continue` で JPY ペアを弾く。大文字だと `JPY_JPY` のままなので
-	 * この除外が外れる——正規化後は従来どおり弾かれることを固定する。
-	 */
+	/** `calcPeriodRealizedPnl` は `t.pair.replace('_jpy', '')` で asset を導出して `if (asset === 'jpy') continue` で JPY ペアを弾くので、大文字だと `JPY_JPY` のままこの除外が外れる。 */
 	it('大文字 JPY_JPY の約定は従来どおり除外される（asset 導出の JPY 判定が外れない）', async () => {
 		const trades = await fetchTrades(tradesWithPair('JPY_JPY'));
 
@@ -192,16 +162,13 @@ describe('取得境界での pair 正規化 — 損益（fetch → calc）', () 
 			null,
 		);
 
-		// 正規化前は 'BTC_JPY' という別キーが生え、'btc' は 0.5 のまま取り残されていた
+		// 正規化されないと 'BTC_JPY' という別キーが生え、'btc' は 0.5 のまま取り残される
 		expect([...holdings.keys()].sort()).toEqual(['btc', 'jpy']);
 		expect(holdings.get('btc')).toBeCloseTo(1, 12);
 		expect(holdings.get('jpy')).toBeCloseTo(4_000_000, 6);
 	});
 
-	/**
-	 * pair 由来の asset（`replace('_jpy', '')`）が `lib/asset-code.ts` 側の小文字 asset と
-	 * 同じ空間に乗ること。乗らないと評価額が 0 円になる（PR #38 との join）。
-	 */
+	/** pair 由来の asset（`replace('_jpy', '')`）が `lib/asset-code.ts` 側の小文字 asset と同じ空間に乗らないと、評価額が 0 円になる。 */
 	it('pair 由来の asset が ticker 価格マップのキーと join できる', async () => {
 		const trades = await fetchTrades(tradesWithPair('BTC_JPY'));
 		const holdings = reconstructHoldingsAtDate([{ asset: 'btc', amount: '0.5' }], trades, T_SELL - 1, null);
@@ -232,7 +199,7 @@ describe('取得境界での pair 正規化 — ticker 価格マップ', () => {
 
 		const { prices } = await fetchTickerPricesMap();
 
-		// 正規化前は 'BTC_JPY' がキーになり prices.get('btc') が全銘柄で外れていた
+		// 正規化されないと 'BTC_JPY' がキーになり、prices.get('btc') が全銘柄で外れる
 		expect([...prices.keys()].sort()).toEqual(['btc', 'eth']);
 		expect(prices.get('btc')).toBe(15_500_000);
 	});
@@ -265,7 +232,7 @@ describe('取得境界での pair 正規化 — ticker 価格マップ', () => {
 		);
 
 		expect(flow.net_flow_jpy).toBe(Math.round(0.1 * 15_500_000));
-		// PR #37 の warning 経路。価格が引けているのに申告されたら誤検知
+		// 価格が引けているのに未評価フローとして申告されたら誤検知
 		expect(flow.unpriced_assets).toBeUndefined();
 	});
 });

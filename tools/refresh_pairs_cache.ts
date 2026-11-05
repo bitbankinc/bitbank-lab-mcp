@@ -5,7 +5,6 @@ import { fail, ok, toStructured } from '../lib/result.js';
 import { RefreshPairsCacheInputSchema } from '../src/schemas.js';
 import type { McpResponse, ToolDefinition } from '../src/tool-definition.js';
 
-/** content テキストに常時載せる主要ペア（存在するもののみ表示）。 */
 const HIGHLIGHT_PAIRS = ['btc_jpy', 'eth_jpy', 'xrp_jpy'];
 
 function formatRate(v: string | null): string {
@@ -16,12 +15,7 @@ function rateLine(spec: PairSpec): string {
 	return `  - ${spec.name}: taker=${formatRate(spec.taker_fee_rate_quote)} / maker=${formatRate(spec.maker_fee_rate_quote)}`;
 }
 
-/**
- * /spot/pairs 手数料レートの TTL キャッシュを強制再取得する public ツール。
- *
- * fetchPairsSpec({ forceRefresh: true }) を呼び、TTL 内でも必ず再 fetch して
- * キャッシュを新値で上書きする。取得失敗時は fail() を返す（サーバーは継続）。
- */
+// TTL 内でも必ず再取得して上書きする。取得失敗時は fail() を返す（古いキャッシュは温存）。
 export default async function refreshPairsCache(
 	args: { pair?: string } = {},
 ): Promise<McpResponse | ReturnType<typeof fail>> {
@@ -30,7 +24,6 @@ export default async function refreshPairsCache(
 		const fetchedAt = nowIso();
 
 		const requested = args.pair?.trim().toLowerCase();
-		// 注記対象ペア + 主要ペアを表示（重複排除・存在するもののみ）。
 		const targetNames = [...new Set([...(requested ? [requested] : []), ...HIGHLIGHT_PAIRS])];
 		const shown: PairSpec[] = [];
 		for (const name of targetNames) {
@@ -68,7 +61,6 @@ export default async function refreshPairsCache(
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'refresh_pairs_cache',
 	description:

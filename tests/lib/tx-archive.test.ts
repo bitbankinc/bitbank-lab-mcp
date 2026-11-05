@@ -7,8 +7,7 @@ import {
 	recentCompletedUtcDayKeys,
 } from '../../lib/tx-archive.js';
 
-// 基準時刻: 2026-07-07 23:31 UTC = 2026-07-08 08:31 JST（障害観測時刻）
-// 進行中の UTC 日 = 20260707（JST では既に「昨日」の日付）
+// 2026-07-07 23:31 UTC = 2026-07-08 08:31 JST。進行中の UTC 日 = 20260707（JST では既に「昨日」の日付）
 const NOW = Date.UTC(2026, 6, 7, 23, 31, 0);
 
 describe('tx-archive: UTC 暦日アーカイブの日付キー導出', () => {

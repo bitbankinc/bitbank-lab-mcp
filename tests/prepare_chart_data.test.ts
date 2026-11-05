@@ -102,12 +102,10 @@ describe('prepare_chart_data', () => {
 		const chikou = res.data.series?.ICHI_chikou;
 		expect(chikou).toBeDefined();
 		expect(chikou).toHaveLength(res.data.candles.length);
-		// 末尾 26 要素は null
 		const tail26 = chikou?.slice(-26) ?? [];
 		for (const v of tail26) {
 			expect(v).toBeNull();
 		}
-		// 末尾以外に非 null 値が存在する
 		const head = chikou?.slice(0, -26) ?? [];
 		expect(head.some((v) => v !== null)).toBe(true);
 	});
@@ -128,27 +126,23 @@ describe('prepare_chart_data', () => {
 		assertOk(res);
 		const candleLen = res.data.candles.length;
 
-		// RSI
 		expect(res.data.subPanels?.RSI_14).toBeDefined();
 		expect(res.data.subPanels?.RSI_14).toHaveLength(candleLen);
 
-		// MACD — line, signal, hist すべて存在し長さが一致
 		expect(res.data.subPanels?.MACD).toBeDefined();
 		expect(res.data.subPanels?.MACD?.line).toHaveLength(candleLen);
 		expect(res.data.subPanels?.MACD?.signal).toHaveLength(candleLen);
 		expect(res.data.subPanels?.MACD?.hist).toHaveLength(candleLen);
 
-		// STOCH
 		expect(res.data.subPanels?.STOCH_K).toBeDefined();
 		expect(res.data.subPanels?.STOCH_K).toHaveLength(candleLen);
 		expect(res.data.subPanels?.STOCH_D).toBeDefined();
 		expect(res.data.subPanels?.STOCH_D).toHaveLength(candleLen);
 
-		// メインパネルの series には含まれない
 		expect(res.data.series ?? {}).not.toHaveProperty('RSI_14');
 	});
 
-	it('JPY ペアの candle 値は整数に丸められる', async () => {
+	it('10 万円以上のペアの candle 値は整数のまま', async () => {
 		mockFetch(makeOhlcvRows(600));
 		const res = await prepareChartData('btc_jpy', '1day', 10);
 		assertOk(res);
@@ -160,17 +154,37 @@ describe('prepare_chart_data', () => {
 		}
 	});
 
-	it('JPY ペアの indicator 値も整数に丸められる', async () => {
+	it('10 万円以上のペアの indicator 値は円の整数に丸められる', async () => {
 		mockFetch(makeOhlcvRows(600));
 		const res = await prepareChartData('btc_jpy', '1day', 100, ['SMA_20']);
 		assertOk(res);
 		const sma = res.data.series?.SMA_20;
 		expect(sma).toBeDefined();
-		for (const v of sma ?? []) {
-			if (v !== null) {
-				expect(Number.isInteger(v)).toBe(true);
-			}
+		expect(sma?.some((v) => v !== null)).toBe(true);
+		for (const v of (sma ?? []).filter((v) => v !== null)) {
+			expect(Number.isInteger(v)).toBe(true);
 		}
+	});
+
+	it('安いペアの candle 値は取引所の価格のまま、指標と MACD も円の整数に潰さない', async () => {
+		const startMs = Date.UTC(2024, 0, 1);
+		const rows: OhlcvRow[] = Array.from({ length: 600 }, (_, i) => {
+			const base = 31 + Math.sin(i / 7) * 0.5;
+			return [base, base + 0.02, base - 0.02, base + 0.005]
+				.map((v) => v.toFixed(4))
+				.concat(['1000', String(startMs + i * 86_400_000)]) as OhlcvRow;
+		});
+		mockFetch(rows);
+		const res = await prepareChartData('doge_jpy', '1day', 30, ['SMA_20', 'MACD']);
+		assertOk(res);
+		const lastRow = rows.at(-1) as OhlcvRow;
+		expect(res.data.candles.at(-1)?.slice(0, 4)).toEqual(lastRow.slice(0, 4).map(Number));
+		const sma = (res.data.series?.SMA_20 ?? []).filter((v): v is number => v !== null);
+		expect(sma.length).toBeGreaterThan(0);
+		expect(sma.some((v) => !Number.isInteger(v))).toBe(true);
+		const hist = (res.data.subPanels?.MACD?.hist ?? []).filter((v): v is number => v !== null);
+		expect(hist.length).toBeGreaterThan(0);
+		expect(hist.some((v) => v !== 0)).toBe(true);
 	});
 
 	it('全 null 系列はレスポンスから除外される', async () => {
@@ -194,14 +208,12 @@ describe('prepare_chart_data', () => {
 	it('limit × indicators 数がしきい値を超える場合 limit が自動切り詰めされる', async () => {
 		mockFetch(makeOhlcvRows(600));
 		const indicators = ['SMA_25', 'SMA_75', 'BB', 'RSI', 'MACD'];
-		// MAX_TOTAL_SERIES=150, seriesMultiplier=1+5=6
-		// effectiveLimit = max(5, floor(150/6)) = 25
+		// MAX_TOTAL_SERIES=150, seriesMultiplier=1+5=6 → effectiveLimit = max(5, floor(150/6)) = 25
 		const res = await prepareChartData('btc_jpy', '1day', 90, indicators);
 		assertOk(res);
 		expect(res.data.candles.length).toBe(25);
 		// summary 先頭に独立した ⚠️ 行として出る（インライン連結ではない）
 		expect(res.summary.startsWith('⚠️ limit was capped from 90 to 25')).toBe(true);
-		// meta.warning に programmatic に露出している
 		expect(res.meta.warning).toBeDefined();
 		expect(res.meta.warning).toContain('limit was capped from 90 to 25');
 	});
@@ -254,11 +266,9 @@ describe('prepare_chart_data', () => {
 		mockFetch(makeOhlcvRows(600));
 		const res = await prepareChartData('btc_jpy', '1day', 10);
 		assertOk(res);
-		// times はローカル ISO 形式（Z なし）
 		expect(res.data.times[0]).not.toMatch(/Z$/);
 		expect(res.data.times[0]).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
-		// makeOhlcvRows の末尾 10 本: i=590, timestamp = UTC 2024-01-01 + 590 日
-		// 先頭 = UTC 2025-08-14T00:00:00 → Asia/Tokyo = 2025-08-14T09:00:00
+		// makeOhlcvRows の末尾 10 本の先頭は i=590 → UTC 2025-08-14T00:00:00 → Asia/Tokyo = 2025-08-14T09:00:00
 		expect(res.data.times[0]).toContain('T09:00:00');
 	});
 
@@ -293,7 +303,6 @@ describe('prepare_chart_data', () => {
 		assertOk(res);
 		const candleLen = res.data.candles.length;
 
-		// メインパネル: BB + ICHIMOKU
 		expect(res.data.series).toHaveProperty('BB_upper');
 		expect(res.data.series).toHaveProperty('BB_middle');
 		expect(res.data.series).toHaveProperty('BB_lower');
@@ -303,23 +312,18 @@ describe('prepare_chart_data', () => {
 			expect(arr).toHaveLength(candleLen);
 		}
 
-		// サブパネル: RSI + STOCH
 		expect(res.data.subPanels?.RSI_14).toHaveLength(candleLen);
 		expect(res.data.subPanels?.STOCH_K).toHaveLength(candleLen);
 		expect(res.data.subPanels?.STOCH_D).toHaveLength(candleLen);
 
-		// meta.indicators にすべて含まれる
 		for (const name of ['BB_upper', 'BB_middle', 'BB_lower', 'ICHI_tenkan', 'RSI_14', 'STOCH_K', 'STOCH_D']) {
 			expect(res.meta.indicators).toContain(name);
 		}
 	});
 
-	// ── 上流 fetchWarning / 指標不足 warnings の伝播 ──
-
 	describe('上流 warning の伝播', () => {
 		function mockPartialMultiYearFetch() {
-			// analyze_indicators → getCandles は anchorYear=currentYear で multi-year 取得する。
-			// limit=1100 で fetchCount=1299、yearsNeeded=4。最古年だけ success:0 で失敗させる。
+			// analyze_indicators → getCandles は anchorYear=currentYear で multi-year 取得する。limit=1100 で fetchCount=1299、yearsNeeded=4 なので、最古年だけ success:0 で失敗させる。
 			const currentYear = dayjs.utc().year();
 			const failYear = currentYear - 3;
 			const baseTs = dayjs.utc(`${currentYear - 1}-01-01`).valueOf();
@@ -354,11 +358,9 @@ describe('prepare_chart_data', () => {
 
 		it('部分失敗時、meta.warning と summary 先頭に上流警告が出る', async () => {
 			mockPartialMultiYearFetch();
-			// limit=1100 で analyze_indicators → multi-year（4年取得）が走る。
 			// pair を変えてキャッシュ衝突を避ける。
 			const res = await prepareChartData('bcc_jpy', '1day', 1100, undefined);
 			assertOk(res);
-			// summary 先頭に警告が出る
 			expect(res.summary.startsWith('⚠️')).toBe(true);
 			expect(res.meta.warning).toBeDefined();
 			expect(res.meta.warning).toContain('失敗');
@@ -366,17 +368,13 @@ describe('prepare_chart_data', () => {
 
 		it('handler content[0].text の先頭に上流警告が出る', async () => {
 			mockPartialMultiYearFetch();
-			// pair を変えてキャッシュ衝突を避ける
 			const res = await toolDef.handler({ pair: 'eth_jpy', type: '1day', limit: 1100 });
 			// biome-ignore lint/suspicious/noExplicitAny: handler returns McpResponse
 			const r = res as any;
 			expect(r.content?.[0]?.text).toBeDefined();
 			const text: string = r.content[0].text;
-			// 先頭が warning 行
 			expect(text.startsWith('⚠️')).toBe(true);
-			// 上流 warning が出る
 			expect(text).toContain('失敗');
-			// JSON 本体より前に warning が出る
 			const idxWarning = text.indexOf('⚠️');
 			const idxJson = text.indexOf('"times"');
 			expect(idxWarning).toBeLessThan(idxJson);
@@ -395,9 +393,7 @@ describe('prepare_chart_data', () => {
 			mockFetch(makeOhlcvRows(40));
 			const res = await prepareChartData('mona_jpy', '1day', 30);
 			assertOk(res);
-			// fetchWarning（取得層）はない
 			expect(res.meta.warning).toBeUndefined();
-			// 指標不足の warnings は存在する
 			expect(res.meta.warnings).toBeDefined();
 			expect((res.meta.warnings ?? []).length).toBeGreaterThan(0);
 			// summary 先頭は ⚠️ で始まる（warnings 由来）
@@ -405,20 +401,9 @@ describe('prepare_chart_data', () => {
 		});
 	});
 
-	// ─── 加工契約テスト（PR4）─────────────────────────────────
-	//
-	// prepare_chart_data の入出力契約を補強する。
-	// - times は単調増加（昇順）であること
-	// - 上流 warning は summary / content[0].text の先頭に伝播すること
-	// - 入力 OHLCV の先頭行が、出力 candles[0] に正しく対応すること
-	//
-	// 1day は yearly type で analyze_indicators の fetchCount=limit+199 が当年経過日数を
-	// 超えると multi-year (current + previous year) 取得が走る。単純な mockFetch だと
-	// 両年で同じ ts を返してしまうため、ここでは年ごとに distinct な ts を返す
-	// mockImplementation を使う。
+	// 1day は analyze_indicators の fetchCount=limit+199 が当年経過日数を超えると multi-year 取得が走り、単純な mockFetch だと両年で同じ ts を返してしまうので、年ごとに distinct な ts を返す mock を使う。
 
 	describe('加工契約', () => {
-		/** 年ごとに distinct な timestamp の rows を返す mock（multi-year 取得に耐える） */
 		function mockMultiYearDistinctFetch(rowsPerYear: number = 365) {
 			vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
 				const urlStr = String(url);
@@ -470,20 +455,16 @@ describe('prepare_chart_data', () => {
 		});
 
 		it('上流 warning は summary 先頭 / handler content[0].text 先頭の両方に伝播する', async () => {
-			// 少ないデータで指標不足 warnings を発生させる（取得は成功するので fetchWarning なし）
 			mockFetch(makeOhlcvRows(40));
 			const res = await prepareChartData('xlm_jpy', '1day', 30);
 			assertOk(res);
-			// summary 先頭に warning
 			expect(res.summary.startsWith('⚠️')).toBe(true);
-			// handler 経由でも content[0].text 先頭に warning が伝播する
 			mockFetch(makeOhlcvRows(40));
 			const handlerRes = (await toolDef.handler({ pair: 'xlm_jpy', type: '1day', limit: 30 })) as {
 				content: Array<{ text: string }>;
 			};
 			const text = handlerRes.content[0].text;
 			expect(text.startsWith('⚠️')).toBe(true);
-			// warning は JSON 本体より前に出る
 			const idxWarning = text.indexOf('⚠️');
 			const idxJson = text.indexOf('"times"');
 			expect(idxWarning).toBeLessThan(idxJson);
@@ -491,8 +472,7 @@ describe('prepare_chart_data', () => {
 		});
 
 		it('入力 OHLCV の先頭行と candles[0] / times[0] が対応する', async () => {
-			// times[0] を元に元データの (year, dayOfYear) を逆算し、入力 ohlcv と candles[0] を比較する。
-			// multi-year fetch を伴うため、times[0] から逆算するアプローチが頑健。
+			// multi-year fetch を伴うので、times[0] から元データの (year, dayOfYear) を逆算して入力 ohlcv と candles[0] を比較する。
 			mockMultiYearDistinctFetch();
 			const res = await prepareChartData('btc_jpy', '1day', 100, undefined, '');
 			assertOk(res);
@@ -521,17 +501,10 @@ describe('prepare_chart_data', () => {
 		});
 	});
 
-	// ─── wire 出力の schema 検証（PrepareChartDataOutputSchema）─────────────
-	//
-	// prepare_chart_data は最終 ok() を parseAsResult で schema 検証して返す
-	// （prepare_depth_data:206 / get_candles と同じ経路。以前は ok() 素返しで未検証だった）。
-	// ここでは market_data_audit.test.ts §3 の assertRoundTrip パターンで、
-	// JSON.stringify→parse 後の wire 形式でも schema を通過し意味が壊れないことを固定する。
 	describe('wire 出力 schema 検証 (JSON round-trip)', () => {
 		type ParsedPrepareChartData = ReturnType<typeof PrepareChartDataOutputSchema.parse>;
 
-		// wire（JSON 往復後）を schema に通し、parse 結果（strip/transform 適用後）で意味不変を検証する。
-		// 生の wire ではなく parsed に対して invariants を評価することで、parse 時の strip も検出できる。
+		// 生の wire ではなく parse 結果（strip / transform 適用後）に対して invariants を評価することで、parse 時の strip も検出できる。
 		function assertRoundTrip(res: unknown, invariants: (parsed: ParsedPrepareChartData) => void) {
 			const wire = JSON.parse(JSON.stringify(res));
 			const parsed = PrepareChartDataOutputSchema.parse(wire); // schema 違反なら throw → テスト失敗
@@ -567,8 +540,7 @@ describe('prepare_chart_data', () => {
 		});
 
 		it('指標不足 warnings が wire（meta.warnings）でも保持される（schema strip されない）', async () => {
-			// 少データで SMA_200 等の指標不足警告を発生させ、schema 検証後も meta.warnings が
-			// 残ることを固定する（schema meta に warnings を含めた回帰防止）。
+			// 少データで指標不足警告を発生させ、schema 検証後も meta.warnings が残ることを固定する（schema の meta に warnings を含めた回帰防止）。
 			mockFetch(makeOhlcvRows(40));
 			const res = await prepareChartData('mona_jpy', '1day', 30);
 			assertOk(res);

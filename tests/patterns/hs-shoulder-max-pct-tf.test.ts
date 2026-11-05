@@ -1,27 +1,4 @@
-/**
- * issue #244 Phase 2 — H&S / 逆 H&S の**肩の同水準判定**を時間足別にした件の回帰テスト。
- *
- * `HS_SHOULDER_MAX_PCT`（5% 固定）は ATR 換算で `1day` 1.8 ATR に対し **`1hour` 8.8 ATR** で、
- * 短い足では同水準判定が実質機能していなかった（#244 Phase 1 結果 3）。`getHsShoulderMaxPctForTf`
- * が `getSizeThresholdsForTf` と同じ ATR 比テーブルを 1day の 5% に掛けて時間足別の上限を返し、
- * **肩ゲートだけ**がその値を使う。
- *
- * 本テストが固定するのは 4 点:
- *
- * 1. `getHsShoulderMaxPctForTf` の表（時間足ごとの値・`1day` 以上の据え置き・未知の据え置き）と、
- *    ATR 比 × アンカーという導出。**`getSizeThresholdsForTf(tf).depthPct` と数値が一致するのは
- *    偶然**（アンカーが同じ 5%）で、意味が違う 2 つの量なので別関数として持っていること
- * 2. 実データ D（`btc_jpy_1hour_2026_09_05`）の `1hour` で、Phase 1.5 §10 が「呼べない」と判定した
- *    **形 X**（左肩 30 / 頭 49 / 右肩 85 系）が `shoulders_not_near:cap` で落ち、
- *    `details.shoulderMaxPct` が **0.0104** であること
- * 3. **窓生成（`outerShoulderOk`）は 5% のまま**であること——`1hour` で肩差 3% の 5 点が
- *    `view=debug` の候補として**現れて**理由コード付きで落ちる。窓生成まで締めていれば
- *    候補に出ないので、この形で診断性を固定する（#244 決定コメントの宿題 1）
- * 4. `1day` の挙動が 1 つも変わっていないこと（アンカー据え置き）
- *
- * 実データケースが `patterns` で種別を絞るのは、`view=debug` の候補配列が **cap 200 件**で
- * トリムされるため（`neckline-side-hs.test.ts` と同じ理由）。
- */
+// 実データケースが `patterns` で種別を絞るのは、`view=debug` の候補配列が cap 200 件でトリムされるため。
 import { describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../../lib/datetime.js';
 import {
@@ -31,7 +8,6 @@ import {
 	resolveParams,
 } from '../../tools/patterns/config.js';
 import { detectHeadAndShoulders } from '../../tools/patterns/detect_hs.js';
-import { linearRegressionWithR2, near as nearFn, pct as pctFn } from '../../tools/patterns/regression.js';
 import { HS_SHOULDER_MAX_PCT } from '../../tools/patterns/structural.js';
 import { detectSwingPoints, filterPeaks, filterValleys, type Pivot } from '../../tools/patterns/swing.js';
 import type { CandDebugEntry, CandleData, DetectContext } from '../../tools/patterns/types.js';
@@ -43,11 +19,7 @@ import analyzeIndicators from '../../tools/analyze_indicators.js';
 import detectPatterns from '../../tools/detect_patterns.js';
 import { buildBtcJpy1hour20260905Candles } from '../fixtures/btc_jpy_1hour_2026_09_05.js';
 
-/**
- * 1day を 1.0 とした ATR 比。**`config.ts` の `getSizeThresholdsForTf` の docstring の表と同一。**
- * テスト側に写しを置くのは、**実装の表と導出規則が食い違ったら落とす**ため
- * （実装から import すると同語反復になる）。
- */
+/** `config.ts` の `getSizeThresholdsForTf` の docstring の表と同一。実装から import すると同語反復になるので、写しを置いて実装の表と導出規則の食い違いを落とす。 */
 const ATR_RATIO: Readonly<Record<string, number>> = {
 	'1min': 0.0264,
 	'5min': 0.0589,
@@ -60,7 +32,6 @@ const ATR_RATIO: Readonly<Record<string, number>> = {
 	'12hour': 0.7071,
 };
 
-/** 実データケースの時間足。 */
 const TF = '1hour';
 
 /** `config.ts` の各表と同じ 4 桁丸め。 */
@@ -93,7 +64,6 @@ describe('getHsShoulderMaxPctForTf の表（issue #244 Phase 2）', () => {
 	});
 
 	it('未知の時間足・空文字・非文字列もアンカーへ畳む', () => {
-		// エッジケース: 未知値 / 空 / 単一要素でない入力（`String(tf)` で畳まれる経路）。
 		for (const tf of ['', '3hour', '2week', 'unknown', '1DAY']) {
 			expect(getHsShoulderMaxPctForTf(tf), JSON.stringify(tf)).toBe(HS_SHOULDER_MAX_PCT);
 		}
@@ -121,17 +91,12 @@ describe('getHsShoulderMaxPctForTf の表（issue #244 Phase 2）', () => {
 	});
 
 	it('`getSizeThresholdsForTf(tf).depthPct` と数値が一致するが、別の量を測る別関数である', () => {
-		// アンカーが `MIN_DEPTH_PCT` と同じ 5% なので**数値は一致する**。これは偶然で、
-		// 流用してはいけない（`depthPct` は谷の深さの**下限**、本関数は肩の同水準の**上限**で極性が逆）。
-		// 一致が崩れたらどちらかのアンカーが動いたということなので、そのときは両方の docstring を
-		// 読み直すこと——このテストは「勝手に片方だけ動かす」を検出するための見張り。
+		// アンカーが `MIN_DEPTH_PCT` と同じ 5% なので数値は一致するが、偶然で流用してはいけない（`depthPct` は谷の深さの下限、本関数は肩の同水準の上限で極性が逆）。
 		for (const tf of ['1min', '5min', '15min', '30min', '1hour', '4hour', '8hour', '12hour', '1day', '1week']) {
 			expect(getHsShoulderMaxPctForTf(tf), tf).toBe(getSizeThresholdsForTf(tf).depthPct);
 		}
 	});
 });
-
-// ── ヘルパー（合成 5 点） ──
 
 function mkCandle(o: number, h: number, l: number, c: number, i: number): CandleData {
 	// `1hour` の等間隔な時刻列。先行トレンド判定・期間表示が時刻を読むので必ず入れる。
@@ -144,10 +109,7 @@ function mkCandle(o: number, h: number, l: number, c: number, i: number): Candle
 	};
 }
 
-/**
- * `H-L-H-L-H`（または `L-H-L-H-L`）の 5 点を持つ合成系列を組む。
- * `enumerateHsWindows` は肩リストと谷リストしか見ないので、間の平坦なバーは形に効かない。
- */
+/** `enumerateHsWindows` は肩リストと谷リストしか見ないので、間の平坦なバーは形に効かない。 */
 function buildFive(
 	kinds: ReadonlyArray<'H' | 'L'>,
 	prices: readonly number[],
@@ -181,21 +143,13 @@ function buildFive(
 			debugCandidates: debug,
 			type: tf,
 			swingDepth: resolved.swingDepth,
-			near: (a: number, b: number) => Math.abs(a - b) <= Math.max(a, b) * tol,
-			pct: (a: number, b: number) => ((b - a) / Math.max(1, a)) * 100,
-			lrWithR2: (pts) => linearRegressionWithR2(pts),
 		},
 	};
 }
 
 describe('窓生成（outerShoulderOk）は 5% のまま（#244 決定コメントの宿題 1）', () => {
-	// 肩差 3%（左肩 100 / 右肩 103 → relDiff = 3/103 ≈ 2.913%）。
-	//
-	// - **肩ゲート**（`1hour` = 1.04%）: 超えるので落ちる
-	// - **窓生成**（5% 固定）: 通るので候補は生成される
-	//
-	// 窓生成まで時間足別にしていたら 2.913% > 1.04% で窓自体が作られず、
-	// `view=debug` に何も残らない（無音の偽陰性）。**この形で診断性を固定する。**
+	// 肩差 3%（左肩 100 / 右肩 103 → relDev ≈ 2.913%）は肩ゲート（`1hour` = 1.04%）で落ちるが、窓生成（5% 固定）は通るので候補は生成される。
+	// 窓生成まで時間足別にしていたら窓自体が作られず、`view=debug` に何も残らない（無音の偽陰性）。
 	const SHOULDER_DIFF_PCT = 3 / 103;
 
 	it('前提: 肩差 3% は 1hour の肩ゲートを超え、窓生成の 5% は超えない', () => {
@@ -209,10 +163,8 @@ describe('窓生成（outerShoulderOk）は 5% のまま（#244 決定コメン�
 		const { ctx, debug } = buildFive(['H', 'L', 'H', 'L', 'H'], [100, 80, 130, 80, 103], '1hour');
 		const res = detectHeadAndShoulders(ctx);
 
-		// 出力には出ない（肩ゲートで落ちる）。
 		expect(res.patterns.filter((p) => p.type === 'head_and_shoulders')).toHaveLength(0);
 
-		// **候補としては現れる**——これが窓生成を据え置いたことの検証。
 		const cand = debug.find(
 			(d) => d.type === 'head_and_shoulders' && d.accepted === false && d.reason?.startsWith('shoulders_not_near'),
 		);
@@ -241,7 +193,6 @@ describe('窓生成（outerShoulderOk）は 5% のまま（#244 決定コメン�
 
 	it('1day では同じ 5 点が肩ゲートも通る（アンカー据え置きの確認）', () => {
 		// 肩差 2.913% ≤ `1day` の肩ゲート 5%。`tolerancePct`（1day = 4%）も通る。
-		// **#244 の前後で 1day の挙動が 1 つも変わっていないこと**を、同じ入力で示す。
 		const { ctx, debug } = buildFive(['H', 'L', 'H', 'L', 'H'], [100, 80, 130, 80, 103], '1day');
 		detectHeadAndShoulders(ctx);
 		const shoulderRejects = debug.filter((d) => d.reason?.startsWith('shoulders_not_near'));
@@ -250,30 +201,13 @@ describe('窓生成（outerShoulderOk）は 5% のまま（#244 決定コメン�
 });
 
 describe('実データ D の 1hour: Phase 1.5 の「形 X」が shoulders_not_near:cap で落ちる', () => {
-	/**
-	 * Phase 1.5（tjackiet/bitbank-lab-mcp#244 の計測記録 §10）が「呼べない」と判定した**形 X** の
-	 * 4 変種（左肩 30 / 42、右肩 85 / 91）と**形 X'**（左肩 25）。実データ D の idx。
-	 * 肩 `relDiff` は 2.076〜2.719%。
-	 *
-	 * 判定理由（§10）: 左右の肩が価格帯として重ならない（右肩の安値が左半分の最高値より 1.53% 高い）／
-	 * 頭の突出が非対称／頭からブレイクまでが一本調子で、「右肩」は途中の −1.89% の押しでしかない。
-	 * **「逆 H&S」ではなく「頭の後の上昇トレンドの押し目」。**
-	 *
-	 * **`swingDepth` ごとに現れる変種が違う**（ピボット列が変わるため）。右肩 85 の 2 変種は
-	 * `swingDepth=3`（1hour の tf-auto 値）、右肩 91 の 2 変種と形 X' は `swingDepth=2` で出る。
-	 */
+	/** Phase 1.5（#244 の計測記録 §10）が「呼べない」と判定した形 X の 4 変種と形 X'（実データ D の idx）。右肩 85 の 2 変種は `swingDepth=3`、右肩 91 の 2 変種と形 X' は `swingDepth=2` で出る。 */
 	const FORM_X_BY_SWING_DEPTH: ReadonlyArray<readonly [number, readonly string[]]> = [
 		[3, ['42-45-49-83-85', '30-32-49-83-85']],
 		[2, ['42-45-49-83-91', '30-39-49-83-91', '25-39-49-83-91']],
 	];
 
-	/**
-	 * `detect_patterns.ts` と同じ順序で ctx を組み、H&S 検出器を**直接**呼ぶ。
-	 *
-	 * `detectPatterns` 経由にしないのは、`view=debug` の候補配列が **cap 200 件**でトリムされ
-	 * （`candidatesTrimmed`）、`swingDepth=2` の 1,797 件から目的の窓が押し出されるため。
-	 * 本テストが見たいのは棄却理由と実効閾値であって出力の整形ではない。
-	 */
+	/** `detectPatterns` 経由だと `view=debug` の候補配列が cap 200 件でトリムされ、目的の窓が押し出されるので、`detect_patterns.ts` と同じ順序で ctx を組んで H&S 検出器を直接呼ぶ。 */
 	function debugCandidatesFor(swingDepth: number): CandDebugEntry[] {
 		const candles = buildBtcJpy1hour20260905Candles() as unknown as CandleData[];
 		const resolved = resolveParams(TF, { swingDepth });
@@ -294,9 +228,6 @@ describe('実データ D の 1hour: Phase 1.5 の「形 X」が shoulders_not_ne
 			debugCandidates,
 			type: TF,
 			swingDepth: resolved.swingDepth,
-			near: (a: number, b: number) => nearFn(a, b, resolved.tolerancePct),
-			pct: pctFn,
-			lrWithR2: linearRegressionWithR2,
 			tz: 'Asia/Tokyo',
 		});
 		return debugCandidates;
@@ -318,15 +249,14 @@ describe('実データ D の 1hour: Phase 1.5 の「形 X」が shoulders_not_ne
 			expect(c?.reason, key).toBe('shoulders_not_near:cap');
 			const details = c?.details as Record<string, unknown> | undefined;
 			expect(details?.shoulderMaxPct, key).toBe(0.0104);
-			// 肩 relDiff は §10 の 2.076〜2.719% の帯に入る（`1hour` の閾値 1.04% の 2 倍以上）。
+			// 肩 relDev は §10 の 2.076〜2.719% の帯に入る（`1hour` の閾値 1.04% の 2 倍以上）。
 			expect(details?.shouldersDiffPct as number, key).toBeGreaterThan(0.0207);
 			expect(details?.shouldersDiffPct as number, key).toBeLessThan(0.0272);
 		}
 	});
 
 	it('落ちた理由は `:cap` であって `:tolerance` / `:both` ではない（tolerancePct は通っている）', () => {
-		// `1hour` の tf-auto `tolerancePct` は 5% で、肩差 2.5% は通る。**落としているのは本 PR の
-		// 時間足別 cap だけ**であることを理由コードの内訳で固定する（#244 以前は 3 変種とも accepted）。
+		// `1hour` の tf-auto `tolerancePct` は 5% で肩差 2.5% は通るので、落としているのは時間足別 cap だけであることを理由コードの内訳で固定する。
 		const tol = getDefaultToleranceForTf(TF);
 		expect(tol).toBeGreaterThan(0.0272);
 	});

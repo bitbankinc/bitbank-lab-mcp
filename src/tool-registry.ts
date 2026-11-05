@@ -1,16 +1,3 @@
-/**
- * tool-registry.ts — 全 MCP ツール定義の集約
- *
- * 各ツールファイル（tools/*.ts）または複雑なハンドラファイル（src/handlers/*Handler.ts）から
- * toolDef をインポートし、配列として server.ts に提供する。
- *
- * 【ツール追加手順】
- * 1. tools/<name>.ts にツール関数を実装
- * 2. 同ファイル（または src/handlers/<name>Handler.ts）に toolDef を export
- * 3. ★ 本ファイルに import + allToolDefs に追加 ★
- * 4. npm run gen:types && npm run typecheck
- */
-
 import { log } from '../lib/logger.js';
 import { toolDef as analyzeBbSnapshot } from '../tools/analyze_bb_snapshot.js';
 import { toolDef as analyzeCandlePatterns } from '../tools/analyze_candle_patterns.js';
@@ -50,20 +37,7 @@ import { startCleanupTimer } from './private/confirmation.js';
 import { startNonceCleanupTimer } from './private/request-state.js';
 import type { ToolDefinition } from './tool-definition.js';
 
-/**
- * Public ツール一覧（カテゴリ別）
- *
- * | カテゴリ             | ツール数 | 概要                                     |
- * |---------------------|---------|------------------------------------------|
- * | Data Retrieval      | 7       | ticker, orderbook, candles, transactions |
- * | Technical Analysis  | 13      | BB, 一目, SMA, EMA, Stoch, Fibonacci 等  |
- * | Signal & Detection  | 4       | 総合シグナル, パターン, MACD, クジラ       |
- * | Visualization       | 4       | SVG チャート, 板チャート, データ整形       |
- * | Backtesting         | 1       | SMA/MACD/BB/RSI 戦略バックテスト          |
- * | **Private**         | **16**  | 残高, 注文, 約定, ポートフォリオ, 信用取引, HITL確認（要 API キー）|
- */
 export const allToolDefs: ToolDefinition[] = [
-	// ── Data Retrieval (7) ──
 	getTicker,
 	getOrderbook,
 	getCandles,
@@ -72,7 +46,6 @@ export const allToolDefs: ToolDefinition[] = [
 	getVolatilityMetrics,
 	getTickersJpy,
 
-	// ── Technical Analysis (13) ──
 	analyzeIndicators,
 	analyzeBbSnapshot,
 	analyzeIchimokuSnapshot,
@@ -87,44 +60,32 @@ export const allToolDefs: ToolDefinition[] = [
 	analyzeFibonacci,
 	analyzeMtfFibonacci,
 
-	// ── Signal & Detection (4) ──
 	analyzeMarketSignal,
 	detectPatterns,
 	detectMacdCross,
 	detectWhaleEvents,
 
-	// ── Visualization (5) ──
 	prepareChartData,
 	prepareDepthData,
 	renderChartSvg,
 	renderDepthSvg,
 	renderCandlePatternDiagram,
 
-	// ── Data Quality (1) ──
 	validateCandleData,
 
-	// ── Backtesting (1) ──
 	runBacktest,
 
-	// ── Maintenance (1) ──
 	refreshPairsCache,
 
-	// ── MCP Apps support (1) ──
 	getUiSnapshot,
 ];
 
-// ── Private API tools（APIキー設定時のみ有効化） ──
 if (isPrivateApiEnabled()) {
-	// 動的 import で private ツールを追加
-	// tool-registry.ts は起動時に1回だけ評価されるため、top-level await 相当の
-	// 即時実行関数で動的 import を行い、allToolDefs に追加する。
-	// ※ ESM の top-level await が使えない環境でも動作するよう IIFE で対応。
 	const { toolDef: getMyAssets } = await import('../tools/private/get_my_assets.js');
 	const { toolDef: getMyTradeHistory } = await import('../tools/private/get_my_trade_history.js');
 	const { toolDef: getMyOrders } = await import('../tools/private/get_my_orders.js');
 	const { toolDef: analyzeMyPortfolio } = await import('../tools/private/analyze_my_portfolio.js');
 	const { toolDef: getMyDepositWithdrawal } = await import('../tools/private/get_my_deposit_withdrawal.js');
-	// Trading tools (preview → execute の2ステップ確認)
 	const { toolDef: previewOrder } = await import('../tools/private/preview_order.js');
 	const { toolDef: createOrder } = await import('../tools/private/create_order.js');
 	const { toolDef: previewCancelOrder } = await import('../tools/private/preview_cancel_order.js');
@@ -133,11 +94,10 @@ if (isPrivateApiEnabled()) {
 	const { toolDef: cancelOrders } = await import('../tools/private/cancel_orders.js');
 	const { toolDef: getOrder } = await import('../tools/private/get_order.js');
 	const { toolDef: getOrdersInfo } = await import('../tools/private/get_orders_info.js');
-	// Margin tools
 	const { toolDef: getMarginStatus } = await import('../tools/private/get_margin_status.js');
 	const { toolDef: getMarginPositions } = await import('../tools/private/get_margin_positions.js');
 	const { toolDef: getMarginTradeHistory } = await import('../tools/private/get_margin_trade_history.js');
-	allToolDefs.push(
+	const privateToolDefs = [
 		getMyAssets,
 		getMyTradeHistory,
 		getMyOrders,
@@ -154,32 +114,15 @@ if (isPrivateApiEnabled()) {
 		getMarginStatus,
 		getMarginPositions,
 		getMarginTradeHistory,
-	);
-	// 使用済み確認トークン / 使用済み nonce の定期 purge。どちらも Private ツール
-	// （preview → 確認 → execute）でしか記録されないので、有効化と同じ場所で起動する。
+	];
+	allToolDefs.push(...privateToolDefs);
+	// 使用済み確認トークン / nonce は Private ツールでしか記録されないので、定期 purge は有効化と同じ場所で起動する。
 	startCleanupTimer();
 	startNonceCleanupTimer();
 	log('info', {
 		type: 'private_api',
 		message: 'Private API tools enabled',
-		tools: [
-			'get_my_assets',
-			'get_my_trade_history',
-			'get_my_orders',
-			'analyze_my_portfolio',
-			'get_my_deposit_withdrawal',
-			'preview_order',
-			'create_order',
-			'preview_cancel_order',
-			'cancel_order',
-			'preview_cancel_orders',
-			'cancel_orders',
-			'get_order',
-			'get_orders_info',
-			'get_margin_status',
-			'get_margin_positions',
-			'get_margin_trade_history',
-		],
+		tools: privateToolDefs.map((t) => t.name),
 	});
 } else {
 	log('info', { type: 'private_api', message: 'Private API tools disabled (no API key configured)' });

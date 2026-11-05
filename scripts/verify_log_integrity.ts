@@ -1,20 +1,11 @@
 #!/usr/bin/env tsx
-/**
- * verify_log_integrity.ts — 取引操作ログのチェーンハッシュ整合性を検証する。
- *
- * Usage: npx tsx scripts/verify_log_integrity.ts [logfile]
- *   logfile を省略すると ./logs/ 内の最新ファイルを対象にする。
- *
- * 取引操作ログ（category === 'trade_action'）のみを対象に、
- * _prevHash → _hash のチェーンが連続していることを検証する。
- */
+// Usage: npx tsx scripts/verify_log_integrity.ts [logfile]（省略時は ./logs/ 内の最新ファイル）
 
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
 function computeHash(record: Record<string, unknown>): string {
-	// _hash を除いた残りで JSON 化し SHA-256
 	const { _hash, ...rest } = record;
 	const json = JSON.stringify(rest);
 	return createHash('sha256').update(json).digest('hex');
@@ -44,7 +35,6 @@ function main() {
 	const content = fs.readFileSync(logFile, 'utf-8');
 	const lines = content.split('\n').filter((l) => l.trim());
 
-	// 取引操作ログのみ抽出
 	const tradeRecords: { line: number; record: Record<string, unknown> }[] = [];
 	for (let i = 0; i < lines.length; i++) {
 		try {
@@ -68,7 +58,6 @@ function main() {
 	let prevHash = '0'.repeat(64); // 初期値
 
 	for (const { line, record } of tradeRecords) {
-		// _prevHash の連続性チェック
 		if (record._prevHash !== prevHash) {
 			console.error(
 				`  [NG] 行 ${line}: _prevHash 不一致\n` + `    期待: ${prevHash}\n` + `    実際: ${record._prevHash}`,
@@ -76,7 +65,6 @@ function main() {
 			errors++;
 		}
 
-		// _hash の再計算チェック
 		const expectedHash = computeHash(record);
 		if (record._hash !== expectedHash) {
 			console.error(

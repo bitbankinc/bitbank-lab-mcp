@@ -1,24 +1,8 @@
-/**
- * lib/candle-validate.ts — ローソク足データの品質検証ロジック
- *
- * Vol.01（データ取得とクレンジング）のバリデーション手法をベースに、
- * OHLCV データの完全性・整合性・異常値を検出する純粋関数群。
- *
- * 【暗号資産ドメイン考慮】
- * - ファットテール分布: σ閾値は株式より広め（Vol.01 の教え）
- * - 出来高ゼロ: 「取引がなかった」= 正常（Vol.01 の補完戦略: 0埋め）
- * - ペアティア: major/mid/minor で流動性・スプレッドが大きく異なる
- *
- * 【共通仕様】
- * - 入力: CandleRow[]（古い順、isoTime 付き）
- * - 出力: 各検証結果オブジェクト
- * - 副作用なし
- */
+// 暗号資産はファットテールなので σ 閾値は株式より広めにする（Vol.01）。
 
 import { dayjs } from './datetime.js';
 import { avg, stddev } from './math.js';
 
-/** 検証対象のローソク足行 */
 export interface CandleRow {
 	open: number;
 	high: number;
@@ -28,9 +12,7 @@ export interface CandleRow {
 	isoTime?: string | null;
 }
 
-// ── ペアティア分類 ──
-// 参考: bitbank-cli-skills pair-classification.md
-// 24h出来高シェア（JPY建て売買代金割合）に基づく分類
+// 24h 出来高シェア（JPY 建て売買代金の割合）による分類（bitbank-cli-skills の pair-classification.md）。
 
 export type PairTier = 'major' | 'mid' | 'minor';
 
@@ -48,12 +30,7 @@ const MID_PAIRS = new Set([
 	'link_jpy',
 ]);
 
-/**
- * ペア名からティアを判定する。
- * major: 出来高シェア10%以上（板が厚く、スプレッド狭い）
- * mid:   出来高シェア1-10%（深夜帯は板が薄くなることがある）
- * minor: 出来高シェア1%未満（出来高ゼロが散発、スプレッド広い、ヒゲが出やすい）
- */
+// major は出来高シェア 10% 以上、mid は 1〜10%、minor は 1% 未満。
 export function classifyPairTier(pair: string): PairTier {
 	const normalized = pair.toLowerCase();
 	if (MAJOR_PAIRS.has(normalized)) return 'major';
@@ -61,21 +38,9 @@ export function classifyPairTier(pair: string): PairTier {
 	return 'minor';
 }
 
-/**
- * ティアに応じたデフォルト閾値を返す。
- *
- * Vol.01 の教え:
- * - 暗号資産はファットテール → σ閾値は広めが妥当
- * - 出来高ゼロ = 取引がなかった（正常）
- *
- * ペア分類の教え:
- * - minor は出来高ゼロが日常的、スプレッド由来のヒゲも頻出
- * - major は板が厚く、異常値はより信号として意味がある
- */
 export interface TierDefaults {
 	priceSigma: number;
 	volumeMultiplier: number;
-	/** 出来高ゼロを品質スコアで減点する重み (0=減点なし, 1=フル減点) */
 	zeroVolumePenaltyWeight: number;
 }
 
@@ -90,8 +55,6 @@ export function getTierDefaults(tier: PairTier): TierDefaults {
 	}
 }
 
-// ── 時間足ごとのインターバル（ミリ秒） ──
-
 const INTERVAL_MS: Record<string, number> = {
 	'1min': 60_000,
 	'5min': 300_000,
@@ -104,8 +67,6 @@ const INTERVAL_MS: Record<string, number> = {
 	'1day': 86_400_000,
 };
 
-// ── 1. 完全性チェック ──
-
 export interface CompletenessResult {
 	expected: number;
 	actual: number;
@@ -114,16 +75,10 @@ export interface CompletenessResult {
 	ratio: number; // 0–1
 }
 
-/**
- * タイムスタンプの歯抜けを検出する。
- * Vol.01 の「expected_index との差分」パターン。
- *
- * 1week / 1month は間隔が不規則なのでスキップ（ratio: 1 を返す）。
- */
+// 1week / 1month は間隔が不規則なのでスキップする（ratio: 1）。
 export function checkCompleteness(candles: CandleRow[], candleType: string): CompletenessResult {
 	const intervalMs = INTERVAL_MS[candleType];
 
-	// 不規則間隔の時間足はスキップ
 	if (!intervalMs || candles.length < 2) {
 		return { expected: candles.length, actual: candles.length, missing: 0, missingTimestamps: [], ratio: 1 };
 	}
@@ -156,8 +111,6 @@ export function checkCompleteness(candles: CandleRow[], candleType: string): Com
 	};
 }
 
-// ── 2. 重複チェック ──
-
 export interface DuplicatesResult {
 	count: number;
 	timestamps: string[];
@@ -180,8 +133,6 @@ export function checkDuplicates(candles: CandleRow[]): DuplicatesResult {
 	return { count: duplicates.length, timestamps: duplicates.slice(0, 50) };
 }
 
-// ── 3. OHLCV 整合性チェック ──
-
 export interface IntegrityIssue {
 	index: number;
 	isoTime: string | null;
@@ -194,13 +145,6 @@ export interface IntegrityResult {
 	issues: IntegrityIssue[];
 }
 
-/**
- * OHLCV の論理整合性を検証。
- * - high >= low
- * - high >= max(open, close)
- * - low <= min(open, close)
- * - volume >= 0
- */
 export function checkIntegrity(candles: CandleRow[]): IntegrityResult {
 	const issues: IntegrityIssue[] = [];
 
@@ -233,8 +177,6 @@ export function checkIntegrity(candles: CandleRow[]): IntegrityResult {
 	};
 }
 
-// ── 4. 価格異常値検出 ──
-
 export interface PriceAnomaly {
 	index: number;
 	isoTime: string | null;
@@ -249,16 +191,11 @@ export interface PriceAnomalyResult {
 	stats: { mean: number; stddev: number; threshold: number } | null;
 }
 
-/**
- * 前足比の変化率（pct_change）が ±N σ を超えるバーを検出。
- * Vol.01 の `ret.describe()` + 外れ値検出パターン。
- */
 export function checkPriceAnomalies(candles: CandleRow[], sigmaThreshold: number): PriceAnomalyResult {
 	if (candles.length < 3) {
 		return { totalBars: candles.length, anomalyCount: 0, anomalies: [], stats: null };
 	}
 
-	// リターン（変化率）を計算
 	const returns: number[] = [];
 	for (let i = 1; i < candles.length; i++) {
 		const prev = candles[i - 1].close;
@@ -302,8 +239,6 @@ export function checkPriceAnomalies(candles: CandleRow[], sigmaThreshold: number
 	};
 }
 
-// ── 5. 出来高異常値検出 ──
-
 export interface VolumeAnomaly {
 	index: number;
 	isoTime: string | null;
@@ -321,9 +256,6 @@ export interface VolumeAnomalyResult {
 	stats: { avgVolume: number; threshold: number } | null;
 }
 
-/**
- * 出来高ゼロ、または移動平均の N 倍超のスパイクを検出。
- */
 export function checkVolumeAnomalies(candles: CandleRow[], multiplierThreshold: number): VolumeAnomalyResult {
 	const volumes = candles.map((c) => c.volume ?? 0);
 
@@ -331,8 +263,7 @@ export function checkVolumeAnomalies(candles: CandleRow[], multiplierThreshold: 
 		return { totalBars: 0, anomalyCount: 0, zeroCount: 0, spikeCount: 0, anomalies: [], stats: null };
 	}
 
-	// スパイク検出のベースラインはゼロ出来高を除外して算出
-	// Vol.01: 出来高ゼロ = 「取引がなかった」なのでベースラインに含めるべきではない
+	// スパイクのベースラインはゼロ出来高を除いて算出する（ゼロは取引が無かっただけ）。
 	const nonZeroVolumes = volumes.filter((v) => v > 0);
 	const avgVol = avg(nonZeroVolumes) ?? 0;
 	const anomalies: VolumeAnomaly[] = [];
@@ -367,8 +298,6 @@ export function checkVolumeAnomalies(candles: CandleRow[], multiplierThreshold: 
 	};
 }
 
-// ── 6. 総合品質スコア ──
-
 export interface QualityScore {
 	score: number; // 0–100
 	breakdown: {
@@ -380,14 +309,7 @@ export interface QualityScore {
 	grade: 'A' | 'B' | 'C' | 'D' | 'F';
 }
 
-/**
- * 各チェック結果を総合して 0–100 の品質スコアを算出。
- *
- * @param zeroVolumePenaltyWeight 出来高ゼロの減点重み (0–1)。
- *   Vol.01: 出来高ゼロ = 「取引がなかった」= 正常な解釈。
- *   minor ペアでは日常的に発生するため 0（減点なし）、
- *   major ペアでは異常の可能性があるため 1（フル減点）。
- */
+// minor は出来高ゼロが日常的なので減点 0、major は異常の可能性があるので 1 を渡す。
 export function computeQualityScore(
 	completeness: CompletenessResult,
 	integrity: IntegrityResult,
@@ -395,19 +317,15 @@ export function computeQualityScore(
 	volumeAnomalies: VolumeAnomalyResult,
 	zeroVolumePenaltyWeight = 1,
 ): QualityScore {
-	// 完全性（30点）: 欠損率に応じて減点
 	const completenessScore = Math.round(completeness.ratio * 30);
 
-	// 整合性（25点）: 不正レコード率に応じて減点
 	const integrityRatio = integrity.totalChecked > 0 ? 1 - integrity.invalidCount / integrity.totalChecked : 1;
 	const integrityScore = Math.round(integrityRatio * 25);
 
-	// 価格安定性（25点）: 異常値率に応じて減点
 	const priceRatio =
 		priceAnomalies.totalBars > 1 ? 1 - Math.min(priceAnomalies.anomalyCount / (priceAnomalies.totalBars - 1), 1) : 1;
 	const priceScore = Math.round(priceRatio * 25);
 
-	// 出来高健全性（20点）: ゼロ率（重み付き）とスパイク率で減点
 	const zeroRatio = volumeAnomalies.totalBars > 0 ? volumeAnomalies.zeroCount / volumeAnomalies.totalBars : 0;
 	const spikeRatio = volumeAnomalies.totalBars > 0 ? volumeAnomalies.spikeCount / volumeAnomalies.totalBars : 0;
 	const volumeScore = Math.round((1 - Math.min(zeroRatio * zeroVolumePenaltyWeight + spikeRatio, 1)) * 20);

@@ -1,15 +1,4 @@
-/**
- * tests/patterns/min-bars.test.ts
- *
- * `patterns/min-bars.ts`（時間足 × 検出器 → 最小要求バー数）の契約テスト。
- *
- * 目的は 2 つ:
- *   1. 導出式が各検出器の実装と同じ意味論であること（境界の off-by-one を含む）
- *   2. `docs/tools.md` の「`limit` の実効下限」表が手書きのまま drift しないこと
- *
- * 2 は表を**実ファイルからパースして**突き合わせる。値を本ファイルに写経すると
- * 「テストと docs が両方古い」状態を作れてしまい、drift 検出にならない。
- */
+// docs の表は実ファイルからパースして突き合わせる（値を本ファイルに写経すると「テストと docs が両方古い」状態を作れてしまう）。
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,14 +22,8 @@ import { assessScanWindow } from '../../tools/patterns/scan-window.js';
 
 const ALL_TIMEFRAMES = CandleTypeEnum.options;
 
-// ── docs/tools.md のパース ────────────────────────
-
 const DOCS_PATH = join(dirname(fileURLToPath(import.meta.url)), '../../docs/tools.md');
 
-/**
- * `docs/tools.md` の指定見出し直後にある最初の markdown テーブルを
- * 「1 列目のラベル → 残りのセル」の Map として返す。
- */
 function parseMarkdownTable(marker: string): Map<string, string[]> {
 	const doc = readFileSync(DOCS_PATH, 'utf8');
 	const markerIdx = doc.indexOf(marker);
@@ -62,7 +45,6 @@ function parseMarkdownTable(marker: string): Map<string, string[]> {
 			.replace(/\|$/, '')
 			.split('|')
 			.map((c) => c.trim());
-		// ヘッダ行と区切り行（---）は捨てる
 		if (cells.every((c) => /^:?-{2,}:?$/.test(c))) continue;
 		const [label, ...rest] = cells;
 		rows.set(label, rest);
@@ -75,8 +57,6 @@ function parseMarkdownTable(marker: string): Map<string, string[]> {
 function timeframesFromLabel(label: string): string[] {
 	return [...label.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
 }
-
-// ── 1. 導出式の意味論 ─────────────────────────────
 
 describe('minBarsForDetector — 導出式', () => {
 	it('全時間足 × 全検出器で正の整数を返す', () => {
@@ -104,12 +84,7 @@ describe('minBarsForDetector — 導出式', () => {
 	});
 
 	describe('形成中の反転パターン — 形成バー数の境界', () => {
-		// triple / H&S は同じ形の判定をする: formationBars ∈ [minBars, maxBars]。
-		// 窓が bars 本のとき取りうる最大の formationBars は bars - 1（添字差）なので、
-		// 導出値は minBars + 1 でなければならない。
-		//
-		// **`forming_double` はこの表から外れた（#268 案 C）。** 形成中 double の経路が消えたので
-		// 「その時間足で形成中 double が組めるか」という問い自体が無くなった。
+		// triple / H&S は formationBars ∈ [minBars, maxBars] で判定し、窓が bars 本のとき取りうる最大の formationBars は bars - 1 なので、導出値は minBars + 1 でなければならない。
 		const cases: Array<{ detector: MinBarsDetector; params: (tf: string) => { minBars: number; maxBars: number } }> = [
 			{ detector: 'forming_hs', params: getHsFormingBarParams },
 			{ detector: 'forming_triple', params: getTripleFormingBarParams },
@@ -136,11 +111,6 @@ describe('minBarsForDetector — 導出式', () => {
 		});
 
 		it('手書き daysPerBar の受理域には戻っていない（#118 問題 3 の回帰）', () => {
-			// 旧実装は patternDays = Math.round(formationBars × (1day→1 / 1week→7 / それ以外→1))
-			// を 21〜90 日で判定していた。1week の受理域は [3, 12] で、構造的下限（25 本）を
-			// 下回っており実質検出不能だった。
-			// **double の 14 日由来の行（受理域 [2, 12]）は #268 案 C で消えた**（経路ごと削除）。
-			// 同じ換算に乗っていた H&S / triple の 21 日由来だけを残す。
 			const legacyDaysPerBar = (tf: string) => (tf === '1day' ? 1 : tf === '1week' ? 7 : 1);
 			const legacyRange = (tf: string, minDays: number) => ({
 				// Math.round(x) >= minDays ⟺ x >= minDays - 0.5
@@ -149,8 +119,6 @@ describe('minBarsForDetector — 導出式', () => {
 			});
 			expect(legacyRange('1week', 21)).toEqual({ minBars: 3, maxBars: 12 });
 			expect(getHsFormingBarParams('1week').minBars).toBeGreaterThan(legacyRange('1week', 21).maxBars);
-			// 1month は旧実装が 21 バー = 21 ヶ月を要求していた。バー数統一後は構造的下限に
-			// 持ち上がるので、閾値は緩むのではなく厳しくなる（PR の意図した向き）。
 			expect(getHsFormingBarParams('1month').minBars).toBe(structuralFloorBars('1month'));
 			expect(getHsFormingBarParams('1month').minBars).toBeGreaterThan(legacyRange('1month', 21).minBars);
 		});
@@ -175,7 +143,6 @@ describe('minBarsForDetector — 導出式', () => {
 			expect(minWindowBars, `${tf}（1 本余分でない）`).toBeGreaterThan(bars - 2 - 5);
 		}
 		// minWindowBars は構造的下限（structuralFloorBars）なので時間足でスケールする。
-		// 旧実装のマジックナンバー 15（全時間足で 21 本）に戻っていないことを固定する。
 		const table = Object.fromEntries(ALL_TIMEFRAMES.map((tf) => [tf, minBarsForDetector(tf, 'triangle')]));
 		expect(table).toEqual({
 			'1min': 21,
@@ -216,8 +183,6 @@ describe('minBarsForDetector — 導出式', () => {
 		}
 	});
 });
-
-// ── 2. docs/tools.md との突き合わせ ───────────────
 
 describe('docs/tools.md 「`limit` の実効下限」表との一致', () => {
 	it('§1 構造的下限の表が assessScanWindow / getDefaultParamsForTf と一致する', () => {

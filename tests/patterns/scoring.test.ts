@@ -1,10 +1,3 @@
-/**
- * `tools/patterns/scoring.ts` — 反転パターンの confidence サブスコア軸。
- *
- * `retracementScore` / `breakoutQualityScore` は `detect_doubles.ts` の module-private 関数を
- * issue #199 候補 1 で共有モジュールへ切り出したもの。**切り出し時に定義を変えていない**ことを
- * 固定するためのテストなので、期待値は double の旧実装の式から導いてある。
- */
 import { describe, expect, it } from 'vitest';
 import { averageDefinedAxes, breakoutQualityScore, retracementScore } from '../../tools/patterns/scoring.js';
 import { RETRACEMENT_MAX, RETRACEMENT_MIN } from '../../tools/patterns/structural.js';

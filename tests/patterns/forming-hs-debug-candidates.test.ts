@@ -1,16 +1,4 @@
-/**
- * tests/patterns/forming-hs-debug-candidates.test.ts
- *
- * 形成中 H&S / 逆 H&S が `debug.candidates` に痕跡を残すことの回帰テスト（issue #155）。
- *
- * カバーするもの:
- *   1. #155 の再現条件で、検出された形成中 H&S と同じ構成点を持つ `accepted: true` が積まれる
- *   2. 構成点 4 点が揃った後の 3 分岐が理由コードを残す
- *      （`head_not_extreme_in_span` / `formation_bars_out_of_range` / `completion_below_min`）
- *
- * `completion_below_min` だけは現行定数では到達しないため、fixture ではなく
- * 「なぜ fixture を置けないか」の算術境界を固定する（{@link FORMING_MIN_COMPLETION} の docstring）。
- */
+// `completion_below_min` は現行定数では到達しないため、fixture ではなく「なぜ fixture を置けないか」の算術境界を固定する。
 import { describe, expect, it, vi } from 'vitest';
 import { asMockResult, assertOk } from '../_assertResult.js';
 
@@ -96,7 +84,7 @@ async function runDebug(
 }
 
 describe('forming H&S debug candidates (#155)', () => {
-	it('#155 の再現条件で、検出された形成中 H&S と同じ構成点の accepted 候補が積まれる', async () => {
+	it('#155 の実データ候補は横ばい先行なら形成中 H&S として積まれない', async () => {
 		const { patterns, candidates } = await runDebug(buildBtcJpy2026Candles() as Candle[], {
 			patterns: ['head_and_shoulders', 'inverse_head_and_shoulders'],
 			headProminencePct: 0.01,
@@ -105,28 +93,18 @@ describe('forming H&S debug candidates (#155)', () => {
 			includeInvalid: true,
 		});
 
-		// issue #155 が実測した検出結果（形成中 H&S、構成点 38 / 53 / 66 / 73）
-		expect(patterns).toHaveLength(1);
-		expect(patterns[0]).toMatchObject({ type: 'head_and_shoulders', status: 'forming' });
-		expect((patterns[0].pivots as Array<{ idx: number }>).map((p) => p.idx)).toEqual([38, 53, 66, 73]);
+		expect(patterns).toHaveLength(0);
 
-		// #155 以前はこの候補が 1 件も無く、3 件すべてが accepted: false だった
-		const accepted = candidates.filter((c) => c.accepted);
-		const hit = accepted.find((c) => JSON.stringify(c.indices) === JSON.stringify([38, 53, 66, 73]));
-		expect(hit).toBeDefined();
+		const hit = candidates.find(
+			(c) =>
+				c.reason === 'prior_trend_mismatch:sideways' && JSON.stringify(c.indices) === JSON.stringify([38, 53, 66, 73]),
+		);
 		expect(hit?.type).toBe('head_and_shoulders');
-		// 完成済みとして採用されたと誤読させないための印
-		expect(hit?.status).toBe('forming');
-		expect(hit?.details).toMatchObject({ confidence: 0.78, method: 'forming_hs' });
-		// 構成点は 4 点。頭後の谷は strict の valley1 / valley2 と混同しない専用 role で出す
-		expect(hit?.points?.map((p) => p.role)).toEqual(['left_shoulder', 'head', 'post_head_valley', 'right_shoulder']);
-		expect(hit?.points?.map((p) => p.idx)).toEqual([38, 53, 66, 73]);
-		expect(hit?.points?.every((p) => typeof p.isoTime === 'string')).toBe(true);
+		expect(hit?.accepted).toBe(false);
 	});
 
 	it('accepted: true は dedup 前の「組み立てた」であって最終出力に残ったではない', async () => {
-		// 形成中 H&S は #154 以降すべての頭候補を試すので、accepted 候補は
-		// data.patterns より多く出うる（globalDedup は detect_patterns 側の後段）。
+		// 形成中 H&S はすべての頭候補を試すので、accepted 候補は data.patterns より多く出うる（globalDedup は detect_patterns 側の後段）。
 		const { patterns, candidates } = await runDebug(buildBtcJpy2026Candles() as Candle[], {
 			patterns: ['head_and_shoulders', 'inverse_head_and_shoulders'],
 			headProminencePct: 0.01,
@@ -192,9 +170,7 @@ describe('forming H&S debug candidates (#155)', () => {
 		});
 
 		it('completion_below_min は現行定数では到達しない（fixture を置けない理由を固定する）', () => {
-			// completion = min(1, (0.75 + 0.25 * progress) * (暫定右肩なら 0.9))、progress ∈ [0, 1]。
-			// 最小は progress = 0（右肩が左肩から許容幅ぴったり離れている）× 暫定右肩の 0.9 掛け。
-			// 重み側を触って下限が FORMING_MIN_COMPLETION を割り込んだらこのテストが落ちる。
+			// completion = min(1, (0.75 + 0.25 * progress) * (暫定右肩なら 0.9))、progress ∈ [0, 1] なので、最小は progress = 0 × 暫定右肩の 0.9 掛け。
 			const minCompletion = 0.75 * 0.9;
 			expect(minCompletion).toBeGreaterThan(FORMING_MIN_COMPLETION);
 		});

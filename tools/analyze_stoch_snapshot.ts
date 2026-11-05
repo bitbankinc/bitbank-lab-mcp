@@ -37,7 +37,6 @@ export interface BuildStochSnapshotTextInput {
 	}>;
 }
 
-/** テキスト組み立て（Stochスナップショット）— テスト可能な純粋関数 */
 export function buildStochSnapshotText(input: BuildStochSnapshotTextInput): string {
 	const { baseSummary, kStr, dStr, zoneJp, kPeriod, smoothK, smoothD, crossDesc, divType, divDesc, recentCrosses } =
 		input;
@@ -99,13 +98,9 @@ export default async function analyzeStochSnapshot(
 		let prevD: number | null = null;
 		let candles: Array<{ isoTime?: string | null; close: number }> = [];
 		let normalizedLen = 0;
-		// 上流 warning（取得層）と warnings（計算層）は path ごとに別ソースから抽出する。
-		// - isDefault=true: analyzeIndicators の meta.warning / meta.warnings 両方
-		// - isDefault=false: getCandles の meta.warning のみ（warnings は出ない）
+		// isDefault=true は analyzeIndicators 経由なので warning / warnings の両方、false は getCandles 経由なので warning だけを取る。
 		let warning: string | undefined;
 		let warnings: string[] | undefined;
-		// 最新足が形成中（未確定）か。%K/%D・ゾーン・クロスは最新足の終値に依存するため、
-		// analyze_indicators と同じ流儀で最新足 ts から判定する（warning 2 系統とは別系統の情報注記）。
 		// 取得 path に依らず最新足 ts で判定できるよう、両 path の中で代入する。
 		let provisional = false;
 

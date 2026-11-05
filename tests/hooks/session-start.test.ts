@@ -1,22 +1,10 @@
-/**
- * session-start.sh のテスト実行最適化ロジックの動作確認テスト
- *
- * テスト実行モード判定ロジック（skip / changed / full）を
- * 実際の git リポジトリ状態で検証する。
- * gen:types / typecheck / vitest 自体の動作は検証対象外
- * （それぞれ独立してテスト済み）。
- */
 import { execFileSync, execSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-/**
- * テスト実行モード判定部分だけを抽出したミニスクリプト。
- * session-start.sh の判定ロジックと同一だが、
- * npm run / vitest 実行を省略してモード名だけを出力する。
- */
+/** session-start.sh の判定ロジックと同一で、npm run / vitest 実行を省略してモード名だけを出力するミニスクリプト。 */
 const MODE_DETECT_SCRIPT = `
 set -euo pipefail
 
@@ -57,7 +45,6 @@ describe('session-start.sh テスト実行モード判定', () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	/** tmpDir で git init し初期コミットを作る（署名なし） */
 	function initRepo(): void {
 		execSync(
 			'git init && git checkout -b main && git config commit.gpgsign false && git config user.email "test@test" && git config user.name "test"',
@@ -67,12 +54,11 @@ describe('session-start.sh テスト実行モード判定', () => {
 		execSync('git add -A && git commit -m "init"', { cwd: tmpDir, stdio: 'pipe' });
 	}
 
-	/** tmpDir でコミットを作る（署名なし） */
 	function commit(message: string): void {
 		execSync(`git add -A && git commit -m "${message}"`, { cwd: tmpDir, stdio: 'pipe' });
 	}
 
-	/** モード判定スクリプトを実行（Windows の cmd.exe はシングルクォートを解釈しないためシェルを介さない） */
+	/** Windows の cmd.exe はシングルクォートを解釈しないので、シェルを介さずに実行する */
 	function detectMode(): string {
 		const out = execFileSync('bash', ['-c', MODE_DETECT_SCRIPT], {
 			cwd: tmpDir,
@@ -114,11 +100,7 @@ describe('session-start.sh テスト実行モード判定', () => {
 		initRepo();
 		writeFileSync(join(tmpDir, 'extra.ts'), 'export const z = 3;');
 		commit('extra');
-		// HEAD は main だが、origin/main が無いので local main を参照
-		// main の HEAD に新コミットがあり、origin/main は存在しない
-		// → main_ref=main, main_sha=HEAD → skip になるはず
-		// ただし実際にはこのケースは「main に追加コミット = 作業中」なので
-		// origin/main との差分で判定すべき。ここでは origin なしなので skip が正しい。
+		// origin/main が無いので local main を参照し、main_ref=main, main_sha=HEAD → skip になる（本来は origin/main との差分で判定すべきケースだが、origin なしなので skip が正しい）。
 		const mode = detectMode();
 		expect(mode).toBe('skip');
 	});

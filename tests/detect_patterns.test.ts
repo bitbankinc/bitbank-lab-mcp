@@ -123,8 +123,6 @@ describe('detect_patterns handler', () => {
 		expect(text).not.toContain('※形成中は includeForming=true を指定してください。');
 	});
 
-	// ── 上流 warning の伝播（views 切替でも content 先頭に出ること） ──
-
 	it('上流 meta.warning（取得層）が detailed view の content[0].text 先頭に伝播する', async () => {
 		mockedDetectPatterns.mockResolvedValueOnce(
 			asMockResult(
@@ -327,8 +325,6 @@ describe('detect_patterns handler', () => {
 		expect(sc.data.statistics).toEqual(statistics);
 	});
 
-	// ── tz 引数の伝搬（PR-4: 表示日付の tz 整形） ──
-
 	it('tz 既定（Asia/Tokyo）: pattern range の表示が JST 暦日になる', async () => {
 		// 2026-10-01T23:30Z は UTC=10/01、JST=10/02。
 		mockedDetectPatterns.mockResolvedValueOnce(
@@ -433,14 +429,11 @@ describe('detect_patterns handler', () => {
 			tz: 'UTC',
 		});
 
-		// detectPatterns(pair, type, limit, opts) の opts.tz に伝搬している
 		expect(mockedDetectPatterns).toHaveBeenCalledWith('btc_jpy', '1day', 90, expect.objectContaining({ tz: 'UTC' }));
 	});
 
 	it("tz='' は Asia/Tokyo にフォールバックして detectPatterns に渡される", async () => {
-		// schema の default('Asia/Tokyo') により tz 省略時は 'Asia/Tokyo' が入る。
-		// 明示的に空文字を渡した場合は formatDateInTz 側でフォールバックされるため
-		// 表示は同等に JST 暦日になる。
+		// tz 省略時は schema の default('Asia/Tokyo') が入り、明示的な空文字は formatDateInTz 側でフォールバックされるので、表示は同等に JST 暦日になる。
 		mockedDetectPatterns.mockResolvedValueOnce(
 			asMockResult(
 				okResult({
@@ -482,17 +475,12 @@ describe('detect_patterns handler', () => {
 		});
 
 		const text = (res as { content: Array<{ text: string }> }).content[0].text;
-		// 空文字 → Asia/Tokyo フォールバック
 		expect(text).toContain('2026-10-02');
 		expect(text).toContain('2026-10-11');
 	});
 
-	// ── パターン表示順序の一貫性（低 confidence H&S が上に出ない） ──
-
 	it('高 confidence パターンが低 confidence H&S より上に表示される（detectPatterns が返した順を handler が崩さない）', async () => {
-		// detectPatterns は rankPatterns 適用後の順番で返すため、
-		// ここでは「ソート済み」配列を mock として渡し、handler がそれを保つことを検証する。
-		// （rankPatterns 単体の挙動は tests/patterns/ranking.test.ts で検証）
+		// detectPatterns は rankPatterns 適用後の順番で返すので、ソート済み配列を mock として渡し、handler がそれを保つことを検証する。
 		const sortedPatterns = [
 			{
 				type: 'triangle_symmetrical',
@@ -549,7 +537,6 @@ describe('detect_patterns handler', () => {
 		expect(idxLow).toBeGreaterThanOrEqual(0);
 		expect(idxHigh).toBeLessThan(idxLow);
 
-		// structuredContent.data.patterns の順序も同じ
 		// biome-ignore lint/suspicious/noExplicitAny: test assertion for structuredContent
 		const sc = (res as any).structuredContent;
 		const patTypes: string[] = (sc?.data?.patterns ?? []).map((p: { type: string }) => p.type);
@@ -598,8 +585,7 @@ describe('detect_patterns handler', () => {
 		const text = (res as { content: Array<{ text: string }> }).content[0].text;
 		expect(text).toMatch(/非常に低い|除外候補/);
 	});
-	// data.warnings は structuredContent 側にしか無く LLM からは見えないため、
-	// スキャン窓不足の警告は content[0].text にも出す必要がある。
+	// data.warnings は structuredContent 側にしか無く LLM からは見えないので、スキャン窓不足の警告は content[0].text にも出す必要がある。
 	describe('スキャン窓不足の警告（data.warnings → content）', () => {
 		const scanWarning = {
 			type: 'limit_too_small_for_timeframe',

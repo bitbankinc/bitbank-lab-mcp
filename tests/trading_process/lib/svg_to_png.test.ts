@@ -50,8 +50,7 @@ describe('generateBacktestChartFilename', () => {
 		expect(filename).not.toContain('xrp_jpy');
 	});
 
-	// パス区切りやドットを含む値が渡ってもファイル名がディレクトリを抜け出さないこと
-	// （防御的サニタイズ。pair は上流の ensurePair で弾かれる前提だが、局所でも保証する）
+	// パス区切りやドットを含む値が渡ってもファイル名がディレクトリを抜け出さないこと（pair は上流の ensurePair で弾かれる前提だが、局所でも保証する防御的サニタイズ）
 	it('パストラバーサルを含むペア名からパス区切りとドットを除去する', () => {
 		const filename = generateBacktestChartFilename('../../etc/passwd', '1D', 'sma_cross');
 		expect(filename).not.toContain('/');

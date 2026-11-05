@@ -1,5 +1,10 @@
 ---
-globs: tools/render_*.ts, tools/prepare_*.ts, src/handlers/*chart*.ts, src/handlers/*render*.ts, src/prompts.ts
+paths:
+  - "tools/render_*.ts"
+  - "tools/prepare_*.ts"
+  - "src/handlers/*chart*.ts"
+  - "src/handlers/*render*.ts"
+  - "src/prompts.ts"
 ---
 
 # チャート・可視化ポリシー

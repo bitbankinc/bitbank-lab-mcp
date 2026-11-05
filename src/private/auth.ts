@@ -1,17 +1,7 @@
-/**
- * bitbank Private API 認証モジュール。
- *
- * ACCESS-TIME-WINDOW 方式を採用。
- * 署名対象文字列: requestTime + timeWindow + path/body
- * ヘッダー: ACCESS-KEY, ACCESS-REQUEST-TIME, ACCESS-TIME-WINDOW, ACCESS-SIGNATURE
- *
- * @see https://github.com/bitbankinc/bitbank-api-docs/blob/master/rest-api.md
- */
-
 import { createHmac } from 'node:crypto';
 import { getPrivateApiConfig } from './config.js';
 
-/** デフォルトの TIME-WINDOW（ミリ秒）。最大 60000 まで設定可能 */
+/** ミリ秒。最大 60000 まで設定可能 */
 const DEFAULT_TIME_WINDOW = '5000';
 
 export interface AuthHeaders {
@@ -21,37 +11,19 @@ export interface AuthHeaders {
 	'ACCESS-SIGNATURE': string;
 }
 
-/**
- * GET リクエスト用の署名対象文字列を組み立てる。
- * 形式: requestTime + timeWindow + path（クエリパラメータ含む）
- */
+/** path はクエリパラメータを含む。 */
 export function buildGetMessage(requestTime: string, timeWindow: string, path: string): string {
 	return requestTime + timeWindow + path;
 }
 
-/**
- * POST リクエスト用の署名対象文字列を組み立てる。
- * 形式: requestTime + timeWindow + JSON body
- */
 export function buildPostMessage(requestTime: string, timeWindow: string, body: string): string {
 	return requestTime + timeWindow + body;
 }
 
-/**
- * HMAC-SHA256 署名を生成する。
- * テスト時に秘密鍵とメッセージを直接渡せるよう、純粋関数として分離。
- */
 export function sign(secret: string, message: string): string {
 	return createHmac('sha256', secret).update(message).digest('hex');
 }
 
-/**
- * GET リクエスト用の認証ヘッダーを生成する。
- *
- * @param path - リクエストパス（例: '/v1/user/assets'）、クエリパラメータ含む
- * @param requestTime - テスト時に固定値を注入可能。省略時はミリ秒タイムスタンプ
- * @param timeWindow - TIME-WINDOW 値（ミリ秒）。省略時は 5000
- */
 export function createGetAuthHeaders(
 	path: string,
 	requestTime?: string,
@@ -74,13 +46,6 @@ export function createGetAuthHeaders(
 	};
 }
 
-/**
- * POST リクエスト用の認証ヘッダーを生成する。
- *
- * @param body - JSON.stringify 済みのリクエストボディ
- * @param requestTime - テスト時に固定値を注入可能。省略時はミリ秒タイムスタンプ
- * @param timeWindow - TIME-WINDOW 値（ミリ秒）。省略時は 5000
- */
 export function createPostAuthHeaders(
 	body: string,
 	requestTime?: string,

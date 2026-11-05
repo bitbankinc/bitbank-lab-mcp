@@ -1,10 +1,3 @@
-/**
- * get_margin_status — 信用取引ステータスを取得する Private API ツール。
- *
- * bitbank Private API `/v1/user/margin/status` を呼び出し、
- * 保証金・建玉・ロスカット情報を取得して返す。
- */
-
 import { nowIso } from '../../lib/datetime.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
 import { normalizePairCodes } from '../../lib/pair-code.js';
@@ -14,7 +7,6 @@ import { GetMarginStatusInputSchema, GetMarginStatusOutputSchema } from '../../s
 import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
-/** bitbank /v1/user/margin/status のレスポンス型 */
 interface RawMarginStatus {
 	status: string;
 	total_margin_balance: string;
@@ -41,7 +33,6 @@ interface RawMarginStatus {
 	}>;
 }
 
-/** 警告が必要なステータス */
 const WARNING_STATUSES = new Set(['CALL', 'LOSSCUT', 'DEBT']);
 
 const STATUS_LABELS: Record<string, string> = {
@@ -59,15 +50,12 @@ export default async function getMarginStatus(_args: Record<string, unknown>) {
 		const raw = await client.get<RawMarginStatus>('/v1/user/margin/status');
 		const timestamp = nowIso();
 
-		// 取得境界での pair 正規化（`lib/pair-code.ts`）。以降はサマリー表示・`data` とも
-		// **この 1 つの値だけ**を使い、`raw.available_balances` を読み直さない。
-		// 読み直すと片方だけ未正規化になり、どちらが担保されているか読めなくなる。
+		// 以降はサマリー表示・`data` ともこの値だけを使い、`raw.available_balances` を読み直さない（片方だけ未正規化になる）。
 		const availableBalances = normalizePairCodes(raw.available_balances ?? []);
 
 		const hasWarning = WARNING_STATUSES.has(raw.status);
 		const statusLabel = STATUS_LABELS[raw.status] ?? raw.status;
 
-		// サマリー文字列の生成
 		const lines: string[] = [];
 
 		if (hasWarning) {
@@ -149,7 +137,6 @@ export default async function getMarginStatus(_args: Record<string, unknown>) {
 			losscut_percentage: raw.losscut_percentage,
 			buy_credit: raw.buy_credit,
 			sell_credit: raw.sell_credit,
-			// 上の取得境界で正規化済みの値をそのまま使う（`structuredContent` は小文字契約）。
 			available_balances: availableBalances,
 			timestamp,
 		};
@@ -162,14 +149,12 @@ export default async function getMarginStatus(_args: Record<string, unknown>) {
 
 		return GetMarginStatusOutputSchema.parse(ok(summary, data, meta));
 	} catch (err) {
-		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
 		return GetMarginStatusOutputSchema.parse(
 			failPrivateToolError(err, '信用取引ステータス取得中に予期しないエラーが発生しました'),
 		);
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'get_margin_status',
 	description:

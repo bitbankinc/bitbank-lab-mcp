@@ -46,7 +46,6 @@ const EMA_FOOTER = [
 	'📌 補完ツール: analyze_sma_snapshot（SMA）, analyze_indicators（他指標）, analyze_bb_snapshot（BB）, get_flow_metrics（出来高）',
 ];
 
-/** テキスト組み立て（EMAスナップショット）— テスト可能な純粋関数 */
 export function buildEmaSnapshotText(input: BuildEmaSnapshotTextInput): string {
 	return buildMaSnapshotText({ ...input, prefix: 'EMA', footerLines: EMA_FOOTER });
 }
@@ -70,13 +69,9 @@ export default async function analyzeEmaSnapshot(
 		let candles: Array<{ isoTime?: string | null }> = [];
 		let normalizedLen = 0;
 		const map: Record<string, number | null> = {};
-		// 上流 warning（取得層）と warnings（計算層）は path ごとに別ソースから抽出する。
-		// - hasCustomPeriods=true: getCandles の meta.warning のみ（warnings は出ない）
-		// - hasCustomPeriods=false: analyzeIndicators の meta.warning / meta.warnings 両方
+		// hasCustomPeriods=true は getCandles 経由なので warning だけ、false は analyzeIndicators 経由なので warning / warnings の両方を取る。
 		let warning: string | undefined;
 		let warnings: string[] | undefined;
-		// 最新足が形成中（未確定）か。EMA の最新値・配列・乖離は最新足の終値に依存するため、
-		// analyze_indicators と同じ流儀で最新足 ts から判定する（warning 2 系統とは別系統の情報注記）。
 		// 取得 path に依らず最新足 ts で判定できるよう、両 path の中で代入する。
 		let provisional = false;
 

@@ -23,9 +23,7 @@ function buildTransactions(count: number, opts?: { startId?: number }): TxInput[
 }
 
 function mockFetchOk(body: unknown, headers: Record<string, string> = {}) {
-	// 実 Fetch API の Headers は case-insensitive。case-sensitive な独自 mock だと
-	// 呼び出し側が異なる casing でアクセスしたとき本番と挙動が乖離するため、
-	// 標準 Headers クラスでラップして本番と等価な挙動にする。
+	// 実 Fetch API の Headers は case-insensitive なので、case-sensitive な独自 mock で本番と挙動が乖離しないよう標準 Headers クラスでラップする。
 	return vi.fn().mockResolvedValue({
 		ok: true,
 		status: 200,
@@ -43,8 +41,6 @@ describe('get_transactions', () => {
 		vi.restoreAllMocks();
 	});
 
-	// ── inputSchema ──
-
 	it('inputSchema: date は YYYYMMDD 形式のみ許可する', () => {
 		const parse = () => toolDef.inputSchema.parse({ pair: 'btc_jpy', date: '2024-01-01' });
 		expect(parse).toThrow();
@@ -59,8 +55,6 @@ describe('get_transactions', () => {
 		const parse = () => toolDef.inputSchema.parse({ pair: 'btc_jpy', date: '202401011' });
 		expect(parse).toThrow();
 	});
-
-	// ── 正常系 ──
 
 	it('正常系: limit 件数だけ normalized を返す', async () => {
 		globalThis.fetch = mockFetchOk({
@@ -129,8 +123,6 @@ describe('get_transactions', () => {
 		expect(byDate.meta.source).toBe('by_date');
 	});
 
-	// ── URL 構築 ──
-
 	it('URL: date 指定時に /transactions/{YYYYMMDD} に当たる', async () => {
 		const fetchMock = mockFetchOk({ success: 1, data: { transactions: buildTransactions(1) } });
 		globalThis.fetch = fetchMock;
@@ -147,8 +139,6 @@ describe('get_transactions', () => {
 		const url = (fetchMock as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0] as string;
 		expect(url).toBe('https://public.bitbank.cc/btc_jpy/transactions');
 	});
-
-	// ── 異常系 ──
 
 	it('API異常系: success:0 を upstream エラーとして明示分類する', async () => {
 		globalThis.fetch = mockFetchOk({ success: 0, data: { code: 10000 } });
@@ -184,8 +174,6 @@ describe('get_transactions', () => {
 		assertFail(res);
 		expect(res.summary).toContain('https://public.bitbank.cc/btc_jpy/transactions');
 	});
-
-	// ── 上流データ品質 ──
 
 	describe('上流データ品質', () => {
 		it('price 欠損行はドロップし、件数を meta.warning と summary に出す', async () => {
@@ -234,8 +222,6 @@ describe('get_transactions', () => {
 		});
 	});
 
-	// ── ペア / limit バリデーション ──
-
 	it('バリデーション: 未対応 pair は fail を返す', async () => {
 		const res = await getTransactions('zzz_jpy', 10);
 		assertFail(res);
@@ -245,8 +231,6 @@ describe('get_transactions', () => {
 		const res = await getTransactions('btc_jpy', 0);
 		assertFail(res);
 	});
-
-	// ── handler 経由のフィルタ ──
 
 	describe('toolDef.handler 経由のフィルタ', () => {
 		function fixture(items: TxInput[]) {
@@ -314,13 +298,11 @@ describe('get_transactions', () => {
 				ok: true;
 				summary: string;
 			};
-			// ヒットした約定（id:3 / id:4）の個別行が content 可視テキストに出る
 			expect(res.summary).toContain('📋 フィルタ後 2件の取引:');
 			expect(res.summary).toContain('id:3');
 			expect(res.summary).toContain('id:4');
 			expect(res.summary).toContain('6000000');
 			expect(res.summary).toContain('7000000');
-			// フィルタ対象外（id:1 / id:2）は summary に漏れない
 			expect(res.summary).not.toContain('id:1');
 			expect(res.summary).not.toContain('id:2');
 		});
@@ -406,9 +388,7 @@ describe('get_transactions', () => {
 	});
 });
 
-// ── UTC 暦日アーカイブ制約のエラーヒント ──
-// /transactions/{YYYYMMDD} は UTC 暦日アーカイブで、当該 UTC 日完了後に公開される（bitbank 側仕様）。
-// 進行中・未来の UTC 日の 404 には「なぜ 404 か」のヒントを付与する。
+// /transactions/{YYYYMMDD} は当該 UTC 日の完了後に公開される UTC 暦日アーカイブなので、進行中・未来の UTC 日の 404 には「なぜ 404 か」のヒントを付ける。
 
 describe('get_transactions: 未公開アーカイブ 404 のヒント', () => {
 	const originalFetch = globalThis.fetch;
@@ -451,9 +431,7 @@ describe('get_transactions: 未公開アーカイブ 404 のヒント', () => {
 	});
 });
 
-// ── フィルタ→limit の適用順序 / truncation メタデータ ──
-// フィルタは limit の前に適用される（filter → slice）。逆順だと「最新側 limit 件の中の合致分」
-// しか返らず、条件を絞るほどカバー期間が縮む。切り捨て発生時は meta と warning で明示する。
+// フィルタを limit の後に適用すると「最新側 limit 件の中の合致分」しか返らず、条件を絞るほどカバー期間が縮むので、filter → slice の順に適用する。切り捨て発生時は meta と warning で明示する。
 
 describe('get_transactions: フィルタ→limit の順序と truncation メタ', () => {
 	const originalFetch = globalThis.fetch;
@@ -463,7 +441,6 @@ describe('get_transactions: フィルタ→limit の順序と truncation メタ'
 		vi.restoreAllMocks();
 	});
 
-	/** count 行のうち largeEvery 行ごとに大口 (1.0)、他は小口 (0.01) を全域に分散させる */
 	function buildSpread(count: number, largeEvery: number): TxInput[] {
 		const baseTs = 1_700_000_000_000;
 		return Array.from({ length: count }, (_, i) => ({
@@ -476,8 +453,7 @@ describe('get_transactions: フィルタ→limit の順序と truncation メタ'
 	}
 
 	it('limit 窓の外にあるフィルタ合致行も返す（filter → limit の順）', async () => {
-		// 2000 行中 50 件の大口が全域に分散。旧実装（limit → filter）では末尾 100 行内の
-		// 大口しか返らなかったケース。
+		// 2000 行中 50 件の大口が全域に分散している。
 		globalThis.fetch = mockFetchOk({ success: 1, data: { transactions: buildSpread(2000, 40) } });
 		const res = (await toolDef.handler({ pair: 'btc_jpy', limit: 100, minAmount: 0.5 })) as {
 			ok: true;
@@ -486,7 +462,7 @@ describe('get_transactions: フィルタ→limit の順序と truncation メタ'
 		};
 		expect(res.ok).toBe(true);
 		expect(res.data.normalized).toHaveLength(50);
-		// 時系列最古の大口（旧実装の limit 窓の外）が含まれる
+		// 時系列最古の大口（最新側 100 行の窓の外）が含まれる
 		expect(res.data.normalized[0].transaction_id).toBe(1_000_000);
 		expect(res.meta.totalFetched).toBe(2000);
 		expect(res.meta.matched).toBe(50);

@@ -1,7 +1,7 @@
 import type { z } from 'zod';
 import { toNum } from '../lib/conversions.js';
 import { nowIso } from '../lib/datetime.js';
-import { formatPercent, formatPriceJPY, formatVolumeJPY } from '../lib/formatter.js';
+import { formatExactPrice, formatPercent, formatVolumeJPY } from '../lib/formatter.js';
 import { fail, failFromError, ok } from '../lib/result.js';
 import {
 	type AnalyzeCurrencyStrengthDataSchemaOut,
@@ -12,8 +12,6 @@ import {
 import type { ToolDefinition } from '../src/tool-definition.js';
 import analyzeIndicators from './analyze_indicators.js';
 import getTickersJpy from './get_tickers_jpy.js';
-
-// ── Types ──
 
 interface TickerItem {
 	pair: string;
@@ -40,8 +38,6 @@ interface RankedItem {
 	interpretation: 'strong_bullish' | 'bullish' | 'neutral' | 'bearish' | 'strong_bearish';
 }
 
-// ── Helpers ──
-
 function clamp(x: number, min: number, max: number) {
 	return Math.max(min, Math.min(max, x));
 }
@@ -58,11 +54,8 @@ function extractCurrency(pair: string): string {
 	return pair.replace(/_jpy$/i, '').toUpperCase();
 }
 
-// ── Main ──
-
 export default async function analyzeCurrencyStrength(topN: number = 10, type: string = '1day') {
 	try {
-		// 1. Fetch all tickers
 		const tickerRes = await getTickersJpy();
 		if (!tickerRes?.ok) {
 			return AnalyzeCurrencyStrengthOutputSchema.parse(fail(tickerRes?.summary || 'tickers fetch failed', 'upstream'));
@@ -72,7 +65,6 @@ export default async function analyzeCurrencyStrength(topN: number = 10, type: s
 			return AnalyzeCurrencyStrengthOutputSchema.parse(fail('ティッカーデータが空です', 'upstream'));
 		}
 
-		// 2. Deduplicate by pair (keep first occurrence), sort by volume descending, pick top N
 		const seenPairs = new Set<string>();
 		const uniqueTickers = tickers.filter((t) => {
 			if (seenPairs.has(t.pair)) return false;
@@ -95,7 +87,6 @@ export default async function analyzeCurrencyStrength(topN: number = 10, type: s
 		withVolume.sort((a, b) => b.volumeJPY - a.volumeJPY);
 		const targets = withVolume.slice(0, topN);
 
-		// 3. Fetch RSI & SMA for each target (parallel, with concurrency limit)
 		const MAX_CONCURRENT = 3;
 		const indicatorResults: PromiseSettledResult<Awaited<ReturnType<typeof analyzeIndicators>>>[] = [];
 		for (let i = 0; i < targets.length; i += MAX_CONCURRENT) {
@@ -104,7 +95,6 @@ export default async function analyzeCurrencyStrength(topN: number = 10, type: s
 			indicatorResults.push(...batchResults);
 		}
 
-		// 3b. Check failures
 		const failedIndicatorPairs: string[] = [];
 		for (let i = 0; i < indicatorResults.length; i++) {
 			const r = indicatorResults[i];
@@ -117,24 +107,16 @@ export default async function analyzeCurrencyStrength(topN: number = 10, type: s
 			return AnalyzeCurrencyStrengthOutputSchema.parse(fail('全銘柄のテクニカル指標取得に失敗しました', 'upstream'));
 		}
 
-		// 4. Compute composite score for each
 		const items: RankedItem[] = targets.map((t, i) => {
 			const indResult = indicatorResults[i];
 			const ind = indResult.status === 'fulfilled' && indResult.value.ok ? indResult.value.data : null;
 
-			// Component: 24h change → score [-100, +100]
-			// ±5% → ±100
 			const changePct = t.change24h;
 			const changeScore = changePct != null ? clamp((changePct / 5) * 100, -100, 100) : 0;
 
-			// Component: RSI → score [-100, +100]
-			// RSI 50 = 0, RSI 70+ = +100, RSI 30- = -100
 			const rsi = (ind?.indicators?.RSI_14 as number | null) ?? null;
 			const rsiScore = rsi != null ? clamp(((rsi - 50) / 20) * 100, -100, 100) : 0;
 
-			// Component: SMA25 deviation → score [-100, +100]
-			// price > SMA25 = positive, price < SMA25 = negative
-			// ±3% deviation → ±100
 			const sma25 = (ind?.indicators?.SMA_25 as number | null) ?? null;
 			const latestClose = ind?.normalized?.at(-1)?.close as number | undefined;
 			let smaDeviation: number | null = null;
@@ -144,11 +126,9 @@ export default async function analyzeCurrencyStrength(topN: number = 10, type: s
 				smaScore = clamp((smaDeviation / 3) * 100, -100, 100);
 			}
 
-			// Component: volume rank bonus (higher volume → small positive bias)
 			const volumeRank = i + 1;
 			const volumeBonus = clamp(((topN - i) / topN) * 10, 0, 10);
 
-			// Composite: 40% change + 30% RSI + 25% SMA + 5% volume
 			const score = Number((changeScore * 0.4 + rsiScore * 0.3 + smaScore * 0.25 + volumeBonus * 0.05).toFixed(1));
 
 			return {
@@ -168,13 +148,11 @@ export default async function analyzeCurrencyStrength(topN: number = 10, type: s
 			};
 		});
 
-		// 5. Sort by score descending and assign ranks
 		items.sort((a, b) => b.score - a.score);
 		items.forEach((item, i) => {
 			item.rank = i + 1;
 		});
 
-		// 6. Build summary
 		const strongBullish = items.filter((it) => it.interpretation === 'strong_bullish').map((it) => it.currency);
 		const strongBearish = items.filter((it) => it.interpretation === 'strong_bearish').map((it) => it.currency);
 		const avgScore = Number((items.reduce((s, it) => s + it.score, 0) / items.length).toFixed(1));
@@ -203,7 +181,6 @@ export default async function analyzeCurrencyStrength(topN: number = 10, type: s
 			meta.failedPairs = failedIndicatorPairs;
 		}
 
-		// Build text summary
 		const lines: string[] = [];
 		if (failedIndicatorPairs.length > 0) {
 			lines.push(
@@ -227,7 +204,7 @@ export default async function analyzeCurrencyStrength(topN: number = 10, type: s
 					? `SMA25乖離${formatPercent(item.components.smaDeviation, { sign: true, digits: 2 })}`
 					: '';
 			const volStr = formatVolumeJPY(item.volumeJPY);
-			const priceStr = item.price != null ? formatPriceJPY(item.price) : 'n/a';
+			const priceStr = item.price != null ? `${formatExactPrice(item.price)}円` : 'n/a';
 			lines.push(
 				`${item.rank}. ${emoji} ${item.currency} ${priceStr} score=${item.score} | 24h:${chgStr} | ${rsiStr} | ${smaStr} | 出来高${volStr}`,
 			);
@@ -260,8 +237,6 @@ export default async function analyzeCurrencyStrength(topN: number = 10, type: s
 		return failFromError(e, { schema: AnalyzeCurrencyStrengthOutputSchema });
 	}
 }
-
-// ── ToolDef ──
 
 export const toolDef: ToolDefinition = {
 	name: 'analyze_currency_strength',

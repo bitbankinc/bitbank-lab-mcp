@@ -41,9 +41,9 @@
     "ci:typecheck": "npm run gen:types && tsc --noEmit -p tsconfig.json",
     "build": "npm run ci:typecheck",
     "gen:types": "tsx scripts/gen_types.ts",
-    "lint": "oxlint src/ tools/ lib/ tests/",
-    "lint:fix": "oxlint --fix src/ tools/ lib/ tests/",
-    "format": "biome format --write src/ tools/ lib/ tests/",
+    "lint": "oxlint src/ tools/ lib/ tests/ scripts/ lab/",
+    "lint:fix": "oxlint --fix src/ tools/ lib/ tests/ scripts/ lab/",
+    "format": "biome format --write src/ tools/ lib/ tests/ scripts/ lab/",
     "postinstall": "mkdir -p assets && cp node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js assets/lightweight-charts.standalone.js || true",
     "prepack": "npm run gen:types && npm run postinstall",
     "build:ui:cancel": "vite build --config ui/cancel-confirm/vite.config.ts"
@@ -65,7 +65,7 @@
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@modelcontextprotocol/server": "2.0.0",
+    "@modelcontextprotocol/server": "2.4.0",
     "dayjs": "^1.11.19",
     "dotenv": "^17.4.2",
     "lightweight-charts": "^5.1.0",

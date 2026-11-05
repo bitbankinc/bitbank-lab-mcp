@@ -1,8 +1,3 @@
-/**
- * プライベート API 系の Zod スキーマ。
- * src/schemas.ts から re-export され、単一ソースの原則を維持する。
- */
-
 import { z } from 'zod';
 import { deprecatedFieldNote } from '../schema/base.js';
 
@@ -14,10 +9,7 @@ const PrivateFailResultSchema = z.object({
 	meta: z.object({ errorType: z.string() }).passthrough(),
 });
 
-/** 信用取引の建玉方向（共有 enum：注文照会・信用系の両方で使う） */
 export const PositionSideEnum = z.enum(['long', 'short']);
-
-// ── get_my_assets ──
 
 export const GetMyAssetsInputSchema = z.object({
 	include_jpy_valuation: z.boolean().default(true).describe('各通貨の日本円評価額を含めるか'),
@@ -53,8 +45,6 @@ export const GetMyAssetsOutputSchema = z.union([
 	}),
 	PrivateFailResultSchema,
 ]);
-
-// ── get_my_trade_history ──
 
 export const GetMyTradeHistoryInputSchema = z.object({
 	pair: z.string().optional().describe('通貨ペア（例: btc_jpy）。省略で全ペア'),
@@ -115,8 +105,6 @@ export const GetMyTradeHistoryOutputSchema = z.union([
 	PrivateFailResultSchema,
 ]);
 
-// ── get_my_orders ──
-
 export const GetMyOrdersInputSchema = z.object({
 	pair: z.string().optional().describe('通貨ペア（例: btc_jpy）。省略で全ペア'),
 	count: z.number().max(1000).default(100).describe('取得件数（最大1000）'),
@@ -165,8 +153,6 @@ export const GetMyOrdersOutputSchema = z.union([
 	PrivateFailResultSchema,
 ]);
 
-// ── analyze_my_portfolio（Phase 3） ──
-
 export const AnalyzeMyPortfolioInputSchema = z.object({
 	include_technical: z.boolean().default(true).describe('保有銘柄のテクニカル分析を含めるか'),
 	include_pnl: z
@@ -183,202 +169,65 @@ export const AnalyzeMyPortfolioInputSchema = z.object({
 		),
 });
 
-/**
- * 入出金履歴が損益計算に使えなかった理由コード。
- *
- * 取得原価（移動平均法）は暗号資産出庫を原価の按分減少として処理するため、出庫履歴が
- * 無いと出庫済み数量の原価が残留して cost_basis が過大化する。値が確定できない場面では
- * 壊れた数値を出さず、当該フィールドを undefined / null にしたうえでこの理由コードを併記する。
- *
- * 値は今後の対応（保有数量の突き合わせ等）で追加される前提の拡張可能な enum として扱う。
- * 追加する側は「なぜ値を出せないか」を一意に説明できる粒度で足すこと。
- *
- * 損益を出す構成（`include_pnl=true`）では入出金履歴を常に取得するため、残る原因は
- * 「取得に失敗した」か「取得しきれなかった」の 2 系統しかない。
- * `include_deposit_withdrawal=false` を表していた `withdrawal_history_not_fetched` は
- * 発生しなくなったため削除した（当時は同フラグが取得可否まで握っていた）。
- */
 export const PortfolioFlowUnavailableReasonEnum = z.enum([
 	/** 入出金 API の取得に失敗した（allFailed、一部チャネルのみの失敗、リクエスト自体の例外を含む） */
 	'dw_fetch_failed',
-	/** 取得は成功したが件数上限で全履歴を取得できていない（欠けた出庫の原価が残留する） */
 	'dw_history_incomplete',
 ]);
 
-/** @see PortfolioFlowUnavailableReasonEnum */
 export type PortfolioFlowUnavailableReason = z.infer<typeof PortfolioFlowUnavailableReasonEnum>;
 
-/**
- * 入庫日価格を「取りに行けば解決できたはず」なのに解決できなかったことを表す理由コード（#80）。
- *
- * 入庫日の 1day 始値は年単位の chunk（`fetchFlowDatePrices`）で取りに行く。この取得が
- * 転けると当該入庫は原価にも復元数量にも算入されず（`collectDepositCostEvents`）、
- * **移動平均法の取得原価が変わって過去の売却の実現損益まで動く**。同じ口座を同じ日に
- * 叩いて別の実現損益が出る以上どちらも確定申告に使えないので、該当銘柄では原価由来の
- * フィールドに加えて `realized_pnl` も確定値として出さない。
- *
- * **「取りに行っても解決できない」分（上場前・当日足の欠損）はここに入らない。**
- * そちらは再実行しても変わらない恒久的な未解決で、抑止すると当該銘柄の原価が永久に
- * 出せなくなるため、従来どおり値を出したうえで `unpriced_deposit_count` と警告行で
- * 不完全さを申告する（#57 / #77 の判断を維持する）。
- */
+/** 上場前・当日足の欠損のように再実行しても解決しない分はここに入れない。抑止すると当該銘柄の原価が永久に出せなくなる（#57 / #77）。 */
 export const PortfolioUnresolvedDepositReasonEnum = z.enum([
-	/** 入庫日を含む年足 chunk の取得に失敗した（`get_candles` が fail / throw / 空応答）。**実行ごとに成否が変わる**ので値の再現性が無い */
 	'deposit_price_fetch_failed',
-	/** 入庫日を含む年足 chunk が件数上限に達して取りに行けなかった。上限は決定的だが、原価に入るはずの入庫が落ちている点は取得失敗と同じ */
 	'deposit_price_chunk_truncated',
 ]);
 
-/** @see PortfolioUnresolvedDepositReasonEnum */
 export type PortfolioUnresolvedDepositReason = z.infer<typeof PortfolioUnresolvedDepositReasonEnum>;
 
-/**
- * 取得原価を確定できなかった理由コード（`holdings[].cost_basis_unavailable_reason` の単一ソース。
- * `closed_positions[].realized_pnl_unavailable_reason`（#93）も本 enum を共有する）。
- *
- * 入出金履歴の取得起因（`PortfolioFlowUnavailableReasonEnum`）を包含する上位集合で、
- * 復元数量と実残高の数量不変条件（`qtyInvariantHolds`）が破れたときの乖離要因と、
- * 入庫日価格の取得に失敗した / 取りに行けなかった要因（`PortfolioUnresolvedDepositReasonEnum`）を追加する。
- * 数量乖離側の 5 値と入庫日価格側の 2 値は銘柄単位でのみ立ち、入出金取得系フィールド
- * （`*_performance.flow_unavailable_reason` / `meta.flowDataUnavailableReason`）には現れない。
- *
- * **抑止するフィールドの範囲は値によって異なる。** 入庫日価格側の 2 値だけは
- * `realized_pnl` も落とす（原価が欠けると移動平均法で過去の売却の実現損益まで動くため）。
- * 他の値は従来どおり原価由来 4 フィールドのみを落として `realized_pnl` は出す
- * （`closed_positions` には `cost_basis` 系フィールド自体が無いので、この非対称は適用されない。
- * `realized_pnl_unavailable_reason` が立つ要素は `realized_pnl` も含めて全フィールドが undefined）。
- */
+/** 入庫日価格側の 2 値だけは `realized_pnl` も落とす（原価が欠けると移動平均法で過去の売却の実現損益まで動くため）。 */
 export const PortfolioCostBasisUnavailableReasonEnum = z.enum([
 	...PortfolioFlowUnavailableReasonEnum.options,
-	/** 復元数量が実残高と乖離しており、該当銘柄に**入庫日の始値を解決できなかった** DONE の暗号資産入庫がある（入庫日の始値で解決できた入庫は原価・数量に算入されるためこの値は立たない） */
+	/** 復元数量が実残高と乖離しており、該当銘柄に入庫日の始値を解決できなかった DONE の暗号資産入庫がある（入庫日の始値で解決できた入庫は原価・数量に算入されるためこの値は立たない） */
 	'has_crypto_deposits',
-	/** 復元数量が実残高と乖離しており、約定履歴または入出金履歴が件数上限で打ち切られている */
 	'history_truncated',
-	/** 復元数量が実残高と乖離しているが、原因を特定できない（例: 履歴に現れない出庫） */
 	'unknown',
-	// #80 で追加。enum は既存値の後ろに足す（公開済みの列挙順を中間から崩さない）。
+	// enum は既存値の後ろに足す（公開済みの列挙順を中間から崩さない）。
 	...PortfolioUnresolvedDepositReasonEnum.options,
-	/**
-	 * 復元数量が**負**。可視の約定・入出庫から積み上げられる量を超えて売却されており、
-	 * API に現れない取得（販売所での買い等）があったことの直接証拠（#89）。
-	 * 同じ「数量乖離」系でも `has_crypto_deposits` / `history_truncated` は乖離を生んだ
-	 * 取得経路を名指しできているケースなので、そちらが立つ構成では本値にならない。
-	 */
 	'reconstructed_qty_negative',
-	// #93 で追加（末尾に足す）。
-	/**
-	 * 復元数量と実残高が乖離しており、`has_crypto_deposits` / `history_truncated` /
-	 * `reconstructed_qty_negative` のいずれにも当てはまらない（#93）。販売所取引など
-	 * bitbank API に現れない取引があった可能性を示すが、**断定はできない**——履歴に
-	 * 現れない出庫のような他の要因でも同じ乖離パターンになりうる。数量不変条件側
-	 * （`holdings[].cost_basis_unavailable_reason`）だけでなく、`closed_positions[]`
-	 * の要素（現在保有ゼロの銘柄）でも `realized_pnl_unavailable_reason` として同じ値が立つ
-	 * （入庫はあるが約定履歴にも現在残高にも現れない銘柄の検出）。この値は旧来 `unknown` を
-	 * 返していた分岐を置き換えたもので、`qtyMismatchReasonFor`（数量不変条件側）からは
-	 * 現在この値だけが返り、`unknown` は他の判定経路のために enum に残している。
-	 */
 	'untracked_trade_suspected',
 ]);
 
-/** @see PortfolioCostBasisUnavailableReasonEnum */
 export type PortfolioCostBasisUnavailableReason = z.infer<typeof PortfolioCostBasisUnavailableReasonEnum>;
 
-/**
- * 数量不変条件の乖離検出で立つ理由コード
- * （上位集合のうち入出金取得起因と入庫日価格起因を除いたもの）。
- */
+// unknown は公開 enum に残しているが、qtyMismatchReasonFor はもう返さない（#93）。
 export type PortfolioQtyMismatchReason = Exclude<
 	PortfolioCostBasisUnavailableReason,
-	PortfolioFlowUnavailableReason | PortfolioUnresolvedDepositReason
+	PortfolioFlowUnavailableReason | PortfolioUnresolvedDepositReason | 'unknown'
 >;
 
-/**
- * 期間パフォーマンスの増減率（`change_pct` / `adjusted_change_pct`）を出せない理由コード。
- *
- * 両フィールドは分母が同じ `start_value_jpy` なので、抑止も必ず同時に起きる（片方だけ落ちることは無い）。
- * `adjusted_change_pct` は純入出金が未計測のときに先に `null` になるため、その場合は
- * 「未計測（null）」が優先され、本コードは `change_pct` 側の説明としてのみ意味を持つ。
- *
- * ## 分母側と分子側の 2 系統が入る（#109）
- *
- * 当初は分母（`start_value_jpy`）が使えない理由だけを列挙していたが、`current_value_unpriced`
- * は**分子側**（`change_jpy = current_value_jpy - start_value_jpy` の現在評価額）の欠損を表す。
- * 率が出せない帰結は同じなので同じ enum に入れる（新系統を作らない）。
- *
- * ## 優先順位（複数成立しうるため単一値の選び方を固定する）
- *
- * 1. `start_boundary_unpriced`
- * 2. `current_value_unpriced`
- * 3. `start_value_zero`
- * 4. `start_value_negligible`
- *
- * 1・2 は「増減額を成績として読ませない」系、3・4 は「率の代わりに増減額で読ませる」系で、
- * **系をまたぐ順序（1・2 が 3・4 より先）は意味を持つ**——分子が壊れている構成で
- * `start_value_zero` / `start_value_negligible` を選ぶと「増減額で読んでください」という
- * 誤った誘導が出るため、読ませない系を必ず先に置く。
- *
- * 1 と 2 の並びは**表示上の選択でしかない**（どちらでも率を抑止し、増減額への誘導も止める）。
- * 既存コードを先に置いて #86 / #97 / #105 の契約を変えないことを優先した。両方成立している
- * ことは `unpriced_start_assets` と `unpriced_current_assets` が同時に出ることで読める。
- */
 export const PortfolioChangePctUnavailableReasonEnum = z.enum([
-	/** 期初評価額が 0（0 除算になるため率を定義できない） */
 	'start_value_zero',
-	/** 期初評価額が現在評価額の `MIN_START_VALUE_RATIO`（1%）未満で、率が運用成績ではなく「期初がほぼ空だった」ことを表す数になる */
 	'start_value_negligible',
-	/** 期初の始値（1day candle open）を解決できなかった暗号資産を評価に含められず、期初評価額が過小になっている。当日足のみ未取得（時間経過で解消しうる）と足データ丸ごと欠損（取得失敗等で恒久的な可能性）の両方を同じコードで扱う——ユーザーへの帰結（過小な分母で率が意味を持たない）は同一のため。原因の切り分けは `equitySeriesQuality`（資産推移）が別系統で補助する */
 	'start_boundary_unpriced',
-	/** 現在 ticker 価格を解決できなかった暗号資産の保有を現在評価額に含められず、`current_value_jpy` が過小になっている（#109）。分母ではなく**分子**が壊れる系統で、`start_boundary_unpriced` の対称形（あちらは期初側が過小で増減額が過大、こちらは現在側が過小で増減額が過小）。現在価格は `tickers_jpy` 1 回で全銘柄ぶんを取るため、その 1 回が失敗すると全暗号資産が一斉に脱落して現在評価額が JPY 残高だけに縮退し、増減額が「口座が消し飛んだ」ように見える巨額の偽損失になる。資産名は `unpriced_current_assets` */
 	'current_value_unpriced',
 ]);
 
-/** @see PortfolioChangePctUnavailableReasonEnum */
 export type PortfolioChangePctUnavailableReason = z.infer<typeof PortfolioChangePctUnavailableReasonEnum>;
 
-/**
- * 暗号資産入出庫を JPY 換算した方式の単一ソース（`*_valuation.basis`）。
- *
- * 換算は**入出庫日（入庫: `confirmed_at` / 出庫: `requested_at`）当日の 1day open** を第一候補にする。
- * 現在価格で換算すると誤差が相場と連動して動く系統的バイアスになり、取引ゼロでも相場上昇だけで
- * 報告損益が悪化するため（#53 の機序）。日次価格を解決できなかった分だけ現在価格に落とし、
- * 混ぜたことを本フィールドで申告する。
- *
- * 個々の入出庫が取りうるのは `deposit_date_price` / `current_price_fallback` の 2 値だけで、
- * `mixed` は両方が 1 件以上ある**集計値でのみ**現れる。
- */
 export const PortfolioFlowValuationBasisEnum = z.enum([
-	/** 入出庫日の 1day open で換算した（相場が動いても評価額は動かない） */
 	'deposit_date_price',
-	/** 入出庫日の日次価格を解決できず、現在価格で仮評価した（相場と連動して動く） */
 	'current_price_fallback',
 	/** 入出庫日価格と現在価格フォールバックが混在している（集計値でのみ現れる） */
 	'mixed',
 ]);
 
-/** @see PortfolioFlowValuationBasisEnum */
 export type PortfolioFlowValuationBasis = z.infer<typeof PortfolioFlowValuationBasisEnum>;
 
-/**
- * 暗号資産入出庫の JPY 換算方式の内訳。
- *
- * 換算対象（DONE・非 JPY・数量が正）が 1 件も無い場合、および全件で価格を解決できなかった
- * 場合はフィールドごと省略する（`undefined`）。件数は換算**できた**件数のみを数える。
- *
- * ## 不変条件（`basis` は 2 つの件数から一意に決まる）
- *
- * `fallback === 0` → `deposit_date_price` / `dated === 0` → `current_price_fallback` /
- * 両方が正 → `mixed`。両方 0 のときはフィールドごと落とすので `mixed` の 0/0 は存在しない。
- *
- * この不変条件は**構築時に保証する**（`portfolio/calc.ts` の `buildFlowValuationBreakdown` が
- * 唯一の生成経路）。ここで `.refine()` して弾く方針は取らない——出力スキーマの parse 失敗は
- * `AnalyzeMyPortfolioOutputSchema` 経由でレスポンス全体を fail に落とすため、ラベルの不整合を
- * 理由にポートフォリオ分析ごと失わせるのは割に合わない。ガードは
- * `tests/handlers/portfolio/calc.test.ts` の不変条件テスト。
- */
+/** `basis` と件数の不変条件は `buildFlowValuationBreakdown`（`portfolio/calc.ts`）で構築時に保証し、ここで `.refine()` しない。parse に失敗するとポートフォリオ分析のレスポンス全体が fail に落ちる。 */
 const FlowValuationSchema = z
 	.object({
-		// 件数はゼロ始まりの加算でしか動かないので負値は取り得ない。公開スキーマ（MCP の
-		// output JSON Schema）は実際に出す値の範囲をそのまま表すべきなので minimum: 0 まで書く。
+		// 公開スキーマ（MCP の output JSON Schema）は実際に出す値の範囲をそのまま表すべきなので minimum: 0 まで書く。
 		deposit_date_price_count: z.number().int().nonnegative().describe('入出庫日の 1day open で換算できた件数'),
 		current_price_fallback_count: z
 			.number()
@@ -391,10 +240,8 @@ const FlowValuationSchema = z
 	})
 	.describe('暗号資産入出庫の JPY 換算方式の内訳（換算できた件数のみを数える）');
 
-/** analyze_my_portfolio の入出金分析状態（meta.depositWithdrawalStatus の単一ソース） */
 export const DepositWithdrawalStatusEnum = z.enum(['available', 'fallback', 'no_history', 'not_requested']);
 
-/** @see DepositWithdrawalStatusEnum */
 export type DepositWithdrawalStatus = z.infer<typeof DepositWithdrawalStatusEnum>;
 
 const HoldingPnlSchema = z.object({
@@ -438,9 +285,7 @@ const HoldingPnlSchema = z.object({
 		.describe(
 			'取得原価の信頼性（数量不変条件の判定結果）。約定・出庫リプレイで復元した保有数量が実残高（onhand_amount）と許容誤差 max(10^-amount_precision × 5, 実残高 × 0.1%) 内で一致すれば true（絶対項は端数処理・ダスト、相対項は浮動小数点誤差の許容）。false のとき cost_basis_unavailable_reason に理由コードが載り、原価由来 4 フィールドは undefined、total_cost_basis / total_unrealized_pnl の集計からも除外される。原価計算の対象外（JPY / include_pnl=false）では省略。**true は「復元数量が実残高と一致する」であって「原価が全入庫を含む」ではない**——許容誤差内に収まった未算入入庫は素通りするので、原価の完全性は unpriced_deposit_count で読むこと。**判定の入力は reconstructed_qty（復元数量）と qty_invariant_tolerance（許容誤差）で出しているので、この真偽値は出力だけで検算できる**（|Number(amount) − reconstructed_qty| ≤ qty_invariant_tolerance ⟺ true）。ただし cost_basis_unavailable_reason が dw_fetch_failed / dw_history_incomplete / deposit_price_fetch_failed / deposit_price_chunk_truncated の銘柄は数量不変条件を評価する**前**に抑止しているため、この不等式が成立していても false のまま',
 		),
-	// 新設キーは既存キーの後ろに宣言する。`z.object` の parse は**スキーマの宣言順**で
-	// オブジェクトを組み直すため、ここが wire 上のキー順の単一ソース（既存消費者の JSON を
-	// 中間から崩さない）。件数はゼロ始まりの加算でしか動かないので負値は取り得ない。
+	// 新設キーは既存キーの後ろに宣言する。`z.object` の parse はスキーマの宣言順でオブジェクトを組み直すため、ここが wire 上のキー順の単一ソース。
 	priced_deposit_count: z
 		.number()
 		.int()
@@ -457,9 +302,6 @@ const HoldingPnlSchema = z.object({
 		.describe(
 			'入庫日（confirmed_at）の 1day 始値を解決できず、取得原価にも復元数量にも**算入しなかった** DONE 暗号資産入庫の件数（当該銘柄・全履歴）。この銘柄の cost_basis / avg_buy_price / unrealized_pnl / unrealized_pnl_pct / realized_pnl は、**この件数の入庫を原価ゼロ扱いで除外して算出されている**（未算入ぶんを売却済みなら原価ゼロで売ったことになり realized_pnl は過大、保有継続なら cost_basis と復元数量がその分だけ過小）。**cost_basis_reliable=true でも本値が 0 でなければ原価は不完全**——数量不変条件は許容誤差内の乖離を通すため両者は同時に成立し、これは矛盾ではない（cost_basis_reliable=「復元数量が実残高と一致するか」、本値=「原価が全入庫を含むか」で別軸。原価を出せなかった理由を表す cost_basis_unavailable_reason とも別軸で、本値は「原価は出したが不完全」の度合い）。本値が 0 でない銘柄も total_cost_basis / total_unrealized_pnl / total_realized_pnl からは**除外せず含める**（除外すると許容誤差内の微小な未算入で銘柄まるごと合計から消えるため）。含めたことは meta.warnings / summary の警告行で申告する。0 件のときはキーごと省く',
 		),
-	// 数量不変条件（cost_basis_reliable）の判定に入った 2 値（#87）。判定結果だけを出すと
-	// 消費者は境界付近の妥当性を評価できず、API に現れない取引の存在も推定できないので、
-	// **入力そのもの**を出す。新設キーは既存キーの後ろ（宣言順 = wire のキー順）。
 	reconstructed_qty: z
 		.number()
 		.optional()
@@ -473,7 +315,6 @@ const HoldingPnlSchema = z.object({
 		.describe(
 			'数量不変条件の許容誤差（base 建て）= max(10^-amount_precision × 5, |Number(amount)| × 0.1%)。絶対項は取引所側の端数処理・ダスト、相対項は移動平均リプレイの浮動小数点誤差の許容で、判定式は |Number(amount) − reconstructed_qty| ≤ 本値。**amount_precision を出力に含めていないため、本値が無いと消費者は許容誤差を再現できない**（＝ cost_basis_reliable を検算できない）ので値として出す。出す条件は reconstructed_qty と同じ（JPY / include_pnl=false では省略、原価抑止時は出す）。**cost_basis_reliable=false の銘柄がすべて本判定で落ちたわけではない**——cost_basis_unavailable_reason が dw_fetch_failed / dw_history_incomplete / deposit_price_fetch_failed / deposit_price_chunk_truncated の銘柄は数量不変条件を評価する前に抑止しており、前者 2 値では出庫履歴を反映できていないぶん reconstructed_qty 自体が過大になりうる',
 		),
-	// 原価側クランプの発火申告（#89）。新設キーは既存キーの後ろ（宣言順 = wire のキー順）。
 	qty_clamp_count: z
 		.number()
 		.int()
@@ -545,8 +386,6 @@ const DepositWithdrawalSummarySchema = z
 		analysis_basis: z
 			.enum(['deposit_withdrawal', 'trade_only'])
 			.describe('分析基準（deposit_withdrawal: 入出金込み, trade_only: 約定ベース）'),
-		// 新設フィールドは既存キーの後ろに置く。`z.object` の parse は**スキーマの宣言順**で
-		// オブジェクトを組み直すため（ハンドラ側の代入順ではなく）、ここが wire 上のキー順の単一ソース。
 		crypto_deposit_valuation: FlowValuationSchema.optional().describe(
 			'crypto_deposit_estimated_jpy の換算方式の内訳。暗号資産入庫が無い / 全件で価格を解決できなかった場合は undefined',
 		),
@@ -603,9 +442,6 @@ const PeriodRealizedPnlSchema = z
 		sell_count: z.number().int().describe('期間内の売却約定件数'),
 		period_start: z.string().describe('期間の開始日時（ISO8601 JST）'),
 		period_end: z.string().describe('期間の終了日時（ISO8601 JST）'),
-		// #77 で追加。件数は全履歴・全銘柄（期間内の入庫だけではない）だが、フィールド名が
-		// 期間オブジェクト内にあるため期間スコープに読める。#85 で *_all_time へ改名し、
-		// 旧名は同じ値を返す alias として残す（.claude/rules/tools.md §7）。
 		priced_deposit_count: z
 			.number()
 			.int()
@@ -622,11 +458,9 @@ const PeriodRealizedPnlSchema = z
 			.describe(
 				`入庫日の始値を解決できず算入しなかった DONE 暗号資産入庫の件数（全履歴・全銘柄）。期間スコープではない。${deprecatedFieldNote('unpriced_deposit_count_all_time')}`,
 			),
-		// #80 で追加。新設キーは既存キーの後ろ（宣言順 = wire のキー順）。
 		realized_pnl_unavailable_reason: PortfolioUnresolvedDepositReasonEnum.optional().describe(
 			'この期間の realized_pnl を確定値として出せなかった理由。設定されている場合 realized_pnl は undefined で、同じ期間の *_account_pnl.spot_realized_pnl / total も undefined になる。deposit_price_fetch_failed=入庫日を含む年足 chunk の取得に失敗した入庫がある銘柄が、この期間に売却している（取得の成否は実行ごとに変わるため値の再現性が無い）, deposit_price_chunk_truncated=同じく年足 chunk が件数上限で取りに行けなかった銘柄が、この期間に売却している。抑止しても sell_count は出る（売却件数は原価に依存しないため）。期間内に該当銘柄の売却が無ければ抑止しない（抑止範囲を必要最小限にするための判定）',
 		),
-		// #85 で追加。新設キーは既存キーの後ろ（宣言順 = wire のキー順）。
 		priced_deposit_count_all_time: z
 			.number()
 			.int()
@@ -646,11 +480,6 @@ const PeriodRealizedPnlSchema = z
 	})
 	.optional();
 
-/**
- * `account_pnl` / `yearly_account_pnl` / `monthly_account_pnl` に共通の既存キー。
- * **並び順を変えないこと**——`z.object` の parse は宣言順でオブジェクトを組み直すため、
- * ここを触ると既存消費者の JSON のキー順が中間から変わる（#69 の回帰テストが固定している）。
- */
 const accountPnlCoreShape = {
 	spot_realized_pnl: z
 		.number()
@@ -675,12 +504,6 @@ const accountPnlCoreShape = {
 		),
 };
 
-/**
- * #72 で追加した信用コスト項。**既存キーの後ろに宣言する**（wire の中間に新キーを挿さない）。
- *
- * `margin_interest` / `margin_fee` と同じ値だが、`_cost` サフィックスで
- * 「コスト = 正値、`total` では減算」という符号規約を名前に出している。
- */
 const marginCostShape = {
 	margin_interest_cost: z
 		.number()
@@ -694,9 +517,6 @@ const marginCostShape = {
 		),
 };
 
-/**
- * #80 で追加した抑止理由。**既存キーの後ろに宣言する**（wire の中間に新キーを挿さない）。
- */
 const realizedPnlSuppressionShape = {
 	spot_realized_pnl_unavailable_reason: PortfolioUnresolvedDepositReasonEnum.optional().describe(
 		'spot_realized_pnl / total を確定値として出せなかった理由。設定されている場合その 2 フィールドは undefined で、信用側の 4 フィールドはそのまま出る。deposit_price_fetch_failed=入庫日を含む年足 chunk の取得に失敗した入庫がある銘柄を抑止した（取得の成否は実行ごとに変わるため値の再現性が無い）, deposit_price_chunk_truncated=同じく年足 chunk が件数上限で取りに行けなかった銘柄を抑止した。両方に該当する銘柄が居る実行では deposit_price_fetch_failed を載せる（再現性が無い方を優先して申告する）。銘柄別の理由は holdings[].cost_basis_unavailable_reason、銘柄名と件数は meta.warnings / summary の警告行',
@@ -705,9 +525,7 @@ const realizedPnlSuppressionShape = {
 
 const AccountPnlSchema = z.object({ ...accountPnlCoreShape, ...marginCostShape, ...realizedPnlSuppressionShape });
 
-// 期間版も既存キー（... total / period_start / period_end）の後ろに新設キーを置く。
-// AccountPnlSchema.extend() だと period_start の**手前**に入り、既存消費者の JSON の
-// 中間に挿さるため、shape を明示的に組み直している。
+// `AccountPnlSchema.extend()` だと新設キーが period_start の手前に入り、既存消費者の JSON の中間に挿さるので、shape を明示的に組み直している。
 const PeriodAccountPnlSchema = z.object({
 	...accountPnlCoreShape,
 	period_start: z.string().describe('期間の開始日時（ISO8601 JST）'),
@@ -819,17 +637,6 @@ const EquityPointSchema = z.object({
 		),
 });
 
-/**
- * 売り切り銘柄（保有ゼロだが約定履歴がある銘柄）の実現損益の銘柄別内訳（#92）。
- *
- * `closed_position_realized_pnl` は銘柄ごとに算出した値をループ内で合計に畳んでおり、
- * 従来は畳んだ時点で銘柄別の値を捨てていた。実口座検証で合計値の変化がどの銘柄由来か
- * 出力から特定できず調査が膠着したため、捨てずに出力する（計算ロジック自体は変更していない）。
- *
- * #93 で用途を広げ、「実額を計算した」要素（`realized_pnl` あり）だけでなく
- * 「入庫はあるが約定履歴にも現在残高にも現れない銘柄の検出」要素（`realized_pnl` 無し、
- * `realized_pnl_unavailable_reason` あり）も同じ配列に混在するようになった。
- */
 const ClosedPositionPnlSchema = z.object({
 	asset: z.string().describe('通貨コード'),
 	realized_pnl: z
@@ -854,7 +661,6 @@ const ClosedPositionPnlSchema = z.object({
 		.describe(
 			'holdings[].unpriced_deposit_count と同義（入庫日の始値を解決できず取得原価にも復元数量にも算入しなかった DONE 暗号資産入庫の件数、当該銘柄・全履歴）。この銘柄の realized_pnl は、この件数の入庫を原価ゼロ扱いで除外して算出されている。売り切り銘柄は holdings に載らずこの件数の置き場が無かった（#77 で認識済みの制約）が、本配列がその置き場になる。0 件のときはキーごと省く。realized_pnl_unavailable_reason が立つ要素では本フィールドも undefined（原価計算そのものを試みていない）',
 		),
-	// #93 で追加。新設キーは既存キーの後ろに宣言する（宣言順 = wire のキー順）。
 	realized_pnl_unavailable_reason: PortfolioCostBasisUnavailableReasonEnum.optional().describe(
 		'realized_pnl を算出できなかった理由（#93）。設定されている場合 realized_pnl / priced_deposit_count / unpriced_deposit_count はいずれも undefined——原価計算そのものを試みていない。暗号資産の DONE 入庫はあるが約定履歴にも現在残高にも現れない銘柄（入出金履歴だけから検出した銘柄）で立ち、値は 2 通り: untracked_trade_suspected=約定履歴を全件取得できている実行での検出（既定）, history_truncated=約定履歴が件数上限で打ち切られている実行での検出——tradedAssets が実際の取引所約定の部分集合でしかないため、取引所で売買した銘柄まで「約定に現れない」と誤検出しうる。この場合は取得漏れの可能性そのものより先に「打ち切りで見えていないだけ」の可能性を優先する（qtyMismatchReasonFor が has_crypto_deposits / history_truncated を数量乖離の untracked 系より優先する非対称と揃えている）。**holdings[].cost_basis_unavailable_reason と同じ enum を共有するが意味は異なる**——あちらは「原価計算を試みたが確定できなかった」、こちらは「原価計算の入力（約定履歴）自体が無く、そもそも試みていない」。本フィールドが立つ要素は closed_position_realized_pnl / closed_position_asset_count の集計に含まれない（realized_pnl を持たないため和の対象外）。**closedSuppressed（入庫日価格を解決できない売り切り銘柄が 1 件でもあると closed_position_realized_pnl 自体を undefined にする既存の抑止、#92）とは独立に動く**——closed_position_realized_pnl / closed_position_asset_count が undefined の実行でも、本フィールドが立つ要素は closed_positions 配列に残る。**入出金履歴の取得自体が信頼できない実行（holdings[].cost_basis_unavailable_reason=dw_fetch_failed / dw_history_incomplete に相当する状態）では検出そのものを行わない**——出庫による除外判定（下記の限界 (2)）が入出金履歴の完全性に依存するため、取得できていない出庫を見落として誤検出する恐れがある。この場合 closed_positions に検出エントリは現れず、警告も出ない（CodeRabbit review, PR #95）。**断定はできない**——untracked_trade_suspected でも「入庫はあるが痕跡が消えている」状態は他の要因（例: 履歴に現れない出庫）でも起こりうる。**この検出にも限界がある**——(1) 入庫そのものが無く、取引所約定も無く、販売所（即時売買）のみで売買を完結させた銘柄は入出金履歴にも約定履歴にも痕跡が残らないため検出できない, (2) DONE の暗号資産出庫が 1 件でもある銘柄は対象から除外する（出庫だけで残高ゼロが説明できるありふれたケースを誤検知しないための保守的な判断）ため、出庫と販売所処分が同一銘柄に混在するケースは見逃す（取得漏れを見逃す方向にのみ誤り、無い懸念を警告する方向には誤らない）',
 	),
@@ -946,13 +752,9 @@ export const AnalyzeMyPortfolioDataSchema = z.object({
 		.describe('保有銘柄の月初比・年初比の価格騰落率（暗号資産のみ。JPY評価額降順）'),
 	technical: z.array(TechnicalSummarySchema).optional().describe('テクニカル分析サマリー'),
 	timestamp: z.string(),
-	// #80 で追加。新設キーは既存キーの後ろに宣言する（`z.object` の parse は宣言順で
-	// オブジェクトを組み直すため、宣言位置がそのまま wire のキー順になる）。
 	total_realized_pnl_unavailable_reason: PortfolioUnresolvedDepositReasonEnum.optional().describe(
 		'合計実現損益を確定値として出せなかった理由（入庫日価格の取得起因のみ）。設定されている場合 total_realized_pnl / account_pnl.spot_realized_pnl / account_pnl.total は undefined で、抑止した銘柄の holdings[].realized_pnl も undefined。抑止した銘柄が売り切り銘柄なら closed_position_realized_pnl / closed_position_asset_count / closed_positions も undefined になる（#93 の検出エントリ——closed_positions[].realized_pnl_unavailable_reason 付き——はこの抑止と独立に動くため例外: closed_position_realized_pnl / closed_position_asset_count が undefined の実行でも、検出エントリがあれば closed_positions 自体は undefined にならず、そのエントリだけを含む配列になる。検出エントリは realized_pnl を持たないため、ここで言う「undefined になる」対象は実額を計算した要素のみ）。deposit_price_fetch_failed=年足 chunk の取得に失敗した入庫がある銘柄を抑止した, deposit_price_chunk_truncated=年足 chunk が件数上限で取りに行けなかった入庫がある銘柄を抑止した（両方居る実行では前者を載せる）。**この実行では検算式 Σ holdings[].realized_pnl + closed_position_realized_pnl = total_realized_pnl が成立しない**——抑止した銘柄の項が両辺から落ちるため。銘柄別の理由は holdings[].cost_basis_unavailable_reason、銘柄名と件数は meta.warnings / summary の警告行',
 	),
-	// #92 で追加。新設キーは既存キーの後ろに宣言する（`z.object` の parse は宣言順で
-	// オブジェクトを組み直すため、宣言位置がそのまま wire のキー順になる）。
 	closed_positions: z
 		.array(ClosedPositionPnlSchema)
 		.optional()
@@ -1082,8 +884,6 @@ export const AnalyzeMyPortfolioOutputSchema = z.union([
 	PrivateFailResultSchema,
 ]);
 
-// ── get_my_deposit_withdrawal（Phase 4） ──
-
 export const GetMyDepositWithdrawalInputSchema = z.object({
 	asset: z
 		.string()
@@ -1149,8 +949,6 @@ export const GetMyDepositWithdrawalOutputSchema = z.union([
 	PrivateFailResultSchema,
 ]);
 
-// ── get_margin_status ──
-
 export const GetMarginStatusInputSchema = z.object({});
 
 const MarginAccountStatus = z.enum(['NORMAL', 'LOSSCUT', 'CALL', 'DEBT', 'SETTLED']);
@@ -1200,8 +998,6 @@ export const GetMarginStatusOutputSchema = z.union([
 	}),
 	PrivateFailResultSchema,
 ]);
-
-// ── get_margin_positions ──
 
 export const GetMarginPositionsInputSchema = z.object({
 	pair: z.string().optional().describe('通貨ペア（例: btc_jpy）。省略で全ペア'),
@@ -1253,8 +1049,6 @@ export const GetMarginPositionsOutputSchema = z.union([
 	}),
 	PrivateFailResultSchema,
 ]);
-
-// ── get_margin_trade_history ──
 
 export const GetMarginTradeHistoryInputSchema = z.object({
 	pair: z.string().optional().describe('通貨ペア（例: btc_jpy）。省略で全ペア'),
@@ -1310,20 +1104,6 @@ export const GetMarginTradeHistoryOutputSchema = z.union([
 	PrivateFailResultSchema,
 ]);
 
-// ── Trading: 注文レスポンス共通スキーマ ──
-
-/**
- * bitbank 注文ステータス（公式 REST API spec 準拠）
- *
- * - INACTIVE: stop / stop_limit のトリガー前
- * - UNFILLED: 未約定
- * - PARTIALLY_FILLED: 部分約定
- * - FULLY_FILLED: 全量約定（終端）
- * - CANCELED_UNFILLED: 未約定のままキャンセル（終端）
- * - CANCELED_PARTIALLY_FILLED: 部分約定後にキャンセル（終端）
- * - REJECTED: システムに拒否された（終端、例: 信用取引のリスク制限超過）
- * - TRIGGERED: stop がトリガー発動済みで後続注文の処理待ち
- */
 export const OrderStatusEnum = z.enum([
 	'INACTIVE',
 	'UNFILLED',
@@ -1335,16 +1115,7 @@ export const OrderStatusEnum = z.enum([
 	'TRIGGERED',
 ]);
 
-/**
- * 終端状態。以後キャンセル不能（`OrderStatusEnum` の docstring で「終端」と注記した 4 つ）。
- *
- * キャンセル可否の判定はここを単一ソースとし、ツール側で別の分類を作らない。
- * 型を `z.infer<typeof OrderStatusEnum>` から導出しているため、enum に無い文字列を書くと typecheck が落ちる。
- *
- * ⚠️ **拒否リストであって許可リストではない。** `INACTIVE`（stop のトリガー前）/ `TRIGGERED`
- * （トリガー発動済み）は正当にキャンセル可能なので、「`UNFILLED` / `PARTIALLY_FILLED` だけ許す」
- * 形に反転させてはならない（#28）。enum に無い未知の status も通す（拒否リストの帰結）。
- */
+/** 拒否リストであって許可リストではない。`INACTIVE`（stop のトリガー前）/ `TRIGGERED` は正当にキャンセル可能なので、「`UNFILLED` / `PARTIALLY_FILLED` だけ許す」形に反転させない（#28）。 */
 export const TERMINAL_ORDER_STATUSES = new Set<z.infer<typeof OrderStatusEnum>>([
 	'FULLY_FILLED',
 	'CANCELED_UNFILLED',
@@ -1352,21 +1123,9 @@ export const TERMINAL_ORDER_STATUSES = new Set<z.infer<typeof OrderStatusEnum>>(
 	'REJECTED',
 ]);
 
-/**
- * 注文タイプ（現物・信用共通）。
- *
- * bitbank 公式 spec の `POST /v1/user/spot/order` では `take_profit` / `stop_loss` / `losscut`
- * も列挙されているが、本実装では意図的に未対応（理由は docs/private-api.md と
- * docs/api-contract-checklist.md §3.4 を参照）。
- *
- * - `take_profit` / `stop_loss`: 公式 docs が動作仕様を明記していない
- *   （発動方向、amount 省略時の決済範囲、現物 vs 信用の適用可否がすべて未定義）。
- *   誤実装による建玉の意図しない決済リスクを避けるため未対応。
- * - `losscut`: システム発動の強制決済タイプ。ユーザー入力対象ではない。
- */
+/** `take_profit` / `stop_loss` / `losscut` は意図的に未対応。前 2 つは公式 docs が動作仕様を明記しておらず建玉を意図せず決済しうるため、`losscut` はシステム発動の強制決済でユーザー入力の対象ではないため。 */
 export const SpotOrderTypeEnum = z.enum(['limit', 'market', 'stop', 'stop_limit']);
 
-/** 注文レスポンス（単一） — bitbank API が返す注文オブジェクト */
 const OrderResponseSchema = z.object({
 	order_id: z.number().describe('注文ID'),
 	pair: z.string().describe('通貨ペア'),
@@ -1389,8 +1148,6 @@ const OrderResponseSchema = z.object({
 });
 
 export type OrderResponse = z.infer<typeof OrderResponseSchema>;
-
-// ── preview_order（注文プレビュー） ──
 
 export const PreviewOrderInputSchema = z
 	.object({
@@ -1434,18 +1191,14 @@ export const PreviewOrderDataSchema = z.object({
 		trigger_price: z.string().optional(),
 		post_only: z.boolean().optional(),
 		position_side: PositionSideEnum.optional(),
-		/** 見積り手数料（カテゴリ A: 取引手数料 / B: 信用手数料）。lib/fees.ts で解決した値。 */
 		fee_estimate: z
 			.object({
-				/** 解決した role（maker / taker） */
 				role: z.enum(['maker', 'taker']),
 				/** 解決した手数料率（負のリベートもありうる） */
 				rate: z.number(),
-				/** 見積り手数料（quote 建て）。約定価格依存で省略する場合は欠落。 */
 				estimated_fee_quote: z.number().optional(),
-				/** 見積りコスト（buy=notional+fee / sell=notional-fee）。省略時は欠落。 */
+				/** buy=notional+fee / sell=notional-fee */
 				estimated_cost_quote: z.number().optional(),
-				/** 見積りの前提を説明する注記。 */
 				note: z.string(),
 			})
 			.optional()
@@ -1455,7 +1208,6 @@ export const PreviewOrderDataSchema = z.object({
 
 export const PreviewOrderMetaSchema = z.object({
 	action: z.literal('create_order'),
-	/** 事前バリデーションで発生した警告（例: /spot/pairs 取得失敗で最小数量・桁数チェックを省略） */
 	warnings: z.array(z.string()).optional(),
 });
 
@@ -1468,8 +1220,6 @@ export const PreviewOrderOutputSchema = z.union([
 	}),
 	PrivateFailResultSchema,
 ]);
-
-// ── create_order（注文発注） ──
 
 export const CreateOrderInputSchema = z
 	.object({
@@ -1502,7 +1252,6 @@ export const CreateOrderMetaSchema = z.object({
 	pair: z.string(),
 	side: z.enum(['buy', 'sell']),
 	type: z.string(),
-	/** 事前再検証で発生した警告（例: /spot/pairs 取得失敗で最小数量・桁数チェックを省略） */
 	warnings: z.array(z.string()).optional(),
 });
 
@@ -1515,8 +1264,6 @@ export const CreateOrderOutputSchema = z.union([
 	}),
 	PrivateFailResultSchema,
 ]);
-
-// ── preview_cancel_order（キャンセルプレビュー） ──
 
 export const PreviewCancelOrderInputSchema = z.object({
 	pair: z.string().describe('通貨ペア（例: btc_jpy）'),
@@ -1558,8 +1305,6 @@ export const PreviewCancelOrderOutputSchema = z.union([
 	PrivateFailResultSchema,
 ]);
 
-// ── cancel_order（注文キャンセル・単一） ──
-
 export const CancelOrderInputSchema = z.object({
 	pair: z.string().describe('通貨ペア（例: btc_jpy）'),
 	order_id: z.number().describe('キャンセルする注文ID'),
@@ -1587,8 +1332,6 @@ export const CancelOrderOutputSchema = z.union([
 	}),
 	PrivateFailResultSchema,
 ]);
-
-// ── preview_cancel_orders（一括キャンセルプレビュー） ──
 
 export const PreviewCancelOrdersInputSchema = z.object({
 	pair: z.string().describe('通貨ペア（例: btc_jpy）'),
@@ -1628,8 +1371,6 @@ export const PreviewCancelOrdersOutputSchema = z.union([
 	PrivateFailResultSchema,
 ]);
 
-// ── cancel_orders（注文キャンセル・複数） ──
-
 export const CancelOrdersInputSchema = z.object({
 	pair: z.string().describe('通貨ペア（例: btc_jpy）'),
 	order_ids: z.array(z.number()).min(1).max(30).describe('キャンセルする注文IDの配列（最大30件）'),
@@ -1658,8 +1399,6 @@ export const CancelOrdersOutputSchema = z.union([
 	PrivateFailResultSchema,
 ]);
 
-// ── get_order（注文照会・単一） ──
-
 export const GetOrderInputSchema = z.object({
 	pair: z.string().describe('通貨ペア（例: btc_jpy）'),
 	order_id: z.number().describe('照会する注文ID'),
@@ -1686,13 +1425,9 @@ export const GetOrderOutputSchema = z.union([
 	PrivateFailResultSchema,
 ]);
 
-// ── get_orders_info（注文照会・複数） ──
-
 export const GetOrdersInfoInputSchema = z.object({
 	pair: z.string().describe('通貨ペア（例: btc_jpy）'),
-	// orders_info（Fetch multiple orders）の API ドキュメントには order_ids の件数上限の記載が無い。
-	// 30 件上限が明記されているのは cancel_orders 側であり、ここで同じ上限を課す根拠は無いため、
-	// 防御的な上限（100 件）に緩和してドキュメントに合わせる。
+	// orders_info の API ドキュメントには order_ids の件数上限の記載が無い（30 件は cancel_orders 側の上限）ので、防御的な上限として 100 件にしている。
 	order_ids: z.array(z.number()).min(1).max(100).describe('照会する注文IDの配列（最大100件）'),
 });
 

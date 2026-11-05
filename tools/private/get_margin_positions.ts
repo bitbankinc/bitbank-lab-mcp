@@ -1,10 +1,3 @@
-/**
- * get_margin_positions — 信用取引の建玉一覧を取得する Private API ツール。
- *
- * bitbank Private API `/v1/user/margin/positions` を呼び出し、
- * 保有建玉・追証・不足金情報を取得して返す。
- */
-
 import { toNum } from '../../lib/conversions.js';
 import { nowIso, toIsoMs } from '../../lib/datetime.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
@@ -16,7 +9,6 @@ import { GetMarginPositionsInputSchema, GetMarginPositionsOutputSchema } from '.
 import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
-/** bitbank /v1/user/margin/positions のレスポンス型 */
 interface RawMarginPositionsResponse {
 	notice: {
 		what: string | null;
@@ -43,11 +35,8 @@ interface RawMarginPositionsResponse {
 }
 
 export default async function getMarginPositions(args: { pair?: string }) {
-	// 入力レイヤーの正規化（`lib/validate.ts`）。下のクライアント側フィルタは API 応答の pair と
-	// `===` で突き合わせるため、ユーザーが `BTC_JPY` と入力すると建玉が全件消える。
-	// 応答側は取得境界で小文字化するので、入力側も同じ空間に乗せる。
-	// `ensurePair` は使わない: ALLOWED_PAIRS に無い pair（上場廃止ペア等）の建玉を
-	// 照会できなくなるため。形式不正はそのまま API に投げて API 側の判断に委ねる。
+	// 下のクライアント側フィルタは API 応答の pair と `===` で突き合わせるので、入力も小文字の空間に乗せる（大文字入力で建玉が全件消える）。
+	// `ensurePair` は使わない。ALLOWED_PAIRS に無い pair（上場廃止ペア等）の建玉を照会できなくなる。
 	const pair = args.pair != null ? (normalizePair(args.pair) ?? args.pair) : undefined;
 	const client = getDefaultClient();
 
@@ -62,19 +51,16 @@ export default async function getMarginPositions(args: { pair?: string }) {
 
 		const timestamp = nowIso();
 
-		// 取得境界での pair 正規化（`lib/pair-code.ts`）。下のフィルタの `===` 比較と
-		// JPY 判定（`p.pair.includes('jpy')`）が小文字前提のため、ここで揃える。
+		// 下のフィルタの `===` 比較と JPY 判定（`p.pair.includes('jpy')`）が小文字前提なので、取得境界で揃える。
 		const allPositions = normalizePairCodes(raw.positions);
 
-		// ペアでフィルタ（API がフィルタ非対応の場合のクライアント側フィルタ）
+		// API がペアのフィルタに対応していない場合に備えたクライアント側フィルタ。
 		const positions = pair ? allPositions.filter((p) => p.pair === pair) : allPositions;
 
 		const hasNotice = raw.notice != null && raw.notice.what != null;
 		const hasPayables = (toNum(raw.payables.amount) ?? 0) > 0;
 
-		// サマリー文字列の生成
-		// 危険情報（追証・不足金）を先頭に出すことで LLM が見落とすリスクを下げる。
-		// get_margin_status.ts と同じく「⚠ 行を summary 先頭に置く」パターンに揃える。
+		// 危険情報（追証・不足金）は LLM が見落とさないよう summary の先頭に出す（get_margin_status.ts と揃える）。
 		const lines: string[] = [];
 
 		if (hasNotice && raw.notice) {
@@ -104,7 +90,6 @@ export default async function getMarginPositions(args: { pair?: string }) {
 				);
 			}
 
-			// 集計
 			const longCount = positions.filter((p) => p.position_side === 'long').length;
 			const shortCount = positions.filter((p) => p.position_side === 'short').length;
 			lines.push('');
@@ -133,14 +118,12 @@ export default async function getMarginPositions(args: { pair?: string }) {
 
 		return GetMarginPositionsOutputSchema.parse(ok(summary, data, meta));
 	} catch (err) {
-		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
 		return GetMarginPositionsOutputSchema.parse(
 			failPrivateToolError(err, '信用建玉取得中に予期しないエラーが発生しました'),
 		);
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'get_margin_positions',
 	description:

@@ -1,13 +1,4 @@
-/**
- * get_flow_metrics の加工契約テスト（PR4）
- *
- * 取得パスごとの内部 sort 依存を解消し、全ての取得パスで timestampMs 昇順 sort が
- * 保証されることを契約として検証する。
- *
- * 上流 get_transactions も内部で sort 済みだが、契約の単一ソースは get_flow_metrics 側に
- * 置きたい（防御層）。そのため getTransactions をモックして「上流が未 sort で返した場合でも
- * get_flow_metrics の出力は昇順 sort される」ことを直接確認する。
- */
+// 上流 get_transactions も内部で sort 済みだが、契約の単一ソースは get_flow_metrics 側に置きたい（防御層）ので、getTransactions をモックして上流が未 sort で返した場合でも出力が昇順 sort されることを直接確認する。
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../lib/datetime.js';
 
@@ -28,7 +19,6 @@ type MockTx = {
 	isoTime: string;
 };
 
-/** 意図的に降順に並べた約定列を作る（上流が未 sort で返したケースをシミュレート） */
 function buildUnsortedTxs(count: number, startMs: number = Date.UTC(2024, 0, 1)): MockTx[] {
 	const txs: MockTx[] = [];
 	for (let i = 0; i < count; i++) {
@@ -41,7 +31,6 @@ function buildUnsortedTxs(count: number, startMs: number = Date.UTC(2024, 0, 1))
 			isoTime: dayjs(ts).toISOString(),
 		});
 	}
-	// 降順に並び替える
 	return txs.reverse();
 }
 
@@ -90,7 +79,6 @@ describe('get_flow_metrics: 加工契約 — timestampMs 昇順 sort', () => {
 		const tss = res.data.series.buckets.map((b: { timestampMs: number }) => b.timestampMs);
 		expect(tss.length).toBeGreaterThan(0);
 		expect(isAscending(tss)).toBe(true);
-		// 補完取得は呼ばれない
 		expect(mocked).toHaveBeenCalledTimes(1);
 	});
 
@@ -152,8 +140,7 @@ describe('get_flow_metrics: 重複除去キー仕様', () => {
 			bucketMs: 60_000,
 			view: 'summary',
 		})) as { content: Array<{ text: string }> };
-		// view=summary は res.summary をそのまま返す。buildFlowMetricsText の footer に
-		// 加工契約（sort / 重複除去キー）の説明が含まれている。
+		// view=summary は res.summary をそのまま返し、buildFlowMetricsText の footer に加工契約（sort / 重複除去キー）の説明が含まれている。
 		const text = res.content[0].text;
 		expect(text).toContain('加工契約');
 		expect(text).toContain('timestampMs 昇順 sort');
@@ -161,9 +148,7 @@ describe('get_flow_metrics: 重複除去キー仕様', () => {
 	});
 
 	it('latest と supplement で同じ約定 (transaction_id 違い) は重複除去される', async () => {
-		// 同じ timestampMs/price/amount/side で transaction_id だけ異なる約定を返す。
-		// get_transactions の normalized は transaction_id を含むが、
-		// get_flow_metrics の dedup key は使用しない仕様。
+		// 同じ timestampMs/price/amount/side で transaction_id だけ異なる約定を返す（get_flow_metrics の dedup key は transaction_id を使わない仕様）。
 		const baseMs = Date.UTC(2024, 0, 1);
 		const dayMs = 86_400_000;
 		const dupTx: MockTx & { transaction_id?: number } = {
@@ -186,7 +171,6 @@ describe('get_flow_metrics: 重複除去キー仕様', () => {
 
 		const res = await getFlowMetrics('btc_jpy', 10, undefined, 60_000);
 		assertOk(res);
-		// 重複除去後は 1 件のみ
 		expect(res.data.aggregates.totalTrades).toBe(1);
 	});
 });

@@ -1,11 +1,10 @@
 import type { z } from 'zod';
-import { ICHIMOKU_SHIFT } from '../../lib/indicator-config.js';
+import { formatExactPrice, formatPriceAtLevel } from '../../lib/formatter.js';
+import { currentCloudSpans } from '../../lib/indicators.js';
 import { extractUpstreamWarning, prependWarnings } from '../../lib/warning-propagation.js';
 import analyzeMarketSignal from '../../tools/analyze_market_signal.js';
 import { AnalyzeMarketSignalInputSchema, AnalyzeMarketSignalOutputSchema } from '../schemas.js';
 import type { ToolDefinition } from '../tool-definition.js';
-
-// ── buildMarketSignalHandlerText ───────────────────────────────
 
 export type BuildMarketSignalHandlerTextInput = {
 	pair: string;
@@ -72,9 +71,8 @@ export function buildMarketSignalHandlerText(input: BuildMarketSignalHandlerText
 	);
 	if (topContributors.length) lines.push(`主要因: ${topContributors.join(', ')}`);
 
-	// SMA詳細
 	if (sma) {
-		const curPx = Number.isFinite(sma.current) ? Math.round(sma.current!).toLocaleString('ja-JP') : null;
+		const curPx = sma.current != null && Number.isFinite(sma.current) ? formatExactPrice(sma.current) : null;
 		const v = sma.values;
 		const dev = sma.deviations;
 		const arr = sma.arrangement;
@@ -84,13 +82,12 @@ export function buildMarketSignalHandlerText(input: BuildMarketSignalHandlerText
 			if (curPx) lines.push(`現在価格: ${curPx}円`);
 			const fmtVs = (x: number | null) => (x == null ? 'n/a' : `${x >= 0 ? '+' : ''}${x.toFixed(2)}%`);
 			const dir = (x: number | null) => (x == null ? '' : x >= 0 ? '上' : '下');
-			const s25 = Number.isFinite(v.sma25) ? Math.round(v.sma25!).toLocaleString('ja-JP') : 'n/a';
-			const s75 = Number.isFinite(v.sma75) ? Math.round(v.sma75!).toLocaleString('ja-JP') : 'n/a';
-			const s200 = Number.isFinite(v.sma200) ? Math.round(v.sma200!).toLocaleString('ja-JP') : 'n/a';
+			const s25 = v.sma25 != null && Number.isFinite(v.sma25) ? formatPriceAtLevel(v.sma25) : 'n/a';
+			const s75 = v.sma75 != null && Number.isFinite(v.sma75) ? formatPriceAtLevel(v.sma75) : 'n/a';
+			const s200 = v.sma200 != null && Number.isFinite(v.sma200) ? formatPriceAtLevel(v.sma200) : 'n/a';
 			lines.push(`- 短期（25日）: ${s25}円（今の価格より ${fmtVs(dev.vs25)} ${dir(dev.vs25)}に位置）`);
 			lines.push(`- 中期（75日）: ${s75}円（今の価格より ${fmtVs(dev.vs75)} ${dir(dev.vs75)}に位置）`);
 			lines.push(`- 長期（200日）: ${s200}円（今の価格より ${fmtVs(dev.vs200)} ${dir(dev.vs200)}に位置）`);
-			// 配置
 			const curVal = Number.isFinite(sma.current) ? Number(sma.current) : null;
 			const v25 = Number.isFinite(v.sma25) ? Number(v.sma25) : null;
 			const v75 = Number.isFinite(v.sma75) ? Number(v.sma75) : null;
@@ -112,7 +109,6 @@ export function buildMarketSignalHandlerText(input: BuildMarketSignalHandlerText
 				const arrLabel = arr === 'bullish' ? '上昇順' : arr === 'bearish' ? '下降順' : '混在';
 				lines.push(`配置: ${arrLabel}`);
 			}
-			// 直近クロス
 			if (sma.recentCross?.pair === '25/75') {
 				const crossJp = sma.recentCross.type === 'golden_cross' ? 'ゴールデンクロス' : 'デッドクロス';
 				const ago = Number(sma.recentCross.barsAgo ?? 0);
@@ -124,7 +120,6 @@ export function buildMarketSignalHandlerText(input: BuildMarketSignalHandlerText
 		}
 	}
 
-	// 補足指標
 	const { rsi: rsiVal, ichimokuSpanA: spanA, ichimokuSpanB: spanB, macdHist } = supplementary;
 	const hasSupplementary = rsiVal != null || (spanA != null && spanB != null) || macdHist != null;
 	if (hasSupplementary) {
@@ -155,13 +150,13 @@ export function buildMarketSignalHandlerText(input: BuildMarketSignalHandlerText
 			lines.push(`一目均衡表: ${positionLabel}（距離 ${distancePct}、雲の厚さ ${cloudThicknessPct}%）`);
 		}
 		if (macdHist != null && Number.isFinite(macdHist)) {
-			const histRounded = Math.round(macdHist).toLocaleString('ja-JP');
+			// MACD は価格の差なので、値自体ではなく価格の水準で桁を決める。
+			const histRounded = formatPriceAtLevel(macdHist, sma?.current ?? macdHist);
 			const macdLabel = macdHist > 0 ? '強気' : '弱気';
 			lines.push(`MACD: ヒストグラム ${histRounded}（${macdLabel}）`);
 		}
 	}
 
-	// 内訳
 	if (breakdownArray.length) {
 		lines.push('');
 		lines.push('【内訳（raw×weight=寄与）】');
@@ -182,7 +177,6 @@ export function buildMarketSignalHandlerText(input: BuildMarketSignalHandlerText
 		}
 	}
 
-	// 次の確認候補
 	if (nextActions.length) {
 		lines.push('');
 		lines.push('【次の確認候補】');
@@ -195,8 +189,6 @@ export function buildMarketSignalHandlerText(input: BuildMarketSignalHandlerText
 
 	return lines.join('\n');
 }
-
-// ── toolDef ────────────────────────────────────────────────────
 
 export const toolDef: ToolDefinition = {
 	name: 'analyze_market_signal',
@@ -240,15 +232,8 @@ export const toolDef: ToolDefinition = {
 				};
 			};
 			const refs = d?.refs?.indicators?.latest || {};
-			// 🚨 「今日の雲」は ichi_series.spanA/B の末尾 ICHIMOKU_SHIFT(26) 本前を参照する。
-			// refs.ICHIMOKU_spanA/B は「今日計算された先行スパン」＝ 26 本後の雲なので、
-			// 価格と比較する「今日の雲」判定には使えない（26 本ズレる）。
-			const ichiSeries = refs?.ichi_series;
-			const ichiSpanASeries = Array.isArray(ichiSeries?.spanA) ? ichiSeries.spanA : null;
-			const ichiSpanBSeries = Array.isArray(ichiSeries?.spanB) ? ichiSeries.spanB : null;
-			const ichiLen = ichiSpanASeries && ichiSpanBSeries ? Math.min(ichiSpanASeries.length, ichiSpanBSeries.length) : 0;
-			const currentSpanA = ichiLen >= ICHIMOKU_SHIFT ? (ichiSpanASeries?.[ichiLen - ICHIMOKU_SHIFT] ?? null) : null;
-			const currentSpanB = ichiLen >= ICHIMOKU_SHIFT ? (ichiSpanBSeries?.[ichiLen - ICHIMOKU_SHIFT] ?? null) : null;
+			// 今日の雲は ichi_series の末尾 26 本前を見る。refs.ICHIMOKU_spanA/B は 26 本後の雲なので使えない。
+			const { spanA: currentSpanA, spanB: currentSpanB } = currentCloudSpans(refs?.ichi_series);
 			const baseText = buildMarketSignalHandlerText({
 				pair: String(pair || ''),
 				type: String(type || '1day'),
@@ -278,9 +263,6 @@ export const toolDef: ToolDefinition = {
 				weights: d?.weights || null,
 				nextActions: Array.isArray(d?.nextActions) ? d.nextActions : [],
 			});
-			// 上流 warning（取得層）/ warnings（計算層）を content 先頭に再連結する。
-			// LLM は structuredContent.meta を参照できないため、tool 層の summary 先頭と
-			// 同じフォーマットで handler 側でも text 先頭に警告を出す（§9.3）。
 			const text = prependWarnings(baseText, extractUpstreamWarning((res as { meta?: unknown }).meta), {
 				separator: '\n',
 			});

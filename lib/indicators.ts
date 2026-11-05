@@ -1,28 +1,9 @@
-/** Create a number[] of given length filled with NaN. */
+import { ICHIMOKU_SHIFT } from './indicator-config.js';
+
 const nanArray = (len: number): number[] => Array.from<number>({ length: len }).fill(NaN);
 
-/**
- * lib/indicators.ts - テクニカル指標の共通計算モジュール
- *
- * 全指標の純粋な計算関数を提供。
- * リアルタイム分析 (tools/analyze_indicators.ts) と
- * バックテストエンジン (tools/trading_process/) の両方から使用される。
- *
- * 【共通仕様】
- * - 入力: number[]（古い順）
- * - 出力: number[]（データ不足の位置は NaN）
- * - 丸め処理なし（呼び出し元で必要に応じて丸める）
- */
+// 全指標で入力は古い順、データ不足の位置は NaN。丸めは呼び出し元で行う（analyze_indicators と trading_process が共有する）。
 
-/**
- * 単純移動平均 (SMA)
- *
- * 窓内に NaN を含む場合は NaN を返し、窓が完全に有限値で埋まった時点で計算を再開する。
- *
- * @param prices 価格配列（古い順）
- * @param period 期間（正の整数）
- * @returns SMA配列（先頭 period-1 個は NaN）
- */
 export function sma(prices: number[], period: number): number[] {
 	if (period <= 0) {
 		throw new Error('SMA period must be positive');
@@ -56,17 +37,6 @@ export function sma(prices: number[], period: number): number[] {
 	return result;
 }
 
-/**
- * 指数移動平均 (EMA)
- *
- * 最初の EMA 値は period 区間の SMA をシードとして使用。
- * 非有限値 (NaN/Infinity) を含む入力にも対応し、検出時は内部状態をリセットして
- * 次に period 個の連続する有限値が揃った時点で再シードする。
- *
- * @param prices 価格配列（古い順）
- * @param period EMA 期間（2 以上）
- * @returns EMA配列（先頭 period-1 個は NaN）
- */
 export function ema(prices: number[], period: number): number[] {
 	const result: number[] = nanArray(prices.length);
 	if (period < 1) return result;
@@ -79,7 +49,6 @@ export function ema(prices: number[], period: number): number[] {
 	for (let i = 0; i < prices.length; i++) {
 		const price = prices[i];
 		if (!Number.isFinite(price)) {
-			// 非有限入力: 内部状態を全リセットして次の有限窓で再シード
 			prevEma = undefined;
 			seedSum = 0;
 			seedCount = 0;
@@ -109,14 +78,7 @@ export function ema(prices: number[], period: number): number[] {
 	return result;
 }
 
-/**
- * RSI (Relative Strength Index) — Wilder's Smoothing
- *
- * @param closes 終値配列（古い順）
- * @param period RSI 期間（通常 14）
- * @returns RSI配列（0–100、先頭 period 個は NaN）。
- *   変動なし区間（avgGain=0 かつ avgLoss=0）は中立値 50 を返す（業界標準）。
- */
+// 変動なし区間（avgGain=0 かつ avgLoss=0）は中立値 50 を返す（業界標準）。
 export function rsi(closes: number[], period: number): number[] {
 	const result: number[] = nanArray(closes.length);
 
@@ -124,7 +86,6 @@ export function rsi(closes: number[], period: number): number[] {
 		return result;
 	}
 
-	// 価格変化
 	let avgGain = 0;
 	let avgLoss = 0;
 	for (let i = 1; i <= period; i++) {
@@ -135,14 +96,12 @@ export function rsi(closes: number[], period: number): number[] {
 	avgGain /= period;
 	avgLoss /= period;
 
-	// 最初の RSI
 	if (avgLoss === 0) {
 		result[period] = avgGain === 0 ? 50 : 100;
 	} else {
 		result[period] = 100 - 100 / (1 + avgGain / avgLoss);
 	}
 
-	// Wilder's Smoothing
 	for (let i = period + 1; i < closes.length; i++) {
 		const change = closes[i] - closes[i - 1];
 		const gain = change > 0 ? change : 0;
@@ -161,14 +120,6 @@ export function rsi(closes: number[], period: number): number[] {
 	return result;
 }
 
-/**
- * NaN → null 変換 + オプショナル丸め。
- * analyze_indicators.ts など NumericSeries を返す呼び出し元で使用。
- *
- * @param values number[]（NaN を含む）
- * @param decimals 小数桁数（省略時は丸めなし）
- * @returns (number | null)[]
- */
 export function toNumericSeries(values: number[], decimals?: number): (number | null)[] {
 	return values.map((v) => {
 		if (!Number.isFinite(v)) return null;
@@ -176,21 +127,6 @@ export function toNumericSeries(values: number[], decimals?: number): (number | 
 	});
 }
 
-// ============================================================
-// Bollinger Bands
-// ============================================================
-
-/**
- * ボリンジャーバンド
- *
- * 窓内に NaN を含む場合は upper/middle/lower すべて NaN を返し、
- * 窓が完全に有限値で埋まった時点で計算を再開する。
- *
- * @param values 価格配列（古い順）
- * @param period SMA 期間（デフォルト 20）
- * @param stdDev 標準偏差倍率（デフォルト 2）
- * @returns { upper, middle, lower } — 各 number[]（先頭 period-1 個は NaN）
- */
 export function bollingerBands(
 	values: number[],
 	period: number = 20,
@@ -239,19 +175,6 @@ export function bollingerBands(
 	return { upper, middle, lower };
 }
 
-// ============================================================
-// MACD
-// ============================================================
-
-/**
- * MACD (Moving Average Convergence Divergence)
- *
- * @param values 価格配列（古い順）
- * @param fast 短期 EMA 期間（デフォルト 12）
- * @param slow 長期 EMA 期間（デフォルト 26）
- * @param signal シグナル EMA 期間（デフォルト 9）
- * @returns { line, signal, hist } — 各 number[]（NaN で埋め）
- */
 export function macd(
 	values: number[],
 	fast: number = 12,
@@ -262,7 +185,6 @@ export function macd(
 	const emaSlow = ema(values, slow);
 	const n = values.length;
 
-	// MACD line = fast EMA - slow EMA
 	const line: number[] = nanArray(n);
 	for (let i = 0; i < n; i++) {
 		if (Number.isFinite(emaFast[i]) && Number.isFinite(emaSlow[i])) {
@@ -285,7 +207,6 @@ export function macd(
 		}
 	}
 
-	// Histogram = line - signal
 	const hist: number[] = nanArray(n);
 	for (let i = 0; i < n; i++) {
 		if (Number.isFinite(line[i]) && Number.isFinite(signalLine[i])) {
@@ -296,15 +217,6 @@ export function macd(
 	return { line, signal: signalLine, hist };
 }
 
-// ============================================================
-// Ichimoku Kinko Hyo
-// ============================================================
-
-/**
- * 一目均衡表の時系列（全ライン）
- *
- * @returns { tenkan, kijun, spanA, spanB, chikou } — 各 number[]（NaN 埋め）
- */
 export function ichimokuSeries(
 	highs: number[],
 	lows: number[],
@@ -350,16 +262,6 @@ export function ichimokuSeries(
 	return { tenkan, kijun, spanA, spanB, chikou };
 }
 
-/**
- * 遅行スパン（chikou）を 26 本過去方向にシフトした系列を返す。
- *
- * シフト後の系列長は元の系列長と同一。
- * 末尾 `shift` 個は NaN（未来に対応するデータがないため）。
- *
- * @param chikou 終値配列（= ichimokuSeries().chikou）
- * @param shift シフト量（デフォルト 26）
- * @returns シフト適用済みの number[]（末尾 shift 個は NaN）
- */
 export function shiftChikou(chikou: number[], shift: number = 26): number[] {
 	const n = chikou.length;
 	const result: number[] = nanArray(n);
@@ -369,11 +271,6 @@ export function shiftChikou(chikou: number[], shift: number = 26): number[] {
 	return result;
 }
 
-/**
- * 一目均衡表の最新スナップショット値
- *
- * @returns 最新の conversion/base/spanA/spanB、データ不足なら null
- */
 export function ichimokuSnapshot(
 	highs: number[],
 	lows: number[],
@@ -387,19 +284,18 @@ export function ichimokuSnapshot(
 	return { conversion, base, spanA, spanB };
 }
 
-// ============================================================
-// Classic Stochastic Oscillator
-// ============================================================
+/** 今日の雲は ichi_series の spanA / spanB の短い方の末尾から ICHIMOKU_SHIFT 本前（末尾の値は ICHIMOKU_SHIFT 本後にプロットされる雲）。 */
+export function currentCloudSpans(
+	series: { spanA?: Array<number | null>; spanB?: Array<number | null> } | null | undefined,
+): { spanA: number | null; spanB: number | null } {
+	const spanA = series?.spanA;
+	const spanB = series?.spanB;
+	if (!Array.isArray(spanA) || !Array.isArray(spanB)) return { spanA: null, spanB: null };
+	const len = Math.min(spanA.length, spanB.length);
+	if (len < ICHIMOKU_SHIFT) return { spanA: null, spanB: null };
+	return { spanA: spanA[len - ICHIMOKU_SHIFT] ?? null, spanB: spanB[len - ICHIMOKU_SHIFT] ?? null };
+}
 
-/**
- * クラシック・ストキャスティクス
- *
- * %K_raw = (Close - Low_n) / (High_n - Low_n) * 100
- * %K = SMA(%K_raw, smoothK)
- * %D = SMA(%K, smoothD)
- *
- * @returns { kSeries, dSeries } — 各 number[]（NaN 埋め）
- */
 export function stochastic(
 	highs: number[],
 	lows: number[],
@@ -413,7 +309,6 @@ export function stochastic(
 		return { kSeries: nanArray(n), dSeries: nanArray(n) };
 	}
 
-	// Raw %K
 	const rawK: number[] = nanArray(n);
 	for (let i = kPeriod - 1; i < n; i++) {
 		let hi = -Infinity;
@@ -436,7 +331,6 @@ export function stochastic(
 		rawK[i] = range === 0 ? 50 : ((close - lo) / range) * 100;
 	}
 
-	// %K = SMA(rawK, smoothK) — 手動ウィンドウ平均（NaN スキップ）
 	const kSeries: number[] = nanArray(n);
 	for (let i = 0; i < n; i++) {
 		if (!Number.isFinite(rawK[i])) continue;
@@ -451,7 +345,6 @@ export function stochastic(
 		if (cnt === smoothK) kSeries[i] = sum / cnt;
 	}
 
-	// %D = SMA(%K, smoothD)
 	const dSeries: number[] = nanArray(n);
 	for (let i = 0; i < n; i++) {
 		if (!Number.isFinite(kSeries[i])) continue;
@@ -469,17 +362,6 @@ export function stochastic(
 	return { kSeries, dSeries };
 }
 
-// ============================================================
-// Stochastic RSI
-// ============================================================
-
-/**
- * ストキャスティクス RSI
- *
- * RSI 値にストキャスティクス計算を適用。
- *
- * @returns { kSeries, dSeries } — 各 number[]（NaN 埋め）
- */
 export function stochRSI(
 	closes: number[],
 	rsiPeriod: number = 14,
@@ -495,7 +377,6 @@ export function stochRSI(
 		return { kSeries: nanArray(n), dSeries: nanArray(n) };
 	}
 
-	// Raw %K over RSI window
 	const rawK: number[] = nanArray(n);
 	for (let i = 0; i < n; i++) {
 		if (!Number.isFinite(rsiValues[i]) || i < stochPeriod - 1) continue;
@@ -510,7 +391,6 @@ export function stochRSI(
 		rawK[i] = range === 0 ? 50 : ((rsiValues[i] - lo) / range) * 100;
 	}
 
-	// Smooth rawK → %K
 	const kSeries: number[] = nanArray(n);
 	for (let i = 0; i < n; i++) {
 		if (!Number.isFinite(rawK[i])) continue;
@@ -525,7 +405,6 @@ export function stochRSI(
 		if (cnt === smoothK) kSeries[i] = sum / cnt;
 	}
 
-	// %D = SMA(%K, smoothD)
 	const dSeries: number[] = nanArray(n);
 	for (let i = 0; i < n; i++) {
 		if (!Number.isFinite(kSeries[i])) continue;
@@ -543,20 +422,6 @@ export function stochRSI(
 	return { kSeries, dSeries };
 }
 
-// ============================================================
-// True Range / ATR
-// ============================================================
-
-/**
- * True Range 系列
- *
- * TR = max(high - low, |high - prevClose|, |low - prevClose|)
- *
- * @param highs 高値配列（古い順）
- * @param lows 安値配列（古い順）
- * @param closes 終値配列（古い順）
- * @returns TR 配列（先頭は NaN — prevClose が存在しない）
- */
 export function trueRange(highs: number[], lows: number[], closes: number[]): number[] {
 	const n = Math.min(highs.length, lows.length, closes.length);
 	if (n < 2) return nanArray(n);
@@ -572,23 +437,7 @@ export function trueRange(highs: number[], lows: number[], closes: number[]): nu
 	return result;
 }
 
-/**
- * Wilder ATR (RMA-based)
- *
- * 初回値は SMA(TR[1..period])。以降は次の漸化式で更新:
- *   ATR_n = (ATR_{n-1} * (period - 1) + TR_n) / period
- *
- * TradingView・MT4/MT5 デフォルトの ATR と一致する。Wilder の元論文準拠。
- *
- * 非有限 TR を検出した場合は内部状態をリセットし、次に period 個の連続有限 TR が
- * 揃った時点で再シードする（ema と同じ挙動）。
- *
- * @param highs 高値配列（古い順）
- * @param lows 安値配列（古い順）
- * @param closes 終値配列（古い順）
- * @param period 期間（デフォルト 14、Wilder 元論文 / TradingView 標準）
- * @returns Wilder ATR 配列（NaN 埋め、先頭 period 個は NaN）
- */
+// TradingView の既定 ATR（RMA）と一致させている（Wilder の元論文準拠）。
 export function wilderAtr(highs: number[], lows: number[], closes: number[], period: number = 14): number[] {
 	if (!Number.isInteger(period) || period < 1) {
 		throw new Error('Wilder ATR period must be a positive integer');
@@ -628,17 +477,6 @@ export function wilderAtr(highs: number[], lows: number[], closes: number[], per
 	return result;
 }
 
-// ============================================================
-// OBV (On-Balance Volume)
-// ============================================================
-
-/**
- * OBV（出来高累積指標）
- *
- * @param closes 終値配列（古い順）
- * @param volumes 出来高配列（古い順）
- * @returns OBV の累積配列（number[]）
- */
 export function obv(closes: number[], volumes: number[]): number[] {
 	const n = Math.min(closes.length, volumes.length);
 	if (n < 1) return [];
@@ -658,33 +496,9 @@ export function obv(closes: number[], volumes: number[]): number[] {
 	return result;
 }
 
-// ============================================================
-// Crossover detection
-// ============================================================
-
-/** クロスの種類。golden = fast が slow を下から上抜け、dead = その逆。 */
 export type CrossType = 'golden' | 'dead';
 
-/**
- * 2 系列 (fast / slow) の直近クロス（符号反転）を末尾側から探す。
- *
- * fast / slow は同一の時間インデックスで揃っている前提（index i が同じ足に対応する。
- * `lib/indicators.ts` が返す NaN 埋めの全長系列が典型）。末尾（新しい側）から
- * `prev = fast[i-1] - slow[i-1]` と `curr = fast[i] - slow[i]` を比較し、
- * 最初に見つかった符号反転を返す。
- *
- * セマンティクス:
- * - golden: `prev < 0` かつ `curr > 0`（fast が slow を下から上抜け）
- * - dead:   `prev > 0` かつ `curr < 0`（fast が slow を上から下抜け）
- * - タイ値（prev または curr がちょうど 0）は「未クロス」として **スキップし探索を継続** する。
- *   厳密不等号で判定するため、0 を跨いだだけの足はクロス成立とみなさない。
- * - 非有限値（NaN / Infinity）が絡む比較はスキップする。
- * - 長さが異なる場合は短い方に合わせる（先頭インデックス基準で揃える）。
- *
- * @param fast 短期側の系列（例: SMA25 / MACD line）
- * @param slow 長期側の系列（例: SMA75 / MACD signal）
- * @returns 直近クロスの `{ type, barsAgo }`（barsAgo=0 は最後の 2 本間のクロス）。無ければ null。
- */
+// タイ値（0）は未クロスとしてスキップし探索を続ける（0 を跨いだだけの足はクロスとみなさない）。
 export function lastCrossover(
 	fast: readonly number[] | null,
 	slow: readonly number[] | null,
@@ -694,9 +508,7 @@ export function lastCrossover(
 	for (let i = n - 1; i >= 1; i--) {
 		const prev = fast[i - 1] - slow[i - 1];
 		const curr = fast[i] - slow[i];
-		// 非有限（NaN/Infinity）は比較不能としてスキップ。
 		if (!Number.isFinite(prev) || !Number.isFinite(curr)) continue;
-		// 厳密不等号で判定 → タイ値（=0）は未クロス扱いで継続。
 		if (prev < 0 && curr > 0) return { type: 'golden', barsAgo: n - 1 - i };
 		if (prev > 0 && curr < 0) return { type: 'dead', barsAgo: n - 1 - i };
 	}

@@ -1,9 +1,4 @@
-/**
- * lib/tx-fetch.ts — get_flow_metrics / analyze_volume_profile 共有の約定取得層。
- *
- * 加工契約（dedup キー `timestampMs:price:amount:side` / timestampMs 昇順 sort）は
- * ツール description に明文化済みのため、ここで固定する。
- */
+// 加工契約（dedup キー `timestampMs:price:amount:side` / timestampMs 昇順 sort）はツール description に明文化済みなので、ここで固定する。
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../../lib/datetime.js';
 import {
@@ -25,6 +20,7 @@ import {
 	type Tx,
 	type TxTimeRangeResolved,
 	txDedupKey,
+	unlimitedTxFetcher,
 } from '../../lib/tx-fetch.js';
 import { ISO8601_WITH_OFFSET_PATTERN, MAX_TX_RANGE_DAYS } from '../../src/schema/base.js';
 
@@ -175,7 +171,6 @@ describe('resolveTxTimeRange', () => {
 	const resolve = (input: Omit<Parameters<typeof resolveTxTimeRange>[0], 'nowMs'>) =>
 		resolveTxTimeRange({ ...input, nowMs: NOW });
 
-	/** ok 分岐に絞り込む（fail なら message 付きで落とす） */
 	function assertResolved(
 		res: ReturnType<typeof resolveTxTimeRange>,
 	): asserts res is { ok: true } & TxTimeRangeResolved {
@@ -245,9 +240,7 @@ describe('resolveTxTimeRange', () => {
 			expect(res.sinceMs).toBe(Date.UTC(2026, 7, 1, 0, 0, 0) + 500);
 		});
 
-		// 小数秒は 10 進小数（.5 = 500ms）。桁数が 3 でない入力は、スキーマの正規表現は
-		// 通るのに parseIso8601（strict format は .SSS 固定）が落として「存在しない日付・
-		// 時刻」と誤報していた。正準形へ揃える正規化をここで固定する。
+		// 小数秒は 10 進小数（.5 = 500ms）。桁数が 3 でない入力はスキーマの正規表現を通るのに parseIso8601（strict format は .SSS 固定）が落とすので、正準形へ揃える正規化を固定する。
 		it.each([
 			['2026-08-01T00:00:00.5Z', 500],
 			['2026-08-01T00:00:00.12Z', 120],
@@ -465,8 +458,7 @@ describe('fetchTxTimeRange', () => {
 	});
 
 	it('過去区間でも「進行中の UTC 日」の判定は実時刻で行う（終端の日を未公開扱いしない）', async () => {
-		// untilMs の UTC 日 = 20260707。これを現在時刻とみなすと 20260707 が進行中と誤判定され、
-		// 実際には公開済みのアーカイブを列挙しなくなる。
+		// untilMs の UTC 日 = 20260707。これを現在時刻とみなすと 20260707 が進行中と誤判定され、実際には公開済みのアーカイブを列挙しなくなる。
 		const calls: Array<string | undefined> = [];
 		const fetcher = vi.fn(async (date?: string) => {
 			calls.push(date);
@@ -510,6 +502,21 @@ describe('fetchTxTimeRange', () => {
 		const res = await fetchTxTimeRange(fetcher, { sinceMs: untilMs - 3600_000, untilMs }, { nowMs: NOW });
 
 		expect(res.txs.map((t) => t.timestampMs)).toEqual([untilMs]);
+	});
+});
+
+describe('unlimitedTxFetcher', () => {
+	it('集計用に応答上限 1000 件を外して get_transactions を呼ぶ（日付はそのまま渡す）', async () => {
+		const getTransactions = vi.fn(async () => ({ ok: true }));
+		const fetcher = unlimitedTxFetcher(getTransactions, 'btc_jpy');
+
+		await fetcher('20260706');
+		await fetcher();
+
+		expect(getTransactions.mock.calls).toEqual([
+			['btc_jpy', 1000, '20260706', undefined, { unlimited: true }],
+			['btc_jpy', 1000, undefined, undefined, { unlimited: true }],
+		]);
 	});
 });
 
@@ -573,7 +580,6 @@ describe('fetchLatestTxs / fetchSupplementTxs', () => {
 });
 
 describe('computeTxCoverage', () => {
-	/** ts オフセット（分）で約定列を作る */
 	const at = (minutes: number[]) => minutes.map((m) => tx({ timestampMs: BASE_MS + m * 60_000 }));
 
 	it('空配列: null', () => {
@@ -605,8 +611,7 @@ describe('computeTxCoverage', () => {
 	});
 
 	it('閑散帯の無約定（実測最長 7.5 分）は欠損としない', () => {
-		// 2026-08-01 実測: JST 01:43:40〜01:51:12 の 7.5 分無約定。別系統の /candlestick でも
-		// volume=0 が 7 本連続しており、取得欠損ではなく本当に約定が無かった区間。
+		// 実際に 7.5 分無約定の区間（別系統の /candlestick でも volume=0 が連続し、取得欠損ではない）があるので、閾値未満の空白は欠損にしない。
 		const quiet = [tx({ timestampMs: BASE_MS }), tx({ timestampMs: BASE_MS + 7.5 * 60_000 })];
 		expect(computeTxCoverage(quiet)?.gaps).toHaveLength(0);
 		expect(computeTxCoverage(quiet)?.coveredMinutes).toBe(8);
@@ -735,7 +740,6 @@ describe('applyTxLimit / buildTxTruncationWarning', () => {
 
 describe('hasCoverageShortfall / カバレッジ不足の警告', () => {
 	const at = (minutes: number[]) => minutes.map((m) => tx({ timestampMs: BASE_MS + m * 60_000 }));
-	/** 0〜spanMin 分に 1 分間隔で連続する約定列（内部ギャップなし） */
 	const contiguous = (spanMin: number) => at(Array.from({ length: spanMin + 1 }, (_, i) => i));
 
 	it('hasCoverageShortfall: 80% ちょうどは不足としない（off-by-one）', () => {
@@ -750,7 +754,7 @@ describe('hasCoverageShortfall / カバレッジ不足の警告', () => {
 	});
 
 	it('内部欠損なし + 要求窓の8割未満 → 未カバーの定量警告が出る', () => {
-		// 実測（2026-08-02, hours=4）: latest 約60件 ≒ 34分 / 要求240分 = 14%
+		// latest 約60件 ≒ 34分 / 要求240分 = 14%
 		const w = buildTxCoverageWarning(computeTxCoverage(contiguous(34)), {
 			requestedMinutes: 240,
 			tz: 'Asia/Tokyo',
@@ -780,7 +784,6 @@ describe('hasCoverageShortfall / カバレッジ不足の警告', () => {
 		const note = buildAggregateCoverageNote(c, '集計値（CVD）', 240);
 		expect(note).toContain('34分（1区間）のみから算出');
 		expect(note).toContain('要求した時間窓（240分）全体を代表する値ではありません');
-		// 内部欠損ゼロなら「欠損 N分」は出さない
 		expect(note).not.toContain('欠損');
 	});
 

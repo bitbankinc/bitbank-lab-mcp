@@ -1,16 +1,10 @@
-/**
- * lib/fees.ts のユニットテスト。
- * 見積り側の取引手数料（カテゴリ A / B）の解決ロジックを検証する。
- *
- * testing.md のエッジ優先順位（空 / null / 重複 / 単一 / 最小最大）に従い、
- * とくに「`||` 誤用回帰（campaign の 0 が fallback に化けない）」を重点的に固定する。
- */
+// 見積り側の取引手数料（カテゴリ A / B）の解決ロジック。とくに `||` 誤用（campaign の 0 が fallback に化ける）の回帰を重点的に固定する。
 
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_TAKER_FALLBACK, estimateOrderFee, feeRole, resolveFeeRate } from '../../lib/fees.js';
 import type { PairSpec } from '../../lib/pairs.js';
 
-/** テスト用 PairSpec。手数料フィールドのデフォルトはフィクスチャ相当（taker 0.0012 / maker -0.0002 / margin null）。 */
+/** 手数料フィールドのデフォルトはフィクスチャ相当（taker 0.0012 / maker -0.0002 / margin null）。 */
 function makeSpec(overrides: Partial<PairSpec> = {}): PairSpec {
 	return {
 		name: 'btc_jpy',

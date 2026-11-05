@@ -1,10 +1,3 @@
-/**
- * tools/patterns/period.ts — スキャン範囲 / 検出パターン分布期間の行ビルダー。
- *
- * 「検出対象期間」という旧ラベルがスキャン窓を指しているように読め、
- * 「1時間足で直近1日分がスキャンされていない」という誤読を招いた。
- * 本テストは 2 行が別の量として出ること、intraday で時刻が落ちないことを固定する。
- */
 import { describe, expect, it } from 'vitest';
 import {
 	buildPatternSpanLine,
@@ -15,14 +8,11 @@ import {
 	type ScanRange,
 } from '../../tools/patterns/period.js';
 
-// timezone-sensitive な timestamp（23:30Z 系）:
-//   2026-10-01T23:30:00.000Z → JST: 2026-10-02 08:30 / UTC: 2026-10-01 23:30
+// timezone-sensitive な timestamp: 2026-10-01T23:30:00.000Z → JST: 2026-10-02 08:30 / UTC: 2026-10-01 23:30
 const START_UTC_LATE = '2026-10-01T23:30:00.000Z';
 const END_UTC_LATE = '2026-10-10T23:30:00.000Z';
 
 const pat = (start: string, end: string) => ({ range: { start, end } });
-
-// ── isIntradayType ──
 
 describe('isIntradayType', () => {
 	it.each(['1min', '5min', '15min', '30min', '1hour', '4hour', '8hour', '12hour'])('%s は intraday', (type) => {
@@ -37,8 +27,6 @@ describe('isIntradayType', () => {
 		expect(isIntradayType('unknown')).toBe(false);
 	});
 });
-
-// ── buildScanRange ──
 
 describe('buildScanRange', () => {
 	it('先頭足・末尾足・本数を返す', () => {
@@ -76,13 +64,17 @@ describe('buildScanRange', () => {
 	});
 });
 
-// ── buildScanRangeLine ──
-
 describe('buildScanRangeLine', () => {
 	const scan: ScanRange = { start: '2026-08-05T07:00:00.000Z', end: '2026-08-21T21:00:00.000Z', bars: 399 };
 
 	it('intraday（1hour）は時刻まで出す — 誤読の直接原因だったので暦日に丸めない', () => {
 		expect(buildScanRangeLine(scan, '1hour', 'UTC')).toBe('スキャン範囲: 2026-08-05 07:00 ~ 2026-08-21 21:00（399本）');
+	});
+
+	it('終端アンカーを指定したスキャンは date を明示する', () => {
+		expect(buildScanRangeLine({ ...scan, anchorDate: '20250831' }, '1hour', 'UTC')).toBe(
+			'スキャン範囲: 2026-08-05 07:00 ~ 2026-08-21 21:00（399本、終端 date=20250831 指定）',
+		);
 	});
 
 	it('intraday（4hour / 12hour）も時刻まで出す', () => {
@@ -103,9 +95,7 @@ describe('buildScanRangeLine', () => {
 		expect(buildScanRangeLine(scan, '1hour', '')).toBe(buildScanRangeLine(scan, '1hour', 'Asia/Tokyo'));
 	});
 
-	// 回帰: 解決できない IANA 名で toIsoWithTz / formatDateInTz が null を返し、
-	// スキャン範囲行が**丸ごと消えて**いた。行が消えると LLM はスキャン窓を確認できず、
-	// この PR が潰そうとしている誤読がそのまま再発する。
+	// 解決できない IANA 名で行が丸ごと消えると、LLM はスキャン窓を確認できない。
 	it.each([
 		'Tokyo',
 		'Not/AZone',
@@ -130,8 +120,6 @@ describe('buildScanRangeLine', () => {
 		expect(buildScanRangeLine(one, '1day', 'UTC')).toBe('スキャン範囲: 2026-10-01 ~ 2026-10-01（1本）');
 	});
 });
-
-// ── buildPatternSpanLine ──
 
 describe('buildPatternSpanLine', () => {
 	it('ラベルは「検出パターン分布期間」— スキャン窓ではないことを名前で示す', () => {
@@ -189,8 +177,7 @@ describe('buildPatternSpanLine', () => {
 		expect(line).toContain('2026-10-11');
 	});
 
-	// 回帰: 解決できない IANA 名で formatDateInTz が null を返し、
-	// `検出パターン分布期間:  ~ （N日間）` のように日付だけ空文字の行が出ていた。
+	// 解決できない IANA 名で `検出パターン分布期間:  ~ （N日間）` のように日付だけ空文字の行が出ていた。
 	it.each([
 		'Tokyo',
 		'Not/AZone',
@@ -202,8 +189,6 @@ describe('buildPatternSpanLine', () => {
 		expect(line).not.toMatch(/期間:\s+~/u);
 	});
 });
-
-// ── buildPeriodBlock ──
 
 describe('buildPeriodBlock', () => {
 	const scan: ScanRange = { start: '2026-08-05T07:00:00.000Z', end: '2026-08-21T21:00:00.000Z', bars: 399 };

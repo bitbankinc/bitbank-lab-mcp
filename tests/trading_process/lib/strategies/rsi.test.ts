@@ -72,7 +72,6 @@ describe('calculateRSI', () => {
 	});
 
 	it('上昇トレンドでは RSI が高い', () => {
-		// 20本の連続上昇
 		const closes = Array.from({ length: 30 }, (_, i) => 100 + i * 2);
 		const result = calculateRSI(closes, 14);
 		const lastRSI = result[result.length - 1];

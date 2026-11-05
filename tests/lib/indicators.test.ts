@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { ICHIMOKU_SHIFT } from '../../lib/indicator-config.js';
 import {
 	bollingerBands,
+	currentCloudSpans,
 	ema,
 	ichimokuSeries,
 	ichimokuSnapshot,
@@ -16,8 +18,6 @@ import {
 	trueRange,
 	wilderAtr,
 } from '../../lib/indicators.js';
-
-// --- SMA ---
 
 describe('sma', () => {
 	it('基本的な SMA を計算する', () => {
@@ -102,8 +102,6 @@ describe('sma', () => {
 	});
 });
 
-// --- EMA ---
-
 describe('ema', () => {
 	it('基本的な EMA を計算する', () => {
 		const prices = [10, 11, 12, 13, 14, 15];
@@ -132,22 +130,16 @@ describe('ema', () => {
 	});
 
 	it('EMA は直近の値に重みを置く（SMA との比較）', () => {
-		// 上昇トレンドでは EMA > SMA になるはず
 		const prices = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
 		const smaResult = sma(prices, 5);
 		const emaResult = ema(prices, 5);
-		// 後半は EMA >= SMA
 		for (let i = 6; i < prices.length; i++) {
 			expect(emaResult[i]).toBeGreaterThanOrEqual(smaResult[i] - 0.001);
 		}
 	});
 
 	it('入力途中に NaN: 後続が再シードして復帰する', () => {
-		// period=3, k=0.5
-		// 先頭 [1,2,3] でシード → result[2]=2
-		// index 3 が NaN → 内部状態リセット
-		// [5,6,7] で再シード → result[6]=6
-		// 以降: result[7]=8*0.5+6*0.5=7, result[8]=9*0.5+7*0.5=8
+		// period=3, k=0.5: 先頭 [1,2,3] でシード → result[2]=2、index 3 の NaN で内部状態リセット、[5,6,7] で再シード → result[6]=6、以降 result[7]=8*0.5+6*0.5=7, result[8]=9*0.5+7*0.5=8
 		const result = ema([1, 2, 3, NaN, 5, 6, 7, 8, 9], 3);
 		expect(result).toHaveLength(9);
 		expect(result[0]).toBeNaN();
@@ -167,11 +159,9 @@ describe('ema', () => {
 		expect(result).toHaveLength(9);
 		expect(result[2]).toBeCloseTo(2, 10);
 		expect(result[3]).toBeNaN();
-		// 再シード後は finite
 		expect(result[6]).toBeCloseTo(6, 10);
 		expect(result[7]).toBeCloseTo(7, 10);
 		expect(result[8]).toBeCloseTo(8, 10);
-		// 出力に Infinity が混入しない
 		for (const v of result) {
 			expect(Number.isFinite(v) || Number.isNaN(v)).toBe(true);
 		}
@@ -188,9 +178,7 @@ describe('ema', () => {
 	});
 
 	it('初期窓に NaN: 先頭をスキップして次の有限窓で再シード', () => {
-		// [NaN, 1, 2, 3, 4, 5], period=3
-		// index 0 (NaN) リセット → [1,2,3] でシード → result[3]=2
-		// result[4]=4*0.5+2*0.5=3, result[5]=5*0.5+3*0.5=4
+		// [NaN, 1, 2, 3, 4, 5], period=3: index 0 の NaN でリセット → [1,2,3] でシード → result[3]=2、result[4]=4*0.5+2*0.5=3, result[5]=5*0.5+3*0.5=4
 		const result = ema([NaN, 1, 2, 3, 4, 5], 3);
 		expect(result).toHaveLength(6);
 		expect(result[0]).toBeNaN();
@@ -217,11 +205,7 @@ describe('ema', () => {
 	});
 
 	it('末尾のみ NaN: 末尾は NaN、その前までは通常計算', () => {
-		// [1,2,3,4,5,NaN], period=3
-		// シード result[2]=2
-		// result[3]=4*0.5+2*0.5=3
-		// result[4]=5*0.5+3*0.5=4
-		// result[5]=NaN (リセット)
+		// [1,2,3,4,5,NaN], period=3: シード result[2]=2 → result[3]=4*0.5+2*0.5=3、result[4]=5*0.5+3*0.5=4、result[5]=NaN（リセット）
 		const result = ema([1, 2, 3, 4, 5, NaN], 3);
 		expect(result[2]).toBeCloseTo(2, 10);
 		expect(result[3]).toBeCloseTo(3, 10);
@@ -230,11 +214,7 @@ describe('ema', () => {
 	});
 
 	it('連続 NaN を含むケース', () => {
-		// [1,2,3,NaN,NaN,4,5,6,7], period=3
-		// [1,2,3] シード → result[2]=2
-		// NaN,NaN で連続リセット
-		// [4,5,6] 再シード → result[7]=5
-		// result[8]=7*0.5+5*0.5=6
+		// [1,2,3,NaN,NaN,4,5,6,7], period=3: [1,2,3] シード → result[2]=2、NaN,NaN で連続リセット、[4,5,6] 再シード → result[7]=5、result[8]=7*0.5+5*0.5=6
 		const result = ema([1, 2, 3, NaN, NaN, 4, 5, 6, 7], 3);
 		expect(result[2]).toBeCloseTo(2, 10);
 		expect(result[3]).toBeNaN();
@@ -245,9 +225,7 @@ describe('ema', () => {
 		expect(result[8]).toBeCloseTo(6, 10);
 	});
 
-	// 参照実装: pandas-ta.ema(length=12) / ema(length=26)（SMA シード + k=2/(period+1)）
-	// 入力配列: 40 本の合成終値（前半上昇 → 後半下降）。
-	// EMA は SMA(period) を index = period-1 にシードし、以降 `next = price*k + prev*(1-k)`。
+	// 参照実装: pandas-ta.ema(length=12) / ema(length=26)（SMA(period) を index = period-1 にシードし、以降 `next = price*k + prev*(1-k)`）。入力は前半上昇 → 後半下降の 40 本の合成終値。
 	const EMA_GOLDEN_CLOSES = [
 		100.0, 101.5, 102.3, 103.1, 102.8, 104.2, 105.0, 104.6, 103.9, 105.5, 106.8, 107.2, 106.5, 108.0, 109.3, 108.7,
 		110.1, 111.4, 110.8, 112.2, 113.5, 112.9, 114.3, 115.6, 114.0, 113.2, 112.5, 111.8, 110.5, 109.7, 108.4, 107.6,
@@ -261,7 +239,6 @@ describe('ema', () => {
 		for (let i = 0; i < 11; i++) {
 			expect(result[i]).toBeNaN();
 		}
-		// シードは SMA(12) の値そのもの
 		const seedSma12 = EMA_GOLDEN_CLOSES.slice(0, 12).reduce((a, b) => a + b, 0) / 12;
 		expect(result[11]).toBeCloseTo(seedSma12, 10);
 		// pandas-ta 出力値（SMA シード + k=2/(12+1)≈0.15385 の漸化式）
@@ -276,11 +253,9 @@ describe('ema', () => {
 	it('golden: EMA(26) 数値固定（pandas-ta.ema(length=26) 参照、ε=1e-4）', () => {
 		const result = ema(EMA_GOLDEN_CLOSES, 26);
 		expect(result).toHaveLength(40);
-		// 先頭 25 個は NaN
 		for (let i = 0; i < 25; i++) {
 			expect(result[i]).toBeNaN();
 		}
-		// シードは SMA(26)
 		const seedSma26 = EMA_GOLDEN_CLOSES.slice(0, 26).reduce((a, b) => a + b, 0) / 26;
 		expect(result[25]).toBeCloseTo(seedSma26, 10);
 		// pandas-ta 出力値（SMA シード + k=2/(26+1)≈0.07407 の漸化式）
@@ -292,19 +267,14 @@ describe('ema', () => {
 	});
 });
 
-// --- RSI ---
-
 describe('rsi', () => {
 	it('基本的な RSI を計算する（period=14）', () => {
-		// 15 日分の上昇トレンド → RSI は高い値
 		const closes = Array.from({ length: 20 }, (_, i) => 100 + i);
 		const result = rsi(closes, 14);
 		expect(result).toHaveLength(20);
-		// 先頭 14 個は NaN
 		for (let i = 0; i < 14; i++) {
 			expect(result[i]).toBeNaN();
 		}
-		// index 14 以降は有効
 		expect(result[14]).toBeCloseTo(100, 5); // 全て上昇なので RSI≈100
 	});
 
@@ -352,7 +322,6 @@ describe('rsi', () => {
 		// 先頭 15 個フラット（初期窓は avgGain=0 && avgLoss=0 で 50）、その後上昇
 		const closes = [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 110, 120];
 		const result = rsi(closes, 14);
-		// 初期窓は完全フラット → 中立値 50
 		expect(result[14]).toBe(50);
 		// 上昇開始後は 50 から離脱（avgLoss=0 のまま avgGain>0 なので RSI=100 となる）
 		expect(result[15]).toBeGreaterThan(50);
@@ -363,7 +332,6 @@ describe('rsi', () => {
 		// 先頭 15 個フラット（初期窓は avgGain=0 && avgLoss=0 で 50）、その後下落
 		const closes = [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 90, 80];
 		const result = rsi(closes, 14);
-		// 初期窓は完全フラット → 中立値 50
 		expect(result[14]).toBe(50);
 		// 下落開始後は 50 から下方向に離脱（avgGain=0 のまま avgLoss>0 なので RSI=0）
 		expect(result[15]).toBeLessThan(50);
@@ -371,15 +339,12 @@ describe('rsi', () => {
 	});
 
 	it('Wilder smoothing が正しく適用される', () => {
-		// 具体的な値で検算
 		const closes = [
 			44, 44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.1, 45.42, 45.84, 46.08, 45.89, 46.03, 45.61, 46.28, 46.28, 46.0,
 			46.03, 46.41, 46.22, 45.64,
 		];
 		const result = rsi(closes, 14);
-		// RSI should be valid from index 14
 		expect(Number.isFinite(result[14])).toBe(true);
-		// Subsequent values should also be valid
 		for (let i = 14; i < result.length; i++) {
 			expect(Number.isFinite(result[i])).toBe(true);
 			expect(result[i]).toBeGreaterThanOrEqual(0);
@@ -387,10 +352,7 @@ describe('rsi', () => {
 		}
 	});
 
-	// 参照実装: pandas-ta.rsi(length=14)（Wilder's Smoothing / RMA）
-	// 入力配列: 33 本の合成終値。前半は緩やかな上昇、後半は下降に転じるよう設計。
-	// 期待値は同一スペックで実装したクリーンルーム参照（Wilder の漸化式そのまま）で生成。
-	// 既存 JS 実装と Wilder RSI 仕様は完全一致するため、許容誤差 ε=1e-4 で固定する。
+	// 期待値は同一スペックで実装したクリーンルーム参照（Wilder の漸化式そのまま）で生成した（入力は前半が緩やかな上昇、後半が下降に転じる 33 本の合成終値）。
 	it('golden: RSI(14) 数値固定（pandas-ta.rsi(length=14) 参照、ε=1e-4）', () => {
 		const closes = [
 			44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.1, 45.42, 45.84, 46.08, 45.89, 46.03, 45.61, 46.28, 46.28, 46.0,
@@ -403,7 +365,6 @@ describe('rsi', () => {
 		for (let i = 0; i < 14; i++) {
 			expect(result[i]).toBeNaN();
 		}
-		// pandas-ta 出力値（Wilder RSI 仕様）
 		expect(result[14]).toBeCloseTo(70.4641, 4);
 		expect(result[15]).toBeCloseTo(66.2496, 4);
 		expect(result[20]).toBeCloseTo(62.8807, 4);
@@ -411,8 +372,6 @@ describe('rsi', () => {
 		expect(result[32]).toBeCloseTo(37.7888, 4);
 	});
 });
-
-// --- toNumericSeries ---
 
 describe('toNumericSeries', () => {
 	it('NaN を null に変換する', () => {
@@ -432,11 +391,8 @@ describe('toNumericSeries', () => {
 	});
 });
 
-// --- Bollinger Bands ---
-
 describe('bollingerBands', () => {
 	it('基本的な BB を計算する', () => {
-		// period=3 の簡易テスト
 		const values = [10, 12, 11, 13, 12, 14];
 		const { upper, middle, lower } = bollingerBands(values, 3, 2);
 		expect(upper).toHaveLength(6);
@@ -444,7 +400,6 @@ describe('bollingerBands', () => {
 		expect(middle[1]).toBeNaN();
 		// middle[2] = (10+12+11)/3 = 11
 		expect(middle[2]).toBeCloseTo(11, 10);
-		// upper > middle > lower
 		for (let i = 2; i < values.length; i++) {
 			expect(upper[i]).toBeGreaterThan(middle[i]);
 			expect(lower[i]).toBeLessThan(middle[i]);
@@ -484,21 +439,15 @@ describe('bollingerBands', () => {
 	});
 
 	it('NaN 窓内では upper/middle/lower すべて NaN、外れたら回復する', () => {
-		// values = [1, 2, NaN, 4, 5, 6, 7], period=3, stdDev=2
-		// 窓 [1,2,NaN]→NaN、[2,NaN,4]→NaN、[NaN,4,5]→NaN
-		// 窓 [4,5,6]→ mean=5, sumSq=2, std=sqrt(2/3)
-		// 窓 [5,6,7]→ mean=6, sumSq=2, std=sqrt(2/3)
+		// values = [1, 2, NaN, 4, 5, 6, 7], period=3, stdDev=2: 窓 [1,2,NaN] / [2,NaN,4] / [NaN,4,5] は NaN、窓 [4,5,6] は mean=5, std=sqrt(2/3)、窓 [5,6,7] は mean=6, std=sqrt(2/3)
 		const { upper, middle, lower } = bollingerBands([1, 2, NaN, 4, 5, 6, 7], 3, 2);
-		// 先頭2つは period 不足
 		expect(middle[0]).toBeNaN();
 		expect(middle[1]).toBeNaN();
-		// NaN を含む窓
 		for (const i of [2, 3, 4]) {
 			expect(upper[i]).toBeNaN();
 			expect(middle[i]).toBeNaN();
 			expect(lower[i]).toBeNaN();
 		}
-		// 回復後
 		const std = Math.sqrt(2 / 3);
 		expect(middle[5]).toBeCloseTo(5, 10);
 		expect(upper[5]).toBeCloseTo(5 + 2 * std, 10);
@@ -508,9 +457,7 @@ describe('bollingerBands', () => {
 		expect(lower[6]).toBeCloseTo(6 - 2 * std, 10);
 	});
 
-	// 参照実装: pandas-ta.bbands(length=20, std=2)（population σ、除数 N。pandas の ddof=1 ではない）
-	// 入力配列: EMA golden と同一の 40 本合成終値（前半上昇 → 後半下降）。
-	// 中央線 = SMA(20)、帯 = mean ± 2 * σ。
+	// 参照実装: pandas-ta.bbands(length=20, std=2)（population σ、除数 N。pandas の ddof=1 ではない）。入力は EMA golden と同一の 40 本合成終値で、中央線 = SMA(20)、帯 = mean ± 2 * σ。
 	const BB_GOLDEN_CLOSES = [
 		100.0, 101.5, 102.3, 103.1, 102.8, 104.2, 105.0, 104.6, 103.9, 105.5, 106.8, 107.2, 106.5, 108.0, 109.3, 108.7,
 		110.1, 111.4, 110.8, 112.2, 113.5, 112.9, 114.3, 115.6, 114.0, 113.2, 112.5, 111.8, 110.5, 109.7, 108.4, 107.6,
@@ -545,11 +492,8 @@ describe('bollingerBands', () => {
 	});
 });
 
-// --- MACD ---
-
 describe('macd', () => {
 	it('基本的な MACD を計算する', () => {
-		// 50 要素の上昇トレンド
 		const values = Array.from({ length: 50 }, (_, i) => 100 + i * 0.5);
 		const result = macd(values, 12, 26, 9);
 		expect(result.line).toHaveLength(50);
@@ -559,7 +503,6 @@ describe('macd', () => {
 		for (let i = 0; i < 25; i++) {
 			expect(result.line[i]).toBeNaN();
 		}
-		// 有効な値が存在する
 		const validLines = result.line.filter((v) => !Number.isNaN(v));
 		expect(validLines.length).toBeGreaterThan(0);
 	});
@@ -589,7 +532,6 @@ describe('macd', () => {
 	it('入力に Infinity を含めても line/signal/hist に Infinity が混入しない', () => {
 		const values: number[] = [];
 		for (let i = 0; i < 80; i++) values.push(100 + i * 0.5);
-		// 途中に Infinity を 1 件注入
 		values[40] = Infinity;
 		const result = macd(values, 12, 26, 9);
 		for (const arr of [result.line, result.signal, result.hist]) {
@@ -623,9 +565,7 @@ describe('macd', () => {
 		for (const v of result.hist) expect(v).toBeNaN();
 	});
 
-	// 参照実装: pandas-ta.macd(fast=12, slow=26, signal=9)（SMA シード + EMA(9) on line）
-	// 入力配列: 50 本の合成終値。最初の 33 本は RSI golden と同じ Wilder 系列、
-	// 末尾 17 本を追加して signal の有効区間 (index >= 33) も確実に覆う。
+	// 参照実装: pandas-ta.macd(fast=12, slow=26, signal=9)（SMA シード + EMA(9) on line）。入力は最初の 33 本が RSI golden と同じ系列の 50 本で、末尾 17 本で signal の有効区間 (index >= 33) も覆う。
 	const MACD_GOLDEN_CLOSES = [
 		44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.1, 45.42, 45.84, 46.08, 45.89, 46.03, 45.61, 46.28, 46.28, 46.0, 46.03,
 		46.41, 46.22, 45.64, 46.21, 46.25, 45.71, 46.45, 45.78, 45.35, 44.03, 44.18, 44.22, 44.57, 43.42, 42.66, 43.13,
@@ -664,23 +604,21 @@ describe('macd', () => {
 		expect(result.signal[49]).toBeCloseTo(0.257, 3);
 
 		// 恒等式: hist[i] = line[i] - signal[i]（line/signal が共に有限な全 index で成立）
-		for (let i = 0; i < 50; i++) {
-			if (Number.isFinite(result.line[i]) && Number.isFinite(result.signal[i])) {
-				expect(result.hist[i]).toBeCloseTo(result.line[i] - result.signal[i], 10);
-			} else {
-				expect(result.hist[i]).toBeNaN();
-			}
+		const indices = Array.from({ length: 50 }, (_, i) => i);
+		const bothFinite = (i: number) => Number.isFinite(result.line[i]) && Number.isFinite(result.signal[i]);
+		for (const i of indices.filter(bothFinite)) {
+			expect(result.hist[i]).toBeCloseTo(result.line[i] - result.signal[i], 10);
+		}
+		for (const i of indices.filter((i) => !bothFinite(i))) {
+			expect(result.hist[i]).toBeNaN();
 		}
 	});
 
-	// 契約: line の先頭のみ NaN、途中は全て有限な入力では、
-	// signal[i] の有効 index が line[i] の有効 index 起点で 9 本目から開始する。
-	// 途中に NaN が混入したケースは契約外（docs §8.11）。
+	// 契約: line の先頭のみ NaN・途中は全て有限な入力では、signal の有効 index は line の有効 index 起点で 9 本目から始まる（途中に NaN が混入するケースは契約外。docs §8.11）。
 	it('macd index 防御: 先頭のみ NaN・途中は全て有限な line で signal が line の有限 index と整合', () => {
 		const result = macd(MACD_GOLDEN_CLOSES, 12, 26, 9);
 
 		const lineFirstFinite = result.line.findIndex((v) => Number.isFinite(v));
-		// line の先頭 NaN 区間を除いて全て有限
 		for (let i = lineFirstFinite; i < result.line.length; i++) {
 			expect(Number.isFinite(result.line[i])).toBe(true);
 		}
@@ -698,10 +636,7 @@ describe('macd', () => {
 	});
 });
 
-// --- Ichimoku ---
-
 describe('ichimokuSeries', () => {
-	// 60 要素のテストデータ
 	const n = 60;
 	const highs = Array.from({ length: n }, (_, i) => 110 + i);
 	const lows = Array.from({ length: n }, (_, i) => 90 + i);
@@ -755,8 +690,7 @@ describe('ichimokuSnapshot', () => {
 		).toBeNull();
 	});
 
-	// 契約: ichimokuSeries が返す spanA[i] / spanB[i] は「計算バー位置 i」の値であり、
-	// 描画時の +26 シフトは適用されていない（描画層 / 解釈層の責務）。
+	// 契約: ichimokuSeries が返す spanA[i] / spanB[i] は計算バー位置 i の値で、描画時の +26 シフトは適用されていない（描画層 / 解釈層の責務）。
 	describe('一目均衡表 index 契約', () => {
 		// 単調増加する 60 本のデータ → 26 本前と末尾で値が大きく異なる
 		const len = 60;
@@ -766,11 +700,9 @@ describe('ichimokuSnapshot', () => {
 
 		it('series.spanA[i] / spanB[i] は計算バー位置 i の値（+26 シフト前）', () => {
 			const series = ichimokuSeries(highs, lows, closes);
-			// spanA[i] は tenkan[i] と kijun[i] が両方有限な i (>= 25) で値を持つ
-			// シフト後に末尾が NaN になる shiftChikou と違い、series 側は末尾まで値が埋まる
+			// spanA[i] は tenkan[i] と kijun[i] が両方有限な i (>= 25) で値を持ち、シフト後に末尾が NaN になる shiftChikou と違って末尾まで値が埋まる
 			expect(Number.isFinite(series.spanA[len - 1])).toBe(true);
 			expect(Number.isFinite(series.spanB[len - 1])).toBe(true);
-			// 計算定義どおり: spanA[i] = (tenkan[i] + kijun[i]) / 2
 			for (let i = 25; i < len; i++) {
 				expect(series.spanA[i]).toBeCloseTo((series.tenkan[i] + series.kijun[i]) / 2, 10);
 			}
@@ -782,16 +714,13 @@ describe('ichimokuSnapshot', () => {
 			expect(snap).not.toBeNull();
 			if (!snap) return;
 
-			// snapshot.spanA は「直近 9/26 本」から計算（= 26 本先にプロットされる雲）
-			// series.spanA[len-1] も同じ値（末尾バーが直近窓そのもの）
+			// snapshot.spanA は直近 9/26 本から計算した値（= 26 本先にプロットされる雲）なので、末尾バーが直近窓そのものの series.spanA[len-1] と一致する
 			expect(series.spanA[len - 1]).toBeCloseTo(snap.spanA, 10);
 			expect(series.spanB[len - 1]).toBeCloseTo(snap.spanB, 10);
 
-			// 一方 series.spanA[len-26] は 26 本前のバーで計算された値（=「今日の雲」位置）
-			// 単調増加データなので 26 本ぶんの差が出る
+			// 一方 series.spanA[len-26] は 26 本前のバーで計算された値（=「今日の雲」位置）なので、単調増加データでは 26 本ぶんの差が出る
 			expect(series.spanA[len - 26]).not.toBeCloseTo(snap.spanA, 4);
 			expect(series.spanB[len - 26]).not.toBeCloseTo(snap.spanB, 4);
-			// 増加データなので series.spanA[len-26] < snap.spanA となる
 			expect(series.spanA[len - 26]).toBeLessThan(snap.spanA);
 		});
 
@@ -801,7 +730,6 @@ describe('ichimokuSnapshot', () => {
 			for (let i = 0; i < len; i++) {
 				expect(series.chikou[i]).toBe(closes[i]);
 			}
-			// 確認: shiftChikou を別途適用すると末尾 26 個が NaN になる
 			const shifted = shiftChikou(series.chikou, 26);
 			for (let i = len - 26; i < len; i++) {
 				expect(shifted[i]).toBeNaN();
@@ -810,11 +738,46 @@ describe('ichimokuSnapshot', () => {
 	});
 });
 
-// --- Stochastic ---
+describe('currentCloudSpans', () => {
+	const series = (lenA: number, lenB: number) => ({
+		spanA: Array.from({ length: lenA }, (_, i) => 1000 + i),
+		spanB: Array.from({ length: lenB }, (_, i) => 500 + i),
+	});
+
+	it('短い方の末尾から ICHIMOKU_SHIFT 本前を spanA / spanB の両方に使う', () => {
+		expect(currentCloudSpans(series(40, 40))).toEqual({
+			spanA: 1000 + 40 - ICHIMOKU_SHIFT,
+			spanB: 500 + 40 - ICHIMOKU_SHIFT,
+		});
+		expect(currentCloudSpans(series(40, 30))).toEqual({
+			spanA: 1000 + 30 - ICHIMOKU_SHIFT,
+			spanB: 500 + 30 - ICHIMOKU_SHIFT,
+		});
+	});
+
+	it('ちょうど ICHIMOKU_SHIFT 本なら先頭、1 本足りなければ null', () => {
+		expect(currentCloudSpans(series(ICHIMOKU_SHIFT, ICHIMOKU_SHIFT))).toEqual({ spanA: 1000, spanB: 500 });
+		expect(currentCloudSpans(series(ICHIMOKU_SHIFT - 1, 40))).toEqual({ spanA: null, spanB: null });
+	});
+
+	it('系列が無い・配列でないときは null', () => {
+		expect(currentCloudSpans(undefined)).toEqual({ spanA: null, spanB: null });
+		expect(currentCloudSpans(null)).toEqual({ spanA: null, spanB: null });
+		expect(currentCloudSpans({ spanA: series(40, 40).spanA })).toEqual({ spanA: null, spanB: null });
+	});
+
+	it('その位置の値が null なら null、NaN は NaN のまま返す', () => {
+		const s = series(40, 40);
+		const idx = 40 - ICHIMOKU_SHIFT;
+		const withNull = { spanA: s.spanA.map((v, i): number | null => (i === idx ? null : v)), spanB: s.spanB };
+		expect(currentCloudSpans(withNull)).toEqual({ spanA: null, spanB: 500 + idx });
+		const withNaN = { spanA: s.spanA, spanB: s.spanB.map((v, i) => (i === idx ? Number.NaN : v)) };
+		expect(currentCloudSpans(withNaN).spanB).toBeNaN();
+	});
+});
 
 describe('stochastic', () => {
 	it('基本的なストキャスティクスを計算する', () => {
-		// 30 要素のテストデータ
 		const n = 30;
 		const highs = Array.from({ length: n }, (_, i) => 110 + Math.sin(i) * 5);
 		const lows = Array.from({ length: n }, (_, i) => 90 + Math.sin(i) * 5);
@@ -822,7 +785,6 @@ describe('stochastic', () => {
 		const result = stochastic(highs, lows, closes, 14, 3, 3);
 		expect(result.kSeries).toHaveLength(n);
 		expect(result.dSeries).toHaveLength(n);
-		// 有効な値は 0-100 の範囲
 		result.kSeries
 			.filter((v) => !Number.isNaN(v))
 			.forEach((v) => {
@@ -922,8 +884,7 @@ describe('stochastic', () => {
 		// index 17 の low を Infinity にする → 窓 [4..17]..[17..30] に含む間 rawK は NaN
 		lows[17] = Infinity;
 		const result = stochastic(highs, lows, closes, 14, 3, 3);
-		// index 17 を含む窓 (i = 17..30) のうち、データ範囲内の rawK が NaN
-		// → kSeries は SMA(3) なので index 17,18,19 で必ず NaN
+		// index 17 を含む窓 (i = 17..30) の rawK が NaN なので、kSeries（SMA(3)）は index 17,18,19 で必ず NaN
 		expect(result.kSeries[17]).toBeNaN();
 		expect(result.kSeries[18]).toBeNaN();
 		expect(result.kSeries[19]).toBeNaN();
@@ -936,10 +897,7 @@ describe('stochastic', () => {
 		const closes = Array.from({ length: n }, (_, i) => 100 + Math.sin(i) * 5);
 		highs[10] = NaN;
 		const result = stochastic(highs, lows, closes, 14, 3, 3);
-		// index 10 を含む窓は i = 10..23 (kPeriod=14)
-		// その後 i >= 24 では窓に NaN が含まれないので rawK は有限
-		// kSeries は rawK の SMA(3) → i >= 26 で smoothK 分の rawK が有限になり kSeries も有限
-		// dSeries は kSeries の SMA(3) → i >= 28 で有限
+		// index 10 を含む窓は i = 10..23 (kPeriod=14) なので i >= 24 で rawK は有限 → kSeries（rawK の SMA(3)）は i >= 26、dSeries（kSeries の SMA(3)）は i >= 28 で有限
 		for (let i = 28; i < n; i++) {
 			expect(Number.isFinite(result.kSeries[i])).toBe(true);
 			expect(Number.isFinite(result.dSeries[i])).toBe(true);
@@ -963,13 +921,8 @@ describe('stochastic', () => {
 		}
 	});
 
-	// 参照実装: lib/indicators.ts::stochastic()（自己整合性確認後に固定）
-	// fixture: 40 本合成 OHLC（4 桁丸めで literal 化）
-	//   close[i] = 100 + i*0.8 + sin(i*0.4)*2
-	//   high[i]  = close[i] + 1.5
-	//   low[i]   = close[i] - 1.5
-	// 期待値は %K = (close - lowestLow) / (highestHigh - lowestLow) * 100、
-	// %D = SMA(%K, 3) の定義に従う（実装値で固定 → リグレッション検出）。
+	// 期待値は lib/indicators.ts::stochastic() の実装値を自己整合性確認後に固定したもの（rawK = (close - lowestLow) / (highestHigh - lowestLow) * 100、kSeries = SMA(rawK, 3)、dSeries = SMA(kSeries, 3)）。
+	// fixture は close[i] = 100 + i*0.8 + sin(i*0.4)*2、high[i] = close[i] + 1.5、low[i] = close[i] - 1.5 を 4 桁丸めした 40 本。
 	const STOCH_GOLDEN_CLOSES = [
 		100, 101.5788, 103.0347, 104.2641, 105.1991, 105.8186, 106.1509, 106.27, 106.2833, 106.315, 106.4864, 106.8968,
 		107.6077, 108.6331, 109.9375, 111.4412, 113.0331, 114.5882, 115.9873, 117.1358, 117.9787, 118.5092, 118.7698,
@@ -1005,7 +958,6 @@ describe('stochastic', () => {
 		for (let i = 0; i < 17; i++) {
 			expect(dSeries[i]).toBeNaN();
 		}
-		// 実装値（自己整合性確認済み）
 		expect(kSeries[20]).toBeCloseTo(89.2285, 4);
 		expect(dSeries[20]).toBeCloseTo(88.5798, 4);
 		expect(kSeries[25]).toBeCloseTo(89.9057, 4);
@@ -1014,7 +966,6 @@ describe('stochastic', () => {
 		expect(dSeries[30]).toBeCloseTo(87.6123, 4);
 		expect(kSeries[39]).toBeCloseTo(90.2293, 4);
 		expect(dSeries[39]).toBeCloseTo(90.0779, 4);
-		// 範囲: 全有限値が 0..100 に収まる
 		for (let i = kFirstFinite; i < 40; i++) {
 			expect(kSeries[i]).toBeGreaterThanOrEqual(0);
 			expect(kSeries[i]).toBeLessThanOrEqual(100);
@@ -1025,8 +976,6 @@ describe('stochastic', () => {
 		}
 	});
 });
-
-// --- Stochastic RSI ---
 
 describe('stochRSI', () => {
 	it('十分なデータで K/D を計算する', () => {
@@ -1050,8 +999,7 @@ describe('stochRSI', () => {
 	});
 
 	it('closes に Infinity が含まれても kSeries/dSeries に Infinity が混入しない', () => {
-		// rsi() に Infinity が流入すると非有限値が出る可能性があるが、
-		// stochRSI 側で validCount / window が Number.isFinite で除外する
+		// rsi() に Infinity が流入すると非有限値が出る可能性があるが、stochRSI 側で validCount / window が Number.isFinite で除外する
 		const closes = Array.from({ length: 80 }, (_, i) => 100 + Math.sin(i * 0.3) * 10);
 		closes[30] = Infinity;
 		const result = stochRSI(closes, 14, 14, 3, 3);
@@ -1089,8 +1037,6 @@ describe('stochRSI', () => {
 	});
 });
 
-// --- OBV ---
-
 describe('obv', () => {
 	it('基本的な OBV を計算する', () => {
 		const closes = [100, 102, 101, 103, 102];
@@ -1124,8 +1070,6 @@ describe('obv', () => {
 	});
 });
 
-// --- True Range ---
-
 describe('trueRange', () => {
 	it('基本的な TR を計算する', () => {
 		const highs = [110, 115, 112, 118];
@@ -1148,14 +1092,9 @@ describe('trueRange', () => {
 	});
 });
 
-// --- Wilder ATR ---
-
 describe('wilderAtr', () => {
 	it('基本的な Wilder ATR を計算する（period=3）', () => {
-		// 5 本のキャンドル
-		// TR[1]=10, TR[2]=4, TR[3]=9 → 初回 ATR[3] = (10+4+9)/3 ≈ 7.6667
-		// TR[4]=max(120-112,|120-115|,|112-115|)=max(8,5,3)=8
-		// ATR[4] = (7.6667*2 + 8)/3 = (15.3333 + 8)/3 = 23.3333/3 ≈ 7.7778
+		// TR[1]=10, TR[2]=4, TR[3]=9 → 初回 ATR[3] = (10+4+9)/3 ≈ 7.6667、TR[4]=max(120-112,|120-115|,|112-115|)=8 → ATR[4] = (7.6667*2 + 8)/3 ≈ 7.7778
 		const highs = [110, 115, 112, 118, 120];
 		const lows = [100, 105, 108, 110, 112];
 		const closes = [105, 110, 109, 115, 118];
@@ -1170,8 +1109,7 @@ describe('wilderAtr', () => {
 	});
 
 	it('Wilder ATR の初回値は SMA(TR[1..period]) と一致する', () => {
-		// 初回 ATR は SMA(TR[1..period]) として定義される
-		// TR[1]=10, TR[2]=4, TR[3]=9 → シード = (10+4+9)/3 = 23/3
+		// 初回 ATR は SMA(TR[1..period]) として定義される（TR[1]=10, TR[2]=4, TR[3]=9 → シード = 23/3）
 		const highs = [110, 115, 112, 118, 120];
 		const lows = [100, 105, 108, 110, 112];
 		const closes = [105, 110, 109, 115, 118];
@@ -1180,20 +1118,7 @@ describe('wilderAtr', () => {
 	});
 
 	it('Wilder の漸化式どおりに次のバーを更新する', () => {
-		// period=3 と少し長い系列で Wilder の RMA 漸化式を検算
-		// 入力 TR を構築するためのシンプルな OHLC
-		// highs: [10,12,14,13,15,16,14,17,16,18]
-		// lows : [ 8,10,11,12,13,14,13,15,14,16]
-		// closes:[ 9,11,13,12,14,15,14,16,15,17]
-		// TR[1]=max(12-10,|12-9|,|10-9|)=3
-		// TR[2]=max(14-11,|14-11|,|11-11|)=3
-		// TR[3]=max(13-12,|13-13|,|12-13|)=1
-		// TR[4]=max(15-13,|15-12|,|13-12|)=3
-		// TR[5]=max(16-14,|16-14|,|14-14|)=2
-		// TR[6]=max(14-13,|14-15|,|13-15|)=2
-		// TR[7]=max(17-15,|17-14|,|15-14|)=3
-		// TR[8]=max(16-14,|16-16|,|14-16|)=2
-		// TR[9]=max(18-16,|18-15|,|16-15|)=3
+		// TR[i] = max(high-low, |high-prevClose|, |low-prevClose|) で TR[1..9] = 3, 3, 1, 3, 2, 2, 3, 2, 3
 		const highs = [10, 12, 14, 13, 15, 16, 14, 17, 16, 18];
 		const lows = [8, 10, 11, 12, 13, 14, 13, 15, 14, 16];
 		const closes = [9, 11, 13, 12, 14, 15, 14, 16, 15, 17];
@@ -1227,20 +1152,14 @@ describe('wilderAtr', () => {
 	});
 
 	it('TR に NaN が混入すると以降は再シードまで NaN', () => {
-		// highs[3]=NaN → TR[3]=NaN。
-		// period=3 のシード窓 tr[1..3] が NaN を含む → result[3]=NaN
-		// その後、連続 3 本の有限 TR が揃うまで NaN のまま、揃った時点で再シード。
+		// highs[3]=NaN → TR[3]=NaN なので、period=3 のシード窓 tr[1..3] が NaN を含んで result[3]=NaN になり、連続 3 本の有限 TR が揃った時点で再シードする。
 		const highs = [10, 12, 14, NaN, 15, 16, 14, 17, 16, 18];
 		const lows = [8, 10, 11, 12, 13, 14, 13, 15, 14, 16];
 		const closes = [9, 11, 13, 12, 14, 15, 14, 16, 15, 17];
 		const result = wilderAtr(highs, lows, closes, 3);
 		// シード期間に NaN を含む（[3,3,NaN]）→ result[3]=NaN
 		expect(result[3]).toBeNaN();
-		// 以降、有限 TR の連続をカウントし直す
-		// TR[4]=max(15-13,|15-12|,|13-12|)=3
-		// TR[5]=max(16-14,|16-14|,|14-14|)=2
-		// TR[6]=max(14-13,|14-15|,|13-15|)=2 → 3 本目で再シード成立
-		// 再シード: (3+2+2)/3 = 7/3
+		// 有限 TR の連続をカウントし直し、TR[4]=3, TR[5]=2, TR[6]=2 の 3 本目で再シード: (3+2+2)/3 = 7/3
 		expect(result[4]).toBeNaN();
 		expect(result[5]).toBeNaN();
 		expect(result[6]).toBeCloseTo(7 / 3, 10);
@@ -1259,15 +1178,13 @@ describe('wilderAtr', () => {
 		expect(result[5]).toBeNaN();
 		// 再シード後（TR[4..6]=[3,2,2]）→ 7/3
 		expect(result[6]).toBeCloseTo(7 / 3, 10);
-		// 出力に Infinity が混入しない
 		for (const v of result) {
 			expect(Number.isFinite(v) || Number.isNaN(v)).toBe(true);
 		}
 	});
 
 	it('period=14, 単調増加データで Wilder ATR が一定値に収束する', () => {
-		// highs - lows = 2 で一定、closes が単調増加 → TR ≒ 2 で一定
-		// Wilder ATR の極限は単純平均と一致する
+		// highs - lows = 2 で一定、closes が単調増加 → TR ≒ 2 で一定なので、Wilder ATR の極限は単純平均と一致する
 		const n = 60;
 		const closes = Array.from({ length: n }, (_, i) => 100 + i);
 		const highs = closes.map((c) => c + 1);
@@ -1277,17 +1194,13 @@ describe('wilderAtr', () => {
 		for (let i = 0; i < 14; i++) {
 			expect(result[i]).toBeNaN();
 		}
-		// TR[i] = max(2, |high-prevClose|, |low-prevClose|) = max(2, 2, 0) = 2 for i>=1
-		// 全ての TR が 2 → Wilder ATR も収束して 2
+		// TR[i] = max(2, |high-prevClose|, |low-prevClose|) = max(2, 2, 0) = 2 for i>=1 なので、Wilder ATR も 2 に収束する
 		expect(result[14]).toBeCloseTo(2, 10);
 		expect(result[n - 1]).toBeCloseTo(2, 10);
 	});
 
-	// TradingView / MT4 標準仕様（Wilder の RMA）と一致する golden 数値固定。
-	// 入力: 30 本の合成 OHLC（drift 付きで TR が一定にならないように設計）。
-	// 期待値は同一スペックの参照実装で生成（Wilder の漸化式そのまま）。
+	// TradingView 標準仕様（Wilder の RMA）の golden。入力は drift 付きで TR が一定にならないよう設計した 30 本の合成 OHLC で、期待値は同一スペックの参照実装で生成する。
 	it('golden: Wilder ATR(14) 数値固定（period=14, ε=1e-8）', () => {
-		// 30 本の合成 OHLC（closes は drift + サイン波、highs/lows は close ± 固定幅）
 		const highs = [
 			102.5, 104.0, 102.0, 105.0, 104.5, 103.5, 106.0, 107.5, 106.0, 108.0, 110.0, 108.5, 111.0, 112.5, 111.0, 113.5,
 			115.0, 114.0, 116.0, 117.5, 116.5, 118.5, 120.0, 119.0, 121.0, 122.5, 121.5, 123.5, 125.0, 124.5,
@@ -1302,7 +1215,6 @@ describe('wilderAtr', () => {
 		];
 		const result = wilderAtr(highs, lows, closes, 14);
 		expect(result).toHaveLength(30);
-		// 先頭 14 個（period 個）は NaN
 		for (let i = 0; i < 14; i++) {
 			expect(result[i]).toBeNaN();
 		}
@@ -1327,8 +1239,7 @@ describe('wilderAtr', () => {
 	});
 
 	it('長い系列では初期シードの差の影響が時間とともに減衰する', () => {
-		// 100 本の系列で前半 50 本と末尾の Wilder ATR を比較。
-		// 後半は同じ TR 分布なら初期化の影響が指数的に消える。
+		// 後半は同じ TR 分布なら初期化の影響が指数的に消えるので、100 本の系列で前半 50 本と末尾の Wilder ATR を比較する。
 		const n = 100;
 		// 一定振幅のジグザグ → TR がほぼ一定
 		const highs: number[] = [];
@@ -1341,7 +1252,6 @@ describe('wilderAtr', () => {
 			lows.push(c - 2);
 		}
 		const result = wilderAtr(highs, lows, closes, 14);
-		// 末尾は安定値に収束しているはず
 		const last = result[n - 1] as number;
 		const earlier = result[n - 20] as number;
 		expect(Number.isFinite(last)).toBe(true);
@@ -1350,8 +1260,6 @@ describe('wilderAtr', () => {
 		expect(Math.abs(last - earlier)).toBeLessThan(0.5);
 	});
 });
-
-// --- shiftChikou ---
 
 describe('shiftChikou', () => {
 	it('シフト後の系列長 === 元の系列長', () => {
@@ -1399,8 +1307,6 @@ describe('shiftChikou', () => {
 	});
 });
 
-// --- lastCrossover ---
-
 describe('lastCrossover', () => {
 	it('空配列は null', () => {
 		expect(lastCrossover([], [])).toBeNull();
@@ -1437,8 +1343,7 @@ describe('lastCrossover', () => {
 	});
 
 	it('タイ値（diff=0）は未クロス扱いでスキップする（0 を跨いだだけでは検出しない）', () => {
-		// diff = [-1, 0, 1]: 0 を経由するだけで隣接する厳密な符号反転がない → null
-		// （旧 <=/>= ロジックなら golden 判定されていた箇所。挙動変更をここで固定する）
+		// diff = [-1, 0, 1]: 0 を経由するだけで隣接する厳密な符号反転がない → null（<= / >= で判定すると golden になる箇所）
 		expect(lastCrossover([1, 2, 3], [2, 2, 2])).toBeNull();
 	});
 

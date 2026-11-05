@@ -6,11 +6,8 @@ import {
 	getSizeThresholdsForTf,
 } from '../../tools/patterns/config.js';
 import { detectHeadAndShoulders, necklineAt, necklineProjectionTarget } from '../../tools/patterns/detect_hs.js';
-import { linearRegressionWithR2 } from '../../tools/patterns/regression.js';
 import type { Pivot } from '../../tools/patterns/swing.js';
 import type { CandleData, DetectContext } from '../../tools/patterns/types.js';
-
-// ── ヘルパー ──
 
 function iso(daysAgo: number): string {
 	return dayjs().subtract(daysAgo, 'day').startOf('day').toISOString();
@@ -26,13 +23,7 @@ function buildCtx(opts: {
 	allPeaks?: Pivot[];
 	allValleys?: Pivot[];
 	tolerancePct?: number;
-	/**
-	 * 既定は tolerancePct に連動させず独立に 0.04（config.ts の時間軸オート表で '1day' に相当）とする。
-	 * 本番の resolveParams も「未指定なら headProminencePct は tolerancePct とは無関係に時間軸オート値」
-	 * という解決なので、ここで tolerancePct へフォールバックすると本番と違う結合を再現してしまう
-	 * （issue #149 が解消した結合そのもの）。tolerancePct と headProminencePct の相互作用を見たい
-	 * テストは両方を明示的に渡すこと（buildIssue146Ctx 等）。
-	 */
+	/** 既定は tolerancePct に連動させず独立に 0.04（config.ts の時間軸オート表で '1day' に相当）とする。tolerancePct へフォールバックすると本番と違う結合を再現してしまう（issue #149）。 */
 	headProminencePct?: number;
 	want?: Set<string>;
 	includeForming?: boolean;
@@ -55,16 +46,10 @@ function buildCtx(opts: {
 		debugCandidates: [],
 		type: opts.type ?? '1day',
 		swingDepth: 7,
-		near: (a: number, b: number) => Math.abs(a - b) <= Math.max(a, b) * tol,
-		pct: (a: number, b: number) => ((b - a) / Math.max(1, a)) * 100,
-		lrWithR2: (pts) => linearRegressionWithR2(pts),
 	};
 }
 
-/**
- * H&S ピボット: H(idx=0) → L(idx=15) → H(idx=30) → L(idx=45) → H(idx=60)
- * 左右の肩が等高、頭が高い
- */
+/** H&S ピボット: H(idx=0) → L(idx=15) → H(idx=30) → L(idx=45) → H(idx=60) */
 function buildHS(opts?: {
 	leftShoulder?: number;
 	head?: number;
@@ -97,10 +82,7 @@ function buildHS(opts?: {
 	return { candles, pivots };
 }
 
-/**
- * Inverse H&S ピボット: L(idx=0) → H(idx=15) → L(idx=30) → H(idx=45) → L(idx=60)
- * 左右の肩が等安、頭が低い
- */
+/** Inverse H&S ピボット: L(idx=0) → H(idx=15) → L(idx=30) → H(idx=45) → L(idx=60) */
 function buildInverseHS(opts?: {
 	leftShoulder?: number;
 	head?: number;
@@ -133,12 +115,25 @@ function buildInverseHS(opts?: {
 	return { candles, pivots };
 }
 
-/**
- * H&S 構造の後にネックライン下抜けを付与したフィクスチャ。
- * - 構造: H(0)-L(15)-H(30)-L(45)-H(60) で buildHS と同じ。
- * - 右肩(idx=60) 後の `breakIdx` 以降を `breakClose` に書き換えてネックライン下抜け。
- * - `postBreakLow` を指定すると、ブレイク後の特定 idx の low を強制し、target 到達テスト用。
- */
+function withPrecedingTrend(
+	pattern: ReturnType<typeof buildHS> | ReturnType<typeof buildInverseHS>,
+	direction: 'up' | 'down' | 'sideways',
+) {
+	const precedingBars = 30;
+	const firstClose = pattern.candles[0].close;
+	const leading = Array.from({ length: precedingBars }, (_, i) => {
+		const progress = i / (precedingBars - 1);
+		const start = direction === 'up' ? firstClose * 0.8 : direction === 'down' ? firstClose * 1.2 : firstClose;
+		const close = start + (firstClose - start) * progress;
+		return mkCandle(100 - i, close, close + 3, close - 3, close);
+	});
+
+	return {
+		candles: [...leading, ...pattern.candles],
+		pivots: pattern.pivots.map((pivot) => ({ ...pivot, idx: pivot.idx + precedingBars })),
+	};
+}
+
 function buildHsWithBreakout(opts?: {
 	breakIdx?: number;
 	breakClose?: number;
@@ -166,7 +161,6 @@ function buildHsWithBreakout(opts?: {
 	for (let i = breakIdx; i < total; i++) {
 		candles[i] = mkCandle(total - i, breakClose + 2, breakClose + 5, breakClose - 3, breakClose);
 	}
-	// target 到達検証用に、特定 idx で low を強制
 	if (opts?.postBreakLow !== undefined && opts?.postBreakIdx !== undefined) {
 		const idx = opts.postBreakIdx;
 		const lo = opts.postBreakLow;
@@ -184,12 +178,6 @@ function buildHsWithBreakout(opts?: {
 	return { candles, pivots };
 }
 
-/**
- * Inverse H&S 構造の後にネックライン上抜けを付与したフィクスチャ。
- * - 構造: L(0)-H(15)-L(30)-H(45)-L(60) で buildInverseHS と同じ。
- * - 右肩(idx=60) 後の `breakIdx` 以降を `breakClose` に書き換えてネックライン上抜け。
- * - `postBreakHigh` を指定すると、ブレイク後の特定 idx の high を強制し、target 到達テスト用。
- */
 function buildInverseHsWithBreakout(opts?: {
 	breakIdx?: number;
 	breakClose?: number;
@@ -214,10 +202,7 @@ function buildInverseHsWithBreakout(opts?: {
 	candles[30] = mkCandle(total - 30, hd + 1, hd + 3, hd, hd + 1);
 	candles[45] = mkCandle(total - 45, p2 - 1, p2, p2 - 3, p2 - 1);
 	candles[60] = mkCandle(total - 60, rs + 1, rs + 3, rs, rs + 1);
-	// 右肩（idx 60）からブレイクまでの経路を**肩の水準より上**に通す（issue #242）。
-	// 全バー close=90 のままだと右肩 100 より下を這う形になり、#242 の「肩ゾーン再進入」で
-	// `invalid` になる——右肩が持っていないのだから判定としては正しい。この fixture が見たいのは
-	// ブレイク確認とターゲット進捗なので、経路そのものは素直な上昇にしておく。
+	// 全バー close=90 のままだと右肩 100 より下を這って #242 の「肩ゾーン再進入」で `invalid` になるので、右肩（idx 60）からブレイクまでの経路を肩の水準より上に通す。
 	// 上限はブレイク閾値 115 × 1.015 = 116.725 未満（ここで先に抜けてしまわないため）。
 	for (let i = 61; i < breakIdx; i++) {
 		const c = 106 + (i - 61) * 3;
@@ -248,7 +233,51 @@ afterEach(() => {
 });
 
 describe('detectHeadAndShoulders', () => {
-	// ── H&S（完成済み） ──────────────────────────────────────
+	describe('反転に必要な先行トレンド', () => {
+		it('横ばいのH&Sは反転として検出しない', () => {
+			const { candles, pivots } = withPrecedingTrend(buildHS(), 'sideways');
+			const ctx = buildCtx({ candles, pivots });
+			const result = detectHeadAndShoulders(ctx);
+
+			expect(result.patterns.filter((pattern) => pattern.type === 'head_and_shoulders')).toHaveLength(0);
+			expect(
+				ctx.debugCandidates.some(
+					(candidate) =>
+						candidate.type === 'head_and_shoulders' && candidate.reason === 'prior_trend_mismatch:sideways',
+				),
+			).toBe(true);
+		});
+
+		it('上昇後のH&Sは反転候補として検出できる', () => {
+			const { candles, pivots } = withPrecedingTrend(buildHS(), 'up');
+			const result = detectHeadAndShoulders(buildCtx({ candles, pivots }));
+			const hs = result.patterns.find((pattern) => pattern.type === 'head_and_shoulders');
+
+			expect(hs?.precedingTrend?.direction).toBe('up');
+		});
+
+		it('横ばいの逆H&Sは反転として検出しない', () => {
+			const { candles, pivots } = withPrecedingTrend(buildInverseHS(), 'sideways');
+			const ctx = buildCtx({ candles, pivots });
+			const result = detectHeadAndShoulders(ctx);
+
+			expect(result.patterns.filter((pattern) => pattern.type === 'inverse_head_and_shoulders')).toHaveLength(0);
+			expect(
+				ctx.debugCandidates.some(
+					(candidate) =>
+						candidate.type === 'inverse_head_and_shoulders' && candidate.reason === 'prior_trend_mismatch:sideways',
+				),
+			).toBe(true);
+		});
+
+		it('下降後の逆H&Sは反転候補として検出できる', () => {
+			const { candles, pivots } = withPrecedingTrend(buildInverseHS(), 'down');
+			const result = detectHeadAndShoulders(buildCtx({ candles, pivots }));
+			const inverseHs = result.patterns.find((pattern) => pattern.type === 'inverse_head_and_shoulders');
+
+			expect(inverseHs?.precedingTrend?.direction).toBe('down');
+		});
+	});
 
 	it('H-L-H-L-H ピボット → head_and_shoulders 検出', () => {
 		const { candles, pivots } = buildHS();
@@ -287,8 +316,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('両肩が離れすぎ → shoulders_not_near:both で rejected', () => {
-		// left=100, right=120 → |20|/120=0.167 > tolerancePct(0.04) かつ > HS_SHOULDER_MAX_PCT(0.05)
-		// → どちらを緩めても通らないので :both（issue #172）
+		// left=100, right=120 → |20|/120=0.167 > tolerancePct(0.04) かつ > HS_SHOULDER_MAX_PCT(0.05) → どちらを緩めても通らないので :both（issue #172）
 		const { candles, pivots } = buildHS({ leftShoulder: 100, rightShoulder: 120 });
 		const ctx = buildCtx({ candles, pivots });
 		detectHeadAndShoulders(ctx);
@@ -322,8 +350,6 @@ describe('detectHeadAndShoulders', () => {
 		expect(hs).toHaveLength(0);
 	});
 
-	// ── Inverse H&S（完成済み） ──────────────────────────────
-
 	it('L-H-L-H-L ピボット → inverse_head_and_shoulders 検出', () => {
 		const { candles, pivots } = buildInverseHS();
 		const ctx = buildCtx({ candles, pivots });
@@ -348,6 +374,35 @@ describe('detectHeadAndShoulders', () => {
 		expect(ihs?.breakoutTarget).toBe(160);
 	});
 
+	it('Inverse H&S の肩が浅すぎる場合は shoulder_depth_insufficient で rejected', () => {
+		// 左右肩はネックラインから 1、頭は 45 下なので、肩の深さ比は約 2.2%。形状の戻りとしては浅すぎるため、肩の同水準ゲートを通っても除外する。
+		const { candles, pivots } = buildInverseHS({ leftShoulder: 114, rightShoulder: 114, head: 70 });
+		const ctx = buildCtx({ candles, pivots });
+		const result = detectHeadAndShoulders(ctx);
+
+		expect(result.patterns.filter((p) => p.type === 'inverse_head_and_shoulders')).toHaveLength(0);
+		const rejected = ctx.debugCandidates.find(
+			(d) => d.type === 'inverse_head_and_shoulders' && d.reason === 'shoulder_depth_insufficient',
+		);
+		const details = rejected?.details as Record<string, unknown> | undefined;
+		expect(details).toMatchObject({ minShoulderDepthRatio: 0.2 });
+		expect(Number(details?.leftShoulderDepthRatio)).toBeCloseTo(1 / 45, 3);
+	});
+
+	it('relaxed Inverse H&S でも浅い肩を救済しない', () => {
+		// 肩の差は strict の tolerance(4%)を超えるが、relaxed と cap(5%)には収まる。それでも左肩の深さ 1 / 45 は同じ hard gate で落ちる。
+		const { candles, pivots } = buildInverseHS({ leftShoulder: 114, rightShoulder: 109, head: 70 });
+		const ctx = buildCtx({ candles, pivots });
+		const result = detectHeadAndShoulders(ctx);
+
+		expect(result.patterns.filter((p) => p.type === 'inverse_head_and_shoulders')).toHaveLength(0);
+		expect(
+			ctx.debugCandidates.some(
+				(d) => d.type === 'inverse_head_and_shoulders' && d.reason === 'shoulder_depth_insufficient',
+			),
+		).toBe(true);
+	});
+
 	it('頭が両肩より低くない → head_not_lower で rejected', () => {
 		// head=97, shoulders=100 → 97 < 100*(1-headProminencePct=0.04)=96? No (97 > 96)（tolerancePct は無関係。issue #149）
 		const { candles, pivots } = buildInverseHS({ head: 97 });
@@ -360,10 +415,7 @@ describe('detectHeadAndShoulders', () => {
 		expect(rejected).toBeDefined();
 	});
 
-	// ── want フィルタ ────────────────────────────────────────
-
 	it('want に head_and_shoulders のみ → inverse はスキップ', () => {
-		// Inverse パターンのデータを使う。want に head_and_shoulders のみ指定
 		const { candles, pivots } = buildInverseHS();
 		const ctx = buildCtx({ candles, pivots, want: new Set(['head_and_shoulders']) });
 		const result = detectHeadAndShoulders(ctx);
@@ -381,15 +433,8 @@ describe('detectHeadAndShoulders', () => {
 		expect(hs).toHaveLength(0);
 	});
 
-	// ── Relaxed fallback ─────────────────────────────────────
-
 	it('strict 不検出 → relaxed H&S (x1.6) でフォールバック検出', () => {
-		// left=100, right=105 → diff/max=5/105=0.0476
-		//   > strict(0.04)                  → strict は shoulders_not_near:tolerance で弾かれる
-		//   <= relaxed(0.04*1.6=0.064)      → relaxed の肩許容に収まる
-		//   <= HS_SHOULDER_MAX_PCT(0.05)    → relaxed でも効く hard cap を超えない
-		// relaxed の許容幅は hard cap で頭打ちになるため、cap 超えの差（旧 106）では
-		// relaxed も必ず落ちる（下の HS_SHOULDER_MAX_PCT テストがその境界を固定している）。
+		// left=100, right=105 → diff/max=5/105=0.0476 > strict(0.04)、<= relaxed(0.04*1.6=0.064)、<= HS_SHOULDER_MAX_PCT(0.05)
 		const { candles, pivots } = buildHS({ leftShoulder: 100, rightShoulder: 105, head: 130 });
 		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.04 });
 		const result = detectHeadAndShoulders(ctx);
@@ -397,9 +442,7 @@ describe('detectHeadAndShoulders', () => {
 		const hs = result.patterns.filter((p) => p.type === 'head_and_shoulders');
 		expect(hs.length).toBeGreaterThan(0);
 		expect(hs[0]?._fallback).toMatch(/relaxed_hs/);
-		// strict パスで一度弾かれてから relaxed に落ちたことを確認する。
-		// **ここは前置一致**——本テストの主題は relaxed フォールバックであって、肩がどちらの
-		// conjunct で落ちたか（#172 の接尾辞）ではない。接尾辞を増やしても壊さない。
+		// ここは前置一致。本テストの主題は relaxed フォールバックであって、肩がどちらの conjunct で落ちたか（#172 の接尾辞）ではない。
 		const strictRejected = ctx.debugCandidates.some(
 			(d) => d.type === 'head_and_shoulders' && (d.reason ?? '').startsWith('shoulders_not_near'),
 		);
@@ -407,8 +450,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('strict 不検出 → relaxed Inverse H&S でフォールバック検出', () => {
-		// shoulders=100,105: diff/max=5/105=0.0476 > strict(0.04)、
-		// かつ relaxed(0.064) / HS_SHOULDER_MAX_PCT(0.05) の双方に収まる。
+		// shoulders=100,105: diff/max=5/105=0.0476 > strict(0.04)、かつ relaxed(0.064) / HS_SHOULDER_MAX_PCT(0.05) の双方に収まる。
 		const { candles, pivots } = buildInverseHS({ leftShoulder: 100, rightShoulder: 105, head: 70 });
 		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.04 });
 		const result = detectHeadAndShoulders(ctx);
@@ -416,28 +458,17 @@ describe('detectHeadAndShoulders', () => {
 		const ihs = result.patterns.filter((p) => p.type === 'inverse_head_and_shoulders');
 		expect(ihs.length).toBeGreaterThan(0);
 		expect(ihs[0]?._fallback).toMatch(/relaxed_ihs/);
-		// 前置一致の理由は上の H&S 版と同じ（主題は relaxed フォールバック）。
 		const strictRejected = ctx.debugCandidates.some(
 			(d) => d.type === 'inverse_head_and_shoulders' && (d.reason ?? '').startsWith('shoulders_not_near'),
 		);
 		expect(strictRejected).toBe(true);
 	});
 
-	// ── shoulders_not_near の conjunct 分割（issue #172） ──
-	//
-	// 肩の判定は `near(tolerancePct)` と `isSameLevel(ctx.hsShoulderMaxPct)` の AND で、
-	// 実効閾値は `min(tolerancePct, ctx.hsShoulderMaxPct)`。棄却理由が 1 種類しか無かったため
-	// `view=debug` を reason で集計するとどちらで落ちたか消えていた（#152 / #167 の誤診の原因）。
-	//
-	// **本ブロックのケースは `buildCtx` の既定 `type`（`1day`）で走る**ので、cap は
-	// `HS_SHOULDER_MAX_PCT` = 5% のまま。#244 Phase 2 で時間足別になったのは `1day` 未満で、
-	// `1day` の挙動と実効閾値はここでも変わっていない（時間足別の側は
-	// `tests/patterns/hs-shoulder-max-pct-tf.test.ts` が持つ）。
+	// 肩の判定は `near(tolerancePct)` と `isSameLevel(ctx.hsShoulderMaxPct)` の AND で、実効閾値は `min(tolerancePct, ctx.hsShoulderMaxPct)`（issue #172）。
+	// 本ブロックのケースは `buildCtx` の既定 `type`（`1day`）で走るので、cap は `HS_SHOULDER_MAX_PCT` = 5% のまま。
 
 	it('H&S: tolerancePct のみ超過 → shoulders_not_near:tolerance', () => {
-		// left=100, right=104.5 → 4.5/104.5 ≈ 0.0431
-		//   > tolerancePct(0.04)          → near() で fail
-		//   <= HS_SHOULDER_MAX_PCT(0.05)  → isSameLevel は通る
+		// left=100, right=104.5 → 4.5/104.5 ≈ 0.0431 > tolerancePct(0.04) で near() は fail、<= HS_SHOULDER_MAX_PCT(0.05) で isSameLevel は通る
 		const { candles, pivots } = buildHS({ leftShoulder: 100, rightShoulder: 104.5, head: 130 });
 		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.04 });
 		detectHeadAndShoulders(ctx);
@@ -446,7 +477,6 @@ describe('detectHeadAndShoulders', () => {
 			(d) => d.type === 'head_and_shoulders' && d.accepted === false && d.reason?.startsWith('shoulders_not_near'),
 		);
 		expect(rejected?.reason).toBe('shoulders_not_near:tolerance');
-		// details は分割前と同じ 3 値を持つ（#172 は reason 文字列だけの変更）
 		const details = rejected?.details as Record<string, unknown> | undefined;
 		expect(details?.tolerancePct).toBe(0.04);
 		expect(details?.shoulderMaxPct).toBe(0.05);
@@ -466,18 +496,10 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('H&S: HS_SHOULDER_MAX_PCT のみ超過 → shoulders_not_near:cap（15min の tf-auto 許容）', () => {
-		// `:cap` は `tolerancePct > cap` のときしか成立しない。**ctx の `type` は `1day`**（既定）
-		// なので cap は 5% で、`tolerancePct` だけを 15min の tf-auto 値（0.06 > 0.05）に差し替えて
-		// 発火させる。マジックナンバーを書かずに tf-auto 表から引く。
-		//
-		// **#244 Phase 2 以降、`1day` 未満では tf-auto の cap 自体が `tolerancePct` を下回るので
-		// `:cap` は既定パスで普通に出る**（`1hour` cap 1.04% < tol 5%）。ここは `1day` の
-		// 「呼び出し側が明示的に緩めたときだけ出る」経路を固定している。
+		// `:cap` は `tolerancePct > cap` のときしか成立しないので、cap 5%（`1day`）のまま `tolerancePct` だけを 15min の tf-auto 値（0.06 > 0.05）に差し替えて発火させる。
 		const tol15min = getDefaultToleranceForTf('15min');
 		expect(tol15min).toBeGreaterThan(0.05);
-		// left=100, right=105.5 → 5.5/105.5 ≈ 0.0521
-		//   <= tolerancePct(0.06)        → near() は通る
-		//   > HS_SHOULDER_MAX_PCT(0.05)  → isSameLevel で fail
+		// left=100, right=105.5 → 5.5/105.5 ≈ 0.0521 <= tolerancePct(0.06) で near() は通り、> HS_SHOULDER_MAX_PCT(0.05) で isSameLevel が fail
 		const { candles, pivots } = buildHS({ leftShoulder: 100, rightShoulder: 105.5, head: 130 });
 		const ctx = buildCtx({ candles, pivots, tolerancePct: tol15min });
 		detectHeadAndShoulders(ctx);
@@ -527,13 +549,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('接尾辞なしの shoulders_not_near は積まれない / tolerancePct <= cap では :cap も出ない', () => {
-		// 右肩を掃引して strict 経路の肩棄却を集め、(a) 旧コードが残っていないこと、
-		// (b) `tolerancePct <= cap` では `:cap` が構造上発火しないことを固定する。
-		//
-		// **掃引は `buildCtx` の既定 `type`（`1day`）で走るので cap = 5% 固定。** #244 Phase 2 で
-		// 時間足別になったのは `1day` 未満で、この不変条件（`tolerancePct <= cap` なら `:cap` は
-		// 出ない）自体は cap の値に依らず成り立つ——掃引の `tolerancePct` 格子（0.03 / 0.04 / 0.05）が
-		// `1day` の cap 以下であることが前提なので、`type` を短い足に変えるならこの格子も変えること。
+		// 掃引の `tolerancePct` 格子（0.03 / 0.04 / 0.05）は `1day` の cap（5%）以下であることが前提なので、`type` を短い足に変えるならこの格子も変えること。
 		const seen = new Set<string>();
 		for (const rightShoulder of [100, 102, 104, 104.5, 105, 105.5, 106, 108, 112, 120, 135]) {
 			for (const tolerancePct of [0.03, 0.04, 0.05]) {
@@ -554,11 +570,8 @@ describe('detectHeadAndShoulders', () => {
 		expect([...seen].sort()).toEqual(['shoulders_not_near:both', 'shoulders_not_near:tolerance']);
 	});
 
-	// ── HS_SHOULDER_MAX_PCT hard cap（PR: shoulder cap 配線） ──
-
 	it('H&S: tolerancePct=0.06 でも肩 ±6%（HS_SHOULDER_MAX_PCT 超過）なら検出しない', () => {
-		// left=100, right=106 → diff/max = 6/106 ≈ 0.0566 → > 0.05 cap だが ≤ 0.06 tolerancePct
-		// strict near() は通るが isSameLevel(.., 0.05) で弾かれる
+		// left=100, right=106 → diff/max = 6/106 ≈ 0.0566 → > 0.05 cap だが ≤ 0.06 tolerancePct で、strict near() は通るが isSameLevel(.., 0.05) で弾かれる
 		const { candles, pivots } = buildHS({ leftShoulder: 100, rightShoulder: 106, head: 130 });
 		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.06 });
 		const result = detectHeadAndShoulders(ctx);
@@ -566,8 +579,7 @@ describe('detectHeadAndShoulders', () => {
 		const hs = result.patterns.filter((p) => p.type === 'head_and_shoulders');
 		expect(hs).toHaveLength(0);
 
-		// tolerancePct(0.06) は通り HS_SHOULDER_MAX_PCT(0.05) だけ超えるので :cap。
-		// **本テストの主題が cap 境界そのもの**なので接尾辞まで固定する（issue #172）。
+		// 本テストの主題が cap 境界そのものなので接尾辞まで固定する（issue #172）。
 		const rejected = ctx.debugCandidates.find(
 			(d) => d.type === 'head_and_shoulders' && d.accepted === false && d.reason === 'shoulders_not_near:cap',
 		);
@@ -585,8 +597,6 @@ describe('detectHeadAndShoulders', () => {
 		const ihs = result.patterns.filter((p) => p.type === 'inverse_head_and_shoulders');
 		expect(ihs).toHaveLength(0);
 
-		// tolerancePct(0.06) は通り HS_SHOULDER_MAX_PCT(0.05) だけ超えるので :cap。
-		// **本テストの主題が cap 境界そのもの**なので接尾辞まで固定する（issue #172）。
 		const rejected = ctx.debugCandidates.find(
 			(d) => d.type === 'inverse_head_and_shoulders' && d.accepted === false && d.reason === 'shoulders_not_near:cap',
 		);
@@ -597,9 +607,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('H&S: relaxed fallback でも肩 ±5% を超える候補は検出しない', () => {
-		// left=100, right=106: strict(0.04) は near() で fail → relaxed パスに落ちる
-		// relaxed factor.shoulder=2.0 で 0.04*2.0=0.08 → 0.0566 ≤ 0.08 で通過していたが
-		// isSameLevel(100, 106, 0.05) で hard reject される
+		// left=100, right=106: strict(0.04) は near() で fail → relaxed パスに落ち、0.04*2.0=0.08 は通るが isSameLevel(100, 106, 0.05) で hard reject される
 		const { candles, pivots } = buildHS({ leftShoulder: 100, rightShoulder: 106, head: 130 });
 		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.04 });
 		const result = detectHeadAndShoulders(ctx);
@@ -638,20 +646,10 @@ describe('detectHeadAndShoulders', () => {
 		expect(ihs[0]?._fallback).toBeUndefined();
 	});
 
-	// ── relaxed 経路の肩落ち（issue #174） ──
-	//
-	// relaxed は `near()` を呼ばず `tolerancePct * factors.shoulder` をインラインで比較する。
-	// 実効閾値は `min(tolerancePct * factors.shoulder, ctx.hsShoulderMaxPct)` で、
-	// **既定パスでは全時間足で cap が律速する**（#244 Phase 2 以降は strict も `1day` 未満で同じ）。
-	// #173 以前は肩で落ちた窓に何も積んでいなかったため、`view=debug` の集計に relaxed が
-	// 1 件も映らず、`:cap` 実測 0 件（#167）が strict の観測だと分からなくなっていた。
+	// relaxed は `near()` を呼ばず `tolerancePct * factors.shoulder` をインラインで比較するので、実効閾値は `min(tolerancePct * factors.shoulder, ctx.hsShoulderMaxPct)`（issue #174）。
 
 	it('H&S relaxed: HS_SHOULDER_MAX_PCT のみ超過 → relaxed_shoulders_not_near:cap', () => {
-		// left=100, right=106.5 → diff/max = 6.5/106.5 ≈ 0.0610
-		//   <= tolerancePct * 2.0 = 0.08  → relaxed の tolerance は通る
-		//   >  HS_SHOULDER_MAX_PCT = 0.05 → cap だけ超過
-		// **同じ窓の strict は :both**（strict の tolerance は 0.04 なので両方超過）。
-		// 律速側が経路で入れ替わる実例で、混ぜて集計すると消える差そのもの。
+		// left=100, right=106.5 → diff/max = 6.5/106.5 ≈ 0.0610 <= tolerancePct * 2.0 = 0.08 で relaxed の tolerance は通り、> HS_SHOULDER_MAX_PCT = 0.05 で cap だけ超過
 		const { candles, pivots } = buildHS({ leftShoulder: 100, rightShoulder: 106.5, head: 130 });
 		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.04 });
 		const result = detectHeadAndShoulders(ctx);
@@ -667,7 +665,6 @@ describe('detectHeadAndShoulders', () => {
 		expect(details?.relaxedTolerancePct).toBeCloseTo(0.08, 12);
 		expect(details?.shouldersDiffPct).toBeCloseTo(6.5 / 106.5, 12);
 
-		// strict 由来と混ざらない（受け入れ条件: 理由コードで区別できること）
 		const strict = ctx.debugCandidates.filter(
 			(d) => d.type === 'head_and_shoulders' && (d.reason ?? '').startsWith('shoulders_not_near'),
 		);
@@ -691,8 +688,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('H&S relaxed: relaxed tolerance のみ超過 → relaxed_shoulders_not_near:tolerance', () => {
-		// tolerancePct=0.02 → relaxed 末尾の段の tolerance は 0.04。
-		// left=100, right=104.5 → 4.5/104.5 ≈ 0.0431 > 0.04 かつ <= 0.05（cap は通る）
+		// tolerancePct=0.02 → relaxed 末尾の段の tolerance は 0.04。left=100, right=104.5 → 4.5/104.5 ≈ 0.0431 > 0.04 かつ <= 0.05（cap は通る）
 		const { candles, pivots } = buildHS({ leftShoulder: 100, rightShoulder: 104.5, head: 130 });
 		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.02 });
 		detectHeadAndShoulders(ctx);
@@ -716,8 +712,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('relaxed の棄却エントリは同じ窓で 2 回積まれない（段は外・窓が内のループ）', () => {
-		// `RELAXED_FACTORS` は 2 段。素朴に両段で積むと同じ 5 点が 2 件になり cap を倍速で食う。
-		// 末尾の段でだけ積む実装なので、窓ごとにちょうど 1 件。
+		// `RELAXED_FACTORS` は 2 段。素朴に両段で積むと同じ 5 点が 2 件になり cap を倍速で食うので、末尾の段でだけ積む（窓ごとにちょうど 1 件）。
 		for (const build of [buildHS, buildInverseHS]) {
 			const isTop = build === buildHS;
 			const { candles, pivots } = build({ leftShoulder: 100, rightShoulder: 106.5, head: isTop ? 130 : 70 });
@@ -736,8 +731,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('x1.6 段の肩落ちは棄却として積まれない（x2.0 段で通る窓）', () => {
-		// tolerancePct=0.025 → x1.6 段 = 0.04 / x2.0 段 = 0.05。
-		// left=100, right=104.5 → 0.0431 は x1.6 で落ちて x2.0 で通る（cap 0.05 も通る）。
+		// tolerancePct=0.025 → x1.6 段 = 0.04 / x2.0 段 = 0.05。left=100, right=104.5 → 0.0431 は x1.6 で落ちて x2.0 で通る（cap 0.05 も通る）。
 		// 末尾の段で救われる窓なので、x1.6 の落ちを積むと「棄却」の意味が壊れる。
 		const { candles, pivots } = buildHS({ leftShoulder: 100, rightShoulder: 104.5, head: 130 });
 		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.025 });
@@ -752,8 +746,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('relaxed のネックライン棄却は relaxed_ 接頭辞で strict と分かれる', () => {
-		// 谷1=85 / 谷2=95 → relDiff = 10/95 ≈ 0.105 > HS_NECKLINE_MAX_PCT(0.05)。
-		// 肩と頭は strict / relaxed とも通るので、両経路がネックラインで落ちる。
+		// 谷1=85 / 谷2=95 → relDev = 10/95 ≈ 0.105 > HS_NECKLINE_MAX_PCT(0.05)。肩と頭は strict / relaxed とも通るので、両経路がネックラインで落ちる。
 		const { candles, pivots } = buildHS({ valley1: 85, valley2: 95, head: 130 });
 		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.04 });
 		detectHeadAndShoulders(ctx);
@@ -763,7 +756,6 @@ describe('detectHeadAndShoulders', () => {
 			.map((d) => d.reason);
 		expect(reasons).toContain('neckline_not_horizontal');
 		expect(reasons).toContain('relaxed_neckline_not_horizontal');
-		// 末尾の段でだけ積むので relaxed 側はちょうど 1 件
 		expect(reasons.filter((r) => r === 'relaxed_neckline_not_horizontal')).toHaveLength(1);
 	});
 
@@ -780,8 +772,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('relaxed は頭で落ちた窓を積まない（#174 の対象外。cap 保護）', () => {
-		// head=101 は headProminencePct=0.04 の x2.0 段（= 0.016）でも突出不足。
-		// 肩は同値で通るので、肩の理由コードもネックラインの理由コードも出ない。
+		// head=101 は headProminencePct=0.04 の x2.0 段（= 0.016）でも突出不足。肩は同値で通るので、肩の理由コードもネックラインの理由コードも出ない。
 		const { candles, pivots } = buildHS({ leftShoulder: 100, rightShoulder: 100, head: 101 });
 		const ctx = buildCtx({ candles, pivots, tolerancePct: 0.04 });
 		detectHeadAndShoulders(ctx);
@@ -789,20 +780,14 @@ describe('detectHeadAndShoulders', () => {
 		expect(ctx.debugCandidates.filter((d) => (d.reason ?? '').startsWith('relaxed_'))).toHaveLength(0);
 	});
 
-	// ── 形成中 H&S ───────────────────────────────────────────
-
 	it('includeForming=true + 右肩形成中 → forming H&S 検出', () => {
-		// 66 本のローソク足を作成
-		// allPeaks: 左肩(idx=5,price=100), 頭(idx=30,price=135)
-		// allValleys: 頭前谷(idx=20,price=88), 頭後谷(idx=45,price=90)
-		// 最終 close=102（左肩 100 近傍 → 暫定右肩）
+		// 左肩(idx=5,price=100) / 頭前谷(idx=20,price=88) / 頭(idx=30,price=135) / 頭後谷(idx=45,price=90)、最終 close=102（左肩 100 近傍 → 暫定右肩）
 		const total = 66;
 		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 90, 95, 85, 90));
 		candles[5] = mkCandle(total - 5, 99, 100, 97, 99);
 		candles[20] = mkCandle(total - 20, 87, 90, 87, 88);
 		candles[30] = mkCandle(total - 30, 134, 135, 132, 134);
 		candles[45] = mkCandle(total - 45, 89, 92, 89, 90);
-		// 最後の 5 本を暫定右肩レベル（102）にする
 		for (let i = 60; i < total; i++) {
 			candles[i] = mkCandle(total - i, 101, 103, 100, 102);
 		}
@@ -865,12 +850,8 @@ describe('detectHeadAndShoulders', () => {
 		expect(forming).toHaveLength(0);
 	});
 
-	// ── 形成中 Inverse H&S ───────────────────────────────────
-
 	it('includeForming=true + 右谷形成中 → forming inverse H&S 検出', () => {
-		// allValleys: 左肩(idx=5,price=100), 頭(idx=30,price=60)
-		// allPeaks: 頭前ピーク(idx=20,price=112), 頭後ピーク(idx=45,price=110)
-		// 最終 close=98（左肩 100 近傍）
+		// 左肩(idx=5,price=100) / 頭前ピーク(idx=20,price=112) / 頭(idx=30,price=60) / 頭後ピーク(idx=45,price=110)、最終 close=98（左肩 100 近傍）
 		const total = 66;
 		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 90, 95, 85, 90));
 		candles[5] = mkCandle(total - 5, 100, 102, 99, 101);
@@ -905,8 +886,6 @@ describe('detectHeadAndShoulders', () => {
 		expect(forming[0]?.breakoutTarget).toBeDefined();
 	});
 
-	// ── structureRange / confirmation / precedingTrend（誤読防止のための分離フィールド） ──
-
 	it('completed H&S: structureRange=左肩〜右肩, confirmation=not_confirmed, precedingTrend あり', () => {
 		const { candles, pivots } = buildHS();
 		const ctx = buildCtx({ candles, pivots });
@@ -920,7 +899,6 @@ describe('detectHeadAndShoulders', () => {
 		expect(hs.structureRange?.start).toBe(candles[0].isoTime);
 		expect(hs.structureRange?.end).toBe(candles[60].isoTime);
 
-		// H&S 検出器はネックライン突破を確認しないため not_confirmed
 		expect(hs.confirmation?.type).toBe('not_confirmed');
 
 		expect(hs.precedingTrend).toBeDefined();
@@ -981,12 +959,8 @@ describe('detectHeadAndShoulders', () => {
 		expect(forming.precedingTrend).toBeDefined();
 	});
 
-	// ── 形成中の最低 confidence ゲート（FORMING_MIN_CONFIDENCE = 0.5） ─────
-
 	it('forming inverse H&S: 右肩が左肩から遠く confidence < 0.5 → 結果に含まれない & reject 理由が残る', () => {
-		// closeness = 1 - |107 - 100| / (100 * 0.08) = 1 - 7/8 = 0.125
-		// confBase = 0.6 * 0.125 + 0.4 * 0.125 = 0.125
-		// confidence = round(0.125 * 0.9 * 100)/100 = 0.11  → < 0.5
+		// closeness = 1 - |107 - 100| / (100 * 0.08) = 0.125、confBase = 0.6 * 0.125 + 0.4 * 0.125 = 0.125、confidence = round(0.125 * 0.9 * 100)/100 = 0.11 → < 0.5
 		// completion = (0.75 + 0.25 * 0.125) * 0.9 = 0.703 → >= 0.4（残るのは confidence 側のみ）
 		const total = 66;
 		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 90, 95, 85, 90));
@@ -1069,11 +1043,8 @@ describe('detectHeadAndShoulders', () => {
 		expect(rejected).toBeDefined();
 	});
 
-	// ── ネックラインブレイク確認（completed への昇格） ─────────
-
 	it('H&S: 右肩後にネックライン下抜け → status=completed, confirmation=neckline_breakout', () => {
-		// neckline (85+85)/2 = 85, head 130
-		// breakIdx=65 で close=80 (< 85*(1-0.015)=83.725) → 下抜け
+		// neckline (85+85)/2 = 85, head 130。breakIdx=65 で close=80 (< 85*(1-0.015)=83.725) → 下抜け
 		const { candles, pivots } = buildHsWithBreakout({ breakIdx: 65, breakClose: 80 });
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectHeadAndShoulders(ctx);
@@ -1086,29 +1057,19 @@ describe('detectHeadAndShoulders', () => {
 		expect(hs.confirmation?.type).toBe('neckline_breakout');
 		expect(hs.breakoutDirection).toBe('down');
 		expect(hs.outcome).toBe('success');
-		// breakoutBarIndex は右肩(idx=60) より後
 		const breakoutBarIndex = hs.breakoutBarIndex;
 		expect(typeof breakoutBarIndex).toBe('number');
 		if (typeof breakoutBarIndex !== 'number') return;
 		expect(breakoutBarIndex).toBeGreaterThan(60);
 		expect(breakoutBarIndex).toBeLessThanOrEqual(candles.length - 1);
 
-		// range.end = ブレイク日（candles[breakoutIdx].isoTime）
 		expect(hs.range?.end).toBe(candles[breakoutBarIndex]?.isoTime);
-		// structureRange.end = 右肩日（candles[60].isoTime）
 		expect(hs.structureRange?.end).toBe(candles[60].isoTime);
-		// confirmation.date は range.end と一致（ブレイク日）
-		if (hs.confirmation?.type === 'neckline_breakout') {
-			expect(hs.confirmation.date).toBe(hs.range?.end);
-			expect(hs.confirmation.idx).toBe(breakoutBarIndex);
-		}
+		expect(hs.confirmation).toMatchObject({ type: 'neckline_breakout', date: hs.range?.end, idx: breakoutBarIndex });
 	});
 
 	it('H&S: 右肩後にターゲット到達 → targetReachedPct >= 100 + targetReached=true', () => {
-		// target ≈ 85 - (130-85) = 40
-		// breakClose=80 → breakoutPrice=80
-		// 末尾 idx=79 で low=25 (<= target=40) → 到達
-		// pct = (25-80) / (40-80) * 100 = 137.5 → 138
+		// target ≈ 85 - (130-85) = 40、breakoutPrice=80、末尾 idx=79 で low=25 (<= target=40) → 到達、pct = (25-80) / (40-80) * 100 = 137.5 → 138
 		const total = 80;
 		const { candles, pivots } = buildHsWithBreakout({
 			breakIdx: 65,
@@ -1134,14 +1095,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('H&S: 一度 target 到達後に close が戻る → high/low ベースで targetReached=true', () => {
-		// 旧 close ベース判定では、最終 close が target を上回ると未到達扱いされる。
-		// 新 high/low ベースでは、ブレイク後の最安値で評価するので、戻しても到達扱いになる。
-		//
-		// target = 85 - (130-85) = 40, breakClose=80 → breakoutPrice=80
-		// 中間 idx=70 で low=25 (<= target 40) → 到達
-		// 末尾 idx=79 は close=80 (> target 40) で recovery
-		// 旧 close ベース: (80-80)/(40-80)*100 = 0% → 未到達
-		// 新 high/low ベース: (25-80)/(40-80)*100 = 137.5 → 138%
+		// ブレイク後の最安値で評価するので、末尾 idx=79 が close=80 (> target 40) に戻しても、中間 idx=70 の low=25 で到達扱いになる（(25-80)/(40-80)*100 = 137.5 → 138%）
 		const total = 80;
 		const { candles, pivots } = buildHsWithBreakout({
 			breakIdx: 65,
@@ -1161,7 +1115,6 @@ describe('detectHeadAndShoulders', () => {
 		expect(hs.confirmation?.type).toBe('neckline_breakout');
 		expect(hs.breakoutTarget).toBe(40);
 
-		// 最終 close は 80 (> target 40) だが、ブレイク後 idx=70 で low=25 が target を割り込んでいる
 		expect(hs.targetReachedPct).toBeGreaterThanOrEqual(100);
 		expect(hs.targetReached).toBe(true);
 		expect(hs.targetReachedPrice).toBe(25);
@@ -1172,9 +1125,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('H&S: ブレイク後 low が target に届かない → 未到達 (targetReachedPct < 100)', () => {
-		// breakClose=80 → 全 post-break candle で low=77 のみ (postBreakLow 未指定)
-		// 77 > target 40 → 未到達
-		// pct = (77-80)/(40-80)*100 = 7.5 → 8%
+		// postBreakLow 未指定なので全 post-break candle で low=77 > target 40 → 未到達、pct = (77-80)/(40-80)*100 = 7.5 → 8%
 		const { candles, pivots } = buildHsWithBreakout({ breakIdx: 65, breakClose: 80 });
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectHeadAndShoulders(ctx);
@@ -1191,10 +1142,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('H&S: ブレイク close == target（距離ゼロ）→ 進捗を出さず理由を申告する', () => {
-		// target = 40, breakClose=40 → breakoutPrice === target → targetDistance=0。
-		// #210 まではこれを「ブレイク時点で既に到達」として reached=true / pct=100 で返していたが、
-		// 距離ゼロは達成度を測る余地が無い状態そのものなので、退化ガードで進捗を出さない。
-		// **breakoutTarget は出る**（target の算出式は変えていない）。
+		// breakClose=40 → breakoutPrice === target で targetDistance=0。距離ゼロは達成度を測る余地が無いので退化ガードで進捗を出さないが、breakoutTarget は出る（#210）。
 		const { candles, pivots } = buildHsWithBreakout({ breakIdx: 65, breakClose: 40 });
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectHeadAndShoulders(ctx);
@@ -1213,10 +1161,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('H&S: ブレイク close が既に target を下回る（オーバーシュート）→ targetReached=true & pct>=100', () => {
-		// target = 40, breakClose=30 → breakoutPrice=30 < target 40 で既に到達済み
-		// 旧式: (extremePrice - 30) / (40 - 30) は分母 +10、extremePrice<30 で分子マイナス → pct が負
-		// 新式: targetDistance=Math.abs(40-30)=10, moveDistance=30-27=3, pct=30
-		//       targetReached=true なので Math.max(100, 30) = 100 にクランプ
+		// breakClose=30 → breakoutPrice=30 < target 40 で既に到達済み。targetDistance=10, moveDistance=30-27=3, pct=30 だが、targetReached=true なので Math.max(100, 30) = 100 にクランプ
 		const { candles, pivots } = buildHsWithBreakout({ breakIdx: 65, breakClose: 30 });
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectHeadAndShoulders(ctx);
@@ -1247,15 +1192,13 @@ describe('detectHeadAndShoulders', () => {
 		expect(hs.status).not.toBe('completed');
 		expect(hs.status).toBe('near_completion');
 		expect(hs.confirmation?.type).toBe('not_confirmed');
-		// range.end = structureRange.end = 右肩日
 		expect(hs.range?.end).toBe(candles[60].isoTime);
 		expect(hs.structureRange?.end).toBe(candles[60].isoTime);
 		expect(hs.breakoutBarIndex).toBeUndefined();
 	});
 
 	it('逆H&S: 右肩後にネックライン上抜け → status=completed, confirmation=neckline_breakout', () => {
-		// neckline (115+115)/2 = 115, head 70
-		// breakIdx=65 で close=120 (> 115*(1+0.015)=116.725) → 上抜け
+		// neckline (115+115)/2 = 115, head 70。breakIdx=65 で close=120 (> 115*(1+0.015)=116.725) → 上抜け
 		const { candles, pivots } = buildInverseHsWithBreakout({ breakIdx: 65, breakClose: 120 });
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectHeadAndShoulders(ctx);
@@ -1277,9 +1220,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('逆H&S: 右肩後にターゲット到達 → targetReachedPct >= 100 + targetReached=true', () => {
-		// target ≈ 115 + (115-70) = 160
-		// breakClose=120 → breakoutPrice=120, 末尾 idx=79 で high=170 (>= target 160)
-		// pct = (170-120)/(160-120)*100 = 125%
+		// target ≈ 115 + (115-70) = 160、breakoutPrice=120、末尾 idx=79 で high=170 (>= target 160)、pct = (170-120)/(160-120)*100 = 125%
 		const total = 80;
 		const { candles, pivots } = buildInverseHsWithBreakout({
 			breakIdx: 65,
@@ -1305,11 +1246,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('逆H&S: 一度 target 到達後に close が戻る → high/low ベースで targetReached=true', () => {
-		// target = 115 + (115-70) = 160, breakClose=120 → breakoutPrice=120
-		// 中間 idx=70 で high=170 (>= target 160) → 到達
-		// 末尾 idx=79 は close=120 (< target 160) で recovery
-		// 旧 close ベース: (120-120)/(160-120)*100 = 0% → 未到達
-		// 新 high/low ベース: (170-120)/(160-120)*100 = 125%
+		// 中間 idx=70 の high=170 (>= target 160) で到達、末尾 idx=79 は close=120 (< target 160) で recovery（(170-120)/(160-120)*100 = 125%）
 		const total = 80;
 		const { candles, pivots } = buildInverseHsWithBreakout({
 			breakIdx: 65,
@@ -1333,15 +1270,12 @@ describe('detectHeadAndShoulders', () => {
 		expect(ihs.targetReached).toBe(true);
 		expect(ihs.targetReachedPrice).toBe(170);
 		expect(ihs.targetReachedDate).toBe(candles[70].isoTime);
-		// 末尾 close は target を下回って戻っている（recovery を fixture が再現していることを念のため確認）
 		const lastClose = candles[total - 1]?.close ?? Number.NaN;
 		expect(lastClose).toBeLessThan(ihs.breakoutTarget ?? Number.NEGATIVE_INFINITY);
 	});
 
 	it('逆H&S: ブレイク後 high が target に届かない → 未到達 (targetReachedPct < 100)', () => {
-		// breakClose=120 → 全 post-break candle で high=123 (= breakClose+3)
-		// 123 < target 160 → 未到達
-		// pct = (123-120)/(160-120)*100 = 7.5 → 8%
+		// 全 post-break candle で high=123 (= breakClose+3) < target 160 → 未到達、pct = (123-120)/(160-120)*100 = 7.5 → 8%
 		const { candles, pivots } = buildInverseHsWithBreakout({ breakIdx: 65, breakClose: 120 });
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectHeadAndShoulders(ctx);
@@ -1377,10 +1311,7 @@ describe('detectHeadAndShoulders', () => {
 	});
 
 	it('逆H&S: ブレイク close が既に target を上回る（オーバーシュート）→ targetReached=true & pct>=100', () => {
-		// target = 160, breakClose=170 → breakoutPrice=170 > target 160 で既に到達済み
-		// 旧式: (extremePrice - 170) / (160 - 170) は分母 -10、extremePrice>170 で分子プラス → pct が負
-		// 新式: targetDistance=Math.abs(160-170)=10, moveDistance=173-170=3, pct=30
-		//       targetReached=true なので Math.max(100, 30) = 100 にクランプ
+		// breakClose=170 → breakoutPrice=170 > target 160 で既に到達済み。targetDistance=10, moveDistance=173-170=3, pct=30 だが、targetReached=true なので 100 にクランプ
 		const { candles, pivots } = buildInverseHsWithBreakout({ breakIdx: 65, breakClose: 170 });
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectHeadAndShoulders(ctx);
@@ -1414,8 +1345,6 @@ describe('detectHeadAndShoulders', () => {
 		expect(ihs.structureRange?.end).toBe(candles[60].isoTime);
 	});
 
-	// ── ピボット不足 ─────────────────────────────────────────
-
 	it('ピボット < 5 個では H&S/Inverse H&S とも検出しない', () => {
 		const candles: CandleData[] = Array.from({ length: 30 }, (_, i) => mkCandle(30 - i, 90, 95, 85, 90));
 		const pivots: Pivot[] = [
@@ -1428,34 +1357,9 @@ describe('detectHeadAndShoulders', () => {
 		expect(result.patterns).toHaveLength(0);
 	});
 
-	// ── 窓生成: 交互列が崩れていても頭を中心とした窓が作られる（issue #146） ──
-
 	describe('交互列が崩れたピボット列からの窓生成（issue #146）', () => {
-		/**
-		 * issue #146 が「実測済み」として報告した BTC/JPY 1時間足のピボット列。
-		 * swingDepth=3（1hour の既定）では**頭の直後に別の高値 12,726,672 が挟まり**、
-		 * 頭より右の交互が崩れる。旧実装は「配列上で連続する 5 ピボットが H-L-H-L-H」を
-		 * 要求していたため、頭 12,851,000 を中心とする窓が**一度も生成されなかった**
-		 * （`view=debug` の candidates にも棄却理由が残らない偽陰性）。
-		 *
-		 * **注意: これは値そのものを凍結した実データ fixture ではない。** issue が実測として
-		 * 報告したピボット列（価格・間隔）を入力にしている。窓生成が読むのは `kind` / `idx` /
-		 * `price` だけなので、「窓が作られるか」の回帰はこの入力で固定できる。
-		 *
-		 * ## `tests/patterns/hs-window-btcjpy-1hour.test.ts` との役割分担（issue #157）
-		 *
-		 * #157 で実データ fixture（`tests/fixtures/btc_jpy_1hour_2026_08.ts`）を凍結したが、
-		 * **本 describe は置き換えず残している。守る対象が違う。**
-		 *
-		 * | | 入力 | 守るもの |
-		 * |---|---|---|
-		 * | 本 describe | 人手で書き写したピボット列 | **窓生成ロジック単体**。`enumerateHsWindows` が交互列の崩れた `kind`/`idx`/`price` から窓を作るか。`tolerancePct` / `headProminencePct` の分離（#149）の振り分けもここ |
-		 * | `hs-window-btcjpy-1hour.test.ts` | 実データ OHLC 365 本 | **`detectSwingPoints` を含む配線**。実 OHLC から実際にどのピボットが出るか、スライス後の idx が窓の idx と対応するか |
-		 *
-		 * 実データ側に一本化すると、`detectSwingPoints` の回帰と窓生成の回帰が同じ 1 本の失敗に
-		 * 潰れてどちらが壊れたか切り分けられなくなる。逆に本 describe だけでは
-		 * 「`detectSwingPoints` がそのピボットを本当に出すか」が未検証のまま残る（#157 の指摘）。
-		 */
+		// issue #146 が実測として報告した BTC/JPY 1時間足のピボット列。swingDepth=3 では頭の直後に別の高値 12,726,672 が挟まり、頭より右の交互が崩れる。
+		// 実データ側（`hs-window-btcjpy-1hour.test.ts`）は `detectSwingPoints` を含む配線を守り、本 describe は窓生成ロジック単体を守るので、一本化しない（#157）。
 		const ISSUE_146_PIVOTS: Array<[number, number, 'H' | 'L']> = [
 			[8, 12_213_097, 'L'], //  起点の安値 8/24
 			[20, 12_582_009, 'H'], // 左肩 8/25
@@ -1490,11 +1394,7 @@ describe('detectHeadAndShoulders', () => {
 				kind,
 				extremePrice: kind === 'H' ? price + 8000 : price - 8000,
 			}));
-			// 0.05 は両パラメータの相互独立性（issue #149）を確認するための固定リファレンス値であって、
-			// どちらの時間軸オート値でもない——tolerancePct の 1hour オートは 0.05 だが、
-			// headProminencePct の 1hour オートは 0.0083（`getHeadProminenceForTf`。issue #198。
-			// 両者は別表で、#198 以前は誤って同じ表を共有していた）。ここでは両方を明示的に渡して
-			// いるので auto 表の値には依存しない。minBarsBetweenSwings=2 は 1hour の時間軸オート。
+			// 0.05 は両パラメータの相互独立性（issue #149）を確認するための固定値で、どちらの時間軸オート値でもない（headProminencePct の 1hour オートは 0.0083）。minBarsBetweenSwings=2 は 1hour の時間軸オート。
 			const ctx = buildCtx({
 				candles,
 				pivots,
@@ -1520,11 +1420,7 @@ describe('detectHeadAndShoulders', () => {
 		});
 
 		it('生成された候補は理由付きで結論が出る（頭のマージン不足で head_not_higher）', () => {
-			// issue の受け入れ条件は「completed で検出される」ことではなく
-			// 「候補が評価されて理由付きで結論が出る」こと。この 5 点は頭が右肩を
-			// **1.85% しか上回っておらず**、strict が要求する頭のマージン
-			// （1hour の headProminencePct = 5%。tolerancePct ではない——issue #149）
-			// に届かないので head_not_higher で棄却されるのが正しい。
+			// 頭が右肩を 1.85% しか上回っておらず、strict が要求する頭のマージン（ここで渡す headProminencePct = 5%）に届かないので head_not_higher で棄却されるのが正しい。
 			const ctx = buildIssue146Ctx();
 			detectHeadAndShoulders(ctx);
 
@@ -1538,13 +1434,8 @@ describe('detectHeadAndShoulders', () => {
 			expect(details.rightShoulder).toBe(12_617_817);
 		});
 
-		// ── tolerancePct / headProminencePct の分離（issue #149） ──
-
 		it('tolerancePct をどれだけ動かしても頭の判定（head_not_higher）は変わらない', () => {
-			// 肩差 0.284%（35,808 / 12,617,817）はどんな tolerancePct でも near() を通るため、
-			// tolerancePct を変えても shouldersNear は常に true のまま。headProminencePct を
-			// 5% に固定して tolerancePct だけを極端に振っても、頭のマージン不足（1.85% < 5%）
-			// による head_not_higher は変わらないことを確認する。
+			// 肩差 0.284%（35,808 / 12,617,817）はどんな tolerancePct でも near() を通るので、tolerancePct だけを極端に振っても head_not_higher は変わらない。
 			const low = buildIssue146Ctx({ tolerancePct: 0.005, headProminencePct: 0.05 });
 			detectHeadAndShoulders(low);
 			const high = buildIssue146Ctx({ tolerancePct: 0.1, headProminencePct: 0.05 });
@@ -1555,7 +1446,6 @@ describe('detectHeadAndShoulders', () => {
 			expect(candLow?.reason).toBe('head_not_higher');
 			expect(candHigh?.reason).toBe('head_not_higher');
 
-			// 頭の判定に使った実際の閾値（headProminencePct）は tolerancePct に関わらず同じ。
 			const detailsLow = candLow?.details as { headProminencePct: number; tolerancePct: number };
 			const detailsHigh = candHigh?.details as { headProminencePct: number; tolerancePct: number };
 			expect(detailsLow.headProminencePct).toBe(0.05);
@@ -1566,9 +1456,7 @@ describe('detectHeadAndShoulders', () => {
 		});
 
 		it('headProminencePct を既定より緩めると head_not_higher が解消する', () => {
-			// 頭のマージンは 1.85%。headProminencePct を既定 5% から 1% まで下げると
-			// 「大きいほど厳しい」の向きどおり要求が緩み、head_not_higher では棄却されなくなる
-			// （tolerancePct は既定のまま動かしていない）。
+			// 頭のマージンは 1.85% なので、headProminencePct を既定 5% から 1% まで下げると head_not_higher では棄却されなくなる（tolerancePct は既定のまま）。
 			const ctx = buildIssue146Ctx({ headProminencePct: 0.01 });
 			detectHeadAndShoulders(ctx);
 
@@ -1577,16 +1465,8 @@ describe('detectHeadAndShoulders', () => {
 		});
 
 		it('厳密に交互する列でも、肩を跨ぐ窓（gap>=3）は新たに生成される', () => {
-			// **窓生成の緩和は「交互が崩れた区間だけ」に閉じていない。** 肩リスト上で
-			// 間に肩を跨ぐ組（gap>=3）は旧実装が作れなかった窓で、`H L H L H L H` のように
-			// 厳密に交互する列でも出る。#146 の 5 点自体が gap=3 の窓（肩リストの第 1 と第 4）
-			// なので、これは仕様であって副作用ではない——ここで固定しておかないと
-			// 「交互列なら旧実装と同一」という誤った不変条件が後から書き戻されうる。
-			//
-			// 肩 h0=0(100) / h1=20(118) / h2=40(130) / h3=60(101)。旧実装が作れた窓は
-			// 配列上で連続する [0,10,20,30,40] と [20,30,40,50,60] の 2 つだけで、
-			// どちらも肩が離れすぎ（100 vs 118 / 118 vs 101）。一方 (h0, h3) を肩に取ると
-			// 頭 = 間の最高値 130、肩は 100 と 101 で揃う。
+			// 肩を跨ぐ窓（gap>=3）は厳密に交互する列でも出る仕様（#146 の 5 点自体が gap=3 の窓）。固定しておかないと「交互列なら旧実装と同一」という誤った不変条件が書き戻されうる。
+			// 肩 h0=0(100) / h1=20(118) / h2=40(130) / h3=60(101)。(h0, h3) を肩に取ると頭 = 間の最高値 130、肩は 100 と 101 で揃う。
 			const pts: Array<[number, number, 'H' | 'L']> = [
 				[0, 100, 'H'],
 				[10, 80, 'L'],
@@ -1611,13 +1491,8 @@ describe('detectHeadAndShoulders', () => {
 		});
 
 		it('肩を跨ぐ窓でも、外側の脚に肩を明確に超える山があれば窓にしない', () => {
-			// 肩を跨ぐ窓を許すと、**跨いだ先の山のほうが肩より高い**読みまで作れてしまう。
-			// H100-L80-H130-L80-H120-L80-H100 では (H0, H60) を肩に取ると頭 130 / 肩 100・100 で
-			// 一見きれいに揃うが、谷2(30) と右肩(60) の間に **右肩より 20% 高い山 H40(120)** がある。
-			// その山こそが右肩であって、H60 を右肩と読むのは肩の取り違え。
-			//
-			// 同水準（`HS_SHOULDER_MAX_PCT` = 5% 以内）の山は「幅のある肩」として通すので、
-			// 実データの双子の山（BTC/JPY 日足 idx 38 と 42 は差 0.08%）は落ちない。
+			// H100-L80-H130-L80-H120-L80-H100 で (H0, H60) を肩に取ると、谷2(30) と右肩(60) の間に右肩より 20% 高い山 H40(120) があり、肩の取り違えになる。
+			// 同水準（`HS_SHOULDER_MAX_PCT` = 5% 以内）の山は「幅のある肩」として通すので、実データの双子の山（BTC/JPY 日足 idx 38 と 42 は差 0.08%）は落ちない。
 			const pts: Array<[number, number, 'H' | 'L']> = [
 				[0, 100, 'H'],
 				[10, 80, 'L'],
@@ -1643,20 +1518,9 @@ describe('detectHeadAndShoulders', () => {
 	});
 });
 
-/**
- * issue #208: `breakoutTarget` の高さを「頭の真下のネックライン」で測る。
- *
- * 旧実装は高さも投影の起点も `necklineAt(neckline, breakoutIdx)`（strict / relaxed）または
- * `neckline[0].y`（forming）で測っており、傾いたネックラインを外挿するぶん高さが歪んでいた。
- * 本 describe のフィクスチャは**ネックラインを意図的に傾けてある**——水平ネックライン
- * （既存の `buildHS` / `buildInverseHS` の既定）では新旧の値が一致してしまい、回帰を検出できない。
- */
+// フィクスチャはネックラインを意図的に傾けてある（水平だと頭の真下とブレイク足時点のネックラインが一致し、回帰を検出できない）。
 describe('detectHeadAndShoulders: ネックライン射影の高さ基準（issue #208）', () => {
-	/**
-	 * 傾いたネックラインを持つ H&S + ブレイク。
-	 * 谷1(idx=15,83) → 谷2(idx=45,87) で `relDev = 4/87 = 4.6%`（`HS_NECKLINE_MAX_PCT = 5%` 内）。
-	 * 傾きは +2/15 本 で、頭(idx=30) の真下は 85、ブレイク足(idx=65) 時点では 89.667。
-	 */
+	/** 谷1(idx=15,83) → 谷2(idx=45,87) で `relDev = 4/87 = 4.6%`（`HS_NECKLINE_MAX_PCT = 5%` 内）。頭(idx=30) の真下は 85。 */
 	function buildSlopedHsWithBreakout() {
 		const total = 80;
 		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 90, 95, 80, 90));
@@ -1665,8 +1529,7 @@ describe('detectHeadAndShoulders: ネックライン射影の高さ基準（issu
 		candles[30] = mkCandle(total - 30, 129, 130, 127, 129);
 		candles[45] = mkCandle(total - 45, 88, 90, 87, 88);
 		candles[60] = mkCandle(total - 60, 99, 100, 97, 99);
-		// idx 65 以降を close=80 に落としてネックライン下抜け（idx 61-64 の close=90 では
-		// nlAt(k) * (1 - 0.015) を下回らないので、ブレイク足は必ず 65 になる）。
+		// idx 61-64 の close=90 では nlAt(k) * (1 - 0.015) を下回らないので、ブレイク足は必ず 65 になる。
 		for (let i = 65; i < total; i++) candles[i] = mkCandle(total - i, 82, 85, 77, 80);
 
 		const pivots: Pivot[] = [
@@ -1701,10 +1564,7 @@ describe('detectHeadAndShoulders: ネックライン射影の高さ基準（issu
 	}
 
 	it('strict H&S: 高さは頭の真下、投影の起点はブレイク足', () => {
-		// nlAt(30) = 85（内挿。クランプ不変）→ 高さ = 130 - 85 = 45
-		// nlAt(65) = 87（#211 のクランプで谷2 の 87 に頭打ち。無クランプなら 89.667 だった）
-		//   → target = round(87 - 45) = 42
-		// 旧実装（高さもブレイク足時点）は round(87 - (130 - 87)) = 44 になる。
+		// nlAt(30) = 85 → 高さ = 130 - 85 = 45、nlAt(65) = 87（#211 のクランプで谷2 の 87 に頭打ち）→ target = 87 - 45 = 42
 		const { candles, pivots } = buildSlopedHsWithBreakout();
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectHeadAndShoulders(ctx);
@@ -1717,17 +1577,14 @@ describe('detectHeadAndShoulders: ネックライン射影の高さ基準（issu
 	});
 
 	it('strict Inverse H&S: 高さは頭の真下、投影の起点はブレイク足', () => {
-		// nlAt(30) = 115.5（内挿。クランプ不変）→ 高さ = 115.5 - 70 = 45.5
-		// nlAt(65) = 118（#211 のクランプで山2 の 118 に頭打ち。無クランプなら 121.333 だった）
-		//   → target = round(118 + 45.5) = 164
-		// 旧実装は round(118 + (118 - 70)) = 166 になる。
+		// nlAt(30) = 115.5 → 高さ = 115.5 - 70 = 45.5、nlAt(65) = 118（#211 のクランプで山2 の 118 に頭打ち）→ target = 118 + 45.5 = 163.5
 		const { candles, pivots } = buildSlopedIhsWithBreakout();
 		const ctx = buildCtx({ candles, pivots });
 		const result = detectHeadAndShoulders(ctx);
 
 		const ihs = result.patterns.find((p) => p.type === 'inverse_head_and_shoulders');
 		expect(ihs?.breakoutBarIndex).toBe(65);
-		expect(ihs?.breakoutTarget).toBe(164);
+		expect(ihs?.breakoutTarget).toBe(163.5);
 		expect(ihs?.breakoutTarget).not.toBe(166);
 		expect(ihs?.targetMethod).toBe('neckline_projection');
 	});
@@ -1745,11 +1602,7 @@ describe('detectHeadAndShoulders: ネックライン射影の高さ基準（issu
 	});
 
 	it('forming H&S: 投影の起点は最終構成点（暫定右肩）で、高さは頭の真下', () => {
-		// ネックライン (20,88) → (45,90)、傾き +2/25 本。
-		// nlAt(30) = 88.8（内挿。クランプ不変）→ 高さ = 135 - 88.8 = 46.2
-		// 暫定右肩 idx=65 → nlAt(65) = 90（#211 のクランプで右端 90 に頭打ち。無クランプなら 91.6）
-		//   → target = round(90 - 46.2) = 44
-		// 旧実装（左端 88 を高さにも起点にも使用）は round(88 - (135 - 88)) = 41 だった（クランプ後も同じ）。
+		// ネックライン (20,88) → (45,90)。nlAt(30) = 88.8 → 高さ = 135 - 88.8 = 46.2、暫定右肩 idx=65 → nlAt(65) = 90（#211 のクランプ）→ target = 90 - 46.2 = 43.8
 		const total = 66;
 		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 90, 95, 85, 90));
 		candles[5] = mkCandle(total - 5, 99, 100, 97, 99);
@@ -1776,7 +1629,7 @@ describe('detectHeadAndShoulders: ネックライン射影の高さ基準（issu
 		const result = detectHeadAndShoulders(ctx);
 
 		const forming = result.patterns.find((p) => p.type === 'head_and_shoulders' && p.status === 'forming');
-		expect(forming?.breakoutTarget).toBe(44);
+		expect(forming?.breakoutTarget).toBe(43.8);
 		expect(forming?.breakoutTarget).not.toBe(41);
 	});
 
@@ -1805,11 +1658,7 @@ describe('detectHeadAndShoulders: ネックライン射影の高さ基準（issu
 		expect(atShoulder).toBe(40);
 	});
 
-	// ── 高さ 0 以下ガード ──
-	//
-	// 検出器の 3 経路はいずれも頭がネックラインの 2 定義点の**間**にあるため、頭の真下の値は
-	// 内挿になり両端の間に収まる。したがってガードは検出器経由では到達不能で、標準コーパス
-	// 896 ケースでも発火 0 件。ここでは helper を直接呼んで振る舞いだけ固定する。
+	// 頭の真下の値は内挿で両端の間に収まるので、高さ 0 以下のガードは検出器経由では到達しない。helper を直接呼んで振る舞いだけ固定する。
 	it('高さが 0 以下なら target を出さない（H&S）', () => {
 		const nl = [
 			{ x: 15, y: 140 },
@@ -1861,9 +1710,7 @@ describe('detectHeadAndShoulders: ネックライン射影の高さ基準（issu
 		).toBeUndefined();
 	});
 
-	// 添字が壊れている入力は fallback の対象外（CodeRabbit の指摘。PR #209 レビュー）。
-	// `necklineAt` は `i` を検査せず NaN をそのまま計算に通すので、先に弾かないと
-	// `at()` が fallbackNecklinePrice に畳んで「もっともらしい target」を返してしまう。
+	// 壊れた添字では `necklineAt` が NaN を返し、先に弾かないと `necklineAtOr` が fallbackNecklinePrice に畳んで「もっともらしい target」を返してしまう。
 	it('headIdx が有限でないなら target を出さない（fallback に畳まない）', () => {
 		expect(
 			necklineProjectionTarget({
@@ -1913,8 +1760,7 @@ describe('detectHeadAndShoulders: ネックライン射影の高さ基準（issu
 	});
 
 	it('ネックラインが 2 点未満なら fallbackNecklinePrice を使う', () => {
-		// necklineAt が NaN を返す経路。頭の真下も起点も fallback に畳まれるので
-		// target = 85 - (130 - 85) = 40。
+		// necklineAt が NaN を返す経路。頭の真下も起点も fallback に畳まれるので target = 85 - (130 - 85) = 40。
 		expect(
 			necklineProjectionTarget({
 				neckline: [{ x: 15, y: 85 }],
@@ -1928,21 +1774,7 @@ describe('detectHeadAndShoulders: ネックライン射影の高さ基準（issu
 	});
 });
 
-/**
- * `necklineAt` の外挿クランプ（issue #211 Phase 2）。
- *
- * ネックラインは `p1` / `p3` の 2 点でしか定義されていない。その外側の値は「教科書の直線を
- * 伸ばしたらこうなるはず」というモデル上の仮定であって、実際のサポート / レジスタンスの根拠が
- * 無いので、**定義点の区間の外では直近の定義点の `y` で頭打ちにする**。
- *
- * クランプは `necklineAt` の 1 箇所に入れてあり、3 消費者（ブレイク検出 / スコアリングの
- * `necklinePrice` / ターゲット投影）すべてに同時に効く。`necklineAt` を export しているのは
- * ここで**非有限ガードを直接叩くため**——`necklineProjectionTarget` /
- * `necklineProjectionHeight` はどちらも添字を先に検査するので、それら経由では到達できない。
- *
- * 検出器を通した効果（ブレイクが消える / `confidence` が動く）の回帰は
- * `tests/detect_patterns_data_patterns_regression.test.ts` と本ファイルの #208 の節が持つ。
- */
+// クランプは `necklineAt` の 1 箇所にあり、3 消費者（ブレイク検出 / スコアリングの `necklinePrice` / ターゲット投影）すべてに同時に効く。
 describe('necklineAt の外挿クランプ（issue #211）', () => {
 	/** 傾き +4/30 本（15 本目 85 → 45 本目 89）。 */
 	const sloped = [
@@ -1973,8 +1805,7 @@ describe('necklineAt の外挿クランプ（issue #211）', () => {
 	});
 
 	it('定義点が逆順に並んでいても区間へ丸める（片端へ潰れない）', () => {
-		// 現行 4 経路は `p1.idx < p3.idx` を守るが、順序に依存しない実装であることを固定する。
-		// 順序前提のクランプ（`min(max(i, a.x), b.x)`）だと右側外挿で左端 85 に潰れる。
+		// 現行 4 経路は `p1.idx < p3.idx` を守るが、順序前提のクランプ（`min(max(i, a.x), b.x)`）だと右側外挿で左端 85 に潰れるので、順序に依存しないことを固定する。
 		const reversed = [
 			{ x: 45, y: 89 },
 			{ x: 15, y: 85 },
@@ -2004,11 +1835,7 @@ describe('necklineAt の外挿クランプ（issue #211）', () => {
 		expect(necklineAt(degenerate, 65)).toBe(85);
 	});
 
-	// 非有限の添字は丸めより**手前**で弾く（CodeRabbit の指摘。PR #239 レビュー）。
-	// `Math.min` / `Math.max` は `±Infinity` を端点へ丸めるので、ガードが無いと
-	// 壊れた添字に対して端点の `y`（89 / 85）という**もっともらしい有限値**が返り、
-	// `necklineAtOr` の fallback にも畳まれなくなる。クランプ導入前は `±Infinity` が
-	// そのまま伝播して fallback に落ちていたので、これはクランプが持ち込んだ退行。
+	// `Math.min` / `Math.max` は `±Infinity` を端点へ丸めるので、ガードが無いと壊れた添字に端点の `y`（89 / 85）というもっともらしい有限値が返り、`necklineAtOr` の fallback にも畳まれなくなる。
 	it('添字が非有限なら NaN（±Infinity が端点へ丸められない）', () => {
 		expect(necklineAt(sloped, Number.POSITIVE_INFINITY)).toBeNaN();
 		expect(necklineAt(sloped, Number.NEGATIVE_INFINITY)).toBeNaN();
@@ -2047,11 +1874,8 @@ describe('necklineAt の外挿クランプ（issue #211）', () => {
 		).toBeNaN();
 	});
 
-	// クランプが**投影の起点まで届いている**こと（消費者 3）。値そのものの固定は上の
-	// `necklineAt` 直叩きが持つので、ここは伝播の確認に絞る。
 	it('ターゲット投影の起点までクランプが届く（H&S / 逆 H&S）', () => {
-		// 頭 idx=30 の真下は 87（内挿。クランプ不変）→ 高さ = 130 - 87 = 43。
-		// 起点は nlAt(65) = 89 に頭打ちになるので target = round(89 - 43) = 46。
+		// 頭 idx=30 の真下は 87 → 高さ = 130 - 87 = 43。起点は nlAt(65) = 89 に頭打ちになるので target = 89 - 43 = 46。
 		expect(
 			necklineProjectionTarget({
 				neckline: sloped,
@@ -2063,8 +1887,7 @@ describe('necklineAt の外挿クランプ（issue #211）', () => {
 			}),
 		).toBe(46);
 
-		// 山1 (15,113) → 山2 (45,118)。nlAt(30) = 115.5 → 高さ = 115.5 - 70 = 45.5。
-		// 起点は nlAt(65) = 118 → target = round(118 + 45.5) = 164。
+		// 山1 (15,113) → 山2 (45,118)。nlAt(30) = 115.5 → 高さ = 115.5 - 70 = 45.5。起点は nlAt(65) = 118 → target = 118 + 45.5 = 163.5。
 		expect(
 			necklineProjectionTarget({
 				neckline: [
@@ -2077,19 +1900,12 @@ describe('necklineAt の外挿クランプ（issue #211）', () => {
 				direction: 'up',
 				fallbackNecklinePrice: 115.5,
 			}),
-		).toBe(164);
+		).toBe(163.5);
 	});
 });
 
-/**
- * 完成済み H&S の整合度サブスコア（issue #204 Phase 2）。
- *
- * 旧実装は 4 経路すべてが `(tolMargin + symmetry + per) / 3` で、`tolMargin` と `symmetry` が
- * **同じ `relDev(左肩, 右肩)`（rd）** から作られていたため confidence が rd の 1 次式に潰れていた。
- * 本 describe が固定するのは「軸が 6 本あること」ではなく、**rd 以外の量が実際に得点を動かすこと**。
- */
+// 固定するのは「軸が 6 本あること」ではなく、rd（`relDev(左肩, 右肩)`）以外の量が実際に得点を動かすこと（issue #204）。
 describe('detectHeadAndShoulders: 整合度の多軸化（issue #204）', () => {
-	/** `detect_hs.ts` の `necklineAt` と同じ内挿（非 export なのでテスト側に置く）。 */
 	/** `detect_hs.ts` の `necklineAt` と同じ式（定義点の外側はクランプする。#211）。 */
 	function nlAt(neckline: ReadonlyArray<{ x: number; y: number }>, i: number): number {
 		const [a, b] = neckline;
@@ -2115,8 +1931,7 @@ describe('detectHeadAndShoulders: 整合度の多軸化（issue #204）', () => 
 	});
 
 	it('未ブレイク（near_completion）では breakoutQuality が付かない', () => {
-		// ブレイクが無いので突破足の終値が無く、軸そのものが算出できない。
-		// **0 として混ぜず平均から外す**（「測れなかった」を「悪い」に化けさせない）。
+		// ブレイクが無いので突破足の終値が無く、軸そのものが算出できない。0 として混ぜず平均から外す（「測れなかった」を「悪い」に化けさせない）。
 		const { candles, pivots } = buildHS();
 		const hs = detectHeadAndShoulders(buildCtx({ candles, pivots })).patterns.find(
 			(p) => p.type === 'head_and_shoulders',
@@ -2165,8 +1980,7 @@ describe('detectHeadAndShoulders: 整合度の多軸化（issue #204）', () => 
 	});
 
 	it('breakoutQuality の分母は「頭の真下のネックライン」までの高さ（#208 と同じ基準）', () => {
-		// 傾きつきネックライン（谷1 = 85 / 谷2 = 89。相対差 4.5% < HS_NECKLINE_MAX_PCT 5%）にすると、
-		// 頭の真下のネックラインとブレイク足時点のネックラインがずれる。
+		// 傾きつきネックライン（谷1 = 85 / 谷2 = 89。相対差 4.5% < HS_NECKLINE_MAX_PCT 5%）にすると、頭の真下のネックラインとブレイク足時点のネックラインがずれる。
 		const { candles, pivots } = buildHsWithBreakout();
 		pivots[3] = { idx: 45, price: 89, kind: 'L', extremePrice: 89 };
 		candles[45] = mkCandle(35, 90, 92, 89, 90);
@@ -2194,18 +2008,14 @@ describe('detectHeadAndShoulders: 整合度の多軸化（issue #204）', () => 
 		);
 		expect(hs?._fallback).toMatch(/relaxed_hs/);
 		expect(hs?.scoreComponents?.headProminence).toBeDefined();
-		// 実測突出率 = 130/105 − 1 = 0.238095。**ゲート**は relaxed で 0.04 × 0.6 = 0.024 まで緩むが、
-		// **採点は strict の 0.04 で行う**（緩めた側の閾値で採点すると「緩めたこと」が整合度に反映
-		// されない。issue #227 の論点 1）。
+		// 実測突出率 = 130/105 − 1 = 0.238095。ゲートは relaxed で 0.04 × 0.6 = 0.024 まで緩むが、採点は strict の 0.04 で行う（緩めた側の閾値で採点すると「緩めたこと」が整合度に反映されない。issue #227）。
 		const prominence = 130 / 105 - 1;
 		expect(hs?.scoreComponents?.headProminence).toBeCloseTo(1 - 0.04 / prominence, 4);
-		// 緩めた側のゲート（0.024）で正規化した値とは違う——ここが #227 Phase 2 で反転した箇所。
 		expect(hs?.scoreComponents?.headProminence).not.toBeCloseTo(1 - 0.024 / prominence, 3);
 	});
 
 	it('relaxed のゲートは通るが strict の突出に届かない構造は headProminence が 0 点になる（#227 Phase 2）', () => {
-		// 突出率 0.238 に対し strict のゲートを 0.3 に上げる。strict では落ちるが relaxed 第 1 段
-		// （0.3 × 0.6 = 0.18）は通る——**検出はされるが、突出の軸には 1 点も入らない**。
+		// 突出率 0.238 に対し strict のゲートを 0.3 に上げる。strict では落ちるが relaxed 第 1 段（0.3 × 0.6 = 0.18）は通る。検出はされるが、突出の軸には 1 点も入らない。
 		const { candles, pivots } = buildHS({ leftShoulder: 100, rightShoulder: 105, head: 130 });
 		const hs = detectHeadAndShoulders(
 			buildCtx({ candles, pivots, tolerancePct: 0.04, headProminencePct: 0.3 }),
@@ -2217,36 +2027,30 @@ describe('detectHeadAndShoulders: 整合度の多軸化（issue #204）', () => 
 	});
 
 	it('逆 H&S の relaxed も突出の採点は strict の閾値で行う（#227 Phase 2）', () => {
-		// left=100 / right=105 で strict の肩判定が落ち、relaxed 第 1 段が拾う（H&S 側と同じ組み方）。
 		const { candles, pivots } = buildInverseHS({ leftShoulder: 100, rightShoulder: 105, head: 70 });
 		const ihs = detectHeadAndShoulders(buildCtx({ candles, pivots, tolerancePct: 0.04 })).patterns.find(
 			(p) => p.type === 'inverse_head_and_shoulders',
 		);
 		expect(ihs?._fallback).toMatch(/relaxed_ihs/);
 		expect(ihs?.scoreComponents?.headProminence).toBeDefined();
-		// 逆 H&S の突出は `1 − 頭 / min(肩)` = 1 − 70/100 = 0.30。ゲートは relaxed で
-		// 0.04 × 0.6 = 0.024 まで緩むが、採点は strict の 0.04 で行う。
+		// 逆 H&S の突出は `1 − 頭 / min(肩)` = 1 − 70/100 = 0.30。
 		const prominence = 1 - 70 / 100;
 		expect(ihs?.scoreComponents?.headProminence).toBeCloseTo(1 - 0.04 / prominence, 4);
 		expect(ihs?.scoreComponents?.headProminence).not.toBeCloseTo(1 - 0.024 / prominence, 3);
 	});
 
 	it('逆 H&S も relaxed のゲートは通るが strict の突出に届かなければ headProminence が 0 点（#227 Phase 2）', () => {
-		// 突出 0.30 に対し strict のゲートを 0.4 に上げる。strict では落ちるが relaxed 第 1 段
-		// （0.4 × 0.6 = 0.24）は通る。
+		// 突出 0.30 に対し strict のゲートを 0.4 に上げる。strict では落ちるが relaxed 第 1 段（0.4 × 0.6 = 0.24）は通る。
 		const { candles, pivots } = buildInverseHS({ leftShoulder: 100, rightShoulder: 105, head: 70 });
 		const ihs = detectHeadAndShoulders(
 			buildCtx({ candles, pivots, tolerancePct: 0.04, headProminencePct: 0.4 }),
 		).patterns.find((p) => p.type === 'inverse_head_and_shoulders');
 		expect(ihs?._fallback).toMatch(/relaxed_ihs/);
-		// strict のゲートに届かない入力であることを固定する
 		expect(1 - 70 / 100).toBeLessThan(0.4);
 		expect(ihs?.scoreComponents?.headProminence).toBe(0);
 	});
 
 	it('肩の相対差が同じでも形が違えば confidence が変わる（rd の 1 次式が崩れている）', () => {
-		// 両方とも肩は 100 / 100（rd = 0）。旧実装では `tolMargin` も `symmetry` も rd だけで決まり、
-		// `per` も同じなので **confidence は完全に一致していた**。
 		const tall = buildHS({ head: 130 });
 		const shallow = buildHS({ head: 108 });
 		const run = (f: ReturnType<typeof buildHS>) =>

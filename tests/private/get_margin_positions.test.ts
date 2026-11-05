@@ -1,7 +1,3 @@
-/**
- * get_margin_positions ツールのユニットテスト。
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertFail, assertOk } from '../_assertResult.js';
 import { mockBitbankError, mockBitbankSuccess, rawMarginPositionsResponse } from '../fixtures/private-api.js';
@@ -253,7 +249,6 @@ describe('get_margin_positions', () => {
 		expect(firstLine.startsWith('⚠')).toBe(true);
 		expect(firstLine).toContain('追証');
 		expect(firstLine).toContain('100,000');
-		// due_date_at が null のときは「—」で描画される
 		expect(firstLine).toContain('期日: —');
 	});
 
@@ -277,7 +272,6 @@ describe('get_margin_positions', () => {
 		const result = await getMarginPositions({});
 
 		assertOk(result);
-		// btc_jpy のポジション
 		expect(result.summary).toContain('15,000,000');
 		expect(result.summary).toContain('評価額');
 	});
@@ -294,15 +288,7 @@ describe('get_margin_positions — handler (toolDef)', () => {
 	});
 });
 
-/**
- * pair の正規化は 2 レイヤーある。同じ 1 行（`p.pair === pair`）の両側なのでまとめて固定する。
- *
- * - **API 応答側**: 取得境界で小文字化（`lib/pair-code.ts`）。揃えないとフィルタが全件落とし、
- *   JPY 建て判定（`p.pair.includes('jpy')`）も外れて平均取得価格が円フォーマットされない。
- * - **ユーザー入力側**: `lib/validate.ts` の `normalizePair`。`BTC_JPY` と入力されると
- *   応答側（小文字）と `===` が一致せず建玉が全件消える。`ensurePair` は使わない
- *   （ALLOWED_PAIRS に無い上場廃止ペアの建玉を照会できなくなるため）。
- */
+/** pair の正規化は同じ 1 行（p.pair === pair）の両側にある。API 応答側は取得境界で小文字化し、ユーザー入力側は normalizePair（ensurePair は上場廃止ペアを弾くので使わない）。 */
 describe('get_margin_positions — pair の正規化', () => {
 	const upperResponse = {
 		...rawMarginPositionsResponse,
@@ -329,7 +315,7 @@ describe('get_margin_positions — pair の正規化', () => {
 		const result = await getMarginPositions({ pair: 'btc_jpy' });
 
 		assertOk(result);
-		// 正規化前は 'BTC_JPY' === 'btc_jpy' が偽で建玉が全件消えていた
+		// 入力を正規化しないと 'BTC_JPY' === 'btc_jpy' が偽で建玉が全件消える
 		expect(result.data.positions.map((p) => p.pair)).toEqual(['btc_jpy']);
 		expect(result.meta.positionCount).toBe(1);
 	});

@@ -21,7 +21,6 @@ type Item = {
 	timestamp: number;
 };
 
-// テキスト summary にティッカー全件を含める（LLM が structuredContent.data を読めない対策）
 function buildTickerText(
 	baseSummary: string,
 	data: Array<Item & { change24h?: number | null; change24hPct?: number | null }>,
@@ -43,7 +42,6 @@ function buildTickerText(
 const CACHE_KEY = 'tickers_jpy';
 const tickerCache = new TtlCache<Item[]>({ ttlMs: 10_000, maxEntries: 1 });
 
-// === Auto mode (official pairs sync) ===
 let dynamicPairs: Set<string> | null = null;
 let dynamicPairsFetchedAt = 0;
 const PAIRS_TTL_MS = Number(process.env.BITBANK_PAIRS_TTL_MS ?? 15 * 60 * 1000); // 15min
@@ -68,7 +66,7 @@ async function fetchOfficialJpyPairs(timeoutMs: number, retries: number, retryWa
 			clearTimeout(t);
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const raw = (await res.json()) as { success?: number; data?: Array<Record<string, unknown>> };
-			if (!raw || raw.success !== 1 || !Array.isArray(raw.data)) throw new Error('bad payload');
+			if (raw?.success !== 1 || !Array.isArray(raw.data)) throw new Error('bad payload');
 			const set = new Set<string>();
 			for (const it of raw.data) {
 				const p = String(it?.pair || '').toLowerCase();
@@ -91,21 +89,18 @@ async function getFilterSet(
 	const mode = getPairsMode();
 	if (mode === 'off') return { mode, set: null, source: 'off' };
 	if (mode === 'strict') return { mode, set: ALLOWED_PAIRS as Set<string>, source: 'static' };
-	// auto
 	const now = Date.now();
-	const stillFresh = dynamicPairs && now - dynamicPairsFetchedAt < PAIRS_TTL_MS;
-	if (!stillFresh) {
-		try {
-			dynamicPairs = await fetchOfficialJpyPairs(timeoutMs, retries, retryWaitMs);
-			dynamicPairsFetchedAt = now;
-		} catch {
-			// keep previous dynamic or fall back to static
-			if (!dynamicPairs || dynamicPairs.size === 0) {
-				return { mode, set: ALLOWED_PAIRS as Set<string>, source: 'static' };
-			}
+	if (dynamicPairs && now - dynamicPairsFetchedAt < PAIRS_TTL_MS) return { mode, set: dynamicPairs, source: 'dynamic' };
+	try {
+		dynamicPairs = await fetchOfficialJpyPairs(timeoutMs, retries, retryWaitMs);
+		dynamicPairsFetchedAt = now;
+		return { mode, set: dynamicPairs, source: 'dynamic' };
+	} catch {
+		if (!dynamicPairs || dynamicPairs.size === 0) {
+			return { mode, set: ALLOWED_PAIRS as Set<string>, source: 'static' };
 		}
+		return { mode, set: dynamicPairs, source: 'dynamic' };
 	}
-	return { mode, set: dynamicPairs!, source: 'dynamic' };
 }
 async function filterByMode(
 	items: Item[],
@@ -150,14 +145,13 @@ export default async function getTickersJpy(opts?: { bypassCache?: boolean }) {
 			const abs = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath);
 			const buf = fs.readFileSync(abs, 'utf8');
 			const raw = JSON.parse(buf);
-			if (!raw || raw.success !== 1 || !Array.isArray(raw.data)) {
+			if (raw?.success !== 1 || !Array.isArray(raw.data)) {
 				return GetTickersJpyOutputSchema.parse(
 					fail('UPSTREAM_ERROR: unexpected response from bitbank API', 'upstream'),
 				);
 			}
 			const dataRaw: Item[] = raw.data as Item[];
 			const { data: filtered, filterInfo } = await filterByMode(dataRaw, timeoutMs, retries, retryWaitMs);
-			// 24h変動率を open/last から算出（%）
 			const data = filtered.map((it) => {
 				const openN = toNum(it.open);
 				const lastN = toNum(it.last);
@@ -177,7 +171,6 @@ export default async function getTickersJpy(opts?: { bypassCache?: boolean }) {
 			);
 		}
 
-		// 固定バックオフでの簡易リトライ
 		let lastErr: unknown;
 		let raw: { success?: number; data?: Item[] } | undefined;
 		for (let i = 0; i <= retries; i++) {
@@ -196,7 +189,7 @@ export default async function getTickersJpy(opts?: { bypassCache?: boolean }) {
 			}
 		}
 		if (!raw) throw lastErr ?? new Error('no response');
-		if (!raw || raw.success !== 1 || !Array.isArray(raw.data)) {
+		if (raw.success !== 1 || !Array.isArray(raw.data)) {
 			return GetTickersJpyOutputSchema.parse(fail('UPSTREAM_ERROR: unexpected response from bitbank API', 'upstream'));
 		}
 		const dataRaw: Item[] = raw.data as Item[];
@@ -211,7 +204,6 @@ export default async function getTickersJpy(opts?: { bypassCache?: boolean }) {
 		tickerCache.set(CACHE_KEY, data);
 		const ms = Date.now() - t0;
 		const payloadBytes = Buffer.byteLength(JSON.stringify(dataRaw));
-		// ロギングはサーバ側集約。ここではsummaryに最小指標を含める
 		const summaryTextHttp = buildTickerText(
 			`tickers_jpy fetched in ${ms}ms (${data.length}/${dataRaw.length} items after filter, ${payloadBytes} bytes raw, mode=${filterInfo.mode}/${filterInfo.source})`,
 			data,

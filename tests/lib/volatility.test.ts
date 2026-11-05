@@ -7,8 +7,6 @@ import {
 	rogersSatchellComponents,
 } from '../../lib/volatility.js';
 
-// --- logReturns ---
-
 describe('logReturns', () => {
 	it('対数リターンを計算する', () => {
 		const closes = [100, 110, 105];
@@ -40,8 +38,6 @@ describe('logReturns', () => {
 	});
 });
 
-// --- parkinsonComponents ---
-
 describe('parkinsonComponents', () => {
 	it('(ln(H/L))^2 を計算する', () => {
 		const highs = [110, 120];
@@ -62,8 +58,6 @@ describe('parkinsonComponents', () => {
 	});
 });
 
-// --- garmanKlassComponents ---
-
 describe('garmanKlassComponents', () => {
 	it('GK コンポーネントを計算する', () => {
 		const opens = [100];
@@ -79,8 +73,6 @@ describe('garmanKlassComponents', () => {
 	});
 });
 
-// --- rogersSatchellComponents ---
-
 describe('rogersSatchellComponents', () => {
 	it('RS コンポーネントを計算する', () => {
 		const opens = [100];
@@ -93,8 +85,6 @@ describe('rogersSatchellComponents', () => {
 		expect(result[0]).toBeCloseTo(expected, 10);
 	});
 });
-
-// --- componentMeanToVol ---
 
 describe('componentMeanToVol', () => {
 	it('Parkinson: sqrt(mean / (4*ln2))', () => {

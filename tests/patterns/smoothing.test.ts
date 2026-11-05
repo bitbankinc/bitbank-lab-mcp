@@ -10,7 +10,6 @@ describe('savgolFilter', () => {
 		const data = [1, 2];
 		const result = savgolFilter(data, 5);
 		expect(result).toEqual([1, 2]);
-		// 元配列と別の参照であること
 		expect(result).not.toBe(data);
 	});
 
@@ -23,7 +22,6 @@ describe('savgolFilter', () => {
 	});
 
 	it('線形データを保持する（2次多項式フィルタ）', () => {
-		// y = 2x の直線データ
 		const data = Array.from({ length: 20 }, (_, i) => 2 * i);
 		const result = savgolFilter(data, 5, 2);
 		// 端を除く中央部分は元と一致するはず

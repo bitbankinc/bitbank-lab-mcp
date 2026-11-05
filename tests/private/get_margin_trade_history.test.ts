@@ -1,7 +1,3 @@
-/**
- * get_margin_trade_history ツールのユニットテスト。
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertFail, assertOk } from '../_assertResult.js';
 import { mockBitbankError, mockBitbankSuccess, rawMarginTradeHistoryResponse } from '../fixtures/private-api.js';
@@ -26,7 +22,6 @@ function setupFetchMock(response: unknown, status = 200) {
 		.mockResolvedValue(new Response(JSON.stringify(response), { status })) as unknown as typeof fetch;
 }
 
-/** 順次レスポンスを返す fetch モック。呼び出しごとに responses を順に消費する。 */
 function setupSequentialFetchMock(responses: unknown[]) {
 	const mockFn = vi.fn();
 	for (const res of responses) {
@@ -36,7 +31,6 @@ function setupSequentialFetchMock(responses: unknown[]) {
 	return mockFn;
 }
 
-/** N 件の信用約定（position_side 付き）を生成するヘルパー */
 function generateMarginTrades(
 	n: number,
 	baseId = 1,
@@ -59,7 +53,6 @@ function generateMarginTrades(
 	}));
 }
 
-/** N 件の現物約定（position_side なし）を生成するヘルパー */
 function generateSpotTrades(n: number, baseId = 1, baseTimestamp = 1710000000000) {
 	return Array.from({ length: n }, (_, i) => ({
 		trade_id: baseId + i,
@@ -370,7 +363,6 @@ describe('get_margin_trade_history', () => {
 
 		assertOk(result);
 		expect(result.data.trades[0].fee_occurred_amount_quote).toBeUndefined();
-		// fallback で fee_amount_quote の値で埋めないことを明示的にアサート
 		expect(result.data.trades[0].fee_occurred_amount_quote).not.toBe(result.data.trades[0].fee_amount_quote);
 	});
 
@@ -387,9 +379,7 @@ describe('get_margin_trade_history', () => {
 	});
 
 	it('現物 (position_side 欠損) が混在しても信用のみを返し集計もフィルタ後の値', async () => {
-		// 公式 docs に type=margin パラメータの記載がなく、API が無視した場合の防御。
-		// position_side == null の現物約定が混入しても、フィルタで信用のみが残ること、
-		// および「ロング X件 / ショート Y件」の集計もフィルタ後の値であることを検証する。
+		// type=margin が API に無視されて現物約定が混入しても、信用だけが残り「ロング X件 / ショート Y件」の集計もフィルタ後の値になること。
 		const mixed = {
 			trades: [
 				{
@@ -443,12 +433,10 @@ describe('get_margin_trade_history', () => {
 		const result = await getMarginTradeHistory({});
 
 		assertOk(result);
-		// 現物が除外され信用 2 件のみ
 		expect(result.data.trades).toHaveLength(2);
 		expect(result.meta.tradeCount).toBe(2);
 		const ids = result.data.trades.map((t) => t.trade_id);
 		expect(ids).toEqual([701, 703]);
-		// 全レコードに position_side が付与されている
 		for (const t of result.data.trades) {
 			expect(t.position_side).toBeDefined();
 		}
@@ -539,11 +527,9 @@ describe('get_margin_trade_history — ページネーション', () => {
 	});
 
 	it('単発リクエストで現物混入をフィルタしても isComplete は生 batch.length で判定する', async () => {
-		// count=20 / レスポンス 20 件（margin 12 + spot 8）
 		// 生 batch.length=20 は count と等しいので isComplete=false が正しい
 		const margin = generateMarginTrades(12, 1, 1710000000000);
 		const spot = generateSpotTrades(8, 100, 1710000020000);
-		// 時系列順に混ぜる
 		const trades = [...margin.slice(0, 6), ...spot.slice(0, 4), ...margin.slice(6), ...spot.slice(4)];
 		setupFetchMock(mockBitbankSuccess({ trades }));
 
@@ -551,12 +537,10 @@ describe('get_margin_trade_history — ページネーション', () => {
 		const result = await getMarginTradeHistory({ count: 20 });
 
 		assertOk(result);
-		// 現物 8 件は除外され、margin 12 件だけ残る
 		expect(result.data.trades).toHaveLength(12);
 		for (const t of result.data.trades) {
 			expect(t.position_side).toBeDefined();
 		}
-		// 生 batch.length=20 ≧ count=20 なので isComplete=false
 		expect(result.meta.isComplete).toBe(false);
 	});
 
@@ -585,11 +569,7 @@ describe('get_margin_trade_history — ページネーション', () => {
 	});
 
 	it('asc ページネーション: 最終ページが短くても limit 超過分を捨てたら isComplete=false', async () => {
-		// バグ回帰防止 (CodeRabbit #458): 旧実装は batch.length < PAGE_SIZE を見ただけで
-		// isComplete=true を返していたため、page1=1000+page2=800 で count=1500 を求めると
-		// all=1800 → slice(0,1500) で 300 件捨てているのに isComplete=true と誤報していた。
-		// スキーマ仕様「count 制限で打ち切られた場合は false」に合わせ、limit 超過時は
-		// 必ず false を返すよう修正された。
+		// count 制限で切り捨てたら isComplete=false（page1=1000 + page2=800 で count=1500 なら 300 件捨てている）。
 		const page1 = generateMarginTrades(1000, 1, 1710000000000);
 		const page2 = generateMarginTrades(800, 1001, 1710001000000);
 
@@ -605,8 +585,7 @@ describe('get_margin_trade_history — ページネーション', () => {
 	});
 
 	it('asc ページネーション: 最終ページが短く all=limit ちょうどなら isComplete=true', async () => {
-		// 境界条件: page1=1000 + page2=500 で count=1500 を完全充当（exhausted=true && all===limit）。
-		// 捨てたレコードは無く、API 窓も使い切ったので isComplete=true。
+		// 境界条件: page1=1000 + page2=500 で count=1500 をちょうど満たし、捨てたレコードも無く API 窓も使い切ったので isComplete=true。
 		const page1 = generateMarginTrades(1000, 1, 1710000000000);
 		const page2 = generateMarginTrades(500, 1001, 1710001000000);
 
@@ -637,9 +616,7 @@ describe('get_margin_trade_history — ページネーション', () => {
 	});
 
 	it('asc ページネーション: 現物混入下で margin だけ集める', async () => {
-		// page1: 1000 件（margin 600 + spot 400）, page2: 1000 件（margin 600 + spot 400）,
-		// page3: 1000 件（margin 300 + spot 700, 終端ではない）
-		// limit=1500 で打ち切り（margin 600+600+300=1500）
+		// 各ページ 1000 件（margin 600+spot 400 / 600+400 / 300+700）で、margin 600+600+300=1500 が limit に達して打ち切る。
 		const page1 = [...generateMarginTrades(600, 1, 1710000000000), ...generateSpotTrades(400, 5000, 1710000600000)];
 		const page2 = [...generateMarginTrades(600, 601, 1710001000000), ...generateSpotTrades(400, 5400, 1710001600000)];
 		const page3 = [...generateMarginTrades(300, 1201, 1710002000000), ...generateSpotTrades(700, 5800, 1710002300000)];
@@ -654,9 +631,7 @@ describe('get_margin_trade_history — ページネーション', () => {
 		const result = await getMarginTradeHistory({ count: 1500, order: 'asc' });
 
 		assertOk(result);
-		// margin だけで 1500 件取得して打ち切り
 		expect(result.data.trades).toHaveLength(1500);
-		// 全て margin のみ（position_side 付き）
 		for (const t of result.data.trades) {
 			expect(t.position_side).toBeDefined();
 		}
@@ -665,8 +640,7 @@ describe('get_margin_trade_history — ページネーション', () => {
 	});
 
 	it('asc ページネーション: カーソル停滞で打ち切り（isComplete=false）', async () => {
-		// page1 全 margin 1000 件で末尾の executed_at が固定。page2 も末尾 executed_at が同じ
-		// → nextSince === since となりカーソル停滞検知で打ち切る。
+		// page1 も page2 も末尾の executed_at が同じなので、nextSince === since のカーソル停滞検知で打ち切る。
 		const sameLastTs = 1710000999000;
 		const page1 = Array.from({ length: 1000 }, (_, i) => ({
 			trade_id: i + 1,
@@ -682,7 +656,6 @@ describe('get_margin_trade_history — ページネーション', () => {
 			fee_amount_quote: '0',
 			executed_at: i < 999 ? 1710000000000 + i * 1000 : sameLastTs,
 		}));
-		// page2: 末尾 executed_at が page1 と同じになる
 		const page2 = Array.from({ length: 1000 }, (_, i) => ({
 			trade_id: 1001 + i,
 			pair: 'btc_jpy',
@@ -750,7 +723,6 @@ describe('get_margin_trade_history — ページネーション', () => {
 		assertOk(result);
 		expect(result.data.trades).toHaveLength(1199);
 		const tradeIds = result.data.trades.map((t: { trade_id: number }) => t.trade_id);
-		// desc: 単調減少
 		for (let i = 1; i < tradeIds.length; i++) {
 			expect(tradeIds[i]).toBeLessThan(tradeIds[i - 1]);
 		}
@@ -771,13 +743,7 @@ describe('get_margin_trade_history — ページネーション', () => {
 	});
 
 	it('desc + count > 1000 で最新側 count 件が返る（CodeRabbit #458 指摘 2 の回帰防止）', async () => {
-		// 旧バグ: paginate が常に asc 取得 → 末尾で reverse していたため、
-		// count > PAGE_SIZE かつ order='desc' のとき「最古 count 件を新→古順」を返してしまっていた。
-		// 修正後: order='desc' のときは API に order=desc + end カーソルを渡し、
-		// 最新側 count 件を取得する。
-		//
-		// シナリオ: 期間内に trade_id 1..1500（ts 増加）の全 margin が存在。count=1200, order='desc'。
-		// 期待: 最新 1200 件 = trade_id 1500..301 を desc 順で返す（最古 1200 件ではない）。
+		// count > PAGE_SIZE かつ order='desc' では最新側 count 件（trade_id 1500..301）を desc 順で返すこと（最古 count 件ではない）。
 		const page1 = generateMarginTrades(1000, 501, 1710000500000).reverse(); // trade_id 1500..501
 		const page2 = generateMarginTrades(501, 1, 1710000000000).reverse(); // trade_id 501..1
 
@@ -795,7 +761,7 @@ describe('get_margin_trade_history — ページネーション', () => {
 		// 先頭は最新の 1500、末尾は 301（最古 count 件 = 1200..1 ではない）
 		expect(ids[0]).toBe(1500);
 		expect(ids[ids.length - 1]).toBe(301);
-		// 旧バグなら ids[0] === 1200 になる
+		// 最古 1200 件を逆順にした場合は ids[0] === 1200 になる
 		expect(ids[0]).not.toBe(1200);
 		// 2 ページ目の URL に end=ts(501) が渡されている（since ではない）
 		const secondUrl = mockFn.mock.calls[1][0] as string;
@@ -836,7 +802,6 @@ describe('get_margin_trade_history — ページネーション', () => {
 
 		assertOk(result);
 		expect(result.data.trades).toHaveLength(1200);
-		// 全て margin
 		for (const t of result.data.trades) {
 			expect(t.position_side).toBeDefined();
 		}
@@ -859,11 +824,7 @@ describe('get_margin_trade_history — handler (toolDef)', () => {
 	});
 });
 
-/**
- * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
- * 揃えないと JPY 建て判定（`t.pair.includes('jpy')`）が外れ、価格が円フォーマットされない。
- * 現行の小文字レスポンスに対しては何も変わらない（防御的正規化）。
- */
+/** pair を取得境界で小文字に揃えないと JPY 建て判定（t.pair.includes('jpy')）が外れ、価格が円フォーマットされない。 */
 describe('get_margin_trade_history — API pair の取得境界正規化', () => {
 	it('小文字レスポンスでは出力の pair 表記が変わらない', async () => {
 		setupFetchMock(mockBitbankSuccess(rawMarginTradeHistoryResponse));
@@ -889,7 +850,7 @@ describe('get_margin_trade_history — API pair の取得境界正規化', () =>
 
 		assertOk(result);
 		expect(result.data.trades.map((t) => t.pair)).toEqual(['btc_jpy', 'btc_jpy', 'eth_jpy']);
-		// 正規化前は includes('jpy') が外れ、価格が生文字列 '15000000' のまま出ていた
+		// 正規化しないと includes('jpy') が外れ、価格が生文字列 '15000000' のまま出る
 		expect(result.summary).toContain('¥15,000,000');
 		expect(result.summary).not.toContain(' 15000000 ');
 		expect(result.summary).toContain('BTC/JPY');

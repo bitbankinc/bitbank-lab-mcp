@@ -1,15 +1,12 @@
-/**
- * chart/render-depth — Depth チャート（板の深度）の SVG 描画。
- *
- * メインのローソク足チャートとは完全に独立したコードパス。
- */
-
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { buildCumulativeSteps } from '../../lib/depth-analysis.js';
 import { formatPair } from '../../lib/formatter.js';
 import getDepth from '../../lib/get-depth.js';
+import { EPSILON } from '../../lib/math.js';
 import { fail, ok } from '../../lib/result.js';
 import type { Pair, Result } from '../../src/schemas.js';
+import { buildDepthPaths } from './depth-paths.js';
 
 type RenderData = { svg?: string; filePath?: string; legend?: Record<string, string> };
 type RenderMeta = {
@@ -29,66 +26,33 @@ export async function renderDepthChart(
 		if (!depth.ok) return fail(depth.summary.replace(/^Error: /, ''), depth.meta?.errorType || 'internal');
 		const asks: Array<[string, string]> = depth.data.asks || [];
 		const bids: Array<[string, string]> = depth.data.bids || [];
-		// 価格レンジ
+		if (!asks.length || !bids.length) {
+			return fail('板データが不足しています（asks/bids の両方が必要です）', 'upstream');
+		}
 		const minBid = Number(bids[bids.length - 1]?.[0] ?? bids[0]?.[0] ?? 0);
 		const maxAsk = Number(asks[asks.length - 1]?.[0] ?? asks[0]?.[0] ?? 0);
 		const xMinP = Math.min(minBid, Number(bids[0]?.[0] ?? minBid));
 		const xMaxP = Math.max(maxAsk, Number(asks[0]?.[0] ?? maxAsk));
-		// 累積量（左：bids 降順→小へ、右：asks 昇順→大へ）
-		const bidsSorted = [...bids]
-			.map(([p, s]) => [Number(p), Number(s)] as [number, number])
-			.sort((a, b) => b[0] - a[0]);
-		const asksSorted = [...asks]
-			.map(([p, s]) => [Number(p), Number(s)] as [number, number])
-			.sort((a, b) => a[0] - b[0]);
-		let cum = 0;
-		const bidSteps: Array<[number, number]> = [];
-		for (const [p, s] of bidsSorted) {
-			cum += s;
-			bidSteps.push([p, cum]);
-		}
-		cum = 0;
-		const askSteps: Array<[number, number]> = [];
-		for (const [p, s] of asksSorted) {
-			cum += s;
-			askSteps.push([p, cum]);
-		}
+		const bidSteps = buildCumulativeSteps(
+			bids.map(([p, s]) => [Number(p), Number(s)] as [number, number]),
+			'bid',
+		);
+		const askSteps = buildCumulativeSteps(
+			asks.map(([p, s]) => [Number(p), Number(s)] as [number, number]),
+			'ask',
+		);
 		const maxQty = Math.max(bidSteps.at(-1)?.[1] || 0, askSteps.at(-1)?.[1] || 0) || 1;
 
-		// キャンバス
 		const w = 860,
 			h = 420;
 		const padding = { top: 36, right: 12, bottom: 32, left: 64 };
 		const plotW = w - padding.left - padding.right;
 		const plotH = h - padding.top - padding.bottom;
 		const x = (price: number) =>
-			Number((padding.left + ((price - xMinP) * plotW) / Math.max(1, xMaxP - xMinP)).toFixed(effectivePrecision));
+			Number((padding.left + ((price - xMinP) * plotW) / Math.max(EPSILON, xMaxP - xMinP)).toFixed(effectivePrecision));
 		const y = (qty: number) => Number((h - padding.bottom - (qty * plotH) / maxQty).toFixed(effectivePrecision));
 
-		// ステップパス生成
-		const toStepPath = (steps: Array<[number, number]>) => {
-			if (!steps.length) return '';
-			const pts = steps.map(([p, q]) => `${x(p)},${y(q)}`);
-			return `M ${pts.join(' L ')}`;
-		};
-		const bidPath = toStepPath(bidSteps);
-		const askPath = toStepPath(askSteps);
-
-		// 塗りつぶし（ステップ下を半透明で）
-		const toFillPath = (steps: Array<[number, number]>, side: 'bid' | 'ask') => {
-			if (!steps.length) return '';
-			const head = steps[0];
-			const tail = steps[steps.length - 1];
-			const baseY = y(0);
-			const poly = ['M', `${x(head[0])},${baseY}`, 'L']
-				.concat(steps.map(([p, q]) => `${x(p)},${y(q)}`))
-				.concat(['L', `${x(tail[0])},${baseY}`, 'Z'])
-				.join(' ');
-			const fill = side === 'bid' ? 'rgba(16,185,129,0.12)' : 'rgba(249,115,22,0.12)';
-			return `<path d="${poly}" fill="${fill}" stroke="none"/>`;
-		};
-		const bidFill = toFillPath(bidSteps, 'bid');
-		const askFill = toFillPath(askSteps, 'ask');
+		const { bidPath, askPath, bidFill, askFill } = buildDepthPaths(bidSteps, askSteps, x, y);
 
 		const mid = (Number(bids[0]?.[0] ?? 0) + Number(asks[0]?.[0] ?? 0)) / 2;
 		const yAxis = `

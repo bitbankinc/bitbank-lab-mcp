@@ -7,6 +7,66 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-04
+
+番号は fork（tjackiet/bitbank-lab-mcp）の PR。BTC・ETH のように 10 万円以上の価格では、価格の丸めの変更で出力は変わらない。
+
+### Added
+
+- `detect_patterns` に `date` を追加した。指定日を終端に過去の窓を走査し、`meta.anchorDate` に終端を返す。`analyze_indicators` も `date` 指定時は本文に「〜時点」と明示する（#314）。
+- 研究用の起動口（`lab/`）から、private API の接続先をループバックのモックへ差し替えられるようにした。npm の配布物には含まれない（ADR-0008、#315）。
+
+### Changed
+
+- 反転パターン（double / triple / H&S）は、先行トレンドに方向があることを求める（#306・#307・#308）。横ばいとみなす閾値は時間足に合わせて伸縮する（#310）。
+- 窓の手前に履歴が無い反転候補、単調に進む完成済み triple、肩の浅い逆 H&S を検出しない（#311・#312・#313）。
+- wedge の構造判定とブレイク判定を厳しくした（#305）。
+- 形成中の triple_top の完成度と信頼度を、triple_bottom と同じ式で出す（#393）。
+- 数円〜数十円のペアで、価格を円の整数や小数 2 桁に丸めない。価格の水準に合わせた桁（有効数字 6 桁）で出し、取引所の値（気配・板・ローソク足）は丸めない。
+  - パターン検出の目標価格など（#398）、板・深さ・チャート用データ（#399）、分析ツールの本文と計算した水準（#400）、指標の系列（#401）。
+  - 価格の割合の分母に掛けていた 1 円の下限を外し、1 円未満の価格でも同じ判定にした（#397）。
+- 板の SVG の数量軸の目盛りを、最大の数量に合わせて 5 本前後にした（#402）。
+- `detect_patterns` の debug view：
+  - 判定を飛ばした反転候補を出す（#309）。
+  - double_bottom の採用候補にブレイク足を含め、forming triple_bottom の判定順を top にそろえた（#391）。
+  - ウェッジの走査で上下の傾きの向きがそろわない窓の棄却は `wedge` のラベルで積む（#403・#404）。
+
+### Fixed
+
+- `get_my_deposit_withdrawal`：取得がすべて失敗したときに「0 件」の成功ではなく失敗を返す。途中のページの失敗で取得状態が `complete` になっていた誤りと、ページの境目と同じ時刻の入出金の取りこぼしも直した（#389）。
+- 確認 UI に、ホストの CSS 変数とフォントが当たっていなかった（#388）。
+- `detect_patterns`：同じ日に始まる同種のパターンで、構造図の identifier がぶつかっていた（#390）。
+- `get_volatility_metrics` の「MT4 標準と一致」の誤り、preview の確認期限「60 秒」の固定文言を直した（#395）。
+- `render_chart_svg` の `style=depth`：価格の幅の 1 円の下限で安いペアの板が縮んでいた。片側だけの板は描かずに失敗を返す（#402）。
+- 板の SVG のヘッダーで時刻に `JST` が 2 回付いていた（#405）。
+- Windows（`core.symlinks=false`）で、plugin の置き場所のテストが落ちていた（#406）。
+
+### Schema
+
+- `DetectPatternsInputSchema` に `date`（optional）、出力の meta に `anchorDate`（optional）を追加（#314）。
+- debug の `candidates[].type` に `wedge` を追加（`PatternCandidateTypeEnum`。入力の `patterns` には無い。#403）。
+
+### Internal
+
+- コメントを `.claude/rules/comments.md` の基準で整理した（#322〜#345）。重複した判定や部品をまとめ、長い関数を分けた（#346〜#387 の refactor、#392・#394・#396）。どちらも挙動は変えていない。
+- tests の lint の警告を 0 件にし、条件によっては何も確かめていなかったテストを直した（#377）。lint の対象に `scripts/` と `lab/` を足した（#347）。
+
+### Security
+- `@modelcontextprotocol/server` を 2.0.0 から 2.4.0 に更新（HTTP トランスポートの high 脆弱性。本サーバーは stdio だけなので該当しないが、依存の監査を通すために上げる）。依存する `@modelcontextprotocol/core` も 2.4.0 になる。ツール・プロンプト・リソースの一覧とサーバーの capabilities は変わらない。
+- `body-parser` を 2.3.0 から 2.4.0 に更新（`@modelcontextprotocol/sdk` → `express` 経由の high 脆弱性。HTTP 経路だけ）。
+- `@hono/node-server` を 2.0.12 から 2.1.5 に更新（`@modelcontextprotocol/sdk` 経由の moderate 脆弱性。HTTP 経路だけ）。
+- `qs` を 6.16.0 から 6.16.1 に更新（`@modelcontextprotocol/sdk` → `express` 経由の moderate 脆弱性。HTTP 経路だけ）。
+- `fast-uri` を 3.1.8 から 3.1.9 に更新（`@modelcontextprotocol/sdk` → `ajv` 経由の high / moderate 脆弱性）。
+- `ip-address` を 10.7.2 から 10.7.4 に更新（`@modelcontextprotocol/sdk` → `express-rate-limit` 経由）。
+- `@modelcontextprotocol/sdk` を 1.30.0 から 1.32.1 に更新（OAuth クライアントの high 脆弱性）。
+- `proxy-addr` を 2.0.7 から 2.0.8 に更新（`@modelcontextprotocol/sdk` → `express` 経由の critical 脆弱性）。
+- `hono` を 4.13.5 から 4.13.13 に更新（`@modelcontextprotocol/sdk` 経由の moderate 脆弱性）。
+- `sharp` を 0.35.4 から 0.35.5 に更新（同梱 libvips の librsvg に起因する high 脆弱性）。
+- `source-map-js` を 1.2.1 から 1.2.2 に更新（devDependency の `vite` / `@vitest/coverage-v8` 経由の high 脆弱性）。
+- `vite` を 8.1.0 から 8.3.4 に更新（devDependency。開発サーバーと同梱の `launch-editor` の high 脆弱性）。確認 UI の `ui/*/dist` は作り直していない。
+- `vitest` / `@vitest/coverage-v8` を 4.1.11 から 4.1.12 に更新（devDependency。`@vitest/mocker` の moderate 脆弱性）。
+- `zod` を 4.4.3 から 4.6.7 に更新（大きすぎる配列などを検証するときのメモリ枯渇の high 脆弱性）。配列の件数の上限を要素より先に確かめるようになり、上限を超えた配列を弾くときは要素ごとのエラーを出さなくなった（変更前後で全ツールの入力 974 通りを比べた範囲では、受け付ける入力・弾く入力は変わらなかった）。`render_candle_pattern_diagram` の `involvedIndices`（2 要素のタプル）は、ツール定義の JSON Schema に `items: false` / `minItems: 2` / `maxItems: 2` が付く。
+
 ## [0.5.2] - 2026-09-29
 
 ### Fixed

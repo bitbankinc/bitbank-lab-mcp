@@ -1,10 +1,4 @@
-/**
- * P1 HITL セキュリティ回帰:
- * - BITBANK_TRUST_HOST_APPROVAL=1 でも preview 応答から execute 用 credential を得られない
- * - preview 後の model/direct-text（execute ツールの MCP handler）は実行されない
- * - elicitation accept 時のみ execute される
- * - decline / cancel / replay / 期限切れは実行されない
- */
+// BITBANK_TRUST_HOST_APPROVAL=1 でも preview 応答から execute 用の credential を得られず、execute は elicitation accept のときだけ実行されることの回帰（decline / cancel / replay / 期限切れは実行されない）。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertFail } from '../_assertResult.js';
@@ -298,7 +292,6 @@ describe('HITL: elicitation accept 時だけ execute される', () => {
 		expect(accepted.content[0]?.text).toContain('注文発注完了');
 		expect(countOrderApiCalls()).toBe(1);
 
-		// 同一 nonce の replay は拒否
 		const replayed = (await toolDef.handler(args, mrtrRound2Ctx('create_order', args, 'hitl-accept'))) as {
 			content: { text: string }[];
 		};

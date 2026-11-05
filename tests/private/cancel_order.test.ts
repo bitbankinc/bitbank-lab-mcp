@@ -1,8 +1,3 @@
-/**
- * cancel_order ツールのユニットテスト。
- * 確認トークン検証 + 単一注文のキャンセル成功・エラーハンドリングを検証する。
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateToken } from '../../src/private/confirmation.js';
 import { assertFail, assertOk } from '../_assertResult.js';
@@ -28,7 +23,6 @@ function setupFetchMock(response: unknown, status = 200) {
 		.mockResolvedValue(new Response(JSON.stringify(response), { status })) as unknown as typeof fetch;
 }
 
-/** キャンセル済み注文レスポンス */
 function canceledOrderResponse(overrides: Record<string, unknown> = {}) {
 	return {
 		order_id: 2001,
@@ -47,7 +41,6 @@ function canceledOrderResponse(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-/** 有効な確認トークンを生成するヘルパー */
 function validToken(params: { pair: string; order_id: number }) {
 	const { token, expiresAt } = generateToken('cancel_order', params);
 	return { confirmation_token: token, token_expires_at: expiresAt };
@@ -394,11 +387,7 @@ describe('cancel_order — handler (toolDef)', () => {
 	});
 });
 
-/**
- * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
- * `data.order.pair` の小文字契約を保つのが目的。表示・JPY 判定は引数の `pair`
- * （ユーザー入力）由来なので出力の他の部分は不変。防御的正規化（現行 API は小文字）。
- */
+/** data.order.pair を小文字契約に保つ（表示・JPY 判定は引数の pair を使うので出力の他の部分は変わらない）。 */
 describe('cancel_order — API pair の取得境界正規化', () => {
 	it('小文字レスポンスでは出力が変わらない（回帰なし）', async () => {
 		setupFetchMock(mockBitbankSuccess(canceledOrderResponse()));

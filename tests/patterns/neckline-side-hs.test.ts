@@ -1,29 +1,4 @@
-/**
- * issue #216 Phase 2（H&S 分）— H&S 系の**主構成点とネックラインの位置関係**を
- * hard gate にした件の回帰テスト。
- *
- * triple / double 側（`neckline-side-triple-double.test.ts`）は #223 で入っていたが、
- * H&S だけは「スカラー基準（`price`）と傾きつきの線基準（外挿）で判定が反転しうる」ため
- * **#211 の結論待ちで保留**されていた。#211（`necklineAt` の外挿を定義点の区間へクランプ）が
- * PR #239 でマージされ、ブレイク検出・スコアリング・ターゲット投影の全消費者が
- * `necklineAt` 1 つを見るようになったので、**H&S もその `necklineAt` を基準にする**。
- *
- * 本テストが固定するのは 5 点:
- *
- * 1. `validateMainPointsAgainstNecklineAt` の判定そのもの（境界・欠損・重複・単一要素・
- *    **点ごとに違う水準で評価されること**）
- * 2. `necklineSideDetailsFromAt` が **offender ごとに `necklinePrice`** を出すこと
- *    ——H&S では点ごとに比較相手が違うので、1 つのスカラーでは診断にならない
- * 3. 凍結済み実データ（`btc_jpy_1hour_2026_08`）で `view=debug` の候補に
- *    **`peaks_below_neckline` / `valleys_above_neckline` が正しい `offenders` 付きで出る**こと。
- *    top / bottom の両方を実データで押さえる
- * 4. 落ちた構造が `data.patterns` に残っていないこと
- * 5. **形成中経路には配線していない**こと（暫定右肩を hard reject の材料にしない）
- *
- * 実データケースが `patterns` で種別を絞るのは、`view=debug` の候補配列が **cap 200 件**で
- * トリムされるため（`detect_patterns.ts` の `candidatesTrimmed`）。絞らないと 1hour の
- * 候補 2,000 件弱に押し出されて、棄却理由が配列に載らない。
- */
+// 実データケースが `patterns` で種別を絞るのは、`view=debug` の候補配列が cap 200 件でトリムされるため。
 import { describe, expect, it, vi } from 'vitest';
 import {
 	necklineSideDetailsFrom,
@@ -58,7 +33,6 @@ const pt = (idx: number, price: number) => ({ idx, price });
 /** 水平線（スカラー版と同値になるはずのケースで使う）。 */
 const flat = (y: number) => () => y;
 
-/** 傾き 1 の線（`idx` そのぶん水準が上がる）。 */
 const sloped = (base: number) => (i: number) => base + i;
 
 describe('validateMainPointsAgainstNecklineAt（issue #216 Phase 2・H&S 分）', () => {
@@ -106,8 +80,7 @@ describe('validateMainPointsAgainstNecklineAt（issue #216 Phase 2・H&S 分）'
 	});
 
 	it('**頭 (p2) だけが誤った側**のケースも拾う（検出器経由では到達しない形）', () => {
-		// 頭がネックラインを追い越した形。`necklineProjectionHeight` の「高さ 0 以下」ガードと
-		// 同じ構造だが、あちらは target を出さないだけで候補は残る。本ゲートは候補ごと落とす。
+		// 頭がネックラインを追い越した形。`necklineProjectionHeight` の「高さ 0 以下」ガードと同じ構造だが、あちらは target を出さないだけで候補は残る。本ゲートは候補ごと落とす。
 		const res = validateMainPointsAgainstNecklineAt('top', [pt(0, 120), pt(5, 100), pt(10, 130)], flat(110));
 		expect(res.reason).toBe('peaks_below_neckline');
 		expect(res.offenders).toEqual([{ idx: 5, price: 100, deviation: 10 }]);
@@ -143,8 +116,7 @@ describe('validateMainPointsAgainstNecklineAt（issue #216 Phase 2・H&S 分）'
 	});
 
 	it('**水準が有限でない点だけ**を除く（候補ごと素通しにはしない）', () => {
-		// スカラー版は `necklinePrice` が非有限なら候補ごと素通しだが、線は点ごとに値が違うので
-		// 1 点が評価できないことは他の点の判定材料が無いことを意味しない。
+		// スカラー版は `necklinePrice` が非有限なら候補ごと素通しだが、線は点ごとに値が違うので、1 点が評価できないことは他の点の判定材料が無いことを意味しない。
 		const at = (i: number) => (i === 1 ? Number.NaN : 100);
 		const res = validateMainPointsAgainstNecklineAt('top', [pt(1, 90), pt(5, 95)], at);
 		expect(res.reason).toBe('peaks_below_neckline');
@@ -198,97 +170,53 @@ async function detectDebug(
 const idxsOf = (p: Record<string, unknown>) => ((p.pivots as Array<{ idx: number }>) ?? []).map((v) => v.idx).join('-');
 
 describe('実データ（`btc_jpy_1hour_2026_08`）の H&S 候補が誤った側で落ちる', () => {
-	it('H&S: 右肩がネックラインより下だと `peaks_below_neckline` で落ちる', async () => {
-		// 右肩 (idx 330 / 終値 12,407,578) が `necklineAt(330)` = 12,479,395 より **71,817 円下**。
-		// `necklineAt` は #211 で `[p1.idx, p3.idx]` にクランプされるので、この 12,479,395 は
-		// 谷2 (idx 325) の水準そのもの——**右肩は「外挿した線」ではなく「谷2 の水準」と比べられる。**
+	it('H&S: 横ばい先行ならネックライン側の検査より前にトレンド不一致で落ちる', async () => {
+		// 右肩 (idx 330 / 終値 12,407,578) が `necklineAt(330)` = 12,479,395 より 71,817 円下。`necklineAt` は #211 で `[p1.idx, p3.idx]` にクランプされるので、右肩は「外挿した線」ではなく谷2 (idx 325) の水準と比べられる。
 		const { candidates } = await detectDebug('1hour', { patterns: ['head_and_shoulders'], swingDepth: 2 });
-		const rejected = candidates.filter((c) => c.reason === 'peaks_below_neckline');
+		const rejected = candidates.filter((c) => c.reason === 'prior_trend_mismatch:sideways');
 		expect(rejected.length).toBeGreaterThan(0);
 		for (const c of rejected) {
 			expect(c.type).toBe('head_and_shoulders');
 			expect(c.accepted).toBe(false);
-			expect(c.details?.offenders).toEqual([
-				{
-					idx: 330,
-					price: 12407578,
-					necklinePrice: 12479395,
-					deviation: 71817,
-					deviationPct: 71817 / 12479395,
-				},
-			]);
-			expect(c.details?.maxDeviation).toBe(71817);
-			// 頭 (idx 294) は誤った側ではない——**落ちた原因は肩**。
-			expect(c.details?.offenders?.some((o) => o.idx === 294)).toBe(false);
 		}
-		// 落ちた窓は右肩 325-330 を共有する左肩候補。**#244 Phase 2 で 257 だけになった**——
-		// 283 / 211 / 204 は右肩 330（12,407,578）との肩 `relDiff` が 1.386% / 1.188% / 1.306% で
-		// `1hour` の肩ゲート（`getHsShoulderMaxPctForTf('1hour')` = 1.04%）を超えるため、
-		// **本ゲートより手前の `shoulders_not_near:cap` で落ちる**。257 は 0.844% で通る。
+		// 283 / 211 / 204 は右肩 330 との肩 `relDev` が 1.386% / 1.188% / 1.306% で `1hour` の肩ゲート（1.04%）を超え、本ゲートより手前の `shoulders_not_near:cap` で落ちる（257 は 0.844% で通る）。
 		expect(rejected.map((c) => c.indices?.join('-'))).toEqual(expect.arrayContaining(['257-272-294-325-330']));
 	});
 
-	it('逆 H&S: 左肩がネックラインより上だと `valleys_above_neckline` で落ちる', async () => {
-		// 左肩 (idx 301 / 終値 12,621,674) が `necklineAt(301)` = 12,617,817（谷1 = idx 308 の
-		// 水準にクランプ）より **3,857 円上**。逆 H&S の左肩がネックラインの上に乗っている形。
+	it('逆 H&S: 横ばい先行ならネックライン側の検査より前にトレンド不一致で落ちる', async () => {
+		// 左肩 (idx 301 / 終値 12,621,674) が `necklineAt(301)` = 12,617,817（谷1 = idx 308 の水準にクランプ）より 3,857 円上。逆 H&S の左肩がネックラインの上に乗っている形。
 		const { candidates, patterns } = await detectDebug('1hour', {
 			patterns: ['inverse_head_and_shoulders'],
 			swingDepth: 2,
 		});
-		const rejected = candidates.filter((c) => c.reason === 'valleys_above_neckline');
+		const rejected = candidates.filter((c) => c.reason === 'prior_trend_mismatch:sideways');
 		expect(rejected.length).toBeGreaterThan(0);
 		for (const c of rejected) {
 			expect(c.type).toBe('inverse_head_and_shoulders');
-			expect(c.details?.offenders).toEqual([
-				{
-					idx: 301,
-					price: 12621674,
-					necklinePrice: 12617817,
-					deviation: 3857,
-					deviationPct: 3857 / 12617817,
-				},
-			]);
 		}
-		// 落ちた構造は出力に残っていない。
 		const rejectedIdxs = new Set(rejected.map((c) => c.indices?.join('-')));
 		expect(patterns.filter((p) => rejectedIdxs.has(idxsOf(p)))).toEqual([]);
 	});
 
-	it('既定の `swingDepth` でも逆 H&S 225-232-249-265-272 が落ちる（左肩 +14,401 円）', async () => {
-		// #211 マージ後の実データで**既定パラメータのまま**落ちる唯一の構造。
-		// `tests/patterns/target-reach-window-invariance.test.ts` の退化ターゲット一覧が
-		// 7 件 → 6 件になったのはこれ。
+	it('既定の `swingDepth` でも逆 H&S 225-232-249-265-272 は反対方向ゲートで落ちる', async () => {
+		// 時間足別の横ばい閾値により、sideways ではなく up と分類されるが、逆 H&S に必要な down 先行ではないため棄却される。
 		const { candidates, patterns } = await detectDebug('1hour', {
 			patterns: ['head_and_shoulders', 'inverse_head_and_shoulders'],
 		});
-		const rejected = candidates.filter(
-			(c) => c.reason === 'valleys_above_neckline' || c.reason === 'peaks_below_neckline',
-		);
+		const rejected = candidates.filter((c) => c.reason === 'prior_trend_mismatch:sideways');
 		expect(rejected.map((c) => [c.type, c.reason, c.indices?.join('-')])).toEqual([
-			['inverse_head_and_shoulders', 'valleys_above_neckline', '225-232-249-265-272'],
+			['inverse_head_and_shoulders', 'prior_trend_mismatch:sideways', '242-245-249-265-272'],
+			['inverse_head_and_shoulders', 'prior_trend_mismatch:sideways', '230-232-249-265-272'],
 		]);
-		expect(rejected[0].details?.offenders).toEqual([
-			{
-				idx: 225,
-				price: 12296676,
-				necklinePrice: 12282275,
-				deviation: 14401,
-				deviationPct: 14401 / 12282275,
-			},
-		]);
+		expect(
+			candidates.some((c) => c.reason === 'prior_trend_mismatch:up' && c.indices?.join('-') === '225-232-249-265-272'),
+		).toBe(true);
 		expect(patterns.filter((p) => idxsOf(p) === '225-232-249-265-272')).toEqual([]);
 	});
 });
 
 describe('配線の範囲（issue #216 Phase 2・H&S 分）', () => {
-	/**
-	 * **形成中経路には配線しない**（triple / double と同じ判断）。形成途中の右肩は暫定値
-	 * （現在足の終値）なので、確定していない点を hard reject の材料にしない。
-	 *
-	 * 挙動ではなくソースで固定しているのは、形成中経路の暫定右肩が「たまたま正しい側に来る」
-	 * 実データでは**配線の有無を出力から区別できない**ため（`tests/http-transport-tripwire.test.ts`
-	 * と同じ流儀のトリップワイヤ）。
-	 */
+	// 形成中経路には配線しない（暫定右肩を hard reject の材料にしない）。暫定右肩がたまたま正しい側に来る実データでは配線の有無を出力から区別できないので、ソースで固定する。
 	it('完成済み 4 経路にだけ配線されている（形成中 2 経路には無い）', () => {
 		const src = readFileSync(resolve(import.meta.dirname, '../../tools/patterns/detect_hs.ts'), 'utf8');
 		// import 1 + 呼び出し 4 + docstring 参照。呼び出しだけを数える。

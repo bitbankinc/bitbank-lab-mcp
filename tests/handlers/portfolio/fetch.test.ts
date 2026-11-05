@@ -1,12 +1,3 @@
-/**
- * portfolio/fetch のページネーションロジックのユニットテスト。
- *
- * 検証対象:
- *   - ページ境界の同一タイムスタンプレコードの取りこぼし防止（trade_id / uuid 重複排除）
- *   - 進捗ゼロ検出による無限ループ防止
- *   - 通常ケース（境界重複なし）のリグレッション防止
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../../../lib/datetime.js';
 import { fail, ok } from '../../../lib/result.js';
@@ -14,6 +5,7 @@ import { paginateMarginTrades, paginateTrades } from '../../../src/handlers/port
 import type { FlowValuationTarget } from '../../../src/handlers/portfolio/types.js';
 import type { GetCandlesData, GetCandlesMeta } from '../../../src/schemas.js';
 import getCandles from '../../../tools/get_candles.js';
+import { jstMs } from '../../helpers/time.js';
 
 vi.mock('../../../tools/get_candles.js', () => ({
 	default: vi.fn(),
@@ -33,7 +25,6 @@ afterEach(() => {
 	delete process.env.BITBANK_API_SECRET;
 });
 
-/** 順次レスポンスを返す fetcher（呼び出し回数と URL を記録する） */
 function makeSequentialFetcher(responses: unknown[]) {
 	const calls: string[] = [];
 	let index = 0;
@@ -104,16 +95,8 @@ function makeWithdrawal(overrides: { uuid: string; requested_at: number; asset?:
 	};
 }
 
-// ── get_candles モックの共通ビルダ ──
-//
-// `getCandles` の戻り値は `OkResult<GetCandlesData, GetCandlesMeta> | FailResult`。
-// モックを手書きすると `data.raw` / `meta.fetchedAt` / `meta.errorType` が欠けた
-// 「実装が絶対に返さない形」で被テストコードを叩くことになり、`fetchFlowDatePrices` の
-// `isTransientFailure`（`res.meta.errorType` を読む）のような分岐が入った瞬間に
-// 偽グリーンになる。ここでは本番と同じ `lib/result.ts` の `ok()` / `fail()` を通し、
-// 形のズレを typecheck で検出できる状態に保つ。
+// get_candles モックを手書きすると `data.raw` / `meta.fetchedAt` / `meta.errorType` が欠けた「実装が絶対に返さない形」で叩くことになり、`isTransientFailure` のような分岐が入った瞬間に偽グリーンになるので、本番と同じ `lib/result.ts` の `ok()` / `fail()` を通して形のズレを typecheck で検出する。
 
-/** `GetCandlesData['normalized']` の 1 要素（1day 足 1 本） */
 type NormalizedCandle = GetCandlesData['normalized'][number];
 
 /** get_candles の成功レスポンス。`raw` はテストで参照しないので null を入れる */
@@ -125,23 +108,14 @@ function candlesOk(normalized: NormalizedCandle[]) {
 	);
 }
 
-/**
- * get_candles の失敗レスポンス。
- *
- * `errorType` の既定は `upstream`（HTTP エラー・レート制限）＝ **再実行で解消しうる失敗**で、
- * `fetchFlowDatePrices` はリトライし `chunkFetchFailed` に計上する。
- * `user`（その年に足が無い）はリトライも計上もされない別経路なので、明示的に渡す。
- */
+/** `errorType` の既定 `upstream` は再実行で解消しうる失敗で、`fetchFlowDatePrices` はリトライして `chunkFetchFailed` に計上する。`user`（その年に足が無い）はリトライも計上もされない別経路なので明示的に渡す。 */
 function candlesFail(errorType = 'upstream') {
 	return fail(`get_candles failed (${errorType})`, errorType);
 }
 
 describe('paginateTrades — ページネーション境界', () => {
 	it('ページ境界に同一 executed_at のレコードが跨っていても全件取得できる', async () => {
-		// バグ回帰防止: 旧実装は executed_at + 1 を次ページ since にしていたため、
-		// ページ末尾と次ページ先頭に同じ executed_at が存在すると取りこぼしていた。
-		// page1 末尾 3 件（id 998-1000）と page2 先頭 2 件（id 998, 1000）が同一 ts。
-		// page2 には id 1001-1003 の新規レコードも同一 ts で存在し、旧実装ではスキップされていた。
+		// executed_at + 1 を次ページ since にすると、ページ末尾と次ページ先頭に同じ executed_at があるとき取りこぼす。page1 末尾 3 件（id 998-1000）と page2 先頭 2 件（id 998, 1000）が同一 ts で、page2 には同一 ts の新規 id 1001-1003 もある。
 		const tBoundary = 1710000999000;
 		const page1 = Array.from({ length: 1000 }, (_, i) =>
 			makeTrade({
@@ -205,9 +179,7 @@ describe('paginateTrades — ページネーション境界', () => {
 	});
 
 	it('全件同一 executed_at で進捗ゼロのとき truncated=true で打ち切る（無限ループ防止）', async () => {
-		// 同一 ts が PAGE_SIZE 件以上連続するエッジケース。新実装は since=lastTs にしているため、
-		// 次ページが同じ範囲を返し続けて進捗ゼロになると無限ループする可能性がある。
-		// 進捗ゼロ検出により truncated=true で打ち切られることを検証。
+		// 同一 ts が PAGE_SIZE 件以上連続すると since=lastTs では次ページが同じ範囲を返し続けて無限ループしうるので、進捗ゼロ検出で truncated=true に打ち切られることを見る。
 		const sameTs = 1710000000000;
 		const page1 = Array.from({ length: 1000 }, (_, i) => makeTrade({ trade_id: i + 1, executed_at: sameTs }));
 		// 次ページ以降も全く同じレコードを返す（API が since=sameTs で同じ範囲を返却する想定）
@@ -254,10 +226,7 @@ describe('paginateTrades — ページネーション境界', () => {
 	});
 
 	it('境界 dedup あり × MAX_PAGES 到達: all.length が PAGE_SIZE の倍数にならなくても truncated=true', async () => {
-		// 各ページは満杯（1000 件）だが、ページ境界で 1 件ずつ trade_id が重複する。
-		// 10 ページ全消費 → 1000 + 999*9 = 9991 件。9991 % 1000 !== 0 なので、
-		// 旧実装は誤って truncated=false を返していた（バグ）。
-		// 修正後は MAX_PAGES 到達で fall-through → truncated=true。
+		// 各ページは満杯（1000 件）だがページ境界で 1 件ずつ trade_id が重複するので、10 ページ全消費で 1000 + 999*9 = 9991 件（9991 % 1000 !== 0）。件数の剰余で truncated を判定すると false になるが、MAX_PAGES 到達で fall-through して truncated=true になる。
 		const PAGE_SIZE = 1000;
 		const MAX_PAGES = 10;
 		const pages: ReturnType<typeof makeTrade>[][] = [];
@@ -287,8 +256,7 @@ describe('paginateTrades — ページネーション境界', () => {
 
 		const result = await paginateTrades(client);
 		expect(result.trades).toHaveLength(9991);
-		// 旧バグ条件: all.length % PAGE_SIZE === 0 で truncated を判定していた。
-		// 9991 % 1000 = 991 のためズレるという前提を明示。
+		// 前提: 件数が PAGE_SIZE の倍数ではない（9991 % 1000 = 991）
 		expect(result.trades.length % PAGE_SIZE).not.toBe(0);
 		expect(result.truncated).toBe(true);
 		expect(calls.length).toBe(MAX_PAGES);
@@ -297,8 +265,7 @@ describe('paginateTrades — ページネーション境界', () => {
 	});
 
 	it('API エラーで break するケース: truncated=true で返す', async () => {
-		// page1 成功（満杯）→ page2 で HTTP 400 + auth エラー → tryGet が ok:false → break → fall-through。
-		// auth エラー（20001）はクライアントが即座に PrivateApiError を投げる（リトライ無し）。
+		// page1 成功（満杯）→ page2 で HTTP 400 + auth エラー（20001。クライアントがリトライ無しで PrivateApiError を投げる）→ tryGet が ok:false → break → fall-through。
 		const page1 = Array.from({ length: 1000 }, (_, i) =>
 			makeTrade({ trade_id: i + 1, executed_at: 1710000000000 + i * 1000 }),
 		);
@@ -320,8 +287,7 @@ describe('paginateTrades — ページネーション境界', () => {
 	});
 
 	it('lastTs 欠損で break するケース: truncated=true で返す', async () => {
-		// 満杯バッチ（1000 件）だが最後のレコードの executed_at が undefined のとき、
-		// !lastTs により break → fall-through → truncated=true。
+		// 満杯バッチ（1000 件）だが最後のレコードの executed_at が undefined のとき、!lastTs により break → fall-through → truncated=true。
 		const head = Array.from({ length: 999 }, (_, i) =>
 			makeTrade({ trade_id: i + 1, executed_at: 1710000000000 + i * 1000 }),
 		);
@@ -350,10 +316,7 @@ describe('paginateTrades — ページネーション境界', () => {
 	});
 
 	it('信用約定 (position_side 付き) が混入したレスポンスから現物のみが返る', async () => {
-		// 公式 docs は position_side を「信用取引の時のみ」と明記しているが、API 挙動変更や
-		// 信用約定の混入に備え、現物経路でも position_side == null で防御フィルタする。
-		// paginateMarginTrades の position_side != null と対称化することで、calcPnl と
-		// calcMarginPnl の二重計上を防ぐ。
+		// 公式 docs は position_side を「信用取引の時のみ」と明記しているが、API 挙動変更や信用約定の混入に備えて現物経路でも position_side == null で防御フィルタし、paginateMarginTrades の position_side != null と対称にして calcPnl と calcMarginPnl の二重計上を防ぐ。
 		const mixed = [
 			makeTrade({ trade_id: 1, executed_at: 1710000000000 }),
 			// 信用約定（position_side='long'）。フィルタで除外されるべき
@@ -397,7 +360,6 @@ describe('paginateTrades — ページネーション境界', () => {
 		expect(result.trades).toHaveLength(2);
 		const ids = result.trades.map((t) => t.trade_id);
 		expect(ids).toEqual([1, 4]);
-		// 全レコードが position_side を持たないことを保証（calcPnl への流入を遮断）
 		for (const t of result.trades) {
 			expect(t.position_side).toBeUndefined();
 		}
@@ -430,9 +392,7 @@ describe('paginateTrades — ページネーション境界', () => {
 	});
 
 	it('満杯バッチが全て信用約定でも lastTs が前進していれば次ページを取得し現物約定を拾う', async () => {
-		// 古い順 (asc) 取得で「初期は信用利用 → 途中から現物のみ」の口座を想定。
-		// 1 ページ目が全て信用でも、後続ページに現物約定があれば取得できなければならない
-		// （フィルタ後の件数のみで早期打ち切りすると取りこぼす）。
+		// 古い順 (asc) 取得で「初期は信用利用 → 途中から現物のみ」の口座を想定する。1 ページ目が全て信用でも後続ページの現物約定を取得できなければならない（フィルタ後の件数だけで早期打ち切りすると取りこぼす）。
 		const marginPage = Array.from({ length: 1000 }, (_, i) => ({
 			trade_id: 200 + i,
 			pair: 'btc_jpy',
@@ -464,7 +424,6 @@ describe('paginateTrades — ページネーション境界', () => {
 		expect(result.truncated).toBe(false);
 		// 2 ページ取得（早期打ち切りしていない）
 		expect(calls.length).toBe(2);
-		// 2 回目の URL に since=（page1 の lastTs）が含まれる
 		const lastTsPage1 = 1710000000000 + 999 * 1000;
 		expect(calls[1]).toContain(`since=${lastTsPage1}`);
 	});
@@ -501,7 +460,6 @@ describe('paginateMarginTrades — ページネーション境界', () => {
 		expect(ids).toContain(1002);
 		expect(new Set(ids).size).toBe(ids.length);
 		expect(result.truncated).toBe(false);
-		// 2 回目の URL に type=margin と since=tBoundary が含まれる
 		expect(calls[1]).toContain('type=margin');
 		expect(calls[1]).toContain(`since=${tBoundary}`);
 	});
@@ -576,7 +534,7 @@ describe('paginateMarginTrades — ページネーション境界', () => {
 		const result = await paginateMarginTrades(client);
 		expect(result.trades).toHaveLength(1000);
 		expect(result.truncated).toBe(true);
-		// API エラーで break したパスを区別するフラグ（PR #2: 不完全性伝播）
+		// API エラーで break したパスを区別するフラグ
 		expect(result.fetchFailed).toBe(true);
 		expect(callIndex).toBe(2);
 	});
@@ -613,8 +571,7 @@ describe('paginateMarginTrades — ページネーション境界', () => {
 	});
 
 	it('現物 (position_side 欠損) と信用が混在するレスポンスでも信用のみが返る', async () => {
-		// 公式 docs に type=margin パラメータの記載がなく、API が無視した場合の防御。
-		// position_side == null の現物約定が混入しても、フィルタで信用のみが残る。
+		// 公式 docs に type=margin パラメータの記載がなく、API が無視した場合の防御。position_side == null の現物約定が混入しても、フィルタで信用のみが残る。
 		const mixed = [
 			makeMarginTrade({ trade_id: 1, executed_at: 1710000000000, profit_loss: '100' }),
 			// 現物約定（position_side なし）。フィルタで除外されるべき
@@ -640,7 +597,6 @@ describe('paginateMarginTrades — ページネーション境界', () => {
 		expect(result.trades).toHaveLength(2);
 		const ids = result.trades.map((t) => t.trade_id);
 		expect(ids).toEqual([1, 3]);
-		// 全レコードに position_side が付いていることを保証
 		for (const t of result.trades) {
 			expect(t.position_side).toBeDefined();
 		}
@@ -666,14 +622,11 @@ describe('paginateMarginTrades — ページネーション境界', () => {
 
 		const result = await paginateMarginTrades(client);
 		expect(result.trades).toHaveLength(0);
-		// batch.length (5) < TRADE_PAGE_SIZE (1000) で通常完了扱い
 		expect(result.truncated).toBe(false);
 	});
 
 	it('満杯バッチが全て現物でも lastTs が前進していれば次ページを取得し信用約定を拾う', async () => {
-		// 古い順 (asc) 取得で「初期は現物のみ → 途中から信用利用開始」の口座を想定。
-		// 1 ページ目が全て現物でも、後続ページに信用約定があれば取得できなければならない
-		// （marginOnly 件数のみで早期打ち切りすると取りこぼす）。
+		// 古い順 (asc) 取得で「初期は現物のみ → 途中から信用利用開始」の口座を想定する。1 ページ目が全て現物でも後続ページの信用約定を取得できなければならない（marginOnly 件数だけで早期打ち切りすると取りこぼす）。
 		const spotPage = Array.from({ length: 1000 }, (_, i) => ({
 			trade_id: 200 + i,
 			pair: 'btc_jpy',
@@ -702,16 +655,13 @@ describe('paginateMarginTrades — ページネーション境界', () => {
 		const ids = result.trades.map((t) => t.trade_id);
 		expect(ids).toEqual([9001, 9002]);
 		expect(result.truncated).toBe(false);
-		// 2 ページ取得（早期打ち切りしていない）
 		expect(calls.length).toBe(2);
-		// 2 回目の URL に since=（page1 の lastTs）が含まれる
 		const lastTsPage1 = 1710000000000 + 999 * 1000;
 		expect(calls[1]).toContain(`since=${lastTsPage1}`);
 	});
 
 	it('満杯ページで lastTs が前回 since と同一のとき truncated=true で打ち切る（カーソル進捗ゼロ保険）', async () => {
-		// 全件現物・全件同一 ts が連続するエッジケース。API が since=sameTs で同じ範囲を
-		// 返し続けたとき、カーソルが進まないことを検出して無限ループを防ぐ。
+		// 全件現物・全件同一 ts が連続するエッジケース。API が since=sameTs で同じ範囲を返し続けたとき、カーソルが進まないことを検出して無限ループを防ぐ。
 		const sameTs = 1710000000000;
 		const spotPageSameTs = Array.from({ length: 1000 }, (_, i) => ({
 			trade_id: 300 + i,
@@ -741,9 +691,7 @@ describe('paginateMarginTrades — ページネーション境界', () => {
 });
 
 describe('paginateDeposits / paginateWithdrawals — ページネーション境界', () => {
-	// paginateDeposits / paginateWithdrawals は非エクスポート関数だが、fetchDepositWithdrawal
-	// 経由で間接的に検証する。
-	// 入出金履歴 API の count 上限は公式 docs で 100 件と定義されているため、ページサイズは 100。
+	// paginateDeposits / paginateWithdrawals は非エクスポートなので fetchDepositWithdrawal 経由で検証する。入出金履歴 API の count 上限は公式 docs で 100 件なので、ページサイズは 100。
 	it('入金: count パラメータが 100（公式上限）で送信される', async () => {
 		const { fetchDepositWithdrawal } = await import('../../../src/handlers/portfolio/fetch.js');
 		const fetcher = vi.fn(async (url: string) => {
@@ -965,8 +913,7 @@ describe('paginateDeposits / paginateWithdrawals — ページネーション境
 	});
 
 	it('JPY/crypto 間で同一 uuid の入金は重複排除される（fetchDepositWithdrawal レベルの dedup を維持）', async () => {
-		// fetchDepositWithdrawal は JPY と crypto を別チャネルで取得して結合するため、
-		// 万一同一 uuid が両方に現れる場合の dedup が必要（既存仕様の維持を検証）。
+		// fetchDepositWithdrawal は JPY と crypto を別チャネルで取得して結合するので、万一同一 uuid が両方に現れる場合の dedup が要る。
 		const { fetchDepositWithdrawal } = await import('../../../src/handlers/portfolio/fetch.js');
 		const sharedDeposit = makeDeposit({ uuid: 'dup-1', confirmed_at: 1710000000000, asset: 'jpy' });
 
@@ -980,7 +927,6 @@ describe('paginateDeposits / paginateWithdrawals — ページネーション境
 
 		const result = await fetchDepositWithdrawal(client);
 		if (!result) throw new Error('fetchDepositWithdrawal returned null');
-		// crypto / jpy 両チャネルで同じ uuid が返っても 1 件に集約される
 		expect(result.deposits).toHaveLength(1);
 		expect(result.deposits[0].uuid).toBe('dup-1');
 	});
@@ -1011,8 +957,7 @@ describe('fetchCandlePriceData', () => {
 		const { fetchCandlePriceData } = await import('../../../src/handlers/portfolio/fetch.js');
 		const result = await fetchCandlePriceData(['btc_jpy'], yearStartMs, monthStartMs, dayStartMs);
 
-		// date は渡さない（getCandles の future-check が当日 anchor を未来として弾くため）。
-		// getCandles 内部 default の todayYyyymmdd() + anchorActive=false に委ねる。
+		// date は渡さない（getCandles の future-check が当日 anchor を未来として弾くので、getCandles 内部 default の todayYyyymmdd() + anchorActive=false に委ねる）。
 		expect(mockedGetCandles).toHaveBeenCalledWith('btc_jpy', '1day', undefined, 400, 'Asia/Tokyo');
 
 		const boundary = result.boundaryPrices.get('btc');
@@ -1041,15 +986,9 @@ describe('fetchCandlePriceData', () => {
 		expect(result.dailyPrices.size).toBe(0);
 	});
 
-	/**
-	 * 日次価格マップのキーは JST 暦日の 0:00。当日損益の起点（getJstPeriodBoundaries の
-	 * dayStartMs）と同じ暦日境界でなければ、資産推移の日次点がこのマップを引けず
-	 * 全点が現在価格フォールバックに落ちる（src/handlers/portfolio/calendar.ts 参照）。
-	 */
+	/** 日次価格マップのキーは JST 暦日の 0:00。当日損益の起点（getJstPeriodBoundaries の dayStartMs）と同じ暦日境界でなければ、資産推移の日次点がこのマップを引けず全点が現在価格フォールバックに落ちる。 */
 	it('JST 0:00 前後の足を JST 暦日キーに正規化する（UTC 暦日ではない）', async () => {
 		/** JST の壁時計時刻を epoch ms に変換する（JST は DST を持たないので UTC+9 固定）。 */
-		const jstMs = (y: number, m: number, d: number, h = 0, min = 0, s = 0, ms = 0) =>
-			Date.UTC(y, m - 1, d, h - 9, min, s, ms);
 
 		const aug1 = jstMs(2026, 8, 1);
 		const aug2 = jstMs(2026, 8, 2);
@@ -1077,34 +1016,18 @@ describe('fetchCandlePriceData', () => {
 	});
 });
 
-/**
- * `fetchFlowDatePrices` — 入出庫日価格を解決するための年単位 chunk の追加取得（#57 (a)-2）。
- *
- * 直近 400 日窓（`fetchCandlePriceData`）で解ける入出庫は追加取得しない、
- * 解けない分だけ (資産, 年) 単位で取りに行く、それでも取れなければ何もしない（現在価格
- * フォールバックは呼び出し側 `resolveFlowPrice` の担当）——の 3 経路を固定する。
- *
- * 加えて #76 の回帰: 入庫（取得原価に算入される）と出庫（表示専用）は chunk 予算を共有しない。
- * 共有していた頃は出庫が増えるだけで入庫が押し出され、取得原価と実現損益が実行ごとに変わった。
- */
+// 直近 400 日窓（`fetchCandlePriceData`）で解ける入出庫は追加取得せず、解けない分だけ (資産, 年) 単位で取りに行き、それでも取れなければ何もしない（現在価格フォールバックは `resolveFlowPrice` の担当）。入庫（取得原価に算入）と出庫（表示専用）は chunk 予算を共有しない（#76）。
 describe('fetchFlowDatePrices', () => {
 	const mockedGetCandles = vi.mocked(getCandles);
 
-	/** JST の壁時計時刻を epoch ms に変換する（JST は DST を持たないので UTC+9 固定）。 */
-	const jstMs = (y: number, m: number, d: number, h = 0) => Date.UTC(y, m - 1, d, h - 9);
-
-	/** 入庫の価格解決対象 1 件 */
 	const deposit = (asset: string, atMs: number): FlowValuationTarget => ({ asset, atMs, kind: 'deposit' });
-	/** 出庫の価格解決対象 1 件 */
 	const withdrawal = (asset: string, atMs: number): FlowValuationTarget => ({ asset, atMs, kind: 'withdrawal' });
 
-	/** 実際に叩いた (pair, year) の組を昇順で返す */
 	const requestedChunks = () => mockedGetCandles.mock.calls.map((c) => `${c[0]}:${c[2]}`).sort();
 
-	/** 取りこぼしゼロの申告（資産別内訳も空）。`toEqual` で完全一致を見るため毎回新しい Map を返す */
+	/** `toEqual` で完全一致を見るので毎回新しい Map を返す */
 	const noShortfall = () => ({ deposits: 0, withdrawals: 0, depositsByAsset: new Map() });
 
-	/** 指定 JST 暦日の 1day 足 1 本だけを返す get_candles レスポンス */
 	function candleAt(dayMs: number, open: number) {
 		return candlesOk([{ open, high: open, low: open, close: open, volume: 1, timestamp: dayMs }]);
 	}
@@ -1207,7 +1130,6 @@ describe('fetchFlowDatePrices', () => {
 		expect(result.dailyPrices.get('btc')?.get(jstMs(2023, 4, 20))).toBe(4_000_000);
 		expect(base.get('btc')?.size).toBe(1);
 		expect(base.get('btc')?.has(jstMs(2023, 4, 20))).toBe(false);
-		// 直近窓の値は上書きされない
 		expect(result.dailyPrices.get('btc')?.get(recentDayMs)).toBe(1_000_000);
 	});
 
@@ -1233,12 +1155,7 @@ describe('fetchFlowDatePrices', () => {
 		expect(result.chunkFetchFailed).toEqual(noShortfall());
 	});
 
-	/**
-	 * #76 の回帰の核。入庫と出庫が同じ chunk 予算を奪い合っていた頃は、
-	 * 出庫が増えるだけで入庫の年 chunk が押し出され、押し出された入庫は
-	 * `deposit_date_price` で解けず `collectDepositCostEvents` が原価から丸ごと落とした。
-	 * ＝ 売買が一切無くても実行タイミングで移動平均の取得原価と過去の実現損益が変わった。
-	 */
+	/** 入庫と出庫が同じ chunk 予算を奪い合うと、出庫が増えるだけで入庫の年 chunk が押し出されて `collectDepositCostEvents` が原価から落とし、売買が無くても実行タイミングで取得原価と過去の実現損益が変わる（#76）。 */
 	describe('入庫と出庫の chunk 予算の分離（#76）', () => {
 		/** 出庫の上限をゆうに超える件数の出庫（すべて入庫と違う年・違う資産） */
 		const manyWithdrawals = (count: number) =>
@@ -1337,10 +1254,7 @@ describe('fetchFlowDatePrices', () => {
 		});
 	});
 
-	/**
-	 * 「上限で取りに行かなかった」と「取りに行ったが取れなかった」は
-	 * どちらも `current_price_fallback_count` に混ざるので、そこからは再実行で直るのか読めない（#76 仕様 2）。
-	 */
+	/** 「上限で取りに行かなかった」と「取りに行ったが取れなかった」はどちらも `current_price_fallback_count` に混ざり、そこからは再実行で直るのか読めない（#76 仕様 2）。 */
 	describe('取れなかった理由の申告', () => {
 		it('取得失敗は truncated ではなく chunkFetchFailed に、入庫・出庫別で数える', async () => {
 			mockedGetCandles.mockResolvedValue(candlesFail());
@@ -1377,12 +1291,7 @@ describe('fetchFlowDatePrices', () => {
 			expect(result.chunkFetchFailed.deposits).toBe(1);
 		});
 
-		/**
-		 * `get_candles` はその (資産, 年) に足が無いとき `errorType='user'` で失敗する
-		 * （`No candle data returned` / `before bitbank service start` / HTTP 404）。
-		 * 再実行しても結果が変わらないので取得失敗に数えない——数えると #80 の抑止に載り、
-		 * 恒久的に価格を解決できない入庫のせいで当該銘柄の原価が永久に出せなくなる。
-		 */
+		/** `get_candles` はその (資産, 年) に足が無いとき `errorType='user'` で失敗し、再実行しても結果が変わらないので取得失敗に数えない（数えると #80 の抑止に載り、恒久的に価格を解決できない入庫のせいで当該銘柄の原価が永久に出せなくなる）。 */
 		it('その年に足が無い失敗（errorType=user）は取得失敗に数えない', async () => {
 			mockedGetCandles.mockResolvedValue(candlesFail('user'));
 
@@ -1416,17 +1325,8 @@ describe('fetchFlowDatePrices', () => {
 		});
 	});
 
-	/**
-	 * 年 chunk 取得の一過性の失敗をリトライで吸収する（#81）。
-	 *
-	 * リトライが無かった頃は、同じ口座を同じ日に叩いても解決できた入庫の件数が実行ごとに変わり
-	 * （実測で 3 件 → 1 件）、`collectDepositCostEvents` が原価に算入する入庫が変わって
-	 * 移動平均の取得原価——ひいては**過去の売却の実現損益**まで動いた。
-	 *
-	 * 固定する不変条件は 2 つ:
-	 *   - `chunkFetchFailed` に載るのはリトライを使い切った失敗だけ（＝一過性の失敗は載らない）
-	 *   - 恒久的な失敗（`errorType='user'`）と成功では 1 回も余分に叩かない
-	 */
+	// 年 chunk 取得の一過性の失敗をリトライで吸収しないと、解決できた入庫の件数が実行ごとに変わり、移動平均の取得原価と過去の売却の実現損益まで動く（#81）。
+	// 固定する不変条件は、`chunkFetchFailed` に載るのはリトライを使い切った失敗だけであることと、恒久的な失敗（`errorType='user'`）と成功では 1 回も余分に叩かないこと。
 	describe('年 chunk 取得のリトライ（#81）', () => {
 		const oldDayMs = jstMs(2023, 4, 20);
 		const oldDeposit = () => [deposit('btc', jstMs(2023, 4, 20, 12))];
@@ -1478,11 +1378,7 @@ describe('fetchFlowDatePrices', () => {
 			expect(mockedGetCandles).toHaveBeenCalledTimes(1);
 		});
 
-		/**
-		 * `errorType='user'` は「その年に足がそもそも無い」の表明で、何度叩いても同じ結果になる。
-		 * ここをリトライすると上場前の入庫 1 件につき無駄なリクエストが 3 倍になり、
-		 * レート制限を自分で誘発して**他の chunk の成功率を下げる**。
-		 */
+		/** `errorType='user'` は「その年に足がそもそも無い」の表明で何度叩いても同じなので、リトライすると上場前の入庫 1 件につき無駄なリクエストが 3 倍になり、レート制限を自分で誘発して他の chunk の成功率を下げる。 */
 		it('その年に足が無い失敗（errorType=user）はリトライしない', async () => {
 			mockedGetCandles.mockResolvedValue(candlesFail('user'));
 

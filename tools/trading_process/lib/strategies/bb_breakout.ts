@@ -1,25 +1,13 @@
-/**
- * strategies/bb_breakout.ts - ボリンジャーバンドブレイクアウト戦略
- *
- * エントリー: 価格が下部バンド（-stddev σ）を下回った後、中央線（SMA）を上抜け
- * エグジット: 価格が上部バンド（+stddev σ）に到達
- */
-
 import { bollingerBands } from '../../../../lib/indicators.js';
+import { roundPriceAtLevel } from '../../../../lib/price.js';
 import type { Candle } from '../../types.js';
 import type { Overlay, ParamValidationResult, Signal, Strategy } from './types.js';
 
-/**
- * BB戦略のデフォルトパラメータ
- */
 const DEFAULT_PARAMS = {
 	period: 20,
 	stddev: 2,
 };
 
-/**
- * パラメータのバリデーション
- */
 export function validateParams(params: Record<string, number>): ParamValidationResult {
 	const errors: string[] = [];
 	const normalized = { ...DEFAULT_PARAMS, ...params };
@@ -38,14 +26,7 @@ export function validateParams(params: Record<string, number>): ParamValidationR
 	};
 }
 
-/**
- * ボリンジャーバンドブレイクアウト戦略
- */
-/**
- * BB Breakout の必要バー数を計算。
- *   - BB(period) は index >= period - 1 で有効。prev/curr 比較で i >= period
- *   - 余裕を持たせて period + 5 をデフォルト要求とする。
- */
+// 余裕を持たせて period + 5 を要求する（prev / curr 比較で i >= period が要る）。
 function computeRequiredBarsImpl(params: Record<string, number>): number {
 	const p = { ...DEFAULT_PARAMS, ...params };
 	return p.period + 5;
@@ -67,7 +48,6 @@ export const bbBreakoutStrategy: Strategy = {
 		const signals: Signal[] = [];
 		const startIdx = period + 1;
 
-		// 下部バンドを下回ったかどうかを追跡
 		let belowLowerBand = false;
 
 		for (let i = 0; i < candles.length; i++) {
@@ -95,17 +75,15 @@ export const bbBreakoutStrategy: Strategy = {
 				continue;
 			}
 
-			// 下部バンドを下回ったら追跡開始
 			if (prevClose <= prevLow) {
 				belowLowerBand = true;
 			}
 
-			// エントリー: 下部バンドを下回った後、中央線を上抜け
 			if (belowLowerBand && prevClose <= prevMid && close > mid) {
 				signals.push({
 					time: candles[i].time,
 					action: 'buy',
-					reason: `BB Breakout: Price crossed above middle band (${mid.toFixed(0)})`,
+					reason: `BB Breakout: Price crossed above middle band (${roundPriceAtLevel(mid)})`,
 				});
 				belowLowerBand = false; // リセット
 			}
@@ -114,7 +92,7 @@ export const bbBreakoutStrategy: Strategy = {
 				signals.push({
 					time: candles[i].time,
 					action: 'sell',
-					reason: `BB Upper Band reached: ${up.toFixed(0)}`,
+					reason: `BB Upper Band reached: ${roundPriceAtLevel(up)}`,
 				});
 				belowLowerBand = false; // リセット
 			}

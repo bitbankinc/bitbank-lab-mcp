@@ -1,19 +1,4 @@
-/**
- * tests/patterns/mutual-exclusion.test.ts
- *
- * triple × H&S の型間排他（issue #218 Phase 2）の契約テスト。
- *
- * 検証する不変条件:
- *   1. 主構成点を 2 点以上共有する `triple_*` だけが落ちる（H&S 側は 1 件も落とさない）
- *   2. 共有 1 点以下では落とさない
- *   3. 主構成点は type ごとに定義が違う（triple は 3 点すべて / H&S は左肩・頭・右肩）。
- *      **形成中の経路は配列長が違う**ので位置決め打ちでは壊れる
- *   4. スコープ外（`double_*` / triangle 等）は素通し
- *   5. 落とした理由に「どの H&S と何点共有したか」が残る（決定性）
- *
- * エッジケースの優先順位（`.claude/rules/testing.md`）: 空配列 → 欠損 → 重複 → 単一要素 → 境界。
- * ここでの境界は**共有点数 1 / 2**（規則そのものの境界で、調整可能な閾値ではない）。
- */
+// 境界は共有点数 1 / 2（規則そのものの境界で、調整可能な閾値ではない）。
 import { describe, expect, it } from 'vitest';
 import {
 	excludeTriplesSharingHsMainPoints,
@@ -25,7 +10,6 @@ import type { DeduplicablePattern } from '../../tools/patterns/types.js';
 
 const pivot = (idx: number, kind: Pivot['kind']): Pivot => ({ idx, price: 100 + idx, kind, extremePrice: 100 + idx });
 
-/** `triple_top` = 3 山 / `triple_bottom` = 3 谷。 */
 function triple(type: 'triple_top' | 'triple_bottom', idxs: number[]): DeduplicablePattern {
 	const kind: Pivot['kind'] = type === 'triple_top' ? 'H' : 'L';
 	return { type, confidence: 0.8, pivots: idxs.map((i) => pivot(i, kind)) };
@@ -49,8 +33,7 @@ describe('mainPointIdxs', () => {
 	});
 
 	it('形成中 H&S（4 点）でも主構成点 3 点を取れる — 位置決め打ちなら壊れるケース', () => {
-		// `detect_hs.ts` の `formingHsForHead` が返す形: 左肩 H / 頭 H / 戻り谷 L / 暫定右肩 H。
-		// `[0] [2] [4]` で取ると戻り谷（idx 30）と undefined を拾う。
+		// `detect_hs.ts` の `formingHsForHead` が返す形は左肩 H / 頭 H / 戻り谷 L / 暫定右肩 H なので、`[0] [2] [4]` で取ると戻り谷（idx 30）と undefined を拾う。
 		const forming: DeduplicablePattern = {
 			type: 'head_and_shoulders',
 			status: 'forming',
@@ -73,7 +56,7 @@ describe('mainPointIdxs', () => {
 	});
 
 	it('スコープ外の type / pivots 欠損 / 空配列は空を返す', () => {
-		// `double_*` は**意図的にスコープ外**（Phase 1 が測っていない。モジュール冒頭）。
+		// `double_*` は意図的にスコープ外（Phase 1 が測っていない）。
 		expect(mainPointIdxs({ type: 'double_bottom', pivots: [pivot(1, 'L'), pivot(2, 'H'), pivot(3, 'L')] })).toEqual([]);
 		expect(mainPointIdxs({ type: 'triangle_ascending', pivots: [pivot(1, 'H')] })).toEqual([]);
 		expect(mainPointIdxs({ type: 'triple_top' })).toEqual([]);
@@ -92,7 +75,7 @@ describe('excludeTriplesSharingHsMainPoints', () => {
 		const res = excludeTriplesSharingHsMainPoints(input);
 		expect(res.kept).toEqual(input);
 		expect(res.excluded).toHaveLength(0);
-		// `excluded` が空なのは「比較して該当なし」ではなく「比較対象が無い」——ここで区別する。
+		// `excluded` が空なのは「比較して該当なし」ではなく「比較対象が無い」ことを、ここで区別する。
 		expect(res.hsCandidateCount).toBe(0);
 	});
 
@@ -115,8 +98,7 @@ describe('excludeTriplesSharingHsMainPoints', () => {
 	});
 
 	it('主構成点を 2 点共有していたら triple を落とし、H&S は残す', () => {
-		// issue #218 の受け入れ条件と同じ形: triple 242-249-272 ↔ 逆 H&S 230-232-249-265-272
-		// （主構成点 230 / 249 / 272）で 249・272 の 2 点を共有する。
+		// issue #218 の受け入れ条件と同じ形: triple 242-249-272 ↔ 逆 H&S 230-232-249-265-272（主構成点 230 / 249 / 272）で 249・272 の 2 点を共有する。
 		const t = triple('triple_bottom', [242, 249, 272]);
 		const h = hs('inverse_head_and_shoulders', [230, 232, 249, 265, 272]);
 		const res = excludeTriplesSharingHsMainPoints([t, h]);
@@ -154,8 +136,7 @@ describe('excludeTriplesSharingHsMainPoints', () => {
 	});
 
 	it('ネックラインの定義点（H&S の [1] [3]）との一致は共有に数えない', () => {
-		// triple 200-220-240 と H&S 100-200-300-240-400。位置で数えると 200 と 240 の 2 点だが、
-		// **200 / 240 は H&S 側ではネックラインの定義点**なので主構成点の共有ではない。
+		// triple 200-220-240 と H&S 100-200-300-240-400。位置で数えると 200 と 240 の 2 点だが、200 / 240 は H&S 側ではネックラインの定義点なので主構成点の共有ではない。
 		const t = triple('triple_top', [200, 220, 240]);
 		const h = hs('head_and_shoulders', [100, 200, 300, 240, 400]);
 		const res = excludeTriplesSharingHsMainPoints([t, h]);
@@ -175,7 +156,6 @@ describe('excludeTriplesSharingHsMainPoints', () => {
 	});
 
 	it('スコープ外の type は素通しする（double / triangle / wedge）', () => {
-		// **`double_*` は H&S と主構成点を 2 点共有していても落とさない**（未計測。別 issue）。
 		const d: DeduplicablePattern = {
 			type: 'double_bottom',
 			pivots: [pivot(10, 'L'), pivot(15, 'H'), pivot(30, 'L')],

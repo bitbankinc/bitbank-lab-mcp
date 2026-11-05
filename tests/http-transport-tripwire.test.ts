@@ -1,33 +1,6 @@
-/**
- * stdio 以外のトランスポート追加を検知する仕掛け（ADR-0007「判断事項 B」の強制）。
- *
- * ADR-0007 は `confirmation_token` の session / principal 束縛を「今回は見送り、ただし
- * **HTTP トランスポート追加時の必須前提**」として記録している。しかし ADR の散文は CI で
- * 落ちないので、実装時に見落とされる。本テストはその 1 点だけを機械的に固定する。
- *
- * なぜ必須前提なのか:
- *   - `confirmation_token` の HMAC ペイロードは `action + params + expiresAt` だけで、
- *     **session も principal も含まない**（`src/private/confirmation.ts`）。
- *     署名鍵には per-process nonce が入っているが（2026-08-17 追加）、**それは session 束縛では
- *     ない**——HTTP では 1 プロセスに複数セッションが同居するため、同一プロセス内であれば
- *     誰が提示しても検証を通る。プロセス境界が閉じたことと session 境界は別問題。
- *   - UI スナップショットのキーは `sessionId ?? ''`（`src/ui-snapshot-cache.ts`）、
- *     MRTR の bind も同じく `?? ''`（`src/private/request-state.ts`）で、
- *     **未設定の sessionId と空文字が同一キーに畳まれる**。
- *   - stdio は 1 接続なので今日は越境先が無く、束縛を足しても no-op。だが HTTP を足した
- *     瞬間、クライアント A の preview で発行したトークンをクライアント B が execute に
- *     使えるようになる（トークンは `_meta` 経由で iframe に渡っており、ゲートは
- *     リクエスト単位で判定されるため）。
- *
- * これは**厳密な証明ではなく tripwire** である。`*ServerTransport` という命名を外れた
- * 独自クラスや、別モジュール経由の接続は検知できない。目的は「気づかずに通ってしまう」を
- * 減らすことであって、迂回不能な関門を作ることではない。
- *
- * 検知は「実際のインスタンス化（`new *ServerTransport(`）」と「import 文」に限定する。
- * 生の識別子を拾うと、`server.ts` のコメントに「HTTP を足すときは…」と書いただけで落ちる。
- * CLAUDE.md がこの要件を明記している以上そういうコメントは書かれうるし、**誤検知する
- * tripwire は最初に消される**ので、取りこぼしよりノイズの方が害が大きい。
- */
+// ADR-0007 判断事項 B の強制。`confirmation_token` の session / principal 束縛は HTTP トランスポート追加時の必須前提だが、ADR の散文は CI で落ちないので、stdio 以外のトランスポート追加をここで機械的に検知する。
+// HMAC ペイロードは `action + params + expiresAt` だけで session も principal も含まず（署名鍵の per-process nonce はプロセス境界を閉じるだけで、HTTP では 1 プロセスに複数セッションが同居する）、UI スナップショットのキー（`src/ui-snapshot-cache.ts`）と MRTR の bind（`src/private/request-state.ts`）も未設定の sessionId を空文字に畳むので、HTTP を足した瞬間にクライアント A の preview で発行したトークンをクライアント B が execute に使えるようになる。
+// 厳密な証明ではなく tripwire（`*ServerTransport` の命名を外れた独自クラスや別モジュール経由の接続は検知できない）。検知を実際のインスタンス化と import 文に限るのは、`server.ts` のコメントに「HTTP を足すときは…」と書いただけで落ちる誤検知の tripwire は最初に消されるため。
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -71,9 +44,7 @@ describe('トランスポート追加の tripwire（ADR-0007 判断事項 B）',
 		expect(transports, REQUIREMENT).toEqual(['StdioServerTransport']);
 	});
 
-	// クラス名の網に掛からない追加（`createStreamableHttpServer()` 等）も、SDK の
-	// サブパス import は変わるので、そちら側からも押さえる。
-	// 行頭の import 文に限定し、散文中の同じ文字列は拾わない。
+	// クラス名の網に掛からない追加（`createStreamableHttpServer()` 等）も SDK のサブパス import は変わるので、行頭の import 文に限ってそちら側からも押さえる。
 	it('src/server.ts が読み込む SDK サブパスは stdio だけ', () => {
 		const subpaths = [...SERVER_SOURCE.matchAll(/^\s*import[^;]*?from\s+'@modelcontextprotocol\/server(\/[^']*)?'/gm)]
 			.map((m) => m[1] ?? '(root)')

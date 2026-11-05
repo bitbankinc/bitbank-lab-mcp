@@ -1,45 +1,17 @@
-/**
- * 注文確認 UI（MCP Apps / SEP-1865）
- *
- * preview_order の結果を受け取り、注文内容を表示する。
- *
- * サーバーが MCP Apps 実行経路を有効化している場合（`BITBANK_MCP_APPS_EXECUTE=1` +
- * ホストが MCP Apps UI を宣言）、ツール結果の `_meta` に確認トークンが載る。その場合のみ
- * 「注文を確定する」ボタンを描画し、`app.callServerTool('create_order', ...)` で発注する。
- * トークンが無ければ従来どおりプレビュー表示のみ（ボタンは出さない）。
- *
- * トークンは `_meta` からしか読まない。`content` / `structuredContent` には載っておらず、
- * それが「LLM には見えないがこの iframe には見える」という認可の根拠になっている。
- * 設計の背景は docs/adr/0007-hitl-confirmation-token-delivery.md を参照。
- */
-
-import {
-	App as McpApp,
-	applyDocumentTheme,
-	applyHostFonts,
-	applyHostStyleVariables,
-	getDocumentTheme,
-} from '@modelcontextprotocol/ext-apps';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { type SnapshotHydrationPhase, startSnapshotHydration } from '../../../src/mcp-apps-hydration.js';
+import { useMemo, useState } from 'react';
 import { type ConfirmationMetaPayload, readConfirmationMeta } from '../../../src/mcp-apps-meta.js';
+import { executeConfirmed, type Status, TERMINAL_STATUSES, useConfirmApp } from '../../shared/confirm-app';
+import { formatAmount, formatPair, formatPrice, formatQuote, sideLabel, typeLabel } from '../../shared/format';
+import { CardTitle, ConfirmActions, PendingView, Row, StatusMessage } from '../../shared/views';
 
 type Side = 'buy' | 'sell';
 type OrderType = 'limit' | 'market' | 'stop' | 'stop_limit';
 type PositionSide = 'long' | 'short';
 
-/** 暗号資産の最大小数桁数（bitbank の表示慣行に合わせる） */
-const CRYPTO_MAX_FRACTION_DIGITS = 8;
-/** JPY の最大小数桁数（整数表示） */
-const JPY_MAX_FRACTION_DIGITS = 0;
 /** create_order 呼び出しの timeout（ms）。サーバー側のツール timeout 60s より少し短く設定 */
 const CREATE_ORDER_TIMEOUT_MS = 45_000;
-/** ui/initialize（ホスト接続）応答待ちの診断タイムアウト（ms） */
-const CONNECT_TIMEOUT_MS = 7_000;
 /** この UI が対応する MCP Apps リソース URI（get_ui_snapshot の取得キー） */
 const RESOURCE_URI = 'ui://order/confirm.html';
-/** スナップショット取得（pull 型 hydration）の timeout（ms） */
-const SNAPSHOT_TIMEOUT_MS = 10_000;
 
 interface PreviewArgs {
 	pair: string;
@@ -52,40 +24,11 @@ interface PreviewArgs {
 	position_side?: PositionSide;
 }
 
-interface PreviewResultData {
-	// confirmation_token / expires_at は structuredContent には載らない（サーバーが strip する）。
-	// トークンはツール結果 `_meta` から別途読み取る。
-	preview: PreviewArgs;
-}
-
 interface PreviewResult {
 	ok: boolean;
 	summary?: string;
-	data?: PreviewResultData;
+	data?: { preview: PreviewArgs };
 	meta?: { action?: string };
-}
-
-type Status = 'idle' | 'submitting' | 'success' | 'error' | 'cancelled' | 'expired';
-
-/** 送信後の終端状態。ボタンを引っ込めて二重発注を防ぐ。 */
-const TERMINAL_STATUSES: ReadonlySet<Status> = new Set<Status>(['success', 'cancelled', 'expired']);
-
-function formatPair(pair: string): string {
-	return pair.toUpperCase().replace('_', '/');
-}
-
-function formatAmount(value: string): string {
-	const n = Number(value);
-	if (!Number.isFinite(n)) return value;
-	return n.toLocaleString('ja-JP', { maximumFractionDigits: CRYPTO_MAX_FRACTION_DIGITS });
-}
-
-function formatPrice(value: string | undefined, isJpy: boolean): string {
-	if (!value) return '—';
-	const n = Number(value);
-	if (!Number.isFinite(n)) return value;
-	if (isJpy) return `¥${n.toLocaleString('ja-JP', { maximumFractionDigits: JPY_MAX_FRACTION_DIGITS })}`;
-	return n.toLocaleString('ja-JP', { maximumFractionDigits: CRYPTO_MAX_FRACTION_DIGITS });
 }
 
 function estimateTotal(preview: PreviewArgs): string | null {
@@ -93,32 +36,7 @@ function estimateTotal(preview: PreviewArgs): string | null {
 	const p = Number(preview.price);
 	const a = Number(preview.amount);
 	if (!Number.isFinite(p) || !Number.isFinite(a)) return null;
-	const isJpy = preview.pair.includes('jpy');
-	const total = p * a;
-	if (isJpy) return `¥${total.toLocaleString('ja-JP', { maximumFractionDigits: JPY_MAX_FRACTION_DIGITS })}`;
-	return total.toLocaleString('ja-JP', { maximumFractionDigits: CRYPTO_MAX_FRACTION_DIGITS });
-}
-
-function sideLabel(side: Side, positionSide?: PositionSide): { text: string; className: string } {
-	const base = side === 'buy' ? '買い' : '売り';
-	const cls = side === 'buy' ? 'side-buy' : 'side-sell';
-	if (!positionSide) return { text: base, className: cls };
-	const posLabel = positionSide === 'long' ? 'ロング' : 'ショート';
-	const isOpen = (side === 'buy' && positionSide === 'long') || (side === 'sell' && positionSide === 'short');
-	return { text: `${base}（信用${isOpen ? '新規' : '決済'}・${posLabel}）`, className: cls };
-}
-
-function typeLabel(type: OrderType): string {
-	switch (type) {
-		case 'limit':
-			return '指値';
-		case 'market':
-			return '成行';
-		case 'stop':
-			return '逆指値';
-		case 'stop_limit':
-			return '逆指値指値';
-	}
+	return formatQuote(p * a, preview.pair.includes('jpy'));
 }
 
 export function App() {
@@ -128,188 +46,67 @@ export function App() {
 	const [status, setStatus] = useState<Status>('idle');
 	const [message, setMessage] = useState<string>('');
 	const [orderId, setOrderId] = useState<number | null>(null);
-	const appRef = useRef<McpApp | null>(null);
-	// ontoolresult は useEffect([]) 内でクロージャ生成され、preview state は
-	// マウント時の値（null）に固定される（stale closure）。preview 受領済みかどうかの
-	// 判定は ref で行い、最新値を参照する。
-	const hasPreviewRef = useRef(false);
-	// ホスト接続・結果受信の診断用状態。無言の「待機中…」で固まらせず、
-	// どの段階（ui/initialize / tool-result 配信）で止まっているかを表示する。
-	const [connState, setConnState] = useState<'connecting' | 'connected' | 'failed'>('connecting');
-	// スナップショット復元（pull 型 hydration）の段階。待ち時間・リトライ・abort の制御は
-	// src/mcp-apps-hydration.ts が持ち、ここは表示の切り替えだけを担当する。
-	const [hydrationPhase, setHydrationPhase] = useState<SnapshotHydrationPhase>('waiting');
 
-	useEffect(() => {
-		const mcpApp = new McpApp({ name: 'bitbank-order-confirm', version: '0.1.0' });
-		appRef.current = mcpApp;
-
-		// preview 応答の取り込み処理。push 通知（ontoolresult）と pull 復元
-		// （get_ui_snapshot）の両経路で共通に使う。どちらも CallToolResult 形なので
-		// structuredContent と `_meta` を同じ引数で受け取る。
-		//
-		// preview_order の結果のみ取り込む。他ツールの結果で state をリセットしないよう
-		// data.preview の存在でフィルタする。
-		//
-		// confirmation_token は `_meta` にしか載らない（structuredContent からは strip 済み）。
-		// 載っていなければボタンは描画されず、従来どおりプレビュー表示のみになる。
-		const applyPreviewResult = (structured: PreviewResult | undefined, meta: unknown) => {
+	// 他ツールの結果で state をリセットしないよう、`ok` かつ `data.preview` を持つ結果だけを取り込む（ツール名は見ていない）。
+	const { appRef, connState, hydrationPhase } = useConfirmApp(
+		'bitbank-order-confirm',
+		RESOURCE_URI,
+		(s, meta, hasPreview) => {
+			const structured = s as PreviewResult | undefined;
 			if (structured?.ok && structured.data?.preview) {
-				hasPreviewRef.current = true;
-				setHydrationPhase('waiting');
 				setPreview(structured.data.preview);
 				setConfirmation(readConfirmationMeta(meta) ?? null);
 				setStatus('idle');
 				setMessage('');
-				return;
+				return true;
 			}
-			// preview 未受領（preview == null）の iframe に ok:false が来た場合は、
-			// その summary をエラーとして描画する（「待機中…」のまま固まらせない）。
-			// 例: 最小単位違反などの validation_error で preview_order が失敗したケース。
-			if (structured?.ok === false && !hasPreviewRef.current) {
+			if (structured?.ok === false && !hasPreview) {
 				setStatus('error');
 				setMessage(structured.summary ?? '注文プレビューに失敗しました。');
 			}
-		};
-
-		mcpApp.ontoolresult = (params) => {
-			applyPreviewResult(params?.structuredContent as PreviewResult | undefined, params?._meta);
-		};
-
-		mcpApp.onhostcontextchanged = (ctx) => {
-			if (ctx.theme) applyDocumentTheme(ctx.theme);
-			if (ctx.styles) applyHostStyleVariables(ctx.styles);
-			if (ctx.fontCss) applyHostFonts(ctx.fontCss);
-		};
-
-		// 診断タイマー: ui/initialize が応答しない / 接続後に tool-result が届かない場合に
-		// 段階別の案内へ表示を切り替える（ホスト側問題の切り分けを画面だけで可能にする）。
-		const connectTimeoutId = setTimeout(() => {
-			setConnState((s) => (s === 'connecting' ? 'failed' : s));
-		}, CONNECT_TIMEOUT_MS);
-		let stopHydration: (() => void) | undefined;
-		// connect() が pending のままアンマウントされると、この .then() は cleanup の**後**に走る。
-		// そこで hydration を始めると停止関数を誰も受け取れないので、破棄済みなら開始しない（#29）。
-		let disposed = false;
-
-		mcpApp
-			.connect()
-			.then(() => {
-				clearTimeout(connectTimeoutId);
-				setConnState('connected');
-				// 初期テーマ・スタイル適用
-				const ctx = mcpApp.getHostContext();
-				applyDocumentTheme(ctx?.theme ?? getDocumentTheme());
-				if (ctx?.styles) applyHostStyleVariables(ctx.styles);
-				if (ctx?.fontCss) applyHostFonts(ctx.fontCss);
-				if (disposed) return;
-				// pull 型 hydration: 一部ホストは ui/notifications/tool-result を配信しない
-				// （2026-07-28 ロールアウト後の Claude Desktop で確認）。サーバー側の
-				// スナップショット（get_ui_snapshot）から直近の preview 応答を取得して復元する。
-				//
-				// 初回待ち・上限付きリトライ・abort は src/mcp-apps-hydration.ts に集約してある
-				// （#29）。ここに残るのは「何を呼ぶか」と「どの結果を取り込むか」のフィルタだけ。
-				stopHydration = startSnapshotHydration({
-					fetchSnapshot: () =>
-						mcpApp.callServerTool(
-							{ name: 'get_ui_snapshot', arguments: { resource_uri: RESOURCE_URI } },
-							{ timeout: SNAPSHOT_TIMEOUT_MS },
-						),
-					isHydrated: () => hasPreviewRef.current,
-					apply: (result) => {
-						// get_ui_snapshot も同じ `_meta` 契約でトークンを返す（push 配信が
-						// 効かないホスト向け。有効化ゲートはサーバー側で再判定される）。
-						const snapshot = result as { structuredContent?: unknown; _meta?: unknown };
-						applyPreviewResult(snapshot.structuredContent as PreviewResult | undefined, snapshot._meta);
-						// 取り込めなかった場合は**失敗として扱う**（スナップショット未保存、
-						// 別ツールの結果、structuredContent 欠損など）。resolve したまま黙って
-						// 終わるとリトライも failed 表示も起きず、「復元中」のまま固まる（#29 の要点）。
-						// 例外は startSnapshotHydration のリトライ経路に乗る。
-						if (!hasPreviewRef.current) {
-							throw new Error('snapshot did not contain a usable preview');
-						}
-					},
-					onPhase: setHydrationPhase,
-				});
-			})
-			.catch(() => {
-				// 非対応ホスト or スタンドアロン表示。UI だけ表示する。
-				clearTimeout(connectTimeoutId);
-				setConnState('failed');
-			});
-
-		return () => {
-			// Strict Mode / HMR / アンマウント時に transport・pending request・timeout を解放する
-			disposed = true;
-			clearTimeout(connectTimeoutId);
-			stopHydration?.();
-			const current = appRef.current;
-			appRef.current = null;
-			void current?.close().catch(() => {
-				// close 自体の失敗は無視（既に切断済み等）
-			});
-		};
-	}, []);
+			return false;
+		},
+	);
 
 	const isJpy = useMemo(() => (preview ? preview.pair.includes('jpy') : false), [preview]);
 
 	const handleConfirm = async () => {
 		if (!preview || !confirmation) return;
-		// クライアント側の期限チェックは UX のため（無駄な往復を省く）。
-		// 認可上の期限判定はサーバーの validateToken が行う。
-		if (Date.now() > confirmation.expires_at) {
-			setStatus('expired');
-			setMessage('確認の有効期限が切れました。もう一度 preview_order を実行してください。');
-			return;
-		}
-		const app = appRef.current;
-		if (!app) {
-			setStatus('error');
-			setMessage('ホストに接続していません。');
-			return;
-		}
-		setStatus('submitting');
-		setMessage('');
-		try {
-			const args: Record<string, unknown> = {
-				pair: preview.pair,
-				amount: preview.amount,
-				side: preview.side,
-				type: preview.type,
-				confirmation_token: confirmation.confirmation_token,
-				token_expires_at: confirmation.expires_at,
-			};
-			// preview と同じパラメータで呼ぶ。1 つでも違うとサーバー側の HMAC 検証が
-			// token_invalid で落ちる（ユーザーが見ていない内容を発注させないための束縛）。
-			if (preview.price) args.price = preview.price;
-			if (preview.trigger_price) args.trigger_price = preview.trigger_price;
-			if (preview.post_only != null) args.post_only = preview.post_only;
-			if (preview.position_side) args.position_side = preview.position_side;
+		const args: Record<string, unknown> = {
+			pair: preview.pair,
+			amount: preview.amount,
+			side: preview.side,
+			type: preview.type,
+			confirmation_token: confirmation.confirmation_token,
+			token_expires_at: confirmation.expires_at,
+		};
+		// preview と同じパラメータで呼ぶ。1 つでも違うとサーバー側の HMAC 検証が token_invalid で落ちる（ユーザーが見ていない内容を発注させないための束縛）。
+		if (preview.price) args.price = preview.price;
+		if (preview.trigger_price) args.trigger_price = preview.trigger_price;
+		if (preview.post_only != null) args.post_only = preview.post_only;
+		if (preview.position_side) args.position_side = preview.position_side;
 
-			const result = await app.callServerTool(
-				{ name: 'create_order', arguments: args },
-				{ timeout: CREATE_ORDER_TIMEOUT_MS },
-			);
-			if (result.isError) {
-				const text = result.content?.find((c) => c.type === 'text')?.text ?? '注文に失敗しました';
-				setStatus('error');
-				setMessage(text);
-				return;
-			}
-			const structured = result.structuredContent as
-				| { ok?: boolean; summary?: string; data?: { order?: { order_id?: number } } }
-				| undefined;
-			if (structured?.ok === false) {
-				setStatus('error');
-				setMessage(structured.summary ?? '注文に失敗しました');
-				return;
-			}
-			setStatus('success');
-			setMessage(structured?.summary ?? '注文を受け付けました');
+		const outcome = await executeConfirmed({
+			app: appRef.current,
+			expiresAt: confirmation.expires_at,
+			call: { name: 'create_order', arguments: args },
+			timeoutMs: CREATE_ORDER_TIMEOUT_MS,
+			texts: {
+				expired: '確認の有効期限が切れました。もう一度 preview_order を実行してください。',
+				failed: '注文に失敗しました',
+				succeeded: '注文を受け付けました',
+				unexpected: '注文中に予期しないエラーが発生しました',
+			},
+			onSubmitting: () => {
+				setStatus('submitting');
+				setMessage('');
+			},
+		});
+		setStatus(outcome.status);
+		setMessage(outcome.message);
+		if (outcome.status === 'success') {
+			const structured = outcome.structured as { data?: { order?: { order_id?: number } } } | undefined;
 			setOrderId(structured?.data?.order?.order_id ?? null);
-		} catch (err) {
-			setStatus('error');
-			setMessage(err instanceof Error ? err.message : '注文中に予期しないエラーが発生しました');
 		}
 	};
 
@@ -319,35 +116,14 @@ export function App() {
 	};
 
 	if (!preview) {
-		// preview を受け取る前に preview_order が失敗した場合は、空の「待機中…」では
-		// なくエラー内容を描画する（validation_error などで iframe が固まらないように）。
-		if (status === 'error') {
-			return (
-				<div className="app">
-					<div className="card">
-						<div className="status status-error" role="alert" aria-live="assertive" aria-atomic="true">
-							❌ {message}
-						</div>
-					</div>
-				</div>
-			);
-		}
-		// 段階別の診断メッセージ。ホスト側の MCP Apps 実装に問題がある場合、
-		// どこで止まっているか（接続 or 結果配信）をユーザーがこの表示だけで判別できる。
-		const waitingText =
-			connState === 'failed'
-				? 'ホストとの MCP Apps 接続（ui/initialize）を確立できませんでした。このホストでは確認 UI を利用できません。プレビュー内容はチャット本文を参照してください。'
-				: hydrationPhase === 'failed'
-					? 'スナップショットから復元できませんでした。内容はチャット本文で確認できます。'
-					: hydrationPhase === 'restoring'
-						? 'ホストからツール結果（ui/notifications/tool-result）が届かないため、スナップショットからの復元を試みています。表示されない場合はプレビュー内容をチャット本文で確認してください。'
-						: 'preview_order の結果を待機中…';
 		return (
-			<div className="app">
-				<div className="card">
-					<p className="muted">{waitingText}</p>
-				</div>
-			</div>
+			<PendingView
+				status={status}
+				message={message}
+				connState={connState}
+				hydrationPhase={hydrationPhase}
+				waitingText="preview_order の結果を待機中…"
+			/>
 		);
 	}
 
@@ -358,109 +134,48 @@ export function App() {
 	return (
 		<div className="app">
 			<div className="card">
-				<h1 className="title">
-					<span className="title-icon" aria-hidden="true">
-						📋
-					</span>
-					注文確認
-				</h1>
+				<CardTitle icon="📋">注文確認</CardTitle>
 
-				<div className="row">
-					<span className="row-label">通貨ペア</span>
-					<span className="row-value">{formatPair(preview.pair)}</span>
-				</div>
-				<div className="row">
-					<span className="row-label">売買方向</span>
-					<span className={`row-value ${side.className}`}>{side.text}</span>
-				</div>
-				<div className="row">
-					<span className="row-label">注文タイプ</span>
-					<span className="row-value">{typeLabel(preview.type)}</span>
-				</div>
-				<div className="row">
-					<span className="row-label">数量</span>
-					<span className="row-value">{formatAmount(preview.amount)}</span>
-				</div>
-				<div className="row">
-					<span className="row-label">価格</span>
-					<span className="row-value">
-						{preview.type === 'market' ? '成行' : formatPrice(preview.price, isJpy)}
-					</span>
-				</div>
-				{preview.trigger_price && (
-					<div className="row">
-						<span className="row-label">トリガー価格</span>
-						<span className="row-value">{formatPrice(preview.trigger_price, isJpy)}</span>
-					</div>
-				)}
-				{total && (
-					<div className="row">
-						<span className="row-label">合計概算</span>
-						<span className="row-value">{total}</span>
-					</div>
-				)}
-				{preview.post_only && (
-					<div className="row">
-						<span className="row-label">Post Only</span>
-						<span className="row-value">有効</span>
-					</div>
-				)}
+				<Row label="通貨ペア">{formatPair(preview.pair)}</Row>
+				<Row label="売買方向" valueClassName={side.className}>
+					{side.text}
+				</Row>
+				<Row label="注文タイプ">{typeLabel(preview.type)}</Row>
+				<Row label="数量">{formatAmount(preview.amount)}</Row>
+				<Row label="価格">{preview.type === 'market' ? '成行' : formatPrice(preview.price, isJpy)}</Row>
+				{preview.trigger_price && <Row label="トリガー価格">{formatPrice(preview.trigger_price, isJpy)}</Row>}
+				{total && <Row label="合計概算">{total}</Row>}
+				{preview.post_only && <Row label="Post Only">有効</Row>}
 
-				{preview.position_side && (
-					<div className="warn">⚠️ 信用取引です。損失が保証金を超える可能性があります。</div>
-				)}
+				{preview.position_side && <div className="warn">⚠️ 信用取引です。損失が保証金を超える可能性があります。</div>}
 
-				{status === 'success' && (
-					<div className="status status-success" role="status" aria-live="polite" aria-atomic="true">
-						✅ {message}
-						{orderId != null && (
+				<StatusMessage
+					status={status}
+					message={message}
+					successExtra={
+						orderId != null && (
 							<>
 								<br />
 								注文ID: {orderId}
 							</>
-						)}
-					</div>
-				)}
-				{status === 'error' && (
-					<div className="status status-error" role="alert" aria-live="assertive" aria-atomic="true">
-						❌ {message}
-					</div>
-				)}
-				{status === 'cancelled' && (
-					<div className="status status-cancelled" role="status" aria-live="polite" aria-atomic="true">
-						{message}
-					</div>
-				)}
-				{status === 'expired' && (
-					<div className="status status-error" role="alert" aria-live="assertive" aria-atomic="true">
-						⏰ {message}
-					</div>
-				)}
+						)
+					}
+				/>
 
 				{!isTerminal && confirmation != null && (
-					<div className="actions">
-						<button
-							type="button"
-							className="btn btn-secondary"
-							onClick={handleCancel}
-							disabled={status === 'submitting'}
-						>
-							キャンセル
-						</button>
-						<button
-							type="button"
-							className="btn btn-primary"
-							onClick={handleConfirm}
-							disabled={status === 'submitting'}
-						>
-							{status === 'submitting' ? '送信中…' : '注文を確定する'}
-						</button>
-					</div>
+					<ConfirmActions
+						status={status}
+						dismissLabel="キャンセル"
+						confirmLabel="注文を確定する"
+						onDismiss={handleCancel}
+						onConfirm={handleConfirm}
+					/>
 				)}
 
 				{!isTerminal && confirmation == null && (
 					<div className="warn">
-						この iframe はプレビュー表示のみです。実際の発注は、確認ダイアログに対応したクライアントで同じ操作を行うか、bitbank
+						この iframe
+						はプレビュー表示のみです。実際の発注は、確認ダイアログに対応したクライアントで同じ操作を行うか、bitbank
 						アプリ/ウェブで同じ内容を手動発注してください。
 					</div>
 				)}

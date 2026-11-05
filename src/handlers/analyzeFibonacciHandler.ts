@@ -22,11 +22,9 @@ export const toolDef: ToolDefinition = {
 		const pair = String(data.pair || (args as Record<string, unknown>).pair || 'btc_jpy');
 		const pairLabel = formatPair(pair);
 
-		// Build text content for LLM
 		const contentArr = res.content ?? [];
 		const existingText = contentArr.length > 0 ? contentArr[0].text : '';
 
-		// Return with structuredContent for tool chaining / visualization
 		return {
 			content: [{ type: 'text', text: existingText }],
 			structuredContent: {

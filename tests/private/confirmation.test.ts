@@ -1,8 +1,3 @@
-/**
- * HITL 確認トークンのユニットテスト。
- * トークン生成・検証、有効期限、パラメータ改ざん検知を検証する。
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_MAX_ENTRIES } from '../../lib/bounded-expiring-set.js';
 import {
@@ -11,6 +6,7 @@ import {
 	_rotateProcessNonce,
 	_usedTokenCapacity,
 	_usedTokenCount,
+	confirmationTtlSeconds,
 	generateToken,
 	purgeExpiredTokens,
 	startCleanupTimer,
@@ -29,6 +25,17 @@ afterEach(() => {
 	// 件数上限を絞ったテストがストアを作り直すため、既定値へ戻してから次のテストに渡す
 	_resetUsedTokens({ maxEntries: DEFAULT_MAX_ENTRIES });
 	vi.useRealTimers();
+});
+
+describe('confirmationTtlSeconds', () => {
+	it.each([
+		['既定', undefined, 60],
+		['ORDER_CONFIRM_TTL_MS に従う', '120000', 120],
+		['上限（5分）でキャップされる', '600000', 300],
+	])('%s', (_label, env, expected) => {
+		if (env !== undefined) process.env.ORDER_CONFIRM_TTL_MS = env;
+		expect(confirmationTtlSeconds()).toBe(expected);
+	});
 });
 
 describe('generateToken', () => {
@@ -116,7 +123,6 @@ describe('validateToken', () => {
 		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit' };
 		const { token, expiresAt } = generateToken('create_order', params, now);
 
-		// amount を改ざん
 		const tampered = { ...params, amount: '100' };
 		const error = validateToken(token, 'create_order', tampered, expiresAt, now + 1000);
 		expect(error?.code).toBe('token_invalid');
@@ -194,11 +200,9 @@ describe('validateToken', () => {
 		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit' };
 		const { token, expiresAt } = generateToken('create_order', params, now);
 
-		// 1回目: 成功
 		const first = validateToken(token, 'create_order', params, expiresAt, now + 1000);
 		expect(first).toBeNull();
 
-		// 2回目: 使用済みで拒否（コードまで一致を確認）
 		const second = validateToken(token, 'create_order', params, expiresAt, now + 2000);
 		expect(second?.code).toBe('token_already_used');
 		expect(second?.message).toContain('既に使用されています');
@@ -210,8 +214,7 @@ describe('validateToken', () => {
 		const { token, expiresAt } = generateToken('create_order', params, now);
 		expect(validateToken(token, 'create_order', params, expiresAt, now + 1000)).toBeNull();
 
-		// プロセス再起動を模擬する。usedTokens はメモリ上にしか無いので一緒に消える。
-		// per-process nonce が無ければ、ここで同じトークンがもう一度通ってしまう。
+		// プロセス再起動を模擬する（usedTokens も消える）。per-process nonce が無ければ同じトークンがもう一度通る。
 		_rotateProcessNonce();
 		_resetUsedTokens();
 
@@ -226,8 +229,7 @@ describe('validateToken', () => {
 
 		_rotateProcessNonce();
 
-		// 期限内で一度も使っていないが、鍵が変わっているので通らない。
-		// 経路 1（elicitation）の pending 確認が再起動で失効するのと同じ挙動。
+		// 期限内で未使用でも、鍵が変わっているので通らない（elicitation 経路の pending 確認が再起動で失効するのと同じ）。
 		expect(validateToken(token, 'create_order', params, expiresAt, now + 1000)?.code).toBe('token_invalid');
 	});
 
@@ -249,8 +251,7 @@ describe('validateToken', () => {
 		_rotateProcessNonce();
 		const second = generateToken('create_order', params, now);
 
-		// action / params / expiresAt がすべて同一でもトークンは一致しない。
-		// これが無いと、同じ secret を持つ別プロセスが互いのトークンを検証できてしまう。
+		// action / params / expiresAt が同一でもトークンは一致しない（一致すると同じ secret の別プロセスが互いのトークンを検証できる）。
 		expect(second.expiresAt).toBe(first.expiresAt);
 		expect(second.token).not.toBe(first.token);
 	});
@@ -270,7 +271,6 @@ describe('validateToken', () => {
 		const params = { pair: 'btc_jpy', amount: '0.001' };
 		const { expiresAt } = generateToken('create_order', params, now);
 
-		// 不正トークンで検証失敗
 		validateToken('deadbeef'.repeat(8), 'create_order', params, expiresAt, now + 1000);
 		expect(_usedTokenCount()).toBe(0);
 	});
@@ -280,7 +280,6 @@ describe('validateToken', () => {
 		const params = { pair: 'btc_jpy', amount: '0.001' };
 		const { token, expiresAt } = generateToken('create_order', params, now);
 
-		// まずトークンを消費して使用済みにする
 		expect(validateToken(token, 'create_order', params, expiresAt, now + 1000)).toBeNull();
 		expect(_usedTokenCount()).toBe(1);
 
@@ -296,11 +295,9 @@ describe('purgeExpiredTokens', () => {
 		const params = { pair: 'btc_jpy', amount: '0.001' };
 		const { token, expiresAt } = generateToken('create_order', params, now);
 
-		// トークンを使用済みにする
 		validateToken(token, 'create_order', params, expiresAt, now + 1000);
 		expect(_usedTokenCount()).toBe(1);
 
-		// 期限切れ後にパージ
 		const purged = purgeExpiredTokens(expiresAt + 1);
 		expect(purged).toBe(1);
 		expect(_usedTokenCount()).toBe(0);
@@ -314,7 +311,6 @@ describe('purgeExpiredTokens', () => {
 		validateToken(token, 'create_order', params, expiresAt, now + 1000);
 		expect(_usedTokenCount()).toBe(1);
 
-		// 期限内にパージ → 除去されない
 		const purged = purgeExpiredTokens(expiresAt);
 		expect(purged).toBe(0);
 		expect(_usedTokenCount()).toBe(1);
@@ -332,7 +328,6 @@ describe('purgeExpiredTokens', () => {
 		validateToken(t2.token, 'create_order', params2, t2.expiresAt, now + 31_000);
 		expect(_usedTokenCount()).toBe(2);
 
-		// t1 のみ期限切れ
 		const purged = purgeExpiredTokens(t1.expiresAt + 1);
 		expect(purged).toBe(1);
 		expect(_usedTokenCount()).toBe(1);
@@ -380,10 +375,7 @@ describe('startCleanupTimer / stopCleanupTimer', () => {
 /** テスト共通の基準時刻。TTL は既定 60 秒なので expiresAt = NOW + 60_000 になる */
 const NOW = 1700000000000;
 
-/**
- * 有効なトークンを生成し、そのまま検証まで通す（成功すれば使用済み記録が 1 件増える）。
- * `seq` でパラメータを変え、毎回異なるトークンを作る。
- */
+/** 有効なトークンを生成して検証まで通す（使用済み記録が 1 件増える）。seq でパラメータを変えて毎回異なるトークンを作る。 */
 function consumeToken(seq: number, nowMs: number = NOW) {
 	const params = { pair: 'btc_jpy', amount: '0.001', seq };
 	const { token, expiresAt } = generateToken('create_order', params, nowMs);
@@ -401,7 +393,6 @@ describe('validateToken — 使用済み記録の件数上限（fail-closed）',
 
 		expect(consumeToken(0).error).toBeNull();
 		expect(consumeToken(1).error).toBeNull();
-		// 上限ちょうどまでは記録できる
 		expect(consumeToken(2).error).toBeNull();
 		expect(_usedTokenCount()).toBe(3);
 	});
@@ -427,7 +418,6 @@ describe('validateToken — 使用済み記録の件数上限（fail-closed）',
 		expect(first.error).toBeNull();
 		expect(second.error).toBeNull();
 
-		// 上限到達
 		expect(consumeToken(2).error?.code).toBe('token_store_full');
 		expect(_usedTokenCount()).toBe(2);
 

@@ -59,6 +59,12 @@ describe('toDisplayTime', () => {
 		const result = toDisplayTime(1700000000000, 'UTC');
 		expect(result).toContain('UTC');
 	});
+	it('JST 以外の IANA タイムゾーンは実際のゾーンと UTC オフセットを表示する', () => {
+		const result = toDisplayTime(1700000000000, 'America/New_York');
+		expect(result).toContain('America/New_York');
+		expect(result).toContain('UTC-05:00');
+		expect(result).not.toMatch(/ JST$/);
+	});
 	it('undefined は現在時刻を返す', () => {
 		const result = toDisplayTime(undefined);
 		expect(result).toContain('JST');

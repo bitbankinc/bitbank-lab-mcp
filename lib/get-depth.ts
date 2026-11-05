@@ -1,9 +1,9 @@
 import { GetDepthOutputSchema } from '../src/schemas.js';
 import { toNum } from './conversions.js';
 import { estimateZones } from './depth-analysis.js';
-import { formatSummary, formatTimestampJST } from './formatter.js';
+import { formatExactPrice, formatSummary, formatTimestampJST } from './formatter.js';
 import { BITBANK_API_BASE, DEFAULT_RETRIES, fetchJsonWithRateLimit } from './http.js';
-import { isJpyPair, roundPrice } from './price.js';
+import { roundMidPrice } from './price.js';
 import { fail, failFromError, failFromValidation, ok } from './result.js';
 import { createMeta, ensurePair } from './validate.js';
 
@@ -20,7 +20,6 @@ export interface BuildDepthTextInput {
 	mid: number | null;
 }
 
-/** テキスト組み立て（板データ表示）— テスト可能な純粋関数 */
 export function buildDepthText(input: BuildDepthTextInput): string {
 	const { timestamp, summary, bids, asks, mid } = input;
 	const text = [
@@ -28,13 +27,13 @@ export function buildDepthText(input: BuildDepthTextInput): string {
 		'',
 		summary,
 		`板の層数: 買い ${bids.length}層 / 売り ${asks.length}層`,
-		mid ? `中値: ${mid.toLocaleString('ja-JP')}円` : '',
+		mid ? `中値: ${formatExactPrice(mid)}円` : '',
 		'',
 		`🟢 買い板 (全${bids.length}層):`,
-		...bids.map(([p, s]: [unknown, unknown], i: number) => `  ${i + 1}. ${Number(p).toLocaleString('ja-JP')}円 ${s}`),
+		...bids.map(([p, s]: [unknown, unknown], i: number) => `  ${i + 1}. ${formatExactPrice(Number(p))}円 ${s}`),
 		'',
 		`🔴 売り板 (全${asks.length}層):`,
-		...asks.map(([p, s]: [unknown, unknown], i: number) => `  ${i + 1}. ${Number(p).toLocaleString('ja-JP')}円 ${s}`),
+		...asks.map(([p, s]: [unknown, unknown], i: number) => `  ${i + 1}. ${formatExactPrice(Number(p))}円 ${s}`),
 	]
 		.filter(Boolean)
 		.join('\n');
@@ -56,9 +55,7 @@ export default async function getDepth(pair: string, { timeoutMs = 3000, maxLeve
 		const { data: json, rateLimit } = await fetchJsonWithRateLimit(url, { timeoutMs, retries: DEFAULT_RETRIES });
 		const jsonObj = json as { success?: number; data?: Record<string, unknown> & { code?: number } };
 
-		// 上流レスポンスの success フラグを明示的に検証する。
-		// 公式 API は { success: 0|1, data: ... } 形式で、エラー時は success:0 を返す。
-		// optional chaining のフォールバックに任せると空配列として握りつぶされ ok を返してしまう。
+		// optional chaining のフォールバックに任せると success:0 が空配列として握りつぶされ ok を返すので、明示的に検証する。
 		if (jsonObj?.success !== 1) {
 			const code = jsonObj?.data?.code;
 			const codeStr = code != null ? `（code: ${code}）` : '';
@@ -66,29 +63,23 @@ export default async function getDepth(pair: string, { timeoutMs = 3000, maxLeve
 		}
 
 		const d = jsonObj?.data ?? {};
-		// 上流レスポンスに bids/asks が含まれない場合は upstream エラーとして明示分類する。
-		// 空配列フォールバックで握りつぶすと downstream（prepare_depth_data, render_depth_svg）で
-		// 「両側が必要」エラーになり、原因の特定が困難になる。get_orderbook と挙動を揃える。
+		// 空配列で握りつぶすと下流で原因の特定が困難になるので upstream エラーにする（get_orderbook と揃える）。
 		if (!Array.isArray(d.asks) || !Array.isArray(d.bids)) {
 			return GetDepthOutputSchema.parse(fail('上流レスポンスに bids/asks が含まれていません', 'upstream'));
 		}
 		const asks = (d.asks as Array<[unknown, unknown]>).slice(0, maxLevels);
 		const bids = (d.bids as Array<[unknown, unknown]>).slice(0, maxLevels);
 
-		// 上流 timestamp は欠損したら Date.now() で偽装せず upstream fail に倒す。
-		// 板スナップショットの timestamp は「上流が観測した時刻」が意味であり、
-		// 受信時刻 (Date.now / fetchedAt) で代用すると古いデータをあたかも最新かのように
-		// 見せてしまう。fetchedAt（受信時刻）は meta に別途含まれる。
+		// timestamp が欠損したら受信時刻で偽装せず upstream fail に倒す（古いデータを最新に見せない）。
 		const tsNum = Number(d.timestamp ?? d.timestamp_ms);
 		if (!Number.isFinite(tsNum) || tsNum <= 0) {
 			return GetDepthOutputSchema.parse(fail('上流レスポンスに timestamp が含まれていません', 'upstream'));
 		}
 
-		// 簡易サマリ（最良気配と件数）。best 気配は finite な数値のみ採用する
-		// （非数値の truthy 文字列が混じっても mid を NaN 化させず null に倒す）。
+		// best 気配は finite な数値のみ採用し、mid を NaN 化させない。
 		const bestAsk = toNum(asks[0]?.[0]);
 		const bestBid = toNum(bids[0]?.[0]);
-		const mid = bestBid != null && bestAsk != null ? roundPrice((bestBid + bestAsk) / 2, isJpyPair(chk.pair)) : null;
+		const mid = bestBid != null && bestAsk != null ? roundMidPrice(bestBid, bestAsk) : null;
 		const summary = formatSummary({
 			pair: chk.pair,
 			latest: mid ?? undefined,
@@ -121,7 +112,7 @@ export default async function getDepth(pair: string, { timeoutMs = 3000, maxLeve
 			},
 		};
 
-		// タイムスタンプ付きテキスト出力（全板データを含める: LLM が structuredContent.data を読めない対策）
+		// LLM は structuredContent.data を読めないので全板データを含める。
 		const textWithBoundary = buildDepthText({ timestamp: data.timestamp, summary, bids, asks, mid });
 
 		const meta = createMeta(chk.pair, rateLimit ? { rateLimit } : {});

@@ -4,7 +4,6 @@ import { isPrivateApiEnabled } from '../src/private/config.js';
 import { type PromptDef, prompts } from '../src/prompts.js';
 import { allToolDefs } from '../src/tool-registry.js';
 
-/** Private API 不要のプロンプト（常に公開） */
 const publicPromptNames = [
 	'🌅 おはようレポート',
 	'🔰 BTCの価格を分析して',
@@ -16,7 +15,6 @@ const publicPromptNames = [
 	'中級：BTCのサポレジを分析して',
 ];
 
-/** Private API 必須のプロンプト（API キー設定時のみ公開） */
 const privatePromptNames = ['💼 ポートフォリオ分析レポート'];
 
 const expectedPromptNames = isPrivateApiEnabled()
@@ -31,14 +29,9 @@ describe('prompts contract', () => {
 
 	it('Private API 無効時はポートフォリオ Prompt が含まれない', () => {
 		const names = prompts.map((p) => p.name);
-		if (isPrivateApiEnabled()) {
-			for (const name of privatePromptNames) {
-				expect(names).toContain(name);
-			}
-		} else {
-			for (const name of privatePromptNames) {
-				expect(names).not.toContain(name);
-			}
+		const enabled = isPrivateApiEnabled();
+		for (const name of privatePromptNames) {
+			expect(names.includes(name), name).toBe(enabled);
 		}
 	});
 
@@ -51,14 +44,7 @@ describe('prompts contract', () => {
 	});
 });
 
-// ────────────────────────────────────────────────────────────────
-// プロンプトが指示する view 値の契約
-//
-// SDK v2 はハンドラ実行前に inputSchema で入力を検証するため、プロンプトが
-// enum に無い view を指示すると、その指示どおり呼んだ時点で validation error になる
-// （実例: get_flow_metrics に存在しない view=detailed を指示していた）。
-// プロンプトは実行されないので通常のテストでは検出できない。ここで静的に突き合わせる。
-// ────────────────────────────────────────────────────────────────
+// SDK v2 はハンドラ実行前に inputSchema で入力を検証するので、プロンプトが enum に無い view を指示すると、その指示どおり呼んだ時点で validation error になる。プロンプトは実行されないので通常のテストでは検出できず、ここで静的に突き合わせる。
 
 interface ViewUsage {
 	promptName: string;
@@ -66,17 +52,8 @@ interface ViewUsage {
 	view: string;
 }
 
-/**
- * `toolName(..., view=xxx, ...)` 形式の呼び出し例だけを見る（引数内にネスト括弧は想定しない）。
- * `view` の直後に `=` を要求するので `viewBox="0 0 480 140"` のような別語には当たらない。
- *
- * 【検査範囲】`view` を明示している呼び出し例のみ。`view` を渡していない呼び出し例
- * （例: `no_such_tool(pair=btc_jpy)`）は抽出されないので、**プロンプトが参照するツール名一般の
- * 実在性はここでは検証していない**。TOOL_CALL_RE は「ツール呼び出しに見えるテキスト」を拾うだけで
- * ツール呼び出しの判定器ではなく（おはようレポートの数式散文に `min(...)` 等が増えれば当たる）、
- * 全 `ident(...)` をツール名として検証すると無関係な散文の編集でテストが落ちる。
- * ツール名の契約が要るなら、プロンプト側を新語彙へ追従させる PR で別途設計する。
- */
+// `view` の直後に `=` を要求するので `viewBox="0 0 480 140"` のような別語には当たらない。
+// `view` を渡していない呼び出し例は抽出されないので、プロンプトが参照するツール名一般の実在性はここでは検証していない（全 `ident(...)` をツール名として検証すると、無関係な散文の編集でテストが落ちる）。
 const TOOL_CALL_RE = /\b([a-z][a-z0-9_]*)\s*\(([^()]*)\)/g;
 const VIEW_ARG_RE = /\bview\s*=\s*(?:"([^"]*)"|'([^']*)'|([\w-]+))/g;
 
@@ -96,7 +73,6 @@ function collectViewUsages(defs: readonly PromptDef[]): ViewUsage[] {
 	);
 }
 
-/** ツールの inputSchema から view サブスキーマを取り出す（無ければ undefined） */
 function viewSchemaOf(toolName: string): z.ZodTypeAny | undefined {
 	const def = allToolDefs.find((d) => d.name === toolName);
 	if (!def) return undefined;
@@ -104,7 +80,6 @@ function viewSchemaOf(toolName: string): z.ZodTypeAny | undefined {
 	return shape?.view;
 }
 
-/** エラーメッセージ用に有効値を取り出す。ZodDefault / ZodOptional を剥がして ZodEnum の options を読む */
 function viewOptionsOf(schema: z.ZodTypeAny): string[] | undefined {
 	let current: unknown = schema;
 	while (current) {
@@ -117,7 +92,6 @@ function viewOptionsOf(schema: z.ZodTypeAny): string[] | undefined {
 	return undefined;
 }
 
-/** プロンプトが指示する view のうち、実際には validation error になるものを列挙する */
 function findInvalidViewUsages(usages: readonly ViewUsage[]): string[] {
 	const errors: string[] = [];
 	for (const { promptName, toolName, view } of usages) {
@@ -152,8 +126,7 @@ describe('prompts の view 値がツールの Zod enum と一致する', () => {
 			{
 				name: 'テスト用',
 				description: 'テスト用',
-				// get_flow_metrics の enum は summary / detailed / full / compact / buckets なので verbose は無効。
-				// （P6 の実例だった view=detailed は、語彙統一で **有効値になった** ので負例に使えない）
+				// get_flow_metrics の enum は summary / detailed / full / compact / buckets なので verbose は無効（detailed は有効値なので負例に使えない）。
 				messages: [
 					{
 						role: 'user',

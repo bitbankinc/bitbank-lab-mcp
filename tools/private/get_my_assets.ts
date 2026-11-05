@@ -1,10 +1,3 @@
-/**
- * get_my_assets — 自分の資産残高を取得する Private API ツール。
- *
- * bitbank Private API `/v1/user/assets` を呼び出し、
- * ticker 連携で円評価額・構成比を自動算出する。
- */
-
 import { normalizeAssetCodes } from '../../lib/asset-code.js';
 import { toNum } from '../../lib/conversions.js';
 import { nowIso } from '../../lib/datetime.js';
@@ -25,18 +18,14 @@ export default async function getMyAssets(args: { include_jpy_valuation?: boolea
 		const rawAssets = await client.get<{ assets: RawAsset[] }>('/v1/user/assets');
 		const timestamp = nowIso();
 
-		// 取得境界での asset 正規化。JPY 判定（`a.asset === 'jpy'`）と `prices.get(a.asset)` が
-		// 小文字前提のため、ここで揃える（`lib/asset-code.ts` 参照）。
-		// 出力の asset も小文字契約のまま（表示は下の `toUpperCase()` が担当）。
+		// JPY 判定（`a.asset === 'jpy'`）と `prices.get(a.asset)` が小文字前提なので取得境界で揃える。出力の asset も小文字契約のまま（表示は下の `toUpperCase()`）。
 		const normalizedAssets = normalizeAssetCodes(rawAssets.assets);
 
-		// ゼロでない資産のみ抽出
 		const nonZeroAssets = normalizedAssets.filter((a) => {
 			const amount = toNum(a.onhand_amount);
 			return amount != null && amount > 0;
 		});
 
-		// ticker 連携（オプション）
 		let tickerError: string | undefined;
 		let prices = new Map<string, number>();
 
@@ -46,7 +35,6 @@ export default async function getMyAssets(args: { include_jpy_valuation?: boolea
 			tickerError = tickerResult.error;
 		}
 
-		// 資産データの組み立て
 		let totalJpyValue = 0;
 		const assets = nonZeroAssets.map((a) => {
 			const amount = a.onhand_amount;
@@ -79,7 +67,6 @@ export default async function getMyAssets(args: { include_jpy_valuation?: boolea
 			};
 		});
 
-		// 構成比の算出
 		if (include_jpy_valuation && totalJpyValue > 0) {
 			for (const asset of assets) {
 				if (asset.jpy_value != null) {
@@ -89,10 +76,8 @@ export default async function getMyAssets(args: { include_jpy_valuation?: boolea
 			}
 		}
 
-		// JPY 評価額降順でソート
 		assets.sort((a, b) => (b.jpy_value ?? 0) - (a.jpy_value ?? 0));
 
-		// サマリー文字列の生成
 		const lines: string[] = [];
 		lines.push(`保有資産: ${assets.length}通貨`);
 		if (include_jpy_valuation && totalJpyValue > 0) {
@@ -140,7 +125,6 @@ export default async function getMyAssets(args: { include_jpy_valuation?: boolea
 
 		const result = ok(summary, data, meta);
 
-		// ticker 一部失敗の場合は partial_data_warning を付与
 		if (tickerError) {
 			(result.meta as Record<string, unknown>).warning = 'partial_data_warning';
 			(result.meta as Record<string, unknown>).warningDetail = tickerError;
@@ -148,12 +132,10 @@ export default async function getMyAssets(args: { include_jpy_valuation?: boolea
 
 		return GetMyAssetsOutputSchema.parse(result);
 	} catch (err) {
-		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
 		return GetMyAssetsOutputSchema.parse(failPrivateToolError(err, 'asset 取得中に予期しないエラーが発生しました'));
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'get_my_assets',
 	description:

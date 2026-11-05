@@ -17,8 +17,6 @@ afterEach(() => {
 	vi.clearAllMocks();
 });
 
-// ─── 共通フィクスチャ ─────────────────────────────────────────────────────────
-
 function makeTextInput(overrides: Partial<BuildMarketSignalHandlerTextInput> = {}): BuildMarketSignalHandlerTextInput {
 	return {
 		pair: 'btc_jpy',
@@ -55,8 +53,6 @@ function makeTextInput(overrides: Partial<BuildMarketSignalHandlerTextInput> = {
 		...overrides,
 	};
 }
-
-// ─── buildMarketSignalHandlerText ─────────────────────────────────────────────
 
 describe('buildMarketSignalHandlerText', () => {
 	it('ペア名・タイムフレーム・スコア・判定が含まれる', () => {
@@ -256,8 +252,6 @@ describe('buildMarketSignalHandlerText', () => {
 	});
 });
 
-// ─── handler orchestration ────────────────────────────────────────────────────
-
 describe('toolDef handler', () => {
 	function makeBreakdownFactor(_factor: string) {
 		return {
@@ -375,8 +369,6 @@ describe('toolDef handler', () => {
 		expect(text).toContain('RSI(14)');
 		expect(text).toContain('MACD');
 	});
-
-	// ── 上流 warning の content 先頭への連結（§9.3） ────────────────────────────
 
 	it('meta.warning がある場合 content の先頭行が ⚠️ で始まる', async () => {
 		const r = makeOkResult();

@@ -1,16 +1,6 @@
-/**
- * Private API レスポンスのフィクスチャ集
- * ユニットテストで再利用する
- */
-
 import type { HttpFetcher } from '../../src/private/client.js';
 
-// ── 資産 ──
-
-// 実 API（/v1/user/assets）の assets[] 形に準拠。
-// withdrawing_amount / network_list / collateral_ratio は公式 rest-api_JP.md の
-// レスポンス例どおりに含める（jpy は network_list を持たない点も再現）。
-// 社内一次ソース: docs/internal/bitbank-api-fields.md
+// 実 API（/v1/user/assets）の assets[] 形に準拠し、withdrawing_amount / network_list / collateral_ratio を公式 rest-api_JP.md のレスポンス例どおりに含める（jpy は network_list を持たない点も再現）。
 export const rawAssetsResponse = {
 	assets: [
 		{
@@ -88,8 +78,6 @@ export const rawAssetsResponse = {
 	],
 };
 
-// ── 約定履歴 ──
-
 export const rawTradeHistoryResponse = {
 	trades: [
 		{
@@ -136,8 +124,6 @@ export const rawTradeHistoryResponse = {
 		},
 	],
 };
-
-// ── アクティブ注文 ──
 
 export const rawActiveOrdersResponse = {
 	orders: [
@@ -189,8 +175,6 @@ export const rawActiveOrdersResponse = {
 	],
 };
 
-// ── 入金履歴 ──
-
 export const rawDepositHistoryResponse = {
 	deposits: [
 		{
@@ -216,8 +200,6 @@ export const rawDepositHistoryResponse = {
 	],
 };
 
-// ── 出金履歴 ──
-
 export const rawWithdrawalHistoryResponse = {
 	withdrawals: [
 		{
@@ -226,8 +208,7 @@ export const rawWithdrawalHistoryResponse = {
 			amount: '200000',
 			fee: '550',
 			bank_name: 'テスト銀行',
-			// 実 API（fiat 出金）が返す禁止フィールド。
-			// ツール出力から除外されることを検証するため敢えて含める。
+			// 実 API（fiat 出金）が返す禁止フィールド。ツール出力から除外されることを検証するので敢えて含める。
 			account_uuid: 'acc-uuid-001',
 			branch_name: 'テスト支店',
 			account_type: '普通',
@@ -249,8 +230,6 @@ export const rawWithdrawalHistoryResponse = {
 		},
 	],
 };
-
-// ── 信用取引ステータス ──
 
 export const rawMarginStatusResponse = {
 	status: 'NORMAL',
@@ -276,8 +255,6 @@ export const rawMarginStatusResponse = {
 		{ pair: 'eth_jpy', long: '300000', short: '250000' },
 	],
 };
-
-// ── 信用建玉 ──
 
 export const rawMarginPositionsResponse = {
 	notice: { what: null, occurred_at: null, amount: null, due_date_at: null },
@@ -307,8 +284,6 @@ export const rawMarginPositionsResponse = {
 		company: '120',
 	},
 };
-
-// ── 信用約定履歴 ──
 
 export const rawMarginTradeHistoryResponse = {
 	trades: [
@@ -362,12 +337,6 @@ export const rawMarginTradeHistoryResponse = {
 	],
 };
 
-// ── /spot/pairs フィクスチャ ──
-
-/**
- * /spot/pairs ペア仕様のデフォルト値（btc_jpy 相当）。
- * テストごとに overrides で上書きできる。
- */
 export function mockSpotPairSpec(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		name: 'btc_jpy',
@@ -411,10 +380,6 @@ export function mockSpotPairSpec(overrides: Record<string, unknown> = {}): Recor
 	};
 }
 
-/**
- * /spot/pairs レスポンス全体（btc_jpy + eth_jpy を含むデフォルト）。
- * extraPairs で追加 / 上書きできる。
- */
 export function mockSpotPairsResponse(extraPairs: Array<Record<string, unknown>> = []): {
 	success: 1;
 	data: { pairs: Array<Record<string, unknown>> };
@@ -440,19 +405,14 @@ export function mockSpotPairsResponse(extraPairs: Array<Record<string, unknown>>
 	};
 }
 
-// ── ヘルパー ──
-
-/** bitbank 成功レスポンスラッパー */
 export function mockBitbankSuccess<T>(data: T): { success: 1; data: T } {
 	return { success: 1, data };
 }
 
-/** bitbank エラーレスポンスラッパー */
 export function mockBitbankError(code: number): { success: 0; data: { code: number } } {
 	return { success: 0, data: { code } };
 }
 
-/** Response オブジェクトを生成するヘルパー */
 export function jsonResponse(body: unknown, status = 200, headers?: Record<string, string>): Response {
 	return new Response(JSON.stringify(body), {
 		status,
@@ -460,10 +420,6 @@ export function jsonResponse(body: unknown, status = 200, headers?: Record<strin
 	});
 }
 
-/**
- * 順次レスポンスを返す HttpFetcher モック。
- * 呼び出しごとに responses 配列を順に消費する。
- */
 export function createMockFetcher(
 	responses: Response[],
 ): HttpFetcher & { calls: Array<{ url: string; init: RequestInit }> } {
@@ -480,10 +436,6 @@ export function createMockFetcher(
 	return fetcher;
 }
 
-/**
- * URL 部分一致でルーティングする fetch モック。
- * analyze_my_portfolio のような複数 API 並列呼び出しのテストに有用。
- */
 export function createUrlRouter(
 	routes: Record<string, () => Response>,
 	fallback?: () => Response,

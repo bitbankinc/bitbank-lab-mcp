@@ -1,21 +1,8 @@
-/**
- * `account_pnl` 系スキーマの契約テスト（#72）。
- *
- * 対象は 3 点。いずれも人手のレビューでは抜けやすいので機械的に固定する
- * （`.claude/rules/tools.md`「規約はテストで機械的に固定する」）。
- *
- * 1. **コスト項の符号規約が description に書いてある。** `structuredContent` を直読みする
- *    非 LLM クライアントにとって、フィールド名と description が符号を知る唯一の手掛かり。
- * 2. **alias に写像先と削除目標バージョンが書いてある。** 期日を書かない別名は「いつ消せるのか」
- *    が分からなくなり、恒久的な二重出力として残る。
- * 3. **新設キーは既存キーの後ろに宣言されている。** `z.object` の parse は宣言順で
- *    オブジェクトを組み直すため、宣言位置がそのまま wire のキー順になる。
- */
+// コスト項の符号規約・alias の写像先と削除目標・wire のキー順を、description と宣言順で機械的に固定する（#72）。
 import { describe, expect, it } from 'vitest';
 import { AnalyzeMyPortfolioDataSchema } from '../../src/private/schemas.js';
 import { DEPRECATED_FIELD_REMOVAL_TARGET } from '../../src/schema/base.js';
 
-/** `AnalyzeMyPortfolioDataSchema` の optional なオブジェクトフィールドから shape を取り出す。 */
 function shapeOf(
 	field: 'account_pnl' | 'yearly_account_pnl' | 'monthly_account_pnl',
 ): Record<string, { description?: string }> {
@@ -33,7 +20,6 @@ const ALL_HISTORY_KEYS = [
 	'total',
 	'margin_interest_cost',
 	'margin_fee_cost',
-	// #80 で追加
 	'spot_realized_pnl_unavailable_reason',
 ];
 
@@ -47,7 +33,6 @@ const PERIOD_KEYS = [
 	'period_end',
 	'margin_interest_cost',
 	'margin_fee_cost',
-	// #80 で追加
 	'spot_realized_pnl_unavailable_reason',
 ];
 

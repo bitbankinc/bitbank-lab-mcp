@@ -10,6 +10,7 @@
 			"src/**",
 			"tools/**",
 			"lib/**",
+			"lab/**",
 			"scripts/**",
 			"tests/**"
 		]

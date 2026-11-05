@@ -1,26 +1,11 @@
-/**
- * chart/ichimoku-cloud — 一目均衡表の雲（先行スパン A/B）の SVG パス生成。
- *
- * spanA と spanB の交差点で緑雲と赤雲を切り替える。
- */
-
-/** 雲パス生成のコンテキスト */
 export interface CloudContext {
-	/** X 座標変換: barIndex → SVG x */
 	x: (i: number) => number;
-	/** Y 座標変換: price → SVG y */
 	y: (v: number) => number;
-	/** pastBuffer（生データの前方バッファ長） */
 	pastBuffer: number;
-	/** 描画領域のバー数 */
 	displayLength: number;
-	/** 先行シフト幅 */
 	forwardShift: number;
 }
 
-/**
- * spanA / spanB の交差で色を切り替えながら雲ポリゴンのパスを生成する。
- */
 export function createCloudPaths(
 	spanA: Array<number | null> | undefined,
 	spanB: Array<number | null> | undefined,
@@ -69,7 +54,6 @@ export function createCloudPaths(
 			continue;
 		}
 
-		// 描画領域外のセグメントをスキップ
 		const posIndex0 = getPosIndex(i);
 		const posIndex1 = getPosIndex(i + 1);
 		if (posIndex1 < minPosIndex || posIndex0 > maxPosIndex) {
@@ -92,7 +76,6 @@ export function createCloudPaths(
 			currentBottom.push(toPoint(i + 1, currentIsGreen ? b1 : a1));
 			continue;
 		}
-		// 交点の線形補間
 		const da = a1 - a0;
 		const db = b1 - b0;
 		const denom = da - db;

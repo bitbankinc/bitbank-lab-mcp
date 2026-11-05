@@ -1,5 +1,6 @@
 ---
-globs: tests/**/*.test.ts
+paths:
+  - "tests/**/*.test.ts"
 ---
 
 # テスト作成ガイド

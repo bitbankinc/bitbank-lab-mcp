@@ -38,7 +38,6 @@ content テキスト末尾に equity_curve / drawdown_curve の JSON を含む
 			return { content: [{ type: 'text', text: errorText }], structuredContent: toStructured(res) };
 		}
 
-		// SVG がある場合はアーティファクト用のヒントを追加
 		let svgHint = '';
 		if (res.svg) {
 			svgHint = [

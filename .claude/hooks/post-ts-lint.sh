@@ -22,12 +22,14 @@ esac
 
 diag=""
 
+# npx は --no-install で使う。node_modules が無いと npm 上の同名の別パッケージ（`biome` 等）を取得して実行してしまうため。
+
 # Phase 1: サイレント自動修正
-npx biome format --write "$file" >/dev/null 2>&1 || true
-npx oxlint --fix "$file" >/dev/null 2>&1 || true
+npx --no-install biome format --write "$file" >/dev/null 2>&1 || true
+npx --no-install oxlint --fix "$file" >/dev/null 2>&1 || true
 
 # Phase 2: 残った lint 違反を収集
-lint_out="$(npx oxlint "$file" 2>&1 | head -30)" || true
+lint_out="$(npx --no-install oxlint "$file" 2>&1 | head -30)" || true
 if echo "$lint_out" | grep -qE 'Found [1-9][0-9]* (warning|error)'; then
   diag="[Oxlint] $lint_out"
 fi
@@ -48,7 +50,7 @@ if [ -f "$TSC_STAMP" ]; then
 fi
 
 if [ "$run_tsc" = true ]; then
-  tsc_out="$(npx tsc --noEmit --incremental --tsBuildInfoFile "$TSC_BUILDINFO" -p tsconfig.json 2>&1 | grep -F "$file" | head -10)" || true
+  tsc_out="$(npx --no-install tsc --noEmit --incremental --tsBuildInfoFile "$TSC_BUILDINFO" -p tsconfig.json 2>&1 | grep -F "$file" | head -10)" || true
   if [ -n "$tsc_out" ]; then
     diag="${diag:+${diag}
 }[TypeScript] $tsc_out"

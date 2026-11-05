@@ -1,8 +1,3 @@
-/**
- * tests/fixtures/private-api.ts のヘルパー関数のユニットテスト。
- * createMockFetcher と createUrlRouter のエッジケースを検証する。
- */
-
 import { describe, expect, it } from 'vitest';
 import { createMockFetcher, createUrlRouter, jsonResponse, mockBitbankSuccess } from './private-api.js';
 

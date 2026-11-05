@@ -1,10 +1,4 @@
-/**
- * failPrivateToolError（src/private/tool-error.ts）のユニットテスト。
- *
- * Private ツールの catch 経路で、未知エラー（プログラミングエラー・lib 由来例外・
- * ZodError 等）の内部 message を Result（summary）へ漏らさず、PrivateApiError の
- * 分類済み文言のみを素通しすることを検証する（情報漏洩防止 regression）。
- */
+// Private ツールの catch 経路で、未知エラーの内部 message を summary に漏らさず PrivateApiError の分類済み文言だけを通すことの回帰（情報漏洩防止）。
 
 import { describe, expect, it } from 'vitest';
 import { getBitbankErrorMessage } from '../../src/lib/bitbank-errors.js';

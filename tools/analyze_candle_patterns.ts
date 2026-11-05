@@ -1,23 +1,4 @@
-/**
- * analyze_candle_patterns - ローソク足パターン検出（1〜3本足）
- *
- * 設計思想:
- * - 目的: 指定ペアの直近5日間のローソク足から短期反転パターンを検出
- * - 対象:
- *   - 1本足: ハンマー、シューティングスター、十字線
- *   - 2本足: 包み線、はらみ線、毛抜き、かぶせ線、切り込み線
- *   - 3本足: 明けの明星、宵の明星、赤三兵、黒三兵
- * - 用途: 初心者向けの自然言語解説 + 過去統計付与
- *
- * 既存ツールとの違い:
- * - detect_patterns: 数週間〜数ヶ月スケールの大型チャートパターン
- * - 本ツール: 1〜3本足の短期反転パターンに特化
- *
- * 🚨 CRITICAL: 配列順序の明示
- * candles配列の順序は常に [最古, ..., 最新] です
- * - index 0: 最古（5日前）
- * - index n-1: 最新（今日、未確定の可能性）
- */
+// candles 配列は常に [最古, ..., 最新] で、最新は未確定の可能性がある。
 
 import { parseDayKeyAllowingOverflow } from '../lib/calendar.js';
 import {
@@ -47,14 +28,12 @@ import { AnalyzeCandlePatternsInputSchema, AnalyzeCandlePatternsOutputSchema } f
 import type { ToolDefinition } from '../src/tool-definition.js';
 import getCandles from './get_candles.js';
 
-// ----- パターンコンテキスト -----
 interface PatternContext {
 	rangeHigh: number;
 	rangeLow: number;
 	avgBodySize: number;
 }
 
-// ----- 統一パターン定義 -----
 interface PatternConfig {
 	span: 1 | 2 | 3;
 	direction: 'bullish' | 'bearish' | 'neutral';
@@ -62,12 +41,6 @@ interface PatternConfig {
 	detect: (candles: Candle[], context?: PatternContext) => { detected: boolean; strength: number };
 }
 
-// ----- ヘルパー関数 -----
-
-/**
- * トレンド判定（直前n本の終値で判定）
- * CRITICAL: candles配列は [最古, ..., 最新] の順序
- */
 function detectTrendBefore(candles: Candle[], endIndex: number, lookbackCount: number = 3): 'up' | 'down' | 'neutral' {
 	if (endIndex < lookbackCount - 1) return 'neutral';
 
@@ -88,9 +61,6 @@ function detectTrendBefore(candles: Candle[], endIndex: number, lookbackCount: n
 	return 'neutral';
 }
 
-/**
- * ボラティリティレベルの判定
- */
 function detectVolatilityLevel(
 	candles: Candle[],
 	endIndex: number,
@@ -108,16 +78,6 @@ function detectVolatilityLevel(
 	return 'medium';
 }
 
-// =====================================================================
-// パターン検出関数
-// =====================================================================
-
-// ----- 1本足パターン (Phase 3) -----
-
-/**
- * ハンマー (hammer) の検出
- * 条件: 長い下ヒゲ、小さい実体（上部）、短い上ヒゲ
- */
 function detectHammer(candles: Candle[], _context?: PatternContext): { detected: boolean; strength: number } {
 	const c = candles[0];
 	const range = totalRange(c);
@@ -130,21 +90,14 @@ function detectHammer(candles: Candle[], _context?: PatternContext): { detected:
 
 	// 実体はレンジの5%〜35%（dojiと区別 & 大きすぎない）
 	if (bodyRatio < 0.05 || bodyRatio > 0.35) return { detected: false, strength: 0 };
-	// 下ヒゲが実体の2倍以上
 	if (lower < body * 2) return { detected: false, strength: 0 };
-	// 上ヒゲがレンジの25%以下
 	if (upper / range > 0.25) return { detected: false, strength: 0 };
-	// 下ヒゲがレンジの60%以上
 	if (lower / range < 0.6) return { detected: false, strength: 0 };
 
 	const strength = Math.min((lower / range - 0.4) / 0.6, 1.0);
 	return { detected: true, strength };
 }
 
-/**
- * シューティングスター (shooting_star) の検出
- * 条件（ハンマーの逆）: 長い上ヒゲ、小さい実体（下部）、短い下ヒゲ
- */
 function detectShootingStar(candles: Candle[], _context?: PatternContext): { detected: boolean; strength: number } {
 	const c = candles[0];
 	const range = totalRange(c);
@@ -164,12 +117,6 @@ function detectShootingStar(candles: Candle[], _context?: PatternContext): { det
 	return { detected: true, strength };
 }
 
-/**
- * 十字線 (doji) の検出
- * 条件: 実体がレンジの5%未満（始値≒終値）
- * ヒゲの偏りで亜種を判別:
- *   - 上下均等 → 通常十字線, 下ヒゲ優勢 → トンボ型, 上ヒゲ優勢 → トウバ型
- */
 function detectDoji(candles: Candle[], _context?: PatternContext): { detected: boolean; strength: number } {
 	const c = candles[0];
 	const range = totalRange(c);
@@ -186,9 +133,6 @@ function detectDoji(candles: Candle[], _context?: PatternContext): { detected: b
 	return { detected: true, strength };
 }
 
-// ----- 2本足パターン (Phase 1-2) -----
-
-/** 陽線包み線 (bullish_engulfing): 陰線 → それを完全に包む陽線 */
 function detectBullishEngulfing(candles: Candle[]): { detected: boolean; strength: number } {
 	const [c1, c2] = candles;
 	if (!isBearish(c1) || !isBullish(c2)) return { detected: false, strength: 0 };
@@ -200,7 +144,6 @@ function detectBullishEngulfing(candles: Candle[]): { detected: boolean; strengt
 	return { detected: true, strength };
 }
 
-/** 陰線包み線 (bearish_engulfing): 陽線 → それを完全に包む陰線 */
 function detectBearishEngulfing(candles: Candle[]): { detected: boolean; strength: number } {
 	const [c1, c2] = candles;
 	if (!isBullish(c1) || !isBearish(c2)) return { detected: false, strength: 0 };
@@ -212,7 +155,6 @@ function detectBearishEngulfing(candles: Candle[]): { detected: boolean; strengt
 	return { detected: true, strength };
 }
 
-/** 陽線はらみ線 (bullish_harami): 大陰線 → 小さいローソク足が内包 */
 function detectBullishHarami(candles: Candle[]): { detected: boolean; strength: number } {
 	const [c1, c2] = candles;
 	if (!isBearish(c1)) return { detected: false, strength: 0 };
@@ -225,7 +167,6 @@ function detectBullishHarami(candles: Candle[]): { detected: boolean; strength: 
 	return { detected: true, strength: Math.min(1 - body2 / body1, 1.0) };
 }
 
-/** 陰線はらみ線 (bearish_harami): 大陽線 → 小さいローソク足が内包 */
 function detectBearishHarami(candles: Candle[]): { detected: boolean; strength: number } {
 	const [c1, c2] = candles;
 	if (!isBullish(c1)) return { detected: false, strength: 0 };
@@ -238,7 +179,6 @@ function detectBearishHarami(candles: Candle[]): { detected: boolean; strength: 
 	return { detected: true, strength: Math.min(1 - body2 / body1, 1.0) };
 }
 
-/** 毛抜き天井 (tweezer_top): 2日連続で高値がほぼ同じ（±0.5%） */
 function detectTweezerTop(candles: Candle[], context?: PatternContext): { detected: boolean; strength: number } {
 	const [c1, c2] = candles;
 	const avgHigh = (c1.high + c2.high) / 2;
@@ -255,7 +195,6 @@ function detectTweezerTop(candles: Candle[], context?: PatternContext): { detect
 	return { detected: true, strength };
 }
 
-/** 毛抜き底 (tweezer_bottom): 2日連続で安値がほぼ同じ（±0.5%） */
 function detectTweezerBottom(candles: Candle[], context?: PatternContext): { detected: boolean; strength: number } {
 	const [c1, c2] = candles;
 	const avgLow = (c1.low + c2.low) / 2;
@@ -272,7 +211,6 @@ function detectTweezerBottom(candles: Candle[], context?: PatternContext): { det
 	return { detected: true, strength };
 }
 
-/** かぶせ線 (dark_cloud_cover) */
 function detectDarkCloudCover(candles: Candle[], context?: PatternContext): { detected: boolean; strength: number } {
 	const [c1, c2] = candles;
 	if (!isBullish(c1) || !isBearish(c2)) return { detected: false, strength: 0 };
@@ -291,7 +229,6 @@ function detectDarkCloudCover(candles: Candle[], context?: PatternContext): { de
 	return { detected: true, strength: Math.min((midPoint - c2.close) / body1, 1.0) };
 }
 
-/** 切り込み線 (piercing_line) */
 function detectPiercingLine(candles: Candle[], context?: PatternContext): { detected: boolean; strength: number } {
 	const [c1, c2] = candles;
 	if (!isBearish(c1) || !isBullish(c2)) return { detected: false, strength: 0 };
@@ -310,12 +247,6 @@ function detectPiercingLine(candles: Candle[], context?: PatternContext): { dete
 	return { detected: true, strength: Math.min((c2.close - midPoint) / body1, 1.0) };
 }
 
-// ----- 3本足パターン (Phase 3) -----
-
-/**
- * 明けの明星 (morning_star)
- * 大陰線→小さい実体→大陽線で1本目の中心値超え
- */
 function detectMorningStar(candles: Candle[], context?: PatternContext): { detected: boolean; strength: number } {
 	const [c1, c2, c3] = candles;
 	if (!isBearish(c1) || !isBullish(c3)) return { detected: false, strength: 0 };
@@ -339,10 +270,6 @@ function detectMorningStar(candles: Candle[], context?: PatternContext): { detec
 	return { detected: true, strength: Math.min(recovery / body1 + 0.3, 1.0) };
 }
 
-/**
- * 宵の明星 (evening_star)
- * 大陽線→小さい実体→大陰線で1本目の中心値割れ
- */
 function detectEveningStar(candles: Candle[], context?: PatternContext): { detected: boolean; strength: number } {
 	const [c1, c2, c3] = candles;
 	if (!isBullish(c1) || !isBearish(c3)) return { detected: false, strength: 0 };
@@ -359,17 +286,12 @@ function detectEveningStar(candles: Candle[], context?: PatternContext): { detec
 	const midPointC1 = (c1.open + c1.close) / 2;
 	if (c3.close > midPointC1) return { detected: false, strength: 0 };
 
-	// BTC24h緩和: 2本目の実体上端が1本目の実体上端以上
 	if (bodyTop(c2) < bodyTop(c1)) return { detected: false, strength: 0 };
 
 	const decline = midPointC1 - c3.close;
 	return { detected: true, strength: Math.min(decline / body1 + 0.3, 1.0) };
 }
 
-/**
- * 赤三兵 (three_white_soldiers)
- * 3本連続陽線、各終値が前を上回る、始値は前の実体内
- */
 function detectThreeWhiteSoldiers(
 	candles: Candle[],
 	context?: PatternContext,
@@ -385,13 +307,11 @@ function detectThreeWhiteSoldiers(
 
 	if (body1 < avgBody * 0.5 || body2 < avgBody * 0.5 || body3 < avgBody * 0.5) return { detected: false, strength: 0 };
 
-	// 各始値が前の実体内またはその近辺
 	const tol2 = body1 * 0.5;
 	const tol3 = body2 * 0.5;
 	if (c2.open < bodyBottom(c1) - tol2 || c2.open > bodyTop(c1) + tol2) return { detected: false, strength: 0 };
 	if (c3.open < bodyBottom(c2) - tol3 || c3.open > bodyTop(c2) + tol3) return { detected: false, strength: 0 };
 
-	// 上ヒゲが短い
 	for (const c of [c1, c2, c3]) {
 		const r = totalRange(c);
 		if (r > 0 && upperShadow(c) / r > 0.4) return { detected: false, strength: 0 };
@@ -402,10 +322,6 @@ function detectThreeWhiteSoldiers(
 	return { detected: true, strength: Math.min(minBody / maxBody + 0.2, 1.0) };
 }
 
-/**
- * 黒三兵 (three_black_crows)
- * 3本連続陰線、各終値が前を下回る
- */
 function detectThreeBlackCrows(candles: Candle[], context?: PatternContext): { detected: boolean; strength: number } {
 	const [c1, c2, c3] = candles;
 	if (!isBearish(c1) || !isBearish(c2) || !isBearish(c3)) return { detected: false, strength: 0 };
@@ -423,7 +339,6 @@ function detectThreeBlackCrows(candles: Candle[], context?: PatternContext): { d
 	if (c2.open < bodyBottom(c1) - tol2 || c2.open > bodyTop(c1) + tol2) return { detected: false, strength: 0 };
 	if (c3.open < bodyBottom(c2) - tol3 || c3.open > bodyTop(c2) + tol3) return { detected: false, strength: 0 };
 
-	// 下ヒゲが短い
 	for (const c of [c1, c2, c3]) {
 		const r = totalRange(c);
 		if (r > 0 && lowerShadow(c) / r > 0.4) return { detected: false, strength: 0 };
@@ -434,12 +349,7 @@ function detectThreeBlackCrows(candles: Candle[], context?: PatternContext): { d
 	return { detected: true, strength: Math.min(minBody / maxBody + 0.2, 1.0) };
 }
 
-// =====================================================================
-// パターン定義レジストリ
-// =====================================================================
-
 const PATTERN_CONFIGS: Record<CandlePatternType, PatternConfig> = {
-	// 1本足
 	hammer: { span: 1, direction: 'bullish', jp_name: 'ハンマー（カラカサ）', detect: detectHammer },
 	shooting_star: {
 		span: 1,
@@ -448,7 +358,6 @@ const PATTERN_CONFIGS: Record<CandlePatternType, PatternConfig> = {
 		detect: detectShootingStar,
 	},
 	doji: { span: 1, direction: 'neutral', jp_name: '十字線（Doji）', detect: detectDoji },
-	// 2本足
 	bullish_engulfing: { span: 2, direction: 'bullish', jp_name: '陽線包み線', detect: detectBullishEngulfing },
 	bearish_engulfing: { span: 2, direction: 'bearish', jp_name: '陰線包み線', detect: detectBearishEngulfing },
 	bullish_harami: { span: 2, direction: 'bullish', jp_name: '陽線はらみ線', detect: detectBullishHarami },
@@ -457,23 +366,18 @@ const PATTERN_CONFIGS: Record<CandlePatternType, PatternConfig> = {
 	tweezer_bottom: { span: 2, direction: 'bullish', jp_name: '毛抜き底', detect: detectTweezerBottom },
 	dark_cloud_cover: { span: 2, direction: 'bearish', jp_name: 'かぶせ線', detect: detectDarkCloudCover },
 	piercing_line: { span: 2, direction: 'bullish', jp_name: '切り込み線', detect: detectPiercingLine },
-	// 3本足
 	morning_star: { span: 3, direction: 'bullish', jp_name: '明けの明星', detect: detectMorningStar },
 	evening_star: { span: 3, direction: 'bearish', jp_name: '宵の明星', detect: detectEveningStar },
 	three_white_soldiers: { span: 3, direction: 'bullish', jp_name: '赤三兵', detect: detectThreeWhiteSoldiers },
 	three_black_crows: { span: 3, direction: 'bearish', jp_name: '黒三兵', detect: detectThreeBlackCrows },
 };
 
-// ----- 過去統計計算 -----
 interface PatternOccurrence {
 	index: number;
 	pattern: CandlePatternType;
 	basePrice: number;
 }
 
-/**
- * 過去のパターン出現を検索（span 対応）
- */
 function findHistoricalPatterns(
 	candles: Candle[],
 	pattern: CandlePatternType,
@@ -499,28 +403,22 @@ function findHistoricalPatterns(
 	return occurrences;
 }
 
-/**
- * 過去統計を計算
- */
 function calculateHistoryStats(
 	candles: Candle[],
 	pattern: CandlePatternType,
 	horizons: number[],
 	lookbackDays: number,
 ): HistoryStats | null {
-	// lookbackDays分のデータがあるか確認
 	if (candles.length < lookbackDays) {
 		return null;
 	}
 
-	// lookbackDays期間内のパターンを検索
 	const startIndex = candles.length - lookbackDays;
 	const relevantCandles = candles.slice(startIndex);
 
 	const occurrences = findHistoricalPatterns(relevantCandles, pattern, 5);
 
 	if (occurrences.length < 5) {
-		// サンプル数が少なすぎる場合はnull
 		return null;
 	}
 
@@ -530,10 +428,8 @@ function calculateHistoryStats(
 		const returns: number[] = [];
 
 		for (const occ of occurrences) {
-			// グローバルインデックスに変換
 			const globalIndex = startIndex + occ.index;
 
-			// h本後のデータが存在するか確認
 			if (globalIndex + h < candles.length) {
 				const futureCandle = candles[globalIndex + h];
 				const returnPct = ((futureCandle.close - occ.basePrice) / occ.basePrice) * 100;
@@ -561,23 +457,12 @@ function calculateHistoryStats(
 	};
 }
 
-// ----- ヘルパー: 日付形式の正規化 -----
-/**
- * `as_of` / `date` 指定時に「その日までの足」を切り出すときの暦基準。
- *
- * UTC 固定なのは現行挙動の維持のため。`get_candles` は同じ日付キーを `tz` 引数の暦日
- * （既定 Asia/Tokyo）として解釈しており基準がずれているが、揃えると「どの足まで含めるか」が
- * 変わる仕様変更になるため本移行では踏み込まない。
- */
-const AS_OF_FILTER_TZ = 'UTC';
+// get_candles に渡す tz と同じ暦日で絞る。日足の timestamp は UTC 00:00 なので、UTC の暦日で絞っても残る足は同じ。
+const AS_OF_TZ = 'Asia/Tokyo';
 
-/**
- * ISO形式 ("2025-11-05") または YYYYMMDD ("20251105") を YYYYMMDD に正規化
- */
 function normalizeDateToYYYYMMDD(dateStr: string | undefined): string | undefined {
 	if (!dateStr) return undefined;
 
-	// ISO形式 ("2025-11-05" or "2025-11-05T...") の場合
 	if (dateStr.includes('-')) {
 		const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
 		if (match) {
@@ -585,7 +470,6 @@ function normalizeDateToYYYYMMDD(dateStr: string | undefined): string | undefine
 		}
 	}
 
-	// 既にYYYYMMDD形式の場合
 	if (/^\d{8}$/.test(dateStr)) {
 		return dateStr;
 	}
@@ -593,7 +477,6 @@ function normalizeDateToYYYYMMDD(dateStr: string | undefined): string | undefine
 	return undefined;
 }
 
-// ----- メイン関数 -----
 export default async function analyzeCandlePatterns(
 	opts: {
 		pair?: string;
@@ -609,7 +492,6 @@ export default async function analyzeCandlePatterns(
 	} = {},
 ) {
 	try {
-		// 入力の正規化
 		const input = AnalyzeCandlePatternsInputSchema.parse(opts);
 		const chk = ensurePair(input.pair);
 		if (!chk.ok) return failFromValidation(chk);
@@ -617,7 +499,6 @@ export default async function analyzeCandlePatterns(
 		const timeframe = input.timeframe;
 
 		// as_of を優先、なければ date を使用（互換性のため）
-		// as_of: ISO形式 "2025-11-05" または YYYYMMDD "20251105" を受け付け
 		const rawDate = input.as_of || input.date;
 		const targetDate = normalizeDateToYYYYMMDD(rawDate);
 		const windowDays = input.window_days;
@@ -627,36 +508,25 @@ export default async function analyzeCandlePatterns(
 		const historyHorizons = input.history_horizons;
 		const allowPartial = input.allow_partial_patterns;
 
-		// 日付指定があるかどうか
 		const isHistoricalQuery = !!targetDate;
 
-		// ローソク足データを取得（統計計算用に多めに取得）
 		const requiredCandles = Math.max(windowDays, historyLookbackDays + 10);
-		const candlesResult = await getCandles(pair, '1day', targetDate, requiredCandles);
+		const candlesResult = await getCandles(pair, '1day', targetDate, requiredCandles, AS_OF_TZ);
 
 		if (!candlesResult.ok) {
 			return AnalyzeCandlePatternsOutputSchema.parse(fail(candlesResult.summary, 'internal'));
 		}
 
-		// 上流 get_candles の取得層 warning を取り込む（partial fetch / multi-day 失敗等）。
-		// server.ts の respond() は content を summary より優先するため、summary だけでなく
-		// content[0].text の先頭にも warning を出す必要がある。
+		// server.ts の respond() は content を summary より優先するので、content[0].text の先頭にも warning を出す。
 		const upstream = extractUpstreamWarning(candlesResult.meta);
 
-		// 全データを保持（統計計算用）
 		const allCandlesForStats = candlesResult.data.normalized;
 		let allCandles = [...allCandlesForStats];
 
-		// 🚨 CRITICAL: 日付指定時は、その日付以前のデータのみにフィルタリング
-		// get_candles は年単位でデータを取得するため、指定日以降のデータも含まれる
+		// get_candles は年単位で取得するので指定日以降の足も含まれる。その日付以前だけに絞る。
 		if (isHistoricalQuery && targetDate) {
-			// targetDate は YYYYMMDD 形式（例: "20251105"）。
-			// normalizeDateToYYYYMMDD は形式しか見ないため実在しない日付（20260230 等）が到達しうる。
-			// 従来の `dayjs.utc('2026-02-30')` はこれを 3/2 へ繰り上げていたので、
-			// 実在日を要求する parseDayKey ではなく繰り上げ許容版を選ぶ。
-			// 繰り上げても解釈できない値は NaN のままにして「全件が範囲外 → データ不足 fail」という
-			// 既存の分岐を保つ。
-			const targetDateMs = parseDayKeyAllowingOverflow(targetDate, AS_OF_FILTER_TZ)?.endMs ?? Number.NaN;
+			// 形式しか見ないので実在しない日付が届きうる。従来どおり繰り上げ許容で読み、解釈できない値は NaN のまま「データ不足 fail」に落とす。
+			const targetDateMs = parseDayKeyAllowingOverflow(targetDate, AS_OF_TZ)?.endMs ?? Number.NaN;
 
 			allCandles = allCandles.filter((c) => {
 				if (!c.isoTime) return false;
@@ -670,21 +540,14 @@ export default async function analyzeCandlePatterns(
 			);
 		}
 
-		// 直近windowDays分を切り出し
-		// CRITICAL: allCandlesは [最古, ..., 最新] の順序
 		const windowStart = allCandles.length - windowDays;
 		const windowCandles = allCandles.slice(windowStart);
 
-		// 日足確定判定:
-		// - 過去日付指定時: すべて確定済み（is_partial = false）
-		// - 最新データ時: 最新の日足が今日のデータなら未確定
-		const displayTz = 'Asia/Tokyo';
-		const todayStr = dayjs().tz(displayTz).format('YYYY-MM-DD');
 		const lastCandle = windowCandles[windowCandles.length - 1];
-		const lastCandleDate = calendarDateFromIso(lastCandle?.isoTime ?? lastCandle?.time) ?? '';
-		const isLastPartial = !isHistoricalQuery && lastCandleDate === todayStr;
+		const lastOpen = lastCandle?.isoTime ?? lastCandle?.time;
+		// 日足は UTC 00:00 始まりなので、JST の暦日で今日と比べると 0〜9 時に進行中の足を確定扱いにしてしまう。
+		const isLastPartial = !isHistoricalQuery && lastOpen != null && dayjs().isBefore(dayjs(lastOpen).add(24, 'hour'));
 
-		// WindowCandle形式に変換
 		const formattedWindowCandles: WindowCandle[] = windowCandles.map((c, idx) => ({
 			timestamp: c.isoTime || toIsoTime(c.time || 0) || '',
 			open: c.open,
@@ -695,13 +558,9 @@ export default async function analyzeCandlePatterns(
 			is_partial: idx === windowCandles.length - 1 && isLastPartial,
 		}));
 
-		// パターン検出
-		// CRITICAL: windowCandles配列は [最古, ..., 最新] の順序
 		const detectedPatterns: DetectedCandlePattern[] = [];
-		// startCheckIndex: 1本足はindex 0から、spanチェックでガード
 		const startCheckIndex = Math.max(0, windowCandles.length - focusLastN);
 
-		// パターンコンテキストを計算
 		const highs = windowCandles.map((c) => c.high);
 		const lows = windowCandles.map((c) => c.low);
 		const bodies = windowCandles.map((c) => Math.abs(c.close - c.open));
@@ -721,7 +580,6 @@ export default async function analyzeCandlePatterns(
 			for (const patternType of targetPatterns) {
 				const config = PATTERN_CONFIGS[patternType];
 
-				// spanに必要な本数があるかチェック
 				if (i < config.span - 1) continue;
 
 				const slice = windowCandles.slice(i - config.span + 1, i + 1);
@@ -764,11 +622,8 @@ export default async function analyzeCandlePatterns(
 		const MIN_STRENGTH_THRESHOLD = 0.5; // 50%
 		const filteredPatterns = detectedPatterns.filter((p) => p.strength >= MIN_STRENGTH_THRESHOLD);
 
-		// サマリーとコンテント生成（フィルタ後のパターンを使用）
 		const baseSummary = generateSummary(filteredPatterns, formattedWindowCandles);
 		const baseContent = generateContent(filteredPatterns, formattedWindowCandles);
-		// 上流 get_candles の warning を summary と content[0].text の両方の先頭に連結する。
-		// content は server.ts が summary より優先するため、summary だけだと LLM に届かない。
 		const summary = prependWarnings(baseSummary, upstream, { separator: '\n' });
 		const content =
 			baseContent.length > 0
@@ -823,7 +678,6 @@ export default async function analyzeCandlePatterns(
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'analyze_candle_patterns',
 	description:

@@ -50,13 +50,13 @@ while IFS= read -r line || [ -n "$line" ]; do
       [ -s "$args" ] || result=1
       ;;
     no_type_errors)
-      npx tsc --noEmit -p tsconfig.json >/dev/null 2>&1 || result=1
+      npx --no-install tsc --noEmit -p tsconfig.json >/dev/null 2>&1 || result=1
       ;;
     test_passes)
       if [ -n "$args" ]; then
-        npx vitest run "$args" >/dev/null 2>&1 || result=1
+        npx --no-install vitest run "$args" >/dev/null 2>&1 || result=1
       else
-        npx vitest run >/dev/null 2>&1 || result=1
+        npx --no-install vitest run >/dev/null 2>&1 || result=1
       fi
       ;;
     grep_in)

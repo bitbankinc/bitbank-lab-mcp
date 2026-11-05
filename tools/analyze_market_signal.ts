@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import { formatPercent, formatPriceJPY } from '../lib/formatter.js';
+import { formatExactPrice, formatPercent, formatPriceJPY } from '../lib/formatter.js';
 import { lastCrossover, sma } from '../lib/indicators.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
@@ -12,8 +12,6 @@ import {
 import analyzeIndicators from './analyze_indicators.js';
 import getFlowMetrics from './get_flow_metrics.js';
 import getVolatilityMetrics from './get_volatility_metrics.js';
-
-// ── buildMarketSignalText ──────────────────────────────────────
 
 export type BuildMarketSignalTextInput = {
 	pair: string;
@@ -77,7 +75,7 @@ export function buildMarketSignalText(input: BuildMarketSignalTextInput): string
 	const { sma25, sma75, sma200 } = sma;
 
 	const score100 = Math.round(score * 100);
-	const priceNowStr = formatPriceJPY(latestClose);
+	const priceNowStr = latestClose != null ? `${formatExactPrice(latestClose)}円` : 'n/a';
 	const relToNow = (smaVal?: number | null) => {
 		if (smaVal == null || latestClose == null || latestClose === 0) return 'n/a';
 		const rel = ((smaVal - latestClose) / latestClose) * 100;
@@ -183,8 +181,6 @@ export function buildMarketSignalText(input: BuildMarketSignalTextInput): string
 	].join('\n');
 }
 
-// ── main function ──────────────────────────────────────────────
-
 type AnalyzeOpts = {
 	type?: string;
 	flowLimit?: number;
@@ -237,12 +233,7 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 				),
 			);
 
-		// 上流 meta から warning / warnings を集約する。
-		// - meta.warning (string): 取得層の不完全性。3 ツールそれぞれの meta.warning を改行連結し、
-		//   どのツール由来か追跡できるよう `[flow] / [volatility] / [indicators]` の prefix を付ける。
-		// - meta.warnings (string[]): 計算層の不完全性。get_flow_metrics（集計値が約定の
-		//   カバー区間のみ由来）と analyze_indicators（バー数不足）が出すので両方継承し、
-		//   同じく由来が追える prefix を付ける。warning と warnings は同じ field に混ぜない（別系統）。
+		// 由来を追えるよう [flow] / [volatility] / [indicators] の prefix を付け、warning と warnings は別系統のまま継承する。
 		const upstreamWarning = collectUpstreamWarnings([
 			{ source: 'flow', warning: (flowRes.meta as { warning?: string }).warning },
 			{ source: 'volatility', warning: (volRes.meta as { warning?: string }).warning },
@@ -260,12 +251,9 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 		];
 		const upstreamWarnings = rawUpstreamWarnings.length > 0 ? rawUpstreamWarnings : undefined;
 
-		// Flow metrics
 		const agg = flowRes.data.aggregates || {};
 		const buckets = (flowRes.data.series?.buckets || []) as Array<{ cvd: number; hasData?: boolean }>;
-		// 欠損バケット（hasData=false）は CVD が据え置きで引き継がれるだけなので、含めると
-		// 「直近 horizon 本」が全部欠損のとき傾き 0 ＝「フロー中立」と誤読される。
-		// 観測のあるバケットだけを対象にする。
+		// 欠損バケットを含めると直近 horizon 本が全部欠損のとき傾き 0 ＝ フロー中立と誤読されるので、観測のあるバケットだけを使う。
 		const cvdSeries = buckets.filter((b) => b.hasData !== false).map((b) => b.cvd);
 		const cvdSlice = cvdSeries.slice(-horizon);
 		const cvdSlope = cvdSlice.length >= 2 ? cvdSlice[cvdSlice.length - 1] - cvdSlice[0] : 0;
@@ -274,18 +262,13 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 		const buyRatio = typeof agg.aggressorRatio === 'number' ? agg.aggressorRatio : 0.5;
 		const buyPressure = clamp((buyRatio - 0.5) * 2, -1, 1);
 
-		// Volatility
-		// rv_std_ann は aggregate（全サンプル, 上の取得は limit=200 → 約 199 returns）の年率実現ボラ。
-		// 実現ボラは標本分散(n-1)化済みだが、aggregate の Bessel 補正は約 +0.25% と無視可能なため、
-		// volatilityFactor の 0.5 正規化基準・閾値は据え置く（「小窓ほど上振れ」の影響は rolling 限定）。
+		// 標本分散化後も Bessel 補正は aggregate で約 +0.25% なので、volatilityFactor の正規化基準・閾値は据え置く。
 		const rv = volRes?.data?.aggregates?.rv_std_ann ?? volRes?.data?.aggregates?.rv_std;
 		const rvNum = typeof rv === 'number' ? rv : 0.5; // typical range ~0.2-0.8
 		const volatilityFactor = clamp((0.5 - rvNum) / 0.5, -1, 1); // 低ボラほど +
 
-		// Indicators
 		const rsi = indRes?.data?.indicators?.RSI_14 as number | null;
 		const momentumFactor = rsi == null ? 0 : clamp((rsi - 50) / 50, -1, 1);
-		// SMA trend factor: price vs SMA25/75 alignment and distance to SMA200
 		const latestClose = indRes?.data?.normalized?.at(-1)?.close as number | undefined;
 		const sma25 = indRes?.data?.indicators?.SMA_25 as number | null | undefined;
 		const sma75 = indRes?.data?.indicators?.SMA_75 as number | null | undefined;
@@ -294,19 +277,16 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 		let smaArrangement: 'bullish' | 'bearish' | 'mixed' = 'mixed';
 		let smaDeviations: { vs25?: number; vs75?: number; vs200?: number } = {};
 		if (latestClose != null && sma25 != null && sma75 != null) {
-			// alignment bonus
 			const alignedUp = latestClose > sma25 && (sma25 as number) > (sma75 as number);
 			const alignedDown = latestClose < sma25 && (sma25 as number) < (sma75 as number);
 			if (alignedUp) smaTrendFactor += 0.6;
 			else if (alignedDown) smaTrendFactor -= 0.6;
 			smaArrangement = alignedUp ? 'bullish' : alignedDown ? 'bearish' : 'mixed';
-			// distance to SMA200 (above -> positive, below -> negative), normalized by 5% band
 			if (sma200 != null) {
 				const dist = (latestClose - (sma200 as number)) / (sma200 as number);
 				smaTrendFactor += clamp(dist / 0.05, -0.4, 0.4);
 			}
 			smaTrendFactor = clamp(smaTrendFactor, -1, 1);
-			// deviations (percent) vs SMA
 			const pct = (val: number | null | undefined) =>
 				val != null && latestClose != null && val !== 0 ? (latestClose - val) / val : undefined;
 			smaDeviations = {
@@ -315,16 +295,13 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 				vs200: pct(sma200 ?? null),
 			};
 		}
-		// SMA position classification relative to all SMAs
 		let smaPosition: 'above_all' | 'below_all' | 'mixed' = 'mixed';
 		if (latestClose != null && sma25 != null && sma75 != null && sma200 != null) {
 			if (latestClose > sma25 && latestClose > sma75 && latestClose > sma200) smaPosition = 'above_all';
 			else if (latestClose < sma25 && latestClose < sma75 && latestClose < sma200) smaPosition = 'below_all';
 			else smaPosition = 'mixed';
 		}
-		// Recent cross detection for 25/75 using normalized closes.
-		// 全長 SMA 系列（lib/indicators.ts の sma — NaN 埋めで時間インデックスが揃う）を
-		// lastCrossover に渡して直近クロスを取る。barsAgo は最新足からの本数。
+		// 全長の SMA 系列（NaN 埋めで時間インデックスが揃う）を lastCrossover に渡す。
 		let recentCross: { type: 'golden_cross' | 'death_cross'; pair: '25/75'; barsAgo: number } | null = null;
 		try {
 			const normalized = indRes.data.normalized;
@@ -345,7 +322,6 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 			/* ignore cross calc errors */
 		}
 
-		// Composite score
 		// トレンド重視型（初心者向け）: 中長期トレンドを重視し、瞬間的な板の変動を抑制
 		const weights = { smaTrend: 0.35, momentum: 0.3, cvdTrend: 0.2, volatility: 0.1, buyPressure: 0.05 } as const;
 		const contribution_buy = buyPressure * weights.buyPressure;
@@ -405,7 +381,6 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 			}
 		}
 
-		// Precompute contributions/breakdown, confidence and next actions
 		type BreakdownEntry = { rawValue: number; weight: number; contribution: number; interpretation: string };
 		type Breakdown = {
 			buyPressure: BreakdownEntry;
@@ -479,10 +454,7 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 			},
 		};
 
-		// 主要要素（重み 35% smaTrend、30% momentum）に必要なデータが揃っているかを判定。
-		// 欠損があると寄与計算が無効化されるので、confidence を low 固定にする（§9.4）。
-		// smaTrend は latestClose / sma25 / sma75 すべてを要求する（L287 のガード参照）。
-		// いずれかが null なら smaTrendFactor=0 になり寄与 35% が黙って消えるので core 扱い。
+		// smaTrend は latestClose / sma25 / sma75 のどれかが null だと寄与 35% が黙って消えるので core 扱いにする。
 		const missingCoreFactors: string[] = [];
 		if (latestClose == null) missingCoreFactors.push('latestClose');
 		if (sma200 == null) missingCoreFactors.push('SMA_200');
@@ -574,12 +546,9 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 			return a;
 		})();
 
-		// Direction states helper
 		const toState = (v: number) => (v > 0.1 ? 'up' : v < -0.1 ? 'down' : 'flat');
 		const momentumState = toState(momentumFactor);
 		const cvdState = toState(cvdTrend);
-		// Timeframe recommendation (simple): suggest 4hour when annualized RV is high.
-		// rvNum は aggregate 年率 RV（標本分散化後も Bessel 補正 ~+0.25% で無視可能）→ 0.6 閾値は据え置き。
 		const recommendedTimeframes: string[] = ['1day', ...(rvNum > 0.6 ? ['4hour'] : [])];
 
 		const data = {
@@ -673,9 +642,6 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 			alerts,
 		});
 
-		// summary 先頭に warning / warnings を別行で連結する（取得層 / 計算層を別系統で出す）。
-		// LLM は structuredContent.meta を参照できないため、テキストに警告を出さないと
-		// データ不完全性を見落とす。prepare_chart_data と同じパターン。
 		const fullText = prependWarnings(
 			baseText,
 			{ warning: upstreamWarning, warnings: upstreamWarnings },

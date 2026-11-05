@@ -1,15 +1,9 @@
-/**
- * chart/render-sub-panels — MACD / RSI / Volume のサブパネル SVG 描画。
- */
-
 import { RSI_OVERBOUGHT, RSI_OVERSOLD } from '../../lib/indicator-config.js';
 import { niceTicks } from './svg-utils.js';
 
-// ── Configuration ──
 const RSI_MIDLINE = 50;
 const PRICE_PANEL_HEIGHT = 420;
 
-/** サブパネル描画に必要なコンテキスト */
 export interface SubPanelContext {
 	x: (i: number) => number;
 	padding: { top: number; right: number; bottom: number; left: number };
@@ -123,7 +117,7 @@ function renderMacdPanel(currentTop: number, ctx: SubPanelContext): string {
 		if (sPts.length > 1) pc += `<path d="M ${sPts.join(' L ')}" fill="none" stroke="#f97316" stroke-width="1.5"/>`;
 		const mt = niceTicks(yMin, yMax, 3);
 		mt.forEach((v) => {
-			pc += `<text x="${padding.left - 8}" y="${py(v, yMin, yMax)}" text-anchor="end" dominant-baseline="middle" fill="#9ca3af" font-size="10">${v.toFixed(0)}</text>`;
+			pc += `<text x="${padding.left - 8}" y="${py(v, yMin, yMax)}" text-anchor="end" dominant-baseline="middle" fill="#9ca3af" font-size="10">${v}</text>`;
 		});
 	}
 	pc += `<text x="${padding.left + 4}" y="${currentTop + 12}" fill="#9ca3af" font-size="10" font-weight="bold">MACD</text>`;

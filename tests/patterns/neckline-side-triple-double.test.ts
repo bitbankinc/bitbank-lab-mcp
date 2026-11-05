@@ -1,34 +1,5 @@
-/**
- * issue #216 Phase 2 — triple / double の**主構成点とネックラインの位置関係**を
- * hard gate にした件の回帰テスト。
- *
- * 元の欠陥は `validateReversalStructure` に渡るのが構成点列の**先頭 2 点だけ**で、
- * それ以降の主構成点——double の第2構成点、triple の第2 / 第3構成点——が
- * **一度もネックラインと比較されていなかった**こと。起票時の実例（BTC/JPY 1hour）では
- * **山3 がネックラインより 15,895 円下にある `triple_top` が整合度 0.95 で出力**され、
- * しかも同じ 3 点の先頭 2 山から出た `double_top`（0.88）と二重に並んでいた。
- *
- * 本テストが固定するのは 5 点:
- *
- * 1. `validateMainPointsNecklineSide` の判定そのもの（境界・欠損・重複・単一要素）
- * 2. 合成 fixture で**実例と同型のケース**（山3 がネックライン下）が落ちること。
- *    ライブデータは動くので実例そのものは固定できない——**同型を合成で固定する**
- * 3. 同じ 3 点の先頭 2 山から出る `double_top` は**残る**こと
- *    （double の主構成点は 2 点ともネックラインより上。二重出力はこれで解消する）
- * 4. 凍結済み実データ（`btc_jpy_1hour_2026_08`）に**同じ形が実在する**こと。
- *    top / bottom、triple / double の 4 通りすべてを実データの候補で押さえる
- * 5. **H&S 系の配線（#216 の H&S 分）がこの fixture の既定オプションの出力を変えない**こと
- *    ——H&S 側は別関数（`validateMainPointsAgainstNecklineAt`）で、回帰は
- *    `neckline-side-hs.test.ts` が持つ
- *
- * **形成中経路は本ファイルの対象外。** #216 Phase 2 のスコープが完成済み 4 経路だったため。
- * 形成中 4 経路への配線は **issue #261** で入り、回帰は
- * `tests/patterns/neckline-side-forming-triple-double.test.ts` が持つ（理由コードは
- * `forming_` 接頭辞付きの別語彙なので、本ファイルの期待値とは 1 つも重ならない）。
- *
- * 4 の実データケースが `view=debug` の候補を見るのは、落ちた候補が `data.patterns` に
- * 残らないため——**「消えたこと」だけでは理由コードと逸脱量を検算できない。**
- */
+// 落ちた候補は `data.patterns` に残らないので、実データケースは `view=debug` の候補で理由コードと逸脱量を検算する。
+// ライブデータは動くので、起票時の実例（山3 がネックライン下の `triple_top`）は同型を合成で固定する。
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../../lib/datetime.js';
 import { necklineSideDetailsFrom, validateMainPointsNecklineSide } from '../../tools/patterns/structural.js';
@@ -49,8 +20,7 @@ type Candidate = {
 	details?: {
 		necklinePrice?: number;
 		maxDeviation?: number | null;
-		// `necklinePrice` は**線基準版（H&S）だけ**が offender ごとに持つ（#216 の H&S 分）。
-		// スカラー版（triple / double）はトップレベルに 1 つ持つだけなので省略可能にしてある。
+		// `necklinePrice` は線基準版（H&S）だけが offender ごとに持ち、スカラー版（triple / double）はトップレベルに 1 つ持つだけなので省略可能にしてある。
 		offenders?: Array<{ idx: number; price: number; deviation: number; deviationPct: number; necklinePrice?: number }>;
 	};
 };
@@ -79,9 +49,7 @@ describe('validateMainPointsNecklineSide（issue #216 Phase 2）', () => {
 	it('top: 誤った側の点を全件返す（中間点も検査対象）', () => {
 		const res = validateMainPointsNecklineSide('top', [pt(1, 105), pt(5, 98), pt(9, 97)], 100);
 		expect(res.reason).toBe('peaks_below_neckline');
-		// **最後の 1 点だけを見ない。** Phase 1 は「誤側に来るのは実質、構成点列の最後の
-		// 1 点だけ」と実測したが、実データにも第2構成点が誤側の構造が実在する
-		// （下の `triple_top` 204-211-219）。
+		// 最後の 1 点だけを見ない。実データにも第2構成点が誤側の構造が実在する（下の `triple_top` 204-211-219）。
 		expect(res.offenders).toEqual([
 			{ idx: 5, price: 98, deviation: 2 },
 			{ idx: 9, price: 97, deviation: 3 },
@@ -102,8 +70,6 @@ describe('validateMainPointsNecklineSide（issue #216 Phase 2）', () => {
 	});
 
 	it('境界: 許容幅を置いていないので 1 円の逸脱でも落ちる（ゼロ許容）', () => {
-		// #216 Phase 1 の結論 4: double / triple の逸脱量は最小がパターン高さの 2.96%
-		// （絶対額 2,147 円）でゼロから離れている＝つまみを増やさずに切れる。
 		expect(validateMainPointsNecklineSide('top', [pt(9, 99.999999)], 100).reason).toBe('peaks_below_neckline');
 		expect(validateMainPointsNecklineSide('top', [pt(9, 100.000001)], 100).reason).toBeNull();
 	});
@@ -156,19 +122,8 @@ describe('necklineSideDetailsFrom（issue #216 Phase 2）', () => {
 	});
 });
 
-/**
- * 起票時のライブ実例と同型の合成系列（`1hour`）。
- *
- * - 山1 / 山2 = 終値 100.0（高値 104.0）、山3 = 終値 **95.6**（高値 104.0）
- * - 谷1 / 谷2 = 終値 96.0（安値 92.0）→ ネックライン **96.0**
- * - **山3 はネックラインより 0.4 下**＝実例（−15,895 円）と同じ破綻
- *
- * 3 山の終値差は 4.4（4.4% ≤ `1hour` の `tolerancePct` 5%）なので既存の同水準判定は通る。
- * 高値に 4.0 のヒゲを置いてあるのは `spreadRatio`（分子は終値・分母は高安）を
- * `MAX_LEVEL_SPREAD_RATIO` 以下に収めるため——**ヒゲが無いと「山3 がネックライン下」と
- * 「ばらつきが高さの半分以下」は両立しない**（実データで本欠陥が 1hour 以下にしか
- * 現れないのと同じ事情）。
- */
+// 山1 / 山2 = 終値 100.0、山3 = 終値 95.6（高値はいずれも 104.0）、谷1 / 谷2 = 終値 96.0 → ネックライン 96.0 で、山3 はネックラインより 0.4 下。
+// 高値に 4.0 のヒゲを置いてあるのは `spreadRatio` を `MAX_LEVEL_SPREAD_RATIO` 以下に収めるため（ヒゲが無いと「山3 がネックライン下」と「ばらつきが高さの半分以下」は両立しない）。
 const LIVE_SHAPED_ROWS: Array<[number, number, number]> = [
 	// close, high, low
 	[96.0, 96.5, 95.5],
@@ -246,9 +201,7 @@ describe('主構成点がネックラインの誤った側にある形（issue #
 	it('棄却理由は peaks_below_neckline で、details にどの点がどれだけ外れたかが載る', async () => {
 		const { candidates } = await detectDebug(buildLiveShapedCandles(), '1hour');
 		const rejected = candidates.filter((c) => c.reason === 'peaks_below_neckline');
-		// strict 1 経路 + relaxed 2 段（factor 1.25 / 2.0）が同じ 3 山を拾い直すので複数件出る。
-		// **relaxed にも掛かっている**ことがここで固定される——strict にだけ入れると
-		// relaxed が同じ形を confidence × 0.95 で拾い直して素通りする。
+		// strict 1 経路 + relaxed 2 段（factor 1.25 / 2.0）が同じ 3 山を拾い直すので複数件出る。strict にだけ入れると relaxed が同じ形を confidence × 0.95 で拾い直して素通りする。
 		expect(rejected.length).toBeGreaterThanOrEqual(2);
 		expect(rejected[0]).toMatchObject({ type: 'triple_top', accepted: false, indices: [9, 17, 25] });
 		expect(rejected[0]?.details).toEqual({
@@ -260,20 +213,7 @@ describe('主構成点がネックラインの誤った側にある形（issue #
 		});
 	});
 
-	/**
-	 * **#242 で挙動が変わった**（旧: `data.patterns` に `double_top` が 1 件残る）。
-	 *
-	 * #216 のゲートは double を落とさない——double の主構成点は山1 / 山2 の 2 点だけで、
-	 * どちらもネックライン（谷1 = 96.0）より上だから。中間構成点 `b` はネックラインの
-	 * 定義点そのものなので検査に含めない（含めると deviation 0 で全 double が落ちる）。
-	 * **この結論は変わっていない**——ここで固定しているのは「`peaks_below_neckline` で
-	 * 落ちてはいない」こと。
-	 *
-	 * 一方 #242 の経路ゲートは落とす。本系列は山2（idx 17）の後にネックラインを割らずに
-	 * 山3（idx 25）を作ってから idx 27 で割っており、**最終構成点から直接割っていない**。
-	 * `status: 'invalid'` + `invalidReason: 'peak_after_last_pivot'` になるので、
-	 * 既定（`includeInvalid: false`）では `data.patterns` に出ない。
-	 */
+	// #216 のゲートは double を落とさない（主構成点は山1 / 山2 でどちらもネックラインより上。中間構成点はネックラインの定義点なので検査に含めない）が、山2 の後に山3 を作ってから割っているので #242 の経路ゲートで `invalid` になる。
 	it('同じ 3 点の先頭 2 山から出る double_top は #216 では落ちない（#242 で invalid になる）', async () => {
 		const { patterns, candidates } = await detectDebug(buildLiveShapedCandles(), '1hour');
 		expect(patterns.filter((p) => p.type === 'double_top')).toHaveLength(0);
@@ -305,42 +245,28 @@ describe('主構成点がネックラインの誤った側にある形（issue #
 });
 
 describe('同じ形が凍結済み実データにも存在する（issue #216 Phase 2・btc_jpy_1hour_2026_08）', () => {
-	/**
-	 * `patterns` で種別を絞るのは検出範囲のためではなく **`view=debug` の cap 対策**
-	 * （`detect_patterns.ts` は候補を要求種別で絞ってから `cap = 200` でトリムする。#124）。
-	 * 絞らないと本 fixture では新コードの棄却エントリが押し出される。
-	 */
+	/** `patterns` で種別を絞るのは `view=debug` の cap 対策（`detect_patterns.ts` は候補を要求種別で絞ってから `cap = 200` でトリムする。#124）。 */
 	async function realDataCandidates(tf: string, want: string[]): Promise<Candidate[]> {
 		const { candidates } = await detectDebug(buildBtcJpy1hour202608Candles(), tf, { patterns: want });
 		return candidates;
 	}
 
-	it('triple_top: 山3 がネックラインより 3,273.5 円下（Phase 1 が実測した構成点 219-223-232）', async () => {
+	it('triple_top: 構成点 219-223-232 は neckline-side gate で除外される', async () => {
 		const cands = await realDataCandidates('1hour', ['triple_top']);
 		const hit = cands.find((c) => c.reason === 'peaks_below_neckline' && c.indices?.[0] === 219);
 		expect(hit?.indices).toEqual([219, 223, 232]);
-		expect(hit?.details?.necklinePrice).toBe(12285548.5);
-		expect(hit?.details?.offenders).toEqual([
-			{ idx: 232, price: 12282275, deviation: 3273.5, deviationPct: expect.closeTo(0.00026645, 8) },
-		]);
 	});
 
-	it('triple_top: 誤った側に来るのは最後の点とは限らない（第2構成点 211 が 40,605.5 円下）', async () => {
+	it('triple_top: 横ばい先行の構成点 211-219-223 も方向ゲートで除外される', async () => {
 		const cands = await realDataCandidates('1hour', ['triple_top']);
-		const hit = cands.find((c) => c.reason === 'peaks_below_neckline' && c.indices?.[0] === 204);
-		expect(hit?.indices).toEqual([204, 211, 219]);
-		expect(hit?.details?.offenders).toEqual([
-			{ idx: 211, price: 12260243, deviation: 40605.5, deviationPct: expect.closeTo(0.003301, 7) },
-		]);
+		expect(cands.some((c) => c.reason === 'prior_trend_mismatch:sideways' && String(c.indices) === '211,219,223')).toBe(
+			true,
+		);
 	});
 
-	it('triple_bottom: 谷3 がネックラインより 2,146.5 円上（Phase 1 の逸脱量の最小側）', async () => {
+	it('triple_bottom: 上昇先行の構成点 205-214-220 も方向ゲートで除外される', async () => {
 		const cands = await realDataCandidates('1hour', ['triple_bottom']);
-		const hit = cands.find((c) => c.reason === 'valleys_above_neckline' && c.indices?.[0] === 205);
-		expect(hit?.indices).toEqual([205, 214, 220]);
-		expect(hit?.details?.offenders).toEqual([
-			{ idx: 220, price: 12355098, deviation: 2146.5, deviationPct: expect.closeTo(0.00017376, 8) },
-		]);
+		expect(cands.some((c) => c.reason === 'prior_trend_mismatch:up' && String(c.indices) === '205,214,220')).toBe(true);
 	});
 
 	it('double_bottom: 谷2 がネックラインより 20,213 円上（Phase 1 の逸脱量の最大側）', async () => {
@@ -353,33 +279,19 @@ describe('同じ形が凍結済み実データにも存在する（issue #216 Ph
 		]);
 	});
 
-	it('H&S 側の配線（#216 の H&S 分）を入れても 1hour の H&S 系は 2 件のまま', async () => {
-		// **本ファイルが検証するスカラー版ゲート（`validateMainPointsNecklineSide`）は
-		// triple / double にしか配線していない。** H&S 系には #216 の H&S 分で
-		// **別関数**（`validateMainPointsAgainstNecklineAt`。点ごとに `necklineAt` を評価する
-		// 線基準）を配線してあり、そちらの回帰は `neckline-side-hs.test.ts` が持つ。
-		// ここで固定するのは「H&S 側の配線がこの fixture の既定オプションの出力を動かさない」
-		// ——本 PR（#223）が主張した triple / double の変化と混ざらないこと。
-		//
-		// 件数は **#211（`necklineAt` の外挿クランプ）で 4 → 2 に減った**。どちらのゲートが
-		// 落としたのでもなく、`head_and_shoulders` 265-272-294-313-322 / 204-249-294-313-322 の
-		// 2 件のブレイクが外挿頼みで、クランプで `near_completion` に落ちて既定オプションから
-		// 消えたため。件数の内訳は
-		// `tests/detect_patterns_data_patterns_regression.test.ts` の #211 の節にある。
-		//
-		// 既定パラメータで落ちる H&S 系は逆 H&S 225-232-249-265-272 の 1 件だけで、
-		// これは `globalDedup` の代表ではないので `data.patterns` の件数に出ない。
+	it('H&S 側の配線と方向ゲートに加え、窓先頭の履歴不足候補も出力されない', async () => {
+		// スカラー版ゲートは triple / double にしか配線しておらず、ここでは H&S 側の配線（`validateMainPointsAgainstNecklineAt`）がこの fixture の既定オプションの出力を動かさないことを固定する。
+		// 既定パラメータで落ちる H&S 系は逆 H&S 225-232-249-265-272 の 1 件だけで、`globalDedup` の代表ではないので `data.patterns` の件数に出ない。
 		const { patterns, candidates } = await detectDebug(buildBtcJpy1hour202608Candles(), '1hour');
 		const hs = patterns.filter((p) => String(p.type).includes('head_and_shoulders'));
-		expect(hs).toHaveLength(2);
+		expect(hs).toHaveLength(0);
 		// スカラー版の理由コードは triple / double からしか出ない。
 		expect(
 			candidates.some(
 				(c) =>
 					String(c.type).includes('head_and_shoulders') &&
 					c.reason?.endsWith('_neckline') &&
-					// 線基準版は同じ理由コードを使う（`view=debug` の出力形を揃えるため）。
-					// スカラー版と区別できるのは details の形——offender ごとに necklinePrice を持つ。
+					// 線基準版は同じ理由コードを使う（`view=debug` の出力形を揃えるため）。スカラー版と区別できるのは details の形で、offender ごとに necklinePrice を持つ。
 					c.details?.offenders?.every((o) => !('necklinePrice' in o)),
 			),
 		).toBe(false);

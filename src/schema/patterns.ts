@@ -1,7 +1,5 @@
 import { z } from 'zod';
-// target 進捗系の description は走査窓・上限・退化閾値を名指しで説明する。
-// 数値を書き写すと振る舞いと宣言が黙ってずれるので、実装から読む（`patterns/target-reach.ts`
-// は依存が型だけの軽い単位に切ってある。理由は同ファイル冒頭）。
+// target 進捗系の description は閾値を書き写さず実装から読む（書き写すと振る舞いと宣言が黙ってずれる）。
 import {
 	MIN_TARGET_DISTANCE_HEIGHT_RATIO,
 	TARGET_REACH_MAX_BARS,
@@ -10,18 +8,16 @@ import {
 import {
 	BaseMetaSchema,
 	BasePairInputSchema,
+	CANDLE_DATE_DESCRIPTION,
 	CandleTypeEnum,
 	FailResultSchema,
 	toolResultSchema,
 	VIEW_CONTRACT_NOTE,
+	warningField,
+	warningsField,
 } from './base.js';
 
-// === Pattern Detection ===
-/**
- * 出力 type — 検出結果として返される確定方向付きのパターン種別。
- * 'flag' / 'pennant' / 'triangle' のような umbrella alias は含めない。
- * 出力スキーマ・visualization_hints・debug.candidates.type に使用。
- */
+/** 'flag' / 'pennant' / 'triangle' のような umbrella alias は出力 type に含めない。 */
 const PATTERN_OUTPUT_TYPES = [
 	'double_top',
 	'double_bottom',
@@ -40,22 +36,14 @@ const PATTERN_OUTPUT_TYPES = [
 	'bear_pennant',
 ] as const;
 
-/**
- * 入力フィルタ専用のエイリアス。これらは出力 type としては返されず、
- * リクエスト側で「方向不問でまとめて検出したい」場合のショートカット。
- * - 'flag'     → bull_flag + bear_flag
- * - 'pennant'  → bull_pennant + bear_pennant
- * - 'triangle' → triangle_ascending + triangle_descending + triangle_symmetrical
- */
 const PATTERN_FILTER_ALIASES = ['flag', 'pennant', 'triangle'] as const;
 
 export const PatternTypeEnum = z.enum(PATTERN_OUTPUT_TYPES);
 
-/**
- * 入力フィルタ用 enum — 出力 type に加えて legacy umbrella alias も受け付ける。
- * DetectPatternsInputSchema.patterns と debug.candidates.type で使用。
- */
 export const PatternFilterEnum = z.enum([...PATTERN_OUTPUT_TYPES, ...PATTERN_FILTER_ALIASES]);
+
+// 'wedge' は候補ラベルにだけ使い、入力の絞り込みでは受け付けない（入力の型を広げずに、ウェッジの走査の棄却を三角形と分けるため）。
+export const PatternCandidateTypeEnum = z.enum([...PATTERN_OUTPUT_TYPES, ...PATTERN_FILTER_ALIASES, 'wedge']);
 
 export const DetectPatternsInputSchema = BasePairInputSchema.extend({
 	type: CandleTypeEnum.optional().default('1day'),
@@ -74,7 +62,14 @@ export const DetectPatternsInputSchema = BasePairInputSchema.extend({
 				'`limit_too_small_for_timeframe` を載せ、content 先頭にも警告行を出す。\n' +
 				'逆に既定の 90 は「いま形成中〜完成直後のパターンを見る」ための窓なので、' +
 				'**過去のパターンの統計（data.statistics の成功率 / 平均リターン）や aftermath を調べる用途では上げる**' +
-				'（上限 365）。view=summary / detailed の content 量はほぼ変わらず、増えるのは API 呼び出し回数。',
+				'（上限 365）。反転系は先行履歴の検証に60本を使うため、61本未満では履歴不足候補を一律に' +
+				'除外せず `limit_too_small_for_timeframe` 警告を優先する。view=summary / detailed の content 量はほぼ変わらず、増えるのは API 呼び出し回数。',
+		),
+	date: z
+		.string()
+		.optional()
+		.describe(
+			`${CANDLE_DATE_DESCRIPTION} limit 本を走査します。省略時は最新足を終端にします。date 指定時の requireCurrentInPattern は終端日を「現在」として判定します。`,
 		),
 	patterns: z
 		.array(PatternFilterEnum)
@@ -98,7 +93,6 @@ export const DetectPatternsInputSchema = BasePairInputSchema.extend({
 				"Aliases: 'flag' → bull_flag + bear_flag, 'pennant' → bull/bear pennant, 'triangle' → asc/desc/sym.",
 			].join('\n'),
 		),
-	// Heuristics
 	swingDepth: z
 		.number()
 		.int()
@@ -205,12 +199,12 @@ export const DetectPatternsInputSchema = BasePairInputSchema.extend({
 				'——行が無いことを「relaxed なし」と読ませないため（値が無いのか content に出していないのかを' +
 				'呼び出し側が区別できない状態が #189 / #191 の直した欠陥）。構造化データは data.patterns[]._fallback。\n' +
 				'**`検出内訳:` 行は 4 view すべて（`debug` を含む）に出る**（issue #200）。' +
-				'`検出 N件 → 重複統合 -M → [現在時点フィルタ -K →] ライフサイクル除外 -L → triple×H&S排他 -X → 出力 P件` の形で、' +
+				'`検出 N件 → 反転履歴不足 -H → 重複統合 -M → [現在時点フィルタ -K →] ライフサイクル除外 -L → triple×H&S排他 -X → 出力 P件` の形で、' +
 				'globalDedup / requireCurrentInPattern（既定 false）/ ライフサイクル絞り込み（includeForming 等）/ ' +
 				'triple×H&S の型間排他（issue #218。**減るのは triple_* だけ**）の' +
-				'4 段でどれだけ減ったかを申告する。`現在時点フィルタ` は 0 のとき区間ごと省くが、' +
-				'`重複統合` / `ライフサイクル除外` / `triple×H&S排他` は 0 でも省かない。構造化データは meta.reduction' +
-				'（`detected` = `dedupMerged + currentFiltered + lifecycleExcluded + tripleHsExcluded + output`）。\n' +
+				'5 段でどれだけ減ったかを申告する。`現在時点フィルタ` は 0 のとき区間ごと省くが、' +
+				'`反転履歴不足` / `重複統合` / `ライフサイクル除外` / `triple×H&S排他` は 0 でも省かない。構造化データは meta.reduction' +
+				'（`detected` = `reversalHistoryExcluded + dedupMerged + currentFiltered + lifecycleExcluded + tripleHsExcluded + output`）。\n' +
 				'- summary: ヘッダ ＋ 分類内訳 ＋ 直近30日/90日件数 ＋ 上記 2 行 ＋ 実効パラメータ行 ＋ 検出経路行 ＋ 検出内訳行 ＋ 検討パターン。' +
 				'個々のパターンの詳細は content に出ない（**どのパターンが relaxed 由来かも出ない**——届くのは検出経路行の件数だけ）。\n' +
 				'- detailed（既定）: 上位 5 件の詳細。6 件目以降は content に出ない。' +
@@ -245,8 +239,8 @@ export const DetectPatternsInputSchema = BasePairInputSchema.extend({
 				'    `▼ 棄却理由の内訳（type 別 → reason 別。合計は上の rejected 62 件と一致する）`\n' +
 				'    `   - triple_top 40 件: three_peaks_not_level 21 / valleys_missing 12 / valley_too_shallow 7`\n' +
 				'    `   - triple_bottom 22 件: peak_too_shallow 15 / peaks_missing 7`\n' +
-				'  内訳は **type と reason の 2 軸**で数える（`rising_wedge:slopes_not_same_direction` と ' +
-				'`falling_wedge:slopes_not_same_direction` を同じ行に潰さないため——' +
+				'  内訳は **type と reason の 2 軸**で数える（`rising_wedge:no_convergence` と ' +
+				'`falling_wedge:no_convergence` を同じ行に潰さないため——' +
 				'同じ reason でも type が違えば意味が違う）。type 行の合計は上の rejected 件数と、' +
 				'行内の reason の合計はその type の件数と必ず一致する（多すぎる場合は残余に畳むが、畳んだ分も件数で残す）。\n' +
 				'  **その下に `▼ reason 横断合計` が 1 行出る**（type を畳んで reason だけで合算したもの。issue #193）:\n' +
@@ -257,7 +251,7 @@ export const DetectPatternsInputSchema = BasePairInputSchema.extend({
 				'`no_convergence(41) > slopes_not_same_direction(66)` という不等号が成立しない式を出力した）。' +
 				'`reason` が `type` を跨ぐ実行ほど外れやすいので、跨ぎが起きうる **type が 2 種別以上のときだけ**出す' +
 				'（1 種別なら type 行がそのまま横断合計なので出さない）。type 別の内訳を**置き換えるものではない**——' +
-				'同じ reason でも type ごとに意味が違いうる（`slopes_not_same_direction` は rising / falling で別の話）ので、' +
+				'同じ reason でも type ごとに意味が違いうる（`no_convergence` は rising / falling で別の話）ので、' +
 				'**帰属は必ず type 別行で見る。** 上限（10 種）を超えた分は type 行と同じ `他 N 種 M` に畳み、' +
 				'cap 飽和時は type 別行と同じ `**全 N 件の内訳ではない**` が付く。\n' +
 				'  **cap で押し出しが起きているときは分母が「表示分」に変わる**: ' +
@@ -275,11 +269,9 @@ export const DetectPatternsInputSchema = BasePairInputSchema.extend({
 				'candidates からは分からない。それを見るには `data.patterns` 側を `includeInvalid=true` で見る' +
 				'（区別は includeInvalid の説明を参照）。',
 		),
-	// New: relevance filter for "current-involved" long-term patterns
 	requireCurrentInPattern: z.boolean().optional().default(false),
 	currentRelevanceDays: z.number().int().min(1).max(365).optional().default(7),
 
-	// Unified pattern lifecycle options
 	includeForming: z.boolean().optional().default(false).describe('形成中パターンを含める'),
 	includeCompleted: z.boolean().optional().default(true).describe('完成済みパターンを含める'),
 	includeInvalid: z
@@ -309,16 +301,6 @@ export const DetectPatternsInputSchema = BasePairInputSchema.extend({
 		),
 });
 
-/**
- * `meta.effective_params` の 1 パラメータ分。**解決後の実効値と、その由来**の組。
- *
- * `source`:
- * - `explicit` — 呼び出し側が渡した値がそのまま効いた
- * - `auto` — 時間軸オート表から解決した。**「未指定」と「スキーマ既定値の明示指定」を畳んでいる**
- *   （`swingDepth` / `minBarsBetweenSwings` / `tolerancePct` は `.default()` があるため、
- *   `resolveParams` に届いた時点で両者が同一値になり区別できない。#182 / #184）。
- *   `headProminencePct` だけは `.default()` が無いので `auto` = 未指定と同義。
- */
 function effectiveParam<T extends z.ZodTypeAny>(valueSchema: T, note: string) {
 	return z
 		.object({
@@ -333,27 +315,7 @@ function effectiveParam<T extends z.ZodTypeAny>(valueSchema: T, note: string) {
 		.describe(note);
 }
 
-/**
- * `detect_patterns` の**解決後の実効パラメータ**。
- *
- * **入力値ではない。** `resolveParams`（`tools/patterns/config.ts`）が時間軸オート表と
- * スキーマ既定値の sentinel 置換を適用したあとの値で、**入力値と一致しないことがある**（#182）:
- * `swingDepth=7` / `minBarsBetweenSwings=5` / `tolerancePct=0.04` はスキーマ既定値（= sentinel）
- * なので、明示的に渡しても時間軸オート値に置換される（`1hour` なら 3 / 2 / 0.05）。
- * 「渡した値が効いたか」は `source` で判別する。
- *
- * **`optional()` だが `ok` の出力では常に埋まる。** optional なのは本フィールドを持たない
- * 古い経路（ハンドラを直接叩くテスト等）を通すためで、欠損は「オートで走った」ではなく
- * 「申告前の実装」を意味する。
- *
- * ⚠️ **#184 まで本フィールドは出力スキーマに宣言されておらず、`parse()` が黙って strip していた**
- * ——`tools/detect_patterns.ts` は #114 以前から `meta.effective_params` を載せていたが、
- * どのクライアントにも届いていなかった（#155 の `status` / #160 の `breakoutDirection` に続く 3 回目）。
- * キーの網羅は `tests/detect_patterns_meta_schema_parity.test.ts` が parse 後の実出力で固定する。
- *
- * 旧 `autoScaled: boolean` は #184 で廃止した（MCP 経路では `.default()` により常に `false` を
- * 返しており、完全オートの呼び出しでも `false` だった）。per-parameter の `source` が後継。
- */
+/** `optional()` だが `ok` の出力では常に埋まる。optional なのはハンドラを直接叩く古い経路を通すためで、欠損は「申告前の実装」を意味する。 */
 const EffectiveParamsSchema = z
 	.object({
 		swingDepth: effectiveParam(
@@ -384,27 +346,16 @@ const EffectiveParamsSchema = z
 			'content には「実効パラメータ:」行として全 view に出る。',
 	);
 
-/**
- * `detect_patterns` の**縮小段の件数申告**（issue #200 要件 E）。
- *
- * 検出結果は `tools/detect_patterns.ts` 内で 3 段を経て縮小する:
- * 1. `globalDedup`（同一 type / 同カテゴリで期間 70% 重複を統合）
- * 2. `requireCurrentInPattern`（既定 false。古いパターンを除外）
- * 3. ライフサイクル絞り込み（`includeForming` / `includeCompleted` / `includeInvalid`）
- *
- * どこで何件減ったかを申告しないと、「1hour の H&S で accepted 76 件 → data.patterns 2 件」
- * のような縮小が「理由不明」に見える（減ること自体は正常な挙動）。件数は `tools/detect_patterns.ts`
- * が単一箇所で数える（`resolveTrimCounts` と同じ理由——2 箇所で計算すると見出しと集計が食い違う）。
- *
- * `detected = dedupMerged + currentFiltered + lifecycleExcluded + output` が常に成り立つ
- * （waterfall。`tests/detect_patterns_meta_schema_parity.test.ts` が実データで固定する）。
- *
- * **`optional()` だが `detect_patterns` の出力では常に埋まる**（`effective_params` と同じ理由。
- * ハンドラを直接叩くテスト等の古い経路を通すため）。
- */
 const ReductionSchema = z
 	.object({
 		detected: z.number().int().describe('globalDedup 前の検出件数（全検出器の合計、重複排除前）。'),
+		reversalHistoryExcluded: z
+			.number()
+			.int()
+			.optional()
+			.describe(
+				'反転系で先行トレンド／ネックライン交差を評価する履歴が不足し、窓の先頭60本以内を開始点とするため除外された件数（issue #297 項目1(b)）。',
+			),
 		dedupMerged: z.number().int().describe('globalDedup で統合されて減った件数。'),
 		currentFiltered: z
 			.number()
@@ -436,76 +387,40 @@ const ReductionSchema = z
 					'ように H&S を要求しない呼び出しでは H&S 検出器が走らず、必ずこの状態になる（排他の根拠は' +
 					'呼び出し側が実際に受け取る H&S に限る仕様。`tools/patterns/mutual-exclusion.ts` 冒頭）。' +
 					'1 以上なら `tripleHsExcluded` は実際に比較した結果。件数の減少ではないので waterfall の等式' +
-					'（`detected = dedupMerged + currentFiltered + lifecycleExcluded + tripleHsExcluded + output`）には入らない。' +
+					'（`detected = reversalHistoryExcluded + dedupMerged + currentFiltered + lifecycleExcluded + tripleHsExcluded + output`）には入らない。' +
 					'content の「検出内訳:」行は 0 のときだけ `triple×H&S排他 -0（比較対象 H&S 無し）` と注記する。',
 			),
 		output: z.number().int().describe('最終的に data.patterns へ残った件数（meta.count と同値）。'),
 	})
 	.optional()
 	.describe(
-		'検出結果が縮小する 4 段（globalDedup → requireCurrentInPattern → ライフサイクル絞り込み → ' +
+		'検出結果が縮小する 5 段（反転履歴不足 → globalDedup → requireCurrentInPattern → ライフサイクル絞り込み → ' +
 			'triple×H&S 排他）の件数内訳。**入力フィルタの結果を変えるものではなく、既存の縮小を可視化するだけ**。' +
 			'content には「検出内訳:」行として summary / detailed / full / debug に出る。',
 	);
 
-/**
- * 出力に現れるローソク足インデックス（`pivots[].idx` / `breakoutBarIndex` /
- * `confirmation.idx` / `meta.debug.*` の idx・indices）の基準を示す共通文言。
- *
- * 本ツールは `analyze_indicators` が返す配列から指標 warmup 分（`chart.meta.pastBuffer` 本）を
- * 落とした「スキャン窓」だけを検出器に渡す。インデックスはその**スキャン窓基準**であり、
- * warmup を含む `chart.candles` の添字ではない。両者は `pastBuffer` 本ずれる。
- */
 const PATTERN_INDEX_NOTE =
 	'**meta.scan が示すスキャン窓（= 直近 limit 本）を基準とした 0 始まりの位置**。' +
 	'analyze_indicators の chart.candles は指標 warmup 分（chart.meta.pastBuffer 本）を先頭に含む' +
 	'別配列なので、そちらへ直接添字として使わないこと（使うなら pastBuffer を足す）。' +
 	'日時で突き合わせるなら range / date 等の ISO 文字列を使う。';
 
-/**
- * target 進捗を出さなかった理由コードの**単一ソース**（issue #210 / #224 症状 2）。
- *
- * **Zod 側をここに置くのは、宣言漏れが「黙って剥がされる」形で出るから。**
- * TypeScript のユニオンと Zod の enum を別々に持つと、検出器が型上は正しい理由を返しても
- * `DetectPatternsOutputSchema.parse()` がそれを落とし、**どのクライアントにも届かない**
- * （#155 / #160 / #184 / #189 / #199 で 5 回起きている）。実装側の
- * `TargetReachOmissionReason`（`tools/patterns/target-reach.ts`）はこの enum から
- * **型として導出**してあるので、片方だけ足すことができない。
- *
- * **依存の向きは変えていない。** 実行時は `src/schema/patterns.ts` → `target-reach.ts`
- * （閾値 3 定数を読む）の一方向のままで、逆向きは `import type` だけ（出力から消える）。
- *
- * コードを足すときはここに足し、`target-reach.ts` の `TARGET_PROGRESS_OMISSION_NOTE`
- * （`Record<TargetReachOmissionReason, string>`）に content 文言を書く——書き忘れは typecheck が落とす。
- */
+/** 実装側の `TargetReachOmissionReason`（`tools/patterns/target-reach.ts`）はこの enum から型として導出している。別々に持つと `parse()` が宣言漏れを黙って剥がす。 */
 export const TargetProgressOmittedReasonEnum = z.enum([
 	'not_broken_out',
 	'no_target',
+	'breakout_against_expectation',
 	'invalid_breakout_price',
 	'no_bars_after_breakout',
 	'degenerate_target_distance',
 	'not_computed_by_detector',
 ]);
 
-/** `TargetProgressOmittedReasonEnum` から導出した理由コードの型。実装側はこれを再エクスポートする。 */
 export type TargetProgressOmittedReason = z.infer<typeof TargetProgressOmittedReasonEnum>;
 
-/**
- * ターゲット到達の帰属を切る「他パターンのブレイク」1 件（issue #288 Phase 2）。
- *
- * `targetOtherBreakoutBeforeReach` / `targetOppositeBreakoutInWindow` の要素。
- * **どの区間・どの方向を数えるかは 2 フィールドで違う**ので、それぞれの `.describe()` を読むこと。
- * 判定の単一ソースは `tools/patterns/target-confounders.ts`。
- *
- * **範囲を宣言側に書き切る。** docstring が「常に 1 以上」と言っているのに `z.number().int()` が
- * 任意の整数を通す状態は、#155 / #160 / #184 / #189 / #199 と同じ「宣言と振る舞いがずれる」形
- * （あちらは宣言漏れ、こちらは宣言の緩さ）。範囲を書いておけば、判定を変えたときに
- * `parse()` が落ちて気づける。
- */
+/** 範囲を宣言側に書き切る。判定を変えたとき `parse()` が落ちて気づける。 */
 const TargetBreakoutConfounderSchema = z.object({
-	// **`unknown` は実装の防御分岐**（`toBreakoutRef` が `type` を文字列として取れなかったとき）。
-	// `PatternTypeEnum` に混ぜず literal で足すことで、「列挙外の種別」と「種別が読めなかった」を
-	// 区別できる状態のまま、任意の文字列は弾ける。
+	// `unknown` は `toBreakoutRef` が `type` を読めなかったときの防御分岐。`PatternTypeEnum` に混ぜず literal で足し、「列挙外の種別」と「読めなかった」を区別する。
 	type: z
 		.union([PatternTypeEnum, z.literal('unknown')])
 		.describe('他パターンの種別。`unknown` は種別を読み取れなかったことの申告。'),
@@ -517,17 +432,11 @@ const TargetBreakoutConfounderSchema = z.object({
 		.describe('自分のブレイク足を 0 本目として何本後にそのブレイクがあったか（常に 1 以上）。'),
 });
 
-/** `TargetBreakoutConfounderSchema` から導出した交絡 1 件の型。実装側はこれを再エクスポートする。 */
 export type TargetBreakoutConfounder = z.infer<typeof TargetBreakoutConfounderSchema>;
 
 export const DetectedPatternSchema = z.object({
 	type: PatternTypeEnum,
 	confidence: z.number().min(0).max(1),
-	/**
-	 * **relaxed フォールバック経路で拾い直したことを示す provenance**（issue #189）。
-	 * 宣言が無かったため `DetectPatternsOutputSchema.parse()` に strip され、
-	 * **一度もクライアントに届いていなかった**（#155 / #160 / #184 に続く 4 回目）。
-	 */
 	_fallback: z
 		.string()
 		.optional()
@@ -547,15 +456,8 @@ export const DetectedPatternSchema = z.object({
 				'detailed / full ではパターン見出し行の末尾に `[relaxed_triple_x1.25]` として同じ値が付く' +
 				'（`view` の説明を参照）。',
 		),
-	/** 検出に使用した時間足（例: '1day', '4hour', '1week'） */
 	timeframe: CandleTypeEnum.optional(),
-	/** 人間可読な時間足ラベル（例: '日足', '4時間足', '週足'） */
 	timeframeLabel: z.string().optional(),
-	/**
-	 * **この 1 件のパターンが占める期間**。スキャン窓でも入力データ範囲でもない。
-	 * 全パターンを跨いだ分布は content の「検出パターン分布期間」行、
-	 * 実際に走査した足の範囲は `meta.scan` を見ること。
-	 */
 	range: z.object({
 		start: z
 			.string()
@@ -573,12 +475,7 @@ export const DetectedPatternSchema = z.object({
 					'UTC ISO 文字列。表示は呼び出し側 tz（既定 Asia/Tokyo）で整形される（後方互換のため値自体は不変）。',
 			),
 	}),
-	/**
-	 * パターン構成点のみで張る期間（誤読防止のための追加フィールド）。
-	 * double_top: peak1 → peak2 / double_bottom: valley1 → valley2 /
-	 * H&S・inverse H&S: 左肩 → 右肩。range はブレイク確認日まで含むことがあるが
-	 * こちらは構成点だけで閉じる。
-	 */
+	/** 構成点だけで閉じる期間（range はブレイク確認日まで含むことがある）。 */
 	structureRange: z
 		.object({
 			start: z
@@ -589,14 +486,6 @@ export const DetectedPatternSchema = z.object({
 				.describe('UTC ISO 文字列。表示は呼び出し側 tz（既定 Asia/Tokyo）で整形される（後方互換のため値自体は不変）。'),
 		})
 		.optional(),
-	/**
-	 * 検出器自身が確認したブレイク（ネックライン突破等）。
-	 * - double_top / double_bottom completed: type='neckline_breakout' を設定
-	 * - H&S / inverse H&S: 検出器はネックラインブレイクを確認しないため type='not_confirmed'
-	 * - forming パターン: type='not_confirmed'
-	 *
-	 * パターン検出後の事後分析（`aftermath.breakoutConfirmed`）とは別概念。
-	 */
 	confirmation: z
 		.union([
 			z.object({
@@ -608,13 +497,7 @@ export const DetectedPatternSchema = z.object({
 			z.object({ type: z.literal('not_confirmed') }),
 		])
 		.optional(),
-	/**
-	 * 先行トレンド（パターン形成直前の lookback window のトレンド情報）。
-	 * - start: lookback window 先頭の isoTime
-	 * - end:   パターン構成開始点（startIdx）の isoTime
-	 * - direction: 'up' / 'down' / 'sideways' / 'insufficient_data'
-	 * - returnPct: priorReturn を百分率（小数2桁）に整形した値
-	 */
+	/** パターン形成直前の lookback window のトレンド（start は窓の先頭、end はパターン構成の開始点）。 */
 	precedingTrend: z
 		.object({
 			start: z
@@ -678,14 +561,12 @@ export const DetectedPatternSchema = z.object({
 		.array(z.object({ x: z.number().int().optional(), y: z.number() }))
 		.length(2)
 		.optional(),
-	// Optional: structure diagram (static SVG artifact to help beginners grok the pattern shape)
 	structureDiagram: z
 		.object({
 			svg: z.string(),
 			artifact: z.object({ identifier: z.string(), title: z.string() }),
 		})
 		.optional(),
-	// 統合: パターンのステータス（形成中/完成度近し/完成済み/無効化/期限切れ）
 	status: z
 		.enum(['forming', 'near_completion', 'completed', 'invalid', 'expired'])
 		.optional()
@@ -707,7 +588,6 @@ export const DetectedPatternSchema = z.object({
 				'（ただし double 2 型の `expired` / `invalid` は**未ブレイクの構造**なので' +
 				'`includeForming: true` も要る）。',
 		),
-	/** status='invalid' / 'expired' の理由コード（issue #126） */
 	invalidReason: z
 		.string()
 		.optional()
@@ -724,11 +604,7 @@ export const DetectedPatternSchema = z.object({
 				'（`expectedBreakoutDirection`。pole の向きから決まるため）——triangle は持たないので、' +
 				'`type` から導出する（`triangle_ascending` = `up` / `triangle_descending` = `down`）。',
 		),
-	/**
-	 * 整合度（confidence）のサブスコア。issue #126 で露出。
-	 * 構造ゲートを通過した候補どうしの**形の良さの比較**にのみ使う値で、
-	 * 構造的な妥当性そのものはゲート（hard reject）側が担保している。
-	 */
+	/** 構造ゲートを通過した候補どうしの形の良さの比較にだけ使う値で、構造的な妥当性はゲート（hard reject）側が担保している。 */
 	scoreComponents: z
 		.object({
 			symmetry: z
@@ -789,7 +665,6 @@ export const DetectedPatternSchema = z.object({
 			'整合度の内訳。**ゲート通過を前提とした形状の良さ**であって、構造的妥当性の指標ではない' +
 				'（構造ゲートは `confidence` に減点として現れず、通らなければそもそも出力されない）。',
 		),
-	/** 構造ゲート（issue #126）の計測値 */
 	structureGate: z
 		.object({
 			retracementRatio: z
@@ -814,24 +689,23 @@ export const DetectedPatternSchema = z.object({
 					'第1構成点より前にネックライン水準を**終値で**抜けたバーの位置。' +
 						`この事象が無い候補は棄却される。${PATTERN_INDEX_NOTE}`,
 				),
+			skipped: z
+				.enum(['no_prior_extreme', 'insufficient_history'])
+				.optional()
+				.describe('構造ゲートを適用できず、先行値幅を未評価のまま通過した理由'),
 		})
 		.optional()
-		.describe('構造ゲートが実際に計測した値。棄却されなかった理由を呼び出し側が検算できるようにする。'),
-	// 形成中パターン用フィールド
+		.describe('構造ゲートが実際に計測した値、または未評価理由。呼び出し側が判定経路を検算できるようにする。'),
 	apexDate: z.string().optional(), // アペックス（頂点）到達予定日
 	daysToApex: z.number().int().optional(), // アペックスまでの日数
 	completionPct: z.number().int().optional(), // 完成度（%）
-	// 完成済みパターン用フィールド
 	breakoutDate: z.string().optional(), // ブレイクアウト日
 	breakoutBarIndex: z.number().int().optional().describe(`ブレイクアウトしたローソク足の位置。${PATTERN_INDEX_NOTE}`),
 	daysSinceBreakout: z.number().int().optional(), // ブレイクアウトからの経過日数
-	// ブレイク方向と結果
 	breakoutDirection: z.enum(['up', 'down']).optional(), // ブレイク方向
 	outcome: z.enum(['success', 'failure']).optional(), // パターン結果（期待通り=success, 逆方向=failure）
-	// ターゲット価格（ブレイクアウト後の想定到達価格）
 	breakoutTarget: z.number().optional(), // 想定ターゲット価格（円）
 	targetMethod: z.enum(['flagpole_projection', 'pattern_height', 'neckline_projection']).optional(), // 計算根拠
-	// ターゲットまでの進捗率（%）。全パターン共通でブレイク後の最安値/最高値（high/low）ベースで算出。
 	targetReachedPct: z
 		.number()
 		.int()
@@ -857,9 +731,7 @@ export const DetectedPatternSchema = z.object({
 				`走査窓に他パターンのブレイクが入る実体が 94.7% ある。` +
 				`「いつ届いたか」は targetFirstReachBars / targetFirstReachDate を見ること。`,
 		),
-	// ブレイク後の high/low ベース target 到達情報。double / triangle / wedge / pennant / flag /
-	// H&S / 逆H&S すべてで付与される。最終 close ベースだと一度到達してから戻したケースを
-	// 未到達扱いしてしまうため、extremum（up=最高 high / down=最安 low）で評価する。
+	// 最終 close ベースだと一度到達してから戻したケースを未到達扱いするので、extremum（up=最高 high / down=最安 low）で評価する。
 	targetReached: z
 		.boolean()
 		.optional()
@@ -880,10 +752,6 @@ export const DetectedPatternSchema = z.object({
 		.number()
 		.optional()
 		.describe(`走査窓（ブレイク足から ${TARGET_REACH_MAX_BARS} 本以内）の extremum（up=最高 high / down=最安 low）。`),
-	// --- ブレイク後の値動きの「事実」（issue #288 Phase 2 で追加。すべて additive）---
-	//
-	// targetReachedDate / targetReachedPrice は **extremum が付いた足**なので「いつ届いたか」ではない。
-	// 初到達は別の量なので別フィールドで持つ。
 	targetFirstReachBars: z
 		.number()
 		.int()
@@ -925,12 +793,6 @@ export const DetectedPatternSchema = z.object({
 			`targetScanBars === ${TARGET_REACH_MAX_BARS}。走査窓ぶんの足が揃っている（＝この先の足が` +
 				`増えても targetReached / targetReachedPct が動かない）かどうか。`,
 		),
-	// --- 到達の帰属を切る交絡（issue #288 Phase 2）---
-	//
-	// 素朴に「走査窓に他パターンのブレイクがあった」を出すと実体の 94.7% に付く（Phase 1 §5）ので、
-	// **到達側は (ブレイク, 初到達) の開区間・方向不問、未到達側は走査窓の逆方向のみ**に絞ってある。
-	// 基準集合は accepted（status が invalid / expired / forming / near_completion でないもの）だけで、
-	// includeInvalid: true でも変わらない。定義の単一ソースは tools/patterns/target-confounders.ts。
 	targetOtherBreakoutBeforeReach: TargetBreakoutConfounderSchema.array()
 		.optional()
 		.describe(
@@ -960,11 +822,12 @@ export const DetectedPatternSchema = z.object({
 			`「進捗 0%」と「測っていない」を取り違えないための唯一の手がかりになる。\n` +
 			`**再問い合わせで答えが変わりうるかは 3 通りある。**\n` +
 			`  (i) 足が増えれば測れるようになりうる（暫定）: 'not_broken_out' / 'no_bars_after_breakout'\n` +
-			`  (ii) その構造では変わらない（確定）: 'no_target' / 'invalid_breakout_price' / 'degenerate_target_distance'\n` +
+			`  (ii) その構造では変わらない（確定）: 'no_target' / 'breakout_against_expectation' / 'invalid_breakout_price' / 'degenerate_target_distance'\n` +
 			`  (iii) 実装ギャップ。再問い合わせでは変わらないが将来のリリースで消える: 'not_computed_by_detector'\n` +
 			`- 'not_broken_out' = ブレイクが確定していない（status が near_completion / forming、` +
 			`またはブレイク足を特定できない）。**最も多い経路。** (i)——後の足でネックラインを抜ければ進捗が出る。\n` +
 			`- 'no_target' = ターゲット価格またはパターン高さを算出できない（ネックライン投影が解けない等）。(ii)\n` +
+			`- 'breakout_against_expectation' = パターンが期待方向と逆にブレイクし、標準ターゲットを適用しない。(ii)\n` +
 			`- 'invalid_breakout_price' = ブレイク足の終値が非有限（欠損足など）。(ii)——その足は後から直らない。\n` +
 			`- 'no_bars_after_breakout' = ブレイク足以降に走査できるローソク足が無い。(i)\n` +
 			`- 'degenerate_target_distance' = |breakoutTarget − ブレイク価格| がパターン高さの ` +
@@ -978,17 +841,12 @@ export const DetectedPatternSchema = z.object({
 			`値は enum に残してあるが、これは公開スキーマの出力フィールドで、値の削除は外部クライアントへの` +
 			`破壊的変更になるため（#228）。同じ実装ギャップが別の検出器で見つかったときの受け皿として使う。(iii)`,
 	),
-	// 用語正規化ラベル（neckline フィールドが何を指すかをパターン種別ごとに明示）
 	trendlineLabel: z.string().optional(),
-	// ペナント用: フラッグポール（旗竿）情報
 	poleDirection: z.enum(['up', 'down']).optional(), // フラッグポールの方向
 	priorTrendDirection: z.enum(['bullish', 'bearish']).optional(), // 先行トレンド方向
 	isTrendContinuation: z.boolean().optional(), // ブレイク方向が先行トレンドと一致しているか
 	flagpoleHeight: z.number().optional(), // フラッグポールの値幅
 	retracementRatio: z.number().optional(), // フラッグポールに対する戻し比率（0.38未満ならペナント的）
-	// bull_flag / bear_flag / bull_pennant / bear_pennant の検証情報。
-	// LLM がパターンの妥当性を即座に判断できるよう、pole の急騰/急落条件と
-	// チャネル幾何（傾き・spread）を明示する。
 	poleStartDate: z.string().optional(), // pole 開始日（UTC ISO）
 	poleEndDate: z.string().optional(), // pole 終了日（UTC ISO）
 	poleChangePct: z.number().optional(), // pole の価格変化率（0.15 = +15%）
@@ -1013,7 +871,6 @@ export const DetectedPatternSchema = z.object({
 			targetReached: z.boolean(),
 			theoreticalTarget: z.number().nullable().optional(),
 			outcome: z.string(),
-			// New: number of bars (days for 1day, weeks for 1week, etc.) to reach theoretical target (if reached within evaluation window)
 			daysToTarget: z.number().int().nullable().optional(),
 		})
 		.optional(),
@@ -1078,6 +935,7 @@ export const DetectPatternsOutputSchema = z.union([
 					start: z.string().describe('スキャンした先頭足の UTC ISO 文字列。'),
 					end: z.string().describe('スキャンした末尾足の UTC ISO 文字列。'),
 					bars: z.number().int().describe('検出器に渡した足の本数。'),
+					anchorDate: z.string().optional().describe('入力 date による終端アンカー。省略時は現在時刻基準。'),
 				})
 				.optional()
 				.describe(
@@ -1108,18 +966,11 @@ export const DetectPatternsOutputSchema = z.union([
 					candidates: z
 						.array(
 							z.object({
-								// 候補ラベルは方向分類前の 'flag' / 'pennant' / 'triangle' を含むため filter enum を使う。
-								type: PatternFilterEnum,
+								type: PatternCandidateTypeEnum,
 								accepted: z.boolean(),
 								reason: z.string().optional(),
-								// 候補が組み立てられた時点の status。形成中パスの成功エントリ（issue #155）が
-								// 「完成済みとして採用された」と誤読されるのを防ぐための印で、`CandDebugEntry`
-								// 側には元からあったが出力スキーマに無く **strip されていた**。
 								status: z.string().optional(),
-								// ブレイク方向。`CandDebugEntry` 側が `string | null`（未ブレイクの候補で `null`）
-								// なので nullable。`PatternEntry.breakoutDirection`（:395）は `z.enum(['up','down'])`
-								// だが**あちらは成立したパターンの確定値**で、こちらは候補時点の観測値。
-								// 揃えて enum にすると `null` と将来の分類値で parse error になる。
+								// `PatternEntry.breakoutDirection` は成立したパターンの確定値で enum だが、こちらは候補時点の観測値（未ブレイクで null）なので揃えて enum にしない。
 								breakoutDirection: z.string().nullish(),
 								indices: z.array(z.number().int()).optional().describe(PATTERN_INDEX_NOTE),
 								points: z
@@ -1136,12 +987,6 @@ export const DetectPatternsOutputSchema = z.union([
 							}),
 						)
 						.optional(),
-					// --- トリムの申告（issue #180 案 1） ---
-					// `swings` / `candidates` は cap=200 で切り詰められる。件数を返さないと
-					// 受け取った 200 件が全件なのか一部なのか判別できず、**棄却理由の内訳を
-					// censored なまま集計する**ことになる（#152 → #167 / #172 の誤帰属と同じクラス）。
-					// **`optional()` だが出力では常に埋まる。** optional なのは旧クライアントとの
-					// 互換のためで、欠損は「トリムが無かった」ではなく「申告前の実装」を意味する。
 					candidatesTotal: z
 						.number()
 						.int()
@@ -1179,17 +1024,14 @@ export const DetectPatternsOutputSchema = z.union([
 				})
 				.optional(),
 			reduction: ReductionSchema,
-			warning: z.string().optional(),
-			warnings: z.array(z.string()).optional(),
+			...warningField,
+			...warningsField,
 		}),
 	}),
 	FailResultSchema,
 ]);
 
-// === Candle Patterns (2-bar patterns: engulfing, harami, etc.) ===
-
 export const CandlePatternTypeEnum = z.enum([
-	// 2本足パターン (Phase 1-2)
 	'bullish_engulfing',
 	'bearish_engulfing',
 	'bullish_harami',
@@ -1198,11 +1040,9 @@ export const CandlePatternTypeEnum = z.enum([
 	'tweezer_bottom',
 	'dark_cloud_cover',
 	'piercing_line',
-	// 1本足パターン (Phase 3)
 	'hammer',
 	'shooting_star',
 	'doji',
-	// 3本足パターン (Phase 3)
 	'morning_star',
 	'evening_star',
 	'three_white_soldiers',
@@ -1212,7 +1052,6 @@ export const CandlePatternTypeEnum = z.enum([
 export const AnalyzeCandlePatternsInputSchema = z.object({
 	pair: z.string().optional().default('btc_jpy'),
 	timeframe: z.literal('1day').optional().default('1day'),
-	// as_of: 主要パラメータ名（ISO形式 "2025-11-05" または YYYYMMDD "20251105" を受け付け）
 	as_of: z
 		.string()
 		.optional()
@@ -1298,7 +1137,7 @@ export const AnalyzeCandlePatternsMetaSchemaOut = BaseMetaSchema.extend({
 	patterns_checked: z.array(CandlePatternTypeEnum),
 	history_lookback_days: z.number().int(),
 	history_horizons: z.array(z.number().int()),
-	warning: z.string().optional(),
+	...warningField,
 });
 
 export const AnalyzeCandlePatternsOutputSchema = z.union([
@@ -1311,8 +1150,6 @@ export const AnalyzeCandlePatternsOutputSchema = z.union([
 	}),
 	FailResultSchema,
 ]);
-
-// === Candle Pattern Diagram (2-bar pattern visualization) ===
 
 const DiagramCandleSchema = z.object({
 	date: z.string().describe('Display date e.g. "11/6(木)"'),

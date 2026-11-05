@@ -1,7 +1,3 @@
-/**
- * get_margin_status ツールのユニットテスト。
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertFail, assertOk } from '../_assertResult.js';
 import { mockBitbankError, mockBitbankSuccess, rawMarginStatusResponse } from '../fixtures/private-api.js';
@@ -207,11 +203,7 @@ describe('get_margin_status — handler (toolDef)', () => {
 	});
 });
 
-/**
- * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
- * `data.available_balances[].pair` は structuredContent に公開されるので小文字契約を保つ。
- * 表示は `formatPair`（`toUpperCase()`）なので従来どおり大文字。防御的正規化（現行 API は小文字）。
- */
+/** data.available_balances[].pair は structuredContent に公開されるので小文字契約を保つ（表示は formatPair で大文字）。 */
 describe('get_margin_status — API pair の取得境界正規化', () => {
 	it('小文字レスポンスでは出力が変わらない（回帰なし）', async () => {
 		setupFetchMock(mockBitbankSuccess(rawMarginStatusResponse));
@@ -223,12 +215,7 @@ describe('get_margin_status — API pair の取得境界正規化', () => {
 		expect(result.data.available_balances).toEqual(rawMarginStatusResponse.available_balances);
 	});
 
-	/**
-	 * 正規化契約は「前後の空白除去 + 小文字化」の 2 つ。空白側は `formatPair`（`toUpperCase()`）
-	 * では落ちないので、サマリーが正規化前の値を読み直していると空白が表示に残る。
-	 * 本ツールは raw を 2 回読んでいて片方だけ未正規化だった（PR #39 レビュー指摘）ので、
-	 * サマリーと data の両方を固定して回帰を防ぐ。
-	 */
+	/** 空白は formatPair（toUpperCase）では落ちないので、サマリーと data の両方から空白が落ちることを固定する（raw を 2 回読んで片方だけ未正規化だった回帰）。 */
 	it('前後に空白を含むレスポンスでもサマリー・data の両方から空白が落ちる', async () => {
 		setupFetchMock(
 			mockBitbankSuccess({

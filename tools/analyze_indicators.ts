@@ -34,6 +34,7 @@ import {
 	stochRSI as rawStochRSI,
 	toNumericSeries,
 } from '../lib/indicators.js';
+import { roundPriceAtLevel } from '../lib/price.js';
 import { isLatestBarProvisional, prependProvisionalNote } from '../lib/provisional-bar.js';
 import { fail, failFromValidation, ok, parseAsResult } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
@@ -50,10 +51,7 @@ import type {
 import { GetIndicatorsDataSchema, GetIndicatorsMetaSchema, GetIndicatorsOutputSchema } from '../src/schemas.js';
 import getCandles from './get_candles.js';
 
-// --- Result cache for analyzeIndicators ---
-// Same pair/type within TTL → skip redundant API call & computation.
-// Especially effective when snapshot tools (BB/SMA/Ichimoku) are called
-// sequentially for the same pair.
+// 同じ pair / type を TTL 内に続けて呼ぶ（スナップショット系ツールの連続呼び出し）ときに API 呼び出しと計算を省く。
 
 interface IndicatorCacheComputed {
 	normalized: Candle[];
@@ -67,9 +65,7 @@ interface IndicatorCacheComputed {
 	warnings: string[];
 	trend: TrendLabel;
 	fetchCount: number;
-	// 上流 get_candles の fetchWarning（multi-year/multi-day 部分失敗等）。
-	// cache miss 時に candlesResult.meta.warning を保存し、cache hit 時もここから返す。
-	// 落とすと 2 回目以降 warning が消えるので必ず cache に乗せる。
+	// cache hit でも返すよう上流の fetchWarning も cache に乗せる（落とすと 2 回目以降 warning が消える）。
 	upstreamWarning?: string;
 }
 
@@ -78,15 +74,17 @@ const indicatorCache = new TtlCache<IndicatorCacheComputed>({
 	maxEntries: INDICATOR_CACHE_MAX_ENTRIES,
 });
 
-/** Clear the indicator cache (useful for testing). */
 export function clearIndicatorCache(): void {
 	indicatorCache.clear();
 }
 
-// --- Indicators (delegates to lib/indicators.ts) ---
+// 価格の系列を小数 2 桁に固定すると数円のペアで有効数字が 3 桁ほどしか残らないので、価格の水準の桁（最低 2 桁）で丸める。MACD のような値幅は refPrices に各足の価格を渡す。
+function toPriceSeries(values: number[], refPrices?: readonly number[]): NumericSeries {
+	return values.map((v, i) => (Number.isFinite(v) ? roundPriceAtLevel(v, refPrices?.[i] ?? v, 2) : null));
+}
 
 export function sma(values: number[], period: number = SMA_DEFAULT_PERIOD): NumericSeries {
-	return toNumericSeries(rawSma(values, period), 2);
+	return toPriceSeries(rawSma(values, period));
 }
 
 export function rsi(values: number[], period: number = RSI_PERIOD): NumericSeries {
@@ -100,16 +98,15 @@ export function bollingerBands(
 ): { upper: NumericSeries; middle: NumericSeries; lower: NumericSeries } {
 	const raw = rawBollingerBands(values, period, stdDev);
 	return {
-		upper: toNumericSeries(raw.upper, 2),
-		middle: toNumericSeries(raw.middle, 2),
-		lower: toNumericSeries(raw.lower, 2),
+		upper: toPriceSeries(raw.upper),
+		middle: toPriceSeries(raw.middle),
+		lower: toPriceSeries(raw.lower),
 	};
 }
 
-// Exponential Moving Average
 export function ema(values: number[], period: number): NumericSeries {
-	if (period <= 1) return values.map((v) => (v != null ? Number(v.toFixed(2)) : null));
-	return toNumericSeries(rawEma(values, period), 2);
+	if (period <= 1) return toPriceSeries(values);
+	return toPriceSeries(rawEma(values, period));
 }
 
 export function macd(
@@ -119,10 +116,11 @@ export function macd(
 	signal = MACD_SIGNAL,
 ): { line: NumericSeries; signal: NumericSeries; hist: NumericSeries } {
 	const raw = rawMacd(values, fast, slow, signal);
+	// 最新の終値の水準で決めると、価格の桁が変わったときに過去の値の桁まで変わり、小さい値が 0 になってクロスが消えるので、同じ足の終値で決める。
 	return {
-		line: toNumericSeries(raw.line, 2),
-		signal: toNumericSeries(raw.signal, 2),
-		hist: toNumericSeries(raw.hist, 2),
+		line: toPriceSeries(raw.line, values),
+		signal: toPriceSeries(raw.signal, values),
+		hist: toPriceSeries(raw.hist, values),
 	};
 }
 
@@ -133,17 +131,14 @@ export function ichimokuSeries(
 ): { tenkan: NumericSeries; kijun: NumericSeries; spanA: NumericSeries; spanB: NumericSeries; chikou: NumericSeries } {
 	const raw = rawIchimokuSeries(highs, lows, closes);
 	return {
-		tenkan: toNumericSeries(raw.tenkan, 2),
-		kijun: toNumericSeries(raw.kijun, 2),
-		spanA: toNumericSeries(raw.spanA, 2),
-		spanB: toNumericSeries(raw.spanB, 2),
-		chikou: toNumericSeries(raw.chikou, 2),
+		tenkan: toPriceSeries(raw.tenkan),
+		kijun: toPriceSeries(raw.kijun),
+		spanA: toPriceSeries(raw.spanA),
+		spanB: toPriceSeries(raw.spanB),
+		chikou: toPriceSeries(raw.chikou),
 	};
 }
 
-/**
- * Stochastic RSI: RSI値にストキャスティクス計算を適用。
- */
 export function computeStochRSI(
 	closes: number[],
 	rsiPeriod = RSI_PERIOD,
@@ -162,9 +157,6 @@ export function computeStochRSI(
 	};
 }
 
-/**
- * Classic Stochastic Oscillator: 価格のレンジ内位置を測定。
- */
 export function computeClassicStochastic(
 	highs: number[],
 	lows: number[],
@@ -193,9 +185,6 @@ export function computeClassicStochastic(
 	};
 }
 
-/**
- * OBV (On-Balance Volume): 出来高を価格方向に応じて累積加算/減算。
- */
 export function computeOBV(
 	candles: Candle[],
 	smaPeriod = OBV_SMA_PERIOD,
@@ -209,14 +198,12 @@ export function computeOBV(
 	const obvVal = obvSeries.at(-1) ?? null;
 	const prevObv = obvSeries.at(-2) ?? null;
 
-	// SMA of OBV
 	let obvSma: number | null = null;
 	if (obvSeries.length >= smaPeriod) {
 		const slice = obvSeries.slice(-smaPeriod);
 		obvSma = Number((slice.reduce((a, b) => a + b, 0) / smaPeriod).toFixed(2));
 	}
 
-	// Trend: compare OBV to its SMA
 	let trend: 'rising' | 'falling' | 'flat' | null = null;
 	if (obvVal != null && obvSma != null) {
 		const diff = obvVal - obvSma;
@@ -237,10 +224,10 @@ function ichimoku(
 	const snap = ichimokuSnapshot(highs, lows, closes);
 	if (!snap) return null;
 	return {
-		conversion: Number(snap.conversion.toFixed(2)),
-		base: Number(snap.base.toFixed(2)),
-		spanA: Number(snap.spanA.toFixed(2)),
-		spanB: Number(snap.spanB.toFixed(2)),
+		conversion: roundPriceAtLevel(snap.conversion, snap.conversion, 2),
+		base: roundPriceAtLevel(snap.base, snap.base, 2),
+		spanA: roundPriceAtLevel(snap.spanA, snap.spanA, 2),
+		spanB: roundPriceAtLevel(snap.spanB, snap.spanB, 2),
 	};
 }
 
@@ -285,12 +272,11 @@ function createChartData(
 			ICHI_spanA: indicators.ichi_series?.spanA ?? [],
 			ICHI_spanB: indicators.ichi_series?.spanB ?? [],
 			ICHI_chikou: indicators.ichi_series?.chikou
-				? toNumericSeries(
+				? toPriceSeries(
 						rawShiftChikou(
 							indicators.ichi_series.chikou.map((v) => v ?? NaN),
 							shift,
 						),
-						2,
 					)
 				: [],
 			macd_series: indicators.macd_series,
@@ -308,14 +294,7 @@ function createChartData(
 	};
 }
 
-/**
- * 本番の指標オブジェクトを生成する（flat 構造で `series` ラッパは持たない）。
- * schema 契約テスト（tests/indicators-contract.test.ts）が戻り値を IndicatorsInternalSchema に
- * 直接通して未知キー混入・キーパス欠落を検出するため公開している。
- *
- * @param normalized 正規化済みローソク足
- * @returns IndicatorsInternalSchema（`GetIndicatorsData['indicators']`）互換の指標オブジェクト
- */
+// tests/indicators-contract.test.ts が戻り値を IndicatorsInternalSchema に直接通して検査するので公開している。
 export function computeAllIndicators(normalized: Candle[]): GetIndicatorsData['indicators'] {
 	const allHighs = normalized.map((c) => c.high);
 	const allLows = normalized.map((c) => c.low);
@@ -426,8 +405,7 @@ function buildWarnings(dataLength: number, candleCount: number): string[] {
 	if (dataLength < 15) warnings.push('RSI_14: データ不足');
 	if (dataLength < 20) warnings.push('Bollinger_Bands: データ不足');
 	if (dataLength < 52) warnings.push('Ichimoku: データ不足');
-	// classic Stochastic（kPeriod=14, smoothK=3, smoothD=3）の最新 %D は
-	// kPeriod + smoothK + smoothD - 2 = 18 本目で確定する（lib/indicators.ts の早期 return 条件と一致）。
+	// classic Stochastic の最新 %D は kPeriod + smoothK + smoothD - 2 = 18 本目で確定する（lib/indicators.ts の早期 return 条件と一致）。
 	if (dataLength < 18) warnings.push('Stochastic: データ不足');
 	if (dataLength < 34) warnings.push('StochRSI: データ不足');
 	if (candleCount < 2) warnings.push('OBV: データ不足');
@@ -602,6 +580,8 @@ export default async function analyzeIndicators(
 	pair: string = 'btc_jpy',
 	type: CandleType | string = '1day',
 	limit: number | null = null,
+	date?: string,
+	tz?: string,
 ): Promise<OkResult<GetIndicatorsData, GetIndicatorsMeta> | FailResult> {
 	const chk = ensurePair(pair);
 	if (!chk.ok) return failFromValidation(chk);
@@ -626,15 +606,16 @@ export default async function analyzeIndicators(
 	] as const;
 	const fetchCount = getFetchCount(displayCount, indicatorKeys);
 
-	// Check cache before fetching & computing
-	const cacheKey = `${chk.pair}:${type}`;
+	// 終端アンカーと暦日解釈はデータ集合を変えるのでキャッシュキーに含める。tz 省略時は getCandles の既定値と揃え、明示した Asia/Tokyo とキャッシュを共有する。
+	const cacheTz = tz ?? 'Asia/Tokyo';
+	const cacheKey = `${chk.pair}:${type}:${date ?? ''}:${cacheTz}`;
 	const cached = indicatorCache.get(cacheKey);
 	let computed: IndicatorCacheComputed;
 
 	if (cached && cached.fetchCount >= fetchCount) {
 		computed = cached;
 	} else {
-		const candlesResult = await getCandles(chk.pair, type, undefined, fetchCount);
+		const candlesResult = await getCandles(chk.pair, type, date, fetchCount, tz);
 		if (!candlesResult.ok) return fail(candlesResult.summary.replace(/^Error: /, ''), candlesResult.meta.errorType);
 
 		const normalized = candlesResult.data.normalized;
@@ -662,14 +643,12 @@ export default async function analyzeIndicators(
 		indicatorCache.set(cacheKey, computed);
 	}
 
-	// --- Build result from computed data (always uses current displayCount/fetchCount) ---
 	const { normalized, indicators, allCloses, warnings, trend } = computed;
 
 	const chartData = createChartData(normalized, indicators, displayCount);
 	padSeriesLengths(chartData.indicators as Record<string, unknown>, chartData.candles.length);
 
-	// 最新足が形成中（未確定）か。realtime 取得（date 未指定）では最新足は現在形成中の足。
-	// now 依存のためキャッシュには載せず、毎回 normalized 末尾 ts から判定する。
+	// now 依存なのでキャッシュには載せず毎回判定する。
 	const provisional = isLatestBarProvisional(normalized.at(-1)?.timestamp, String(type));
 
 	const baseSummary = buildIndicatorsSummaryText({
@@ -685,7 +664,6 @@ export default async function analyzeIndicators(
 		normalized,
 		displayCount,
 	});
-	// 形成中足の注記を summary 先頭に連結（warning 2 系統とは別系統の情報注記）。
 	const summary = prependProvisionalNote(baseSummary, provisional, { separator: '\n' });
 
 	const data: GetIndicatorsData = {
@@ -702,10 +680,9 @@ export default async function analyzeIndicators(
 		count: allCloses.length,
 		requiredCount: fetchCount,
 		warnings: warnings.length > 0 ? warnings : undefined,
-		// 上流 fetchWarning は warnings[] と別系統。
-		// warnings[] に混ぜると指標不足と取得層不完全性の区別がつかなくなる。
+		// 上流 fetchWarning は warnings[] と混ぜない（指標不足と取得層の不完全性が区別できなくなる）。
 		warning: computed.upstreamWarning,
-		// 形成中足フラグ（warning / warnings とは別系統）。handler が content に注記を出す。
+		// handler が content に注記を出すために参照する。
 		provisional: provisional || undefined,
 	});
 

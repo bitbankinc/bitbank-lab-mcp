@@ -197,9 +197,7 @@ describe('analyze_market_signal', () => {
 	});
 
 	it('rv_std_ann > 1.0 のボラティリティ値が metrics に伝播する', async () => {
-		// 注: 高ボラそのものは confidence を直接降格させない。confidence の降格は
-		// (1) 上流 meta.warning ありで high → medium、(2) 主要要素 null で low 固定、の 2 系統のみ。
-		// このテストは rv_std_ann が data.metrics にそのまま流れることを検証する。
+		// 高ボラそのものは confidence を直接降格させない（降格は上流 meta.warning ありで high → medium、主要要素 null で low 固定の 2 系統のみ）ので、rv_std_ann が data.metrics にそのまま流れることを検証する。
 		mockedGetFlowMetrics.mockResolvedValueOnce(asMockResult(flowOk(0.5, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
 		mockedGetVolatilityMetrics.mockResolvedValueOnce(asMockResult(volOk(1.5)));
 		mockedAnalyzeIndicators.mockResolvedValueOnce(
@@ -238,9 +236,7 @@ describe('analyze_market_signal', () => {
 	it('25/75 直近クロス: 時間軸を揃えた全長 SMA 系列で golden_cross を検出する（slidingMean ズレ修正の回帰）', async () => {
 		mockedGetFlowMetrics.mockResolvedValueOnce(asMockResult(flowOk(0.5, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
 		mockedGetVolatilityMetrics.mockResolvedValueOnce(asMockResult(volOk(0.5)));
-		// 60 本下落 → 60 本上昇の V 字。下落局面で sma25<sma75、上昇局面で sma25>sma75 となり、
-		// 直近クロスは上昇局面の golden。旧実装は長さの違う slidingMean 配列を同一 index で
-		// 比較して 50 本ズレていたため、ここは時間軸の揃った全長系列での検出を固定する。
+		// 60 本下落 → 60 本上昇の V 字で、直近クロスは上昇局面の golden。長さの違う slidingMean 配列を同一 index で比較するとズレるので、時間軸の揃った全長系列での検出を固定する。
 		const down = Array.from({ length: 60 }, (_, i) => 200 - i * 2);
 		const up = Array.from({ length: 60 }, (_, i) => 82 + (i + 1) * 3);
 		const closeSeries = [...down, ...up];
@@ -279,19 +275,16 @@ describe('analyze_market_signal', () => {
 		expect(res.content[0].text).toContain('BTC_JPY');
 	});
 
-	// ── 「今日の雲」判定のバグ修正（spanA[len-ICHIMOKU_SHIFT] を使うこと）──
-
 	it('toolDef.handler: 雲判定は ichi_series.spanA/B の末尾 ICHIMOKU_SHIFT 本前を使う（ICHIMOKU_spanA/B とズレているケース）', async () => {
 		mockedGetFlowMetrics.mockResolvedValueOnce(asMockResult(flowOk(0.5, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
 		mockedGetVolatilityMetrics.mockResolvedValueOnce(asMockResult(volOk(0.5)));
 		const length = ICHIMOKU_SHIFT + 4;
-		// - ICHIMOKU_spanA/B（末尾＝ICHIMOKU_SHIFT 本後）: 80/70 → これを使うと close=100 が above_cloud（バグ）
-		// - 今日の雲（spanA/B[len-ICHIMOKU_SHIFT]）: 130/120 → 正しくは below_cloud
+		// 今日の雲（spanA/B[len-ICHIMOKU_SHIFT]）だけを 130/120 にし、末尾（= ICHIMOKU_SHIFT 本後の雲）を含む他の位置は 80/70 にしているので、読む位置が 1 本でもずれると close=100 が above_cloud になる。
 		const ichiSeries = {
 			tenkan: Array.from({ length }, () => 130),
 			kijun: Array.from({ length }, () => 120),
-			spanA: Array.from({ length }, (_, i) => (i === length - 1 ? 80 : 130)),
-			spanB: Array.from({ length }, (_, i) => (i === length - 1 ? 70 : 120)),
+			spanA: Array.from({ length }, (_, i) => (i === length - ICHIMOKU_SHIFT ? 130 : 80)),
+			spanB: Array.from({ length }, (_, i) => (i === length - ICHIMOKU_SHIFT ? 120 : 70)),
 			chikou: Array.from({ length }, () => 130),
 		};
 		const indRes = indicatorsOk({ close: 100, rsi: 55, sma25: 100, sma75: 100, sma200: 100 });
@@ -345,8 +338,6 @@ describe('analyze_market_signal', () => {
 		expect(res.data.metrics.buyPressure).toBe(1);
 		expect(res.data.nextActions.map((action) => action.tool)).toContain('get_orderbook');
 	});
-
-	// ── 上流 warning の集約と伝播（§9.2 / §9.3） ────────────────────────────────
 
 	it('get_flow_metrics の meta.warning が tool の meta.warning と content 先頭に伝播する', async () => {
 		mockedGetFlowMetrics.mockResolvedValueOnce(
@@ -403,23 +394,18 @@ describe('analyze_market_signal', () => {
 
 		const res = await analyzeMarketSignal('btc_jpy');
 		assertOk(res);
-		// 取得層 warning は meta.warning に
 		expect(res.meta.warning).toContain('[indicators]');
 		expect(res.meta.warning).toContain('indicators 取得層警告');
-		// 計算層 warnings は meta.warnings に（取得層メッセージが混入していない）。
-		// 由来が追えるよう warning と同じく [source] prefix を付ける。
+		// 由来が追えるよう、計算層 warnings にも warning と同じ [source] prefix を付ける。
 		expect(res.meta.warnings).toEqual(['[indicators] SMA_200: データ不足', '[indicators] Ichimoku: データ不足']);
 		expect(res.meta.warnings).not.toContain('indicators 取得層警告');
-		// content 先頭に取得層 warning と計算層 warnings が両方並ぶ
 		expect(res.summary).toContain('[indicators] indicators 取得層警告');
 		expect(res.summary).toContain('⚠️ [indicators] SMA_200: データ不足');
 		expect(res.summary).toContain('⚠️ [indicators] Ichimoku: データ不足');
 	});
 
 	it('直近バケットが全て欠損（hasData=false）でも CVD 傾きを「中立」と読まない', async () => {
-		// 直近 horizon(=10) 本が全部欠損バケットのケース。欠損バケットは CVD が据え置きで
-		// 引き継がれるため、そのまま傾きを取ると 0 ＝「フロー中立」と誤読される。
-		// 観測のあるバケットだけを対象にすれば、上昇トレンドが正しく反映される。
+		// 直近 horizon(=10) 本が全部欠損バケットのケース。欠損バケットは CVD が据え置きで引き継がれるので、そのまま傾きを取ると 0 ＝「フロー中立」と誤読される。観測のあるバケットだけを対象にすれば上昇トレンドが反映される。
 		const rising = [0, 20, 40, 60, 80, 100, 120, 140, 160, 180].map((cvd) => ({ cvd, hasData: true }));
 		const gapTail = Array.from({ length: 10 }, () => ({ cvd: 180, hasData: false }));
 		mockedGetFlowMetrics.mockResolvedValueOnce(
@@ -442,8 +428,7 @@ describe('analyze_market_signal', () => {
 	});
 
 	it('get_flow_metrics の計算層 warnings（集計値のカバー区間）も meta.warnings に伝播する', async () => {
-		// キャップ解除後も進行中 UTC 日は latest 約60件のみ。CVD 系スコアが欠損を含む区間から
-		// 算出されている事実は間接消費者（本ツール）まで届かないと LLM が気づけない。
+		// 進行中 UTC 日は latest 約60件のみなので、CVD 系スコアが欠損を含む区間から算出されている事実を間接消費者（本ツール）まで届けないと LLM が気づけない。
 		mockedGetFlowMetrics.mockResolvedValueOnce(
 			asMockResult(
 				flowOk(0.5, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], {
@@ -469,11 +454,8 @@ describe('analyze_market_signal', () => {
 		expect(res.summary).toContain('集計値');
 	});
 
-	// ── confidence のデータ品質連動降格（§9.4） ─────────────────────────────────
-
 	it('取得層 warning がある状態では 寄与符号一致でも confidence が high にならず medium に降格する', async () => {
-		// 主要3要素（smaTrend / momentum / cvdTrend）が全て正方向で一致する強気シグナルを用意。
-		// 上流 warning なしなら high になる構成だが、warning ありで medium に降格する。
+		// 主要3要素（smaTrend / momentum / cvdTrend）が全て正方向で一致する強気シグナル。上流 warning なしなら high になる構成だが、warning ありで medium に降格する。
 		mockedGetFlowMetrics.mockResolvedValueOnce(
 			asMockResult(flowOk(0.8, [0, 10, 20, 40, 60, 80, 100, 120, 140, 160], { warning: '⚠️ flow データ部分欠損' })),
 		);
@@ -598,7 +580,6 @@ describe('analyze_market_signal', () => {
 		assertOk(res);
 		expect(res.meta.warning).toBeUndefined();
 		expect(res.meta.warnings).toBeUndefined();
-		// content 先頭に ⚠️ が出ない（既存テストの緑維持）
 		expect(res.summary.split('\n')[0]).not.toMatch(/^⚠️/);
 	});
 });

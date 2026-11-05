@@ -6,12 +6,10 @@ import { viteSingleFile } from 'vite-plugin-singlefile';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
-// MCP Apps single-file bundle: すべての asset を無条件でインライン化するための閾値（~100MB）。
+// iframe 上で一枚の HTML として配信されるので、すべての asset を無条件でインライン化する閾値（~100MB）。
 const INLINE_ALL_ASSETS_LIMIT_BYTES = 100_000_000;
 
-// MCP Apps (SEP-1865): キャンセル確認 UI を単一 HTML にバンドルする。
-// 成果物は `ui/cancel-confirm/dist/cancel-confirm.html` に出力され、
-// サーバー側 `src/resources/app-resources.ts` から読み込まれる。
+// 出力先の dist/cancel-confirm.html は src/resources/app-resources.ts が読み込むので、パスを揃える。
 export default defineConfig({
 	root: __dirname,
 	plugins: [react(), viteSingleFile()],

@@ -9,12 +9,15 @@ import {
 	formatPctFromRatio,
 	formatPercent,
 	formatPrice,
+	formatPriceAtLevel,
+	formatPriceDecimals,
 	formatPriceJPY,
 	formatRounded,
 	formatSummary,
 	formatTrendArrow,
 	formatTrendSymbol,
 	formatVolumeJPY,
+	formatYenAmount,
 } from '../../lib/formatter.js';
 
 describe('formatPair', () => {
@@ -27,6 +30,11 @@ describe('formatPair', () => {
 });
 
 describe('formatPrice', () => {
+	it('100 円以上は従来どおり小数 3 桁まで、100 円未満は刻み（0.0001 円）まで出す', () => {
+		expect(formatPrice(15_234_567.891234)).toBe('¥15,234,567.891');
+		expect(formatPrice(2500.123)).toBe('¥2,500.123');
+		expect(formatPrice(31.2345)).toBe('¥31.2345');
+	});
 	it('JPY ペアは ¥ プレフィックス付きで返す', () => {
 		const result = formatPrice(100000, 'btc_jpy');
 		expect(result).toContain('¥');
@@ -50,11 +58,46 @@ describe('formatPrice', () => {
 });
 
 describe('formatPriceJPY', () => {
+	it('計算した価格は価格の水準の桁で出す（10 万円以上は円の整数）', () => {
+		expect(formatPriceJPY(15_234_567.6)).toBe('15,234,568円');
+		expect(formatPriceJPY(31.234567)).toBe('31.2346円');
+	});
+	it('値幅は refPrice の水準で桁を決める', () => {
+		expect(formatPriceJPY(45_678.9, 15_000_000)).toBe('45,679円');
+		expect(formatPriceJPY(0.987654, 31.2345)).toBe('0.9877円');
+	});
 	it('円サフィックス付きで四捨五入する', () => {
 		expect(formatPriceJPY(123456.7)).toBe('123,457円');
 	});
 	it('null は n/a を返す', () => {
 		expect(formatPriceJPY(null)).toBe('n/a');
+	});
+});
+
+describe('formatYenAmount', () => {
+	it('金額は円の整数で出す', () => {
+		expect(formatYenAmount(1234.56)).toBe('1,235円');
+		expect(formatYenAmount(null)).toBe('n/a');
+	});
+});
+
+describe('formatPriceAtLevel', () => {
+	it('価格の水準の桁で出し、円は付けない', () => {
+		expect(formatPriceAtLevel(15_234_567.6)).toBe('15,234,568');
+		expect(formatPriceAtLevel(0.987654, 31.2345)).toBe('0.9877');
+	});
+});
+
+describe('formatPriceDecimals', () => {
+	it('0 桁では円の整数に丸めて桁区切りを付ける', () => {
+		expect(formatPriceDecimals(15_234_567.6, 0)).toBe('15,234,568');
+	});
+	it('指定の桁で丸め、末尾の 0 は出さない', () => {
+		expect(formatPriceDecimals(0.0512345678, 7)).toBe('0.0512346');
+		expect(formatPriceDecimals(1.5, 5)).toBe('1.5');
+	});
+	it('負の値も同じ桁で出す', () => {
+		expect(formatPriceDecimals(-0.0012345678, 7)).toBe('-0.0012346');
 	});
 });
 

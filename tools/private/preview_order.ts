@@ -1,33 +1,15 @@
-/**
- * preview_order — 注文プレビュー。
- *
- * 注文パラメータのバリデーションを行い、プレビューを表示する。実際の発注は行わない。
- *
- * 内部的に confirmation_token も生成する。配送先は接続ホストによって 3 通りに分かれる:
- *   - elicitation 対応ホスト: ハンドラ内の accept 経路で create_order へ非公開のまま引き渡す
- *     （token はサーバープロセス内に閉じる。第一選択）
- *   - MCP Apps 実行経路が有効なホスト: ツール結果の `_meta` にのみ載せて iframe へ配送する
- *     （`BITBANK_MCP_APPS_EXECUTE=1` + MCP Apps UI 宣言の 2 段ゲート。ADR-0007）
- *   - どちらでもないホスト: 取引実行は行わずプレビューのみ返し、token はクライアントに渡さない
- *
- * いずれの場合も **content / structuredContent には token を載せない**（LLM から読めない）。
- *
- * 詳細は docs/private-api.md「`confirmation_token` の受け渡し」節を参照。
- */
-
 import { estimateOrderFee } from '../../lib/fees.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
 import { isJpyQuotedPair } from '../../lib/pair-code.js';
 import { fetchPairsSpec, type PairSpec, validateOrderConstraints } from '../../lib/pairs.js';
-import { fail, ok, toStructured } from '../../lib/result.js';
+import { fail, ok } from '../../lib/result.js';
 import { validateTriggerPrice } from '../../lib/trigger-price.js';
-import { generateToken } from '../../src/private/confirmation.js';
-import { withElicitedConfirmation } from '../../src/private/elicitation.js';
+import { confirmationTtlSeconds, generateToken } from '../../src/private/confirmation.js';
+import { confirmPreview } from '../../src/private/preview-confirmation.js';
 import { PreviewOrderInputSchema, PreviewOrderOutputSchema } from '../../src/private/schemas.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 import createOrder from './create_order.js';
 
-/** 注文タイプごとの必須パラメータチェック */
 function validateOrderParams(args: {
 	type: string;
 	price?: string;
@@ -67,7 +49,6 @@ function isPositiveNumericString(s: string): boolean {
 	return Number.isFinite(n) && n > 0;
 }
 
-/** 手数料率を % 表示にする（浮動小数の桁あふれを抑えて整形）。負のリベートはマイナス付きで返す。 */
 function formatRatePercent(rate: number): string {
 	const pct = Number((rate * 100).toFixed(4));
 	return `${pct}%`;
@@ -85,7 +66,6 @@ export default async function previewOrder(args: {
 }) {
 	const { pair, amount, price, side, type, post_only, trigger_price, position_side } = args;
 
-	// バリデーション
 	const paramError = validateOrderParams({ type, price, trigger_price, post_only });
 	if (paramError) {
 		return PreviewOrderOutputSchema.parse(fail(paramError, 'validation_error'));
@@ -101,9 +81,7 @@ export default async function previewOrder(args: {
 		return PreviewOrderOutputSchema.parse(fail('trigger_price は正の数値を指定してください', 'validation_error'));
 	}
 
-	// /spot/pairs に照らした事前バリデーション（最小数量・桁数・取引停止フラグ）
-	// API 取得失敗時は warning に留めて発注を継続する（後段の bitbank 側で必ず検証されるため）。
-	// 失敗時の挙動は docs/private-api.md「ペア仕様の事前バリデーション」節を参照。
+	// /spot/pairs の取得に失敗しても warning に留めて続行する（後段の bitbank 側で必ず検証されるため）。
 	const warnings: string[] = [];
 	// 手数料見積りでも spec を使うため try の外に保持する（pairs を二重 fetch しない）。
 	let spec: PairSpec | undefined;
@@ -127,7 +105,6 @@ export default async function previewOrder(args: {
 		warnings.push(`ペア仕様（/spot/pairs）取得失敗のため最小数量・桁数チェックをスキップしました: ${msg}`);
 	}
 
-	// stop / stop_limit: トリガー価格の妥当性チェック
 	if ((type === 'stop' || type === 'stop_limit') && trigger_price) {
 		const triggerError = await validateTriggerPrice(pair, side, Number(trigger_price));
 		if (triggerError) {
@@ -135,7 +112,6 @@ export default async function previewOrder(args: {
 		}
 	}
 
-	// 確認トークン生成
 	const tokenParams: Record<string, unknown> = { pair, amount, side, type };
 	if (price) tokenParams.price = price;
 	if (post_only != null) tokenParams.post_only = post_only;
@@ -144,13 +120,11 @@ export default async function previewOrder(args: {
 
 	const { token, expiresAt } = generateToken('create_order', tokenParams);
 
-	// プレビュー表示
 	const isJpy = isJpyQuotedPair(pair);
 	const sideLabel = side === 'buy' ? '買' : '売';
 	const fmtPrice = price ? (isJpy ? formatPrice(Number(price)) : price) : '成行';
 	const isMargin = !!position_side;
 
-	// 信用取引の操作ラベル
 	let marginLabel = '';
 	if (isMargin) {
 		const posLabel = position_side === 'long' ? 'ロング' : 'ショート';
@@ -177,9 +151,7 @@ export default async function previewOrder(args: {
 		lines.push('  Post Only: 有効');
 	}
 
-	// ── 手数料見積り（カテゴリ A: 取引手数料 / B: 信用手数料）──
-	// spec は事前バリデーションで取得済み。取得失敗時は undefined のまま渡し、
-	// estimateOrderFee 側で公称 taker による概算にフォールバックする（warning は別途下段に表示）。
+	// spec の取得に失敗していたら undefined のまま渡し、estimateOrderFee 側で公称 taker による概算にフォールバックさせる。
 	const feeEstimate = estimateOrderFee(spec, {
 		type,
 		side,
@@ -189,14 +161,12 @@ export default async function previewOrder(args: {
 		positionSide: position_side,
 	});
 
-	// 手数料区分ラベル（信用は新規/決済を明示）
 	let feeKindLabel: string = feeEstimate.role;
 	if (isMargin) {
 		const isOpen = (side === 'buy' && position_side === 'long') || (side === 'sell' && position_side === 'short');
 		feeKindLabel = `${feeEstimate.role}（信用${isOpen ? '新規' : '決済'}）`;
 	}
 
-	// 手数料率（% 表示。負はリベート明示）
 	const ratePct = formatRatePercent(feeEstimate.rate);
 	const rateLabel = feeEstimate.rate < 0 ? `${ratePct}（リベート）` : ratePct;
 
@@ -210,8 +180,7 @@ export default async function previewOrder(args: {
 	if (feeEstimate.estimatedCostQuote != null) {
 		lines.push(`  推定コスト: ${isJpy ? formatPrice(feeEstimate.estimatedCostQuote) : feeEstimate.estimatedCostQuote}`);
 	}
-	// note は ' / ' 区切りの複数注記（信用は「API 未提供」概算・利息は見積り対象外を含む）。
-	// 読みやすさのため備考を行ごとに分解して表示する。
+	// note は estimateOrderFee が ' / ' で連結した複数注記なので、同じ区切りで行に分解する。
 	const noteParts = feeEstimate.note.split(' / ');
 	lines.push(`  備考: ${noteParts[0]}`);
 	for (const part of noteParts.slice(1)) {
@@ -273,11 +242,6 @@ export const toolDef: ToolDefinition = {
 		'このツールの応答を受け取った後、LLM が発注完了を宣言してはならない。実行結果はユーザー確認後の応答で別途返る。',
 	].join(' '),
 	inputSchema: PreviewOrderInputSchema,
-	// MCP Apps (SEP-1865): 対応ホストでは iframe 内に注文プレビュー UI を表示する。
-	// 非対応ホストでは無視される（Progressive Enhancement）。
-	// 注: iframe 起源の tools/call はサーバー側で識別できない。UI からの create_order は
-	// 「LLM が読めない `_meta` にしか出していないトークンを提示できるか」で認可する
-	// （`BITBANK_MCP_APPS_EXECUTE=1` + MCP Apps UI 宣言時のみ。ADR-0007）。
 	_meta: {
 		ui: {
 			resourceUri: 'ui://order/confirm.html',
@@ -297,69 +261,23 @@ export const toolDef: ToolDefinition = {
 		const result = await previewOrder(typedArgs);
 		if (!result.ok) return result;
 
-		// スキーマ上 optional だが preview 成功時は必ず生成される。ここで 1 度だけ narrowing し、
-		// 以降の非 null 断定を無くす。万一生成されていなければ fail-closed で実行させない
-		// （トークン無しで execute 経路へ進ませないため）。
-		const { confirmation_token, expires_at } = result.data;
-		if (!confirmation_token || expires_at == null) {
-			return PreviewOrderOutputSchema.parse(fail('確認トークンを生成できませんでした', 'internal'));
-		}
-
-		// elicitation 非対応 かつ MCP Apps 実行経路も無効なホスト向けのフォールバック。
-		// 取引実行はこのホストでは行えない旨を明示し、トークンの存在は仄めかさない。
-		const fallbackText = [
-			result.summary,
-			'',
-			'※ このホストでは取引実行に対応していません。',
-			'  実際に発注するには、elicitation/MRTR 対応クライアントで同じ操作を行うか、bitbank アプリ/ウェブで同じ内容を手動発注してください。',
-		].join('\n');
-
-		// elicitation 非対応だが MCP Apps 実行経路が有効なホスト向け。確認カードの
-		// ボタンで発注できるため、案内が上と正反対になる。トークンは含めない。
-		const appUiFallbackText = [
-			result.summary,
-			'',
-			'※ 上部の確認カードで内容を確認し、「注文を確定する」ボタンを押すと発注されます。',
-			'  ボタンを押さない限り発注されません。確認は 60 秒で期限切れになるため、その場合は preview_order をやり直してください。',
-		].join('\n');
-
-		// elicitation 対応ホストでは preview → ユーザー確認 → create_order までを
-		// このハンドラ内で完結させる（LLM から見ると preview_order 1 回呼び出しで発注完了）。
-		// confirmation_token / expires_at は withElicitedConfirmation が
-		// structuredContent / declinedStructured / fallback から必ず剥がすため
-		// caller 側で sanitize する必要はない（多層防御の最終ガードは helper 側）。
-		return withElicitedConfirmation({
+		return confirmPreview({
 			extra,
 			action: 'create_order',
-			bindArgs: typedArgs as unknown as Record<string, unknown>,
-			summary: result.summary,
-			confirmTitle: 'この注文を発注する',
-			// 内部的に create_order を実行。監査ログには route='elicitation' で記録される。
-			// confirmation_token / expires_at は previewOrder() が必ず生成するため non-null 断定して渡す
-			// （スキーマ上は optional だが内部生成のみで undefined にはならない）。
-			onConfirmed: () =>
-				createOrder(
-					{
-						...typedArgs,
-						confirmation_token,
-						token_expires_at: expires_at,
-					},
-					'elicitation',
-					{ sessionId: (extra as { sessionId?: string } | undefined)?.sessionId },
-				),
-			onDeclinedText: 'ユーザーが発注をキャンセルしました（elicitation）',
-			declinedStructured: toStructured(result),
-			fallback: {
-				content: [{ type: 'text', text: fallbackText }],
-				structuredContent: toStructured(result),
+			args: typedArgs,
+			result,
+			outputSchema: PreviewOrderOutputSchema,
+			texts: {
+				confirmTitle: 'この注文を発注する',
+				declinedText: 'ユーザーが発注をキャンセルしました（elicitation）',
+				unsupportedHostGuide:
+					'  実際に発注するには、elicitation/MRTR 対応クライアントで同じ操作を行うか、bitbank アプリ/ウェブで同じ内容を手動発注してください。',
+				appUiGuide: [
+					'※ 上部の確認カードで内容を確認し、「注文を確定する」ボタンを押すと発注されます。',
+					`  ボタンを押さない限り発注されません。確認は ${confirmationTtlSeconds()} 秒で期限切れになるため、その場合は preview_order をやり直してください。`,
+				],
 			},
-			// MCP Apps ホスト向けのトークン配送。実際に載るのは有効化ゲート 2 段を
-			// 満たし、かつ elicitation 非対応と判定された場合のみ（helper 側で制御）。
-			metaConfirmation: {
-				confirmation_token,
-				expires_at,
-			},
-			appUiFallbackText,
+			execute: createOrder,
 		});
 	},
 };

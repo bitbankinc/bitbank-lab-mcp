@@ -93,13 +93,37 @@ describe('detect_patterns fixtures', () => {
 		expect(res.meta.count).toBe(1);
 	});
 
-	/**
-	 * **`status` の期待値を `forming` から `near_completion` に変えた（issue #262）。**
-	 * この synthetic fixture は「確定 2 谷 + 中間の山が揃い、ネックライン突破を待っている」形で、
-	 * 旧 `tryFormingDoubleBottom` がそれを `forming` と呼んでいた。完成済み経路の
-	 * `near_completion` に付け替えたのが #262。`completionPct` は完成度スコアごと消えた
-	 * （triple / H&S の `near_completion` も持たない）。**`range.end` も最新足から谷2 になった**。
-	 */
+	it('1 円未満のペアでも目標価格・ネックライン・事後の値動きを円の整数に潰さない', async () => {
+		const candles = buildCompletedDoubleTopCandles().map((c) => ({
+			...c,
+			open: c.open / 1000,
+			high: c.high / 1000,
+			low: c.low / 1000,
+			close: c.close / 1000,
+		}));
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
+
+		const res = await detectPatterns('btc_jpy', '1day', 26, {
+			patterns: ['double_top'],
+			swingDepth: 2,
+			tolerancePct: 0.02,
+			includeCompleted: true,
+			includeForming: false,
+		});
+		assertOk(res);
+		expect(res.data.patterns).toHaveLength(1);
+		expect(res.data.patterns[0]).toMatchObject({
+			breakoutTarget: 0.0905,
+			aftermath: {
+				theoreticalTarget: 0.09,
+				priceMove: { days3: { high: 0.103, low: 0.092 } },
+			},
+		});
+		expect(res.summary).toContain('ネックライン: 0.11円 → 0.11円');
+		expect(res.summary).toContain('ターゲット価格: 0.0905円');
+	});
+
+	// この synthetic fixture は「確定 2 谷 + 中間の山が揃い、ネックライン突破を待っている」形なので `near_completion`（issue #262）。
 	it('synthetic fixture から near_completion の double_bottom を completed なしで返せる', async () => {
 		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildFormingDoubleBottomCandles())));
 
@@ -444,7 +468,6 @@ describe('detect_patterns fixtures', () => {
 		);
 	});
 
-	// PR1: includeForming=false でも完成済み wedge が forming 候補に潰されないこと
 	it('includeCompleted=true / includeForming=false でも completed wedge は検出される', async () => {
 		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildCompletedFallingWedgeCandles())));
 
@@ -455,7 +478,6 @@ describe('detect_patterns fixtures', () => {
 		});
 
 		assertOk(res);
-		// completed wedge が残っている（forming 候補に dedup で潰されていない）
 		expect(res.data.patterns.length).toBeGreaterThan(0);
 		expect(res.data.patterns).toEqual(
 			expect.arrayContaining([
@@ -466,8 +488,7 @@ describe('detect_patterns fixtures', () => {
 				}),
 			]),
 		);
-		// 残ったパターンは completed 系であって、forming / near_completion は混ざらない
-		// （includeForming=false の段階で forming と near_completion を弾いているため）
+		// includeForming=false の段階で forming と near_completion を弾いているので、残ったパターンは completed 系だけ。
 		for (const p of res.data.patterns) {
 			expect(['completed', 'invalid', undefined]).toContain(p.status);
 		}
@@ -519,7 +540,6 @@ describe('detect_patterns fixtures', () => {
 		);
 	});
 
-	// ── ネックライン水平性 / double 構造上限 hard cap（PR #2） ──
 	describe('反転パターン構造上限の hard reject', () => {
 		it('IHS: 山1/山2 が同水準でない場合 inverse_head_and_shoulders を検出しない', async () => {
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildAsymmetricNecklineIHSCandles())));
@@ -648,7 +668,6 @@ describe('detect_patterns fixtures', () => {
 			expect(rejected).toBeDefined();
 		});
 
-		// ── 非退行：既存 fixture が引き続き検出されることを担保 ──
 		it('既存 double_top fixture は引き続き検出され、confidence は維持される', async () => {
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildCompletedDoubleTopCandles())));
 			const res = await detectPatterns('btc_jpy', '1day', 26, {
@@ -664,7 +683,6 @@ describe('detect_patterns fixtures', () => {
 			expect(dt[0].confidence).toBeGreaterThanOrEqual(0.6);
 		});
 
-		// `status` の期待値が `near_completion` に変わった理由は上の同 fixture のテストを参照（#262）。
 		it('既存 forming double_bottom fixture は引き続き検出され、confidence は維持される', async () => {
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildFormingDoubleBottomCandles())));
 			const res = await detectPatterns('btc_jpy', '1day', FORMING_DOUBLE_BOTTOM_BARS, {
@@ -714,9 +732,8 @@ describe('detect_patterns fixtures', () => {
 		});
 	});
 
-	// ── 形成前トレンド方向の hard reject（PR #3） ──
 	describe('反転パターン形成前トレンドの hard reject', () => {
-		it('上昇トレンド継続中は forming の double_bottom を検出しない（priorReturn が up）', async () => {
+		it('上昇トレンド継続中は double_bottom を検出しない', async () => {
 			mockedAnalyzeIndicators.mockResolvedValueOnce(
 				asMockResult(indicatorsOk(buildUptrendThenFakeDoubleBottomCandles())),
 			);
@@ -733,13 +750,7 @@ describe('detect_patterns fixtures', () => {
 			const dbs = res.data.patterns.filter((p: { type: string }) => p.type === 'double_bottom');
 			expect(dbs).toHaveLength(0);
 
-			const debugCands =
-				(res.meta?.debug as { candidates?: Array<{ accepted?: boolean; reason?: string }> } | undefined)?.candidates ??
-				[];
-			const priorTrendRejects = debugCands.filter(
-				(c) => !c.accepted && typeof c.reason === 'string' && c.reason.startsWith('prior_trend_mismatch'),
-			);
-			expect(priorTrendRejects.length).toBeGreaterThan(0);
+			// double は forming を出さないので、未ブレイクなら no_breakout で先に終了する（先行トレンドの理由コードは、構造・経路の診断を残すため最後に評価する）。
 		});
 
 		it('下降トレンド継続中は head_and_shoulders を検出しない（priorReturn が down）', async () => {
@@ -766,9 +777,7 @@ describe('detect_patterns fixtures', () => {
 			expect(priorTrendRejects.length).toBeGreaterThan(0);
 		});
 
-		// pattern start がデータ先頭付近（lookback 不足）の場合、
-		// validatePriorTrend は insufficient_data を返し hard reject しない。
-		// 既存 fixture（pattern start idx ≦ 5）で検出が維持されることを確認。
+		// pattern start がデータ先頭付近（lookback 不足）の場合、validatePriorTrend は insufficient_data を返し hard reject しない。
 		it('pattern 開始がデータ先頭付近の場合、prior_trend で reject しない', async () => {
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildCompletedDoubleTopCandles())));
 
@@ -799,7 +808,6 @@ describe('detect_patterns fixtures', () => {
 			expect(insufficientEntry).toBeDefined();
 		});
 
-		// double_bottom 側でも同等にデータ先頭付近の場合は insufficient_data を debug に残す
 		it('double_bottom でも pattern 開始がデータ先頭付近の場合、insufficient_data を debug に残す', async () => {
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildFormingDoubleBottomCandles())));
 
@@ -826,9 +834,34 @@ describe('detect_patterns fixtures', () => {
 			);
 			expect(insufficientEntry).toBeDefined();
 		});
+
+		it('十分な窓では先頭60本以内に始まる反転候補を履歴不足で除外する', async () => {
+			const base = buildCompletedDoubleTopCandles();
+			const candles = [...base, ...Array.from({ length: 70 }, (_, i) => makeCandle(base.length + i, 100))];
+			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
+
+			const res = await detectPatterns('btc_jpy', '1day', candles.length, {
+				patterns: ['double_top'],
+				swingDepth: 2,
+				tolerancePct: 0.02,
+				includeCompleted: true,
+				includeForming: false,
+				view: 'debug',
+			});
+
+			assertOk(res);
+			expect(res.data.patterns.filter((p: { type: string }) => p.type === 'double_top')).toHaveLength(0);
+			const reduction = res.meta.reduction as { reversalHistoryExcluded?: number };
+			expect(reduction.reversalHistoryExcluded).toBeGreaterThan(0);
+			expect(
+				(
+					(res.meta.debug as { candidates?: Array<{ type?: string; accepted?: boolean; reason?: string }> })
+						.candidates ?? []
+				).some((c) => c.type === 'double_top' && c.accepted === false && c.reason === 'reversal_history_insufficient'),
+			).toBe(true);
+		});
 	});
 
-	// ── 上流 warning の伝播（取得層 meta.warning / 計算層 meta.warnings） ──
 	describe('上流 warning の伝播', () => {
 		function indicatorsOkWithMeta(candles: Candle[], meta: Record<string, unknown>) {
 			return {
@@ -858,7 +891,6 @@ describe('detect_patterns fixtures', () => {
 			assertOk(res);
 			expect(res.meta.warning).toBe('⚠️ partial fetch (3日中1日の取得に失敗)');
 			expect(res.meta.warnings).toBeUndefined();
-			// summary 先頭が warning 行
 			expect(res.summary.split('\n')[0]).toContain('⚠️ partial fetch');
 		});
 
@@ -879,18 +911,13 @@ describe('detect_patterns fixtures', () => {
 			});
 
 			assertOk(res);
-			// meta.warnings に上流計算層 warnings が継承される
 			expect(res.meta.warnings).toEqual(['SMA_200: データ不足', 'Ichimoku: データ不足']);
 			expect(res.meta.warning).toBeUndefined();
-			// data.warnings（本ツール独自の検出系警告）と meta.warnings（上流計算層）は別フィールド
-			// 独自警告は { type, message, suggestedParams } の形だが上流由来は string[]
-			if (Array.isArray(res.data.warnings)) {
-				for (const w of res.data.warnings) {
-					// data.warnings は独自スキーマで、上流の string そのままが混入していないこと
-					expect(typeof w).toBe('object');
-				}
+			// data.warnings（本ツール独自の検出系警告、{ type, message, suggestedParams } の形）と meta.warnings（上流計算層、string[]）は別フィールド
+			for (const w of Array.isArray(res.data.warnings) ? res.data.warnings : []) {
+				// data.warnings は独自スキーマで、上流の string そのままが混入していないこと
+				expect(typeof w).toBe('object');
 			}
-			// summary 先頭が warning 行
 			expect(res.summary.split('\n')[0]).toMatch(/^⚠️/);
 			expect(res.summary).toContain('⚠️ SMA_200: データ不足');
 		});
@@ -915,7 +942,6 @@ describe('detect_patterns fixtures', () => {
 			assertOk(res);
 			expect(res.meta.warning).toBe('⚠️ partial fetch (multi-year)');
 			expect(res.meta.warnings).toEqual(['SMA_200: データ不足']);
-			// summary の先頭 2 行に取得層 warning と計算層 warnings がそれぞれ出る
 			const lines = res.summary.split('\n');
 			expect(lines[0]).toContain('⚠️ partial fetch');
 			expect(lines[1]).toContain('⚠️ SMA_200: データ不足');
@@ -938,7 +964,6 @@ describe('detect_patterns fixtures', () => {
 		});
 	});
 
-	// ── tz 表示（PR-4: 表示日付の tz 整形） ──
 	describe('表示日付の tz 整形', () => {
 		// 23:30 UTC の足を含む fixture を作る（UTC 暦日と JST 暦日が 1 日ずれる）。
 		function makeIsoAt(year: number, month: number, day: number, hour: number): string {
@@ -955,8 +980,7 @@ describe('detect_patterns fixtures', () => {
 		}
 
 		function buildDoubleTopAt2330Z(): Candle[] {
-			// 既存 buildCompletedDoubleTopCandles と同じ close 列だが、isoTime を 23:30Z 系に振り直す。
-			// idx 0 → 2026-10-01T23:30Z (UTC=10/01, JST=10/02)。1 日刻みで進める。
+			// 既存 buildCompletedDoubleTopCandles と同じ close 列で、isoTime を 23:30Z 系に振り直す（idx 0 → 2026-10-01T23:30Z = UTC 10/01、JST 10/02）。
 			const closes = [
 				100, 102, 105, 110, 118, 130, 126, 122, 118, 114, 112, 110, 114, 118, 122, 126, 128, 129, 123, 116, 104, 100,
 				95, 100, 99, 98,
@@ -987,7 +1011,6 @@ describe('detect_patterns fixtures', () => {
 			// idx 5 (= 2026-10-06T23:30Z → JST 10/07) ~ idx 20 (= 2026-10-21T23:30Z → JST 10/22)
 			expect(res.summary).toContain('2026-10-07');
 			expect(res.summary).toContain('2026-10-22');
-			// UTC 暦日（10-06 / 10-21）は出ない
 			expect(res.summary).not.toContain('2026-10-06');
 			expect(res.summary).not.toContain('2026-10-21');
 		});
@@ -1040,7 +1063,6 @@ describe('detect_patterns fixtures', () => {
 			expect(res2.data.patterns[0].range.start).toBe('2026-10-06T23:30:00.000Z');
 			expect(res2.data.patterns[0].range.end).toBe('2026-10-21T23:30:00.000Z');
 
-			// overlays も同様に UTC ISO のまま
 			expect(res1.data.overlays?.ranges?.[0]?.start).toBe('2026-10-06T23:30:00.000Z');
 			expect(res2.data.overlays?.ranges?.[0]?.start).toBe('2026-10-06T23:30:00.000Z');
 		});
@@ -1094,7 +1116,6 @@ describe('detect_patterns fixtures', () => {
 			assertOk(res);
 			expect(res.summary).toContain('検出パターン分布期間: 2026-10-07 ~ 2026-10-22');
 
-			// UTC のとき
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildDoubleTopAt2330Z())));
 			const resUtc = await detectPatterns('btc_jpy', '1day', 26, {
 				patterns: ['double_top'],
@@ -1110,12 +1131,7 @@ describe('detect_patterns fixtures', () => {
 		});
 	});
 
-	// スキャン窓 = 表示窓（直近 limit 本）。
-	//
-	// analyze_indicators は指標の warmup 分を先頭に足した配列を返し、その本数を
-	// chart.meta.pastBuffer で伝える（render_chart_svg も `slice(pastBuffer)` で切る）。
-	// 本ツールはこれを無視して全件走査しており、`limit=200` の要求に 399 本を走査して
-	// ヘッダの `{limit}本から` が虚偽表示になっていた。
+	// analyze_indicators は指標の warmup 分を先頭に足した配列を返し、その本数を chart.meta.pastBuffer で伝えるので、スキャン窓（= 表示窓、直近 limit 本）はそこから切り出す（render_chart_svg も `slice(pastBuffer)` で切る）。
 	describe('スキャン窓の pastBuffer 切り出し', () => {
 		/** warmup 本を先頭に付けた chart を返す（本番 analyze_indicators と同じ形）。 */
 		function indicatorsOkWithBuffer(warmup: Candle[], window: Candle[]) {
@@ -1188,8 +1204,7 @@ describe('detect_patterns fixtures', () => {
 			expect(res.data.patterns).toEqual([]);
 		});
 
-		// インデックス契約: 出力の idx はスキャン窓基準（warmup を含む chart.candles の添字ではない）。
-		// slice で意味が変わった箇所なので、実際の足に解決できることを固定する。
+		// 出力の idx はスキャン窓基準（warmup を含む chart.candles の添字ではない）。slice で意味が変わった箇所なので、実際の足に解決できることを固定する。
 		it('pivots[].idx / breakoutBarIndex はスキャン窓基準で、該当足に解決できる', async () => {
 			const window = buildCompletedDoubleTopCandles();
 			const warmup = flatCandles(30, -30);
@@ -1208,7 +1223,6 @@ describe('detect_patterns fixtures', () => {
 			const pivots = pattern.pivots ?? [];
 			expect(pivots.length).toBeGreaterThan(0);
 			for (const pivot of pivots) {
-				// window（= スキャン窓）の添字として有効な範囲に収まる
 				expect(pivot.idx).toBeGreaterThanOrEqual(0);
 				expect(pivot.idx).toBeLessThan(window.length);
 				// 価格がその足の高安に含まれる = 正しい足を指している
@@ -1217,11 +1231,9 @@ describe('detect_patterns fixtures', () => {
 				expect(pivot.price).toBeLessThanOrEqual(bar.high);
 			}
 
-			// range の端は pivot が指す足の日時と整合する（ISO 側との突き合わせ）
 			expect(pattern.range.start).toBe(window[pivots[0].idx].isoTime);
 
-			// breakoutBarIndex も同じ基準。bounds だけでなく、指す足が confirmation.date と
-			// 一致することまで見る——bounds だけだと窓内に収まる誤りを見逃す。
+			// breakoutBarIndex も同じ基準。bounds だけだと窓内に収まる誤りを見逃すので、指す足が confirmation.date と一致することまで見る。
 			const breakoutBarIndex = pattern.breakoutBarIndex;
 			expect(breakoutBarIndex).toBeDefined();
 			expect(breakoutBarIndex).toBeGreaterThanOrEqual(0);
@@ -1267,9 +1279,7 @@ describe('detect_patterns fixtures', () => {
 			expect(sliced.data.patterns.length).toBeLessThan(unsliced.data.patterns.length);
 		});
 	});
-	// スキャン窓 = 直近 limit 本になった結果、limit をスキーマ下限（20）付近まで小さくすると
-	// swingDepth 分が前後から落ちてピボット候補が残らず「構造上ゼロ件」の窓が作れるようになった。
-	// candles.length < 20 のガードは「ちょうど 20」で通ってしまうので、警告で申告する。
+	// limit をスキーマ下限（20）付近まで小さくすると swingDepth 分が前後から落ちてピボット候補が残らず「構造上ゼロ件」の窓が作れるので、candles.length < 20 のガードとは別に警告で申告する。
 	describe('スキャン窓不足の警告', () => {
 		/** 平坦でない適当な足を count 本作る（本数だけが論点なので形は問わない）。 */
 		function noisyCandles(count: number): Candle[] {

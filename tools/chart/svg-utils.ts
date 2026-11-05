@@ -1,12 +1,3 @@
-/**
- * chart/svg-utils — SVG チャート描画で共通利用するユーティリティ。
- *
- * 全関数は純粋関数（副作用なし）。
- */
-
-// ── Y 軸目盛り ──
-
-/** Y 軸スケール用の "きれいな" 目盛りを生成する */
 export function niceTicks(min: number, max: number, count = 5): number[] {
 	if (max < min) [min, max] = [max, min];
 	const range = max - min;
@@ -31,7 +22,6 @@ export function niceTicks(min: number, max: number, count = 5): number[] {
 	return ticks;
 }
 
-/** Y 軸ラベルの省略表示フォーマッタ */
 export function formatYLabel(val: number, isJpyPair: boolean): string {
 	const abs = Math.abs(val);
 	const prefix = isJpyPair ? '¥' : '';
@@ -42,11 +32,8 @@ export function formatYLabel(val: number, isJpyPair: boolean): string {
 	return `${prefix}${val}`;
 }
 
-// ── ポイント簡略化 ──
-
 export type Pt = { x: number; y: number };
 
-/** RDP 風のポイント簡略化 */
 export function simplifyPts(raw: Pt[], tolerance: number): Pt[] {
 	if (tolerance <= 0 || raw.length <= 2) return raw;
 	const sqTol = tolerance * tolerance;
@@ -65,17 +52,12 @@ export function simplifyPts(raw: Pt[], tolerance: number): Pt[] {
 	return simplified;
 }
 
-// ── サニタイゼーション ──
-
-/** SVG 文字列から script タグと on* イベントハンドラを除去 */
 export function sanitizeSvg(s: string): string {
 	return s
 		.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
 		.replace(/\son[a-z]+="[^"]*"/gi, '')
 		.replace(/\son[a-z]+='[^']*'/gi, '');
 }
-
-// ── カラーマップ ──
 
 export const smaColors: Record<number, string> = {
 	5: '#f472b6',

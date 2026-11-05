@@ -1,18 +1,7 @@
-/**
- * 取得層・提示層の堅牢性リグレッションテスト（2026-06 データ正確性監査の修正分）。
- *
- * 監査で確認した F1 / P2 / P1 の修正後の「正しい挙動」を固定する。
- *   F1: get_orderbook が非数値 price/size を drop し、全 mode で NaN を流出させない
- *       （全滅時は upstream fail、片側欠損の正常系は維持）。
- *   P2: get_orderbook の pressure/statistics 出来高単位がペアのベース通貨になる。
- *   P1: get_candles の view=items でも取得層 warning / meta が保持される。
- *
- * 実行: npx vitest run tests/orderbook_candles_robustness.test.ts
- */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { allToolDefs } from '../src/tool-registry.js';
 import getOrderbook from '../tools/get_orderbook.js';
-import { asMockResult } from './_assertResult.js';
+import { asMockResult, assertOk } from './_assertResult.js';
 
 function findNonFinite(value: unknown, path = '$'): string[] {
 	const found: string[] = [];
@@ -52,9 +41,6 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-// ─────────────────────────────────────────────────────────────
-// F1: get_orderbook の非数値 price/size を全 mode で drop（NaN 非流出 + 適切な分類）
-// ─────────────────────────────────────────────────────────────
 describe('F1 取得層: get_orderbook の不正レベル sanitize', () => {
 	// bids 先頭 price が非数値。もう 1 本は有効 → drop 後も片側は生存。
 	const partlyBad = {
@@ -76,27 +62,29 @@ describe('F1 取得層: get_orderbook の不正レベル sanitize', () => {
 		it(`mode=${mode}: drop して ok、NaN 非流出、warning/droppedRows を surface`, async () => {
 			mockJson(partlyBad);
 			const res = await getOrderbook({ pair: 'btc_jpy', mode });
-			expect(res.ok).toBe(true);
-			if (!res.ok) return;
-			// data に NaN/Infinity が出ない
+			assertOk(res);
 			expect(findNonFinite({ data: res.data })).toEqual([]);
-			// 取得層 warning と droppedRows が surface される
 			expect((res.meta as { warning?: string }).warning).toMatch(/不正な板レベルを除外/);
 			expect((res.meta as { droppedRows?: { bids: number } }).droppedRows?.bids).toBe(1);
-			// LLM 可視テキストにも drop 警告が出る
 			expect(res.summary).toMatch(/不正な板レベルを除外/);
-			// raw は破損値 "abc" / "NaN円" を含まない
-			if (mode === 'raw') {
-				expect(JSON.stringify(res.data)).not.toContain('abc');
-				expect(res.summary).not.toContain('NaN');
-			}
-			// pressure は baseMid が有限（無言退行しない）
-			if (mode === 'pressure') {
-				const bands = (res.data as { bands: Array<{ baseMid: number | null }> }).bands;
-				expect(bands[0].baseMid).not.toBeNull();
-			}
 		});
 	}
+
+	it('mode=raw: 不正な値を data と summary に出さない', async () => {
+		mockJson(partlyBad);
+		const res = await getOrderbook({ pair: 'btc_jpy', mode: 'raw' });
+		assertOk(res);
+		expect(JSON.stringify(res.data)).not.toContain('abc');
+		expect(res.summary).not.toContain('NaN');
+	});
+
+	it('mode=pressure: 不正な行を除いても基準の中値が求まる', async () => {
+		mockJson(partlyBad);
+		const res = await getOrderbook({ pair: 'btc_jpy', mode: 'pressure' });
+		assertOk(res);
+		const bands = (res.data as { bands: Array<{ baseMid: number | null }> }).bands;
+		expect(bands[0].baseMid).not.toBeNull();
+	});
 
 	it('片側が drop で全滅 → upstream fail（network 誤分類にしない）', async () => {
 		mockJson({
@@ -113,7 +101,6 @@ describe('F1 取得層: get_orderbook の不正レベル sanitize', () => {
 	});
 
 	it('正常な片側欠損（asks=[] の一方向板）は従来どおり ok・warning なし', async () => {
-		// 既存 audit テスト（market_data_audit.test.ts:213）の挙動を維持する。
 		mockJson({
 			success: 1,
 			data: {
@@ -129,15 +116,11 @@ describe('F1 取得層: get_orderbook の不正レベル sanitize', () => {
 		expect(res.ok).toBe(true);
 		if (!res.ok) return;
 		expect(findNonFinite({ data: res.data })).toEqual([]);
-		// drop は発生していない → warning/droppedRows なし
 		expect((res.meta as { warning?: string }).warning).toBeUndefined();
 		expect((res.meta as { droppedRows?: unknown }).droppedRows).toBeUndefined();
 	});
 });
 
-// ─────────────────────────────────────────────────────────────
-// P2: get_orderbook pressure/statistics の出来高単位がペアのベース通貨になる
-// ─────────────────────────────────────────────────────────────
 describe('P2 提示層: get_orderbook の出来高単位がペア依存', () => {
 	const goodDepth = {
 		success: 1,
@@ -172,9 +155,6 @@ describe('P2 提示層: get_orderbook の出来高単位がペア依存', () => 
 	}
 });
 
-// ─────────────────────────────────────────────────────────────
-// P1: get_candles view=items でも取得層 warning / meta が保持される
-// ─────────────────────────────────────────────────────────────
 describe('P1 提示層: get_candles view=items の warning / meta 保持', () => {
 	function mockPartialMultiDay() {
 		let call = 0;
@@ -231,9 +211,7 @@ describe('P1 提示層: get_candles view=items の warning / meta 保持', () =>
 		};
 		const text = (out.content ?? []).map((c) => c.text).join('\n');
 		expect(text).toMatch(/失敗しました/); // ← 警告が保持される
-		// items 配列の JSON も依然として content に含まれる
 		expect(text).toContain('"open"');
-		// structuredContent に meta（warning 入り）が含まれる
 		expect(out.structuredContent && 'meta' in out.structuredContent).toBe(true);
 		const meta = (out.structuredContent as { meta?: { warning?: string } }).meta;
 		expect(meta?.warning).toMatch(/失敗しました/);

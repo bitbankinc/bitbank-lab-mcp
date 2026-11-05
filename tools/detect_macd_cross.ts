@@ -8,9 +8,6 @@ import { type Pair, VIEW_CONTRACT_NOTE } from '../src/schemas.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
 import analyzeIndicators from './analyze_indicators.js';
 
-// ── テキスト組み立て: 純粋エクスポート関数 ──
-
-/** 表示用暦日（JST）。既に YYYY-MM-DD の値はそのまま、ISO は calendarDateFromIso で変換。 */
 function displayCalendarDate(isoOrDate: string | null | undefined, fallback: string): string {
 	if (!isoOrDate) return fallback;
 	const s = String(isoOrDate);
@@ -177,8 +174,6 @@ export function buildMacdSingleText(input: BuildMacdSingleTextInput): string {
 	);
 }
 
-// ── 共通: クロス検出ヘルパー ──
-
 type CrossDetailed = {
 	pair: string;
 	type: 'golden' | 'dead';
@@ -205,7 +200,6 @@ function findPrevCross(
 	signal: number[],
 	before: number,
 ): { idx: number; type: 'golden' | 'dead' } | null {
-	// index < before の範囲で直近クロスを探す（lastCrossover に委譲）。
 	const cross = lastCrossover(line.slice(0, before), signal.slice(0, before));
 	if (cross == null) return null;
 	return { idx: before - 1 - cross.barsAgo, type: cross.type };
@@ -220,9 +214,7 @@ function detectCrossInRange(
 	n: number,
 	pairName: string,
 ): CrossDetailed | null {
-	// [start, end] の curr index 範囲で直近クロスを探す。
-	// lastCrossover は curr index <= end の最新クロスを返すので、end までで切って評価し、
-	// 見つかった index が start 未満なら（= 範囲内にクロスなし）null を返す。
+	// lastCrossover は curr index <= end の最新クロスを返すので、見つかった index が start 未満なら範囲内にクロスなしとして null を返す。
 	const recent = lastCrossover(line.slice(0, end + 1), signal.slice(0, end + 1));
 	if (recent == null) return null;
 	const i = end - recent.barsAgo;
@@ -257,8 +249,6 @@ function detectCrossInRange(
 		returnSinceCrossPct: retPct,
 	};
 }
-
-// ── モード A: 複数ペアスクリーニング ──
 
 type ScreenOpts = {
 	minHistogramDelta?: number;
@@ -338,7 +328,6 @@ async function screenMode(
 		if (sortBy === 'return')
 			return (projReturn(b.returnSinceCrossPct) - projReturn(a.returnSinceCrossPct)) * (order === -1 ? 1 : -1);
 		if (sortBy === 'barsAgo') return (safeNum(a.barsAgo) - safeNum(b.barsAgo)) * (order === -1 ? 1 : -1);
-		// sortBy === 'date': compare crossDate strings directly
 		const dateA = a.crossDate || '';
 		const dateB = b.crossDate || '';
 		return dateA < dateB ? -1 * order : dateA > dateB ? 1 * order : 0;
@@ -406,8 +395,6 @@ async function screenMode(
 	return ok(summary, data, meta);
 }
 
-// ── モード B: 単一ペア深掘り（forming + 過去統計） ──
-
 type CrossPerf = { date: string | null; histogram: number | null; performance: Record<string, number | null> };
 
 async function singlePairMode(
@@ -434,7 +421,6 @@ async function singlePairMode(
 	const nowIdx = n - 1;
 	const lastClose = candles[nowIdx]?.close ?? null;
 
-	// forming detection
 	let forming: FormingStatus | null = null;
 	if (includeForming) {
 		const win = Math.min(5, n - 1);
@@ -497,7 +483,6 @@ async function singlePairMode(
 		};
 	}
 
-	// history + statistics
 	let history: CrossHistory | null = null;
 	let statistics: { golden: CrossStats; dead: CrossStats } | null = null;
 	if (includeStats) {
@@ -569,7 +554,6 @@ async function singlePairMode(
 		statistics = { golden: statsOf(goldenCrosses), dead: statsOf(deadCrosses) };
 	}
 
-	// Build summary text
 	const summaryText = buildMacdSingleText({
 		pair,
 		lastClose,
@@ -587,8 +571,6 @@ async function singlePairMode(
 		{ pair, historyDays, performanceWindows, minHistogramForForming, includeForming, includeStats },
 	);
 }
-
-// ── MCP ツール定義（tool-registry から自動収集） ──
 
 export const toolDef: ToolDefinition = {
 	name: 'detect_macd_cross',

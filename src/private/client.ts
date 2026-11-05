@@ -1,29 +1,16 @@
-/**
- * bitbank Private API HTTP クライアント。
- *
- * - 認証ヘッダーの付与を隠蔽し、ツールから直接認証を意識させない
- * - HTTP 層を注入可能にし、テスト時に mock に差し替えられる
- * - レート制限（429 / エラーコード 10009）は Retry-After に従いリトライ
- * - Base URL: https://api.bitbank.cc（public.bitbank.cc とは別）
- *
- * @see https://github.com/bitbankinc/bitbank-api-docs/blob/master/rest-api.md
- * @see https://github.com/bitbankinc/bitbank-api-docs/blob/master/errors.md
- */
+// 接続先は https://api.bitbank.cc（public.bitbank.cc とは別）。差し替えは研究用の起動口（`lab/`）だけで、環境変数や設定からは変えられない（ADR-0008）。
 
 import { extractRateLimit, type RateLimitInfo } from '../../lib/http.js';
 import { getBitbankErrorMessage } from '../lib/bitbank-errors.js';
 import { createGetAuthHeaders, createPostAuthHeaders } from './auth.js';
 
-/** テスト時に差し替え可能な HTTP fetcher 型 */
 export type HttpFetcher = (url: string, init: RequestInit) => Promise<Response>;
 
-/** bitbank API の標準レスポンス形式 */
 export interface BitbankApiResponse<T = unknown> {
 	success: number;
 	data: T;
 }
 
-/** Private API クライアントのエラー */
 export class PrivateApiError extends Error {
 	constructor(
 		message: string,
@@ -36,43 +23,65 @@ export class PrivateApiError extends Error {
 	}
 }
 
-/**
- * bitbank エラーコードの分類。
- * @see https://github.com/bitbankinc/bitbank-api-docs/blob/master/errors.md
- */
-// 認証系: 20001〜20005
 const AUTH_ERROR_CODES = new Set([20001, 20002, 20003, 20004, 20005]);
-// レート制限: 10009
 const RATE_LIMIT_CODES = new Set([10009]);
-// メンテナンス/過負荷: 10007, 10008
 const MAINTENANCE_CODES = new Set([10007, 10008]);
+const NOT_FOUND_CODES = new Set([50009]);
+
+const DEFAULT_ORIGIN = 'https://api.bitbank.cc';
+
+/** 差し替え先として許すホスト名（`URL#hostname` の正規化後の値と完全一致で比べる） */
+const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', '[::1]', 'localhost']);
+
+const INVALID_ORIGIN_MESSAGE =
+	'private API の接続先として受け付けるのは、ループバック（127.0.0.1 / [::1] / localhost）の ' +
+	'http(s) origin だけです（例: http://127.0.0.1:14000）。パス・末尾の /・クエリ・userinfo は付けられません（ADR-0008）';
+
+// 通らなければ throw し、既定の接続先へは戻さない（ADR-0008）。
+// パスの接頭辞を受けないのは、GET の署名が「パス + クエリ」に対して作られるため（`auth.ts`）。接頭辞を付けると、署名したパスと実際に送るパスがずれる。
+// エラーメッセージに入力値を載せない（userinfo に秘密が入っていても stderr やログに残さないため）。
+function assertLoopbackOrigin(value: string): string {
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		throw new Error(INVALID_ORIGIN_MESSAGE);
+	}
+	const isHttp = url.protocol === 'http:' || url.protocol === 'https:';
+	if (!isHttp || value !== url.origin || !LOOPBACK_HOSTNAMES.has(url.hostname)) {
+		throw new Error(INVALID_ORIGIN_MESSAGE);
+	}
+	return url.origin;
+}
 
 export interface PrivateClientOptions {
 	fetcher?: HttpFetcher;
 	timeoutMs?: number;
 	maxRetries?: number;
+	/** 配布物の中からは渡さない。渡すのは `lab/` の起動口だけ（ADR-0008）。 */
+	origin?: string;
 }
 
 export class BitbankPrivateClient {
-	private static readonly BASE_URL = 'https://api.bitbank.cc';
+	private readonly origin: string;
+	// 既定の接続先では空で、要求は 1 文字も変わらない。
+	// 差し替え先のリダイレクトには従わない（`redirect: 'error'`）。fetch は 307 / 308 で POST の本文も `ACCESS-*` ヘッダーも転送先へ送るので、ループバックに限った検査を差し替え先が外へ迂回させられる。
+	private readonly overrideInit: RequestInit;
 	private readonly fetcher: HttpFetcher;
 	private readonly timeoutMs: number;
 	private readonly maxRetries: number;
 
-	/** 直近の成功レスポンスから抽出したレートリミット情報（ヘッダ未提供時は null） */
 	lastRateLimit: RateLimitInfo | null = null;
 
 	constructor(opts: PrivateClientOptions = {}) {
+		// 既定に戻すのは「指定なし」のときだけ。空文字や null も検査に通して落とす。
+		this.origin = opts.origin === undefined ? DEFAULT_ORIGIN : assertLoopbackOrigin(opts.origin);
+		this.overrideInit = opts.origin === undefined ? {} : { redirect: 'error' };
 		this.fetcher = opts.fetcher ?? globalThis.fetch.bind(globalThis);
 		this.timeoutMs = opts.timeoutMs ?? 5000;
 		this.maxRetries = opts.maxRetries ?? 2;
 	}
 
-	/**
-	 * GET リクエスト
-	 * @param path - API パス（例: '/v1/user/assets'）
-	 * @param params - クエリパラメータ
-	 */
 	async get<T>(path: string, params?: Record<string, string>): Promise<T> {
 		let fullPath = path;
 		if (params) {
@@ -80,7 +89,7 @@ export class BitbankPrivateClient {
 			if (qs) fullPath = `${path}?${qs}`;
 		}
 
-		const url = `${BitbankPrivateClient.BASE_URL}${fullPath}`;
+		const url = `${this.origin}${fullPath}`;
 		const headers = createGetAuthHeaders(fullPath);
 
 		return this.request<T>(url, {
@@ -92,18 +101,9 @@ export class BitbankPrivateClient {
 		});
 	}
 
-	/**
-	 * POST リクエスト
-	 *
-	 * 状態変化を伴う POST（注文発注・キャンセル等）はネットワーク/タイムアウト/5xx
-	 * 全経路で自動リトライしない。リトライ時の二重注文を防ぐため defense-in-depth として
-	 * `retries: 0` を強制する。再試行はユーザー起点で preview から再実行する想定。
-	 *
-	 * @param path - API パス
-	 * @param body - リクエストボディ
-	 */
+	/** 状態変化を伴う POST（注文発注・キャンセル等）は、リトライ時の二重注文を防ぐため全経路で自動リトライしない（`retries: 0`）。 */
 	async post<T>(path: string, body: Record<string, unknown>): Promise<T> {
-		const url = `${BitbankPrivateClient.BASE_URL}${path}`;
+		const url = `${this.origin}${path}`;
 		const jsonBody = JSON.stringify(body);
 		const headers = createPostAuthHeaders(jsonBody);
 
@@ -121,13 +121,6 @@ export class BitbankPrivateClient {
 		);
 	}
 
-	/**
-	 * 共通リクエスト処理（リトライ・タイムアウト・エラーハンドリング）
-	 *
-	 * @param opts.retries - リトライ上限のオーバーライド。指定時はこの値、
-	 *   未指定なら `this.maxRetries` を採用する。POST のような非冪等リクエストは
-	 *   呼び出し側で `0` を渡す。
-	 */
 	private async request<T>(url: string, init: RequestInit, opts: { retries?: number } = {}): Promise<T> {
 		const maxRetries = opts.retries ?? this.maxRetries;
 		let lastErr: unknown;
@@ -137,13 +130,11 @@ export class BitbankPrivateClient {
 			const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
 
 			try {
-				const res = await this.fetcher(url, { ...init, signal: ctrl.signal });
+				const res = await this.fetcher(url, { ...init, ...this.overrideInit, signal: ctrl.signal });
 				clearTimeout(timer);
 
-				// 429 Rate Limit（HTTP レベル）
 				if (res.status === 429) {
 					const retryAfter = res.headers.get('Retry-After');
-					// Retry-After は秒数のほか HTTP-date 形式（RFC 9110）も許容される。
 					// 秒数として解釈できない場合は 1000ms フォールバック（NaN を setTimeout に渡すと 0ms 即リトライになる）
 					const retryAfterSec = retryAfter ? parseInt(retryAfter, 10) : Number.NaN;
 					const hasRetryAfterSec = Number.isFinite(retryAfterSec) && retryAfterSec >= 0;
@@ -159,7 +150,6 @@ export class BitbankPrivateClient {
 					);
 				}
 
-				// 5xx Server Error
 				if (res.status >= 500) {
 					if (attempt < maxRetries) {
 						await new Promise((r) => setTimeout(r, 200 * 2 ** attempt));
@@ -172,16 +162,13 @@ export class BitbankPrivateClient {
 					);
 				}
 
-				// レスポンスボディを取得
 				const body = await res.text().catch(() => '');
 
-				// HTTP エラー（4xx 等）
 				if (!res.ok) {
 					const errorCode = this.extractErrorCode(body);
 					throw this.classifyBitbankError(res.status, errorCode);
 				}
 
-				// Success レスポンスのパース
 				let json: BitbankApiResponse<T>;
 				try {
 					json = JSON.parse(body) as BitbankApiResponse<T>;
@@ -189,14 +176,12 @@ export class BitbankPrivateClient {
 					throw new PrivateApiError('レスポンスの JSON パースに失敗しました', 'upstream_error');
 				}
 
-				// レートリミット情報を抽出（成功時）
 				this.lastRateLimit = extractRateLimit(res.headers);
 
 				// success: 0 の場合（HTTP 200 でもエラー）
 				if (json.success !== 1) {
 					const errorCode = (json.data as Record<string, unknown>)?.code as number | undefined;
 
-					// レート制限エラーはリトライ
 					if (errorCode != null && RATE_LIMIT_CODES.has(errorCode)) {
 						if (attempt < maxRetries) {
 							await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
@@ -212,7 +197,6 @@ export class BitbankPrivateClient {
 				clearTimeout(timer);
 				if (err instanceof PrivateApiError) throw err;
 
-				// AbortError = timeout
 				if (err instanceof Error && err.name === 'AbortError') {
 					lastErr = new PrivateApiError(`タイムアウト (${this.timeoutMs}ms)`, 'upstream_error');
 				} else {
@@ -229,7 +213,6 @@ export class BitbankPrivateClient {
 		throw new PrivateApiError(lastErr instanceof Error ? lastErr.message : 'ネットワークエラー', 'upstream_error');
 	}
 
-	/** bitbank エラーレスポンスからエラーコードを抽出 */
 	private extractErrorCode(body: string): number | null {
 		try {
 			const parsed = JSON.parse(body);
@@ -239,20 +222,7 @@ export class BitbankPrivateClient {
 		}
 	}
 
-	/**
-	 * bitbank エラーコードを分類し、適切な PrivateApiError を生成する。
-	 *
-	 * エラーコード体系:
-	 * - 10000 番台: システムエラー（10009 はレート制限）
-	 * - 20000 番台: 認証エラー
-	 * - 30000 番台: 必須パラメータ不足
-	 * - 40000 番台: パラメータ不正
-	 * - 50000 番台: データエラー
-	 * - 60000 番台: 数値制限超過
-	 * - 70000 番台: 取引制限中
-	 */
 	private classifyBitbankError(httpStatus: number, errorCode: number | null): PrivateApiError {
-		// 認証エラー
 		if (errorCode != null && AUTH_ERROR_CODES.has(errorCode)) {
 			const details: Record<number, string> = {
 				20001: 'API 認証に失敗しました',
@@ -264,7 +234,6 @@ export class BitbankPrivateClient {
 			return new PrivateApiError(details[errorCode] ?? 'API 認証エラー', 'authentication_error', httpStatus, errorCode);
 		}
 
-		// レート制限
 		if (errorCode != null && RATE_LIMIT_CODES.has(errorCode)) {
 			return new PrivateApiError(
 				'リクエスト頻度が高すぎます。しばらく待ってから再試行してください',
@@ -274,7 +243,6 @@ export class BitbankPrivateClient {
 			);
 		}
 
-		// メンテナンス / 過負荷
 		if (errorCode != null && MAINTENANCE_CODES.has(errorCode)) {
 			return new PrivateApiError(
 				errorCode === 10007
@@ -286,7 +254,6 @@ export class BitbankPrivateClient {
 			);
 		}
 
-		// HTTP 401/403（エラーコードなし）
 		if (httpStatus === 401 || httpStatus === 403) {
 			return new PrivateApiError(
 				'API キーまたは署名が不正です。bitbank 管理画面でキーを確認してください',
@@ -296,9 +263,6 @@ export class BitbankPrivateClient {
 			);
 		}
 
-		// 注文・データが存在しない（docs: 50009 等）
-		const NOT_FOUND_CODES = new Set([50009]);
-		// パラメータ系（30000番台=必須不足 / 40000番台=不正）
 		if (errorCode != null) {
 			const libMessage = getBitbankErrorMessage(errorCode);
 			if (NOT_FOUND_CODES.has(errorCode)) {
@@ -309,6 +273,7 @@ export class BitbankPrivateClient {
 					errorCode,
 				);
 			}
+			// パラメータ系（30000番台=必須不足 / 40000番台=不正）
 			if (errorCode >= 30000 && errorCode < 50000) {
 				return new PrivateApiError(
 					libMessage ?? 'リクエストパラメータが不正です',
@@ -317,17 +282,11 @@ export class BitbankPrivateClient {
 					errorCode,
 				);
 			}
-		}
-
-		// 共通テーブルに登録されたコード
-		if (errorCode != null) {
-			const libMessage = getBitbankErrorMessage(errorCode);
 			if (libMessage) {
 				return new PrivateApiError(libMessage, 'upstream_error', httpStatus, errorCode);
 			}
 		}
 
-		// その他
 		return new PrivateApiError(
 			`bitbank API エラー (HTTP ${httpStatus}${errorCode ? `, code: ${errorCode}` : ''})`,
 			'upstream_error',
@@ -337,7 +296,6 @@ export class BitbankPrivateClient {
 	}
 }
 
-/** デフォルトのシングルトンインスタンス */
 let defaultClient: BitbankPrivateClient | null = null;
 
 export function getDefaultClient(): BitbankPrivateClient {
@@ -345,4 +303,15 @@ export function getDefaultClient(): BitbankPrivateClient {
 		defaultClient = new BitbankPrivateClient();
 	}
 	return defaultClient;
+}
+
+// 研究用の起動口（`lab/`）専用で、配布物の中からは呼ばない（ADR-0008。ガードは `tests/private-api-origin-tripwire.test.ts`）。
+// 既に作られていたら throw するのは、同じプロセスの中で一部の要求は既定の接続先へ、残りは差し替え先へ、と送り先が途中で変わるのを防ぐため。
+export function setDefaultClient(client: BitbankPrivateClient): void {
+	if (defaultClient) {
+		throw new Error(
+			'既定の private API クライアントは既に初期化されています。差し替えはサーバー起動前に 1 回だけ行えます',
+		);
+	}
+	defaultClient = client;
 }

@@ -1,11 +1,3 @@
-/**
- * render_backtest_chart_generic.ts - 汎用バックテストチャート描画
- *
- * 2つのモード:
- * - default: エクイティ + ドローダウンのみ（軽量、トークン節約）
- * - full: 4段チャート（価格 + オーバーレイ + シグナル / エクイティ / ドローダウン / ポジション）
- */
-
 import { calendarDateFromIso, dayjs } from '../../lib/datetime.js';
 import type { BacktestEngineSummary } from './lib/backtest_engine.js';
 import type { Overlay } from './lib/strategies/types.js';
@@ -19,7 +11,6 @@ function formatRange(summary: BacktestEngineSummary): string {
 	return `${start} ~ ${end}`;
 }
 
-// === 固定配色 ===
 const COLORS = {
 	background: '#1a1a2e',
 	grid: '#2d2d44',
@@ -36,7 +27,6 @@ const COLORS = {
 	zeroline: '#4b5563',
 };
 
-// オーバーレイ用のカラーパレット
 const OVERLAY_COLORS = [
 	'#fbbf24', // yellow
 	'#a78bfa', // purple
@@ -46,7 +36,6 @@ const OVERLAY_COLORS = [
 	'#fb923c', // orange
 ];
 
-// === 固定レイアウト（full モード）===
 const LAYOUT_FULL = {
 	width: 1000,
 	margin: { top: 70, right: 120, bottom: 40, left: 80 },
@@ -59,7 +48,6 @@ const LAYOUT_FULL = {
 	gapBetweenPanels: 40,
 };
 
-// === 軽量レイアウト（default モード）===
 const LAYOUT_MINIMAL = {
 	width: 700,
 	height: 350,
@@ -82,27 +70,22 @@ export interface GenericBacktestChartData {
 		strategyName: string;
 		strategyParams: Record<string, number>;
 		fee_bp: number;
-		/** 手数料の由来（explicit=明示指定 / dynamic=/spot/pairs taker / fallback=公称概算）。 */
 		fee_source?: 'explicit' | 'dynamic' | 'fallback';
 	};
 	summary: BacktestEngineSummary;
 }
 
-function formatPrice(price: number): string {
+// 1,000 未満は目盛りの間隔の桁で出す（数円のペアで目盛りがすべて同じ整数にならない）。
+function formatPrice(price: number, tickStep: number): string {
 	if (price >= 1000000) return `${(price / 1000000).toFixed(2)}M`;
 	if (price >= 1000) return `${(price / 1000).toFixed(1)}K`;
-	return price.toFixed(0);
+	return price.toFixed(tickStep > 0 ? Math.max(0, -Math.floor(Math.log10(tickStep))) : 0);
 }
 
 function formatPct(pct: number): string {
 	return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
 }
 
-/**
- * データの期間に応じて適切な日付フォーマットを選択
- * @param spanDays データの期間（日数）
- * @returns 'full' (YYYY-MM-DD), 'month-day' (MM/DD), 'year-month' (YYYY-MM)
- */
 function getDateFormat(spanDays: number): 'full' | 'month-day' | 'year-month' {
 	if (spanDays <= 60) return 'month-day'; // 2ヶ月以下: MM/DD
 	if (spanDays <= 180) return 'full'; // 6ヶ月以下: YYYY-MM-DD
@@ -154,11 +137,6 @@ function calculatePositionState(candles: Candle[], trades: Trade[]): ('long' | '
 	return result;
 }
 
-/**
- * 汎用チャート描画
- * @param data チャートデータ
- * @param chartDetail 'default' = エクイティ+DD のみ（軽量）, 'full' = 4段チャート
- */
 export function renderBacktestChartGeneric(data: GenericBacktestChartData, chartDetail: ChartDetail = 'full'): string {
 	if (chartDetail === 'default') {
 		return renderMinimalChart(data);
@@ -166,9 +144,6 @@ export function renderBacktestChartGeneric(data: GenericBacktestChartData, chart
 	return renderFullChart(data);
 }
 
-/**
- * 軽量チャート描画（エクイティ + ドローダウンのみ）
- */
 function renderMinimalChart(data: GenericBacktestChartData): string {
 	const { candles, equity_curve, drawdown_curve, input, summary } = data;
 	const { width, height, margin, equityHeight, drawdownHeight, gapBetweenPanels } = LAYOUT_MINIMAL;
@@ -179,13 +154,11 @@ function renderMinimalChart(data: GenericBacktestChartData): string {
 	const buyHoldEquity = calculateBuyHoldEquity(candles);
 	const finalBuyHold = buyHoldEquity[buyHoldEquity.length - 1] || 0;
 
-	// パネル位置
 	const equityTop = margin.top;
 	const equityBottom = equityTop + equityHeight;
 	const ddTop = equityBottom + gapBetweenPanels;
 	const ddBottom = ddTop + drawdownHeight;
 
-	// エクイティスケール
 	const strategyEquity = equity_curve.map((e) => e.equity_pct);
 	const allEquity = [...strategyEquity, ...buyHoldEquity];
 	const equityMin = Math.min(...allEquity, 0) * 1.1;
@@ -193,22 +166,18 @@ function renderMinimalChart(data: GenericBacktestChartData): string {
 	const equityRange = Math.max(equityMax - equityMin, 10);
 	const equityYScale = (pct: number) => equityBottom - ((pct - equityMin) / equityRange) * equityHeight;
 
-	// ドローダウンスケール
 	const ddValues = drawdown_curve.map((d) => d.drawdown_pct);
 	const ddMax = Math.max(...ddValues, 5);
 	const ddYScale = (ddPositive: number) => ddTop + (ddPositive / ddMax) * (drawdownHeight - 10);
 
-	// データ間引き（100ポイント以上なら間引く）
 	const step = candles.length > 100 ? Math.ceil(candles.length / 100) : 1;
 
-	// SVG構築（レスポンシブ: viewBox のみ指定）
 	const svg: string[] = [];
 	svg.push(
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" style="max-width:100%;height:auto;">`,
 	);
 	svg.push(`<rect width="${width}" height="${height}" fill="${COLORS.background}"/>`);
 
-	// タイトル
 	const paramsStr = Object.entries(input.strategyParams)
 		.map(([k, v]) => `${k}=${v}`)
 		.join(', ');
@@ -222,11 +191,9 @@ function renderMinimalChart(data: GenericBacktestChartData): string {
 		`${input.pair.toUpperCase()} | ${formatRange(summary)} | Win: ${(summary.win_rate * 100).toFixed(0)}% | MaxDD: -${summary.max_drawdown_pct.toFixed(1)}%</text>`,
 	);
 
-	// 最終確定損益 (Realized P&L)
 	const finalConfirmed = equity_curve.length > 0 ? equity_curve[equity_curve.length - 1].confirmed_pct : 0;
 
-	// === エクイティカーブ ===
-	// 凡例: Mark = Mark-to-Market PnL（時価評価損益）, Real = Realized PnL（確定損益）
+	// 凡例: Mark = Mark-to-Market PnL（時価評価損益）、Real = Realized PnL（確定損益）。
 	svg.push(
 		`<text x="${margin.left}" y="${equityTop - 8}" fill="${COLORS.text}" font-size="10" font-weight="bold">Equity (%)</text>`,
 	);
@@ -240,7 +207,6 @@ function renderMinimalChart(data: GenericBacktestChartData): string {
 		`<text x="${margin.left + 230}" y="${equityTop - 8}" fill="${COLORS.buyHold}" font-size="9">B&amp;H: ${formatPct(finalBuyHold)}</text>`,
 	);
 
-	// グリッド
 	const equityTicks = generateYTicks(equityMin, equityMax, 3);
 	for (const tick of equityTicks) {
 		const y = equityYScale(tick);
@@ -252,14 +218,12 @@ function renderMinimalChart(data: GenericBacktestChartData): string {
 		);
 	}
 
-	// Buy & Hold ライン（間引き）
 	const buyHoldPoints: string[] = [];
 	for (let i = 0; i < candles.length; i += step) {
 		buyHoldPoints.push(`${i === 0 ? 'M' : 'L'}${xScale(i).toFixed(0)},${equityYScale(buyHoldEquity[i]).toFixed(0)}`);
 	}
 	svg.push(`<path d="${buyHoldPoints.join(' ')}" fill="none" stroke="${COLORS.buyHold}" stroke-width="1.5"/>`);
 
-	// 確定損益ライン (Realized) - 点線、間引き
 	if (equity_curve.length > 0) {
 		const confirmedPoints: string[] = [];
 		for (let i = 0; i < equity_curve.length; i += step) {
@@ -272,7 +236,6 @@ function renderMinimalChart(data: GenericBacktestChartData): string {
 		);
 	}
 
-	// 評価損益ライン (Mark-to-Market) - 実線、間引き
 	if (equity_curve.length > 0) {
 		const strategyPoints: string[] = [];
 		for (let i = 0; i < equity_curve.length; i += step) {
@@ -283,7 +246,6 @@ function renderMinimalChart(data: GenericBacktestChartData): string {
 		svg.push(`<path d="${strategyPoints.join(' ')}" fill="none" stroke="${COLORS.strategy}" stroke-width="2"/>`);
 	}
 
-	// === ドローダウン ===
 	svg.push(
 		`<text x="${margin.left}" y="${ddTop - 8}" fill="${COLORS.text}" font-size="10" font-weight="bold">Drawdown</text>`,
 	);
@@ -305,7 +267,6 @@ function renderMinimalChart(data: GenericBacktestChartData): string {
 		svg.push(`<path d="${ddPoints.join(' ')}" fill="none" stroke="${COLORS.drawdown}" stroke-width="1"/>`);
 	}
 
-	// X軸ラベル（期間に応じたフォーマット）
 	const spanDays = calculateSpanDays(candles);
 	const dateFormat = getDateFormat(spanDays);
 	const xLabelInterval = Math.max(1, Math.floor(candles.length / 5));
@@ -319,9 +280,6 @@ function renderMinimalChart(data: GenericBacktestChartData): string {
 	return svg.join('\n');
 }
 
-/**
- * フルチャート描画（4〜5段: インジケータパネルは動的追加）
- */
 function renderFullChart(data: GenericBacktestChartData): string {
 	const { candles, overlays, trades, equity_curve, drawdown_curve, input, summary } = data;
 	const {
@@ -342,12 +300,10 @@ function renderFullChart(data: GenericBacktestChartData): string {
 	const finalBuyHold = buyHoldEquity[buyHoldEquity.length - 1] || 0;
 	const positionState = calculatePositionState(candles, trades);
 
-	// オーバーレイを price / indicator に分離
 	const priceOverlays = overlays.filter((o) => o.panel !== 'indicator');
 	const indicatorOverlays = overlays.filter((o) => o.panel === 'indicator');
 	const hasIndicatorPanel = indicatorOverlays.length > 0;
 
-	// トレードマーカー
 	const tradeEntryMarkers = trades
 		.map((t) => ({
 			idx: candles.findIndex((c) => c.time === t.entry_time),
@@ -362,7 +318,6 @@ function renderFullChart(data: GenericBacktestChartData): string {
 		}))
 		.filter((m) => m.idx >= 0);
 
-	// パネル位置（インジケータパネルは動的）
 	const priceTop = margin.top;
 	const priceBottom = priceTop + priceHeight;
 
@@ -377,7 +332,6 @@ function renderFullChart(data: GenericBacktestChartData): string {
 	const posBottom = posTop + positionHeight;
 	const totalHeight = posBottom + margin.bottom;
 
-	// 価格スケール（priceOverlays のみ使用）
 	const allPrices = [
 		...candles.map((c) => c.close),
 		...tradeEntryMarkers.map((m) => m.price),
@@ -397,7 +351,6 @@ function renderFullChart(data: GenericBacktestChartData): string {
 	const priceMax = Math.max(...allPrices) * 1.005;
 	const priceYScale = (p: number) => priceBottom - ((p - priceMin) / (priceMax - priceMin)) * priceHeight;
 
-	// エクイティスケール
 	const strategyEquity = equity_curve.map((e) => e.equity_pct);
 	const allEquity = [...strategyEquity, ...buyHoldEquity];
 	const equityMin = Math.min(...allEquity, 0) * 1.1;
@@ -405,19 +358,16 @@ function renderFullChart(data: GenericBacktestChartData): string {
 	const equityRange = Math.max(equityMax - equityMin, 10);
 	const equityYScale = (pct: number) => equityBottom - ((pct - equityMin) / equityRange) * equityHeight;
 
-	// ドローダウンスケール
 	const ddValues = drawdown_curve.map((d) => d.drawdown_pct);
 	const ddMax = Math.max(...ddValues, 5);
 	const ddYScale = (ddPositive: number) => ddTop + (ddPositive / ddMax) * (drawdownHeight - 10);
 
-	// SVG構築（レスポンシブ: viewBox のみ指定、高さは動的）
 	const svg: string[] = [];
 	svg.push(
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${totalHeight}" style="max-width:100%;height:auto;">`,
 	);
 	svg.push(`<rect width="${width}" height="${totalHeight}" fill="${COLORS.background}"/>`);
 
-	// タイトル
 	const paramsStr = Object.entries(input.strategyParams)
 		.map(([k, v]) => `${k}=${v}`)
 		.join(', ');
@@ -431,25 +381,23 @@ function renderFullChart(data: GenericBacktestChartData): string {
 		`${input.pair.toUpperCase()} | ${formatRange(summary)} | Trades: ${summary.trade_count} | Win Rate: ${(summary.win_rate * 100).toFixed(1)}% | Max DD: -${summary.max_drawdown_pct.toFixed(1)}%</text>`,
 	);
 
-	// === 価格チャート ===
 	const priceTicks = generateYTicks(priceMin, priceMax, 5);
+	const priceTickStep = (priceTicks[1] ?? 0) - (priceTicks[0] ?? 0);
 	for (const tick of priceTicks) {
 		const y = priceYScale(tick);
 		svg.push(
 			`<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="${COLORS.grid}" stroke-dasharray="2,2"/>`,
 		);
 		svg.push(
-			`<text x="${width - margin.right + 5}" y="${y + 4}" fill="${COLORS.textMuted}" font-size="10">${formatPrice(tick)}</text>`,
+			`<text x="${width - margin.right + 5}" y="${y + 4}" fill="${COLORS.textMuted}" font-size="10">${formatPrice(tick, priceTickStep)}</text>`,
 		);
 	}
 
-	// 終値ライン
 	const pricePath = candles
 		.map((c, i) => `${i === 0 ? 'M' : 'L'}${xScale(i).toFixed(1)},${priceYScale(c.close).toFixed(1)}`)
 		.join(' ');
 	svg.push(`<path d="${pricePath}" fill="none" stroke="${COLORS.price}" stroke-width="1.5"/>`);
 
-	// 価格パネルのオーバーレイ描画（indicator パネルのものは除外）
 	let colorIdx = 0;
 	const legendItems: { color: string; name: string }[] = [{ color: COLORS.price, name: 'Close' }];
 
@@ -506,7 +454,6 @@ function renderFullChart(data: GenericBacktestChartData): string {
 		}
 	}
 
-	// エントリー/エグジットマーカー
 	for (const marker of tradeEntryMarkers) {
 		const x = xScale(marker.idx);
 		const y = priceYScale(marker.price);
@@ -525,7 +472,6 @@ function renderFullChart(data: GenericBacktestChartData): string {
 		);
 	}
 
-	// 凡例（パネル上部に配置）
 	let legendX = margin.left + 10;
 	const legendY = priceTop - 8;
 	for (const item of legendItems) {
@@ -536,9 +482,7 @@ function renderFullChart(data: GenericBacktestChartData): string {
 	legendX += 60;
 	svg.push(`<text x="${legendX}" y="${legendY}" fill="${COLORS.exitMarker}" font-size="10">▼ Exit</text>`);
 
-	// === インジケータサブパネル（MACD 等） ===
 	if (hasIndicatorPanel) {
-		// インジケータ値のスケール計算
 		const allIndValues: number[] = [];
 		for (const overlay of indicatorOverlays) {
 			if (overlay.type === 'line' || overlay.type === 'histogram') {
@@ -549,10 +493,10 @@ function renderFullChart(data: GenericBacktestChartData): string {
 		const indAbsMax = Math.max(Math.abs(Math.min(...allIndValues, 0)), Math.abs(Math.max(...allIndValues, 0))) * 1.15;
 		const indMin = -indAbsMax;
 		const indMax = indAbsMax;
-		const indRange = Math.max(indMax - indMin, 1);
+		// 1 の下限を付けると、安いペアの MACD（±0.01 など）がパネルの下端に潰れる。
+		const indRange = indMax - indMin > 0 ? indMax - indMin : 1;
 		const indYScale = (v: number) => indBottom - ((v - indMin) / indRange) * indicatorHeight;
 
-		// パネルラベル + 凡例
 		const indLines = indicatorOverlays.filter((o) => o.type === 'line');
 		const panelTitle = indLines.length > 0 ? 'MACD' : 'Indicator';
 		svg.push(
@@ -566,25 +510,23 @@ function renderFullChart(data: GenericBacktestChartData): string {
 			indLegendX += overlay.name.length * 7 + 40;
 		}
 
-		// ゼロライン
 		const zeroY = indYScale(0);
 		svg.push(
 			`<line x1="${margin.left}" y1="${zeroY}" x2="${width - margin.right}" y2="${zeroY}" stroke="${COLORS.zeroline}" stroke-width="1"/>`,
 		);
 
-		// グリッド + Y軸ラベル
 		const indTicks = generateYTicks(indMin, indMax, 5);
+		const indTickStep = (indTicks[1] ?? 0) - (indTicks[0] ?? 0);
 		for (const tick of indTicks) {
 			const y = indYScale(tick);
 			svg.push(
 				`<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="${COLORS.grid}" stroke-dasharray="2,2"/>`,
 			);
 			svg.push(
-				`<text x="${margin.left - 5}" y="${y + 3}" fill="${COLORS.textMuted}" font-size="8" text-anchor="end">${formatPrice(tick)}</text>`,
+				`<text x="${margin.left - 5}" y="${y + 3}" fill="${COLORS.textMuted}" font-size="8" text-anchor="end">${formatPrice(tick, indTickStep)}</text>`,
 			);
 		}
 
-		// ヒストグラム棒の描画
 		for (const overlay of indicatorOverlays) {
 			if (overlay.type === 'histogram') {
 				const barW = Math.max((plotWidth / candles.length) * 0.6, 1);
@@ -604,7 +546,6 @@ function renderFullChart(data: GenericBacktestChartData): string {
 			}
 		}
 
-		// インジケータライン描画
 		for (const overlay of indicatorOverlays) {
 			if (overlay.type === 'line') {
 				let started = false;
@@ -625,7 +566,6 @@ function renderFullChart(data: GenericBacktestChartData): string {
 		}
 	}
 
-	// === エクイティカーブ ===
 	const equityLabelY = equityTop - 15;
 	svg.push(
 		`<text x="${margin.left}" y="${equityLabelY}" fill="${COLORS.text}" font-size="11" font-weight="bold">Equity (%)</text>`,
@@ -650,13 +590,11 @@ function renderFullChart(data: GenericBacktestChartData): string {
 		);
 	}
 
-	// Buy & Hold ライン
 	const buyHoldPath = candles
 		.map((_, i) => `${i === 0 ? 'M' : 'L'}${xScale(i).toFixed(1)},${equityYScale(buyHoldEquity[i]).toFixed(1)}`)
 		.join(' ');
 	svg.push(`<path d="${buyHoldPath}" fill="none" stroke="${COLORS.buyHold}" stroke-width="2"/>`);
 
-	// Strategy ライン
 	if (equity_curve.length > 0) {
 		const strategyPath = equity_curve
 			.map((e, i) => `${i === 0 ? 'M' : 'L'}${xScale(i).toFixed(1)},${equityYScale(e.equity_pct).toFixed(1)}`)
@@ -664,7 +602,6 @@ function renderFullChart(data: GenericBacktestChartData): string {
 		svg.push(`<path d="${strategyPath}" fill="none" stroke="${COLORS.strategy}" stroke-width="2.5"/>`);
 	}
 
-	// === ドローダウン ===
 	svg.push(
 		`<text x="${margin.left}" y="${ddTop - 15}" fill="${COLORS.text}" font-size="11" font-weight="bold">Drawdown (%)</text>`,
 	);
@@ -697,7 +634,6 @@ function renderFullChart(data: GenericBacktestChartData): string {
 		}
 	}
 
-	// === ポジション ===
 	svg.push(
 		`<text x="${margin.left}" y="${posTop - 15}" fill="${COLORS.text}" font-size="11" font-weight="bold">Position</text>`,
 	);
@@ -722,7 +658,6 @@ function renderFullChart(data: GenericBacktestChartData): string {
 		`<text x="${width - margin.right + 28}" y="${posTop + 15}" fill="${COLORS.positionLong}" font-size="9">Long</text>`,
 	);
 
-	// X軸ラベル（期間に応じたフォーマット）
 	const spanDays = calculateSpanDays(candles);
 	const dateFormat = getDateFormat(spanDays);
 	const xLabelInterval = Math.max(1, Math.floor(candles.length / 8));

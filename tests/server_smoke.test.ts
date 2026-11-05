@@ -2,13 +2,11 @@ import { createRequire } from 'node:module';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ToolDefinition } from '../src/tool-definition.js';
 
-// serverInfo.version はリテラルではなく package.json と突き合わせる。
-// リテラルで固定すると、実装側のハードコードと一緒に drift しても検知できない。
+// serverInfo.version をリテラルで固定すると、実装側のハードコードと一緒に drift しても検知できないので、package.json と突き合わせる。
 const { version: packageVersion } = createRequire(import.meta.url)('../package.json') as {
 	version: string;
 };
 
-// ── Mock 用ローカル型 ──────────────────────────────────────────
 interface FakeToolEntry {
 	name: string;
 	options: Record<string, unknown>;
@@ -52,9 +50,7 @@ const runtime = vi.hoisted(() => ({
 	logError: vi.fn(),
 }));
 
-// SDK v2 は部分モックにする: McpServer だけ差し替え、isInputRequiredResult /
-// inputRequired / createRequestStateCodec 等の純粋関数は実物を使う
-// （server.ts 経由でロードされる src/private/request-state.ts が実物の codec を必要とする）。
+// SDK v2 は McpServer だけ差し替える部分モックにする（server.ts 経由でロードされる src/private/request-state.ts が実物の codec を必要とする）。
 vi.mock('@modelcontextprotocol/server', async (importOriginal) => {
 	const actual = await importOriginal<Record<string, unknown>>();
 
@@ -231,7 +227,6 @@ describe('server.ts smoke', () => {
 		// MRTR requestState の HMAC / 期限検証フックが ServerOptions に接続されている
 		const requestState = server.options?.requestState as { verify?: unknown } | undefined;
 		expect(typeof requestState?.verify).toBe('function');
-		// Resources は SDK の registerResource 経由で正規ルートに登録される
 		expect(server.resources.map((r) => r.uri)).toEqual(['ui://order/confirm.html', 'ui://cancel/confirm.html']);
 		expect(server.connections).toHaveLength(1);
 		expect(server.connections[0].kind).toBe('stdio');
@@ -258,13 +253,11 @@ describe('server.ts smoke', () => {
 
 		const server = await importServer();
 
-		// ツールは完全な Zod スキーマ（.refine 等を含む）をそのまま SDK に渡す。
-		// JSON Schema への変換・入力検証・tools/list のルーティングは SDK v2 の責務。
+		// ツールは完全な Zod スキーマ（.refine 等を含む）をそのまま SDK に渡す（JSON Schema への変換・入力検証・tools/list のルーティングは SDK v2 の責務）。
 		expect(server.tools).toHaveLength(1);
 		expect(server.tools[0].options).toMatchObject({ description: 'Smoke tool description' });
 		expect(server.tools[0].options.inputSchema).toBe(inputSchema);
 
-		// prompt は registerPrompt 経由で登録され、メッセージは SDK 形式に変換される
 		const registeredPrompt = server.prompts[0];
 		expect(registeredPrompt.options).toEqual({ description: 'Smoke prompt description' });
 		const promptRegistration = registeredPrompt.handler();
@@ -279,7 +272,6 @@ describe('server.ts smoke', () => {
 			},
 		]);
 
-		// Resources は SDK の registerResource 経由で登録され、`server.resources` に集約される
 		expect(server.resources.map((r) => ({ uri: r.uri, name: r.name, ...r.config }))).toEqual([
 			{
 				uri: 'ui://order/confirm.html',
@@ -440,8 +432,7 @@ describe('server.ts smoke', () => {
 		];
 
 		const server = await importServer();
-		// importServer() の vi.resetModules() 後に server.ts と同一インスタンスの
-		// cache モジュールを import する（モジュールキャッシュを共有させる）。
+		// importServer() の vi.resetModules() 後に、server.ts と同一インスタンスの cache モジュールを import する（モジュールキャッシュを共有させる）。
 		const { getUiSnapshot, _resetUiSnapshots } = await import('../src/ui-snapshot-cache.js');
 		_resetUiSnapshots();
 
@@ -451,7 +442,6 @@ describe('server.ts smoke', () => {
 			data: { preview: { pair: 'btc_jpy' } },
 		});
 
-		// _meta.ui の無いツールはどの URI にも保存されない
 		await server.tools[1].handler({});
 		expect(getUiSnapshot('ui://cancel/confirm.html')).toBeNull();
 
@@ -459,17 +449,14 @@ describe('server.ts smoke', () => {
 		await server.tools[2].handler({});
 		expect(getUiSnapshot('ui://cancel/confirm.html')).toMatchObject({ ok: false });
 
-		// スナップショットは sessionId + resourceUri をキーに独立保持する。
-		// sess-1 への保存は stdio（sessionId なし）エントリを上書きしない。
+		// スナップショットは sessionId + resourceUri をキーに独立保持するので、sess-1 への保存は stdio（sessionId なし）エントリを上書きしない。
 		await server.tools[0].handler({}, { sessionId: 'sess-1' });
 		expect(getUiSnapshot('ui://order/confirm.html', { sessionId: 'sess-1' })).toMatchObject({ ok: true });
 		expect(getUiSnapshot('ui://order/confirm.html', { sessionId: 'other-session' })).toBeNull();
 		expect(getUiSnapshot('ui://order/confirm.html')).toMatchObject({ ok: true });
 	});
 
-	// `_meta` は confirmation token を載せる唯一のチャネルで、`content[0].text` は LLM が読む
-	// 唯一のチャネル。respond() の 2 つのフォールバックは result 全体を流し込むため、
-	// `_meta` を落とさないとトークンが LLM 可視チャネルへ出る（ADR-0007）。
+	// `_meta` は confirmation token を載せる唯一のチャネルで、respond() の 2 つのフォールバックは result 全体を `content[0].text`（LLM が読む唯一のチャネル）に流し込むので、`_meta` を落とさないとトークンが LLM 可視チャネルへ出る（ADR-0007）。
 	// 現行ハンドラはこの分岐に入らないが、将来のハンドラが黙って踏む罠なのでここで固定する。
 	it('結果レベル `_meta` は content / structuredContent のフォールバックに流れない', async () => {
 		const { z } = await import('zod');
@@ -520,8 +507,7 @@ describe('server.ts smoke', () => {
 	it('ハンドラには ctx と内部 Server を合流させた extra が渡る', async () => {
 		const { z } = await import('zod');
 
-		// 引数を型付けしておかないと mock.calls[0] が空タプル [] に推論され、
-		// [1] の取り出しが TS2493 / TS2352 になる。
+		// 引数を型付けしておかないと mock.calls[0] が空タプル [] に推論され、[1] の取り出しが TS2493 / TS2352 になる。
 		const spyHandler = vi.fn(async (_input: Record<string, unknown>, _extra?: Record<string, unknown>) => ({
 			summary: 'ok',
 			ok: true,
@@ -553,13 +539,11 @@ describe('server.ts smoke', () => {
 			throw new Error("ENOENT: no such file or directory, open '/home/user/secret/path.ts'");
 		});
 		const zodHandler = vi.fn(async () => {
-			// Zod のバリデーション失敗を模した ZodError を投げる
 			const schema = z.object({ pair: z.string() });
 			schema.parse({ pair: 123 });
 			throw new Error('unreachable');
 		});
-		// importServer() で vi.resetModules() が呼ばれるため、PrivateApiError は
-		// handler 実行時にロード（lib/error.ts と同じモジュールキャッシュを参照させる）
+		// importServer() で vi.resetModules() が呼ばれるので、PrivateApiError は handler 実行時にロードする（lib/error.ts と同じモジュールキャッシュを参照させる）。
 		const privateApiHandler = vi.fn(async () => {
 			const { PrivateApiError } = await import('../src/private/client.js');
 			throw new PrivateApiError('数量が最低取引量を下回っています', 'invalid_amount');

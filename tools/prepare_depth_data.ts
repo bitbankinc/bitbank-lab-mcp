@@ -1,37 +1,20 @@
-/**
- * prepare_depth_data — Visualizer / 板深度チャート描画用の累積データを返す。
- *
- * getDepth（/depth API）を呼び出し、price × cumulative volume の階段配列として
- * コンパクトに整形する。render_depth_svg と同じ累積計算ロジック（lib/depth-analysis）
- * を共有する。
- *
- * クライアント側（Claude.ai Visualizer 等）で描画可能な場合はこのツールを優先。
- * ファイル保存が必要な場合は render_depth_svg を使用すること。
- */
+// render_depth_svg と同じ累積計算（lib/depth-analysis）を共有する。
 
 import { toIsoTime } from '../lib/datetime.js';
 import { buildCumulativeSteps } from '../lib/depth-analysis.js';
 import getDepth from '../lib/get-depth.js';
-import { isJpyPair, roundPrice } from '../lib/price.js';
+import { roundMidPrice, roundSpread } from '../lib/price.js';
 import { fail, failFromError, failFromValidation, ok, parseAsResult, toStructured } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import type { FailResult, OkResult, Pair } from '../src/schemas.js';
 import { PrepareDepthDataInputSchema, PrepareDepthDataOutputSchema } from '../src/schemas.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
 
-/** Volume は固定小数桁に丸める */
 function roundVolume(v: number): number {
 	return Number(v.toFixed(6));
 }
 
-/**
- * raw tuple 配列を Number() 変換しつつ、NaN/非有限値の行を除外する。
- *
- * bitbank /depth API は値を string で返すため Number() に通す必要があるが、
- * 上流が壊れた値（"abc" 等）を返した場合は NaN が累積計算・band 集計・bestBid/bestAsk
- * まで伝播し、最終的に JSON wire 経由で null 化される。
- * 早期に drop することで、structuredContent.data に NaN/Infinity を一切混入させない。
- */
+// 壊れた値の行を早期に drop し、structuredContent.data に NaN / Infinity を混入させない。
 function toFiniteTuples(raw: Array<[unknown, unknown]>): {
 	rows: Array<[number, number]>;
 	dropped: number;
@@ -51,32 +34,22 @@ function toFiniteTuples(raw: Array<[unknown, unknown]>): {
 }
 
 interface PrepareDepthDataResult {
-	/** bids: 高価格 → 低価格 の [price, cumulativeVolume] 階段データ */
 	bids: Array<[number, number]>;
-	/** asks: 低価格 → 高価格 の [price, cumulativeVolume] 階段データ */
 	asks: Array<[number, number]>;
 	bestBid: number | null;
 	bestAsk: number | null;
-	/** (bestBid + bestAsk) / 2 */
 	mid: number | null;
-	/** bestAsk - bestBid */
 	spread: number | null;
-	/** spread / mid */
 	spreadPct: number | null;
-	/** 買い板全体の累積量 */
 	totalBidVolume: number;
-	/** 売り板全体の累積量 */
 	totalAskVolume: number;
-	/** mid を中心とする ±bandPct% 範囲の買い/売り量と比率 */
 	band: {
 		pct: number;
 		bidVolume: number;
 		askVolume: number;
 		ratio: number | null;
 	};
-	/** 板取得時刻（Unix ms） */
 	timestamp: number;
-	/** 板取得時刻（ISO8601, UTC） */
 	isoTime: string | null;
 }
 
@@ -84,19 +57,15 @@ interface PrepareDepthDataMeta {
 	pair: Pair;
 	fetchedAt: string;
 	levels: { bids: number; asks: number };
-	/** 出来高の単位（ペアのベース通貨。例: btc_jpy → "BTC"） */
 	volumeUnit: string;
-	/** Number() 変換で NaN/非有限になった行数。0 件の場合は省略。 */
 	droppedRows?: { bids: number; asks: number };
-	/** drop が発生した場合の警告メッセージ */
 	warning?: string;
 }
 
 export interface PrepareDepthDataParams {
 	pair?: string;
-	/** 取得する最大レベル数（片側） */
 	levels?: number;
-	/** mid を中心とした band 比率（0.01 = ±1%） */
+	/** 0.01 = ±1%。 */
 	bandPct?: number;
 }
 
@@ -109,7 +78,6 @@ export default async function prepareDepthData(
 	if (!chk.ok) return failFromValidation(chk);
 
 	const maxLevels = Math.max(10, Math.min(1000, Math.floor(levels)));
-	const jpyPair = isJpyPair(chk.pair);
 
 	try {
 		const depth = await getDepth(chk.pair, { maxLevels });
@@ -122,8 +90,6 @@ export default async function prepareDepthData(
 			return fail('板データが不足しています（asks/bids の両方が必要です）', 'upstream');
 		}
 
-		// NaN/非有限を drop しつつ Number() 変換する。
-		// 全件 drop された場合は upstream エラーとして倒す。
 		const { rows: bidsNum, dropped: bidsDropped } = toFiniteTuples(bidsRaw);
 		const { rows: asksNum, dropped: asksDropped } = toFiniteTuples(asksRaw);
 
@@ -134,8 +100,8 @@ export default async function prepareDepthData(
 		const bidStepsRaw = buildCumulativeSteps(bidsNum, 'bid');
 		const askStepsRaw = buildCumulativeSteps(asksNum, 'ask');
 
-		const bidSteps: Array<[number, number]> = bidStepsRaw.map(([p, q]) => [roundPrice(p, jpyPair), roundVolume(q)]);
-		const askSteps: Array<[number, number]> = askStepsRaw.map(([p, q]) => [roundPrice(p, jpyPair), roundVolume(q)]);
+		const bidSteps: Array<[number, number]> = bidStepsRaw.map(([p, q]) => [p, roundVolume(q)]);
+		const askSteps: Array<[number, number]> = askStepsRaw.map(([p, q]) => [p, roundVolume(q)]);
 
 		const bestBid = bidStepsRaw[0]?.[0] ?? null;
 		const bestAsk = askStepsRaw[0]?.[0] ?? null;
@@ -146,7 +112,6 @@ export default async function prepareDepthData(
 		const totalBidVolume = bidStepsRaw.at(-1)?.[1] ?? 0;
 		const totalAskVolume = askStepsRaw.at(-1)?.[1] ?? 0;
 
-		// mid を中心とした band 集計
 		let bandBidVol = 0;
 		let bandAskVol = 0;
 		if (mid != null) {
@@ -157,17 +122,16 @@ export default async function prepareDepthData(
 		}
 		const bandRatio = bandAskVol > 0 ? Number((bandBidVol / bandAskVol).toFixed(4)) : null;
 
-		// getDepth が timestamp を必須として保証するため、ここでは Date.now() fallback は不要。
-		// 上流欠損は getDepth 側で upstream fail として倒れている。
+		// getDepth が timestamp を必須として保証している（上流欠損は getDepth 側で upstream fail）ので Date.now() fallback は要らない。
 		const timestamp = Number(depth.data.timestamp);
 
 		const data: PrepareDepthDataResult = {
 			bids: bidSteps,
 			asks: askSteps,
-			bestBid: bestBid != null ? roundPrice(bestBid, jpyPair) : null,
-			bestAsk: bestAsk != null ? roundPrice(bestAsk, jpyPair) : null,
-			mid: mid != null ? roundPrice(mid, jpyPair) : null,
-			spread: spread != null ? roundPrice(spread, jpyPair) : null,
+			bestBid,
+			bestAsk,
+			mid: bestBid != null && bestAsk != null ? roundMidPrice(bestBid, bestAsk) : null,
+			spread: bestBid != null && bestAsk != null ? roundSpread(bestBid, bestAsk) : null,
 			spreadPct,
 			totalBidVolume: roundVolume(totalBidVolume),
 			totalAskVolume: roundVolume(totalAskVolume),
@@ -220,12 +184,11 @@ export const toolDef: ToolDefinition = {
 		'レスポンス形式: { bids: [[price, cumVolume], ...], asks: [[price, cumVolume], ...], bestBid, bestAsk, mid, spread, spreadPct, totalBidVolume, totalAskVolume, band: {pct, bidVolume, askVolume, ratio}, timestamp, isoTime }\n' +
 		'- bids は価格降順、asks は価格昇順\n' +
 		'- band は mid を中心とした ±bandPct 範囲の買い/売り量と比率（ratio = bidVolume / askVolume）\n' +
-		'- JPY ペアの価格は整数に丸め済み',
+		'- bids / asks / bestBid / bestAsk は取引所の価格のまま。mid と spread は丸め済み（10 万円以上は円の整数、安いペアほど小数の桁が増える）',
 	inputSchema: PrepareDepthDataInputSchema,
 	handler: async ({ pair, levels, bandPct }: { pair?: string; levels?: number; bandPct?: number }) => {
 		const result = await prepareDepthData({ pair, levels, bandPct });
 		if (!result.ok) return result;
-		// LLM は structuredContent を参照できないため、content テキストにデータを含める
 		const text = `${result.summary}\n${JSON.stringify(result.data)}`;
 		return {
 			content: [{ type: 'text', text }],

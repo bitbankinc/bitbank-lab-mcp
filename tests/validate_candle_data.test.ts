@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import validateCandleData from '../tools/validate_candle_data.js';
 import { assertFail, assertOk } from './_assertResult.js';
 
-/** 1day 間隔の正常な OHLCV を N 本生成 */
 function makeOhlcv(n: number, baseTs = 1704067200000) {
 	return Array.from({ length: n }, (_, i) => [
 		String(100 + i), // open

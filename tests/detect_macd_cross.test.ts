@@ -153,8 +153,6 @@ describe('detect_macd_cross', () => {
 		expect(res.data.results.map((item: { pair: string }) => item.pair)).toEqual(['eth_jpy', 'btc_jpy']);
 	});
 
-	// ── screenMode branches ──
-
 	it('screenMode: pairs 未指定 + market=jpy は _jpy ペアのみスクリーニングする', async () => {
 		mockedAnalyzeIndicators.mockResolvedValue(
 			asMockResult(
@@ -168,7 +166,6 @@ describe('detect_macd_cross', () => {
 
 		const res = await toolDef.handler({ market: 'jpy', lookback: 3 });
 		assertOk(res);
-		// market=jpy filter → meta.pairs should all end with _jpy
 		const meta = res.meta as { pairs: string[] };
 		expect(meta.pairs.every((p: string) => p.endsWith('_jpy'))).toBe(true);
 	});
@@ -477,8 +474,7 @@ describe('detect_macd_cross', () => {
 			throw new Error(`unexpected pair: ${pair}`);
 		});
 
-		// sortBy=barsAgo, sortOrder=desc: the sort formula puts smaller barsAgo first (ascending values)
-		// This is the "most recent first" behaviour of this tool
+		// sortBy=barsAgo, sortOrder=desc は小さい barsAgo を先に並べる（このツールの「新しい順」）
 		const res = await toolDef.handler({
 			pairs: ['btc_jpy', 'eth_jpy'],
 			lookback: 5,
@@ -526,7 +522,6 @@ describe('detect_macd_cross', () => {
 			lookback: 5,
 			view: 'detailed',
 		});
-		// detailed view returns content with text
 		expect(res).toBeDefined();
 	});
 
@@ -573,8 +568,6 @@ describe('detect_macd_cross', () => {
 		expect(res.data.results).toHaveLength(1);
 	});
 
-	// ── singlePairMode branches ──
-
 	it('singlePairMode: 無効なペアは failFromValidation を返す', async () => {
 		const res = await toolDef.handler({ pair: 'invalid_pair' });
 		assertFail(res);
@@ -606,10 +599,7 @@ describe('detect_macd_cross', () => {
 	});
 
 	it('singlePairMode: forming_golden (hPrev < 0 && slopePerBar > 0) を検出する', async () => {
-		// hPrev < 0, hNow approaching zero from negative
-		// n=20, nowIdx=19, win=5, hPrev=hist[14], hNow=hist[19]
-		// hist[14] must be negative and non-zero; hist[19] closer to zero but still negative
-		// No sign change in hist[16..19] to avoid crossed_recently
+		// hPrev < 0 から負のまま 0 に近づく形（n=20, nowIdx=19, win=5, hPrev=hist[14], hNow=hist[19]）。crossed_recently を避けるため hist[16..19] で符号を変えない。
 		const n = 20;
 		const hist = Array.from({ length: n }, () => 0);
 		hist[14] = -0.3;
@@ -646,10 +636,7 @@ describe('detect_macd_cross', () => {
 	});
 
 	it('singlePairMode: forming_dead (hPrev > 0 && slopePerBar < 0) を検出する', async () => {
-		// hPrev > 0, hNow approaching zero from positive
-		// n=20, nowIdx=19, win=5, hPrev=hist[14], hNow=hist[19]
-		// hist[14] positive non-zero; hist[19] closer to zero but still positive
-		// No sign change in hist[16..19] to avoid crossed_recently
+		// hPrev > 0 から正のまま 0 に近づく形（n=20, nowIdx=19, win=5, hPrev=hist[14], hNow=hist[19]）。crossed_recently を避けるため hist[16..19] で符号を変えない。
 		const n = 20;
 		const hist = Array.from({ length: n }, () => 0);
 		hist[14] = 0.3;
@@ -686,15 +673,10 @@ describe('detect_macd_cross', () => {
 	});
 
 	it('singlePairMode: forming_golden で estimatedCrossDays <= 1.5 → 1-2日以内', async () => {
-		// Construct hist so that hPrev < 0, hNow very close to zero, slopePerBar > 0
-		// win=5, hPrev=hist[n-1-5], hNow=hist[n-1]
-		// We want |hNow|/|slopePerBar| <= 1.5
-		// slopePerBar = (hNow - hPrev) / win
+		// hPrev < 0、hNow がほぼ 0、slopePerBar > 0 で |hNow|/|slopePerBar| <= 1.5 にする（slopePerBar = (hNow - hPrev) / win、win=5）
 		const n = 20;
 		const hist = Array.from({ length: n }, () => 0);
-		// hPrev (index n-1-5=14) = -0.3, hNow (index 19) = -0.01
-		// slopePerBar = (-0.01 - (-0.3)) / 5 = 0.058
-		// estimatedCrossDays = 0.01 / 0.058 ≈ 0.17 <= 1.5
+		// hPrev (index 14) = -0.3, hNow (index 19) = -0.01 → slopePerBar = 0.058、estimatedCrossDays = 0.01 / 0.058 ≈ 0.17 <= 1.5
 		hist[14] = -0.3;
 		hist[15] = -0.24;
 		hist[16] = -0.18;
@@ -727,16 +709,13 @@ describe('detect_macd_cross', () => {
 		const res = await toolDef.handler({ pair: 'btc_jpy', includeForming: true, includeStats: false });
 		assertOk(res);
 		expect(res.data.forming?.status).toBe('forming_golden');
-		// estimatedCrossDays should be <= 1.5
 		expect(res.data.forming?.estimatedCrossDays).toBeLessThanOrEqual(1.5);
 	});
 
 	it('singlePairMode: forming_golden で estimatedCrossDays > 1.5 → X日程度', async () => {
 		const n = 20;
 		const hist = Array.from({ length: n }, () => 0);
-		// hPrev (index 14) = -2, hNow (index 19) = -1.5
-		// slopePerBar = (-1.5 - (-2)) / 5 = 0.1
-		// estimatedCrossDays = 1.5 / 0.1 = 15 > 1.5
+		// hPrev (index 14) = -2, hNow (index 19) = -1.5 → slopePerBar = 0.1、estimatedCrossDays = 1.5 / 0.1 = 15 > 1.5
 		hist[14] = -2;
 		hist[15] = -1.9;
 		hist[16] = -1.8;
@@ -946,8 +925,6 @@ describe('detect_macd_cross', () => {
 		expect(res.data.forming?.lastCrossType).toBe('dead');
 	});
 
-	// ── Additional branch coverage ──
-
 	it('screenMode: view=detailed でクロスなし → detRaw.length === 0 → res をそのまま返す', async () => {
 		// line stays positive, no cross within lookback
 		mockedAnalyzeIndicators.mockResolvedValueOnce(
@@ -984,7 +961,6 @@ describe('detect_macd_cross', () => {
 		const res = await toolDef.handler({ market: 'all', lookback: 3 });
 		assertOk(res);
 		const meta = res.meta as { pairs: string[] };
-		// market=all includes non-jpy pairs too
 		expect(meta.pairs.length).toBeGreaterThan(0);
 	});
 
@@ -1045,7 +1021,6 @@ describe('detect_macd_cross', () => {
 
 		const res = await toolDef.handler({ pairs: ['btc_jpy'], lookback: 5 });
 		assertOk(res);
-		// summary should contain the cross info
 		expect(typeof res.summary).toBe('string');
 		expect(res.data.results).toHaveLength(1);
 	});
@@ -1078,7 +1053,6 @@ describe('detect_macd_cross', () => {
 
 		const res = await toolDef.handler({ pair: 'btc_jpy', includeForming: false, includeStats: true, historyDays: 180 });
 		assertOk(res);
-		// summary should contain golden/dead cross text
 		expect(res.summary).toMatch(/ゴールデンクロス/);
 		expect(res.summary).toMatch(/デッドクロス/);
 	});
@@ -1086,8 +1060,7 @@ describe('detect_macd_cross', () => {
 	it('buildMacdSingleText: forming_golden で estimatedCrossDays <= 1.5 → サマリに 1-2日以内 が含まれる', async () => {
 		const n = 20;
 		const hist = Array.from({ length: n }, () => 0);
-		// hPrev (index 14) = -0.3, hNow (index 19) = -0.01
-		// slopePerBar = 0.058, estimatedCrossDays ≈ 0.17 <= 1.5
+		// hPrev (index 14) = -0.3, hNow (index 19) = -0.01 → slopePerBar = 0.058、estimatedCrossDays ≈ 0.17 <= 1.5
 		hist[14] = -0.3;
 		hist[15] = -0.24;
 		hist[16] = -0.18;
@@ -1126,8 +1099,7 @@ describe('detect_macd_cross', () => {
 	it('buildMacdSingleText: forming_golden で estimatedCrossDays > 1.5 → サマリに X日程度 が含まれる', async () => {
 		const n = 20;
 		const hist = Array.from({ length: n }, () => 0);
-		// hPrev (index 14) = -2, hNow (index 19) = -1.5
-		// slopePerBar = 0.1, estimatedCrossDays = 15 > 1.5
+		// hPrev (index 14) = -2, hNow (index 19) = -1.5 → slopePerBar = 0.1、estimatedCrossDays = 15 > 1.5
 		hist[14] = -2;
 		hist[15] = -1.9;
 		hist[16] = -1.8;
@@ -1312,11 +1284,8 @@ describe('detect_macd_cross', () => {
 		expect(res.data.statistics).not.toBeNull();
 	});
 
-	it('screenMode: view=detailed で !res.ok → そのまま res を返す (handler early return)', async () => {
-		// When analyzeIndicators fails for the only pair, screenMode returns ok but with no results
-		// The handler checks !res.ok || args.view !== 'detailed' → returns res
-		// Test with ok=false scenario by having screenMode not return ok (shouldn't happen normally)
-		// Instead test that when view='summary' the detailed path is not entered
+	it('screenMode: view=summary は detailed の content を組まずに res をそのまま返す', async () => {
+		// screenMode が ok=false を返す状況は通常作れないので、代わりに view='summary' のとき detailed の経路に入らないことを見る。
 		mockedAnalyzeIndicators.mockResolvedValueOnce(
 			asMockResult(
 				buildAnalyzeIndicatorsOk({
@@ -1333,7 +1302,6 @@ describe('detect_macd_cross', () => {
 			view: 'summary',
 		});
 		assertOk(res);
-		// summary view → no content property
 		expect('content' in res).toBe(false);
 	});
 
@@ -1403,7 +1371,6 @@ describe('detect_macd_cross', () => {
 		});
 		expect(res).toHaveProperty('content');
 		const content = (res as { content: Array<{ text: string }> }).content;
-		// Should include prevCross info (barsAgo days)
 		expect(content[0].text).toMatch(/日/);
 	});
 });

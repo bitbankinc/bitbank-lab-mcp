@@ -4,12 +4,10 @@ import { GetCandlesInputSchema } from '../src/schemas.js';
 import getCandles, { toolDef } from '../tools/get_candles.js';
 import { assertFail, assertOk } from './_assertResult.js';
 import { candlesError } from './fixtures/bitbank-api.js';
+import { requireDefined } from './helpers/assert.js';
+import { utcDayMs } from './helpers/time.js';
 
-/**
- * normalized から timestamp 列を取り出す。
- * `CandleSchema.timestamp` はスキーマ上 optional だが get_candles は全経路で必ず埋めるため、
- * 欠損は契約違反としてここで落とす（`c.timestamp!` で握りつぶさない）。
- */
+/** `CandleSchema.timestamp` はスキーマ上 optional だが get_candles は全経路で必ず埋めるので、欠損は契約違反としてここで落とす（`c.timestamp!` で握りつぶさない）。 */
 function timestampsOf(candles: readonly { timestamp?: number }[]): number[] {
 	return candles.map((c, i) => {
 		if (c.timestamp === undefined) throw new Error(`normalized[${i}] に timestamp がありません`);
@@ -32,7 +30,6 @@ describe('GetCandlesInputSchema (limit 上限契約)', () => {
 		expect(GetCandlesInputSchema.safeParse({ pair: 'btc_jpy', type: '1day', limit: 200 }).success).toBe(true);
 		expect(GetCandlesInputSchema.safeParse({ pair: 'btc_jpy', type: '1day', limit: 1000 }).success).toBe(true);
 		expect(GetCandlesInputSchema.safeParse({ pair: 'btc_jpy', type: '1day', limit: 1 }).success).toBe(true);
-		// 省略時は default(200) が適用される
 		const parsed = GetCandlesInputSchema.parse({ pair: 'btc_jpy', type: '1day' });
 		expect(parsed.limit).toBe(200);
 	});
@@ -113,7 +110,6 @@ describe('getCandles', () => {
 	});
 
 	it('十分なデータがある場合 keyPoints と volumeStats を計算するべき', async () => {
-		// 100本のローソク足を生成
 		const baseTs = 1704067200000;
 		const ohlcv = Array.from({ length: 100 }, (_, i) => [
 			String(100 + i),
@@ -137,20 +133,16 @@ describe('getCandles', () => {
 		const res = await getCandles('btc_jpy', '1day', '2024', 100);
 		assertOk(res);
 
-		// keyPoints should exist
-		expect(res.data.keyPoints!.today).not.toBeNull();
-		expect(res.data.keyPoints!.sevenDaysAgo).not.toBeNull();
-		expect(res.data.keyPoints!.thirtyDaysAgo).not.toBeNull();
-		expect(res.data.keyPoints!.ninetyDaysAgo).not.toBeNull();
+		expect(requireDefined(res.data.keyPoints, 'res.data.keyPoints').today).not.toBeNull();
+		expect(requireDefined(res.data.keyPoints, 'res.data.keyPoints').sevenDaysAgo).not.toBeNull();
+		expect(requireDefined(res.data.keyPoints, 'res.data.keyPoints').thirtyDaysAgo).not.toBeNull();
+		expect(requireDefined(res.data.keyPoints, 'res.data.keyPoints').ninetyDaysAgo).not.toBeNull();
 
-		// baseTs=1704067200000 = 2024-01-01T00:00:00Z = JST 2024-01-01 09:00
-		// 100本のローソク → today index=99 → 2024-04-09T00:00:00Z = JST 2024-04-09 09:00 → '2024-04-09'
-		// 既定 tz='Asia/Tokyo' で JST 暦日として出る
+		// baseTs=2024-01-01T00:00:00Z（JST 09:00）から 100 本 → today index=99 は 2024-04-09T00:00:00Z で、既定 tz='Asia/Tokyo' の暦日 '2024-04-09' として出る
 		expect(res.data.keyPoints?.today?.date).toBe('2024-04-09');
 		// sevenDaysAgo = index 92 → 2024-04-02 → JST '2024-04-02'
 		expect(res.data.keyPoints?.sevenDaysAgo?.date).toBe('2024-04-02');
 
-		// volumeStats should exist (>= 14 items)
 		expect(res.data.volumeStats).not.toBeNull();
 		expect(res.data.volumeStats?.changePct).toBeDefined();
 		expect(res.data.volumeStats?.judgment).toBeDefined();
@@ -186,7 +178,6 @@ describe('getCandles', () => {
 
 	it('出来高変化率が +20% 以上なら「活発になっています」と判定するべき', async () => {
 		const baseTs = 1704067200000;
-		// recent 7 days high volume, previous 7 days low volume
 		const ohlcv = Array.from({ length: 20 }, (_, i) => [
 			'100',
 			'110',
@@ -213,7 +204,6 @@ describe('getCandles', () => {
 
 	it('出来高変化率が -20% 以下なら「落ち着いています」と判定するべき', async () => {
 		const baseTs = 1704067200000;
-		// recent 7 days low volume, previous 7 days high volume
 		const ohlcv = Array.from({ length: 20 }, (_, i) => [
 			'100',
 			'110',
@@ -241,8 +231,7 @@ describe('getCandles', () => {
 	describe('volumeStats: 前7日間ゼロ出来高ベースライン耐性', () => {
 		it('前7日間が全てゼロ出来高 + 直近7日間に出来高ありなら changePct=null かつ専用ラベル', async () => {
 			const baseTs = 1704067200000;
-			// previous 7 days (index 0-6) = 0 volume, recent 7 days (index 7-13) = nonzero
-			// → previous7DaysAvg === 0, recent7DaysAvg !== 0 → 通常計算なら Infinity
+			// previous 7 days (index 0-6) = 0 volume、recent 7 days (index 7-13) = nonzero → previous7DaysAvg === 0 で、通常計算なら Infinity
 			const ohlcv = Array.from({ length: 14 }, (_, i) => [
 				'100',
 				'110',
@@ -330,10 +319,8 @@ describe('getCandles', () => {
 				view: 'full',
 			})) as { content: Array<{ type: string; text: string }> };
 			const text = res.content[0].text;
-			// Infinity / NaN が含まれないこと
 			expect(text).not.toMatch(/Infinity/);
 			expect(text).not.toMatch(/NaN/);
-			// 専用ラベルが summary に含まれる
 			expect(text).toContain('前週比較不可');
 		});
 	});
@@ -381,11 +368,8 @@ describe('getCandles', () => {
 		const res = await getCandles('btc_jpy', '1day', undefined, 500);
 		assertOk(res);
 
-		// Should have made multiple fetch calls (one per year)
 		expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
 	});
-
-	// ── multi-year 起点年（date パラメータの遵守） ──
 
 	describe('multi-year: date パラメータを起点に取得する', () => {
 		const buildSuccessMock = () => {
@@ -416,7 +400,6 @@ describe('getCandles', () => {
 			await getCandles('btc_jpy', '1day', '2020', 2000);
 
 			const calledUrls = fetchMock.mock.calls.map((call) => String(call[0]));
-			// 起点年 2020 が含まれる
 			expect(calledUrls.some((u) => u.endsWith('/btc_jpy/candlestick/1day/2020'))).toBe(true);
 			// 2020 より新しい年は呼ばれていない（現在年起点になっていないことを確認）
 			for (let y = 2021; y <= 2030; y++) {
@@ -511,20 +494,11 @@ describe('getCandles', () => {
 			await getCandles('btc_jpy', '1hour', '20240115', 100);
 
 			const calledUrls = fetchMock.mock.calls.map((call) => String(call[0]));
-			// multi-day branch は YYYYMMDD 形式のまま既存挙動
 			expect(calledUrls.some((u) => u.endsWith('/btc_jpy/candlestick/1hour/20240115'))).toBe(true);
 		});
 
-		// anchor 年内の利用可能本数の見積りは「1/1 から anchor 日までの**暦日数**」（= 暦日差 + 1）で決まる。
-		// DST を挟む tz では ms 差の単純割り算だと 1 日ぶん少なく出る:
-		// NY 2025-01-01 00:00 EST → 06-16 00:00 EDT は暦日差 166 日（= 経過 167 日ぶん）だが、
-		// 春の DST 開始で 1 時間短いため ms 差は 165 日 23 時間 → 割り算では経過 166 日ぶんに落ちる。
-		//
-		// この見積り (barsInAnchorYear) は yearsNeeded → needsMultiYear を経て **limit 上限**を
-		// 切り替える（multiYear=5000 / default=1000）。date 指定時は fetch key が UTC 年 window 側から
-		// 決まるため、見積りが観測できるのはこの limit 上限だけ（meta.multiYear は出力スキーマに
-		// 無く parse で落ちる）。境界 limit を挟んで ok / user エラーが反転することで
-		// barsInAnchorYear === floor(167 * 2190/365) === 1002 を一意に固定する。
+		// anchor 年内の利用可能本数の見積りは 1/1 から anchor 日までの暦日数で決まるが、DST を挟む tz では ms 差の単純割り算だと 1 日ぶん少なく出る（NY 2025-01-01 → 06-16 は暦日差 166 日 = 経過 167 日ぶんだが、ms 差は 165 日 23 時間）。
+		// 見積りが観測できるのは limit 上限（multiYear=5000 / default=1000）の切り替えだけなので、境界 limit を挟んで ok / user エラーが反転することで barsInAnchorYear === floor(167 * 2190/365) === 1002 を固定する。
 		describe('anchor 年の本数見積りは DST を跨いでも暦日数で数える', () => {
 			const buildYearMock = () =>
 				vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
@@ -589,11 +563,8 @@ describe('getCandles', () => {
 		const res = await getCandles('btc_jpy', '1hour', '20240115', 100);
 		assertOk(res);
 
-		// Should have made multiple fetch calls (one per day batch)
 		expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
 	});
-
-	// ── limit 上限（schema 緩和後の impl 側 validateLimit との整合） ──
 
 	describe('limit 上限: impl 側 validateLimit', () => {
 		const buildFetchMock = (rows: unknown[][]) =>
@@ -652,15 +623,12 @@ describe('getCandles', () => {
 	});
 
 	it('同一 timestamp の重複行は dedupe され normalized に 1 件のみ残る', async () => {
-		// /candlestick レスポンスで同一 ts の重複（一方は全 0 OHLC のプレースホルダ）が
-		// 観測される。pipeline (sort → dedupe → anchor filter → slice) で dedupe される。
+		// /candlestick レスポンスで同一 ts の重複（一方は全 0 OHLC のプレースホルダ）が観測される。
 		const ts = 1704067200000;
 		const ohlcv = [
 			// 同一 ts の重複: priority a で除外される全 0 プレースホルダ
 			['0', '0', '0', '0', '0', String(ts)],
-			// 同一 ts の正常行（残るべき）
 			['100', '110', '90', '105', '1.5', String(ts)],
-			// 別 ts の正常行
 			['101', '111', '91', '106', '2.0', String(ts + 86400000)],
 		];
 		const fetchMock = vi.fn().mockResolvedValue({
@@ -677,11 +645,9 @@ describe('getCandles', () => {
 		const res = await getCandles('btc_jpy', '1day', '2024', 10);
 		assertOk(res);
 
-		// dedupe により ts=ts の行は 1 件のみ
 		expect(res.data.normalized).toHaveLength(2);
 		const tsList = timestampsOf(res.data.normalized);
 		expect(tsList.filter((t: number) => t === ts)).toHaveLength(1);
-		// 残ったのは非プレースホルダ行
 		const kept = res.data.normalized.find((c) => c.timestamp === ts);
 		expect(kept?.open).toBe(100);
 		expect(kept?.volume).toBe(1.5);
@@ -707,19 +673,14 @@ describe('getCandles', () => {
 		const res = await getCandles('btc_jpy', '1day', '2024', 10);
 		assertOk(res);
 
-		// High should be 200, Low should be 70
 		const highs = res.data.normalized.map((c: { high: number }) => c.high);
 		const lows = res.data.normalized.map((c: { low: number }) => c.low);
 		expect(Math.max(...highs)).toBe(200);
 		expect(Math.min(...lows)).toBe(70);
 
-		// priceRange.periodStart/End は summary 上に出る。tz 既定=Asia/Tokyo の暦日:
-		//   baseTs=2024-01-01T00:00:00Z=JST 2024-01-01 09:00 → '2024-01-01'
-		//   baseTs+1d=2024-01-02T00:00:00Z=JST 2024-01-02 09:00 → '2024-01-02'
+		// priceRange.periodStart/End は tz 既定=Asia/Tokyo の暦日で出る（baseTs=2024-01-01T00:00:00Z=JST 09:00）。
 		expect(res.summary).toContain('2024-01-01 〜 2024-01-02');
 	});
-
-	// ── API 異常系（success:0） ──
 
 	it('API異常系: success:0 を「データなし」(user) ではなく upstream として明示分類する', async () => {
 		// 単一リクエスト経路: 1day + limit=10 + date=2024 は yearsNeeded=1 で単発取得
@@ -782,8 +743,6 @@ describe('getCandles', () => {
 		expect(res.meta?.errorType).toBe('upstream');
 		expect(res.summary).toContain('code: 10000');
 	});
-
-	// ── OHLCV データ品質（不正行検出 + timestamp 保持） ──
 
 	describe('OHLCV データ品質', () => {
 		it('D-1: OHLCV 行に NaN になる値が含まれる場合 upstream として fail する', async () => {
@@ -925,15 +884,11 @@ describe('getCandles', () => {
 
 		const res = await getCandles('btc_jpy', '1day', '2024', 10, '');
 		assertOk(res);
-		// Asia/Tokyo へのフォールバックなので isoTimeLocal が含まれる
 		expect(res.data.normalized[0].isoTimeLocal).toBeDefined();
 		// 1704067200000 = 2024-01-01T00:00:00Z = JST 2024-01-01 09:00
 		expect(res.data.normalized[0].isoTimeLocal).toBe('2024-01-01T09:00:00');
-		// keyPoints の date も JST 暦日
 		expect(res.data.keyPoints?.today?.date).toBe('2024-01-01');
 	});
-
-	// ── formatDateInTz による表示層の tz 起点化（PR-2） ──
 
 	describe('表示層の tz: keyPoints.date は tz 引数の暦日で出る', () => {
 		const buildSingleCandleMock = (timestampMs: number) =>
@@ -992,8 +947,6 @@ describe('getCandles', () => {
 		});
 	});
 
-	// ── toolDef.handler 経由（fail 透過） ──
-
 	describe('toolDef.handler 経由', () => {
 		it('success:0 + view=items のとき fail を透過し 0件 JSON を返さない', async () => {
 			const fetchMock = vi.fn().mockResolvedValue({
@@ -1018,9 +971,7 @@ describe('getCandles', () => {
 			expect(res.ok).toBe(false);
 			expect(res.meta?.errorType).toBe('upstream');
 			// fail を透過しているので content に 0件 JSON 配列を入れない
-			if (res.content?.[0]?.text) {
-				expect(res.content[0].text).not.toBe('[]');
-			}
+			expect(res.content?.[0]?.text).not.toBe('[]');
 		});
 
 		it('success:0 + view=full のとき fail を透過する', async () => {
@@ -1076,12 +1027,9 @@ describe('getCandles', () => {
 		});
 	});
 
-	// ── fetchWarning（部分失敗）の meta.warning 経由での伝播 ──
-
 	describe('multi-year/multi-day 部分失敗時の fetchWarning', () => {
 		it('multi-year: 4年中1年失敗 → meta.warning に伝播し、summary 先頭に出る', async () => {
-			// 1day + date=2020 + limit=1100 → yearsNeeded=4（過去年起点）
-			// years=[2020, 2019, 2018, 2017] のうち 2017 を success:0 で失敗させる
+			// 1day + date=2020 + limit=1100 → yearsNeeded=4（過去年起点）。years=[2020, 2019, 2018, 2017] のうち 2017 を success:0 で失敗させる
 			const baseTs = 1577836800000; // 2020-01-01 UTC
 			const validRows = Array.from({ length: 365 }, (_, i) => [
 				'100',
@@ -1111,18 +1059,14 @@ describe('getCandles', () => {
 
 			const res = await getCandles('btc_jpy', '1day', '2020', 1100);
 			assertOk(res);
-			// meta.warning に上流の部分失敗が伝播している
 			expect(res.meta.warning).toBeDefined();
 			expect(res.meta.warning).toContain('4年中1年');
 			expect(res.meta.warning).toContain('2017');
-			// summary 先頭にも警告が出る
 			expect(res.summary.startsWith('⚠️')).toBe(true);
 		});
 
 		it('multi-day: 過半数未満の失敗 → meta.warning に伝播', async () => {
-			// 1hour + date=20240115 (tz=Asia/Tokyo) + limit=200 → tz 暦日 window 由来の UTC keys
-			//   = [20240107..20240115] の 9 日。
-			// 9 日のうち 20240107（最古日）の 1 日を失敗させる（1/9 < 0.5）。
+			// 1hour + date=20240115 (tz=Asia/Tokyo) + limit=200 → tz 暦日 window 由来の UTC keys は [20240107..20240115] の 9 日。最古日 20240107 の 1 日だけ失敗させる（1/9 < 0.5）。
 			const baseTs = 1705276800000; // 2024-01-15
 			const validRows = Array.from({ length: 24 }, (_, i) => [
 				'100',
@@ -1180,24 +1124,15 @@ describe('getCandles', () => {
 		});
 	});
 
-	// ── date アンカーによる絞り込み（指定日「以前」の limit 件を返す） ──
-
 	describe('date アンカー絞り込み: 指定日以前の limit 件を返す', () => {
-		/** YYYY-MM-DD UTC start-of-day を ms に（Date.UTC は月が 0-indexed なので -1） */
-		const dayMs = (iso: string) => {
-			const [y, m, d] = iso.split('-').map(Number);
-			return Date.UTC(y, m - 1, d);
-		};
-
 		it('1day + date=YYYYMMDD + limit=3: 指定日を含む過去3本を返し、未来の足は含めない', async () => {
-			// API は year=2025 を URL から受け取ったら 2025 年全体の足を返す体で mock する。
-			// 9/30, 10/1, 10/2, 10/3, 10/4 の 5 本を返却 → 期待結果は 9/30, 10/1, 10/2 の 3 本。
+			// API は year=2025 を URL から受け取ったら 2025 年全体の足を返す体で mock する。9/30, 10/1, 10/2, 10/3, 10/4 の 5 本を返却 → 期待結果は 9/30, 10/1, 10/2 の 3 本。
 			const ohlcv = [
-				['100', '110', '90', '105', '1.0', dayMs('2025-09-30')],
-				['101', '111', '91', '106', '1.0', dayMs('2025-10-01')],
-				['102', '112', '92', '107', '1.0', dayMs('2025-10-02')],
-				['103', '113', '93', '108', '1.0', dayMs('2025-10-03')],
-				['104', '114', '94', '109', '1.0', dayMs('2025-10-04')],
+				['100', '110', '90', '105', '1.0', utcDayMs('2025-09-30')],
+				['101', '111', '91', '106', '1.0', utcDayMs('2025-10-01')],
+				['102', '112', '92', '107', '1.0', utcDayMs('2025-10-02')],
+				['103', '113', '93', '108', '1.0', utcDayMs('2025-10-03')],
+				['104', '114', '94', '109', '1.0', utcDayMs('2025-10-04')],
 			];
 			const fetchMock = vi.fn().mockResolvedValue({
 				ok: true,
@@ -1212,15 +1147,14 @@ describe('getCandles', () => {
 
 			expect(res.data.normalized).toHaveLength(3);
 			const tsList = timestampsOf(res.data.normalized);
-			expect(tsList).toEqual([dayMs('2025-09-30'), dayMs('2025-10-01'), dayMs('2025-10-02')]);
-			// 10/3, 10/4 は含まれない
-			expect(tsList).not.toContain(dayMs('2025-10-03'));
-			expect(tsList).not.toContain(dayMs('2025-10-04'));
+			expect(tsList).toEqual([utcDayMs('2025-09-30'), utcDayMs('2025-10-01'), utcDayMs('2025-10-02')]);
+			expect(tsList).not.toContain(utcDayMs('2025-10-03'));
+			expect(tsList).not.toContain(utcDayMs('2025-10-04'));
 		});
 
 		it('date 未指定: 従来通り末尾 limit 件（最新側）を返す', async () => {
 			// 5 本の足を返す。date 未指定なので anchor フィルタなし → slice(-3) で末尾 3 本。
-			const baseTs = dayMs('2025-09-30');
+			const baseTs = utcDayMs('2025-09-30');
 			const ohlcv = Array.from({ length: 5 }, (_, i) => [
 				String(100 + i),
 				String(110 + i),
@@ -1240,15 +1174,13 @@ describe('getCandles', () => {
 			const res = await getCandles('btc_jpy', '1day', undefined, 3);
 			assertOk(res);
 			expect(res.data.normalized).toHaveLength(3);
-			// 末尾 3 本: 10/2, 10/3, 10/4
 			const tsList = timestampsOf(res.data.normalized);
-			expect(tsList).toEqual([dayMs('2025-10-02'), dayMs('2025-10-03'), dayMs('2025-10-04')]);
+			expect(tsList).toEqual([utcDayMs('2025-10-02'), utcDayMs('2025-10-03'), utcDayMs('2025-10-04')]);
 		});
 
 		it('1hour + date=YYYYMMDD + limit=5: 指定日終端 (tz=Asia/Tokyo) 23:59:59 以前のみ返し、JST 翌日の足は含めない', async () => {
-			// anchor は JST 暦日終端で切る（PR-3 以降）。JST 10/2 23:59 = UTC 10/2 14:59 のため、
-			// 防御的に「JST 10/3 に入る足」（UTC 10/2 15:00 以降）を mock に混ぜ、filter で確実に切り落とされることを検証する。
-			const hourMs = (iso: string, h: number) => dayMs(iso) + h * 3600000;
+			// anchor は JST 暦日終端（JST 10/2 23:59 = UTC 10/2 14:59）で切るので、「JST 10/3 に入る足」（UTC 10/2 15:00 以降）を mock に混ぜ、filter で確実に切り落とされることを検証する。
+			const hourMs = (iso: string, h: number) => utcDayMs(iso) + h * 3600000;
 			const ohlcv = [
 				// JST 10/2 18:00..23:00 = UTC 10/2 09:00..14:00（6 本）
 				...Array.from({ length: 6 }, (_, i) => ['100', '110', '90', '105', '1.0', String(hourMs('2025-10-02', 9 + i))]),
@@ -1274,15 +1206,12 @@ describe('getCandles', () => {
 			assertOk(res);
 
 			const tsList = timestampsOf(res.data.normalized);
-			// すべて JST 10/2 終端（= UTC 10/2 14:59:59.999）以前であること
-			const jstEndOfDayMs = dayMs('2025-10-02') + 15 * 3600000 - 1; // JST 10/2 23:59:59.999
+			const jstEndOfDayMs = utcDayMs('2025-10-02') + 15 * 3600000 - 1; // JST 10/2 23:59:59.999
 			for (const ts of tsList) expect(ts).toBeLessThanOrEqual(jstEndOfDayMs);
-			// JST 10/3（= UTC 10/2 15:00 以降）の足は含まれない
 			expect(tsList.find((ts: number) => ts >= hourMs('2025-10-02', 15))).toBeUndefined();
 		});
 
 		it('1day + date=20250110 + limit 年跨ぎ: 2025年と2024年の両方を取得し、anchor 以前の limit 件を返す', async () => {
-			// 各年 365 本のフィクスチャを返す。年ごとに baseTs を切り替える。
 			vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
 				const urlStr = String(url);
 				const m = urlStr.match(/\/1day\/(\d{4})$/);
@@ -1304,8 +1233,7 @@ describe('getCandles', () => {
 				} as Response;
 			});
 
-			// daysFromStart(20250110)=10 → barsInAnchorYear=10
-			// yearsNeeded = 1 + ceil((50-10)/365) = 2 → fetch [2025, 2024]
+			// daysFromStart(20250110)=10 → barsInAnchorYear=10、yearsNeeded = 1 + ceil((50-10)/365) = 2 → fetch [2025, 2024]
 			const res = await getCandles('btc_jpy', '1day', '20250110', 50);
 			assertOk(res);
 
@@ -1313,20 +1241,16 @@ describe('getCandles', () => {
 			expect(calledUrls.some((u) => u.endsWith('/1day/2025'))).toBe(true);
 			expect(calledUrls.some((u) => u.endsWith('/1day/2024'))).toBe(true);
 
-			// 結果は 50 本、すべて anchor=2025-01-10 23:59:59 以前
 			expect(res.data.normalized).toHaveLength(50);
-			const anchor = dayMs('2025-01-11') - 1;
+			const anchor = utcDayMs('2025-01-11') - 1;
 			for (const c of res.data.normalized as Array<{ timestamp: number }>) {
 				expect(c.timestamp).toBeLessThanOrEqual(anchor);
 			}
-			// 末尾は 2025-01-10
-			expect(res.data.normalized.at(-1)?.timestamp).toBe(dayMs('2025-01-10'));
+			expect(res.data.normalized.at(-1)?.timestamp).toBe(utcDayMs('2025-01-10'));
 		});
 
 		it('4hour 年初早朝 + 小 limit: 経過時間ベース見積もりで前年まで取得する', async () => {
-			// バグ修正前は estimatedBarsThisYear が dayOfYear=1 から 6 bars と過大評価し、
-			// limit=5 だと 6>=5 で yearsNeeded=1 となり前年が取得されなかった。
-			// 経過時間ベースなら 03:00 UTC で floor(10800000/14400000)+1=1 となり前年取得が走る。
+			// 経過時間ベースなら 03:00 UTC で floor(10800000/14400000)+1=1 となり前年取得が走る（dayOfYear=1 から 6 bars と見積もると、limit=5 で yearsNeeded=1 になり前年が取得されない）。
 			vi.useFakeTimers();
 			vi.setSystemTime(dayjs.utc('2026-01-01T03:00:00Z').valueOf());
 			try {
@@ -1367,9 +1291,8 @@ describe('getCandles', () => {
 		});
 
 		it('指定日以前のデータが存在しない場合は user エラーを返す', async () => {
-			// year=2025 を fetch すると 2025-06 以降の足だけが返る mock。
-			// date=20250105 → anchor=2025-01-05 23:59:59 → 全 row が anchor より後 → 空。
-			const baseTs = dayMs('2025-06-01');
+			// year=2025 を fetch すると 2025-06 以降の足だけが返る mock。date=20250105 → anchor=2025-01-05 23:59:59 → 全 row が anchor より後 → 空。
+			const baseTs = utcDayMs('2025-06-01');
 			const ohlcv = Array.from({ length: 3 }, (_, i) => [
 				'100',
 				'110',
@@ -1393,20 +1316,11 @@ describe('getCandles', () => {
 		});
 	});
 
-	// ── PR-3: anchor を tz 起点で解釈する ──
-
 	describe('anchor は tz 引数の暦日終端で切る（PR-3）', () => {
-		/** YYYY-MM-DD UTC start-of-day を ms に */
-		const dayMs = (iso: string) => {
-			const [y, m, d] = iso.split('-').map(Number);
-			return Date.UTC(y, m - 1, d);
-		};
-		const hourMs = (iso: string, h: number) => dayMs(iso) + h * 3600000;
+		const hourMs = (iso: string, h: number) => utcDayMs(iso) + h * 3600000;
 
 		it("tz='Asia/Tokyo' × date=20251002 × 1hour × limit=24: normalized の timestamp は JST 10/2 (UTC 10/1 15:00..10/2 14:00) 内に収まる", async () => {
-			// bitbank API は UTC 暦日でグルーピング（docs/internal/bitbank-candle-tz.md）。
-			// /20251001 と /20251002 の 48 本のうち、anchor=JST 10/2 23:59:59=UTC 10/2 14:59:59
-			// 以前の 24 本が選ばれる → JST 10/2 0:00..23:00 (UTC 10/1 15:00..10/2 14:00) 24 本。
+			// bitbank API は UTC 暦日でグルーピングするので、/20251001 と /20251002 の 48 本のうち anchor（JST 10/2 23:59:59 = UTC 10/2 14:59:59）以前の 24 本 = JST 10/2 0:00..23:00 (UTC 10/1 15:00..10/2 14:00) が選ばれる。
 			vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
 				const urlStr = String(url);
 				const m = urlStr.match(/\/1hour\/(\d{8})$/);
@@ -1414,7 +1328,6 @@ describe('getCandles', () => {
 				const y = Number(dateKey.slice(0, 4));
 				const mo = Number(dateKey.slice(4, 6));
 				const d = Number(dateKey.slice(6, 8));
-				// 各 UTC 日について 0:00..23:00 の 24 本を返す
 				const baseTs = Date.UTC(y, mo - 1, d);
 				const ohlcv = Array.from({ length: 24 }, (_, i) => [
 					'100',
@@ -1441,8 +1354,7 @@ describe('getCandles', () => {
 			expect(tsList[0]).toBe(hourMs('2025-10-01', 15));
 			// 最新 = JST 10/2 23:00 = UTC 10/2 14:00
 			expect(tsList.at(-1)).toBe(hourMs('2025-10-02', 14));
-			// すべて anchor (JST 10/2 23:59:59 = UTC 10/2 14:59:59) 以前
-			const jstAnchor = dayMs('2025-10-02') + 15 * 3600000 - 1;
+			const jstAnchor = utcDayMs('2025-10-02') + 15 * 3600000 - 1;
 			for (const ts of tsList) expect(ts).toBeLessThanOrEqual(jstAnchor);
 		});
 
@@ -1479,12 +1391,11 @@ describe('getCandles', () => {
 			// tz=UTC の暦日 anchor: UTC 10/2 0:00..23:00 ぴったり
 			expect(tsList[0]).toBe(hourMs('2025-10-02', 0));
 			expect(tsList.at(-1)).toBe(hourMs('2025-10-02', 23));
-			const utcAnchor = dayMs('2025-10-03') - 1; // UTC 10/2 23:59:59.999
+			const utcAnchor = utcDayMs('2025-10-03') - 1; // UTC 10/2 23:59:59.999
 			for (const ts of tsList) expect(ts).toBeLessThanOrEqual(utcAnchor);
 		});
 
 		it('未来日 (date=20991231) は PR-5 で user エラー (future) として早期 fail する', async () => {
-			// PR-5: anchor 計算後の早期 fail で fetch 前に未来日を弾く。
 			// mock は fetch されないが安全のため設定しておく。
 			const fetchMock = vi.fn().mockResolvedValue({
 				ok: true,
@@ -1499,7 +1410,6 @@ describe('getCandles', () => {
 			assertFail(res);
 			expect(res.meta?.errorType).toBe('user');
 			expect(res.summary).toContain('future');
-			// 早期 fail により fetch は呼ばれない
 			expect(fetchMock).not.toHaveBeenCalled();
 		});
 
@@ -1570,7 +1480,7 @@ describe('getCandles', () => {
 		});
 
 		it('4hour + date=2025 + tz=America/New_York: tz 年末の足が UTC 次年 chunk にある場合も fetch する', async () => {
-			// NY 2025-12-31 23:00 (EST) = UTC 2026-01-01T04:00:00Z。旧実装は /2025 のみ fetch して欠落。
+			// NY 2025-12-31 23:00 (EST) = UTC 2026-01-01T04:00:00Z。
 			const nyYearEndBarTs = Date.UTC(2026, 0, 1, 4, 0, 0, 0);
 			vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
 				const urlStr = String(url);
@@ -1601,9 +1511,7 @@ describe('getCandles', () => {
 		});
 
 		it('1day (YYYY anchor) + tz=Asia/Tokyo: 年末は JST 12/31 終端で切る (= UTC 12/31 14:59:59)', async () => {
-			// UTC 12/31 00:00 (= JST 12/31 09:00) の daily candle は anchor 内、
-			// UTC 12/31 23:00 のような次年の足は anchor 外（仮にあれば）。
-			// 365 本 + ダミー次年バー 1 本を mock し、365 本残ることを検証する。
+			// UTC 12/31 00:00 (= JST 12/31 09:00) の日足は anchor 内なので、365 本 + ダミー次年バー 1 本を mock し、365 本残ることを検証する。
 			vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
 				const urlStr = String(url);
 				const m = urlStr.match(/\/1day\/(\d{4})$/);
@@ -1624,25 +1532,15 @@ describe('getCandles', () => {
 
 			const res = await getCandles('btc_jpy', '1day', '2025', 1000, 'Asia/Tokyo');
 			assertOk(res);
-			// 翌年 1/1 の足は除外、365 本のみ
 			const tsList = timestampsOf(res.data.normalized);
 			expect(tsList.find((ts: number) => ts >= Date.UTC(2026, 0, 1))).toBeUndefined();
-			// 末尾は UTC 2025-12-31 00:00（= JST 12/31 09:00）
 			expect(tsList.at(-1)).toBe(Date.UTC(2025, 11, 31));
 		});
 	});
 
-	// ── PR-N: multi-day fetch 範囲は tz 暦日 window から導出する ──
-
 	describe('multi-day fetch 範囲は tz 暦日 window から導出する', () => {
-		/** YYYY-MM-DD UTC start-of-day を ms に */
-		const dayMs = (iso: string) => {
-			const [y, m, d] = iso.split('-').map(Number);
-			return Date.UTC(y, m - 1, d);
-		};
-		const hourMs = (iso: string, h: number) => dayMs(iso) + h * 3600000;
+		const hourMs = (iso: string, h: number) => utcDayMs(iso) + h * 3600000;
 
-		/** UTC 暦日キー (YYYYMMDD) のローソク 24 本 (0..23 UTC) を返す mock factory */
 		const buildPerUtcDayMock = () =>
 			vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
 				const urlStr = String(url);
@@ -1669,7 +1567,7 @@ describe('getCandles', () => {
 			});
 
 		it("tz='America/New_York' × date=20251002 × 1hour × limit=24: /20251002 と /20251003 の両方を fetch する", async () => {
-			// NY (DST 中, UTC-4) の 10/2 は UTC 10/2 04:00 〜 UTC 10/3 03:59 → 旧実装で漏れていた '次の UTC 日' を含む。
+			// NY (DST 中, UTC-4) の 10/2 は UTC 10/2 04:00 〜 UTC 10/3 03:59 で、'次の UTC 日' を含む。
 			buildPerUtcDayMock();
 			const res = await getCandles('btc_jpy', '1hour', '20251002', 24, 'America/New_York');
 			assertOk(res);
@@ -1702,7 +1600,7 @@ describe('getCandles', () => {
 		});
 
 		it("tz='Asia/Tokyo' × date=20251002 × 1hour × limit=24: /20251001 と /20251002 を fetch、/20251003 は fetch しない", async () => {
-			// 既存 PR-3 ケースの回帰確認。JST (UTC+9) の 10/2 は UTC 10/1 15:00 〜 UTC 10/2 14:59。
+			// JST (UTC+9) の 10/2 は UTC 10/1 15:00 〜 UTC 10/2 14:59。
 			buildPerUtcDayMock();
 			const res = await getCandles('btc_jpy', '1hour', '20251002', 24, 'Asia/Tokyo');
 			assertOk(res);
@@ -1714,15 +1612,13 @@ describe('getCandles', () => {
 		});
 
 		it("tz='UTC' × date=20251002 × 1hour × limit=24: window がローカル日と一致するため 1 UTC 日のみ fetch", async () => {
-			// UTC 10/2 0:00 〜 UTC 10/2 23:59、limit=24 では lookback がローカル日終端から 0:00 まで戻るため
-			// windowStart = localDayStart = UTC 10/2 0:00。UTC range は 1 日のみ → 単一 fetch 経路。
+			// UTC 10/2 0:00 〜 UTC 10/2 23:59、limit=24 では lookback がローカル日終端から 0:00 まで戻るので windowStart = localDayStart = UTC 10/2 0:00。UTC range は 1 日のみ → 単一 fetch 経路。
 			buildPerUtcDayMock();
 			const res = await getCandles('btc_jpy', '1hour', '20251002', 24, 'UTC');
 			assertOk(res);
 
 			const calledUrls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0]));
 			expect(calledUrls.some((u) => u.endsWith('/1hour/20251002'))).toBe(true);
-			// 隣接 UTC 日は要求されない
 			expect(calledUrls.some((u) => u.endsWith('/1hour/20251001'))).toBe(false);
 			expect(calledUrls.some((u) => u.endsWith('/1hour/20251003'))).toBe(false);
 
@@ -1766,8 +1662,7 @@ describe('getCandles', () => {
 		});
 
 		it("tz='America/New_York' × date=20251002 × 1hour × limit=1: 小 limit でもローカル日が window に含まれて空にならない", async () => {
-			// Math.min(localDayStart, lookbackStart) のおかげで、limit=1 でも windowStart=NY 10/2 0:00=UTC 10/2 04:00
-			// → UTC keys=[20251002, 20251003]。lookback が支配的でない場合の安全弁。
+			// Math.min(localDayStart, lookbackStart) により、limit=1 でも windowStart=NY 10/2 0:00=UTC 10/2 04:00 → UTC keys=[20251002, 20251003]（lookback が支配的でない場合の安全弁）。
 			buildPerUtcDayMock();
 			const res = await getCandles('btc_jpy', '1hour', '20251002', 1, 'America/New_York');
 			assertOk(res);
@@ -1782,20 +1677,14 @@ describe('getCandles', () => {
 		});
 
 		it('DST 境界日 (NY 2025-11-02) でも結果が空にならずクラッシュしない', async () => {
-			// NY は 2025-11-02 02:00 で DST 終了 → 11/2 は 25 時間ある。
-			// window は dayjs.tz の startOf/endOf に依存。空配列にならず assertOk できることだけ確認する
-			// (DST 境界の厳密な bar count 整合は本 PR スコープ外)。
+			// NY は 2025-11-02 02:00 で DST 終了 → 11/2 は 25 時間ある。DST 境界の厳密な bar count 整合は見ず、空配列にならず assertOk できることだけ確認する。
 			buildPerUtcDayMock();
 			const res = await getCandles('btc_jpy', '1hour', '20251102', 24, 'America/New_York');
 			assertOk(res);
 			expect(res.data.normalized.length).toBeGreaterThan(0);
 		});
 
-		// 実在しない暦日 (20260230 等) の扱い。validateDate は形式 (/^\d{8}$/) しか見ず、
-		// GetCandlesInputSchema も date を z.string() で受けるため、この入力は実装まで到達する。
-		// 現行は dayjs.tz の繰り上げ解釈（2026-02-30 → 2026-03-02）で anchor / window を組む。
-		// 実在日として弾く方向へ倒すと「anchor 無効 → 最新側 limit 本」に化けて silent に結果が変わるため、
-		// 現行の繰り上げ挙動を回帰として固定する。
+		// validateDate は形式（/^\d{8}$/）しか見ないので、実在しない暦日もそのまま実装まで届く。実在日として弾く方向へ倒すと「anchor 無効 → 最新側 limit 本」に化けて silent に結果が変わるため、現行の繰り上げ解釈（dayjs.tz）を回帰として固定する。
 		it('実在しない date (20260230) は繰り上げ解釈 (2026-03-02) の tz 暦日 window で fetch する', async () => {
 			buildPerUtcDayMock();
 			const res = await getCandles('btc_jpy', '1hour', '20260230', 24, 'Asia/Tokyo');
@@ -1805,20 +1694,14 @@ describe('getCandles', () => {
 			const calledUrls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0]));
 			expect(calledUrls.some((u) => u.endsWith('/1hour/20260301'))).toBe(true);
 			expect(calledUrls.some((u) => u.endsWith('/1hour/20260302'))).toBe(true);
-			// 2 月側 (繰り上げ前の暦日) は要求しない
 			expect(calledUrls.some((u) => u.endsWith('/1hour/20260228'))).toBe(false);
 
-			// anchor も繰り上げ後の JST 3/2 終端で切られる
 			expect(res.data.normalized).toHaveLength(24);
 			const tsList = timestampsOf(res.data.normalized);
 			expect(tsList[0]).toBe(hourMs('2026-03-01', 15));
 			expect(tsList.at(-1)).toBe(hourMs('2026-03-02', 14));
 		});
 	});
-
-	// ── PR-5: エラー分類の細分化 ──
-	// 未来日 / 取引開始前 / 上流 404 / データなし を区別できるメッセージに変更。
-	// errorType ('user'/'upstream'/'network') の使い分けは維持し、メッセージのみ user 向けに改善。
 
 	describe('PR-5: エラー分類の細分化', () => {
 		it('取引開始前 (date=20100101) は fetch 前に user エラー (before bitbank service start) として早期 fail する', async () => {
@@ -1835,7 +1718,6 @@ describe('getCandles', () => {
 			expect(res.meta?.errorType).toBe('user');
 			expect(res.summary).toContain('before bitbank service start');
 			expect(res.summary).toContain('20100101');
-			// fetch 前に弾くので呼ばれない
 			expect(fetchMock).not.toHaveBeenCalled();
 		});
 
@@ -1858,8 +1740,6 @@ describe('getCandles', () => {
 		});
 
 		it('anchor filter 後 0 件 (data はあるが anchor がそれより前) は user エラー (on or before) を返す', async () => {
-			// year=2025 fetch で 2025-06 以降のデータのみ返す mock。
-			// date=20250105 → anchor=2025-01-05 23:59:59 → 全行が anchor より後 → filter 後 0 件。
 			const baseTs = Date.UTC(2025, 5, 1); // 2025-06-01
 			const ohlcv = Array.from({ length: 3 }, (_, i) => [
 				'100',
@@ -1891,7 +1771,6 @@ describe('getCandles', () => {
 			const res = await getCandles('btc_jpy', '4hour', '2024', 10);
 			assertFail(res);
 			expect(res.meta?.errorType).toBe('user');
-			// 既存のヒント文言
 			expect(res.summary).toContain('HTTP 404 Not Found');
 			expect(res.summary).toContain('YYYY 形式');
 		});
@@ -1909,9 +1788,6 @@ describe('getCandles', () => {
 			expect(res.summary).toContain('check pair/type/date validity');
 		});
 	});
-
-	// ── 形成中足（provisional）注記: realtime のみ ℹ️ 注記 + meta.provisional を立てる ──
-	// analyze_indicators / get_volatility_metrics と同じ横展開。生データツール側の漏れを塞ぐ。
 
 	describe('形成中足（provisional）注記', () => {
 		/** 末尾の足が「現在形成中」になるよう ts を当日 UTC 0 時に揃えた日足を作る。 */
@@ -1931,7 +1807,6 @@ describe('getCandles', () => {
 			});
 		};
 
-		/** 過去（2024 年起点）の確定足を作る。 */
 		const makePastRows = (count: number): string[][] => {
 			const baseTs = 1704067200000; // 2024-01-01 UTC
 			return Array.from({ length: count }, (_, i) => [
@@ -1972,14 +1847,12 @@ describe('getCandles', () => {
 		});
 
 		it('date 指定時は最新足の期間が未終了でも注記を付けない（!dateProvided ゲート）', async () => {
-			// 当月の月足は ts 上 isLatestBarProvisional=true だが、date 指定なので注記を出さない。
-			// !dateProvided ゲートが外れると provisional=true に化けるため、それを回帰で防ぐ。
+			// 当月の月足は ts 上 isLatestBarProvisional=true だが、date 指定なので注記を出さない（!dateProvided ゲートが外れると provisional=true に化ける）。
 			// now を月の途中に固定する（実時刻に依存すると月境界で ts 判定がブレるため）。
 			vi.useFakeTimers();
 			try {
 				vi.setSystemTime(dayjs.utc('2026-06-17T06:00:00Z').valueOf());
-				// 2026-01〜2026-06 の月足。末尾 = 2026-06-01（当月、期間未終了）。
-				// anchor=20260610（過去・当月内）で当月足は filter を通過する。
+				// 2026-01〜2026-06 の月足。末尾 = 2026-06-01（当月、期間未終了）で、anchor=20260610（過去・当月内）なので当月足は filter を通過する。
 				const rows = Array.from({ length: 6 }, (_, i) => {
 					const ts = Date.UTC(2026, i, 1);
 					const base = 1000 + i;
@@ -1988,9 +1861,7 @@ describe('getCandles', () => {
 				mockOhlcv(rows);
 				const res = await getCandles('btc_jpy', '1month', '20260610', 6);
 				assertOk(res);
-				// 末尾足は当月（期間未終了）であることを明示。
 				expect(res.data.normalized.at(-1)?.timestamp).toBe(Date.UTC(2026, 5, 1));
-				// それでも date 指定なので注記・フラグは付かない。
 				expect((res.meta as { provisional?: boolean }).provisional).toBeUndefined();
 				expect(res.summary).not.toContain('未確定（形成中）');
 			} finally {
@@ -2014,7 +1885,6 @@ describe('getCandles', () => {
 			// content[0] は JSON 配列のまま（既存契約を維持）。
 			const parsed = JSON.parse(res.content[0].text);
 			expect(Array.isArray(parsed)).toBe(true);
-			// 注記は別ブロックとして保持される。
 			expect(res.content.some((c) => c.text.includes('未確定（形成中）'))).toBe(true);
 		});
 
@@ -2034,12 +1904,7 @@ describe('getCandles', () => {
 	});
 });
 
-// ── JST 早朝（UTC 日付境界前後）の当日データ取得 ──
-// 障害再現: 2026-07-08 08:31 JST（= 2026-07-07 23:31 UTC）に「直近24時間」系が全滅した。
-// 原因は (1) 未来 UTC 日 chunk の要求 → 404 → 過半数失敗、(2) 当日 date 指定の future 誤拒否。
-// bitbank API 実測（docs/internal/bitbank-candle-tz.md / bitbank-tx-archive-tz.md）:
-//   - 進行中の UTC 日の candlestick は 200 + 部分データ
-//   - 未来の UTC 日は 404、UTC 日開始直後は 200 + success:0 (code:10000)
+// bitbank API は進行中の UTC 日の candlestick に 200 + 部分データ、未来の UTC 日に 404、UTC 日開始直後に 200 + success:0 (code:10000) を返す（docs/internal/bitbank-candle-tz.md / bitbank-tx-archive-tz.md）。
 
 describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () => {
 	const originalFetch = globalThis.fetch;
@@ -2050,7 +1915,6 @@ describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () =>
 		vi.restoreAllMocks();
 	});
 
-	/** UTC 暦日キーごとに応答を返すモック。valid な日は 0..23 時の 24 本を返す。 */
 	const mockPerUtcDay = (respond: (dateKey: string) => { status: number; body: unknown }) =>
 		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
 			const m = String(url).match(/\/1hour\/(\d{8})$/);
@@ -2079,7 +1943,7 @@ describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () =>
 	it('date 省略 + 1hour + limit=24 @JST 08:31: 進行中 UTC 日のみ fetch し、未来 UTC 日 (JST 当日キー) を要求しない', async () => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(dayjs.utc('2026-07-07T23:31:00Z').valueOf());
-		// 未来 UTC 日 20260708 を要求したら 404（実測どおり）→ 旧実装では過半数失敗で全滅していた
+		// 未来 UTC 日 20260708 を要求したら 404（実測どおり）
 		mockPerUtcDay((key) =>
 			key === '20260707' ? { status: 200, body: okBody(key) } : { status: 404, body: notFoundBody },
 		);
@@ -2124,7 +1988,6 @@ describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () =>
 	it('UTC 日開始直後 @JST 09:05: 進行中 UTC 日 chunk の success:0 は過半数失敗に数えず ℹ️ 注記で許容する', async () => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(dayjs.utc('2026-07-08T00:05:00Z').valueOf());
-		// 実測: UTC 日開始直後は 200 + success:0 (code:10000) が返る
 		mockPerUtcDay((key) =>
 			key === '20260707' ? { status: 200, body: okBody(key) } : { status: 200, body: notFoundBody },
 		);
@@ -2133,13 +1996,11 @@ describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () =>
 		assertOk(res);
 		expect(res.data.normalized).toHaveLength(24);
 		expect(calledUrls().some((u) => u.endsWith('/1hour/20260708'))).toBe(true);
-		// 過半数失敗 fail にならず、ℹ️ 注記が meta.warning / summary に出る
 		expect(res.meta.warning).toContain('ℹ️');
 		expect(res.meta.warning).toContain('20260708');
 	});
 
-	// #84 以前はここが「過半数 fail」だった。上場前の期間は必ず 404 になるため、
-	// 他 chunk が実データを返していれば「その期間に足が無い」として許容する（下の #84 ブロック参照）。
+	// 上場前の期間は必ず 404 になるので、他 chunk が実データを返していれば「その期間に足が無い」として許容する（#84）。
 	it('過去 UTC 日 chunk の 404 は、他 chunk にデータがあれば注記に落として成功させる', async () => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(dayjs.utc('2026-07-08T00:05:00Z').valueOf());
@@ -2162,7 +2023,6 @@ describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () =>
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(dayjs.utc('2026-07-08T00:05:00Z').valueOf());
 		// date=20240115 (JST) → UTC keys [20240114, 20240115]。過去日 20240114 が 5xx → 実失敗。
-		// 旧実装（>= totalChunks / 2）はここで全体 fail し、取得できた 20240115 ごと捨てていた。
 		mockPerUtcDay((key) => (key === '20240114' ? { status: 503, body: {} } : { status: 200, body: okBody(key) }));
 
 		const res = await getCandles('btc_jpy', '1hour', '20240115', 24);
@@ -2173,8 +2033,7 @@ describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () =>
 		expect(res.meta.warning).toContain('503');
 	});
 
-	// tz=UTC は tz 暦日 = UTC 暦日のため window が 1 UTC 日に潰れやすく、
-	// UTC 日開始直後（データ未生成 success:0）の挙動が multi-fetch 経路と別枠になる。
+	// tz=UTC は tz 暦日 = UTC 暦日なので window が 1 UTC 日に潰れやすく、UTC 日開始直後（データ未生成 success:0）の挙動が multi-fetch 経路と別枠になる。
 
 	it('tz=UTC × date 省略 @UTC 日開始直後: 前日 chunk へ広げて最新 limit 本を返す（realtime lookback）', async () => {
 		vi.useFakeTimers({ toFake: ['Date'] });
@@ -2201,7 +2060,6 @@ describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () =>
 		assertOk(res);
 		expect(calledUrls().some((u) => u.endsWith('/1hour/20260707'))).toBe(true);
 		expect(calledUrls().some((u) => u.endsWith('/1hour/20260708'))).toBe(true);
-		// 旧実装は当日 chunk のみ（〜13本）しか返せなかった
 		expect(res.data.normalized).toHaveLength(24);
 	});
 
@@ -2220,10 +2078,7 @@ describe('JST 早朝の当日データ取得（UTC 日付境界回帰）', () =>
 	});
 });
 
-// ── 上場前 chunk の 404 に巻き込まれない（#84） ──
-// JST 1 年ぶんの窓は UTC 年 chunk 2 本に割れるため、上場初年度の銘柄では古い側が必ず上場前になる。
-// bitbank /candlestick は存在しない期間キーに 404 を返す（docs/internal/bitbank-candle-tz.md 実測 4/5）ので、
-// これは確率的な失敗ではなく**構造的な確定失敗**——旧実装では該当銘柄がその年を永久に取得できなかった。
+// JST 1 年ぶんの窓は UTC 年 chunk 2 本に割れるので、上場初年度の銘柄では古い側が必ず上場前になる。/candlestick は存在しない期間キーに 404 を返すので、これは確率的な失敗ではなく構造的な確定失敗（#84）。
 
 describe('上場前 chunk の 404 に巻き込まれない（#84）', () => {
 	const originalFetch = globalThis.fetch;
@@ -2234,7 +2089,6 @@ describe('上場前 chunk の 404 に巻き込まれない（#84）', () => {
 		vi.restoreAllMocks();
 	});
 
-	/** UTC 年キーごとに応答を返すモック。valid な年は 1 年ぶんの日足を返す。 */
 	const mockPerUtcYear = (respond: (yearKey: string) => { status: number; body: unknown }) =>
 		vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: unknown) => {
 			const m = String(url).match(/\/1day\/(\d{4})$/);
@@ -2262,7 +2116,6 @@ describe('上場前 chunk の 404 に巻き込まれない（#84）', () => {
 		(globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) => String(c[0]).endsWith(`/1day/${yearKey}`))
 			.length;
 
-	// 本 issue の核。実測は flr_jpy / date=2023 だが、上場初年度の銘柄すべてに共通する構造。
 	it('2 chunk のうち古い側が上場前 404・新しい側にデータあり → 成功してデータが返る', async () => {
 		// date=2020 + limit=400 → UTC 年 keys [2019, 2020]
 		mockPerUtcYear((key) => (key === '2019' ? notFound : { status: 200, body: okBody(key) }));
@@ -2270,7 +2123,6 @@ describe('上場前 chunk の 404 に巻き込まれない（#84）', () => {
 		const res = await getCandles('btc_jpy', '1day', '2020', 400);
 		assertOk(res);
 		expect(res.data.normalized.length).toBeGreaterThan(0);
-		// 取得できた 2020 年の足が返っていること（404 の巻き添えで捨てられていない）
 		expect(timestampsOf(res.data.normalized).every((ts) => ts >= Date.UTC(2020, 0, 1))).toBe(true);
 		// 実失敗ではないので ⚠️ ではなく ℹ️ で申告する
 		expect(res.meta.warning).toContain('ℹ️');
@@ -2292,7 +2144,7 @@ describe('上場前 chunk の 404 に巻き込まれない（#84）', () => {
 
 		const res = await getCandles('btc_jpy', '1day', '2020', 400);
 		assertOk(res);
-		// 何度叩いても 404 なので初回のみ。旧実装は DEFAULT_RETRIES ぶん 3 回撃っていた
+		// 何度叩いても 404 なので初回のみ
 		expect(yearCalls('2019')).toBe(1);
 		expect(yearCalls('2020')).toBe(1);
 	});
@@ -2321,8 +2173,7 @@ describe('上場前 chunk の 404 に巻き込まれない（#84）', () => {
 	});
 
 	it('上場前 404 は過半数判定の分母から外れる（実失敗だけで判定する）', async () => {
-		// date=2020 + limit=800 → UTC 年 keys [2018, 2019, 2020]
-		// 2018 が上場前 404（分母から除外）→ 分母 2 / 実失敗 1（2019 の 5xx）→ 半数ちょうどなので fail しない
+		// date=2020 + limit=800 → UTC 年 keys [2018, 2019, 2020]。2018 が上場前 404（分母から除外）→ 分母 2 / 実失敗 1（2019 の 5xx）→ 半数ちょうどなので fail しない
 		mockPerUtcYear((key) => {
 			if (key === '2018') return notFound;
 			if (key === '2019') return { status: 503, body: {} };
@@ -2335,10 +2186,7 @@ describe('上場前 chunk の 404 に巻き込まれない（#84）', () => {
 		expect(res.meta.warning).toContain('上場前');
 	});
 
-	/**
-	 * 閾値は「半数以上」ではなく**半数超**（過半数）。メッセージの文言に閾値の方を寄せた。
-	 * `>=` のままだと、常に 2 chunk になる 1 年ぶんの要求が片方の失敗で必ず全滅する。
-	 */
+	/** 閾値は「半数以上」ではなく半数超（過半数）。`>=` のままだと、常に 2 chunk になる 1 年ぶんの要求が片方の失敗で必ず全滅する。 */
 	describe('過半数の閾値（3 chunk = date 2020 + limit 800）', () => {
 		it('3 年中 1 年の実失敗 → ⚠️ 警告付きで成功する', async () => {
 			mockPerUtcYear((key) => (key === '2018' ? upstreamZero : { status: 200, body: okBody(key) }));

@@ -486,7 +486,13 @@ total = spot_realized_pnl + margin_realized_pnl − margin_interest_cost − mar
 
 `debug` view は出力を置換する階梯外の view なので、この 2 行は出ない。
 
-### スキャン窓 = 直近 `limit` 本
+### スキャン窓 = 直近 `limit` 本（`date` 指定時は終端アンカー以前）
+
+`detect_patterns` の `date` は `get_candles` と同じ形式・`tz` の暦日として解釈され、指定日の終端以前の
+`limit` 本を走査する。省略時だけ現在時刻を終端とする。`meta.scan.anchorDate` と content の
+「スキャン範囲」行に指定値が出るため、過去時点の再現では必ず走査終端を確認できる。
+`requireCurrentInPattern=true` を併用した場合の「現在」はこの走査終端日に固定される。
+終端の `swingDepth` 本ぶんの余白（未確定ピボットを検査しない）は、過去の `date` を指定した場合も同じように適用される。
 
 `analyze_indicators` は「表示窓 `limit` 本」の前に指標の warmup 分を足した配列を返す
 （`SMA_200` / `EMA_200` のぶん `fetchCount = limit + 199`）。先頭の warmup 本数は
@@ -553,7 +559,7 @@ total = spot_realized_pnl + margin_realized_pnl − margin_interest_cost − mar
   `triangle_*` のみ、ブレイク側の線）であって構成点の平均ではない。
 - **`price` は高安**（`extremePrice` と同値）。下の「`pivots[].price` は終値、`extremePrice` が判定値」を参照。
 - **点数は窓の長さとタッチの多さに比例する。** `wedge_*` は 0.5% 以内をタッチとみなす
-  （`helpers.ts` の `evaluateTouchesEx`）ので、収束が進んで上下の幅が 0.5% を切った区間では
+  （`wedge-helpers.ts` の `evaluateTouchesEx`）ので、収束が進んで上下の幅が 0.5% を切った区間では
   ほぼ全バーが構成点になる（BTC/JPY 1hour の実測で 31〜107 点）。**件数を「形の良さ」の
   代理指標に使わないこと**——整合度は `confidence` を見る。
 - **ブレイク足以降は線を問わず除外する**（#281）。`evaluateTouchesEx` は「線を割った / 抜けた」を
@@ -740,6 +746,20 @@ issue #288 の症状）。行頭ラベルは 4 形とも `ターゲット:` で�
 
 契約は `tests/patterns/structural-gates-btcjpy.test.ts`（実データ fixture）が固定している。
 
+### 反転パターンの先頭履歴ウォームアップ（#297 項目1(b))
+
+double / triple / H&S 系は、第1構成点より前の先行トレンドとネックライン交差を確認できて
+初めて反転パターンとして成立する。必要な履歴は
+`max(PRIOR_TREND_LOOKBACK_MAX, NECKLINE_CROSS_LOOKBACK_BARS) = 60` 本を基準にする。
+
+十分なスキャン窓（61本以上）で第1構成点が先頭60本以内にあり、構造ゲートまたは先行トレンドが
+`no_prior_extreme` / `insufficient_history` を申告した候補は、整合度を下げるのではなく出力から除外する。
+除外理由は `view=debug` の `candidates` に `reversal_history_insufficient` として残り、件数は
+`meta.reduction.reversalHistoryExcluded` に載る。継続系（triangle / wedge / flag）は対象外。
+
+60本以下の小さな窓では、パターンを一律に消す代わりに既存の `limit_too_small_for_timeframe` 警告を
+優先する。反転パターンの精度を確認する用途では、少なくとも61本以上を要求すること。
+
 ### 形成中 triple の単調性ゲート（#263）
 
 `triple_top` / `triple_bottom` の**形成中**経路は、主構成点 3 点（確定 2 点 ＋ 最新足の終値）が
@@ -759,12 +779,14 @@ issue #288 の症状）。行頭ラベルは 4 形とも `ターゲット:` で�
 - **同水準判定（`forming_peaks_not_level` / `forming_valleys_not_level`）より前に評価する。**
   単調な階段は同水準判定でも落ちうるが、「ばらつきが大きい」より「単調に切り下がっている」の
   ほうが形を言い当てているため。`view=debug` で理由コードを集計するときはこの順序が見える。
-- **完成済み経路（`near_completion` を含む）にはこのゲートは無い**
-  （3 点すべてが確定ピボットで `tolerancePct` と高さ相対の 2 段が掛かるため）。
-  **double にはそもそも形成中経路が無い**——`double_bottom` は #262、`double_top` は #268 案 C で
-  削除され、同じ 3 点は完成済み経路が `near_completion` として組む（上と同じ理由でゲートは無い）。
-  形成中 `double_top` が残っていた頃は「主構成点が 2 点なので階段が定義できない」ことが
-  例外の理由だったが、その例外ごと消えた。
+- 完成済み経路（`near_completion` を含む）にも、3 点すべてが確定ピボットになった時点で
+  同じ単調性を適用する。`main1 < main2 < main3` / `main1 > main2 > main3` は
+  `stair_step_up` / `stair_step_down` として落とし、形成中のような累積差の 2% 閾値は設けない。
+  完成済みは点が確定しているため、1% 程度の切り上がり・切り下がりでも「同水準への反復接触」では
+  ないことを判定できる。
+- **double にはそもそも形成中経路が無い**——`double_bottom` は #262、`double_top` は #268 案 C で
+  削除され、同じ 3 点は完成済み経路が `near_completion` として組む。形成中 `double_top` が残っていた頃は
+  「主構成点が 2 点なので階段が定義できない」ことが例外の理由だったが、その例外ごと消えた。
 
 契約は `tests/patterns/detect_triples.test.ts`（合成 fixture の最小対）と
 `tests/patterns/stair-step-both-directions-263.test.ts`（実データの実例）が固定している。
@@ -940,6 +962,18 @@ ATR 比テーブルを掛けたもの。
 
 `relaxed_*` 接頭辞の同じ 3 つが relaxed フォールバック経路にある（そちらの「許容誤差」は
 `tolerancePct × 段の係数`）。
+
+### 逆 H&S の肩の深さゲート（#297 項目 5）
+
+逆 H&S は左右肩が同水準でも、ネックラインからの戻りがほとんど無い肩を受理しない。
+各肩と隣接する山（ネックライン定義点）の深さを、頭の深さ（2 山の平均ネックライン − 頭）と
+比較し、**左右とも頭の深さの 20%以上**を要求する。片側だけが 0.3% 程度しか戻らない
+V 字の途中を逆 H&S と呼ばないための hard gate である。
+
+棄却理由は `shoulder_depth_insufficient`。`view=debug` の `details` に左右の深さ、頭の深さ、
+左右の深さ比、最小比率（`minShoulderDepthRatio=0.2`）を出す。strict と relaxed の両方に適用し、
+relaxed が浅い肩を救済することはない。判定は終値（`price`）基準で、既存のサイズ検査・構造ゲートと
+同様に、検出結果から候補を除外する。
 
 **`:cap` の出方が #244 で変わった。** 以前は `tolerancePct`（`1hour` 5% / `15min` `30min` 6%）が
 5% を超える `15min` / `30min` でしか既定パスで出なかったが、上限が時間足別になった今は
@@ -1140,14 +1174,14 @@ accepted も押し出されうる（`content` はこの 2 つを区別して書�
 |---|---|---|
 | `flag` | `detect_pennants`（分類前の棄却をすべてこのラベルで積む） | `bull_flag` / `bear_flag` / `bull_pennant` / `bear_pennant`（flag / pennant の**両方**） |
 | `triangle` | `detect_triangles`（`poor_trendline_fit` / `classification_failed` はどの三角形になりえたかが決まる前の棄却） | `triangle_ascending` / `triangle_descending` / `triangle_symmetrical` |
+| `wedge` | `detect_wedges`（上下の線の傾きの向きがそろわない窓の棄却。完成済みの走査の `r2_below_threshold` / `type_classification_failed` と、形成中の走査の `slopes_not_same_direction`） | `rising_wedge` / `falling_wedge` |
 
-`detect_wedges` は umbrella ラベルを持たない。棄却の大半は `rising_wedge` / `falling_wedge` に
-分類済みのラベルで積まれる。ただし `r2_below_threshold`（回帰の当てはまり不足）と
-`type_classification_failed`（傾き比の条件を満たさない）の **2 箇所**は、**上下の傾きから
-種別を推定して**ラベルを付けており、傾きの向きが揃わない窓は `triangle_symmetrical` として
-積まれる。これはウェッジ走査の棄却であって三角形の候補ではない——ラベルと実体がずれている
-既知のケース（#129 の対象外。umbrella の `wedge` が `PatternFilterEnum` に無いため別途の
-検討が要る）。**2 箇所が同じ推論を持っているので、直すときは両方**。
+`detect_wedges` の棄却の大半は `rising_wedge` / `falling_wedge` に分類済みのラベルで積まれる。
+完成済みの走査の `r2_below_threshold` と `type_classification_failed` は上下の傾きから種別を推定して
+ラベルを付け、向きがそろわない窓だけ `wedge` で積む（`type_classification_failed` の
+`details.failureReason` は `slopes_not_same_direction`）。形成中の走査の `slopes_not_same_direction` は
+常に `wedge`。`wedge` は候補ラベルにだけ使い、入力の `patterns` では受け付けない
+（ウェッジの候補を見るには `rising_wedge` / `falling_wedge` を指定する）。
 
 **`candidates[].type` は「その候補がどの種別になりえたか」であって、必ずしも確定した種別ではない。**
 
@@ -1425,4 +1459,3 @@ accepted も押し出されうる（`content` はこの 2 つを区別して書�
 ```bash
 export BACKTEST_OUTPUT_DIR_ALLOWLIST="/path/to/outputs:/another/dir"
 ```
-

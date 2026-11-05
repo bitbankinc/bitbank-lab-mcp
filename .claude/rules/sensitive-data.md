@@ -1,5 +1,10 @@
 ---
-globs: tools/private/**/*.ts, src/private/**/*.ts, src/handlers/**/*.ts, lib/logger.ts, src/server.ts
+paths:
+  - "tools/private/**/*.ts"
+  - "src/private/**/*.ts"
+  - "src/handlers/**/*.ts"
+  - "lib/logger.ts"
+  - "src/server.ts"
 ---
 
 # 機密情報の取り扱いポリシー

@@ -1,22 +1,11 @@
-/**
- * preview_order ツールのユニットテスト。
- * バリデーション、確認トークン発行、プレビューメッセージ生成を検証する。
- * ネットワーク依存のトリガー価格検証 / /spot/pairs はモックで対応。
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertFail, assertOk } from '../_assertResult.js';
 import { mockBitbankSuccess, mockSpotPairsResponse } from '../fixtures/private-api.js';
+import { requireDefined } from '../helpers/assert.js';
 
 const originalFetch = globalThis.fetch;
 
-/**
- * URL に応じてレスポンスを返すデフォルトの fetch モック。
- * - /spot/pairs → 正常な pairs 仕様（btc_jpy / eth_jpy 含む）
- * - /ticker     → last=15000000 のティッカー
- * - その他      → success:1 の空レスポンス
- * 個別テストで `globalThis.fetch` を上書きすればこの mock を差し替えできる。
- */
+/** /spot/pairs は btc_jpy / eth_jpy を含む正常な仕様、/ticker は last=15000000 を返す既定の fetch モック。 */
 function installDefaultFetchMock(extraPairs: Array<Record<string, unknown>> = []): void {
 	globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
 		const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : String(input);
@@ -198,56 +187,23 @@ describe('preview_order', () => {
 		});
 	});
 
-	// take_profit / stop_loss / losscut は公式 spec に列挙されているが本実装では意図的に未対応。
-	// SpotOrderTypeEnum で 4 種に絞っており、Zod 入力スキーマで早期に拒否されることを保証する。
-	// 詳細は docs/private-api.md「対応注文タイプ」節 / docs/api-contract-checklist.md §3.4 を参照。
-	//
-	// 失敗理由が「type フィールド由来」であることを issues.path で確認する。
-	// success===false のみだと、他フィールドの欠落（confirmation_token 未指定等）でも
-	// テストが通ってしまい、type 列挙の閉鎖性を検証できなくなるため。
+	// 拒否理由が type 由来であることを issues.path で確かめる（success===false だけだと他フィールドの欠落でも通ってしまう）。
 	describe('未対応の注文タイプ（take_profit / stop_loss / losscut）', () => {
-		it('take_profit は PreviewOrderInputSchema で拒否される', async () => {
+		it.each([
+			['take_profit', { trigger_price: '16000000' }],
+			['stop_loss', { trigger_price: '13000000' }],
+			['losscut', {}],
+		] as const)('%s は PreviewOrderInputSchema で拒否される', async (type, extra) => {
 			const { PreviewOrderInputSchema } = await import('../../src/private/schemas.js');
 			const result = PreviewOrderInputSchema.safeParse({
 				pair: 'btc_jpy',
 				amount: '0.01',
 				side: 'sell',
-				type: 'take_profit',
-				trigger_price: '16000000',
+				type,
+				...extra,
 			});
 			expect(result.success).toBe(false);
-			if (!result.success) {
-				expect(result.error.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-			}
-		});
-
-		it('stop_loss は PreviewOrderInputSchema で拒否される', async () => {
-			const { PreviewOrderInputSchema } = await import('../../src/private/schemas.js');
-			const result = PreviewOrderInputSchema.safeParse({
-				pair: 'btc_jpy',
-				amount: '0.01',
-				side: 'sell',
-				type: 'stop_loss',
-				trigger_price: '13000000',
-			});
-			expect(result.success).toBe(false);
-			if (!result.success) {
-				expect(result.error.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-			}
-		});
-
-		it('losscut は PreviewOrderInputSchema で拒否される', async () => {
-			const { PreviewOrderInputSchema } = await import('../../src/private/schemas.js');
-			const result = PreviewOrderInputSchema.safeParse({
-				pair: 'btc_jpy',
-				amount: '0.01',
-				side: 'sell',
-				type: 'losscut',
-			});
-			expect(result.success).toBe(false);
-			if (!result.success) {
-				expect(result.error.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-			}
+			expect(result.error?.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
 		});
 	});
 
@@ -263,10 +219,11 @@ describe('preview_order', () => {
 			});
 
 			assertOk(result);
-			// confirmation_token / expires_at はスキーマ上 optional だが、内部関数 previewOrder() は必ず生成する
 			expect(result.data.confirmation_token).toBeTypeOf('string');
-			expect(result.data.confirmation_token!.length).toBeGreaterThan(0);
-			expect(result.data.expires_at!).toBeGreaterThan(Date.now());
+			expect(requireDefined(result.data.confirmation_token, 'result.data.confirmation_token').length).toBeGreaterThan(
+				0,
+			);
+			expect(requireDefined(result.data.expires_at, 'result.data.expires_at')).toBeGreaterThan(Date.now());
 		});
 
 		it('market 注文プレビューが成功する', async () => {
@@ -310,7 +267,6 @@ describe('preview_order', () => {
 			});
 
 			assertOk(result);
-			// formatPrice で3桁区切りになる
 			expect(result.summary).toContain('14,000,000');
 		});
 
@@ -327,13 +283,10 @@ describe('preview_order', () => {
 
 			assertOk(result);
 			expect(result.summary).toContain('Post Only');
-			// post_only:true は preview に含まれる
 			expect(result.data.preview.post_only).toBe(true);
 		});
 
-		// post_only:false を明示した limit 注文。トークン生成側（tokenParams）は
-		// `post_only != null` で false も含めるため、preview 側のガードも揃っていないと
-		// UI→create_order でパラメータ集合が食い違い token_invalid になる。
+		// トークン生成側（tokenParams）は post_only != null で false も含めるので、preview 側も false を残さないと create_order で token_invalid になる。
 		it('post_only:false を明示した limit 注文の preview に post_only が含まれる', async () => {
 			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
 			const result = await previewOrder({
@@ -346,16 +299,11 @@ describe('preview_order', () => {
 			});
 
 			assertOk(result);
-			// false を落とさず preview に残すことでトークン整合が保たれる
 			expect(result.data.preview.post_only).toBe(false);
-			// Post Only は無効なのでラベルは出さない（既存挙動）
 			expect(result.summary).not.toContain('Post Only');
 		});
 
-		// 受け入れ条件: preview→確定（create_order）が token_invalid にならないことを
-		// 同一パラメータ集合のトークンで end-to-end に検証する。
 		it('post_only:false の preview トークンで create_order がトークン検証を通過する', async () => {
-			// /spot/pairs（事前再検証）と発注 POST を正常応答にする
 			globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
 				const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : String(input);
 				if (url.includes('/spot/pairs')) {
@@ -396,11 +344,10 @@ describe('preview_order', () => {
 			const { default: createOrder } = await import('../../tools/private/create_order.js');
 			const created = await createOrder({
 				...orderArgs,
-				confirmation_token: preview.data.confirmation_token!,
-				token_expires_at: preview.data.expires_at!,
+				confirmation_token: requireDefined(preview.data.confirmation_token, 'preview.data.confirmation_token'),
+				token_expires_at: requireDefined(preview.data.expires_at, 'preview.data.expires_at'),
 			});
 
-			// パラメータ集合が一致するため token_invalid にならず発注まで到達する
 			assertOk(created);
 		});
 
@@ -593,9 +540,10 @@ describe('preview_order', () => {
 			});
 
 			assertOk(result);
-			// confirmation_token はスキーマ上 optional だが、内部関数 previewOrder() は必ず生成する
 			expect(result.data.confirmation_token).toBeTypeOf('string');
-			expect(result.data.confirmation_token!.length).toBeGreaterThan(0);
+			expect(requireDefined(result.data.confirmation_token, 'result.data.confirmation_token').length).toBeGreaterThan(
+				0,
+			);
 		});
 	});
 
@@ -618,18 +566,14 @@ describe('preview_order', () => {
 
 			const text = result.content[0]?.text ?? '';
 			const data = result.structuredContent?.data;
-			// structuredContent.data.preview は残るが confirmation_token / expires_at は含まれない
 			expect(data?.preview).toBeDefined();
 			expect(data?.confirmation_token).toBeUndefined();
 			expect(data?.expires_at).toBeUndefined();
-			// content[0].text にもトークン文字列・「confirmation_token」表記を出さない
 			expect(text).not.toContain('confirmation_token');
-			// 実行不可通知の案内文があること
 			expect(text).toContain('このホストでは取引実行に対応していません');
 		});
 
 		it('elicitation 対応ホストで accept されると create_order まで実行される', async () => {
-			// URL で振り分け: /spot/pairs（事前バリデーション）/ /user/spot/order（発注）
 			globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
 				const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : String(input);
 				if (url.includes('/spot/pairs')) {
@@ -671,12 +615,10 @@ describe('preview_order', () => {
 			};
 
 			expect(result.content[0]?.text).toContain('注文発注完了');
-			// structuredContent は create_order の Result が乗る
 			expect(result.structuredContent).toMatchObject({ ok: true });
 		});
 
 		it('elicitation で decline されたらキャンセル扱いで create_order は呼ばれない', async () => {
-			// /spot/pairs のみ正常レスポンス、注文 API は呼ばれない想定
 			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
 				const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : String(input);
 				if (url.includes('/spot/pairs')) {
@@ -705,7 +647,6 @@ describe('preview_order', () => {
 			};
 
 			expect(result.content[0]?.text).toContain('キャンセル');
-			// decline 時の structuredContent にも confirmation_token / expires_at は含まれない
 			expect(result.structuredContent?.data?.confirmation_token).toBeUndefined();
 			expect(result.structuredContent?.data?.expires_at).toBeUndefined();
 			// limit はトリガー価格検証も注文 API も呼ばれない（/spot/pairs のみ）
@@ -959,7 +900,6 @@ describe('preview_order', () => {
 		});
 
 		it('/spot/pairs 取得失敗時は warning にフォールバックして発注プレビューを継続する', async () => {
-			// /spot/pairs だけ 500 を返し、ticker は正常
 			globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
 				const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : String(input);
 				if (url.includes('/spot/pairs')) {
@@ -980,9 +920,7 @@ describe('preview_order', () => {
 				price: '14000000',
 			});
 			assertOk(result);
-			// プレビューは成立し confirmation_token が発行される
 			expect(result.data.confirmation_token).toBeTypeOf('string');
-			// warning が meta と summary 双方に出る
 			expect(result.meta.warnings).toBeDefined();
 			expect(result.meta.warnings?.[0]).toContain('/spot/pairs');
 			expect(result.summary).toContain('スキップ');
@@ -1025,8 +963,7 @@ describe('preview_order', () => {
 		});
 	});
 
-	// 手数料見積り（カテゴリ A: 取引手数料 / B: 信用手数料）。
-	// レートは lib/fees.ts 経由で解決される。/spot/pairs フィクスチャの maker は -0.0002（リベート）。
+	// /spot/pairs フィクスチャの maker は -0.0002（リベート）。
 	describe('手数料見積り（fee_estimate）', () => {
 		// maker 正レートでの買い/売りを明示検証するため、maker_fee_rate_quote を正値に上書きする。
 		const POSITIVE_MAKER_PAIR = {
@@ -1074,9 +1011,7 @@ describe('preview_order', () => {
 			expect(fee?.rate).toBe(0.0001);
 			// notional = 14,000,000 * 0.01 = 140,000 / fee = 140,000 * 0.0001 = 14
 			expect(fee?.estimated_fee_quote).toBe(14);
-			// 買いは notional + fee
 			expect(fee?.estimated_cost_quote).toBe(140014);
-			// content（summary）に手数料行が含まれる
 			expect(result.summary).toContain('手数料見積り');
 			expect(result.summary).toContain('手数料区分: maker');
 			expect(result.summary).toContain('0.01%');
@@ -1096,12 +1031,10 @@ describe('preview_order', () => {
 			const fee = result.data.preview.fee_estimate;
 			expect(fee?.role).toBe('maker');
 			expect(fee?.estimated_fee_quote).toBe(14);
-			// 売りは notional - fee
 			expect(fee?.estimated_cost_quote).toBe(139986);
 		});
 
 		it('負のリベート（maker -0.0002）はコストを減らす方向に効く', async () => {
-			// デフォルトフィクスチャの maker は -0.0002
 			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
 			const result = await previewOrder({
 				pair: 'btc_jpy',
@@ -1118,7 +1051,6 @@ describe('preview_order', () => {
 			expect(fee?.estimated_fee_quote).toBe(-28);
 			// 買いは notional + fee = 140,000 + (-28) = 139,972（コストが減る）
 			expect(fee?.estimated_cost_quote).toBe(139972);
-			// リベート表示が summary に出る
 			expect(result.summary).toContain('リベート');
 		});
 
@@ -1198,7 +1130,6 @@ describe('preview_order', () => {
 			// margin maker null → 公称 taker(0.0012) に fallback
 			expect(fee?.rate).toBe(0.0012);
 			expect(fee?.note).toContain('API 未提供');
-			// content（summary）に区分・「API 未提供」・利息 note が出る
 			expect(result.summary).toContain('信用新規');
 			expect(result.summary).toContain('API 未提供');
 			expect(result.summary).toContain('利息');
@@ -1224,7 +1155,6 @@ describe('preview_order', () => {
 			assertOk(result);
 			expect(result.summary).toContain('利息');
 			expect(result.summary).toContain('trade_history');
-			// レートが揃っているので「API 未提供」note は出ない
 			expect(result.summary).not.toContain('API 未提供');
 		});
 
@@ -1276,7 +1206,6 @@ describe('preview_order', () => {
 			// spec 不明 → 公称 taker (0.0012) で概算
 			expect(fee?.rate).toBe(0.0012);
 			expect(fee?.note).toContain('spec 不明');
-			// 手数料行と warning がどちらも summary に残る
 			expect(result.summary).toContain('手数料見積り');
 			expect(result.summary).toContain('スキップ');
 			expect(result.meta.warnings?.[0]).toContain('/spot/pairs');
@@ -1308,7 +1237,6 @@ describe('preview_order', () => {
 			const text = result.content[0]?.text ?? '';
 			expect(text).toContain('手数料見積り');
 			expect(text).toContain('手数料区分: maker');
-			// 発注 API（POST /v1/user/spot/order）が一切呼ばれていないこと
 			const calls = (fetchMock as unknown as { mock: { calls: Array<[unknown]> } }).mock.calls;
 			expect(calls.some((c) => String(c[0]).includes('/user/spot/order'))).toBe(false);
 		});

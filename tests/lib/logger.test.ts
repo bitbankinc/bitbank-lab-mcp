@@ -4,7 +4,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Stub fs before importing logger
 vi.mock('node:fs', async () => {
 	const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
 	return {
@@ -85,8 +84,7 @@ describe('ログ出力先', () => {
 		vi.restoreAllMocks();
 	});
 
-	// MCP サーバーはホストが spawn するため cwd を制御できない（Claude Desktop / macOS では `/`）。
-	// 出力先が cwd 相対だと `/logs` の作成が EACCES で落ち、取引監査ログごと黙って消える。
+	// MCP サーバーはホストが spawn するので cwd を制御できず（Claude Desktop / macOS では `/`）、出力先が cwd 相対だと `/logs` の作成が EACCES で落ちて取引監査ログごと黙って消える。
 	it('cwd に依存しない絶対パスへ書く', () => {
 		logToolRun({ tool: 'get_ticker', input: { pair: 'btc_jpy' }, result: { ok: true }, ms: 1 });
 
@@ -102,10 +100,7 @@ describe('ログ出力先', () => {
 		expect(path.dirname(file)).toBe(EXPECTED_LOG_DIR);
 	});
 
-	// 上の 2 つは「絶対パスであること」までしか見ておらず、`path.resolve('./logs')` のような
-	// **絶対パスだが cwd 依存** の実装を素通りさせる。実際に cwd を動かしてモジュールを
-	// 読み直し、出力先が変わらないことまで確認する（vitest の cwd は通常
-	// PACKAGE_ROOT と一致するため、cwd を変えないと差が出ない）。
+	// 上の 2 つは絶対パスであることまでしか見ておらず `path.resolve('./logs')` のような絶対パスだが cwd 依存の実装を素通りさせるので、実際に cwd を動かしてモジュールを読み直し、出力先が変わらないことまで確認する（vitest の cwd は通常 PACKAGE_ROOT と一致する）。
 	it('cwd を別ディレクトリへ移しても出力先が変わらない', async () => {
 		const originalCwd = process.cwd();
 		try {
@@ -193,8 +188,7 @@ describe('書き込み失敗の扱い', () => {
 		expect(stderr).toHaveBeenCalledTimes(1);
 	});
 
-	// 追記前にチェーンを進めると、書き込まれなかったレコードの hash を次レコードが指し、
-	// 改ざんが無いのに verify_log_integrity がチェーン断絶として検出する。
+	// 追記前にチェーンを進めると、書き込まれなかったレコードの hash を次レコードが指し、改ざんが無いのに verify_log_integrity がチェーン断絶として検出する。
 	it('追記に失敗したレコードでチェーンハッシュを進めない', () => {
 		vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 		const written: string[] = [];

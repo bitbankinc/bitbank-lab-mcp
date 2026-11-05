@@ -1,7 +1,14 @@
 import { z } from 'zod';
-import { BaseMetaSchema, CandleSchema, CandleTypeEnum, NumericSeriesSchema, toolResultSchema } from './base.js';
+import {
+	BaseMetaSchema,
+	CandleSchema,
+	CandleTypeEnum,
+	NumericSeriesSchema,
+	toolResultSchema,
+	warningField,
+	warningsField,
+} from './base.js';
 
-// ChartIndicators shape
 export const IchimokuSeriesSchema = z.object({
 	ICHI_tenkan: NumericSeriesSchema,
 	ICHI_kijun: NumericSeriesSchema,
@@ -121,9 +128,6 @@ export const ChartPayloadSchema = z
 		}
 	});
 
-// ── prepare_chart_data ──
-
-/** 選択可能な指標グループ */
 export const ChartIndicatorGroupEnum = z.enum([
 	'SMA_5',
 	'SMA_20',
@@ -156,10 +160,8 @@ export const PrepareChartDataInputSchema = z.object({
 		),
 });
 
-/** コンパクトな数値配列（null 許容） */
 const CompactSeriesSchema = z.array(z.union([z.number(), z.null()]));
 
-/** MACD サブパネル（コンパクト形式） */
 const CompactMacdSubPanelSchema = z.object({
 	line: CompactSeriesSchema,
 	signal: CompactSeriesSchema,
@@ -170,17 +172,11 @@ export const PrepareChartDataOutputSchema = z.object({
 	ok: z.literal(true),
 	summary: z.string(),
 	data: z.object({
-		/** 共有タイムスタンプ配列 */
 		times: z.array(z.string()),
-		/** 表示用短縮ラベル（tz 指定時のみ）。例: ["17:00", "18:00", ...] or ["03/16 17:00", ...] */
 		labels: z.array(z.string()).optional(),
-		/** candles 配列の各要素の意味: ["open","high","low","close","volume"] */
 		candleFormat: z.array(z.string()),
-		/** OHLCV タプル配列: [[open, high, low, close, volume], ...] */
 		candles: z.array(z.array(z.number())),
-		/** メインパネル指標（indicators 指定時のみ） */
 		series: z.record(z.string(), CompactSeriesSchema).optional(),
-		/** サブパネル指標（indicators 指定時のみ） */
 		subPanels: z
 			.object({
 				RSI_14: CompactSeriesSchema.optional(),
@@ -194,16 +190,11 @@ export const PrepareChartDataOutputSchema = z.object({
 		type: CandleTypeEnum,
 		count: z.number(),
 		indicators: z.array(z.string()),
-		/** 出来高の単位（ペアのベース通貨。例: btc_jpy → "BTC"） */
 		volumeUnit: z.string(),
-		/** 上流 get_candles → analyze_indicators から伝播する取得層 warning（partial fetch 等）。 */
-		warning: z.string().optional(),
-		/** 上流 analyze_indicators の指標不足 warnings（"SMA_200: データ不足" 等）。warning とは別系統。 */
-		warnings: z.array(z.string()).optional(),
+		...warningField,
+		...warningsField,
 	}),
 });
-
-// ── prepare_depth_data ──
 
 export const PrepareDepthDataInputSchema = z.object({
 	pair: z.string().optional().default('btc_jpy'),
@@ -250,10 +241,8 @@ export const PrepareDepthDataDataSchemaOut = z.object({
 export const PrepareDepthDataMetaSchemaOut = BaseMetaSchema.extend({
 	levels: z.object({ bids: z.number().int(), asks: z.number().int() }),
 	volumeUnit: z.string(),
-	/** Number() 変換で NaN/非有限になった行数。0 の場合は省略可。 */
 	droppedRows: z.object({ bids: z.number().int(), asks: z.number().int() }).optional(),
-	/** drop が発生した場合の警告メッセージ */
-	warning: z.string().optional(),
+	...warningField,
 });
 
 export const PrepareDepthDataOutputSchema = toolResultSchema(
@@ -261,7 +250,6 @@ export const PrepareDepthDataOutputSchema = toolResultSchema(
 	PrepareDepthDataMetaSchemaOut,
 );
 
-/** render_chart_svg で使用可能なインジケーター */
 export const RenderChartSvgIndicatorEnum = z.enum([
 	'SMA_5',
 	'SMA_20',
@@ -279,16 +267,15 @@ export const RenderChartSvgIndicatorEnum = z.enum([
 	'ICHIMOKU_EXTENDED',
 ]);
 
+export const RENDER_CHART_SVG_DEFAULT_LIMIT = 60;
+
 export const RenderChartSvgInputSchema = z
 	.object({
 		pair: z.string().optional().default('btc_jpy'),
 		type: CandleTypeEnum.optional().default('1day'),
-		// impl default is 60; align contract to tool behavior
-		limit: z.number().int().min(5).max(365).optional().default(60),
-		// main series style: candles (default) or line (close-only)
+		limit: z.number().int().min(5).max(365).optional().default(RENDER_CHART_SVG_DEFAULT_LIMIT),
 		style: z.enum(['candles', 'line', 'depth']).optional().default('candles'),
 		depth: z.object({ levels: z.number().int().min(10).max(500).optional().default(200) }).optional(),
-		// ── 統一インジケーター指定（推奨） ──
 		indicators: z
 			.array(RenderChartSvgIndicatorEnum)
 			.optional()
@@ -297,7 +284,7 @@ export const RenderChartSvgInputSchema = z
 				'Indicators to overlay. Do NOT set unless the user explicitly requests them. Default: [] (none).\n' +
 					'Available: SMA_5, SMA_20, SMA_25, SMA_50, SMA_75, SMA_200, EMA_12, EMA_26, EMA_50, EMA_200, BB, BB_EXTENDED, ICHIMOKU, ICHIMOKU_EXTENDED',
 			),
-		// ── 後方互換（deprecated: 新規利用は indicators を使用） ──
+		// 以下は後方互換（deprecated。新規利用は indicators を使う）
 		withSMA: z.array(z.number().int()).optional().default([]),
 		withEMA: z.array(z.number().int()).optional().default([]),
 		withBB: z.boolean().optional().default(false),
@@ -311,7 +298,6 @@ export const RenderChartSvgInputSchema = z
 			.optional(),
 		// 軽量化のため凡例は既定でオフ
 		withLegend: z.boolean().optional().default(false),
-		// 軽量化オプション
 		svgPrecision: z.number().int().min(0).max(3).optional().default(1).describe('Coordinate rounding decimals (0-3).'),
 		svgMinify: z.boolean().optional().default(true).describe('Minify SVG text by stripping whitespace where safe.'),
 		simplifyTolerance: z
@@ -323,15 +309,12 @@ export const RenderChartSvgInputSchema = z
 		viewBoxTight: z.boolean().optional().default(true).describe('Use tighter paddings to reduce empty margins.'),
 		barWidthRatio: z.number().min(0.1).max(0.9).optional().describe('Width ratio of each candle body (slot fraction).'),
 		yPaddingPct: z.number().min(0).max(0.2).optional().describe('Vertical padding ratio to expand y-range.'),
-		// サブパネル（価格パネルの下に独立Y軸で描画）
 		subPanels: z
 			.array(z.enum(['macd', 'rsi', 'volume']))
 			.optional()
 			.default([])
 			.describe('サブパネル: macd(MACD線+シグナル+ヒストグラム), rsi(RSI 14 + 70/30ゾーン), volume(出来高バー)'),
-		// X軸ラベルのタイムゾーン
 		tz: z.string().optional().default('Asia/Tokyo').describe('X軸ラベルのタイムゾーン（例: Asia/Tokyo, UTC）'),
-		// Optional pattern overlays (ranges/annotations)
 		overlays: z
 			.object({
 				ranges: z
@@ -354,7 +337,6 @@ export const RenderChartSvgInputSchema = z
 			.optional(),
 	})
 	.superRefine((val, ctx) => {
-		// indicators 配列から一目均衡表の有無を判定
 		const hasIchimokuViaIndicators =
 			val.indicators?.includes('ICHIMOKU') || val.indicators?.includes('ICHIMOKU_EXTENDED');
 		const hasIchimoku = val.withIchimoku || hasIchimokuViaIndicators;
@@ -379,7 +361,6 @@ export const RenderChartSvgInputSchema = z
 		}
 	});
 
-// Optional: output contract (not enforced by SDK at runtime, but useful for validation/tests)
 export const RenderChartSvgOutputSchema = z.object({
 	ok: z.literal(true).or(z.literal(false)),
 	summary: z.string(),
@@ -400,10 +381,8 @@ export const RenderChartSvgOutputSchema = z.object({
 			sizeBytes: z.number().optional(),
 			layerCount: z.number().optional(),
 			fallback: z.string().optional(),
-			// 上流 analyze_indicators から伝播する取得層 warning（partial fetch 等）
-			warning: z.string().optional(),
-			// 上流 analyze_indicators から伝播する計算層 warnings（指標バー数不足 等）
-			warnings: z.array(z.string()).optional(),
+			...warningField,
+			...warningsField,
 			// レンダリング層独自の警告（雲のデータ不足等）
 			renderWarnings: z.array(z.string()).optional(),
 		})

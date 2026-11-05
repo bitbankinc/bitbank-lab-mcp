@@ -1,7 +1,3 @@
-/**
- * get_my_assets ツールのユニットテスト。
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertFail, assertOk } from '../_assertResult.js';
 import { tickersJpy } from '../fixtures/bitbank-api.js';
@@ -22,7 +18,6 @@ afterEach(() => {
 	vi.resetModules();
 });
 
-/** fetch モックを URL パターンでルーティング */
 function setupFetchMock(opts: {
 	assetsResponse?: unknown;
 	assetsStatus?: number;
@@ -56,7 +51,6 @@ describe('get_my_assets', () => {
 		expect(result.data.assets.length).toBeGreaterThan(0);
 		expect(result.data.total_jpy_value).toBeGreaterThan(0);
 
-		// JPY 評価額降順ソート
 		const jpyValues = result.data.assets.map((a) => a.jpy_value ?? 0);
 		for (let i = 1; i < jpyValues.length; i++) {
 			expect(jpyValues[i]).toBeLessThanOrEqual(jpyValues[i - 1]);
@@ -96,15 +90,9 @@ describe('get_my_assets', () => {
 		assertOk(result);
 		// 資産は返る（JPY はティッカー不要なので評価できる）
 		expect(result.data.assets.length).toBeGreaterThan(0);
-		// サマリーに警告が含まれる
 		expect(result.summary).toContain('ticker');
 	});
 
-	/**
-	 * API が返す asset は取得境界で小文字へ正規化する（`lib/asset-code.ts`）。
-	 * 出力の表記契約は「structuredContent は小文字 / サマリー表示は大文字」で、
-	 * 正規化を入れても現行の小文字レスポンスに対しては何も変わらない。
-	 */
 	describe('API asset の取得境界正規化', () => {
 		it('小文字レスポンスでは出力の asset 表記が変わらない', async () => {
 			setupFetchMock({});
@@ -114,7 +102,6 @@ describe('get_my_assets', () => {
 
 			assertOk(result);
 			expect(result.data.assets.map((a) => a.asset)).toEqual(['btc', 'eth', 'jpy', 'xrp']);
-			// サマリー表示は従来どおり大文字
 			expect(result.summary).toContain('BTC:');
 			expect(result.summary).toContain('JPY:');
 		});

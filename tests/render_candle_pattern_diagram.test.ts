@@ -134,9 +134,7 @@ describe('render_candle_pattern_diagram', () => {
 			Number(m[1]),
 		);
 		expect(xs).toHaveLength(10);
-		// 最右の候補が plotRight (750) を超えない
 		expect(xs[xs.length - 1]).toBeLessThan(750);
-		// 最左が plotLeft (100) を下回らない
 		expect(xs[0]).toBeGreaterThan(100);
 	});
 });

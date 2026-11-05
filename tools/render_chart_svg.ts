@@ -1,37 +1,19 @@
-// tools/render_chart_svg.ts
-/**
- * Render chart as SVG or save to file depending on options.
- *
- * ## ボリンジャーバンド (BB)
- * - default : ±2σ のみ描画（軽量版）
- * - extended: ±1σ, ±2σ, ±3σ を描画（完全版）
- * - CLI: `--bb-mode=default|extended`、`--no-bb` で無効化
- * - 後方互換: `--bb-mode=light` → default、`--bb-mode=full` → extended
- *
- * ## 一目均衡表 (Ichimoku)
- * - default : 転換線・基準線・雲（先行スパン A/B）
- * - extended: 上記＋遅行スパン
- * - CLI: `--with-ichimoku --ichimoku-mode=default|extended`
- * - 指定なしの場合はオフ
- *
- * ## SMA
- * - デフォルトでは描画しない
- * - CLI: `--sma=5,20,50` のように明示指定した場合のみ描画
- * - 利用可能な期間: 5, 20, 25, 50, 75, 200
- *
- * @returns Result<
- *   { svg?: string | null; filePath?: string | null; legend?: Record<string,string> },
- *   { pair: string; type: string; limit?: number; indicators?: string[]; bbMode: 'default'|'extended'; range?: {start:string; end:string}; sizeBytes?: number; layerCount?: number; truncated?: boolean; }>
- */
 import { dayjs } from '../lib/datetime.js';
 import { formatPair } from '../lib/formatter.js';
 import { ICHIMOKU_MIN_BARS_FOR_CLOUD, ICHIMOKU_SHIFT } from '../lib/indicator-config.js';
+import { isJpyQuotedPair } from '../lib/pair-code.js';
 import { fail, ok } from '../lib/result.js';
 import { extractUpstreamWarning, prependWarnings } from '../lib/warning-propagation.js';
-import type { CandleType, ChartPayload, Pair, RenderChartSvgOptions, Result } from '../src/schemas.js';
+import {
+	type CandleType,
+	type ChartPayload,
+	type Pair,
+	RENDER_CHART_SVG_DEFAULT_LIMIT,
+	type RenderChartSvgOptions,
+	type Result,
+} from '../src/schemas.js';
 import analyzeIndicators from './analyze_indicators.js';
 
-// ── Chart Dimensions ──
 const CHART_WIDTH = 860;
 const CHART_HEIGHT = 420;
 const PADDING_TIGHT = { top: 36, right: 12, bottom: 32 } as const;
@@ -55,7 +37,6 @@ import {
 	smaColors,
 } from './chart/svg-utils.js';
 
-/** Internal options extending the public schema with undocumented/debug properties */
 type RenderChartSvgInternalOpts = RenderChartSvgOptions & {
 	debug?: boolean;
 	forceLayers?: boolean;
@@ -74,11 +55,9 @@ type RenderMeta = {
 	layerCount?: number;
 	truncated?: boolean;
 	fallback?: string;
-	/** 上流 analyze_indicators の取得層 warning（partial fetch / multi-day 失敗 等） */
 	warning?: string;
-	/** 上流 analyze_indicators の計算層 warnings（指標バー数不足 等） */
 	warnings?: string[];
-	/** レンダリング層独自の警告（雲のデータ不足等）。上流 warnings と別系統。 */
+	/** 上流 warnings とは別系統のレンダリング層の警告（雲のデータ不足等）。 */
 	renderWarnings?: string[];
 	debug?: Record<string, unknown>;
 };
@@ -86,8 +65,6 @@ type RenderMeta = {
 export default async function renderChartSvg(
 	args: RenderChartSvgInternalOpts = {},
 ): Promise<Result<RenderData, RenderMeta>> {
-	// --- パラメータの解決 ---
-	// indicators 配列 + legacy with* を統合して内部フラグに変換
 	const indSet = new Set<string>(args.indicators ?? []);
 
 	// legacy with* → indSet にマージ（後方互換）
@@ -99,7 +76,6 @@ export default async function renderChartSvg(
 	for (const p of args.withSMA ?? []) indSet.add(`SMA_${p}`);
 	for (const p of args.withEMA ?? []) indSet.add(`EMA_${p}`);
 
-	// 内部フラグの導出（一箇所で集約）
 	let withIchimoku = indSet.has('ICHIMOKU') || indSet.has('ICHIMOKU_EXTENDED');
 	const ichimokuMode: 'default' | 'extended' = indSet.has('ICHIMOKU_EXTENDED') ? 'extended' : 'default';
 	const drawChikou = ichimokuMode === 'extended' || args.ichimoku?.withChikou === true;
@@ -108,7 +84,6 @@ export default async function renderChartSvg(
 	let withSMA = [...indSet].filter((k) => k.startsWith('SMA_')).map((k) => Number(k.split('_')[1]));
 	let withEMA = [...indSet].filter((k) => k.startsWith('EMA_')).map((k) => Number(k.split('_')[1]));
 
-	// 排他制御: 一目均衡表使用時は SMA/BB をオフ
 	if (withIchimoku) {
 		withSMA = [];
 		withEMA = [];
@@ -127,7 +102,7 @@ export default async function renderChartSvg(
 		pair = 'btc_jpy',
 		// normalize to CandleType-like values (historically 'day' was used)
 		type = '1day',
-		limit = 60,
+		limit = RENDER_CHART_SVG_DEFAULT_LIMIT,
 		withLegend = true,
 		overlays,
 		tz = 'Asia/Tokyo',
@@ -136,20 +111,17 @@ export default async function renderChartSvg(
 	const debugInfo: Record<string, unknown[]> = debugEnabled ? { notes: [] } : {};
 	const forceLayers = args.forceLayers === true || args.noAutoLighten === true;
 
-	// Sub-panel configuration
 	const subPanelTypes: Array<'macd' | 'rsi' | 'volume'> = ((args.subPanels || []) as string[]).filter(
 		(t): t is 'macd' | 'rsi' | 'volume' => ['macd', 'rsi', 'volume'].includes(t),
 	);
 	const SUB_PANEL_HEIGHT = 120;
 	const SUB_PANEL_GAP = 24;
 
-	// === Depth チャート（独立描画） ===
 	if (isDepth) {
 		return renderDepthChart(pair, args, effectivePrecision);
 	}
 
-	// --- 事前見積もりヒューリスティクス（重そうなら candles-only にフォールバック） ---
-	// 一目均衡表は雲＋転換線＋基準線＋先行スパン2本で実質5レイヤー
+	// 重そうなら candles-only にフォールバックする事前見積もり（一目は雲＋転換線＋基準線＋先行スパン 2 本で実質 5 レイヤー）。
 	const estimatedLayers =
 		(withIchimoku ? 5 : 0) + (withBB ? (bbMode === 'extended' ? 3 : 1) : 0) + withSMA.length + withEMA.length + 1; // +1 for base series
 	const summaryNotes: string[] = [];
@@ -163,13 +135,9 @@ export default async function renderChartSvg(
 		}
 	}
 
-	// ★ データ取得はバッファ計算をgetIndicatorsに任せる
-	// 一目均衡表の雲を適切に表示するには limit >= 60 が必要（先行スパンB: 52期間 + シフト: 26日）
 	const ichimokuMinLimit = ICHIMOKU_MIN_BARS_FOR_CLOUD;
-	// レンダリング層（雲不足等）の自前 warning。上流 warnings とは別系統。
 	const renderWarnings: string[] = [];
 
-	// 一目均衡表使用時に limit が小さすぎる場合は自動調整
 	let effectiveLimit = limit;
 	if (withIchimoku && limit < ichimokuMinLimit) {
 		effectiveLimit = ichimokuMinLimit;
@@ -185,16 +153,11 @@ export default async function renderChartSvg(
 		);
 	}
 
-	// 上流 analyze_indicators の meta を取り込む。
-	// - res.meta.warning  → 取得層（get_candles の multi-year/multi-day 部分失敗等）
-	// - res.meta.warnings → 計算層（SMA_200 がデータ不足等）
-	// この 2 系統は renderWarnings（雲不足等のレンダリング層）と混ぜずに別系統で保持する。
 	const upstream = extractUpstreamWarning(res.meta);
 
 	const chartData = res.data?.chart as ChartPayload;
 	const items = chartData?.candles || [];
 	const indicators = chartData?.indicators;
-	/** Safe dynamic indicator access by key (for EMA_${p}, BB${n}_upper, etc.) */
 	const indicatorSeries = (key: string): Array<number | null> | undefined =>
 		(indicators as Record<string, unknown>)[key] as Array<number | null> | undefined;
 	const pastBuffer = chartData.meta?.pastBuffer ?? 0;
@@ -207,7 +170,6 @@ export default async function renderChartSvg(
 		return fail('No candle data available to render SVG chart.', 'user');
 	}
 
-	// 一目均衡表の雲（spanA/spanB）が十分なデータを持っているかチェック
 	if (withIchimoku) {
 		const spanA = indicators?.ICHI_spanA as Array<number | null> | undefined;
 		const spanB = indicators?.ICHI_spanB as Array<number | null> | undefined;
@@ -225,17 +187,13 @@ export default async function renderChartSvg(
 		}
 	}
 
-	// Y軸ラベルの省略表示フォーマッタ（imported formatYLabel を pair に束縛）
-	const isJpyPair = pair.toLowerCase().includes('jpy');
+	const isJpyPair = isJpyQuotedPair(pair);
 	const fmtYLabel = (val: number) => formatYLabel(val, isJpyPair);
 
 	const xs = displayItems.map((_, i) => i);
 	const highs = displayItems.map((d) => d.high as number);
 	const lows = displayItems.map((d) => d.low as number);
-	// forwardShift は上部で meta.shift から取得済み
 
-	// Y軸の範囲を、表示されるすべての要素から計算
-	// 描画対象のインジケーター系列キーを一箇所で列挙
 	const yRangeKeys: string[] = [];
 	if (withIchimoku) yRangeKeys.push('ICHI_tenkan', 'ICHI_kijun', 'ICHI_spanA', 'ICHI_spanB');
 	if (withBB) {
@@ -260,47 +218,38 @@ export default async function renderChartSvg(
 	const dataYMax = Math.max(...allYValues);
 	const yPad = Math.min(0.2, Math.max(0, Number(args.yPaddingPct ?? 0.06)));
 	const yRange = dataYMax - dataYMin;
-	// クリップ回避用の安全ヘッドルーム（レンジの2%）
 	const autoHeadroom = yRange * Y_HEADROOM_PCT;
-	// データレンジに対する相対パディング（値幅に比例してタイトに描画）
 	const yAxisMinWithBuffer = yRange > 0 ? dataYMin - yRange * yPad : dataYMin * (1 - yPad);
 	const yAxisMaxTarget = yRange > 0 ? dataYMax + yRange * yPad + autoHeadroom : dataYMax * (1 + yPad) + autoHeadroom;
 	const yTicks = niceTicks(yAxisMinWithBuffer, yAxisMaxTarget, 6);
 	const yMin = yTicks[0];
 	const yMax = yTicks.at(-1) as number;
 
-	// Y軸ラベルの最大幅に基づいてpadding.leftを動的に調整
 	const maxLabelWidth = Math.max(...yTicks.map((v) => fmtYLabel(v).length));
 	const dynamicPaddingLeft = maxLabelWidth * LABEL_CHAR_WIDTH_PX + LABEL_EXTRA_PADDING;
 
-	// スケール計算
 	const w = CHART_WIDTH;
 	const h = CHART_HEIGHT;
-	// 上部に余白を多めに確保（凡例が詰まらないように）
 	const padding = viewBoxTight
 		? { top: PADDING_TIGHT.top, right: PADDING_TIGHT.right, bottom: PADDING_TIGHT.bottom, left: dynamicPaddingLeft }
 		: { top: PADDING_NORMAL.top, right: PADDING_NORMAL.right, bottom: PADDING_NORMAL.bottom, left: dynamicPaddingLeft };
 	const plotW = w - padding.left - padding.right;
 	const plotH = h - padding.top - padding.bottom;
 
-	// Dynamic total height: price panel + sub-panels
 	const subPanelsTotalH =
 		subPanelTypes.length > 0 ? subPanelTypes.length * SUB_PANEL_HEIGHT + subPanelTypes.length * SUB_PANEL_GAP : 0;
 	const totalH = h + subPanelsTotalH;
 	const xAxisBottom = totalH - padding.bottom;
 
-	// X座標計算: 描画ウィンドウ内での相対位置を計算
-	// Xはバー中心を(i+0.5)に置き、左右に半スロットの余白を確保して端の切れを防ぐ
+	// バー中心を (i+0.5) に置き、左右に半スロットの余白を確保して端の切れを防ぐ。
 	const totalSlots = Math.max(1, xs.length + forwardShift);
 	const x = (i: number) => Number((padding.left + ((i + 0.5) * plotW) / totalSlots).toFixed(effectivePrecision));
 	const y = (v: number) =>
 		Number((h - padding.bottom - ((v - yMin) * plotH) / Math.max(1, yMax - yMin)).toFixed(effectivePrecision));
 
-	// --- 凡例メタデータと描画レイヤーの準備 ---
 	const legendMeta: Record<string, string> = {};
 	let legendLayers = '';
 
-	// 自動調整: 未指定時は本数に応じて隙間が過剰/不足にならないよう最適化
 	let barWidthRatio = Number(args.barWidthRatio);
 	if (!Number.isFinite(barWidthRatio)) {
 		const n = xs.length;
@@ -313,7 +262,6 @@ export default async function renderChartSvg(
 	barWidthRatio = Math.min(0.9, Math.max(0.1, barWidthRatio));
 	const barW = Math.max(2, (plotW / Math.max(1, xs.length)) * barWidthRatio);
 
-	// ローソク（棒＋ヒゲ） or 折れ線
 	let sticks = '';
 	let bodies = '';
 	let priceLine = '';
@@ -337,15 +285,11 @@ export default async function renderChartSvg(
 			})
 			.join('');
 	} else if (style === 'line') {
-		// style === 'line' → 終値の折れ線（描画はヘルパー定義後に実施）
 		wantPriceLine = true;
 	} else if (style === 'depth') {
 		// depth は価格系列の描画を行わず、後段の overlays/axes のみ使用
 	}
 
-	// --- インジケータ描画 ---
-
-	// 汎用的なライン描画関数
 	const round = (v: number) => Number(v.toFixed(svgPrecision));
 
 	const createLinePath = (
@@ -369,7 +313,6 @@ export default async function renderChartSvg(
 			}
 		});
 		if (raw.length === 0) return '';
-		// RDP風の単純化
 		if (options.simplify !== false) {
 			raw = simplifyPts(raw, simplifyTolerance);
 		}
@@ -384,13 +327,11 @@ export default async function renderChartSvg(
 		return `<path d="${d}" fill="none" stroke="${color}" stroke-width="${width}" ${dash}/>`;
 	};
 
-	// 折れ線（終値）を必要に応じて描画
 	if (wantPriceLine) {
 		const closesFull: Array<number | null> = items.map((d) => (typeof d.close === 'number' ? d.close : null));
 		priceLine = createLinePath(closesFull, '#60a5fa', { width: '1.5', simplify: true, offset: 0 });
 	}
 
-	// --- 型安全なインジケータ参照ヘルパー ---
 	const bbSeries = {
 		getUpper: (mode: 'default' | 'extended') => (mode === 'extended' ? indicators?.BB2_upper : indicators?.BB_upper),
 		getMiddle: (mode: 'default' | 'extended') => (mode === 'extended' ? indicators?.BB2_middle : indicators?.BB_middle),
@@ -417,7 +358,6 @@ export default async function renderChartSvg(
 		chikou: indicators?.ICHI_chikou as Array<number | null> | undefined,
 	} as const;
 
-	// SMAレイヤー
 	let smaLayers = '';
 	for (const p of withSMA) {
 		const series = indicatorSeries(`SMA_${p}`);
@@ -426,7 +366,6 @@ export default async function renderChartSvg(
 		}
 	}
 
-	// EMAレイヤー（SMAと区別するため暖色系・破線）
 	let emaLayers = '';
 	for (const p of withEMA) {
 		const series = indicatorSeries(`EMA_${p}`);
@@ -435,7 +374,6 @@ export default async function renderChartSvg(
 		}
 	}
 
-	// ボリンジャーバンド
 	let bbLayers = '';
 	if (withBB) {
 		const createBBPoints = (data?: Array<number | null>): Pt[] => {
@@ -477,19 +415,16 @@ export default async function renderChartSvg(
 		};
 
 		if (bbMode === 'extended') {
-			// ±2σのバンド塗り
 			const band2 = makeBand(bbSeries.getBand(2).upper, bbSeries.getBand(2).lower);
 			bbLayers += `
         <path d="${band2.bandPath}" fill="${bbColors.bandFill2}" stroke="none" />
       `;
-			// ±1σ ライン（グレー）
 			const p1u = createPathFromPoints(createBBPoints(bbSeries.getBand(1).upper));
 			const p1l = createPathFromPoints(createBBPoints(bbSeries.getBand(1).lower));
 			bbLayers += `
         <path d="${p1u}" fill="none" stroke="${bbColors.line1}" stroke-width="1"/>
         <path d="${p1l}" fill="none" stroke="${bbColors.line1}" stroke-width="1"/>
       `;
-			// ±2σ ライン（青） + 中央線（灰の破線）
 			const p2u = createPathFromPoints(createBBPoints(bbSeries.getBand(2).upper));
 			const p2m = createPathFromPoints(createBBPoints(bbSeries.getBand(2).middle));
 			const p2l = createPathFromPoints(createBBPoints(bbSeries.getBand(2).lower));
@@ -498,7 +433,6 @@ export default async function renderChartSvg(
         <path d="${p2l}" fill="none" stroke="${bbColors.line2}" stroke-width="1"/>
         <path d="${p2m}" fill="none" stroke="${bbColors.middle}" stroke-width="1" stroke-dasharray="4 4"/>
       `;
-			// ±3σ ライン（オレンジ）
 			const p3u = createPathFromPoints(createBBPoints(bbSeries.getBand(3).upper));
 			const p3l = createPathFromPoints(createBBPoints(bbSeries.getBand(3).lower));
 			bbLayers += `
@@ -506,7 +440,6 @@ export default async function renderChartSvg(
         <path d="${p3l}" fill="none" stroke="${bbColors.line3}" stroke-width="1"/>
       `;
 		} else {
-			// light: 互換キー（±2σ）のみを使って従来描画
 			const band2 = makeBand(bbSeries.getUpper('default'), bbSeries.getLower('default'));
 			const mid2 = createPathFromPoints(createBBPoints(bbSeries.getMiddle('default')));
 			bbLayers = `
@@ -518,7 +451,6 @@ export default async function renderChartSvg(
 		}
 	}
 
-	// 一目均衡表
 	let ichimokuLayers = '';
 	if (withIchimoku && ichiSeries.tenkan) {
 		const tenkanPath = createLinePath(ichiSeries.tenkan, '#00a3ff', { width: '1', offset: 0 });
@@ -529,7 +461,6 @@ export default async function renderChartSvg(
 		const spanAPath = createLinePath(ichiSeries.spanA, '#16a34a', { width: '1', offset: ICHIMOKU_SHIFT });
 		const spanBPath = createLinePath(ichiSeries.spanB, '#ef4444', { width: '1', offset: ICHIMOKU_SHIFT });
 
-		// 雲の描画（交点で色切替）— 抽出済みモジュールに委譲
 		const { greenCloudPath, redCloudPath } = createCloudPaths(ichiSeries.spanA, ichiSeries.spanB, ICHIMOKU_SHIFT, {
 			x,
 			y,
@@ -549,7 +480,6 @@ export default async function renderChartSvg(
     `;
 	}
 
-	// --- インジケータメタデータ＋凡例（統一構築） ---
 	const legendItems: Array<{ key: string; text: string; color: string }> = [];
 	for (const p of withSMA) {
 		const c = smaColors[p] || '#e5e7eb';
@@ -572,10 +502,8 @@ export default async function renderChartSvg(
 		legendItems.push({ key: 'Ichimoku', text: '転換線', color: '#00a3ff' });
 		legendItems.push({ key: 'Ichimoku_kijun', text: '基準線', color: '#ff4d4d' });
 	}
-	// メタデータ（withLegend に依存しない）
 	for (const item of legendItems) legendMeta[item.key] = `${item.text} (${item.color})`;
 
-	// 凡例SVG
 	if (withLegend) {
 		const yOffset = Math.max(14, padding.top - 18);
 		legendLayers =
@@ -592,7 +520,6 @@ export default async function renderChartSvg(
 			`</g>`;
 	}
 
-	// Y軸 (価格)
 	const yAxis = `
     <line x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${h - padding.bottom}" stroke="#4b5563" stroke-width="1"/>
     <g font-size="12" fill="#9ca3af">
@@ -605,17 +532,13 @@ export default async function renderChartSvg(
     </g>
   `;
 
-	// X軸 (日付) - timeframe に応じたフォーマットで表示
-	// タイムゾーンを適用してdayjsインスタンスを生成
 	const toDayjs = (d: { isoTime?: string | null; time?: string | number | null; timestamp?: string | number | null }) =>
 		dayjs(d?.isoTime || d?.time || d?.timestamp).tz(tz);
-	// 全データが同一日に収まるかを判定
 	const firstDate = toDayjs(displayItems[0]);
 	const lastDate = toDayjs(displayItems[displayItems.length - 1]);
 	const isSameDay =
 		firstDate.isValid() && lastDate.isValid() && firstDate.format('YYYYMMDD') === lastDate.format('YYYYMMDD');
 
-	// timeframe に基づくフォーマット決定
 	const formatXLabel = (d: ReturnType<typeof dayjs>): string => {
 		const tf = String(type).toLowerCase();
 		if (['1min', '5min', '15min', '30min'].includes(tf)) {
@@ -627,7 +550,6 @@ export default async function renderChartSvg(
 		if (['8hour', '12hour', '1day'].includes(tf)) {
 			return `${d.month() + 1}/${d.date()}`;
 		}
-		// 1week, 1month
 		return d.format('YYYY/M/D');
 	};
 
@@ -649,7 +571,6 @@ export default async function renderChartSvg(
     </g>
   `;
 
-	// --- Sub-panel rendering ---
 	const { svg: subPanelSvg } = renderSubPanels(subPanelTypes, {
 		x,
 		padding,
@@ -662,7 +583,6 @@ export default async function renderChartSvg(
 		indicators: indicators as Record<string, unknown> | undefined,
 	});
 
-	// --- 2種類のSVGを構築 ---
 	const createSvgString = (layers: { ichimoku: string; bb: string; sma: string; ema: string }) => `
     <svg width="${w}" height="${totalH}" viewBox="0 0 ${w} ${totalH}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" style="background-color: #1f2937; color: #e5e7eb; font-family: sans-serif; max-width: 100%; height: auto;">
       <title>${formatPair(pair)} ${type} chart</title>
@@ -709,7 +629,6 @@ ${priceLine}
 				})()}
         ${(() => {
 					if (!overlays?.annotations) return '';
-					// ピン＆テキストを上部に配置し、重なりを軽減するため縦位置を交互にずらす
 					let slot = 0;
 					const mkPin = (iso: string, text: string) => {
 						const findIndexByIso = (s: string) => displayItems.findIndex((d) => d.isoTime === s);
@@ -765,12 +684,10 @@ ${priceLine}
 		lightSvg = minify(lightSvg);
 	}
 
-	// --- 返却: 常に生 SVG をインライン返却 ---
 	const finalSvg = sanitizeSvg(withIchimoku ? lightSvg : fullSvg);
 	const sizeBytes = Buffer.byteLength(finalSvg, 'utf8');
 	const layerCount = estimatedLayers;
 
-	// Human-friendly identifiers
 	const title = `${formatPair(pair)} ${type} chart`;
 	const rangeStart = displayItems[0]?.isoTime || '';
 	const rangeEnd = displayItems.at(-1)?.isoTime || '';
@@ -791,9 +708,7 @@ ${priceLine}
 		layerCount,
 		...(identifier ? { identifier } : {}),
 		...(title ? { title } : {}),
-		// 上流 warning（取得層）/ warnings（計算層）を別系統で伝播
 		...upstream,
-		// 自前のレンダリング層警告（雲不足等）。上流とは別フィールドで保持。
 		...(renderWarnings.length > 0 ? { renderWarnings } : {}),
 	};
 	if (debugEnabled) {
@@ -808,9 +723,7 @@ ${priceLine}
 	const baseSummary = summaryNotes.length
 		? `${formatPair(pair)} ${type} chart rendered (${summaryNotes.join('; ')})`
 		: `${formatPair(pair)} ${type} chart rendered`;
-	// summary 先頭に上流 warning / warnings を別行で連結する（取得層 / 計算層を別系統で）。
-	// renderWarnings はレンダリング層の独立 channel なので summary には混ぜず meta だけで返す
-	// （handler 側で SVG block の前に別表示する）。
+	// renderWarnings は summary に混ぜず meta だけで返す（handler が SVG block の前に別表示する）。
 	const summary = prependWarnings(baseSummary, upstream, { separator: '\n' });
 
 	return ok<RenderData, RenderMeta>(summary, { svg: finalSvg, legend: legendMeta }, metaBase);

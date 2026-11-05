@@ -1,14 +1,5 @@
-/**
- * MCP Apps `_meta` 配送の stdio wire レベル回帰（E2E）。
- *
- * 単体テストは `respond()` の戻り値までしか見ないため、**SDK が結果レベル `_meta` を
- * 実際にクライアントへ透過するか**は確認できない。ここだけがそれを担保する。
- * 計測では透過を確認済みだが、SDK 更新で静かに壊れうる箇所なので回帰を張る。
- *
- * ⚠️ `tests/e2e/**` は `npm test` の対象外で PR では走らない（CLAUDE.md）。
- * 手動 / nightly（`npm run test:e2e`）でのみ実行される。PR でのゲートは
- * `tests/private/mcp-apps-execute.test.ts` が担う。
- */
+// 単体テストは `respond()` の戻り値までしか見ないので、SDK が結果レベル `_meta` を実際にクライアントへ透過するかはここだけが担保する（SDK 更新で静かに壊れうる）。
+// `tests/e2e/**` は `npm test` の対象外で PR では走らないので、PR でのゲートは `tests/private/mcp-apps-execute.test.ts` が担う。
 import { existsSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';

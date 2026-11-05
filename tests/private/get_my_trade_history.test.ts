@@ -1,7 +1,3 @@
-/**
- * get_my_trade_history ツールのユニットテスト。
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../../lib/datetime.js';
 import { assertFail, assertOk } from '../_assertResult.js';
@@ -27,7 +23,6 @@ function setupFetchMock(response: unknown, status = 200) {
 		.mockResolvedValue(new Response(JSON.stringify(response), { status })) as unknown as typeof fetch;
 }
 
-/** N 件の RawTrade を生成するヘルパー */
 function generateTrades(n: number, baseId = 1, baseTimestamp = 1710000000000) {
 	return Array.from({ length: n }, (_, i) => ({
 		trade_id: baseId + i,
@@ -44,7 +39,6 @@ function generateTrades(n: number, baseId = 1, baseTimestamp = 1710000000000) {
 	}));
 }
 
-/** 順次レスポンスを返す fetch モック。呼び出しごとに responses を順に消費する。 */
 function setupSequentialFetchMock(responses: unknown[]) {
 	const mockFn = vi.fn();
 	for (const res of responses) {
@@ -63,7 +57,6 @@ describe('get_my_trade_history', () => {
 
 		assertOk(result);
 		expect(result.data.trades).toHaveLength(3);
-		// unix ms が ISO8601 に変換されている
 		for (const trade of result.data.trades) {
 			expect(trade.executed_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 		}
@@ -77,10 +70,8 @@ describe('get_my_trade_history', () => {
 
 		const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
 		const calledUrl = fetchMock.mock.calls[0][0] as string;
-		// unix ms パラメータが含まれている
 		expect(calledUrl).toContain('since=');
 		expect(calledUrl).toContain('end=');
-		// ISO8601 文字列ではなく数値
 		expect(calledUrl).not.toContain('2024-03-10');
 	});
 
@@ -217,14 +208,11 @@ describe('get_my_trade_history', () => {
 
 		assertOk(result);
 		expect(result.data.trades[0].fee_occurred_amount_quote).toBeUndefined();
-		// fallback で fee_amount_quote の値で埋めないことを明示的にアサート
 		expect(result.data.trades[0].fee_occurred_amount_quote).not.toBe(result.data.trades[0].fee_amount_quote);
 	});
 
 	it('単発リクエスト経路で position_side != null の信用約定は除外される（paginateTrades と対称）', async () => {
-		// 公式 docs は position_side を「信用取引の時のみ」と明記しているが、API 挙動変更や
-		// 信用約定の混入に備え、単発経路でも paginateTrades と同様に position_side == null で
-		// 防御フィルタする。これにより calcPnl 等の下流での二重計上を防ぐ。
+		// position_side は docs 上「信用取引の時のみ」だが、混入に備えて単発経路でも paginateTrades と同じく position_side == null で絞る（calcPnl での二重計上を防ぐ）。
 		const trades = [
 			// 現物約定（保持）
 			{
@@ -283,8 +271,7 @@ describe('get_my_trade_history', () => {
 	});
 
 	it('position_side が API レスポンスに含まれない場合、undefined を伝播する（通常の現物約定）', async () => {
-		// 公式 docs は position_side を「信用取引の時のみ」と明記しているため、
-		// 現物約定のみのレスポンスでは undefined になる。fallback で値を埋めないことを保証。
+		// position_side は docs 上「信用取引の時のみ」なので、現物約定のみのレスポンスでは undefined のまま（値を埋めない）。
 		const trades = [
 			{
 				trade_id: 802,
@@ -408,9 +395,7 @@ describe('get_my_trade_history — ページネーション', () => {
 	});
 
 	it('asc: ページネーションで次ページの since に最後の executed_at をそのまま使う（境界バグ修正）', async () => {
-		// バグ回帰防止: 旧実装は executed_at + 1 を since に渡していたため、同一ミリ秒の
-		// 境界レコードを次ページで取りこぼしていた。新実装は executed_at をそのまま渡し、
-		// trade_id で dedup する。
+		// 同一ミリ秒の境界レコードを取りこぼさないよう、次ページの since は executed_at をそのまま渡し trade_id で dedup する。
 		const page1 = generateTrades(1000, 1, 1710000000000);
 		const lastTimestamp = page1[page1.length - 1].executed_at; // 1710000999000
 		const page2 = generateTrades(100, 1001, lastTimestamp + 1);
@@ -462,7 +447,6 @@ describe('get_my_trade_history — ページネーション', () => {
 		expect(result.data.trades).toHaveLength(1199);
 		const tradeIds = result.data.trades.map((t: { trade_id: number }) => t.trade_id);
 		expect(tradeIds[0]).toBeGreaterThan(tradeIds[tradeIds.length - 1]);
-		// 単調減少（API レスポンスをそのまま使う）
 		for (let i = 1; i < tradeIds.length; i++) {
 			expect(tradeIds[i]).toBeLessThan(tradeIds[i - 1]);
 		}
@@ -492,12 +476,7 @@ describe('get_my_trade_history — ページネーション', () => {
 	});
 
 	it('ページ境界に同一 executed_at のレコードが跨っていても全件取得できる（境界バグ修正）', async () => {
-		// バグ回帰防止: 旧実装は executed_at + 1 を次ページ since にしていたため、
-		// ページ末尾と次ページ先頭に同じ executed_at が存在すると取りこぼしていた。
-		// 新実装は executed_at をそのまま使い、trade_id ベースで dedup する。
-		// page1: 末尾 3 件（id 998-1000）が同一 executed_at = T_boundary
-		// page2: 先頭 2 件（id 998, 1000）が page1 と重複（同一 ts のため API が再返却）
-		//        続く 3 件（id 1001-1003）が新規
+		// page1 末尾 3 件（id 998-1000）が同一 executed_at。page2 は先頭 2 件（998, 1000）が重複再返却、続く 1001-1003 が新規。
 		const tBoundary = 1710000999000;
 		const page1 = Array.from({ length: 1000 }, (_, i) => ({
 			trade_id: i + 1,
@@ -540,7 +519,7 @@ describe('get_my_trade_history — ページネーション', () => {
 				fee_amount_quote: '0',
 				executed_at: tBoundary,
 			},
-			// 旧実装ではここからスキップされていた同一 ts の残レコード
+			// 同一 ts の残レコード（executed_at + 1 を since にするとここから取りこぼす）
 			{
 				trade_id: 1001,
 				pair: 'btc_jpy',
@@ -591,20 +570,15 @@ describe('get_my_trade_history — ページネーション', () => {
 		// 全 1003 件（page1 1000 + page2 新規 3）が取得され、重複 2 件は dedup される
 		expect(result.data.trades).toHaveLength(1003);
 		const ids = result.data.trades.map((t) => t.trade_id);
-		// 同一 ts の残レコード（1001, 1002, 1003）が含まれている
 		expect(ids).toContain(1001);
 		expect(ids).toContain(1002);
 		expect(ids).toContain(1003);
-		// 重複は 1 件だけ
 		const uniqueIds = new Set(ids);
 		expect(uniqueIds.size).toBe(ids.length);
 	});
 
 	it('asc: count を満たして打ち切ったときは isComplete=false（取り切れた保証はない）', async () => {
-		// バグ回帰防止 (Medium 2): 旧実装は count に達したら isComplete=true を返していたが、
-		// 期間内にまだ未取得レコードがある可能性があるため誤誘導していた。
-		// page1: 1000 件（満杯）→ page2: 1000 件（満杯）= 計 2000 件で count を満たす。
-		// 期間内にさらにレコードがあるかは分からないため isComplete=false が正しい。
+		// 2 ページとも満杯で count を満たしても、期間内にまだレコードがあるかは分からないので isComplete=false。
 		const page1 = generateTrades(1000, 1, 1710000000000);
 		const page2 = generateTrades(1000, 1001, 1710001000000);
 
@@ -620,9 +594,7 @@ describe('get_my_trade_history — ページネーション', () => {
 	});
 
 	it('asc: 全件同一 executed_at で進捗ゼロのとき isComplete=false で無限ループせず打ち切る', async () => {
-		// 同一 ts が PAGE_SIZE 件以上連続するエッジケース。新実装は since=lastTs にしているため、
-		// 次ページが同じ範囲を返し続けて進捗ゼロになると無限ループする可能性がある。
-		// 進捗ゼロ検出により isComplete=false で打ち切られることを検証。
+		// 同一 ts が PAGE_SIZE 件以上続くと since=lastTs で同じ範囲が返り続けるので、進捗ゼロ検出で打ち切ること。
 		const sameTs = 1710000000000;
 		const page1 = Array.from({ length: 1000 }, (_, i) => ({
 			trade_id: i + 1,
@@ -653,11 +625,8 @@ describe('get_my_trade_history — ページネーション', () => {
 	});
 
 	it('asc: 連続ページで重複する trade_id は dedup される', async () => {
-		// page2 の先頭が page1 の末尾と同じ trade_id を返すケース（境界バグ修正の副作用）。
-		// dedup により最終結果に 1 件だけ含まれることを検証。
-		// page2 は 999 件（< PAGE_SIZE）に抑え、ループが自然終了するようにする。
+		// page2 の先頭が page1 末尾と同じ trade_id を返すケース。page2 は 999 件（< PAGE_SIZE）にしてループを自然終了させる。
 		const page1 = generateTrades(1000, 1, 1710000000000);
-		// page2 の先頭 2 件を page1 末尾と意図的に重複させる
 		const lastTwo = page1.slice(-2);
 		const newRecords = generateTrades(997, 1001, 1710001000000);
 		const page2 = [...lastTwo, ...newRecords];
@@ -677,17 +646,7 @@ describe('get_my_trade_history — ページネーション', () => {
 	});
 
 	it('desc + count > 1000 で最新側 count 件が返る（CodeRabbit #458 指摘 2 の回帰防止）', async () => {
-		// 旧バグ: paginate が常に asc 取得 → 末尾で reverse していたため、
-		// count > PAGE_SIZE かつ order='desc' のとき「最古 count 件を新→古順」を返してしまっていた。
-		// 修正後: order='desc' のときは API に order=desc + end カーソルを渡し、
-		// 最新側 count 件を取得する。
-		//
-		// シナリオ: 期間内に trade_id 1..1500（ts 増加）が存在。count=1200, order='desc'。
-		// 期待: 最新 1200 件 = trade_id 1500..301 を desc 順で返す（最古 1200 件ではない）。
-		//
-		// API は desc + end=null で newest 1000 件 → page1: trade_id 1500..501 (1000件 desc 順)。
-		// 次ページは end=ts(501) → page2: trade_id 501..1 (501件、境界 501 が重複) → dedup で 500 新規。
-		// all=1500 → slice(0, 1200) で先頭 1200 件 (trade_id 1500..301)。
+		// page1: trade_id 1500..501（desc）、page2: end=ts(501) で 501..1（境界 501 が重複）→ 1500 件を slice(0, 1200) で 1500..301。
 		const page1 = generateTrades(1000, 501, 1710000500000).reverse(); // trade_id 1500..501
 		const page2 = generateTrades(501, 1, 1710000000000).reverse(); // trade_id 501..1
 
@@ -705,7 +664,7 @@ describe('get_my_trade_history — ページネーション', () => {
 		// 先頭は最新の 1500、末尾は 301（最古 count 件 = 1200..1 ではない）
 		expect(ids[0]).toBe(1500);
 		expect(ids[ids.length - 1]).toBe(301);
-		// 旧バグなら ids[0] === 1200 になる（最古 1200 件を逆順にしたもの）
+		// 最古 1200 件を逆順にした場合は ids[0] === 1200 になる
 		expect(ids[0]).not.toBe(1200);
 		// 2 ページ目の URL に end=ts(501) が渡されている（since ではない）
 		const secondUrl = mockFn.mock.calls[1][0] as string;
@@ -740,7 +699,6 @@ describe('get_my_trade_history — ページネーション', () => {
 		const { default: getMyTradeHistory } = await import('../../tools/private/get_my_trade_history.js');
 		await getMyTradeHistory({ count: 1500, order: 'desc', since: '2024-03-10T00:00:00Z' });
 
-		// since の unix ms
 		const sinceMs = dayjs('2024-03-10T00:00:00Z').valueOf();
 		for (const [url] of mockFn.mock.calls) {
 			expect(url as string).toContain(`since=${sinceMs}`);
@@ -751,8 +709,7 @@ describe('get_my_trade_history — ページネーション', () => {
 	});
 
 	it('desc: ページ境界に同一 executed_at のレコードが跨っていても全件取得できる', async () => {
-		// バグ回帰防止: desc + end カーソルでも、境界で同一 ts が複数あっても
-		// dedup で取りこぼし無く取得できる。
+		// desc + end カーソルでも、境界で同一 ts が複数あっても dedup で取りこぼさない。
 		const tBoundary = 1710000500000;
 		// page1 末尾 3 件 (trade_id 1003, 1002, 1001) が同一 ts = tBoundary
 		const page1 = [
@@ -825,7 +782,7 @@ describe('get_my_trade_history — ページネーション', () => {
 				fee_amount_quote: '0',
 				executed_at: tBoundary,
 			},
-			// 旧バグだとここからスキップされていた同一 ts の残レコード
+			// 同一 ts の残レコード（境界で取りこぼしやすい）
 			{
 				trade_id: 1000,
 				pair: 'btc_jpy',
@@ -863,21 +820,14 @@ describe('get_my_trade_history — ページネーション', () => {
 		// page1: 1000 件 + page2: 重複 2 件除いた 2 件 = 1002 件
 		expect(result.data.trades).toHaveLength(1002);
 		const ids = result.data.trades.map((t) => t.trade_id);
-		// 同一 ts の残レコード（1000, 999）が含まれている
 		expect(ids).toContain(1000);
 		expect(ids).toContain(999);
-		// 重複は 1 件だけ
 		const uniqueIds = new Set(ids);
 		expect(uniqueIds.size).toBe(ids.length);
 	});
 });
 
-/**
- * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
- * 揃えないと JPY 建て判定（`t.pair.includes('jpy')`）が外れ、価格が円フォーマットされない。
- * 出力の表記契約は「structuredContent は小文字 / サマリー表示は formatPair の大文字」で、
- * 現行の小文字レスポンスに対しては何も変わらない（防御的正規化）。
- */
+/** pair を取得境界で小文字に揃えないと JPY 建て判定（t.pair.includes('jpy')）が外れ、価格が円フォーマットされない。 */
 describe('get_my_trade_history — API pair の取得境界正規化', () => {
 	it('小文字レスポンスでは出力の pair 表記が変わらない', async () => {
 		setupFetchMock(mockBitbankSuccess(rawTradeHistoryResponse));
@@ -904,7 +854,7 @@ describe('get_my_trade_history — API pair の取得境界正規化', () => {
 
 		assertOk(result);
 		expect(result.data.trades.map((t) => t.pair)).toEqual(['btc_jpy', 'btc_jpy', 'eth_jpy']);
-		// 正規化前は includes('jpy') が外れ、価格が生文字列 '15000000' のまま出ていた
+		// 正規化しないと includes('jpy') が外れ、価格が生文字列 '15000000' のまま出る
 		expect(result.summary).toContain('¥15,000,000');
 		expect(result.summary).not.toContain(' 15000000 ');
 		expect(result.summary).toContain('BTC/JPY');

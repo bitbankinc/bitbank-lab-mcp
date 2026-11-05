@@ -1,22 +1,9 @@
-/**
- * get_orderbook — 統合板情報ツール
- *
- * mode で分析粒度を切り替え、内部では単一の /depth API 呼出しで全モードをカバー。
- *
- * | mode        | 旧ツール                  | 概要                                       |
- * |-------------|---------------------------|--------------------------------------------|
- * | summary     | get_orderbook             | 上位N層の正規化＋累計サイズ＋spread          |
- * | pressure    | get_orderbook_pressure    | 帯域(±0.1%/0.5%/1%等)別 買い/売り圧力        |
- * | statistics  | get_orderbook_statistics  | 範囲分析＋流動性ゾーン＋大口注文＋総合評価     |
- * | raw         | get_depth                 | 生の bids/asks 配列＋壁ゾーン自動推定          |
- */
-
 import { toNum } from '../lib/conversions.js';
 import { toIsoTime } from '../lib/datetime.js';
 import { estimateZones } from '../lib/depth-analysis.js';
-import { formatSummary, formatTimestampJST } from '../lib/formatter.js';
+import { formatExactPrice, formatPriceDecimals, formatSummary, formatTimestampJST } from '../lib/formatter.js';
 import { BITBANK_API_BASE, DEFAULT_RETRIES, fetchJsonWithRateLimit } from '../lib/http.js';
-import { isJpyPair, roundPrice } from '../lib/price.js';
+import { midPriceDecimals, roundMidPrice, roundSpread } from '../lib/price.js';
 import { fail, failFromError, failFromValidation, ok, parseAsResult } from '../lib/result.js';
 import { createMeta, ensurePair, validateLimit } from '../lib/validate.js';
 import type { GetOrderbookData, GetOrderbookMeta, OrderbookLevelWithCum } from '../src/schemas.js';
@@ -28,33 +15,18 @@ export type OrderbookMode = 'summary' | 'pressure' | 'statistics' | 'raw';
 export interface GetOrderbookParams {
 	pair?: string;
 	mode?: OrderbookMode;
-	/** summary mode: 上位N層 (1-200, default 10) */
 	topN?: number;
-	/** pressure mode: 帯域幅 (default [0.001, 0.005, 0.01]) */
 	bandsPct?: number[];
-	/** statistics mode: 範囲% (default [0.5, 1.0, 2.0]) */
 	ranges?: number[];
-	/** statistics mode: 価格ゾーン分割数 (default 10) */
 	priceZones?: number;
-	/** raw mode: 最大レベル数 (default 200) */
 	maxLevels?: number;
-	/** タイムアウト */
 	timeoutMs?: number;
 }
-
-// ─── ヘルパー ───
 
 type RawLevel = [string, string]; // [price, size] from API
 type NumLevel = [number, number]; // [price, size] parsed
 
-/**
- * raw な板レベル配列から、price/size が非有限になる行を drop する。
- *
- * bitbank /depth は値を string で返すため、上流が壊れた値（"abc" 等）を返すと
- * Number() が NaN になり、Math.max/min・Zod parse・テキスト表示まで伝播する。
- * （summary/statistics は Zod 失敗で 'network' 誤分類、raw は "NaN円" として LLM に流出。）
- * prepare_depth_data の toFiniteTuples と同じ防御を全 mode の入口で行う。
- */
+// /depth は値を string で返すので、壊れた値は NaN になって Math.max/min・Zod parse・表示まで伝播する。prepare_depth_data の toFiniteTuples と同じ防御を全 mode の入口で行う。
 function toFiniteRawLevels(raw: RawLevel[]): { rows: RawLevel[]; dropped: number } {
 	let dropped = 0;
 	const rows: RawLevel[] = [];
@@ -78,17 +50,14 @@ function toLevelsWithCum(levels: NumLevel[], n: number): OrderbookLevelWithCum[]
 	return out;
 }
 
-// ─── mode=summary ───
-
 function buildSummary(pair: string, bidsNum: NumLevel[], asksNum: NumLevel[], topN: number, timestamp: number) {
 	const bids = toLevelsWithCum(bidsNum, topN);
 	const asks = toLevelsWithCum(asksNum, topN);
 
-	const jpyPair = isJpyPair(pair);
 	const bestAsk = asks[0]?.price ?? null;
 	const bestBid = bids[0]?.price ?? null;
-	const spread = bestAsk != null && bestBid != null ? Number((bestAsk - bestBid).toFixed(0)) : null;
-	const mid = bestAsk != null && bestBid != null ? roundPrice((bestAsk + bestBid) / 2, jpyPair) : null;
+	const spread = bestAsk != null && bestBid != null ? roundSpread(bestBid, bestAsk) : null;
+	const mid = bestAsk != null && bestBid != null ? roundMidPrice(bestBid, bestAsk) : null;
 
 	const summary = formatSummary({
 		pair,
@@ -102,17 +71,17 @@ function buildSummary(pair: string, bidsNum: NumLevel[], asksNum: NumLevel[], to
 		summary,
 		'',
 		`📊 板情報 (上位${topN}層):`,
-		`中値: ${mid?.toLocaleString('ja-JP') ?? 'N/A'}円`,
-		`スプレッド: ${spread?.toLocaleString('ja-JP') ?? 'N/A'}円`,
+		`中値: ${mid != null ? formatExactPrice(mid) : 'N/A'}円`,
+		`スプレッド: ${spread != null ? formatExactPrice(spread) : 'N/A'}円`,
 		'',
 		`🟢 買い板 (Bids): ${bids.length}層`,
 		...bids.map(
-			(b, i) => `  ${i + 1}. ${b.price.toLocaleString('ja-JP')}円 ${b.size.toFixed(4)} (cum:${b.cumSize.toFixed(4)})`,
+			(b, i) => `  ${i + 1}. ${formatExactPrice(b.price)}円 ${b.size.toFixed(4)} (cum:${b.cumSize.toFixed(4)})`,
 		),
 		'',
 		`🔴 売り板 (Asks): ${asks.length}層`,
 		...asks.map(
-			(a, i) => `  ${i + 1}. ${a.price.toLocaleString('ja-JP')}円 ${a.size.toFixed(4)} (cum:${a.cumSize.toFixed(4)})`,
+			(a, i) => `  ${i + 1}. ${formatExactPrice(a.price)}円 ${a.size.toFixed(4)} (cum:${a.cumSize.toFixed(4)})`,
 		),
 	]
 		.filter(Boolean)
@@ -135,16 +104,13 @@ function buildSummary(pair: string, bidsNum: NumLevel[], asksNum: NumLevel[], to
 	return { text, data, mid };
 }
 
-// ─── mode=pressure ───
-
 function buildPressure(pair: string, bidsRaw: RawLevel[], asksRaw: RawLevel[], bandsPct: number[], timestamp: number) {
 	const baseCcy = pair.split('_')[0]?.toUpperCase() ?? '';
-	const jpyPair = isJpyPair(pair);
 	const bestAsk = Number(asksRaw?.[0]?.[0] ?? NaN);
 	const bestBid = Number(bidsRaw?.[0]?.[0] ?? NaN);
 	// 帯域境界の計算には丸め前の生 mid を使い、出力（baseMidOut）のみ共通の丸め規約に通す。
 	const baseMid = Number.isFinite(bestAsk) && Number.isFinite(bestBid) ? (bestAsk + bestBid) / 2 : null;
-	const baseMidOut = baseMid != null ? roundPrice(baseMid, jpyPair) : null;
+	const baseMidOut = baseMid != null ? roundMidPrice(bestBid, bestAsk) : null;
 
 	function sumInBand(levels: RawLevel[], low: number, high: number) {
 		let s = 0;
@@ -237,8 +203,6 @@ function buildPressure(pair: string, bidsRaw: RawLevel[], asksRaw: RawLevel[], b
 	return { text, data, mid: baseMidOut };
 }
 
-// ─── mode=statistics ───
-
 function buildStatistics(
 	pair: string,
 	bidsNum: NumLevel[],
@@ -248,17 +212,16 @@ function buildStatistics(
 	timestamp: number,
 ) {
 	const baseCcy = pair.split('_')[0]?.toUpperCase() ?? '';
-	const jpyPair = isJpyPair(pair);
 	const bestBid = bidsNum.length ? Math.max(...bidsNum.map(([p]) => p)) : null;
 	const bestAsk = asksNum.length ? Math.min(...asksNum.map(([p]) => p)) : null;
-	// レンジ集計・ゾーン分割・距離%には丸め前の生 mid を使い、出力 currentPrice のみ共通の丸め規約に通す。
 	const mid = bestBid != null && bestAsk != null ? (bestBid + bestAsk) / 2 : null;
+	const zoneDecimals = bestBid != null && bestAsk != null ? midPriceDecimals(bestBid, bestAsk) : 0;
 
 	const basic = {
-		currentPrice: mid != null ? roundPrice(mid, jpyPair) : null,
+		currentPrice: bestBid != null && bestAsk != null ? roundMidPrice(bestBid, bestAsk) : null,
 		bestBid: bestBid != null ? Number(bestBid) : null,
 		bestAsk: bestAsk != null ? Number(bestAsk) : null,
-		spread: bestBid != null && bestAsk != null ? Number(bestAsk) - Number(bestBid) : null,
+		spread: bestBid != null && bestAsk != null ? roundSpread(bestBid, bestAsk) : null,
 		spreadPct: bestBid != null && bestAsk != null && mid ? (Number(bestAsk) - Number(bestBid)) / Number(mid) : null,
 	};
 
@@ -281,8 +244,7 @@ function buildStatistics(
 		return { vol, val };
 	}
 
-	// rawRatio は overall/strength 判定用に保持（ask=0 のときは Infinity）。
-	// 出力 ratio は wire format (JSON) と整合させるため finite な数値 or null に正規化する。
+	// rawRatio は ask=0 で Infinity のまま overall / strength 判定に使い、出力 ratio だけ JSON と整合する finite か null にする。
 	const rangeComputed = ranges.map((pct) => {
 		const b = sumWithinPct(bidsNum, pct, 'bid');
 		const a = sumWithinPct(asksNum, pct, 'ask');
@@ -309,7 +271,6 @@ function buildStatistics(
 		};
 	});
 
-	// Liquidity zones
 	const maxPct = Math.max(...ranges);
 	const minPrice = mid ? mid * (1 - maxPct / 100) : 0;
 	const maxPrice = mid ? mid * (1 + maxPct / 100) : 0;
@@ -330,7 +291,7 @@ function buildStatistics(
 			const dom = bVol > aVol * 1.2 ? 'bid' : aVol > bVol * 1.2 ? 'ask' : 'balanced';
 			const note = dom === 'bid' ? '強い買いサポート' : dom === 'ask' ? '強い売り圧力' : undefined;
 			zones.push({
-				priceRange: `${Math.round(lo).toLocaleString('ja-JP')} - ${Math.round(hi).toLocaleString('ja-JP')}`,
+				priceRange: `${formatPriceDecimals(lo, zoneDecimals)} - ${formatPriceDecimals(hi, zoneDecimals)}`,
 				bidVolume: Number(bVol.toFixed(4)),
 				askVolume: Number(aVol.toFixed(4)),
 				dominance: dom,
@@ -339,13 +300,12 @@ function buildStatistics(
 		}
 	}
 
-	// Large orders
 	const threshold = 0.1;
 	const largeBids = bidsNum
 		.filter(([, sz]) => sz >= threshold)
 		.slice(0, 20)
 		.map(([p, sz]) => ({
-			price: Math.round(p),
+			price: p,
 			size: Number(sz.toFixed(3)),
 			distance: mid ? Number((((p - mid) / mid) * 100).toFixed(2)) : null,
 		}));
@@ -353,13 +313,11 @@ function buildStatistics(
 		.filter(([, sz]) => sz >= threshold)
 		.slice(0, 20)
 		.map(([p, sz]) => ({
-			price: Math.round(p),
+			price: p,
 			size: Number(sz.toFixed(3)),
 			distance: mid ? Number((((p - mid) / mid) * 100).toFixed(2)) : null,
 		}));
 
-	// Overall assessment は finite/Infinity 区別なく rangeComputed の rawRatio を使う。
-	// rangesOut[0].ratio は ask=0 のとき null になるので overall/strength 判定には使えない。
 	const lastRawRatio = rangeComputed[0]?.rawRatio ?? 1;
 	const overall = lastRawRatio > 1.1 ? '買い優勢' : lastRawRatio < 0.9 ? '売り優勢' : '均衡';
 	// |Infinity - 1| === Infinity > 0.3 で strong に分類される（ask=0 で買い圧倒のケース）。
@@ -381,7 +339,7 @@ function buildStatistics(
 		`📸 ${formatTimestampJST(timestamp)}`,
 		'',
 		`=== ${String(pair).toUpperCase()} 板統計分析 ===`,
-		`💰 現在価格: ${basic.currentPrice != null ? `${basic.currentPrice.toLocaleString('ja-JP')}円` : 'n/a'}`,
+		`💰 現在価格: ${basic.currentPrice != null ? `${formatExactPrice(basic.currentPrice)}円` : 'n/a'}`,
 		basic.spread != null ? `   スプレッド: ${basic.spread}円 (${((basic.spreadPct || 0) * 100).toFixed(6)}%)` : '',
 		'',
 		'📊 板の厚み分析:',
@@ -398,11 +356,11 @@ function buildStatistics(
 		'🐋 大口注文:',
 		...largeBids.map(
 			(o) =>
-				`買い板: ${o.price.toLocaleString('ja-JP')}円に${o.size} ${baseCcy} (${o.distance != null ? `${(o.distance >= 0 ? '+' : '') + o.distance}%` : ''})`,
+				`買い板: ${formatExactPrice(o.price)}円に${o.size} ${baseCcy} (${o.distance != null ? `${(o.distance >= 0 ? '+' : '') + o.distance}%` : ''})`,
 		),
 		...largeAsks.map(
 			(o) =>
-				`売り板: ${o.price.toLocaleString('ja-JP')}円に${o.size} ${baseCcy} (${o.distance != null ? `${(o.distance >= 0 ? '+' : '') + o.distance}%` : ''})`,
+				`売り板: ${formatExactPrice(o.price)}円に${o.size} ${baseCcy} (${o.distance != null ? `${(o.distance >= 0 ? '+' : '') + o.distance}%` : ''})`,
 		),
 		'',
 		`💡 総合評価: ${overall}（${strength}）`,
@@ -422,8 +380,6 @@ function buildStatistics(
 	return { text, data, mid };
 }
 
-// ─── mode=raw ───
-
 function buildRaw(
 	pair: string,
 	rawJson: Record<string, unknown>,
@@ -431,10 +387,9 @@ function buildRaw(
 	asksRaw: RawLevel[],
 	timestamp: number,
 ) {
-	const jpyPair = isJpyPair(pair);
 	const bestAsk = asksRaw[0]?.[0] != null ? Number(asksRaw[0][0]) : null;
 	const bestBid = bidsRaw[0]?.[0] != null ? Number(bidsRaw[0][0]) : null;
-	const mid = bestBid != null && bestAsk != null ? roundPrice((bestBid + bestAsk) / 2, jpyPair) : null;
+	const mid = bestBid != null && bestAsk != null ? roundMidPrice(bestBid, bestAsk) : null;
 
 	const bidsNum: NumLevel[] = bidsRaw.map(([p, s]) => [Number(p), Number(s)]);
 	const asksNum: NumLevel[] = asksRaw.map(([p, s]) => [Number(p), Number(s)]);
@@ -445,19 +400,18 @@ function buildRaw(
 		extra: `levels: bids=${bidsRaw.length} asks=${asksRaw.length}`,
 	});
 
-	// raw mode: 全レベルをテキストに含める（LLM が structuredContent.data を読めない対策）
 	const text = [
 		`📸 ${formatTimestampJST(timestamp)}`,
 		'',
 		summary,
 		`板の層数: 買い ${bidsRaw.length}層 / 売り ${asksRaw.length}層`,
-		mid ? `中値: ${mid.toLocaleString('ja-JP')}円` : '',
+		mid ? `中値: ${formatExactPrice(mid)}円` : '',
 		'',
 		`🟢 買い板 (全${bidsRaw.length}層):`,
-		...bidsRaw.map(([p, s], i) => `  ${i + 1}. ${Number(p).toLocaleString('ja-JP')}円 ${s}`),
+		...bidsRaw.map(([p, s], i) => `  ${i + 1}. ${formatExactPrice(Number(p))}円 ${s}`),
 		'',
 		`🔴 売り板 (全${asksRaw.length}層):`,
-		...asksRaw.map(([p, s], i) => `  ${i + 1}. ${Number(p).toLocaleString('ja-JP')}円 ${s}`),
+		...asksRaw.map(([p, s], i) => `  ${i + 1}. ${formatExactPrice(Number(p))}円 ${s}`),
 	]
 		.filter(Boolean)
 		.join('\n');
@@ -482,8 +436,6 @@ function buildRaw(
 
 	return { text, data, mid };
 }
-
-// ─── メインエントリ ───
 
 export default async function getOrderbook(params: GetOrderbookParams | string = {}) {
 	// 後方互換: 旧シグネチャ getOrderbook(pair, topN) 対応
@@ -513,14 +465,11 @@ export default async function getOrderbook(params: GetOrderbookParams | string =
 		if (!limitCheck.ok) return failFromValidation(limitCheck);
 	}
 
-	// ─── 単一 API 呼出し ───
 	const url = `${BITBANK_API_BASE}/${chk.pair}/depth`;
 	try {
 		const { data: json, rateLimit } = await fetchJsonWithRateLimit(url, { timeoutMs, retries: DEFAULT_RETRIES });
 		const jsonObj = json as { success?: number; data?: Record<string, unknown> };
-		// 上流レスポンスの success フラグを明示的に検証する。
-		// 公式 API は { success: 0|1, data: ... } 形式で、エラー時は success:0 を返す。
-		// optional chaining のフォールバックに任せると bids/asks 欠損として握りつぶされてしまう。
+		// optional chaining のフォールバックに任せると bids/asks 欠損として握りつぶされるので、success を明示的に検証する。
 		if (jsonObj?.success !== 1) {
 			const code = (jsonObj?.data as { code?: number } | undefined)?.code;
 			const codeStr = code != null ? `（code: ${code}）` : '';
@@ -530,26 +479,18 @@ export default async function getOrderbook(params: GetOrderbookParams | string =
 		if (!Array.isArray(d.asks) || !Array.isArray(d.bids)) {
 			return fail('上流レスポンスに bids/asks が含まれていません', 'upstream');
 		}
-		// 非有限な price/size を持つ板レベルを drop する（prepare_depth_data と同じ防御）。
-		// drop しないと NaN が Math.max/min・Zod parse・テキスト表示へ伝播し、mode により
-		// 'network' 誤分類 / "NaN円" 流出 / pressure の baseMid=null 退行を引き起こす。
 		const { rows: rawAsks, dropped: asksDropped } = toFiniteRawLevels((d.asks as RawLevel[]).slice(0, maxLevels));
 		const { rows: rawBids, dropped: bidsDropped } = toFiniteRawLevels((d.bids as RawLevel[]).slice(0, maxLevels));
-		// 「元々片側が空（一方向の板）」は許容するが、「drop で片側が全滅」は上流データ品質の
-		// 問題として upstream fail に倒す（network 誤分類を避ける）。
+		// 元々片側が空の板は許容するが、drop で片側が全滅したら上流データ品質の問題として upstream fail に倒す。
 		if ((asksDropped > 0 && rawAsks.length === 0) || (bidsDropped > 0 && rawBids.length === 0)) {
 			return fail('板データの数値変換に失敗しました（有効な bids/asks が存在しません）', 'upstream');
 		}
-		// 上流 timestamp は欠損したら Date.now() で偽装せず upstream fail に倒す。
-		// 板スナップショットの timestamp は「上流が観測した時刻」が意味であり、受信時刻で
-		// 代用すると古いデータをあたかも最新かのように見せてしまう。fetchedAt（受信時刻）は
-		// meta に別途含まれる。
+		// timestamp が欠損したら受信時刻で偽装せず upstream fail に倒す（古いデータを最新に見せない）。
 		const timestamp = toNum(d.timestamp ?? d.timestamp_ms);
 		if (timestamp == null || timestamp <= 0) {
 			return fail('上流レスポンスに timestamp が含まれていません', 'upstream');
 		}
 
-		// NumLevel 変換（rawBids/rawAsks は toFiniteRawLevels 済みで有限値のみ）
 		const bidsNum: NumLevel[] = rawBids.map(([p, s]) => [Number(p), Number(s)]);
 		const asksNum: NumLevel[] = rawAsks.map(([p, s]) => [Number(p), Number(s)]);
 
@@ -576,7 +517,7 @@ export default async function getOrderbook(params: GetOrderbookParams | string =
 			`\n📌 補完ツール: get_flow_metrics（出来高フロー・CVD）, get_transactions（約定履歴）, analyze_indicators（指標）`;
 		result.text += boundary;
 
-		// 不正レベルの drop を LLM 可視テキスト先頭 + meta に surface する（prepare_depth_data と対称）。
+		// drop した件数を LLM 可視テキスト先頭と meta に出す（prepare_depth_data と対称）。
 		const totalDropped = bidsDropped + asksDropped;
 		const droppedWarning =
 			totalDropped > 0
@@ -605,7 +546,6 @@ export default async function getOrderbook(params: GetOrderbookParams | string =
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'get_orderbook',
 	description: `[Order Book / Depth / Spread] 板情報（order book / depth / bid-ask spread）の統合ツール。

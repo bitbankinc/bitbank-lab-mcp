@@ -14,8 +14,6 @@ afterEach(() => {
 	vi.clearAllMocks();
 });
 
-// ─── helpers ──────────────────────────────────────────────────────────────────
-
 function makeFailResult() {
 	return {
 		ok: false,
@@ -64,8 +62,6 @@ function makeOkResult(opts: { trend?: 'up' | 'down' } = {}) {
 		},
 	};
 }
-
-// ─── tests ────────────────────────────────────────────────────────────────────
 
 describe('analyzeFibonacciHandler', () => {
 	it('analyze_fibonacci の ok:false はそのまま返す', async () => {

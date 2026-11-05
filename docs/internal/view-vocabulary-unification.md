@@ -231,6 +231,7 @@ candidates は `accepted` 優先で 200 件まで）。全 view で `meta.debug`
 コメントに理由が残っている——「LLM が default view で rolling window 別 RV/ATR を読めるようにするため」。
 `buildVolatilitySummaryText` は現在テストからしか参照されておらず、本番経路では実質デッドコード。
 **一度作った軽量 rung が「LLM に情報が届かなくなる」という理由で差し戻された実例**である。
+（`buildVolatilitySummaryText` は、PR 6 を実施しないと決めたので削除した（§6-2）。この段落は削除前の観察。）
 
 （リポジトリ履歴はスカッシュ済み（168 commits、初期化コミットに集約）で、この判断の commit 単位の
 経緯は追えない。上記のルール文書・コード内コメント・差し戻しの痕跡が一次ソースになる。）
@@ -613,7 +614,7 @@ PR 3  語彙統一 Phase 1（破壊的変更はここに全部集約）         
 PR 4  呼び出し側の追従 + ドキュメント                                            ✅ 完了
         ↓（1 リリース以上 かつ 3 ヶ月以上あける）
 PR 5  Phase 2（alias 削除）                                                    ← 次はここ
-PR 6  Phase 3（軽量 summary の opt-in 追加、需要ベース・任意）
+PR 6  Phase 3（軽量 summary の opt-in 追加、需要ベース・任意）                  実施しない（§6-2）
 ```
 
 **分割の原則**
@@ -663,7 +664,7 @@ PR 6  Phase 3（軽量 summary の opt-in 追加、需要ベース・任意）
 | **内容** | ① `get_flow_metrics` の `buckets` / `full` が `res.summary` を捨てて再構築している箇所を、`res.summary` をベースにする形に変える（最終約定価格・スパイク上位 3 件・4 行フッタが復活する）② `get_volatility_metrics` の `detailed` / `full` で 4 行フッタを維持する |
 | **受け入れ基準** | 「階梯上の各 view の `content` が、下位 view の定型要素（フッタ / 警告行 / 最終値）を含む」テストを追加 |
 | **やらないこと** | `beginner`（volatility）と `debug`（patterns）は**階梯外なので対象にしない**（§3-2 規約 3）。平易な言い換えである `beginner` に専門的なフッタを足すのはその view の目的に反する |
-| **小項目** | `buildVolatilitySummaryText()`（`getVolatilityMetricsHandler.ts:72-77`）は本番未使用（§2-0）。**削除せず「本番未使用。PR 6 の軽量 summary の土台」というコメントを付ける**。PR 6 をやらないと決まった時点で削除する |
+| **小項目** | `buildVolatilitySummaryText()`（`getVolatilityMetricsHandler.ts:72-77`）は本番未使用（§2-0）。**削除せず「本番未使用。PR 6 の軽量 summary の土台」というコメントを付ける**。PR 6 をやらないと決まった時点で削除する（→ PR 6 を実施しないと決めたので削除済み。§6-2） |
 | **CHANGELOG** | `### Fixed`。既定の `content` が変わるツールは無いこと（増える方向のみ）を明記 |
 | **依存** | PR 1（同一ファイル） |
 
@@ -728,6 +729,7 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 
 | 項目 | 内容 |
 |---|---|
+| **状態** | **実施しない**（§6-2 で「用意しない」と決定） |
 | **前提** | §6-2 で「用意する」と決まった場合のみ。需要ベース |
 | **内容** | `get_candles` / `get_transactions` に集計のみの `summary` を追加。**既定にはしない**（§2-0 / §3-5） |
 | **受け入れ基準** | 既定（`full`）の応答が 1 バイトも変わらないこと |
@@ -743,7 +745,7 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 | 3 | 語彙統一 Phase 1 | **あり**（enum / `get_candles` の shape） | **必要** | PR 2 の後 |
 | 4 | 呼び出し側追従 + docs | なし | — | PR 3 の後 |
 | 5 | Phase 2（alias 削除） | **あり** | — | PR 4 の 1 リリース + 3 ヶ月後 |
-| 6 | Phase 3（軽量 summary） | なし（追加のみ） | §6-2 次第 | PR 5 の後 |
+| 6 | Phase 3（軽量 summary） | なし（追加のみ） | 実施しない（§6-2） | — |
 
 ---
 
@@ -760,6 +762,9 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
    §2-0 の制約により**既定にはしない**ことは確定なので、争点は「opt-in の rung を用意する価値が
    あるか」だけ。やらないなら両ツールは `full` のみになり、量の制御は `limit` に一本化される
    （`view` パラメータ自体を廃止して `format` だけ残す選択肢もある）。
+   → **決定: 用意しない。PR 6 は実施しない。** 軽い view は「同じ情報を短く」ではなく「LLM に届く情報が減る」
+   だけで（§2-0）、一度作った軽量 rung も同じ理由で差し戻されている。PR 6 の土台として残していた
+   `buildVolatilitySummaryText` も削除した。`view` パラメータを廃止するかは別に決める。
 3. **`get_tickers_jpy` の `view`（`items` / `ranked`）を本統一に含めるか。**
    本提案は対象外（射影の指定であり量ではないため）。含めるなら `includeRanked: boolean` への改名を推奨。
    → **決定: 対象外。** `ranked` / `items` は射影であり量でも形式でもない。
@@ -819,7 +824,7 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 | PR 3 | §5-5 | **完了** | — | **P1 / P2 / P5 / P7** ＋ **P4 の残り**（`get_candles(view=items)` の封筒） |
 | PR 4 | §5-6 | **完了** | — | （呼び出し側追従とドキュメント。指摘の解消ではない） |
 | PR 5 | §5-7 | 未着手 | — | （Phase 2: alias 削除） |
-| PR 6 | §5-8 | 未着手 | — | （Phase 3: 軽量 `summary` の opt-in 追加。§6-2 次第で実施しない） |
+| PR 6 | §5-8 | **実施しない** | — | （Phase 3: 軽量 `summary` の opt-in 追加。§6-2 で用意しないと決定） |
 
 ### 7-1. PR 1（#20）で実際に入ったもの
 
@@ -1043,4 +1048,4 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 | debug 配列の cap | `tools/detect_patterns.ts:280-292`（cap=200、accepted 優先） |
 | リポジトリ内の `view` 利用 | `src/prompts/intermediate.ts:90-91, 128` / `src/prompts/reports.ts:16` |
 | `content` が唯一のチャネルである根拠 | `.claude/rules/tools.md`「content テキストにデータを含める（重要）」/ `tools/get_candles.ts:807-808` / `tools/get_transactions.ts:248` / `tools/get_volatility_metrics.ts:331` / `tools/get_orderbook.ts:448` / `tools/get_tickers_jpy.ts:24` / `tools/detect_patterns.ts:295, 445` |
-| 軽量 rung の差し戻し痕跡 | `src/handlers/getVolatilityMetricsHandler.ts:72-77`（`buildVolatilitySummaryText`、本番未使用）と `:237-245`（上流 summary を流す判断とその理由） |
+| 軽量 rung の差し戻し痕跡 | `src/handlers/getVolatilityMetricsHandler.ts` の `view=summary` が上流 summary を流す判断とその理由（本番未使用だった `buildVolatilitySummaryText` は削除済み。§6-2） |

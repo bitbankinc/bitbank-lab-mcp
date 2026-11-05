@@ -1,10 +1,3 @@
-/**
- * analyze_my_portfolio ツールのユニットテスト。
- *
- * 複合ツール（assets + trades + tickers + deposits/withdrawals + technical）の
- * 統合動作を検証する。URL ベースのルーティングで複数 API 呼び出しをモック。
- */
-
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import { assertFail, assertOk } from '../_assertResult.js';
 import { candlesBtcJpy1day120, candlesBtcJpy1day120Near, generateOhlcv, tickersJpy } from '../fixtures/bitbank-api.js';
@@ -24,8 +17,8 @@ import {
 import { assertDefined, requireDefined } from '../helpers/assert.js';
 import { asMcp } from '../helpers/mcp.js';
 import { holdingOf } from '../helpers/portfolio.js';
+import { jstMs } from '../helpers/time.js';
 
-/** rawAssetsResponse から指定 asset のエントリを取り出す（整合 fixture の組み立て用） */
 function assetFixture(asset: string) {
 	const found = rawAssetsResponse.assets.find((a) => a.asset === asset);
 	if (!found) throw new Error(`fixture asset not found: ${asset}`);
@@ -33,13 +26,8 @@ function assetFixture(asset: string) {
 }
 
 /**
- * 既定の約定・出庫履歴から calcPnl が復元する数量と onhand を整合させた assets レスポンス。
- * btc: 買 0.01（fee 0.00001 BTC）→ 売 0.005 → 0.00499、eth: 買 1.0（fee 0.001 ETH）→ 0.999
- * （既定 fixture の eth 出庫は約定より前で保有 0 のため数量に影響しない）。
- *
- * rawAssetsResponse は onhand が履歴と乖離しており、数量不変条件（cost_basis_reliable）で
- * 原価が抑止される。乖離検出そのものを検証するテスト以外では本フィクスチャを既定にする。
- * xrp は約定履歴が無く、正の残高が常に復元数量 0 と乖離するため含めない。
+ * onhand を既定の約定・出庫履歴から復元される数量に揃えた assets（btc: 0.01 − fee 0.00001 − 売 0.005 = 0.00499、eth: 1.0 − fee 0.001 = 0.999）。
+ * rawAssetsResponse のままだと数量不変条件で原価が抑止される。xrp は約定履歴が無く常に乖離するので含めない。
  */
 const consistentAssetsResponse = {
 	assets: [
@@ -50,7 +38,6 @@ const consistentAssetsResponse = {
 	],
 };
 
-/** 信用建玉なしの margin/positions レスポンス（デフォルト fixture が長短 2 件持ちのため、テスト用に空版を別に用意） */
 const rawMarginPositionsEmptyResponse = {
 	notice: null,
 	payables: { amount: '0' },
@@ -58,12 +45,6 @@ const rawMarginPositionsEmptyResponse = {
 	losscut_threshold: { individual: '110', company: '120' },
 };
 
-/**
- * 信用口座系 endpoints のデフォルト success レスポンス。
- * `setupFetchMock` を使わずインライン fetch mock を組むテスト用に、
- * `/v1/user/margin/status` と `/v1/user/margin/positions` を一発でハンドルする。
- * マッチしない URL では null を返すので、呼び出し側は短絡評価で処理を続行できる。
- */
 function maybeMarginAccountResponse(urlStr: string): Response | null {
 	if (urlStr.includes('/v1/user/margin/status')) {
 		return new Response(JSON.stringify(mockBitbankSuccess(rawMarginStatusResponse)), { status: 200 });
@@ -74,11 +55,7 @@ function maybeMarginAccountResponse(urlStr: string): Response | null {
 	return null;
 }
 
-/**
- * 本テストの assets / tickers フィクスチャに出てくるペアを網羅した /spot/pairs レスポンス。
- * price_digits は bitbank の実値に寄せる（btc/eth は整数刻み、xrp/doge/xlm は小数刻み）。
- * 価格フィールドの丸めはこの桁数を単一ソースにするため、低価格ペアを含めておく。
- */
+/** price_digits は bitbank の実値に寄せる（btc/eth は整数刻み、xrp/doge/xlm は小数刻み）。低価格ペアの丸めを検証するため小数刻みのペアを含める。 */
 const defaultSpotPairsResponse = mockSpotPairsResponse([
 	mockSpotPairSpec({ name: 'xrp_jpy', base_asset: 'xrp', quote_asset: 'jpy', price_digits: 3, amount_digits: 6 }),
 	mockSpotPairSpec({ name: 'doge_jpy', base_asset: 'doge', quote_asset: 'jpy', price_digits: 4, amount_digits: 8 }),
@@ -99,7 +76,6 @@ afterEach(() => {
 	vi.resetModules();
 });
 
-/** URL パターンでルーティングする fetch モック */
 function setupFetchMock(opts?: {
 	assets?: unknown;
 	assetsFail?: boolean;
@@ -107,12 +83,7 @@ function setupFetchMock(opts?: {
 	tradesFail?: boolean;
 	marginTradesFail?: boolean;
 	dwFail?: boolean;
-	/**
-	 * 出庫チャネルだけを失敗させる（dwFail と異なり入庫チャネルは成功のまま）。
-	 * flowUnavailableReason=dw_fetch_failed を、入庫データは残したまま再現するための専用フラグ
-	 * （#93: depositOnlyAssets の出庫による除外判定が不完全な入出金履歴でも誤って動くことがない
-	 * ことを確認するテスト用）。
-	 */
+	/** 出庫チャネルだけを失敗させ、入庫データは残したまま dw_fetch_failed を再現する（#93）。 */
 	withdrawalsFail?: boolean;
 	marginTrades?: unknown;
 	marginStatusFail?: boolean;
@@ -121,24 +92,17 @@ function setupFetchMock(opts?: {
 	marginPositions?: unknown;
 	deposits?: unknown;
 	withdrawals?: unknown;
-	/** tickers_jpy のレスポンス差し替え（現在価格を振って評価額の相場連動を見るテスト用） */
 	tickers?: unknown;
 	/** candlestick のレスポンス差し替え。既定は 2024-03-08 起点の 120 本 */
 	candles?: unknown;
-	/** /spot/pairs のレスポンス差し替え（価格の丸め桁 price_digits を振るテスト用） */
 	pairs?: unknown;
-	/** /spot/pairs を失敗させる（丸め桁が解決できない経路の検証用） */
 	pairsFail?: boolean;
-	/**
-	 * この述語が true を返す candlestick URL だけを上流エラーにする（#80 の年 chunk 取得失敗の注入）。
-	 * URL は `.../<pair>/candlestick/<type>/<key>` 形式で、`key` は UTC 暦年（JST 年 chunk は 2 本叩く）。
-	 */
+	/** true を返す candlestick URL だけを上流エラーにする（#80）。URL 末尾の key は UTC 暦年で、JST 年 chunk は 2 本叩く。 */
 	candleFail?: (urlStr: string) => boolean;
 }) {
 	globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
 		const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
 
-		// Public API: /spot/pairs（価格フィールドの丸め桁 price_digits の供給元）
 		if (urlStr.includes('/spot/pairs')) {
 			if (opts?.pairsFail) {
 				return new Response(JSON.stringify(mockBitbankError(10000)), { status: 500 });
@@ -146,22 +110,18 @@ function setupFetchMock(opts?: {
 			return new Response(JSON.stringify(opts?.pairs ?? defaultSpotPairsResponse), { status: 200 });
 		}
 
-		// Public API: tickers
 		if (urlStr.includes('tickers_jpy')) {
 			return new Response(JSON.stringify(opts?.tickers ?? tickersJpy), { status: 200 });
 		}
 
-		// Public API: candlestick
 		if (urlStr.includes('candlestick')) {
 			if (opts?.candleFail?.(urlStr)) {
-				// success:0 は UpstreamApiError 扱いになり、errorType='upstream'（＝再実行で
-				// 解消しうる一時的な失敗）として分類される。「その年に足が無い」の 'user' とは別物。
+				// success:0 は errorType='upstream'（再実行で解消しうる失敗）になり、「その年に足が無い」の 'user' とは区別される。
 				return new Response(JSON.stringify(mockBitbankError(10000)), { status: 200 });
 			}
 			return new Response(JSON.stringify(opts?.candles ?? candlesBtcJpy1day120), { status: 200 });
 		}
 
-		// Private API: assets（既定は履歴と数量整合した consistentAssetsResponse）
 		if (urlStr.includes('/v1/user/assets')) {
 			if (opts?.assetsFail) {
 				return new Response(JSON.stringify(mockBitbankError(20001)), { status: 400 });
@@ -180,18 +140,15 @@ function setupFetchMock(opts?: {
 			return new Response(JSON.stringify(mockBitbankSuccess(payload)), { status: 200 });
 		}
 
-		// Private API: margin positions
 		if (urlStr.includes('/v1/user/margin/positions')) {
 			if (opts?.marginPositionsFail) {
 				return new Response(JSON.stringify(mockBitbankError(10007)), { status: 200 });
 			}
-			// 既存テストの assertion を壊さないよう、デフォルトは「建玉なし」。
-			// 建玉ありを検証するテストは opts.marginPositions で明示する。
+			// 既存テストの assertion を壊さないよう、既定は建玉なし（建玉ありは opts.marginPositions で明示する）。
 			const payload = opts?.marginPositions ?? rawMarginPositionsEmptyResponse;
 			return new Response(JSON.stringify(mockBitbankSuccess(payload)), { status: 200 });
 		}
 
-		// Private API: trade history（type=margin を信用約定として分岐）
 		if (urlStr.includes('trade_history')) {
 			const isMargin = urlStr.includes('type=margin');
 			if (isMargin) {
@@ -209,7 +166,6 @@ function setupFetchMock(opts?: {
 			});
 		}
 
-		// Private API: deposit history
 		if (urlStr.includes('deposit_history')) {
 			if (opts?.dwFail) {
 				return new Response(JSON.stringify(mockBitbankError(10007)), { status: 200 });
@@ -219,7 +175,6 @@ function setupFetchMock(opts?: {
 			});
 		}
 
-		// Private API: withdrawal history
 		if (urlStr.includes('withdrawal_history')) {
 			if (opts?.dwFail || opts?.withdrawalsFail) {
 				return new Response(JSON.stringify(mockBitbankError(10007)), { status: 200 });
@@ -229,7 +184,6 @@ function setupFetchMock(opts?: {
 			});
 		}
 
-		// fallback
 		return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
 	}) as unknown as typeof fetch;
 }
@@ -263,7 +217,6 @@ describe('analyze_my_portfolio', () => {
 
 		assertOk(result);
 		expect(result.data.holdings.length).toBeGreaterThan(0);
-		// PnL 関連フィールドが undefined
 		const btcHolding = holdingOf(result.data.holdings, 'btc');
 		expect(btcHolding).toBeDefined();
 		expect(btcHolding?.cost_basis).toBeUndefined();
@@ -294,7 +247,6 @@ describe('analyze_my_portfolio', () => {
 		});
 
 		assertOk(result);
-		// 入出金失敗でも資産情報は返る
 		expect(result.data.holdings.length).toBeGreaterThan(0);
 	});
 
@@ -309,7 +261,6 @@ describe('analyze_my_portfolio', () => {
 	});
 
 	it('信用約定なしのケース: account_pnl.total === spot_realized_pnl、内訳は 0', async () => {
-		// marginTrades 未指定 → モックは trades: [] を返す
 		setupFetchMock();
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -324,17 +275,14 @@ describe('analyze_my_portfolio', () => {
 		expect(result.data.account_pnl.margin_realized_pnl).toBe(0);
 		expect(result.data.account_pnl.margin_interest).toBe(0);
 		expect(result.data.account_pnl.margin_fee).toBe(0);
-		// #72: 新設の *_cost も同じ 0。信用未使用の口座では出力が従来と一致する（回帰）
 		expect(result.data.account_pnl.margin_interest_cost).toBe(0);
 		expect(result.data.account_pnl.margin_fee_cost).toBe(0);
 		expect(result.data.account_pnl.total).toBe(result.data.account_pnl.spot_realized_pnl);
-		// コスト項がすべて 0 なので Margin 内訳行そのものが出ない（従来どおり）
 		expect(result.summary).not.toContain('Interest cost:');
 	});
 
 	it('信用約定あり: account_pnl.total が spot + margin - interest - fee と一致', async () => {
-		// rawMarginTradeHistoryResponse は決済 1 件（profit_loss=5000, interest=30,
-		// fee_occurred_amount_quote=155）+ 建玉 2 件（fee_occurred_amount_quote=0）
+		// rawMarginTradeHistoryResponse は決済 1 件（profit_loss=5000, interest=30, fee_occurred_amount_quote=155）+ 建玉 2 件（fee 0）
 		setupFetchMock({ marginTrades: rawMarginTradeHistoryResponse });
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -354,13 +302,6 @@ describe('analyze_my_portfolio', () => {
 		expect(pnl.total).toBe(pnl.spot_realized_pnl + 5000 - 30 - 155);
 	});
 
-	/**
-	 * #72: コスト項は `_cost` サフィックス付きが正で、旧名は **alias**（同じ正値）。
-	 *
-	 * JSON を直読みする消費者はフィールド名だけで「コスト = 正値・total では減算」と
-	 * 判別できる必要がある（旧名は名前から符号規約が読めず、足し算されていた）。
-	 * 新旧の一致・total の検算・wire キー順・summary ラベルを 1 シナリオで固定する。
-	 */
 	it('account_pnl: margin_*_cost が旧フィールドと同値で、total を減算で検算できる', async () => {
 		setupFetchMock({ marginTrades: rawMarginTradeHistoryResponse });
 
@@ -373,19 +314,15 @@ describe('analyze_my_portfolio', () => {
 
 		assertOk(result);
 		const pnl = requireDefined(result.data.account_pnl, 'result.data.account_pnl');
-		// 新フィールドはコスト = 正値（負値で持たない）
 		expect(pnl.margin_interest_cost).toBe(30);
 		expect(pnl.margin_fee_cost).toBe(155);
-		// 旧フィールドは alias として同じ値を出し続ける
 		expect(pnl.margin_interest).toBe(pnl.margin_interest_cost);
 		expect(pnl.margin_fee).toBe(pnl.margin_fee_cost);
-		// total は新フィールドを **減算** して再現できる
 		assertDefined(pnl.spot_realized_pnl, 'result.data.account_pnl.spot_realized_pnl');
 		expect(pnl.total).toBe(
 			pnl.spot_realized_pnl + pnl.margin_realized_pnl - pnl.margin_interest_cost - pnl.margin_fee_cost,
 		);
 
-		// 新設キーは既存キーの後ろに出す（既存消費者の JSON を中間から崩さない）
 		expect(Object.keys(pnl)).toEqual([
 			'spot_realized_pnl',
 			'margin_realized_pnl',
@@ -394,19 +331,16 @@ describe('analyze_my_portfolio', () => {
 			'total',
 			'margin_interest_cost',
 			'margin_fee_cost',
-			// #80 で追加
 			'spot_realized_pnl_unavailable_reason',
 		]);
 
-		// summary のラベルも新名称に揃える。表示は total への寄与なので `-` 前置のまま
+		// 表示は total への寄与なので `-` 前置のまま
 		expect(result.summary).toContain('Interest cost: -30円');
 		expect(result.summary).toContain('Fee cost: -155円');
 	});
 
 	it('信用約定レスポンスに現物 (position_side 欠損) が混入しても margin_fee は信用のみから集計', async () => {
-		// 公式 docs に type=margin パラメータの記載がなく、API がそれを無視して
-		// 現物約定も返してしまった場合の防御。フィルタが効いていれば、現物の
-		// fee_occurred_amount_quote は margin_fee に加算されない（過剰控除を防ぐ）。
+		// type=margin が API に無視されて現物約定が混ざった場合の防御。現物の fee_occurred_amount_quote は margin_fee に加算されない。
 		const mixedMargin = {
 			trades: [
 				// 信用決済: PL=5000, interest=30, fee=155 → これらだけが集計対象
@@ -427,8 +361,7 @@ describe('analyze_my_portfolio', () => {
 					interest: '30',
 					executed_at: 1710000100000,
 				},
-				// 現物約定（position_side なし）— fee_occurred_amount_quote=9999 だが
-				// margin_fee に加算されてはいけない
+				// 現物約定（position_side なし）。fee_occurred_amount_quote=9999 は margin_fee に加算されてはいけない
 				{
 					trade_id: 1002,
 					pair: 'btc_jpy',
@@ -457,7 +390,6 @@ describe('analyze_my_portfolio', () => {
 		assertOk(result);
 		const pnl = result.data.account_pnl;
 		assertDefined(pnl, 'result.data.account_pnl');
-		// 信用約定 1 件のみが集計対象
 		expect(pnl.margin_realized_pnl).toBe(5000);
 		expect(pnl.margin_interest).toBe(30);
 		// 現物の 9999 が混入していたら 9999+155=10154 になるはずだが、フィルタで除外されて 155 のみ
@@ -467,10 +399,7 @@ describe('analyze_my_portfolio', () => {
 	});
 
 	it('信用 fetch 失敗時: ⚠️ 警告 + meta.marginFetchFailed=true + margin pnl 0 で「信用未使用」と区別できる', async () => {
-		// Cursor レビュー B: paginateMarginTrades が API エラーで break した場合に
-		// 「信用未使用」と区別できない結果を返してしまう問題のリグレ防止。
-		// 同シナリオで summary 警告 / meta フラグ / フォールバック値 / truncated 警告の非重複を
-		// 一括検証する（assert を別 it に分けると重複テストになる）。
+		// paginateMarginTrades が API エラーで break したとき、「信用未使用」と区別できない結果を返さないこと。
 		setupFetchMock({ marginTradesFail: true });
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -481,10 +410,8 @@ describe('analyze_my_portfolio', () => {
 		});
 
 		assertOk(result);
-		// ⚠️ 警告 + meta フラグで失敗を明示
 		expect(result.summary).toContain('⚠️ 信用約定の取得に失敗');
 		expect(result.meta.marginFetchFailed).toBe(true);
-		// フォールバック: margin pnl 各種は 0
 		assertDefined(result.data.account_pnl, 'result.data.account_pnl');
 		expect(result.data.account_pnl.margin_realized_pnl).toBe(0);
 		expect(result.data.account_pnl.margin_interest).toBe(0);
@@ -495,8 +422,7 @@ describe('analyze_my_portfolio', () => {
 	});
 
 	it('打ち切り (現物): summary に ※ 約定履歴（現物） が含まれ、meta.tradesTruncated === true', async () => {
-		// Cursor レビュー C/E: 打ち切り警告の文字列 assertion を追加してリグレ検知する。
-		// paginateTrades が満杯ページ × 同一カーソルで進捗ゼロを検出 → truncated=true で打ち切る。
+		// paginateTrades は満杯ページ × 同一カーソルで進捗ゼロを検出し、truncated=true で打ち切る。
 		const SAME_TS = 1710000000000;
 		const fullSpotPage = Array.from({ length: 1000 }, (_, i) => ({
 			trade_id: i + 1,
@@ -680,8 +606,6 @@ describe('analyze_my_portfolio', () => {
 	});
 
 	it('警告行が summary 先頭付近に出る（タイトル前または直後）— LLM の見落とし防止', async () => {
-		// .claude/rules/tools.md: content[0].text の先頭に warning 行が含まれているか目視確認。
-		// ハンドラ summary がそのまま content text になるため、先頭付近に warning が出ることを検証。
 		setupFetchMock({ marginTradesFail: true });
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -697,8 +621,7 @@ describe('analyze_my_portfolio', () => {
 	});
 
 	it('yearly_account_pnl / monthly_account_pnl の期間フィルターが正しく効く', async () => {
-		// 固定の現在時刻（JST 2026-05-16 12:00）を基準に、当月内 / 当月外 / 当年内を確実に振り分ける。
-		// vi.useFakeTimers でクロックを固定し、Date.now() ベースの境界計算（getJstPeriodBoundaries）も決定論化する。
+		// 固定の現在時刻（JST 2026-05-16 12:00）で、当月内 / 当月外 / 当年内を決定論的に振り分ける。
 		const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0); // 2026-05-16T03:00:00Z = 12:00 JST
 		vi.useFakeTimers();
 		vi.setSystemTime(fixedNowMs);
@@ -771,7 +694,6 @@ describe('analyze_my_portfolio', () => {
 			expect(result.data.monthly_account_pnl.margin_interest).toBe(5);
 			expect(result.data.monthly_account_pnl.margin_fee).toBe(25);
 
-			// #72: 期間版にも同じリネームが効く（新旧同値 + total を減算で検算）
 			for (const periodPnl of [result.data.yearly_account_pnl, result.data.monthly_account_pnl]) {
 				assertDefined(periodPnl.spot_realized_pnl, 'periodPnl.spot_realized_pnl');
 				expect(periodPnl.margin_interest_cost).toBe(periodPnl.margin_interest);
@@ -782,7 +704,6 @@ describe('analyze_my_portfolio', () => {
 						periodPnl.margin_interest_cost -
 						periodPnl.margin_fee_cost,
 				);
-				// 期間版でも新設キーは既存キー（period_end まで）の後ろに出る
 				expect(Object.keys(periodPnl)).toEqual([
 					'spot_realized_pnl',
 					'margin_realized_pnl',
@@ -793,7 +714,6 @@ describe('analyze_my_portfolio', () => {
 					'period_end',
 					'margin_interest_cost',
 					'margin_fee_cost',
-					// #80 で追加
 					'spot_realized_pnl_unavailable_reason',
 				]);
 			}
@@ -803,8 +723,7 @@ describe('analyze_my_portfolio', () => {
 	});
 
 	it('全履歴取得: paginate*/fetchDepositWithdrawal に since クエリパラメータを付与しない', async () => {
-		// バグ回帰防止: 旧実装は yearStartMs を since として渡していたため、年初前の買い・入金が
-		// 損益計算から欠落していた。全期間取得に戻したことを URL の since 不在で検証する。
+		// 年初前の買い・入金が損益計算から欠落しないよう、全期間を取得していること（URL に since が無いこと）を検証する。
 		const seenUrls: string[] = [];
 		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
 			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
@@ -841,28 +760,20 @@ describe('analyze_my_portfolio', () => {
 		});
 
 		assertOk(result);
-		// 各 Private API の呼び出しが存在すること
 		const tradeUrls = seenUrls.filter((u) => u.includes('trade_history'));
 		const depositUrls = seenUrls.filter((u) => u.includes('deposit_history'));
 		const withdrawalUrls = seenUrls.filter((u) => u.includes('withdrawal_history'));
 		expect(tradeUrls.length).toBeGreaterThan(0);
 		expect(depositUrls.length).toBeGreaterThan(0);
 		expect(withdrawalUrls.length).toBeGreaterThan(0);
-		// 全 URL に since= が含まれない（ハンドラからの全履歴取得）。
-		// 注意: paginate*/fetchDepositWithdrawal は 2 ページ目以降で内部的に since を使う。
-		// 現フィクスチャは各エンドポイント < PAGE_SIZE のため 1 ページで完結し、追加コールは
-		// 発生しない。フィクスチャが PAGE_SIZE 超に拡大した際は、page=0 のみを抜き出して
-		// 検証する形にリファクタすること。
+		// 現フィクスチャは各エンドポイントが 1 ページで完結するので since が付かない。PAGE_SIZE 超に拡大したら page=0 だけを検証する形に直す。
 		for (const u of [...tradeUrls, ...depositUrls, ...withdrawalUrls]) {
 			expect(u).not.toMatch(/[?&]since=/);
 		}
 	});
 
 	it('年初前入金で形成された保有: account_return_jpy は年初前入金も含めた純投入額に対して計算される', async () => {
-		// 固定時刻 2026-05-16 12:00 JST。
-		// 入金: 年初前 1_000_000（2025-06-01）+ 年初後 500_000（2026-02-01）= 1_500_000
-		// 出金: なし
-		// 現在総資産は rawAssetsResponse + tickersJpy から自動計算される（BTC 0.6 + ETH 2 + XRP 1000 + JPY 500_000）
+		// 固定時刻 2026-05-16 12:00 JST。入金: 年初前 1_000_000（2025-06-01）+ 年初後 500_000（2026-02-01）= 1_500_000、出金なし。
 		const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
 		vi.useFakeTimers();
 		vi.setSystemTime(fixedNowMs);
@@ -926,10 +837,8 @@ describe('analyze_my_portfolio', () => {
 			assertOk(result);
 			const dw = result.data.deposit_withdrawal_summary;
 			assertDefined(dw, 'result.data.deposit_withdrawal_summary');
-			// 純投入額は年初前 1_000_000 + 年初後 500_000 = 1_500_000
 			expect(dw.total_jpy_deposited).toBe(1_500_000);
 			expect(dw.net_jpy_invested).toBe(1_500_000);
-			// account_return = 現在総資産 - 純投入額。総資産 > 純投入額なら正値
 			expect(dw.account_return_jpy).toBeDefined();
 			const totalValue = requireDefined(result.data.total_jpy_value, 'result.data.total_jpy_value');
 			expect(dw.account_return_jpy).toBe(totalValue - 1_500_000);
@@ -939,10 +848,7 @@ describe('analyze_my_portfolio', () => {
 	});
 
 	it('年初前買い → 年初後売り: yearly_realized_pnl が「売値 - 平均取得単価」で計算される', async () => {
-		// 固定時刻 2026-05-16 12:00 JST。
-		// 約定: 年初前買い 1 BTC @ 10_000_000（2025-12-01）+ 年初後売り 0.5 BTC @ 12_000_000（2026-03-01）
-		// 旧実装: 年初前買いが欠落 → 売却代金 6_000_000 が realized に積まれる
-		// 新実装: 平均原価 10_000_000 で按分 → realized = 0.5 * (12_000_000 - 10_000_000) = 1_000_000
+		// 約定: 年初前買い 1 BTC @ 10_000_000（2025-12-01）+ 年初後売り 0.5 BTC @ 12_000_000（2026-03-01）→ 平均原価で按分して realized = 1_000_000。
 		const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
 		vi.useFakeTimers();
 		vi.setSystemTime(fixedNowMs);
@@ -1018,9 +924,6 @@ describe('analyze_my_portfolio', () => {
 			}) as unknown as typeof fetch;
 
 			const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
-			// cost_basis / avg_buy_price を検証するため入出金履歴ありで呼ぶ。
-			// include_deposit_withdrawal=false だと出庫履歴が無く取得原価を確定できないため、
-			// これらのフィールドは意図的に出力されない（cost_basis_unavailable_reason を参照）。
 			const result = await handler({
 				include_technical: false,
 				include_pnl: true,
@@ -1028,7 +931,6 @@ describe('analyze_my_portfolio', () => {
 			});
 
 			assertOk(result);
-			// 年初後の sell が yearly に集計される
 			assertDefined(result.data.yearly_realized_pnl, 'result.data.yearly_realized_pnl');
 			expect(result.data.yearly_realized_pnl.realized_pnl).toBe(1_000_000);
 			expect(result.data.yearly_realized_pnl.sell_count).toBe(1);
@@ -1047,11 +949,7 @@ describe('analyze_my_portfolio', () => {
 	});
 
 	it('年初前出庫 + 年初後売却: yearly_realized_pnl が出庫後の平均原価を使う', async () => {
-		// バグ回帰防止 (Medium): 旧 calcPeriodRealizedPnl は出庫を無視していたため、
-		// 出庫後の売却で残数量・平均原価が calcPnl とズレていた。
-		// 買い 1 BTC @ 10_000_000（2025-12-01）→ 出庫 0.3 BTC（2025-12-15, fee 0.001）→ 売り 0.5 BTC @ 12_000_000（2026-03-01）
-		// 出庫後: qty=0.699, cost=6_990_000, avgCost=10_000_000
-		// 売り 0.5: sellCost=5_000_000, sellRev=6_000_000, realized=1_000_000
+		// 買い 1 BTC @ 10_000_000 → 出庫 0.3 BTC（fee 0.001）で qty 0.699 / avgCost 10_000_000 → 売り 0.5 @ 12_000_000 で realized = 1_000_000
 		const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
 		vi.useFakeTimers();
 		vi.setSystemTime(fixedNowMs);
@@ -1144,7 +1042,6 @@ describe('analyze_my_portfolio', () => {
 			});
 
 			assertOk(result);
-			// yearly_realized_pnl: 出庫を反映した平均原価で計算
 			assertDefined(result.data.yearly_realized_pnl, 'result.data.yearly_realized_pnl');
 			expect(result.data.yearly_realized_pnl.realized_pnl).toBe(1_000_000);
 			// total_realized_pnl も同じ（calcPnl と calcPeriodRealizedPnl の整合）
@@ -1153,8 +1050,6 @@ describe('analyze_my_portfolio', () => {
 			vi.useRealTimers();
 		}
 	});
-
-	// ── 信用口座状態・建玉サマリの統合（Cursor レビュー D 対応） ──
 
 	it('信用建玉あり: summary に建玉ブロックが含まれる', async () => {
 		// rawMarginPositionsResponse は BTC ロング 0.01 / ETH ショート 1.0 の 2 件。
@@ -1179,7 +1074,6 @@ describe('analyze_my_portfolio', () => {
 	});
 
 	it('信用建玉なし: summary に建玉ブロックが含まれない', async () => {
-		// デフォルトの rawMarginPositionsEmptyResponse は positions=[] を返す。
 		setupFetchMock();
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -1196,7 +1090,6 @@ describe('analyze_my_portfolio', () => {
 	});
 
 	it('status = CALL: summary 先頭付近に追証警告 / status = LOSSCUT: ロスカット警告', async () => {
-		// CALL ケース
 		setupFetchMock({
 			marginStatus: { ...rawMarginStatusResponse, status: 'CALL' },
 		});
@@ -1208,12 +1101,10 @@ describe('analyze_my_portfolio', () => {
 		});
 		assertOk(resultCall);
 		expect(resultCall.summary).toContain('⚠ 追証発生中（CALL）');
-		// 警告は summary 先頭付近 (先頭 5 行以内) に出ることを確認
 		const firstFiveLinesCall = resultCall.summary.split('\n').slice(0, 5).join('\n');
 		expect(firstFiveLinesCall).toContain('⚠ 追証発生中（CALL）');
 
-		// LOSSCUT ケース（vi.resetModules で動的 import を再評価する必要があるが、
-		// afterEach の resetModules でクリーンに分離される。同 it 内では一度 reset を挟む）
+		// LOSSCUT ケースは動的 import を再評価する必要があるので、同じ it の中で一度 resetModules を挟む。
 		vi.resetModules();
 		setupFetchMock({
 			marginStatus: { ...rawMarginStatusResponse, status: 'LOSSCUT' },
@@ -1244,9 +1135,7 @@ describe('analyze_my_portfolio', () => {
 		expect(result.summary).toContain('⚠️ 信用口座状態の取得に失敗');
 		expect(result.meta.marginStatusFetchFailed).toBe(true);
 		expect(result.meta.marginPositionsFetchFailed).toBe(false);
-		// 信用約定 fetch とは独立して扱われていること
 		expect(result.meta.marginFetchFailed).toBe(false);
-		// 信用約定 / 信用建玉 fetch には言及していないこと（原因切り分け確認）
 		expect(result.summary).not.toContain('⚠️ 信用建玉の取得に失敗');
 		expect(result.summary).not.toContain('⚠️ 信用約定の取得に失敗');
 	});
@@ -1265,14 +1154,11 @@ describe('analyze_my_portfolio', () => {
 		expect(result.summary).toContain('⚠️ 信用建玉の取得に失敗');
 		expect(result.meta.marginPositionsFetchFailed).toBe(true);
 		expect(result.meta.marginStatusFetchFailed).toBe(false);
-		// 信用約定 fetch とは独立して扱われていること
 		expect(result.meta.marginFetchFailed).toBe(false);
-		// 建玉サマリ自体は出力されない（fetch 失敗のため）
 		expect(result.summary).not.toContain('信用建玉:\n');
 	});
 
 	it('信用約定 / 信用口座状態 / 信用建玉が同時に失敗: warning が 1 行に集約されず別々に出る', async () => {
-		// 原因切り分けのため、3 系統の warning が独立して summary に並ぶことを確認。
 		setupFetchMock({
 			marginTradesFail: true,
 			marginStatusFail: true,
@@ -1297,18 +1183,9 @@ describe('analyze_my_portfolio', () => {
 });
 
 describe('analyze_my_portfolio — 信頼できない損益値の null 化', () => {
-	/**
-	 * 入出金履歴が無い状態の cost_basis は、出庫済み数量の取得原価が残留して過大になる
-	 * （移動平均法で暗号資産出庫を原価の按分減少として処理しているため）。
-	 * その原価から出した「合計評価損益 -60.9%」型の確定値を一切出さないことを固定する。
-	 */
+	/** 入出金履歴が無いと出庫済み数量の原価が残留して cost_basis が過大になるので、原価由来 4 フィールドを確定値として出さないことを固定する。 */
 	const COST_FIELDS = ['avg_buy_price', 'cost_basis', 'unrealized_pnl', 'unrealized_pnl_pct'] as const;
 
-	/**
-	 * 全暗号資産銘柄で原価由来の 4 フィールドが出ておらず、理由コードが併記されていること、
-	 * および合計側も同様であることをまとめて検証する。
-	 * 原価に依存しない値（評価額）は落としていないことも併せて確認する。
-	 */
 	function expectCostFieldsSuppressed(result: { data: Record<string, unknown> }, reason: string) {
 		const holdings = result.data.holdings as Array<Record<string, unknown>>;
 		const crypto = holdings.filter((h) => h.asset !== 'jpy');
@@ -1317,7 +1194,6 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 			for (const f of COST_FIELDS) expect(h[f]).toBeUndefined();
 			expect(h.cost_basis_unavailable_reason).toBe(reason);
 			expect(h.cost_basis_reliable).toBe(false);
-			// 原価に依存しない値は落とさない（評価額・現在価格・実現損益は引き続き使える）
 			expect(h.jpy_value).toBeDefined();
 		}
 		expect(result.data.total_cost_basis).toBeUndefined();
@@ -1327,8 +1203,7 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 	}
 
 	it('include_deposit_withdrawal=false でも取得失敗なら抑止される（判定は取得結果だけを見る）', async () => {
-		// 表示セクションを閉じていても損益計算のために入出金は読むので、そこが落ちれば
-		// 原価は信頼できない。抑止の判定軸が表示フラグではなく取得結果であることを固定する。
+		// 抑止の判定軸が表示フラグではなく入出金の取得結果であることを固定する（表示セクションを閉じても損益計算のために入出金は読む）。
 		setupFetchMock({ dwFail: true });
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -1341,7 +1216,6 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 		assertOk(result);
 		expectCostFieldsSuppressed(result, 'dw_fetch_failed');
 		expect(result.meta.flowDataUnavailableReason).toBe('dw_fetch_failed');
-		// セクション側の状態は表示フラグどおり not_requested のまま（別軸）
 		expect(result.meta.depositWithdrawalStatus).toBe('not_requested');
 		expect(result.meta.dwFetchedForPnl).toBe(false);
 	});
@@ -1363,10 +1237,7 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 	});
 
 	it('暗号資産出庫チャネルだけ失敗: available のままでも取得原価は抑止される', async () => {
-		// fetchDepositWithdrawal は 暗号資産入庫 / JPY入金 / 暗号資産出庫 / JPY出金 の
-		// 4 チャネルを個別に取得する。暗号資産出庫だけ落ちても他にレコードがあれば
-		// allFailed=false → status=available になるが、cost_basis を過大化させる当の出庫が
-		// 欠けた withdrawals がそのまま calcPnl に渡るため、原価は信頼できない。
+		// 暗号資産出庫だけ落ちても他チャネルにレコードがあれば allFailed=false / status=available になるが、原価を過大化させる当の出庫が欠けているので原価は信頼できない。
 		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
 			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
 			const marginResponse = maybeMarginAccountResponse(urlStr);
@@ -1475,7 +1346,6 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 			expect(p.adjusted_change_pct, key).toBeNull();
 			expect(p.flow_measured, key).toBe(false);
 			expect(p.flow_unavailable_reason, key).toBe('dw_fetch_failed');
-			// 単純増減は入出金の影響が混ざったままだが値としては残す
 			expect(typeof p.change_jpy, key).toBe('number');
 		}
 	});
@@ -1496,13 +1366,11 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 		expect(result.summary).not.toContain('合計評価損益（全履歴の約定ベース）');
 		// 3 期間すべてに未計測行が出る（行ごと省くと「調整不要な口座」に見える）
 		expect(result.summary.match(/純入出金: 未計測/g)).toHaveLength(3);
-		// 資産推移・期初評価額の品質注記
 		expect(result.summary).toContain('入出金を巻き戻せていません');
 	});
 
 	it('summary: 再取得の案内が include_deposit_withdrawal を切り替えろとは言わない', async () => {
-		// 同フラグは表示セクションの制御しかしないので、切り替えても原価は復活しない。
-		// 誤った案内を出す経路が残っていないことを固定する。
+		// 同フラグは表示セクションの制御しかしないので、切り替えても原価は復活しない（誤った案内を出さない）。
 		setupFetchMock({ dwFail: true });
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -1540,8 +1408,7 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 	});
 
 	it('include_pnl=false: 抑止対象が無いので理由コードは立たない（誤った再実行案内を出さない）', async () => {
-		// エッジ: 損益が未リクエストのケースと、入出金欠落で損益を潰したケースを混同しない。
-		// 前者で理由コードを立てると「入出金を取れば原価が出る」という誤案内になる。
+		// 損益が未リクエストのケースで理由コードを立てると「入出金を取れば原価が出る」という誤案内になる。
 		setupFetchMock();
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -1564,19 +1431,9 @@ describe('analyze_my_portfolio — 信頼できない損益値の null 化', () 
 	});
 });
 
-/**
- * 入出金履歴の取得を `include_pnl` に紐づけ、`include_deposit_withdrawal` を
- * 「入出金分析セクションを出すか」だけの表示フラグに限定する（フラグの直交化）。
- *
- * 取得原価（移動平均法）は暗号資産出庫を原価の按分減少として処理し、期初評価額と
- * 資産推移シリーズは入出金の巻き戻しを前提にしている。つまり損益を出す時点で入出金履歴は
- * 必須の入力であり、表示フラグでこれを落とすと計算そのものが壊れていた。
- */
+/** 入出金履歴の取得を include_pnl に紐づけ、include_deposit_withdrawal は入出金分析セクションを出すかだけの表示フラグにする（損益を出すなら入出金履歴は必須の入力）。 */
 describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', () => {
-	/**
-	 * 現物約定 fixture より後に発生した btc 出庫。
-	 * 出庫が約定より前だと holdingQty が 0 で原価に影響せず、テストが素通りしてしまう。
-	 */
+	/** 出庫が約定より前だと holdingQty が 0 で原価に影響せず、テストが素通りするので約定より後に置く。 */
 	const btcWithdrawalAfterTrades = {
 		withdrawals: [
 			{ uuid: 'wd-btc', asset: 'btc', amount: '0.002', fee: '0.0006', status: 'DONE', requested_at: 1710000300000 },
@@ -1584,11 +1441,8 @@ describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', ()
 	};
 
 	/**
-	 * 出庫を按分した btc 取得原価。
-	 * 約定のみ: 買 0.01 @15,000,000（手数料 0.00001 BTC）→ 売 0.005 @15,500,000（手数料 77.5 JPY）で
-	 * 残 0.00499 BTC / 原価 74,925 円。ここから出庫 0.002 + 出庫手数料 0.0006 = 0.0026 BTC を
-	 * 平均単価で按分減少させると 0.00239 BTC / 原価 35,886 円になる。
-	 * 出庫が calcPnl に渡らないと 74,925 円のまま残り、約 2.1 倍の過大原価になる。
+	 * 約定のみ: 買 0.01 @15,000,000（fee 0.00001 BTC）→ 売 0.005 @15,500,000 で残 0.00499 BTC / 原価 74,925 円。
+	 * 出庫 0.002 + 出庫手数料 0.0006 を平均単価で按分減少させると 0.00239 BTC / 原価 35,886 円（出庫が渡らないと 74,925 円のまま）。
 	 */
 	const BTC_COST_BASIS_WITH_WITHDRAWAL = 35_886;
 	const BTC_COST_BASIS_WITHOUT_WITHDRAWAL = 74_925;
@@ -1602,7 +1456,6 @@ describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', ()
 		],
 	};
 
-	/** モックに記録された fetch 呼び出しの URL 一覧 */
 	function fetchedUrls(): string[] {
 		const mock = globalThis.fetch as unknown as { mock: { calls: Array<[string | URL | Request]> } };
 		return mock.mock.calls.map(([u]) => (typeof u === 'string' ? u : u instanceof URL ? u.href : u.url));
@@ -1624,7 +1477,6 @@ describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', ()
 
 		assertOk(result);
 		const btc = holdingOf(result.data.holdings, 'btc');
-		// P1 で null になっていた値が復活し、かつ出庫を按分した正しい値であること
 		expect(btc.cost_basis).toBe(BTC_COST_BASIS_WITH_WITHDRAWAL);
 		expect(btc.cost_basis).not.toBe(BTC_COST_BASIS_WITHOUT_WITHDRAWAL);
 		expect(btc.avg_buy_price).toBeGreaterThan(0);
@@ -1659,7 +1511,6 @@ describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', ()
 		expect(withoutSection.data.total_cost_basis).toEqual(withSection.data.total_cost_basis);
 		expect(withoutSection.data.total_unrealized_pnl).toEqual(withSection.data.total_unrealized_pnl);
 		expect(withoutSection.meta.dwFetchedForPnl).toBe(true);
-		// 変わるのは表示セクション側だけ
 		expect(withSection.data.deposit_withdrawal_summary).toBeDefined();
 		expect(withoutSection.data.deposit_withdrawal_summary).toBeUndefined();
 		expect(withoutSection.data.yearly_dw_summary).toBeUndefined();
@@ -1745,18 +1596,15 @@ describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', ()
 		const urls = fetchedUrls();
 		expect(urls.some((u) => u.includes('deposit_history'))).toBe(true);
 		expect(urls.some((u) => u.includes('withdrawal_history'))).toBe(true);
-		// 約定履歴は引き続き取得しない
 		expect(urls.some((u) => u.includes('trade_history') && !u.includes('type=margin'))).toBe(false);
 		expect(result.data.deposit_withdrawal_summary).toBeDefined();
 		expect(result.meta.depositWithdrawalStatus).toBe('available');
-		// 損益を出さないので入出金履歴は損益計算に供給されていない
 		expect(result.meta.dwFetchedForPnl).toBe(false);
 		expect(result.meta.flowDataUnavailableReason).toBeUndefined();
 	});
 
 	it('summary: セクション未リクエストでも損益に入出金を使っている旨が content に出る', async () => {
-		// content[0].text が LLM への唯一のチャネルなので、not_requested を
-		// 「損益も入出金を見ていない」と読まれないようテキスト側で打ち消す。
+		// not_requested を「損益も入出金を見ていない」と読まれないよう、content テキスト側で打ち消す（LLM は content しか読まない）。
 		setupFetchMock({ assets: assetsAfterWithdrawal, withdrawals: btcWithdrawalAfterTrades });
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -1773,10 +1621,7 @@ describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', ()
 	});
 
 	it('summary: 部分失敗で原価を抑止したときは「反映済み」と言わない（同一テキスト内の自己矛盾を防ぐ）', async () => {
-		// 暗号資産出庫チャネルだけ落ちると allFailed=false のまま warnings が立つので、
-		// dwFetchedForPnl は true でも取得原価は抑止される（flowUnavailableReason=dw_fetch_failed）。
-		// ここで「取得原価・評価損益は入出金を反映した値です」と言うと、同じ content 内の
-		// 「評価損益: 算出不能」と真っ向から矛盾する。text しか読まない LLM には解けない。
+		// 暗号資産出庫チャネルだけ落ちると dwFetchedForPnl は true でも原価は抑止される。そこで「入出金を反映した値です」と書くと、同じ content の「算出不能」と矛盾する。
 		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
 			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
 			const marginResponse = maybeMarginAccountResponse(urlStr);
@@ -1811,11 +1656,9 @@ describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', ()
 		});
 
 		assertOk(result);
-		// 取得自体は成立しているが、欠けたチャネルがあるので原価は抑止されている
 		expect(result.meta.dwFetchedForPnl).toBe(true);
 		expect(result.meta.flowDataUnavailableReason).toBe('dw_fetch_failed');
 		expect(result.summary).toContain('評価損益: 算出不能');
-		// その状態で「反映した値です」と断言しない
 		expect(result.summary).not.toContain('取得原価・評価損益・純入出金は入出金を反映した値です');
 	});
 
@@ -1836,7 +1679,6 @@ describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', ()
 });
 
 describe('analyze_my_portfolio — equity series データ品質', () => {
-	/** JPY のみ保有: 暗号資産なし → equity series は JPY 残高ベースで構築される */
 	it('JPY のみ保有でも equity series が構築される (quality=jpy_only)', async () => {
 		const jpyOnlyAssets = {
 			assets: [
@@ -1897,7 +1739,6 @@ describe('analyze_my_portfolio — equity series データ品質', () => {
 		expect(last?.value_jpy).toBe(10560);
 	});
 
-	/** 暗号資産あり・全 candle 取得失敗 → 現在価格にフォールバック (quality=fallback_only) */
 	it('candle 取得が全失敗しても equity series が構築される (quality=fallback_only)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
 			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
@@ -1907,7 +1748,6 @@ describe('analyze_my_portfolio — equity series データ品質', () => {
 				return new Response(JSON.stringify(tickersJpy), { status: 200 });
 			}
 			if (urlStr.includes('candlestick')) {
-				// 全 candle fetch を失敗させる
 				return new Response(JSON.stringify(mockBitbankError(20001)), { status: 400 });
 			}
 			if (urlStr.includes('/v1/user/assets')) {
@@ -1941,13 +1781,8 @@ describe('analyze_my_portfolio — equity series データ品質', () => {
 		expect(result.summary).toContain('現在価格で全期間を代替');
 	});
 
-	/** 正常系: 全ペアで candle 取得済 → quality=complete */
 	it('全暗号資産で candle 取得済のとき quality=complete', async () => {
-		// 静的フィクスチャ candlesBtcJpy1day120 は 2024 年データなので、年初判定のための
-		// 「年初以降の daily candle が存在するか」を満たすために動的に最近の candle を生成する。
-		// baseTs = 今日から (count - 1) 日前 → 今日まで連続する 1day 足
-		// count は年初（1/1）〜今日を常にカバーする 400 日（うるう年でも 366 日 < 400）。
-		// 180 日だと年初から 181 日目（6/30）以降の実行で 1/1 に届かず fallback 判定になる。
+		// 年初以降の daily candle が要るので、今日まで連続する 1day 足を動的に生成する。400 日あれば年初〜今日を常にカバーする（180 日だと 6/30 以降に年初へ届かない）。
 		const TODAY_MS = Date.now();
 		const ONE_DAY_MS = 86_400_000;
 		const recentCandle = (count: number) => ({
@@ -2001,14 +1836,10 @@ describe('analyze_my_portfolio — equity series データ品質', () => {
 		expect(result.meta.equitySeriesFallbackAssets).toBeUndefined();
 	});
 
-	/** 一部だけ candle 成功 → 残りは fallback (quality=partial_fallback) */
 	it('一部の暗号資産でだけ candle 取得済のとき quality=partial_fallback', async () => {
-		// btc は最近の candle データを返し、eth / xrp は error を返す混在モック。
-		// equity series 構築側の lookup 日付（monthDates + yearDates）すべてが btc に揃うよう、
-		// 年初〜今日までを連続で生成する。
+		// btc だけ年初〜今日の連続足を返し、eth / xrp は error を返す混在モック。
 		const TODAY_MS = Date.now();
 		const ONE_DAY_MS = 86_400_000;
-		// 年初から今日までを十分カバーする日数（例: 400 日）。
 		const recentBtcCandle = {
 			success: 1,
 			data: {
@@ -2029,8 +1860,7 @@ describe('analyze_my_portfolio — equity series データ品質', () => {
 				return new Response(JSON.stringify(tickersJpy), { status: 200 });
 			}
 			if (urlStr.includes('candlestick')) {
-				// URL pattern: https://public.bitbank.cc/{pair}/candlestick/1day/{date}
-				// btc_jpy のみ成功、それ以外は upstream error
+				// btc_jpy だけ成功、それ以外は upstream error
 				if (urlStr.includes('btc_jpy')) {
 					return new Response(JSON.stringify(recentBtcCandle), { status: 200 });
 				}
@@ -2062,13 +1892,11 @@ describe('analyze_my_portfolio — equity series データ品質', () => {
 		expect(result.data.monthly_equity_series).toBeDefined();
 		expect(result.data.monthly_equity_series?.length).toBeGreaterThan(0);
 		expect(result.meta.equitySeriesQuality).toBe('partial_fallback');
-		// btc は揃っているので fallback 対象外、eth / xrp は対象
 		expect(result.meta.equitySeriesFallbackAssets).toEqual(expect.arrayContaining(['eth', 'xrp']));
 		expect(result.meta.equitySeriesFallbackAssets).not.toContain('btc');
 		expect(result.summary).toContain('歴史的価格データが取得できなかったため、現在価格で代替');
 	});
 
-	/** include_pnl=false のとき equitySeriesQuality は undefined */
 	it('include_pnl=false のとき equity series は構築されず quality は undefined', async () => {
 		setupFetchMock();
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -2085,13 +1913,7 @@ describe('analyze_my_portfolio — equity series データ品質', () => {
 	});
 });
 
-/**
- * 純入出金（calcPeriodNetFlow）で価格を解決できなかった暗号資産の申告。
- *
- * 価格が引けない入出庫は net_flow_jpy から黙って落ちる（= 0 円計上と等価）ため、
- * adjusted_change_jpy も同じ向きにずれる。読み手が欠落に気づけるよう、計算層 warning
- * （`.claude/rules/tools.md` の meta.warnings 系統）として資産名だけを申告する。
- */
+/** 価格が引けない入出庫は net_flow_jpy から黙って落ちる（0 円計上と等価）ので、計算層 warning で資産名だけを申告する。 */
 describe('analyze_my_portfolio — 純入出金の価格解決 warning', () => {
 	/** 2026-05-16 12:00 JST。当日・当月・当年のいずれの期間にも入る入出庫を作れる基準時刻 */
 	const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
@@ -2127,8 +1949,7 @@ describe('analyze_my_portfolio — 純入出金の価格解決 warning', () => {
 		setupFetchMock({
 			deposits: unpricedDeposits,
 			withdrawals: unpricedWithdrawals,
-			// 既定の静的 candle（2024 起点）。near candle は全ペアに同じ OHLCV を返すため
-			// doge_jpy / mona_jpy の入出庫日価格まで誤って解決し、本テストの net flow 未計上が検証できなくなる。
+			// candle は既定の静的 fixture（2024 起点）のまま。直近の足を渡すと doge_jpy / mona_jpy の入出庫日価格まで解決して検証にならない。
 		});
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -2151,12 +1972,10 @@ describe('analyze_my_portfolio — 純入出金の価格解決 warning', () => {
 		expect(warnings.join('\n')).not.toContain('1000');
 		expect(warnings.join('\n')).not.toMatch(/\b10円/);
 
-		// data 側にも資産名が残る（3 期間とも同じ入出庫が対象）
 		expect(result.data.daily_performance?.unpriced_flow_assets).toEqual(['doge', 'mona']);
 		expect(result.data.monthly_performance?.unpriced_flow_assets).toEqual(['doge', 'mona']);
 		expect(result.data.yearly_performance?.unpriced_flow_assets).toEqual(['doge', 'mona']);
 
-		// LLM が見落とさないよう summary 先頭付近に出す
 		const firstLines = result.summary.split('\n').slice(0, 3).join('\n');
 		expect(firstLines).toContain('⚠️');
 		expect(firstLines).toContain('DOGE, MONA');
@@ -2193,12 +2012,7 @@ describe('analyze_my_portfolio — 純入出金の価格解決 warning', () => {
 		expect(result.data.daily_performance?.unpriced_flow_assets).toBeUndefined();
 		expect(result.data.yearly_performance?.unpriced_flow_assets).toBeUndefined();
 		expect(result.summary).not.toContain('純入出金に計上できませんでした');
-		// candle fixture は 2024 年分しか無く 2026 年の入庫日価格を解決できないため、
-		// 現在価格フォールバックの申告が残る（#57 (a) の 3 経路目。unpriced とは別系統）。
-		// もう 1 本は同じ入庫が取得原価に算入されなかったことの申告（#77）。純入出金には
-		// 現在価格で計上されるのに原価には入らない、という非対称をここで固定する。
-		// #86: 静的 candle では期初始値も欠損するため start_boundary / 増減率抑止の warning が加わる。
-		// 並びは原価の完全性（銘柄単位）→ 期初始値欠損 → 増減率抑止 → 換算フォールバックの順。
+		// candle fixture は 2024 年分しか無いので warning は 4 本（原価の完全性 #77 → 期初始値欠損 → 増減率抑止 #86 → 現在価格フォールバック #57）がこの順に出る。
 		expect(result.meta.warnings).toHaveLength(4);
 		expect(result.meta.warnings?.[0]).toContain('BTC（1件）');
 		expect(result.meta.warnings?.[1]).toContain('期初の始値を解決できず期初評価額に含めていません');
@@ -2209,11 +2023,6 @@ describe('analyze_my_portfolio — 純入出金の価格解決 warning', () => {
 		expect(result.data.daily_performance?.net_flow_jpy).toBe(1_550_000);
 	});
 
-	/**
-	 * このツールに `view` / `format` は無く、出力の切り替え軸は 3 つの include_* だけ。
-	 * warning が消える組み合わせでは、warning の対象になる値（performance / 純入出金）
-	 * 自体が出力されない — 過小な数値だけが warning なしで残る経路が無いことを固定する。
-	 */
 	it('include_pnl=false / include_deposit_withdrawal=false: 過小な純入出金が warning なしで出ることはない', async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(fixedNowMs);
@@ -2221,11 +2030,9 @@ describe('analyze_my_portfolio — 純入出金の価格解決 warning', () => {
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
 
-		/** 価格解決の warning は資産名を含む。取得原価が確定できない旨の warning とは別系統。 */
 		const hasUnpricedWarning = (warnings: string[] | undefined) =>
 			(warnings ?? []).some((w) => w.includes('DOGE') || w.includes('MONA'));
 
-		// include_pnl=false: performance を構築しないので純入出金自体が出力されない
 		const noPnl = await handler({
 			include_technical: false,
 			include_pnl: false,
@@ -2237,9 +2044,7 @@ describe('analyze_my_portfolio — 純入出金の価格解決 warning', () => {
 		expect(noPnl.data.yearly_performance).toBeUndefined();
 		expect(noPnl.data.monthly_performance).toBeUndefined();
 
-		// include_deposit_withdrawal=false: 表示セクションは閉じるが、損益計算のために
-		// 入出金は読む。純入出金は実測され、価格を引けない入出庫はその実測値から落ちるので
-		// warning も従来どおり出る（黙って過小になる経路を作らない）。
+		// include_deposit_withdrawal=false でも損益計算のために入出金は読むので、純入出金は実測され warning も出る。
 		const noDw = await handler({
 			include_technical: false,
 			include_pnl: true,
@@ -2269,21 +2074,12 @@ describe('analyze_my_portfolio — 純入出金の価格解決 warning', () => {
 		expect(warningIndex).toBeGreaterThanOrEqual(0);
 		expect(jsonIndex).toBeGreaterThan(0);
 		expect(warningIndex).toBeLessThan(jsonIndex);
-		// 先頭付近（1〜3 行目）に出ること
 		expect(text.split('\n').slice(0, 3).join('\n')).toContain('⚠️');
-		// data の JSON にも資産名が残る（structuredContent を見ないクライアント向け）
 		expect(text).toContain('unpriced_flow_assets');
 	});
 });
 
-/**
- * 暗号資産入出庫の JPY 換算を入出庫日の 1day open で固定する（#57 (a)）。
- *
- * 本 issue の眼目は「相場が動いても入出庫の評価額が動かないこと」なので、
- * **現在価格（tickers）だけを差し替えた 2 回の実行で同じ値が返ること**を軸に据える。
- * 経路は 3 つ: 直近 400 日窓の日次価格で解ける / 400 日超で年 chunk を追加取得して解ける /
- * どちらでも解けず現在価格にフォールバックする。
- */
+/** #57 (a): 入出庫の評価額が相場で動かないことを、現在価格だけを差し替えた 2 回の実行で同じ値になることで固定する。 */
 describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 	/** 2026-05-16 12:00 JST */
 	const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
@@ -2295,10 +2091,7 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 	/** 入庫日の 1day open。現在価格（15,500,000 / 31,000,000）とは意図的に離す */
 	const FLOW_DAY_OPEN = 8_000_000;
 
-	/**
-	 * 指定した UTC 時刻の 1day 足だけを返す candlestick レスポンス。
-	 * `portfolioDayStartMs` は JST 暦日に丸めるため、UTC 0:00 の足は同じ日付の JST 暦日キーになる。
-	 */
+	/** portfolioDayStartMs は JST 暦日に丸めるので、UTC 0:00 の足は同じ日付の JST 暦日キーになる。 */
 	function candles1day(rows: Array<{ tsMs: number; open: number }>) {
 		return {
 			success: 1,
@@ -2320,7 +2113,6 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 		};
 	}
 
-	/** btc の現在価格だけを差し替えた tickers_jpy レスポンス */
 	function tickersWithBtc(last: number) {
 		return {
 			success: 1,
@@ -2340,7 +2132,6 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 		};
 	}
 
-	/** btc を 0.1 だけ入庫した履歴（confirmed_at を引数で振る） */
 	function btcDeposit(confirmedAt: number) {
 		return {
 			deposits: [
@@ -2356,7 +2147,6 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 		};
 	}
 
-	/** 現在価格だけを振って 2 回実行する */
 	async function runWithBtcPrice(last: number, opts: Parameters<typeof setupFetchMock>[0]) {
 		setupFetchMock({ ...opts, tickers: tickersWithBtc(last) });
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -2373,7 +2163,6 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 		const mockOpts = {
 			deposits: btcDeposit(recentFlowMs),
 			withdrawals: { withdrawals: [] },
-			// 入庫当日（JST 2026-05-16）の足を持つ
 			candles: candles1day([{ tsMs: Date.UTC(2026, 4, 16), open: FLOW_DAY_OPEN }]),
 		};
 
@@ -2382,16 +2171,13 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 
 		assertOk(cheap);
 		assertOk(rich);
-		// 本 issue の眼目: 現在価格が 2 倍でも入庫の評価額は 1 円も動かない
 		expect(cheap.data.daily_performance?.net_flow_jpy).toBe(rich.data.daily_performance?.net_flow_jpy);
 		expect(cheap.data.deposit_withdrawal_summary?.crypto_deposit_estimated_jpy).toBe(
 			rich.data.deposit_withdrawal_summary?.crypto_deposit_estimated_jpy,
 		);
-		// 0.1 BTC × 入庫日の始値
 		expect(cheap.data.daily_performance?.net_flow_jpy).toBe(Math.round(0.1 * FLOW_DAY_OPEN));
 		expect(cheap.data.deposit_withdrawal_summary?.crypto_deposit_estimated_jpy).toBe(Math.round(0.1 * FLOW_DAY_OPEN));
 
-		// 評価方式が出力から判別できる（受け入れ条件）
 		expect(cheap.meta.flowValuationBasis).toBe('deposit_date_price');
 		expect(cheap.meta.flowValuationFallbackCount).toBeUndefined();
 		expect(cheap.data.daily_performance?.flow_valuation).toEqual({
@@ -2400,15 +2186,13 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 			basis: 'deposit_date_price',
 		});
 		expect(cheap.data.deposit_withdrawal_summary?.crypto_deposit_valuation?.basis).toBe('deposit_date_price');
-		// 仮評価に落ちていないので警告も出ない
 		expect((cheap.meta.warnings ?? []).some((w: string) => w.includes('現在価格で仮評価'))).toBe(false);
 	});
 
 	it('400 日超: 年 chunk を追加取得して入庫日価格で評価する', async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(fixedNowMs);
-		// 直近窓（date 未指定）には入庫日の足が無く、2023 年 chunk（date='2023'）にだけ在る状況を作る。
-		// setupFetchMock は URL で分岐できないため、candlestick の URL から年 chunk を読み取る。
+		// 直近窓には入庫日の足が無く 2023 年 chunk にだけある状況を作る（setupFetchMock は URL で分岐できないので自前で振り分ける）。
 		const mockOpts = {
 			deposits: btcDeposit(oldFlowMs),
 			withdrawals: { withdrawals: [] },
@@ -2416,7 +2200,6 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 		const recentCandles = candles1day([{ tsMs: Date.UTC(2026, 4, 15), open: 20_000_000 }]);
 		const oldCandles = candles1day([{ tsMs: Date.UTC(2023, 3, 20), open: FLOW_DAY_OPEN }]);
 
-		/** candlestick の URL は `/candlestick/{pair}/{type}/{yearOrDay}` 形式 */
 		const runWithYearChunks = async (last: number) => {
 			setupFetchMock({ ...mockOpts, tickers: tickersWithBtc(last) });
 			const routed = globalThis.fetch as unknown as Mock<typeof fetch>;
@@ -2443,11 +2226,9 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 		const cheap = await runWithYearChunks(15_500_000);
 		const rich = await runWithYearChunks(31_000_000);
 
-		// 直近窓（当年 / 前年）だけでなく、入庫年の chunk を実際に叩いている
 		expect(cheap.candleUrls.some((u) => u.includes('/2023'))).toBe(true);
 		assertOk(cheap.result);
 		assertOk(rich.result);
-		// 全履歴を集計する入出金サマリーで、年 chunk 由来の入庫日価格が使われる
 		expect(cheap.result.data.deposit_withdrawal_summary?.crypto_deposit_estimated_jpy).toBe(
 			Math.round(0.1 * FLOW_DAY_OPEN),
 		);
@@ -2473,7 +2254,6 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 
 		assertOk(cheap);
 		assertOk(rich);
-		// フォールバックは相場連動する（だからこそ黙って混ぜず申告する）
 		expect(cheap.data.deposit_withdrawal_summary?.crypto_deposit_estimated_jpy).toBe(Math.round(0.1 * 15_500_000));
 		expect(rich.data.deposit_withdrawal_summary?.crypto_deposit_estimated_jpy).toBe(Math.round(0.1 * 31_000_000));
 
@@ -2484,7 +2264,6 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 			current_price_fallback_count: 1,
 			basis: 'current_price_fallback',
 		});
-		// 計算層 warning（content 先頭）と入出金セクションの両方で申告する
 		expect((cheap.meta.warnings ?? []).some((w: string) => w.includes('1件'))).toBe(true);
 		expect(cheap.summary).toContain('現在価格で仮評価');
 	});
@@ -2515,21 +2294,11 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 		expect(result.data.daily_performance?.net_flow_jpy).toBe(1_000_000);
 	});
 
-	/**
-	 * 換算結果を出力するセクションが 1 つも無い構成では、価格解決自体を走らせない。
-	 *
-	 * `include_deposit_withdrawal=false`（入出金セクションを閉じる）かつ入出金履歴の部分失敗で
-	 * 純入出金が未計測（`buildPeriodPerformance` が `unmeasuredNetFlow` に短絡）になると、
-	 * 換算値はどの出力にも現れない。それでも candle を追加取得すると、
-	 * (1) 出力に出ない値のためにレイテンシを払い、(2) meta / summary が
-	 * 「どこにも出ていない評価額」を申告してしまう（読み手が探しても見つからない）。
-	 */
 	it('換算結果を出力するセクションが無い構成では価格解決も申告も行わない', async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(fixedNowMs);
 
-		// 暗号資産出庫チャネルだけ落として部分失敗にする（allFailed=false / warnings あり
-		// → flowUnavailableReason=dw_fetch_failed で純入出金が未計測になる）。
+		// 暗号資産出庫チャネルだけ落として部分失敗にする（flowUnavailableReason=dw_fetch_failed で純入出金が未計測になる）。
 		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
 			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
 			const marginResponse = maybeMarginAccountResponse(urlStr);
@@ -2550,8 +2319,7 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 				return new Response(JSON.stringify(mockBitbankSuccess(payload)), { status: 200 });
 			}
 			if (urlStr.includes('deposit_history')) {
-				// 年初以降（= 純入出金の母集合に入る）の DONE 暗号資産入庫。
-				// candle は当日を含まないので、解決を試みれば現在価格フォールバックに落ちる。
+				// 年初以降の DONE 暗号資産入庫。candle は当日を含まないので、解決を試みれば現在価格フォールバックに落ちる。
 				return new Response(JSON.stringify(mockBitbankSuccess(btcDeposit(recentFlowMs))), { status: 200 });
 			}
 			if (urlStr.includes('withdrawal_history')) {
@@ -2571,31 +2339,19 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 		});
 
 		assertOk(result);
-		// 前提: 純入出金は未計測で、入出金セクションも出ていない = 換算値の出力先が無い
 		expect(result.meta.flowDataUnavailableReason).toBe('dw_fetch_failed');
 		expect(result.data.daily_performance?.flow_measured).toBe(false);
 		expect(result.data.daily_performance?.flow_valuation).toBeUndefined();
 		expect(result.data.deposit_withdrawal_summary).toBeUndefined();
 
-		// 出力に現れない換算を申告しない
 		expect(result.meta.flowValuationBasis).toBeUndefined();
 		expect(result.meta.flowValuationFallbackCount).toBeUndefined();
 		expect((result.meta.warnings ?? []).some((w: string) => w.includes('現在価格で仮評価'))).toBe(false);
 		expect(result.summary).not.toContain('現在価格で仮評価');
 	});
 
-	/**
-	 * 年初より前の暗号資産**出庫**は、入出金分析セクションの有無で換算対象かどうかが変わる。
-	 *
-	 * `calcDepositWithdrawalSummary` は #70 以降、暗号資産出庫を出庫日価格で換算して
-	 * 純投入額から差し引く（元本の回収として扱う）。したがってセクションを出す構成では
-	 * **全履歴**の出庫に反映先があり、年 chunk を追加取得してでも出庫日価格で解く必要がある。
-	 * 逆にセクションを閉じた構成では消費者が期間ネットフローだけになるので年初来で足り、
-	 * 年初より前の出庫を解いても candle 取得と `flowValuationBasis` / フォールバック件数 /
-	 * 警告だけが動いてしまう（入庫と出庫で下限時刻を分けている理由）。
-	 */
+	/** セクションを出す構成では全履歴の出庫を純投入額から差し引くので年 chunk まで取りに行き、閉じた構成では年初来で足りる（入庫と出庫で下限時刻を分けている理由）。 */
 	describe('年初より前の暗号資産出庫の換算範囲', () => {
-		/** 2023 年の暗号資産出庫だけを持つ口座で handler を走らせ、叩いた candlestick URL を返す */
 		async function runWithOldWithdrawal(includeDepositWithdrawal: boolean, jpyDepositAmount = '5000000') {
 			const candleUrls: string[] = [];
 			globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
@@ -2621,7 +2377,6 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 					return new Response(JSON.stringify(mockBitbankSuccess(payload)), { status: 200 });
 				}
 				if (urlStr.includes('deposit_history')) {
-					// 当年の暗号資産入庫は無い（JPY 入金のみ）
 					return new Response(
 						JSON.stringify(
 							mockBitbankSuccess({
@@ -2629,8 +2384,7 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 									{
 										uuid: 'dep-jpy',
 										asset: 'jpy',
-										// 既定は出庫の評価額（1,600,000）を上回る額にして純投入額を正に保つ
-										// （負だと account_return_* が undefined になり summary の内訳ブロックが出ない）
+										// 既定は出庫の評価額（1,600,000）より大きくして純投入額を正に保つ（負だと account_return_* が undefined になる）。
 										amount: jpyDepositAmount,
 										status: 'DONE',
 										found_at: recentFlowMs,
@@ -2685,21 +2439,15 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 			// 0.2 BTC × 出庫日（2023-04-20）の始値。手数料 0.0006 BTC は元本に含めない
 			expect(dw?.crypto_withdrawal_estimated_jpy).toBe(Math.round(0.2 * FLOW_DAY_OPEN));
 			expect(dw?.crypto_withdrawal_valuation?.basis).toBe('deposit_date_price');
-			// JPY 入金 5,000,000 - 出庫の評価額
 			expect(dw?.net_jpy_invested).toBe(5_000_000 - Math.round(0.2 * FLOW_DAY_OPEN));
 
-			// 反映先があるので出庫年（2023）の chunk を取りに行く
 			expect(candleUrls.some((u) => u.includes('/2023'))).toBe(true);
-			// 換算方式の申告も母集合に載る
 			expect(result.meta.flowValuationBasis).toBe('deposit_date_price');
 
-			// LLM が読むのは content テキストだけ（.claude/rules/tools.md）。
-			// 内訳・注記が structuredContent と同じ扱いを述べていること。
 			expect(result.summary).toContain('暗号資産出庫の評価: -');
 			expect(result.summary).toContain('（JPY純入金 - 暗号資産出庫の評価額）');
 			expect(result.summary).toContain('元本の回収');
 			expect(result.summary).toContain('口座外の値動きは測定対象外');
-			// 実態と食い違う旧注記が残っていない（#70）
 			expect(result.summary).not.toContain('送金として損益計算から除外');
 		});
 
@@ -2713,7 +2461,6 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 			assertOk(result);
 			expect(result.data.deposit_withdrawal_summary?.net_jpy_invested).toBeLessThan(0);
 			expect(result.data.deposit_withdrawal_summary?.account_return_pct).toBeUndefined();
-			// ブロックごと消さず、出せない理由を LLM に見える content テキストで示す
 			expect(result.summary).toContain('口座全体リターン: 算出不可');
 			expect(result.summary).toContain('元本の回収');
 		});
@@ -2725,26 +2472,16 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 			const { result, candleUrls } = await runWithOldWithdrawal(false);
 
 			assertOk(result);
-			// セクション自体が出ない（＝全履歴の出庫を換算する消費者がいない）
 			expect(result.data.deposit_withdrawal_summary).toBeUndefined();
-			// 出庫年（2023）の chunk を取りに行かない
 			expect(candleUrls.some((u) => u.includes('/2023'))).toBe(false);
-			// 換算した入出庫が 1 件も無いので方式の申告も出ない
 			expect(result.meta.flowValuationBasis).toBeUndefined();
 			expect(result.meta.flowValuationFallbackCount).toBeUndefined();
 			expect((result.meta.warnings ?? []).some((w: string) => w.includes('現在価格で仮評価'))).toBe(false);
 		});
 	});
 
-	/**
-	 * summary の件数は「入出庫の総件数」ではなく**評価できた件数**で書く。
-	 *
-	 * `crypto_*_count` は総件数で、`crypto_*_estimated_jpy` に載るのは価格を解決できた分だけ
-	 * （解決できなかった分は黙って 0 円計上せず集計から落ちる）。総件数で説明すると、
-	 * 純投入額に反映されていない出庫まで「差し引いた」と書くことになる。
-	 */
+	/** crypto_*_count は総件数だが estimated_jpy に載るのは解決できた分だけなので、summary の件数は評価できた件数で書く。 */
 	describe('価格を一部しか解決できない出庫の申告', () => {
-		/** btc（価格あり）と mona（tickers にも candle にも無い）の出庫を持つ口座で走らせる */
 		async function runWithPartiallyPricedWithdrawals() {
 			globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
 				const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
@@ -2814,7 +2551,6 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 
 			assertOk(result);
 			const dw = result.data.deposit_withdrawal_summary;
-			// 総件数は 2 件、金額に載っているのは btc の 1 件だけ
 			expect(dw?.crypto_withdrawal_count).toBe(2);
 			expect(dw?.crypto_withdrawal_estimated_jpy).toBe(Math.round(0.2 * FLOW_DAY_OPEN));
 			expect(dw?.crypto_withdrawal_valuation).toEqual({
@@ -2830,16 +2566,11 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 				'※ 暗号資産出庫 1件は JPY 出金と同じ「元本の回収」として純投入額から差し引いています',
 			);
 			expect(result.summary).not.toContain('暗号資産出庫 2件は JPY 出金と同じ');
-			// 落ちた 1 件は黙って消さず別行で申告する
 			expect(result.summary).toContain('※ 暗号資産出庫 1件は評価額を算出できず純投入額に反映されていません');
 		});
 	});
 
-	/**
-	 * 純投入額が 0 以下でリターンを出せないのは暗号資産出庫のせいとは限らない。
-	 * JPY 出金だけで入金と相殺されている口座も同じ状態になるので、理由の提示は
-	 * 出庫の有無に依存させず、出庫が効いているときだけ内訳を添える。
-	 */
+	/** 純投入額が 0 以下になるのは JPY 出金でも起きるので、算出不可の理由は出庫の有無に依存させない。 */
 	it('JPY 入出金だけで純投入額が 0 になった口座にも算出不可の理由を出す', async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(fixedNowMs);
@@ -2875,17 +2606,10 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 		expect(result.data.deposit_withdrawal_summary?.net_jpy_invested).toBe(0);
 		expect(result.data.deposit_withdrawal_summary?.account_return_pct).toBeUndefined();
 		expect(result.summary).toContain('口座全体リターン: 算出不可');
-		// 暗号資産出庫は 1 件も無いので、出庫由来の内訳は添えない
 		expect(result.summary).not.toContain('元本の回収');
 	});
 
-	/**
-	 * 新設フィールドは既存キーの後ろに出す（既存消費者の JSON を頭から崩さない）。
-	 *
-	 * **キー順を決めるのはハンドラの代入順ではなく Zod スキーマの宣言順**——`z.object` の
-	 * parse はスキーマ順でオブジェクトを組み直すため、代入順だけ末尾にしても wire では
-	 * 中間に入る。人手のレビューでは見えない差なので、実際の出力順で機械的に固定する。
-	 */
+	/** キー順を決めるのはハンドラの代入順ではなく Zod スキーマの宣言順なので、実際の出力順で固定する。 */
 	it('新設の *_valuation は既存キーの後ろに出る（既存キーの相対順も不変）', async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(fixedNowMs);
@@ -2910,27 +2634,20 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 			'is_complete',
 			'analysis_basis',
 			'crypto_deposit_valuation',
-			// #70 で追加。値が undefined でもキーは残る（crypto_deposit_estimated_jpy と同じ挙動）
+			// 値が undefined でもキーは残る（crypto_deposit_estimated_jpy と同じ）
 			'crypto_withdrawal_estimated_jpy',
 		]);
 
-		// performance 側も同様に、新設フィールドが既存キーの後ろに並ぶ
 		const perfKeys = Object.keys(result.data.daily_performance ?? {});
 		expect(perfKeys.indexOf('note')).toBeLessThan(perfKeys.indexOf('flow_valuation'));
-		// #109 の申告も flow_valuation より後ろ。このフィクスチャの tickers は btc_jpy しか
-		// 返さないので ETH / XRP が現在評価額から落ち、実際に両フィールドが出る。
+		// このフィクスチャの tickers は btc_jpy しか返さないので ETH / XRP が現在評価額から落ち、unpriced_current_assets が実際に出る。
 		expect(perfKeys.indexOf('flow_valuation')).toBeLessThan(perfKeys.indexOf('unpriced_current_assets'));
 		expect(perfKeys.at(-1)).toBe('change_jpy_understated');
 
-		// 期間 DW サマリーも同様
 		const periodKeys = Object.keys(result.data.yearly_dw_summary ?? {});
 		expect(periodKeys.indexOf('period_end')).toBeLessThan(periodKeys.indexOf('crypto_deposit_valuation'));
 	});
 
-	/**
-	 * `PERFORMANCE_NOTE` と summary の注記行は LLM が評価方式を読む唯一のチャネル
-	 * （`structuredContent` は見えない）。文言が現在価格ベースのまま取り残されないよう固定する。
-	 */
 	it('note / summary の注記が入出庫日ベースであることを明示する', async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(fixedNowMs);
@@ -2949,30 +2666,17 @@ describe('analyze_my_portfolio — 入出庫日価格での評価', () => {
 	});
 });
 
-/**
- * 取得原価の決定性 — 出庫が入庫の価格取得枠を奪わないこと（#76）。
- *
- * #70 で出庫の価格解決範囲を年初来から全履歴に広げた結果、入庫と出庫が 1 つの
- * (資産, 年) chunk 予算を奪い合うようになった。年の新しい順に枠が埋まるため、
- * 古い年の入庫が出庫に押し出され → 入庫日の始値で解けず → `collectDepositCostEvents` が
- * 原価から丸ごと落とす → 移動平均の取得原価が変わり、**過去の実現損益まで変わる**。
- * 売買が一切無くても実行タイミングで数字が動く状態だったので、ここで固定する。
- */
+/** #76: 出庫が入庫の (資産, 年) chunk 予算を奪うと、古い入庫が原価から落ちて過去の実現損益まで変わる。 */
 describe('analyze_my_portfolio — 取得原価の決定性（出庫に押し出されない）', () => {
 	/** 2026-05-16 12:00 JST */
 	const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
 	/** 2023-04-20 12:00 JST（直近 400 日窓の外。年 chunk の追加取得が要る） */
 	const depositMs = Date.UTC(2023, 3, 20, 3, 0, 0, 0);
-	/** 2024-06-01 12:00 JST（入庫年より**新しい**＝旧実装では入庫より先に枠を取る） */
+	/** 2024-06-01 12:00 JST（入庫年より新しいので、年の新しい順に枠を取ると入庫より先に枠を取ってしまう） */
 	const withdrawalMs = Date.UTC(2024, 5, 1, 3, 0, 0, 0);
-	/** 入庫日（2023-04-20）の 1day open */
 	const DEPOSIT_DAY_OPEN = 8_000_000;
 
-	/**
-	 * 出庫だけが要求する (資産, 年) chunk を作るための資産。
-	 * 出庫の上限（12）を超える 14 種類を並べ、旧実装なら 12 枠を全部食って
-	 * 入庫の btc:2023 が押し出される状況にする。
-	 */
+	/** 出庫だけが要求する (資産, 年) chunk を上限（12）より多い 14 組作り、入庫の btc:2023 が押し出される状況にする。 */
 	const WITHDRAWAL_ASSETS = [
 		'xrp',
 		'ltc',
@@ -3036,12 +2740,6 @@ describe('analyze_my_portfolio — 取得原価の決定性（出庫に押し出
 		],
 	};
 
-	/**
-	 * 2023 年の btc 入庫 1 件（＋ JPY 入金）と、任意件数の出庫を持つ口座で handler を走らせる。
-	 *
-	 * @param withdrawalCount 出庫の総件数。`WITHDRAWAL_ASSETS` に均等に振る（＝出庫だけの chunk 数は資産数）
-	 * @param depositYearResolvable false なら入庫年の足を返さない（押し出されたのと同じ状態を作る）
-	 */
 	async function run(withdrawalCount: number, depositYearResolvable = true) {
 		const withdrawals = Array.from({ length: withdrawalCount }, (_, i) => ({
 			uuid: `wd-${i}`,
@@ -3113,9 +2811,7 @@ describe('analyze_my_portfolio — 取得原価の決定性（出庫に押し出
 			return new Response(JSON.stringify(mockBitbankSuccess({})), { status: 200 });
 		}) as unknown as typeof fetch;
 
-		// 1 つの it で handler を 2 回走らせるので、呼び出しごとにモジュールを捨てる。
-		// BitbankPrivateClient は生成時に globalThis.fetch を bind してキャッシュされるため、
-		// リセットしないと 2 回目の handler が 1 回目の fetch モックを掴んだままになる。
+		// BitbankPrivateClient は生成時に globalThis.fetch を bind するので、handler を 2 回走らせる it では呼び出しごとにモジュールを捨てる。
 		vi.resetModules();
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
 		return handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: true });
@@ -3130,7 +2826,6 @@ describe('analyze_my_portfolio — 取得原価の決定性（出庫に押し出
 		vi.useRealTimers();
 	});
 
-	/** 出庫が 1 件も無い口座を基準にして、出庫が増えても入庫側の出力が動かないことを見る */
 	it('出庫ゼロ件の口座と出庫 98 件の口座で入庫の原価算入結果が一致する', async () => {
 		const noWithdrawals = await run(0);
 		// 98 件 = 出庫履歴 1 ページ（100 件）に収まる最大級。出庫だけの chunk は 14 組で上限 12 を超える
@@ -3139,20 +2834,14 @@ describe('analyze_my_portfolio — 取得原価の決定性（出庫に押し出
 		assertOk(noWithdrawals);
 		assertOk(manyWithdrawals);
 
-		// 入庫の原価算入結果（原価・平均取得単価・実現損益・数量不変条件）が 1 つも動かない
 		expect(manyWithdrawals.data.holdings).toEqual(noWithdrawals.data.holdings);
 		expect(manyWithdrawals.data.total_cost_basis).toBe(noWithdrawals.data.total_cost_basis);
 		expect(manyWithdrawals.data.total_realized_pnl).toBe(noWithdrawals.data.total_realized_pnl);
 		expect(manyWithdrawals.data.total_unrealized_pnl).toBe(noWithdrawals.data.total_unrealized_pnl);
-		// 入庫は 1 件も切り落とされていない（出庫が 14 組を要求しても入庫の枠は減らない）
 		expect(manyWithdrawals.meta.flowPriceChunkTruncatedDepositCount).toBeUndefined();
 		expect(manyWithdrawals.meta.flowPriceChunkFailedDepositCount).toBeUndefined();
 	});
 
-	/**
-	 * 上の一致が「どちらも原価を出せていないから一致している」という空振りでないことの確認。
-	 * 入庫年の足が取れないと原価算入対象から外れ、数量不変条件も崩れる ＝ 出力は確かに敏感。
-	 */
 	it('入庫年の足が取れないと原価・実現損益が変わる（一致テストが空振りでないことの確認）', async () => {
 		const resolvable = await run(0);
 		const unresolvable = await run(0, false);
@@ -3169,31 +2858,22 @@ describe('analyze_my_portfolio — 取得原価の決定性（出庫に押し出
 		// 算入されないと復元数量が 0.00499 に留まり、数量不変条件で原価が抑止される
 		expect(withoutDeposit?.cost_basis_reliable).toBe(false);
 		expect(withoutDeposit?.cost_basis).toBeUndefined();
-		// 実現損益も動く（移動平均の取得原価が変わるため）
 		expect(withoutDeposit?.realized_pnl).not.toBe(withDeposit?.realized_pnl);
 	});
 
-	/**
-	 * 出庫は表示専用なので従来どおり上限で妥協してよい。ただし黙って落とさず、
-	 * 「上限で切った」ことを現在価格フォールバック件数とは別枠で申告する（#76 仕様 2）。
-	 */
+	/** 出庫は表示専用なので上限で切ってよいが、黙って落とさず別枠で申告する（#76）。 */
 	it('上限で切り落とした出庫を件数で申告する（現在価格フォールバック件数とは別枠）', async () => {
 		const result = await run(98);
 
 		assertOk(result);
-		// 出庫だけの chunk は 14 組、上限は 12 組 → 2 組ぶんの出庫が切り落とされる
-		// （98 件を 14 資産に均等配分すると 1 資産あたり 7 件）
+		// 出庫だけの chunk は 14 組、上限 12 組 → 2 組ぶん（1 資産 7 件 × 2 = 14 件）が切り落とされる
 		expect(result.meta.flowPriceChunkTruncatedWithdrawalCount).toBe(14);
 		expect(result.meta.flowPriceChunkTruncatedDepositCount).toBeUndefined();
-		// LLM が読むのは content テキストだけ（.claude/rules/tools.md）。JSON より前の警告行に出す
 		expect(result.summary).toContain('暗号資産出庫 14件');
 		expect(result.summary).toContain('取得原価には影響しません');
 	});
 
-	/**
-	 * 入庫側の上限は「予算」ではなく暴走時の安全弁だが、当たったときは黙って落とさない。
-	 * 入庫が切られた ＝ 取得原価が不完全で、再実行で値が変わりうる状態なので必ず申告する。
-	 */
+	/** 入庫側の上限は暴走時の安全弁だが、当たったら原価が不完全で再実行で値が変わりうるので必ず申告する。 */
 	it('入庫が上限に当たったら「再実行で値が変わりうる」と申告する', async () => {
 		const { MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS } = await import('../../src/handlers/portfolio/fetch.js');
 		// 上限 +1 組ぶんの (資産, 年) を作る。1 組だけ切り落とされる想定
@@ -3260,18 +2940,15 @@ describe('analyze_my_portfolio — 取得原価の決定性（出庫に押し出
 
 		assertOk(result);
 		expect(result.meta.flowPriceChunkTruncatedDepositCount).toBe(1);
-		// 読み手に「原価が不完全で、再実行で値が変わりうる」ことが伝わる文言であること
 		expect(result.summary).toContain('暗号資産入庫 1件');
 		expect(result.summary).toContain('取得原価に算入していません');
 		expect(result.summary).toContain('再実行で値が変わります');
-		// 警告は JSON より前（summary は content テキストの先頭に入る）
 		expect(result.summary.indexOf('暗号資産入庫 1件')).toBeGreaterThanOrEqual(0);
 	});
 });
 
 describe('analyze_my_portfolio — toolDef handler', () => {
 	it('handler がデフォルト引数で動作する', async () => {
-		// setup URL routing fetch mock
 		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
 			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
 			const _maybeMargin = maybeMarginAccountResponse(urlStr);
@@ -3319,7 +2996,6 @@ describe('analyze_my_portfolio — toolDef handler', () => {
 		expect(jsonStart).toBeGreaterThan(0);
 		const dataInContent = JSON.parse(text.slice(jsonStart + 1)) as Record<string, unknown>;
 		expect(dataInContent).toEqual(structured.data);
-		// include_pnl=true のとき equity series は常に content の JSON に含まれる
 		expect(Array.isArray(structured.data.monthly_equity_series)).toBe(true);
 		expect(Array.isArray(structured.data.yearly_equity_series)).toBe(true);
 		expect((structured.data.monthly_equity_series as unknown[]).length).toBeGreaterThan(0);
@@ -3328,25 +3004,15 @@ describe('analyze_my_portfolio — toolDef handler', () => {
 		expect(text).toContain('yearly_equity_series');
 	});
 
-	/**
-	 * 資産推移の日次点・月次点の終端は、リクエスト開始時に確定した boundaries から導く。
-	 *
-	 * boundaries は fetchCandlePriceData に渡す取得条件そのものなので、ここで時計を
-	 * 読み直すと、API 応答を待っている間に JST 00:00 を跨いだ場合に「取得済みの日次価格に
-	 * 存在しない翌日」が 1 点増え、その点だけ現在価格フォールバックに落ちる。
-	 */
+	/** 日次点・月次点の終端はリクエスト開始時の boundaries から導く。時計を読み直すと、応答待ちの間に JST 00:00 を跨いだとき取得していない翌日の点が増える。 */
 	it('リクエスト中に JST 00:00 を跨いでも日次点は取得時の暦日で止まる', async () => {
-		/** JST の壁時計時刻を epoch ms に変換する（JST は DST を持たないので UTC+9 固定）。 */
-		const jstMs = (y: number, m: number, d: number, h = 0, min = 0, s = 0, ms = 0) =>
-			Date.UTC(y, m - 1, d, h - 9, min, s, ms);
 		const beforeMidnight = jstMs(2026, 8, 2, 23, 59, 59, 900);
 
 		vi.useFakeTimers();
 		vi.setSystemTime(beforeMidnight);
 		try {
 			setupFetchMock();
-			// candlestick は boundaries 確定後に発行される（handler の fetchCandlePriceData）。
-			// その応答を待っている間に JST 00:00 を跨がせる。
+			// candlestick は boundaries 確定後に発行されるので、その応答を待っている間に JST 00:00 を跨がせる。
 			const routed = globalThis.fetch;
 			let crossed = false;
 			globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
@@ -3368,15 +3034,13 @@ describe('analyze_my_portfolio — toolDef handler', () => {
 			assertOk(result);
 			expect(crossed).toBe(true);
 
-			// 日次点は月初 (8/1) 〜 取得時の当日 (8/2) の 2 点 + 最終点（現在値）。
-			// 時計を読み直していると 8/3 が増えて 4 点になる。
+			// 日次点は月初 (8/1)〜取得時の当日 (8/2) の 2 点 + 最終点。時計を読み直していると 8/3 が増えて 4 点になる。
 			const monthly = result.data.monthly_equity_series ?? [];
 			expect(monthly.map((p) => p.timestamp)).toEqual([
 				'2026-08-01T00:00:00+09:00',
 				'2026-08-02T00:00:00+09:00',
 				result.data.monthly_equity_series?.[monthly.length - 1]?.timestamp,
 			]);
-			// 月次点も同様に取得時の当月 (8月) で止まる。
 			const yearly = result.data.yearly_equity_series ?? [];
 			expect(yearly.at(-2)?.timestamp).toBe('2026-08-01T00:00:00+09:00');
 		} finally {
@@ -3385,15 +3049,7 @@ describe('analyze_my_portfolio — toolDef handler', () => {
 	});
 });
 
-/**
- * API が返す asset コードの取得境界正規化（`lib/asset-code.ts`）のハンドラレベル検証。
- *
- * `/v1/user/assets` と入出金履歴の asset は取得境界で小文字へ揃える。揃えないと
- * `reconstructHoldingsAtDate` の holdings キーが `BTC` / `btc` に割れ、期初評価額・
- * 純入出金・warning が同時に壊れる（`docs/internal/bitbank-api-fields.md` 参照）。
- *
- * 現行 API は小文字を返すため、これは防御的正規化。小文字レスポンスでの出力不変も併せて固定する。
- */
+/** asset コードを取得境界で小文字に揃えないと holdings キーが BTC / btc に割れ、期初評価額・純入出金・warning が同時に壊れる。 */
 describe('analyze_my_portfolio — API asset の取得境界正規化', () => {
 	/** 2026-05-16 12:00 JST。当日・当月・当年のいずれの期間にも入る入出庫を作れる基準時刻 */
 	const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
@@ -3481,17 +3137,13 @@ describe('analyze_my_portfolio — API asset の取得境界正規化', () => {
 		});
 
 		assertOk(result);
-		// holdings キーが BTC / btc に割れず、1 資産 1 エントリ（structuredContent は小文字契約）
 		const assets = result.data.holdings.map((h) => h.asset);
 		expect(assets).toEqual([...new Set(assets)]);
 		expect(assets.sort()).toEqual(['btc', 'jpy']);
 		// 保有 0.6 BTC が価格に突き合わさる（大文字のままだと prices.get('BTC') が外れて欠落する）
 		expect(result.data.holdings.find((h) => h.asset === 'btc')?.jpy_value).toBe(0.6 * 15_500_000);
 		expect(result.data.total_jpy_value).toBe(0.6 * 15_500_000 + 500_000);
-		// BTC 入出庫は価格解決できるので unpriced 系 warning は出ない。一方 onhand 0.6 は
-		// 復元数量（出庫按分後 0）と乖離しているため、数量不変条件の warning が出る。
-		// 大文字レスポンスの入庫（'BTC', DONE）が正規化されて has_crypto_deposits に一致することも兼ねて固定する。
-		// 静的 candle では 2026 年の入出庫日価格はフォールバックし、期初始値も欠損する（#86）。
+		// warning は 4 本: onhand 0.6 と復元数量 0 の乖離（大文字の入庫が has_crypto_deposits に一致することも兼ねる）、静的 candle での期初始値欠損と増減率抑止（#86）、入出庫日価格のフォールバック。
 		expect(result.meta.warnings).toHaveLength(4);
 		expect(result.meta.warnings?.[0]).toContain('BTC（入庫日の価格を解決できない暗号資産の入庫あり）');
 		expect(result.meta.warnings?.[1]).toContain('期初の始値を解決できず期初評価額に含めていません');
@@ -3505,8 +3157,7 @@ describe('analyze_my_portfolio — API asset の取得境界正規化', () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(fixedNowMs);
 
-		// getDefaultClient は fetch を構築時に束縛するため、同一 mock 内でレスポンスを切り替える
-		// （setupFetchMock を 2 回呼ぶと 2 回目の差し替えがクライアントに届かない）。
+		// getDefaultClient は fetch を構築時に束縛するので、同じ mock の中でレスポンスを切り替える（setupFetchMock を 2 回呼んでも 2 回目が届かない）。
 		let uppercase = true;
 		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
 			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
@@ -3552,19 +3203,7 @@ describe('analyze_my_portfolio — API asset の取得境界正規化', () => {
 	});
 });
 
-/**
- * API が返す pair シンボルの取得境界正規化（`lib/pair-code.ts`）のハンドラレベル検証。
- *
- * 約定履歴の `pair` と `tickers_jpy` の `pair` は取得境界で小文字へ揃える。揃えないと
- * `'BTC_JPY'.replace('_jpy', '')` が**何も置換しない**ため、pair 由来の asset が
- * `lib/asset-code.ts` で正規化した小文字 asset と割れ、
- *   - `prices` のキーが `BTC_JPY` になって評価額が算出できない
- *   - `calcPnl` の `t.pair === 'btc_jpy'` が 0 件マッチで平均取得単価・実現損益が消える
- *   - PR #37 の `unpriced_flow_assets` warning が全銘柄に対して誤検知する
- * が同時に起きる（`docs/internal/bitbank-api-fields.md` 参照）。
- *
- * 現行 API は小文字を返すため、これは防御的正規化。小文字レスポンスでの出力不変も併せて固定する。
- */
+/** pair を取得境界で小文字に揃えないと 'BTC_JPY'.replace('_jpy', '') が置換されず、評価額・平均取得単価・実現損益が消え unpriced_flow_assets が全銘柄で誤検知する。 */
 describe('analyze_my_portfolio — API pair の取得境界正規化', () => {
 	/** 2026-05-16 12:00 JST */
 	const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
@@ -3630,7 +3269,6 @@ describe('analyze_my_portfolio — API pair の取得境界正規化', () => {
 		],
 	};
 
-	/** tickers_jpy の pair だけ大文字にした版 */
 	function tickersWithPairCase(uppercase: boolean) {
 		return {
 			...tickersJpy,
@@ -3694,12 +3332,10 @@ describe('analyze_my_portfolio — API pair の取得境界正規化', () => {
 		expect(btc?.avg_buy_price).toBe(10_000_000);
 		expect(btc?.cost_basis).toBe(6_000_000);
 		expect(btc?.pair).toBe('btc_jpy');
-		// pair 由来の asset が `lib/asset-code.ts` の小文字 asset と割れていない
 		expect(result.data.holdings.map((h) => h.asset).sort()).toEqual(['btc', 'jpy']);
-		// PR #37 の warning 経路。BTC の価格は引けているので誤検知してはいけない
+		// BTC の価格は引けているので、未評価フローの warning を誤検知してはいけない
 		expect(result.data.daily_performance?.unpriced_flow_assets).toBeUndefined();
-		// 静的 candle では期初始値も欠損するため start_boundary / 増減率抑止の warning が加わる（#86）。
-		// 並びは原価の完全性（銘柄単位）→ 期初始値欠損 → 増減率抑止 → 換算フォールバックの順。
+		// 静的 candle では期初始値も欠損するので start_boundary / 増減率抑止の warning が加わり 4 本になる（#86）。
 		expect(result.meta.warnings).toHaveLength(4);
 		expect(result.meta.warnings?.[0]).toContain('BTC（1件）');
 		expect(result.meta.warnings?.[1]).toContain('期初の始値を解決できず期初評価額に含めていません');
@@ -3729,12 +3365,7 @@ describe('analyze_my_portfolio — API pair の取得境界正規化', () => {
 	});
 });
 
-/**
- * 数量不変条件（issue #56）: calcPnl が復元した保有数量と assets API の実残高（onhand_amount）を
- * 突き合わせ、許容誤差 max(10^-amount_precision × 5, 実残高 × 0.1%) を超える乖離があれば
- * 確定値を出さず cost_basis_reliable=false + 理由コードで申告する。
- * フィードバックの ETH 型（約 1000 倍乖離）は何の検知にも掛からず確定値として出ていた。
- */
+/** #56: 復元数量と実残高の乖離が許容誤差 max(10^-amount_precision × 5, 実残高 × 0.1%) を超えたら、確定値を出さず cost_basis_reliable=false で申告する。 */
 describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', () => {
 	/** eth 買い 0.002 のみの約定。onhand 2.0 と約 1000 倍乖離する（ETH 型フィードバックの再現） */
 	const tinyEthBuy = {
@@ -3755,7 +3386,6 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		],
 	};
 
-	/** eth の実残高（onhand）だけを差し替えた assets レスポンス。数量不変条件の成否を振る */
 	function ethAssets(onhand: string) {
 		return {
 			assets: [{ ...assetFixture('eth'), free_amount: onhand, onhand_amount: onhand }, assetFixture('jpy')],
@@ -3765,8 +3395,7 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 	const emptyDw = { deposits: { deposits: [] }, withdrawals: { withdrawals: [] } };
 
 	it('受け入れ: ETH 型（約 1000 倍乖離）で確定値ではなく cost_basis_reliable=false + 理由コードが出る', async () => {
-		// 出庫は withdrawals に無い（入出金取得は成功・complete）ので入出金起因の抑止は掛からず、
-		// 数量不変条件だけが乖離を検出する。他に具体的な手掛かりが無いので untracked_trade_suspected（#93）。
+		// 入出金取得は成功・complete なので入出金起因の抑止は掛からず、他に手掛かりが無いので untracked_trade_suspected（#93）になる。
 		setupFetchMock({
 			assets: ethAssets('2.0'),
 			trades: tinyEthBuy,
@@ -3785,17 +3414,14 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		const eth = holdingOf(result.data.holdings, 'eth');
 		expect(eth.cost_basis_reliable).toBe(false);
 		expect(eth.cost_basis_unavailable_reason).toBe('untracked_trade_suspected');
-		// 原価から派生する 4 フィールドは #54 と同じ null 化経路で抑止される
 		expect(eth.cost_basis).toBeUndefined();
 		expect(eth.avg_buy_price).toBeUndefined();
 		expect(eth.unrealized_pnl).toBeUndefined();
 		expect(eth.unrealized_pnl_pct).toBeUndefined();
-		// 原価に依存しない値は残す
 		expect(eth.jpy_value).toBeGreaterThan(0);
 		expect(eth.realized_pnl).toBe(0);
 		expect(eth.trade_count).toBe(1);
-		// 唯一の暗号資産が除外されるので合計は立たない。入出金起因ではないため
-		// total 側・meta 側の理由コードは立たない（銘柄単位の申告 + warning で伝える）
+		// 入出金起因ではないので total 側・meta 側の理由コードは立たない（銘柄単位の申告 + warning で伝える）。
 		expect(result.data.total_cost_basis).toBeUndefined();
 		expect(result.data.total_unrealized_pnl).toBeUndefined();
 		expect(result.data.total_cost_basis_unavailable_reason).toBeUndefined();
@@ -3807,11 +3433,7 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		expect(result.summary).toContain('ETH は復元数量が実残高と乖離しているため合計評価損益に含めていません');
 	});
 
-	/**
-	 * 入庫 1 件（1.998 ETH, confirmed_at = 2024-03-10 JST）の fixture。
-	 * 既定 candle（generateOhlcv 起点 2024-03-08）の 3 本目 = JST 2024-03-10 の始値 15,100,000 で
-	 * 解決できるので、(b) では原価に算入され復元数量が onhand 2.0 と一致する。
-	 */
+	/** 既定 candle（2024-03-08 起点）の 3 本目 = JST 2024-03-10 の始値 15,100,000 で解決できるので、入庫が原価に算入され復元数量が onhand 2.0 と一致する。 */
 	const ethDeposit = {
 		deposits: {
 			deposits: [
@@ -3827,7 +3449,6 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		},
 		withdrawals: { withdrawals: [] },
 	};
-	/** 上の入庫日（JST 2024-03-10）の 1day open。既定 fixture の 3 本目 */
 	const ETH_DEPOSIT_DAY_OPEN = 15_100_000;
 
 	it('入庫は入庫日の始値で原価に算入され、数量不変条件が成立する', async () => {
@@ -3842,11 +3463,9 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 
 		assertOk(result);
 		const eth = holdingOf(result.data.holdings, 'eth');
-		// (b) の眼目: 入庫ぶんの数量が復元に入るので、乖離は解消し原価が確定値として出る
 		expect(eth.cost_basis_reliable).toBe(true);
 		expect(eth.cost_basis_unavailable_reason).toBeUndefined();
-		// 買い 0.002 × 400,000 = 800 に、入庫 1.998 × 入庫日始値 を積む。
-		// 現在価格（380,000）で評価していたらこの値にはならない = 入庫日ベースの根拠。
+		// 買い 0.002 × 400,000 = 800 に入庫 1.998 × 入庫日始値を積む（現在価格で評価していたらこの値にならない）。
 		expect(eth.cost_basis).toBe(Math.round(800 + 1.998 * ETH_DEPOSIT_DAY_OPEN));
 		expect(eth.avg_buy_price).toBe(Math.round((800 + 1.998 * ETH_DEPOSIT_DAY_OPEN) / 2));
 		expect(
@@ -3857,9 +3476,7 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 	});
 
 	it('入庫日の始値を解決できない入庫は原価に算入せず has_crypto_deposits で申告する', async () => {
-		// candle が空 → 入庫日の始値が引けず、resolveFlowPrice は現在価格フォールバックしか返せない。
-		// 現在価格で原価を作ると評価損益が常にゼロ付近に貼り付く（相場連動の誤差を cost_basis に
-		// 持ち込む）ので算入しない。結果として数量が復元されず理由コード経路に載る。
+		// candle が空だと入庫日の始値が引けない。現在価格で原価を作ると評価損益が常にゼロ付近に貼り付くので算入しない。
 		setupFetchMock({
 			assets: ethAssets('2.0'),
 			trades: tinyEthBuy,
@@ -3882,15 +3499,12 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		expect(
 			result.meta.warnings?.some((w: string) => w.includes('ETH（入庫日の価格を解決できない暗号資産の入庫あり）')),
 		).toBe(true);
-		// DONE 入庫があるだけでは入出金起因の抑止は掛からない
 		expect(result.meta.flowDataUnavailableReason).toBeUndefined();
 		expect(result.meta.depositWithdrawalStatus).toBe('available');
 	});
 
 	it('乖離 + 約定履歴の打ち切り: history_truncated', async () => {
-		// 同一ページ（1000 件フルページ・同一 executed_at）を返し続けると、2 ページ目で
-		// cursor が進まず paginateTrades が truncated=true で終了する。
-		// 復元数量は 0.002 × 1000 = 2.0（dedupe 後）で onhand 5.0 と乖離する。
+		// 同一ページ（1000 件・同一 executed_at）を返し続けると 2 ページ目で cursor が進まず truncated=true になる。復元数量は 0.002 × 1000 = 2.0 で onhand 5.0 と乖離する。
 		const fullPage = {
 			trades: Array.from({ length: 1000 }, (_, i) => ({
 				...tinyEthBuy.trades[0],
@@ -3916,7 +3530,6 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 	});
 
 	it('回帰: 整合した銘柄は cost_basis_reliable=true で数値がそのまま出る', async () => {
-		// 既定 fixture（consistentAssetsResponse + 既定履歴）は数量整合している
 		setupFetchMock({
 			candles: candlesBtcJpy1day120Near(),
 			deposits: { deposits: [] },
@@ -3935,16 +3548,13 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		expect(btc.cost_basis_reliable).toBe(true);
 		expect(btc.cost_basis_unavailable_reason).toBeUndefined();
 		expect(btc.cost_basis).toBe(74_925);
-		// btc_jpy は price_digits=0 だが、avg_buy_price は板の刻みに縛られない加重平均なので
-		// +2 桁の余裕を持たせて丸める（整数丸めではない）。
+		// avg_buy_price は板の刻みに縛られない加重平均なので price_digits（btc_jpy は 0）+ 2 桁で丸める。
 		expect(btc.avg_buy_price).toBe(15_015_015.02);
 		const eth = holdingOf(result.data.holdings, 'eth');
 		expect(eth.cost_basis_reliable).toBe(true);
 		expect(eth.cost_basis).toBe(380_000);
-		// JPY は原価計算の対象外なので省略
 		const jpy = holdingOf(result.data.holdings, 'jpy');
 		expect(jpy.cost_basis_reliable).toBeUndefined();
-		// 数量整合の warning・除外注記は出ない
 		expect(result.meta.warnings).toBeUndefined();
 		expect(result.summary).not.toContain('合計評価損益に含めていません');
 	});
@@ -3966,9 +3576,7 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 	});
 
 	it('境界: 許容誤差内の微小乖離は成立し数値が出る', async () => {
-		// eth 買 0.002 → 復元 0.002。onhand 0.0020005 の乖離 5e-7 は
-		// 許容誤差 max(5e-8, 0.0020005 × 0.1% ≈ 2.0005e-6) に収まる。
-		// 許容誤差「ちょうど」の等号は qtyInvariantHolds の単体テストで固定している
+		// 乖離 5e-7 は許容誤差 max(5e-8, 0.0020005 × 0.1% ≈ 2.0005e-6) に収まる（等号ちょうどは qtyInvariantHolds の単体テストで固定）。
 		setupFetchMock({ assets: ethAssets('0.0020005'), trades: tinyEthBuy, ...emptyDw });
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -4080,7 +3688,6 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		const eth = holdingOf(result.data.holdings, 'eth');
 		expect(btc.cost_basis_reliable).toBe(true);
 		expect(eth.cost_basis_reliable).toBe(false);
-		// 合計は btc のみから算出される（eth の評価額・原価は入らない）
 		assertDefined(btc.jpy_value, 'btc.jpy_value');
 		assertDefined(btc.cost_basis, 'btc.cost_basis');
 		expect(result.data.total_cost_basis).toBe(btc.cost_basis);
@@ -4089,15 +3696,7 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 		expect(result.summary).toContain('ETH は復元数量が実残高と乖離しているため合計評価損益に含めていません');
 	});
 
-	/**
-	 * #89 の受け入れ条件: 実口座データの完全リプレイで確定した機序（issue 本文）をそのまま
-	 * フィクスチャ化する。販売所の買い（API に現れない取得）が 0.00041693 BTC 欠けた口座で、
-	 * 売り 2 回がリプレイ上の保有を超えてクランプが発火する（吸収 0.0003 + 0.0001 = 0.0004）。
-	 *
-	 * 旧実装（数量もクランプ）は復元数量を実残高側へ 0.0004 押し戻し、乖離 0.00041693 が
-	 * 0.00001693（許容誤差 0.1% 未満）に圧縮されて cost_basis_reliable=true を素通りしていた。
-	 * 本 PR の後は乖離が圧縮されずに現れ、false として検出される。
-	 */
+	/** #89: 販売所の買い（API に現れない取得）0.00041693 BTC が欠けた口座。売り 2 回のクランプ（吸収 0.0004）で乖離が許容誤差未満に圧縮されず、false として検出されること。 */
 	describe('#89: 売りのクランプが取得漏れを吸収して不変条件を素通りする回帰', () => {
 		const btcTrades = {
 			trades: [
@@ -4218,8 +3817,7 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 			const btc = holdingOf(result.data.holdings, 'btc');
 			expect(btc.qty_clamp_count).toBe(2);
 			expect(btc.qty_clamp_absorbed_qty).toBeCloseTo(0.0004, 9);
-			// 原価側の按分ロジック自体は変えていないので、realized_pnl は本 PR の前後で変わらない
-			// （sell1: 6,000-3,000=3,000 / sell2: 15,000-14,000=1,000）
+			// 原価側の按分は変えていないので realized_pnl は 4,000（sell1: 6,000-3,000 / sell2: 15,000-14,000）のまま。
 			expect(btc.realized_pnl).toBe(4_000);
 			expect(
 				result.meta.warnings?.some((w: string) => w.includes('BTC（2件） は約定・入出庫から復元した保有を超える売却')),
@@ -4253,12 +3851,7 @@ describe('analyze_my_portfolio — 復元数量 vs 実残高の不変条件', ()
 	});
 });
 
-/**
- * 価格フィールドの丸め（issue #58）: `avg_buy_price` / `current_price` はかつて無条件に
- * `Math.round` で整数化されており、低価格ペアを壊していた（XLM: 実勢 26.686 → 27、
- * 29.59 → 30 で誤差 1.4%。建値ストップ判断で損益の符号が変わる水準）。
- * /spot/pairs の `price_digits`（最小値刻み = 10^-price_digits）を単一ソースにして丸める。
- */
+/** #58: avg_buy_price / current_price を無条件に整数化すると低価格ペアが壊れる（XLM 26.686 → 27）ので、/spot/pairs の price_digits で丸める。 */
 describe('analyze_my_portfolio — 価格の price_digits 準拠の丸め', () => {
 	/** xrp のみ保有（fixture の onhand は 1000、amount_precision は 6） */
 	const xrpOnlyAssets = {
@@ -4287,7 +3880,6 @@ describe('analyze_my_portfolio — 価格の price_digits 準拠の丸め', () =
 		};
 	}
 
-	/** xrp_jpy の現在値だけ差し替えた tickers レスポンス */
 	function tickersWithXrpLast(last: string) {
 		return {
 			success: 1,
@@ -4316,7 +3908,6 @@ describe('analyze_my_portfolio — 価格の price_digits 準拠の丸め', () =
 		assertOk(result);
 		const xrp = holdingOf(result.data.holdings, 'xrp');
 		expect(xrp.cost_basis_reliable).toBe(true);
-		// 旧実装ではここが 27 / 30 になっていた（誤差 1.4%）
 		expect(xrp.avg_buy_price).toBe(26.686);
 		expect(xrp.current_price).toBe(29.59);
 	});
@@ -4352,7 +3943,6 @@ describe('analyze_my_portfolio — 価格の price_digits 準拠の丸め', () =
 		assertOk(result);
 		const xrp = holdingOf(result.data.holdings, 'xrp');
 		expect(xrp.avg_buy_price).toBe(26.68612);
-		// current_price は板の刻みちょうど（price_digits=3）
 		expect(xrp.current_price).toBe(29.591);
 	});
 
@@ -4381,7 +3971,6 @@ describe('analyze_my_portfolio — 価格の price_digits 準拠の丸め', () =
 			assets: xrpOnlyAssets,
 			trades: xrpBuy('26.6861234567'),
 			tickers: tickersWithXrpLast('29.5912345'),
-			// btc_jpy / eth_jpy のみ（xrp_jpy を含まない）
 			pairs: mockSpotPairsResponse(),
 			...emptyDw,
 		});
@@ -4413,7 +4002,6 @@ describe('analyze_my_portfolio — 価格の price_digits 準拠の丸め', () =
 		setupFetchMock({
 			assets: xrpOnlyAssets,
 			trades: xrpBuy('26.686'),
-			// xrp_jpy を落とした tickers
 			tickers: { success: 1, data: tickersJpy.data.filter((t) => t.pair !== 'xrp_jpy') },
 			...emptyDw,
 		});
@@ -4427,7 +4015,6 @@ describe('analyze_my_portfolio — 価格の price_digits 準拠の丸め', () =
 	});
 
 	it('回帰: 取得原価が抑止される経路では avg_buy_price が undefined のまま（current_price は丸めて出る）', async () => {
-		// 出庫履歴の取得失敗 → flowUnavailableReason=dw_fetch_failed で原価由来 4 フィールドを抑止
 		setupFetchMock({
 			assets: xrpOnlyAssets,
 			trades: xrpBuy('26.686'),
@@ -4485,14 +4072,7 @@ describe('analyze_my_portfolio — 価格の price_digits 準拠の丸め', () =
 	});
 });
 
-/**
- * #59 6-1: Realized PnL 3 系統のスコープ明示。
- *
- * 同一出力に「全履歴・全銘柄（account_pnl.spot_realized_pnl / total_realized_pnl）」
- * 「年初来・月初来（yearly_/monthly_）」「全履歴だが現在保有中の銘柄のみ（holdings[].realized_pnl の合計）」
- * が併存する。差分は売り切り銘柄ぶんなので、その内訳を closed_position_realized_pnl として出し、
- * 検算式が出力上で閉じることをここで固定する。
- */
+/** #59 6-1: 全履歴・全銘柄 / 年初来・月初来 / 保有中銘柄のみの 3 系統の Realized PnL の差分は売り切り銘柄ぶんなので、closed_position_realized_pnl で検算式が閉じることを固定する。 */
 describe('analyze_my_portfolio — Realized PnL のスコープと売り切り銘柄の内訳', () => {
 	/** xrp のみ保有（onhand 1000）+ JPY。doge / xlm は保有せず「売り切り銘柄」になる */
 	const xrpOnlyAssets = {
@@ -4532,7 +4112,6 @@ describe('analyze_my_portfolio — Realized PnL のスコープと売り切り�
 		],
 	};
 
-	/** 保有中銘柄（xrp）だけ。売り切り銘柄は 1 件も無い */
 	const heldOnlyTrades = {
 		trades: [
 			trade(5901, 'xrp_jpy', 'buy', '1200', '20', 1710000000000),
@@ -4546,7 +4125,6 @@ describe('analyze_my_portfolio — Realized PnL のスコープと売り切り�
 		);
 	}
 
-	/** holdings[].realized_pnl の合計（undefined の JPY 行は除外） */
 	function sumHoldingsRealizedPnl(holdings: Array<{ realized_pnl?: number }>): number {
 		return holdings.reduce((acc, h) => acc + (h.realized_pnl ?? 0), 0);
 	}
@@ -4557,17 +4135,14 @@ describe('analyze_my_portfolio — Realized PnL のスコープと売り切り�
 		const result = await callHandler();
 
 		assertOk(result);
-		// 保有中銘柄ぶん（xrp のみ。doge は保有ゼロなので holdings に載らない）
 		const heldSum = sumHoldingsRealizedPnl(result.data.holdings);
 		expect(heldSum).toBeCloseTo(2000, 6);
 		expect(result.data.holdings.some((h: { asset: string }) => h.asset === 'doge')).toBe(false);
 
-		// 売り切り銘柄ぶん（doge）
 		assertDefined(result.data.closed_position_realized_pnl, 'result.data.closed_position_realized_pnl');
 		expect(result.data.closed_position_realized_pnl).toBeCloseTo(5000, 6);
 		expect(result.data.closed_position_asset_count).toBe(1);
 
-		// 検算式が閉じる
 		assertDefined(result.data.account_pnl, 'result.data.account_pnl');
 		assertDefined(result.data.account_pnl.spot_realized_pnl, 'result.data.account_pnl.spot_realized_pnl');
 		expect(heldSum + result.data.closed_position_realized_pnl).toBeCloseTo(
@@ -4575,7 +4150,6 @@ describe('analyze_my_portfolio — Realized PnL のスコープと売り切り�
 			6,
 		);
 		expect(result.data.account_pnl.spot_realized_pnl).toBeCloseTo(7000, 6);
-		// total_realized_pnl は account_pnl.spot_realized_pnl と同値（3 系統の対応関係）
 		expect(result.data.total_realized_pnl).toBeCloseTo(result.data.account_pnl.spot_realized_pnl, 6);
 	});
 
@@ -4585,7 +4159,6 @@ describe('analyze_my_portfolio — Realized PnL のスコープと売り切り�
 		const result = await callHandler();
 
 		assertOk(result);
-		// 旧実装は 'Realized PnL (Spot): ' のみでスコープが読めなかった
 		expect(result.summary).toContain('Realized PnL (Spot, 全履歴・売り切り銘柄含む): +7,000円');
 		expect(result.summary).toContain(
 			'内訳: 現在保有銘柄（holdings[].realized_pnl の合計）+2,000円 / 売り切り銘柄 1銘柄 +5,000円',
@@ -4691,15 +4264,8 @@ describe('analyze_my_portfolio — Realized PnL のスコープと売り切り�
 	});
 });
 
-/**
- * #59 6-2: ゼロ建玉の表示抑制。
- *
- * 実口座では決済済みペアのゼロ建玉が居座り、実建玉が埋もれる（#53 症状 7 前半）。
- * 明細行からは落とすが、省略件数は集計行に必ず出す（黙って消さない）。
- * structuredContent 側には元から建玉データを載せていないため、変更は表示テキストのみ。
- */
+/** #59 6-2: 決済済みペアのゼロ建玉は明細行から落とすが、省略件数は集計行に必ず出す。 */
 describe('analyze_my_portfolio — ゼロ建玉の表示抑制', () => {
-	/** 建玉数量・評価額ともゼロの行（決済済みペアの残骸） */
 	function zeroPosition(pair: string, side: 'long' | 'short') {
 		return {
 			pair,
@@ -4741,10 +4307,8 @@ describe('analyze_my_portfolio — ゼロ建玉の表示抑制', () => {
 		assertOk(result);
 		expect(result.summary).toContain('信用建玉:');
 		expect(result.summary).toContain('BTC/JPY ロング 0.01');
-		// ゼロ建玉の明細行は出ない
 		expect(result.summary).not.toContain('XRP/JPY ロング 0');
 		expect(result.summary).not.toContain('LTC/JPY ショート 0');
-		// 件数は実建玉のみを数え、省略件数を併記する
 		expect(result.summary).toContain('集計: ロング 1件 / ショート 0件 / ゼロ建玉 2件省略');
 	});
 
@@ -4763,7 +4327,6 @@ describe('analyze_my_portfolio — ゼロ建玉の表示抑制', () => {
 		// セクションごと消すと省略件数の申告先が無くなり「建玉なし」と区別できなくなる
 		expect(result.summary).toContain('信用建玉:');
 		expect(result.summary).toContain('集計: ロング 0件 / ショート 0件 / ゼロ建玉 3件省略');
-		// 明細行は 1 行も出ない
 		expect(result.summary).not.toContain('BTC/JPY ロング 0');
 		expect(result.summary).not.toContain('ETH/JPY ショート 0');
 		expect(result.summary).not.toContain('XRP/JPY ロング 0');
@@ -4807,17 +4370,7 @@ describe('analyze_my_portfolio — ゼロ建玉の表示抑制', () => {
 	});
 });
 
-/**
- * 資産推移シリーズの入出金フローマーカー（#60）。
- *
- * 月次・年次の資産推移は入出金があった期間でも単一の連続線として出るため、大口入金のある
- * 口座では「ずっと同額を保有していた」ように誤読される（#53 の症状 7 後半）。グラフ化されると
- * 注記行は消える前提なので、フロー発生点を `EquityPoint.flow_jpy` として**データで**返し、
- * summary にも読み方を添える。
- *
- * 現在時刻は JST 2026-05-16 12:00 に固定する。シリーズの点は `Date.now()` 由来の
- * JST 暦日境界から生えるため、固定しないと「当月内の入金」を仕込めない。
- */
+/** #60: 入出金のあった期間も資産推移は連続線で出るので、フロー発生点を EquityPoint.flow_jpy としてデータで返す。現在時刻を固定しないと当月内の入金を仕込めない。 */
 describe('analyze_my_portfolio — 資産推移の入出金フローマーカー', () => {
 	/** 2026-05-16T03:00:00Z = JST 2026-05-16 12:00 */
 	const fixedNowMs = Date.UTC(2026, 4, 16, 3);
@@ -4826,7 +4379,6 @@ describe('analyze_my_portfolio — 資産推移の入出金フローマーカー
 	/** JST 2026-05-12 18:00（同じ当月内、入金より後） */
 	const withdrawalAtMs = Date.UTC(2026, 4, 12, 9);
 
-	/** JPY のみ保有。価格解決を挟まずフローの寄せ方と表示だけを見るための最小構成。 */
 	function jpyOnlyAssets(onhand: string) {
 		return {
 			assets: [
@@ -4846,7 +4398,6 @@ describe('analyze_my_portfolio — 資産推移の入出金フローマーカー
 		};
 	}
 
-	/** 約定・信用なし、入出金だけを差し込める JPY 単独口座の fetch モック */
 	function setupJpyOnlyMock(opts: { onhand: string; deposits?: unknown[]; withdrawals?: unknown[] }) {
 		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {
 			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
@@ -4873,7 +4424,6 @@ describe('analyze_my_portfolio — 資産推移の入出金フローマーカー
 		}) as unknown as typeof fetch;
 	}
 
-	/** 損益・入出金セクションを両方出す既定の呼び出し（本 describe は原価の申告だけを見る） */
 	async function analyze() {
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
 		return handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: true });
@@ -4913,7 +4463,6 @@ describe('analyze_my_portfolio — 資産推移の入出金フローマーカー
 		expect(flowPoints[0].timestamp).toBe('2026-05-10T00:00:00+09:00');
 		expect(flowPoints[0].flow_jpy).toBe(500_000);
 
-		// 年次シリーズ（月次点）では 5 月の点に寄る
 		const yearly = result.data.yearly_equity_series ?? [];
 		const yearlyFlowPoints = yearly.filter((p: { flow_jpy?: number }) => p.flow_jpy != null);
 		expect(yearlyFlowPoints).toHaveLength(1);
@@ -4921,10 +4470,6 @@ describe('analyze_my_portfolio — 資産推移の入出金フローマーカー
 		expect(yearlyFlowPoints[0].flow_jpy).toBe(500_000);
 	});
 
-	/**
-	 * フローマーカーの存在理由そのもの。入金による段差を「運用成績」と読ませないために、
-	 * 増減からフローを引いた残りがゼロ（JPY のみ保有なので市場変動が無い）になることを固定する。
-	 */
 	it('増減からフローを引くと市場変動が残る（JPY のみ保有なら全区間ゼロ）', async () => {
 		setupJpyOnlyMock({
 			onhand: '1500000',
@@ -5003,7 +4548,6 @@ describe('analyze_my_portfolio — 資産推移の入出金フローマーカー
 
 		expect(result.summary).toContain('2026-05-10T00:00:00+09:00: 1,000,000円 ← 純入出金 +500,000円');
 		expect(result.summary).toContain('マーカーとして扱い、線の変動として説明しない');
-		// 見出しに読み方が乗る（月次・年次それぞれ）
 		const headings = result.summary.split('\n').filter((l: string) => l.includes('資産推移（'));
 		expect(headings).toHaveLength(2);
 		for (const h of headings) expect(h).toContain('「← 純入出金」');
@@ -5022,10 +4566,7 @@ describe('analyze_my_portfolio — 資産推移の入出金フローマーカー
 		expect(result.summary).toContain('2026-05-12T00:00:00+09:00: 1,000,550円 ← 純入出金 -200,000円');
 	});
 
-	/**
-	 * 回帰。フローが無い期間では従来と JSON レベルで一致し、summary の見出しも変わらない。
-	 * `toEqual` は undefined のプロパティを無視するため `JSON.stringify` で確かめる。
-	 */
+	/** toEqual は undefined のプロパティを無視するので JSON.stringify で比べる。 */
 	it('フローが無い期間の出力は従来と一致する（JSON / 見出しとも）', async () => {
 		setupJpyOnlyMock({ onhand: '1000000' });
 
@@ -5061,18 +4602,13 @@ describe('analyze_my_portfolio — 資産推移の入出金フローマーカー
 		assertOk(result);
 
 		expect(JSON.stringify(result.data.monthly_equity_series)).not.toContain('flow_jpy');
-		// 「フローがゼロ」ではなく「未計測」であることは既存の申告経路が担う
 		assertDefined(result.data.monthly_performance, 'result.data.monthly_performance');
 		expect(result.data.monthly_performance.flow_measured).toBe(false);
 		expect(result.data.monthly_performance.flow_unavailable_reason).toBeDefined();
 	});
 });
 
-/**
- * #71: 期初評価額が極小のとき、増減率は「運用成績」ではなく「期初がほぼ空だった」ことを
- * 表す数になる（実口座で年初比 +26929.2% が出た）。抑止の基準は相対
- * （期初評価額が現在評価額の 1% 未満）で、抑止したときは金額と理由を summary / meta に出す。
- */
+/** #71: 期初評価額が現在評価額の 1% 未満なら増減率を抑止し、金額と理由を summary / meta に出す。 */
 describe('analyze_my_portfolio — 期初評価額が極小のときの増減率の抑止', () => {
 	/** 2026-05-16T03:00:00Z = JST 2026-05-16 12:00 */
 	const fixedNowMs = Date.UTC(2026, 4, 16, 3);
@@ -5081,7 +4617,6 @@ describe('analyze_my_portfolio — 期初評価額が極小のときの増減率
 	/** JST 2026-05-10 10:00（当月内・当年内だが当日より前） */
 	const earlierDepositAtMs = Date.UTC(2026, 4, 10, 1);
 
-	/** JPY 単独口座。価格解決を挟まず期初評価額を 1 円単位で狙うための最小構成。 */
 	function jpyOnlyAssets(onhand: string) {
 		return {
 			assets: [
@@ -5140,7 +4675,6 @@ describe('analyze_my_portfolio — 期初評価額が極小のときの増減率
 		}) as unknown as typeof fetch;
 	}
 
-	/** 損益・入出金セクションを両方出す既定の呼び出し（本 describe は原価の申告だけを見る） */
 	async function analyze() {
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
 		return handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: true });
@@ -5170,7 +4704,6 @@ describe('analyze_my_portfolio — 期初評価額が極小のときの増減率
 			expect(p.adjusted_change_pct, key).toBeUndefined();
 			expect(p.change_pct_unavailable_reason, key).toBe('start_value_negligible');
 		}
-		// 5 桁の百分率が出力のどこにも現れない
 		expect(JSON.stringify(result.data)).not.toContain('26929');
 	});
 
@@ -5198,7 +4731,6 @@ describe('analyze_my_portfolio — 期初評価額が極小のときの増減率
 		expect(warning).toBeDefined();
 		expect(warning).toContain('前日比 / 年初比 / 月初比');
 		expect(warning).toContain('「ゼロ %」の意味ではありません');
-		// `.claude/rules/tools.md`: 計算層 warning は summary 先頭に出す
 		expect(result.summary.split('\n').slice(0, 5).join('\n')).toContain('増減率');
 	});
 
@@ -5215,7 +4747,6 @@ describe('analyze_my_portfolio — 期初評価額が極小のときの増減率
 		expect(result.data.yearly_performance.change_pct_unavailable_reason).toBeUndefined();
 		expect(result.meta.changePctUnavailablePeriods).toBeUndefined();
 		expect(result.summary).not.toContain('※ 増減率・入出金調整後増減率は非表示');
-		// #105: 抑止が起きない通常時の出力は従来と JSON 一致する（キーごと増えない）
 		expect(JSON.stringify(result.data)).not.toContain('change_jpy_overstated');
 	});
 
@@ -5239,10 +4770,7 @@ describe('analyze_my_portfolio — 期初評価額が極小のときの増減率
 	});
 });
 
-/**
- * #86: 当日足が未取得の時間帯に前日比の期初評価額が JPY だけになり、過大な増減率が出る。
- * 始値解決欠損は start_value_negligible とは別理由コードで抑止する。
- */
+/** #86: 当日足が未取得だと前日比の期初評価額が JPY だけになるので、start_value_negligible とは別の理由コードで抑止する。 */
 describe('analyze_my_portfolio — 期初の始値が解決できないときの増減率の抑止', () => {
 	/** 2026-05-16T00:00:00Z = JST 2026-05-16 09:00（issue #86 の検証時刻帯に近い） */
 	const fixedNowMs = Date.UTC(2026, 4, 16, 0);
@@ -5333,11 +4861,7 @@ describe('analyze_my_portfolio — 期初の始値が解決できないときの
 		expect(warning).toContain('過小');
 	});
 
-	/**
-	 * #105: 率を抑止した欠損はそのまま分子（増減額）の欠損でもある。
-	 * 抑止の申告は 3 箇所（content 先頭の warning / 期間ブロックの ※ 行 / *_performance.note）に
-	 * 出るので、いずれも増減額へ誘導しないことを 3 箇所とも確認する。
-	 */
+	/** #105: 抑止の申告は 3 箇所（content 先頭の warning / 期間ブロックの ※ 行 / *_performance.note）に出るので、3 箇所とも増減額へ誘導しないことを確かめる。 */
 	describe('増減額への誘導の抑止（#105）', () => {
 		it('summary の ※ 行が増減額へ誘導せず、算出できないことを明示する', async () => {
 			setupMissingDayStartMock();
@@ -5350,7 +4874,6 @@ describe('analyze_my_portfolio — 期初の始値が解決できないときの
 			expect(dailyBlock[0]).not.toContain('増減額で読んでください');
 			expect(dailyBlock[0]).toContain('成績として読まないでください');
 			expect(dailyBlock[0]).toContain('算出できません');
-			// 期初過小の行も、脱落分が増減額の過大分であることまで言う
 			expect(result.summary).toContain('脱落した分がそのまま上の増減額の過大分です');
 		});
 
@@ -5367,11 +4890,9 @@ describe('analyze_my_portfolio — 期初の始値が解決できないときの
 			expect(warning).toContain('成績として読まないこと');
 			expect(warning).toContain('資産推移シリーズも同じ日次価格に依存');
 			expect(warning).toContain('「ゼロ %」の意味ではありません');
-			// 期初過小の warning 側も増減額が同じ欠損の影響を受けることに言及する（3 箇所の整合）
 			const startWarning = (result.meta.warnings ?? []).find((w: string) => w.includes('期初の始値'));
 			expect(startWarning).toContain('増減額（change_jpy / adjusted_change_jpy）も同じ欠損の影響を受けます');
 			expect(startWarning).toContain('change_jpy_overstated=true');
-			// `.claude/rules/tools.md`: 計算層 warning は content 先頭（JSON より前）
 			expect(result.summary.split('\n').slice(0, 6).join('\n')).toContain('増減率');
 		});
 
@@ -5386,7 +4907,6 @@ describe('analyze_my_portfolio — 期初の始値が解決できないときの
 			expect(daily.change_jpy_overstated).toBe(true);
 			expect(daily.note).toContain('change_jpy_overstated=true');
 			expect(daily.note).toContain('増減額を運用成績として読まないこと');
-			// 抑止が起きていない期間には付かない（当日足だけが欠けている構成）
 			assertDefined(result.data.monthly_performance, 'result.data.monthly_performance');
 			assertDefined(result.data.yearly_performance, 'result.data.yearly_performance');
 			expect(result.data.monthly_performance.change_jpy_overstated).toBeUndefined();
@@ -5395,15 +4915,12 @@ describe('analyze_my_portfolio — 期初の始値が解決できないときの
 		});
 
 		it('現在価格も引けない保有では過大と断定せず、向き不明として申告する（CodeRabbit 回帰）', async () => {
-			// 現在評価額は現在 ticker 価格を引けなかった保有を除外して積むため、期初・現在の
-			// 両端から落ちる資産では増減額のずれの向きが決まらない。ここで「過大」と書くと
-			// 抑止したはずの確定値を文言から出すことになる。
+			// 期初・現在の両端から落ちる資産では増減額のずれの向きが決まらないので、ここで「過大」と書かない。
 			setupFetchMock({
 				assets: btcJpyAssets('0.1', '63314'),
 				trades: { trades: [] },
 				deposits: { deposits: [] },
 				withdrawals: { withdrawals: [] },
-				// btc は ticker にも足にも現れない
 				tickers: { success: 1, data: [] },
 				candleFail: () => true,
 			});
@@ -5426,8 +4943,7 @@ describe('analyze_my_portfolio — 期初の始値が解決できないときの
 		});
 
 		it('3 期間すべて始値を解決できないとき 3 期間ともフラグが立つ', async () => {
-			// 足を丸ごと引けない構成（boundaryPrices にエントリが無い）。daily 固有の対処に
-			// なっていないこと＝ buildPeriodPerformance 共通経路で効いていることの確認。
+			// 足を丸ごと引けない構成でも効くこと（daily 固有ではなく buildPeriodPerformance 共通経路であること）の確認。
 			setupFetchMock({
 				assets: btcJpyAssets('0.1', '63314'),
 				trades: { trades: [] },
@@ -5451,14 +4967,7 @@ describe('analyze_my_portfolio — 期初の始値が解決できないときの
 	});
 });
 
-/**
- * #109: 現在価格（ticker）を解決できない保有があると現在評価額が過小になり、
- * `change_jpy` / `change_pct` が同じだけ**過小**になる。#105（期初側が過小で増減額が過大）の対称形。
- *
- * 最悪ケースは ticker の全失敗。`lib/tickers.ts` の `fetchTickerPricesMap` はエラーを握り潰して
- * 空 Map を返すため、現在評価額が JPY 残高だけに縮退し「口座が消し飛んだ」ように見える
- * 巨額の偽損失が出る。
- */
+/** #109: 現在価格を解決できない保有があると現在評価額が過小になる（#105 の対称形）。fetchTickerPricesMap は失敗を握り潰して空 Map を返すので、全失敗で巨額の偽損失が出る。 */
 describe('analyze_my_portfolio — 現在価格が解決できないときの増減率の抑止（#109）', () => {
 	/** 2026-05-16T00:00:00Z = JST 2026-05-16 09:00 */
 	const fixedNowMs = Date.UTC(2026, 4, 16, 0);
@@ -5549,7 +5058,6 @@ describe('analyze_my_portfolio — 現在価格が解決できないときの増
 		const result = await analyze();
 		assertOk(result);
 
-		// 現在評価額は JPY 残高だけに縮退している
 		assertDefined(result.data.daily_performance, 'result.data.daily_performance');
 		expect(result.data.daily_performance.current_value_jpy).toBe(63_314);
 		for (const key of ['daily_performance', 'monthly_performance', 'yearly_performance'] as const) {
@@ -5559,11 +5067,9 @@ describe('analyze_my_portfolio — 現在価格が解決できないときの増
 			expect(p.change_pct_unavailable_reason, key).toBe('current_value_unpriced');
 			expect(p.unpriced_current_assets, key).toEqual(['btc', 'eth']);
 			expect(p.change_jpy_understated, key).toBe(true);
-			// 期初側は無傷（対称形を取り違えていないこと）
 			expect(p.unpriced_start_assets, key).toBeUndefined();
 			expect(p.change_jpy_overstated, key).toBeUndefined();
 		}
-		// -96% 型の偽の増減率が JSON のどこにも出ない
 		expect(JSON.stringify(result.data)).not.toMatch(/"(adjusted_)?change_pct":/);
 	});
 
@@ -5573,7 +5079,6 @@ describe('analyze_my_portfolio — 現在価格が解決できないときの増
 		const result = await analyze();
 		assertOk(result);
 
-		// (1) content 先頭の warning（`.claude/rules/tools.md`: JSON より前）
 		const warning = (result.meta.warnings ?? []).find((w: string) => w.includes('増減率'));
 		expect(warning).toBeDefined();
 		expect(warning).not.toContain('そちらで読むこと');
@@ -5586,14 +5091,12 @@ describe('analyze_my_portfolio — 現在価格が解決できないときの増
 		expect(currentWarning).toContain('total_unrealized_pnl');
 		expect(result.summary.split('\n').slice(0, 8).join('\n')).toContain('増減率');
 
-		// (2) 各期間ブロックの ※ 行
 		expect(result.summary.match(/※ 増減率・入出金調整後増減率は非表示/g)).toHaveLength(3);
 		expect(result.summary).not.toContain('増減額で読んでください');
 		expect(result.summary.match(/成績として読まないでください/g)).toHaveLength(3);
 		expect(result.summary).toContain('※ 上の現在評価額は過小');
 		expect(result.summary).toContain('脱落した分がそのまま上の増減額の過小分です');
 
-		// (3) note
 		assertDefined(result.data.daily_performance, 'result.data.daily_performance');
 		expect(result.data.daily_performance.note).toContain('change_jpy_understated=true');
 		expect(result.data.daily_performance.note).toContain('増減額を運用成績として読まないこと');
@@ -5619,7 +5122,6 @@ describe('analyze_my_portfolio — 現在価格が解決できないときの増
 	});
 
 	it('1 銘柄だけ現在価格が引けない: どの銘柄が落ちたかを出力だけで特定できる', async () => {
-		// btc_jpy だけ返す ticker。ETH が現在評価額から落ちる。
 		setupMock({
 			success: 1,
 			data: [{ pair: 'btc_jpy', sell: '15500000', buy: '15490000', last: '15500000', vol: '1', timestamp: fixedNowMs }],
@@ -5635,9 +5137,7 @@ describe('analyze_my_portfolio — 現在価格が解決できないときの増
 		expect(result.summary).toContain('ETH');
 		const currentWarning = (result.meta.warnings ?? []).find((w: string) => w.includes('現在価格を解決できず'));
 		expect(currentWarning).toContain('ETH');
-		// 全滅ではないので ticker 全失敗の断定はしない
 		expect(currentWarning).not.toContain('保有する暗号資産が全て脱落しています');
-		// 合計評価損益は BTC ぶんだけで立つ（既存ガードと同じ銘柄集合）
 		expect(result.data.total_unrealized_pnl).toBeDefined();
 	});
 
@@ -5707,17 +5207,7 @@ describe('analyze_my_portfolio — 現在価格が解決できないときの増
 	});
 });
 
-/**
- * 原価に算入できなかった入庫の申告（issue #77）。
- *
- * `calcPnl` は入庫日の始値を解決できた入庫だけを取得原価に算入し、解決できなかったものは
- * 算入せず件数だけ数える（嘘の原価を作らない設計）。数量不変条件が許容誤差内に収まった銘柄では
- * **原価が不完全でも `cost_basis_reliable: true` のまま確定値が出る**ため、件数を出力に露出して
- * おかないと「この realized_pnl は何件の入庫を除外して算出されたのか」が復元できない。
- *
- * 既存の `cost_basis_unavailable_reason`（＝原価を出せなかった理由）とは別軸で、
- * こちらは「原価は出したが不完全」の度合いを表す。
- */
+/** #77: 原価に算入できなかった入庫は、数量不変条件が許容誤差内なら cost_basis_reliable: true のまま確定値が出るので、件数を出力して不完全さを申告する。 */
 describe('analyze_my_portfolio — 原価に算入できなかった入庫の申告', () => {
 	/** eth 買い 2.0（手数料なし）。復元数量 2.0 / 原価 800,000 の起点 */
 	const ethBuy2 = {
@@ -5745,7 +5235,6 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 	/** JST 2023-06-01。candle fixture が 2024 年分しか持たないので始値を解決できない入庫日 */
 	const UNPRICED_DEPOSIT_AT = Date.UTC(2023, 4, 31, 15, 0, 0);
 
-	/** DONE 入庫のみの deposit / withdrawal レスポンスを組み立てる（入庫日で価格解決の可否を振る） */
 	function depositsOf(...entries: Array<{ uuid: string; asset: string; amount: string; at: number }>) {
 		return {
 			deposits: {
@@ -5762,27 +5251,23 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 		};
 	}
 
-	/** eth の実残高（onhand）だけを差し替えた assets レスポンス。数量不変条件の成否を振る */
 	function ethAssets(onhand: string) {
 		return {
 			assets: [{ ...assetFixture('eth'), free_amount: onhand, onhand_amount: onhand }, assetFixture('jpy')],
 		};
 	}
 
-	/** 損益・入出金セクションを両方出す既定の呼び出し（本 describe は原価の申告だけを見る） */
 	async function analyze() {
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
 		return handler({ include_technical: false, include_pnl: true, include_deposit_withdrawal: true });
 	}
 
-	/** #77 の警告行（銘柄名と件数で原価の不完全さを申告するもの）を取り出す */
 	function unpricedWarning(warnings: string[] | undefined): string | undefined {
 		return (warnings ?? []).find((w) => w.includes('取得原価にも復元数量にも算入せずに'));
 	}
 
 	it('全件を原価に算入できた銘柄: 算入件数だけが出て未算入の申告は出ない', async () => {
-		// 入庫 0.5 ETH は 2024-03-10 の始値で解決できるので原価にも数量にも入る。
-		// 復元数量 2.5 = onhand 2.5 で数量不変条件も成立する。
+		// 入庫 0.5 ETH は 2024-03-10 の始値で解決できるので原価・数量に入り、復元数量 2.5 = onhand 2.5 で不変条件も成立する。
 		setupFetchMock({
 			assets: ethAssets('2.5'),
 			trades: ethBuy2,
@@ -5802,9 +5287,7 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 	});
 
 	it('受け入れ: cost_basis_reliable=true と unpriced_deposit_count>0 が同時に出る', async () => {
-		// 未算入の入庫は 0.001 ETH で、乖離は許容誤差 max(5e-8, 2.501 × 0.1% = 0.002501) 以内。
-		// 数量不変条件は成立する（= 原価は確定値として出る）のに、その原価は入庫 1 件ぶん欠けている。
-		// この組み合わせこそ #77 が可視化したい状態で、矛盾ではない。
+		// 未算入の入庫 0.001 ETH は許容誤差 max(5e-8, 2.501 × 0.1%) 以内なので、原価は確定値として出るのに入庫 1 件ぶん欠けている（#77 が可視化したい状態）。
 		setupFetchMock({
 			assets: ethAssets('2.501'),
 			trades: ethBuy2,
@@ -5821,7 +5304,6 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 		expect(eth?.cost_basis_reliable).toBe(true);
 		expect(eth?.cost_basis_unavailable_reason).toBeUndefined();
 		expect(eth?.unpriced_deposit_count).toBe(1);
-		// 算入できた件数も出すので、1/2 件が欠けている（不完全さの度合い）まで読める
 		expect(eth?.priced_deposit_count).toBe(1);
 		// 原価は未算入ぶんを除いた値のまま出る（0.001 ETH ぶんが入っていない）
 		expect(eth?.cost_basis).toBe(Math.round(800_000 + 0.5 * ETH_DEPOSIT_DAY_OPEN));
@@ -5830,11 +5312,9 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 		expect(result.data.total_cost_basis).toBe(eth?.cost_basis);
 		expect(result.data.total_unrealized_pnl).toBe((eth?.jpy_value ?? 0) - (eth?.cost_basis ?? 0));
 
-		// 含めたことは警告行で申告する
 		const warning = unpricedWarning(result.meta.warnings);
 		expect(warning).toContain('ETH（1件）');
 		expect(warning).toContain('cost_basis_reliable=true のまま確定値が出ますが、原価は不完全です');
-		// `.claude/rules/tools.md`: 計算層 warning は summary 先頭（= content の JSON より前）に出す
 		expect(result.summary.split('\n').slice(0, 5).join('\n')).toContain('ETH（1件）');
 		expect(result.summary).toContain('※ ETH（1件） は入庫日の始値を解決できなかった入庫');
 	});
@@ -5854,14 +5334,12 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 
 		const warning = unpricedWarning(result.meta.warnings);
 		expect(warning).toBeDefined();
-		// 数字は件数の 1 だけ。原価・評価額・入庫数量が混ざっていないことを機械的に固定する
-		// （`.claude/rules/sensitive-data.md` の HIGH 分類）
+		// 数字は件数の 1 だけで、原価・評価額・入庫数量が混ざらないこと（.claude/rules/sensitive-data.md の HIGH 分類）。
 		expect(warning?.match(/\d[\d,.]*/g)).toEqual(['1']);
 	});
 
 	it('数量乖離で原価を抑止した銘柄は二重に警告しない（has_crypto_deposits と別軸）', async () => {
-		// 未算入の入庫 0.5 ETH は許容誤差を大きく超えるので数量不変条件が破れる。
-		// 原価そのものを出していない以上、#77 の「原価は出したが不完全」の申告対象ではない。
+		// 未算入の入庫 0.5 ETH は許容誤差を超えて不変条件が破れ、原価を出していないので #77 の申告対象ではない。
 		setupFetchMock({
 			assets: ethAssets('2.5'),
 			trades: ethBuy2,
@@ -5875,10 +5353,8 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 		expect(eth?.cost_basis_reliable).toBe(false);
 		expect(eth?.cost_basis_unavailable_reason).toBe('has_crypto_deposits');
 		expect(eth?.cost_basis).toBeUndefined();
-		// 抑止側の経路でも件数は出す（なぜ抑止されたかが件数で裏取りできる）
 		expect(eth?.unpriced_deposit_count).toBe(1);
 		expect(eth?.priced_deposit_count).toBeUndefined();
-		// 申告は既存の has_crypto_deposits 警告 1 本だけ
 		expect(unpricedWarning(result.meta.warnings)).toBeUndefined();
 		expect(
 			result.meta.warnings?.some((w: string) => w.includes('ETH（入庫日の価格を解決できない暗号資産の入庫あり）')),
@@ -5886,8 +5362,7 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 	});
 
 	it('売り切り銘柄の未算入入庫も申告する（holdings に載らないが total_realized_pnl に入る）', async () => {
-		// xrp は買って全量売ったので holdings に載らない。realized_pnl は
-		// closed_position_realized_pnl / total_realized_pnl に入るため、算出条件の申告が要る。
+		// xrp は全量売ったので holdings に載らないが、realized_pnl は closed_position_realized_pnl / total_realized_pnl に入るので算出条件の申告が要る。
 		const trades = {
 			trades: [
 				...ethBuy2.trades,
@@ -5932,16 +5407,12 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 		expect(result.data.closed_position_realized_pnl).toBe(1000);
 		const warning = unpricedWarning(result.meta.warnings);
 		expect(warning).toContain('XRP（1件）');
-		// eth 側は入庫が無いので巻き込まれない
 		expect(warning).not.toContain('ETH');
 		expect(result.data.holdings.find((h) => h.asset === 'eth')?.unpriced_deposit_count).toBeUndefined();
 	});
 
 	it('売り切り銘柄の実現損益が 0 円に丸まっても申告を落とさない', async () => {
-		// realized_pnl は Math.round 済みで、0 円は「損益が無い」ではなく「丸めた結果 0」でもある。
-		// しかも未算入の入庫があるからこそ 0 に見えている可能性がある（本来の原価を引けていれば
-		// 非ゼロ）。金額の集計条件（realized_pnl !== 0）で警告まで絞ると、holdings にも載らない
-		// この銘柄の算出条件が出力から完全に消える。
+		// 0 円は未算入の入庫があるからこそ 0 に見えている可能性があるので、realized_pnl !== 0 で警告を絞らない。
 		const trades = {
 			trades: [
 				...ethBuy2.trades,
@@ -5982,11 +5453,9 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 		const result = await analyze();
 		assertOk(result);
 
-		// 同値で買って売ったので実現損益はゼロ。金額側の集計には入らない
 		expect(result.data.closed_position_realized_pnl).toBe(0);
 		expect(result.data.closed_position_asset_count).toBe(0);
 		expect(result.data.holdings.find((h) => h.asset === 'xrp')).toBeUndefined();
-		// それでも算出条件は申告する
 		expect(unpricedWarning(result.meta.warnings)).toContain('XRP（1件）');
 	});
 
@@ -6003,12 +5472,10 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 		const result = await analyze();
 		assertOk(result);
 
-		// 移動平均法は期間開始前の入庫も原価に積むため、件数は全履歴・全銘柄の合計。
-		// 年初来と月初来で同じ件数になるのは、フィールドが期間スコープではないため（#85）。
+		// 移動平均法は期間開始前の入庫も原価に積むので、件数は全履歴・全銘柄の合計で、年初来と月初来が同じになる（#85）。
 		for (const period of [result.data.yearly_realized_pnl, result.data.monthly_realized_pnl]) {
 			expect(period?.unpriced_deposit_count_all_time).toBe(1);
 			expect(period?.priced_deposit_count_all_time).toBe(1);
-			// 旧名は同じ値を返す alias
 			expect(period?.unpriced_deposit_count).toBe(period?.unpriced_deposit_count_all_time);
 			expect(period?.priced_deposit_count).toBe(period?.priced_deposit_count_all_time);
 		}
@@ -6072,13 +5539,10 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 			'trade_count',
 			'cost_basis_unavailable_reason',
 			'cost_basis_reliable',
-			// #77 で追加
 			'priced_deposit_count',
 			'unpriced_deposit_count',
-			// #87 で追加（数量不変条件の検算に要る 2 値）
 			'reconstructed_qty',
 			'qty_invariant_tolerance',
-			// #89 で追加（売りの原価按分がゼロ床でクランプされた事実の申告）
 			'qty_clamp_count',
 			'qty_clamp_absorbed_qty',
 		]);
@@ -6087,12 +5551,10 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 			'sell_count',
 			'period_start',
 			'period_end',
-			// #77 で追加。#85 で *_all_time へ改名し、旧名は同じ位置に alias として残す
+			// 旧名は同じ位置に alias として残す（#85）
 			'priced_deposit_count',
 			'unpriced_deposit_count',
-			// #80 で追加
 			'realized_pnl_unavailable_reason',
-			// #85 で追加（canonical）
 			'priced_deposit_count_all_time',
 			'unpriced_deposit_count_all_time',
 		]);
@@ -6102,39 +5564,18 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 	});
 });
 
-/**
- * 入庫日価格を取りに行けなかった銘柄の抑止（issue #80）。
- *
- * 入庫日の 1day 始値は年単位の chunk で取りに行く。この取得が確率的に失敗すると当該入庫は
- * 原価にも復元数量にも算入されず、移動平均法の取得原価が変わって**過去の売却の実現損益まで動く**。
- * 同じ口座を同じ日に叩いて別の実現損益が出る以上どちらも確定申告に使えないので、該当銘柄では
- * 原価由来フィールドに加えて `realized_pnl` も確定値として出さない。
- *
- * 抑止するのは「取りに行けば解決できたはず」の 2 系統（取得失敗 / 上限切り落とし）だけで、
- * **恒久的に解決できない未算入（上場前・当日足の欠損）は従来どおり値を出して件数で申告する**
- * （#57 / #77 の判断を維持する）。抑止すると当該銘柄の原価が永久に出せなくなるため。
- */
+/** #80: 入庫日価格の取得が失敗・切り落としされた銘柄は realized_pnl も確定値として出さない。恒久的に解決できない未算入（上場前・当日足の欠損）は抑止せず件数で申告する。 */
 describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の抑止（#80）', () => {
 	/** JST 2024-03-10。既定 candle（2024-03-08 起点 120 本）で始値を解決できる入庫日 */
 	const PRICED_DEPOSIT_AT = 1710000100000;
 	/** JST 2023-06-01。既定 candle は 2024 年分しか持たないので年 chunk の追加取得が要る入庫日 */
 	const OLD_DEPOSIT_AT = Date.UTC(2023, 4, 31, 15, 0, 0);
-	/** 上の入庫日（JST 2024-03-10）の 1day open。既定 fixture の 3 本目 */
 	const ETH_DEPOSIT_DAY_OPEN = 15_100_000;
 
 	/** JST 暦年 `year` の取得を丸ごと失敗させる UTC 年キー（`getCandles` は 2 本叩く） */
 	const jstYearChunkKeys = (year: number) => [`${year - 1}`, `${year}`];
 
-	/**
-	 * JST 暦年 2023 の chunk **だけ**を取得失敗にする述語。
-	 *
-	 * `getCandles` は JST 1 年の窓を UTC 暦年 2 本（2022 / 2023）で取りに行くので、
-	 * **両方**落として初めてその年が取得不能になる。片方だけでは（#84 以降）取得できた側の足を
-	 * 返して部分成功になり、取得失敗の注入にならない——半数ちょうどの欠損は ⚠️ 警告に落ちる。
-	 *
-	 * UTC 2023 も落とすが、直近 400 日窓（UTC 2025 / 2026）と JST 2024 の chunk（UTC 2023 / 2024）は
-	 * 片方だけの欠損なので無傷で残る。取得失敗の注入対象を 1 つの入庫に絞るための細工。
-	 */
+	/** getCandles は JST 1 年を UTC 暦年 2 本で取りに行くので、両方落として初めて JST 2023 が取得不能になる（片方だけでは部分成功になる。#84）。 */
 	const eth2023ChunkFails = (urlStr: string) =>
 		jstYearChunkKeys(2023).some((key) => urlStr.includes(`/eth_jpy/candlestick/1day/${key}`));
 
@@ -6170,7 +5611,6 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 		],
 	};
 
-	/** DONE 入庫のみの deposit / withdrawal レスポンスを組み立てる */
 	function depositsOf(...entries: Array<{ uuid: string; asset: string; amount: string; at: number }>) {
 		return {
 			deposits: {
@@ -6187,7 +5627,6 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 		};
 	}
 
-	/** eth の実残高（onhand）だけを差し替えた assets レスポンス */
 	function ethAssets(onhand: string) {
 		return {
 			assets: [{ ...assetFixture('eth'), free_amount: onhand, onhand_amount: onhand }, assetFixture('jpy')],
@@ -6203,7 +5642,6 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 		});
 	}
 
-	/** #80 の抑止警告（確定値を出していないことを申告するもの）を取り出す */
 	function suppressionWarning(warnings: string[] | undefined): string | undefined {
 		return (warnings ?? []).find((w) => w.includes('確定値として出さず'));
 	}
@@ -6225,35 +5663,21 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 		const eth = holdingOf(result.data.holdings, 'eth');
 		expect(eth?.cost_basis_unavailable_reason).toBe('deposit_price_fetch_failed');
 		expect(eth?.cost_basis_reliable).toBe(false);
-		// 原価由来 4 フィールド（#54 の null 化経路）に加えて realized_pnl も出さないのが本 issue の眼目
 		expect(eth?.cost_basis).toBeUndefined();
 		expect(eth?.avg_buy_price).toBeUndefined();
 		expect(eth?.unrealized_pnl).toBeUndefined();
 		expect(eth?.unrealized_pnl_pct).toBeUndefined();
 		expect(eth?.realized_pnl).toBeUndefined();
-		// 原価に依存しない値は残す（何件の約定を見た結果かが読める）
 		expect(eth?.trade_count).toBe(2);
 		expect(eth?.jpy_value).toBeGreaterThan(0);
 		expect(eth?.current_price).toBeGreaterThan(0);
-		// 抑止の根拠になる件数は落とさない
 		expect(eth?.unpriced_deposit_count).toBe(1);
 		expect(eth?.priced_deposit_count).toBe(1);
-		// meta 側でも「取得失敗が 1 件」と読める（上限切り落としではない）
 		expect(result.meta.flowPriceChunkFailedDepositCount).toBe(1);
 		expect(result.meta.flowPriceChunkTruncatedDepositCount).toBeUndefined();
 	});
 
-	/**
-	 * #89: 本抑止（realized_pnl も undefined にする経路）とクランプ発火が同一銘柄で
-	 * 同時に起きるケース。未算入の入庫（この経路の原因そのもの）は costQty にも netQty にも
-	 * 入らないため、後続の売りがそのぶん保有不足になりクランプが発火しやすい——両者の
-	 * 同時発生は偶然ではなく構造的に起こりうる。
-	 *
-	 * realized_pnl 自体を出していない銘柄で「realized_pnl は過大側にずれています」という
-	 * クランプ警告を出すと、出してもいない値を指す誤導になるため、warning 行には出ない
-	 * ことを固定する。一方 qty_clamp_count はリプレイの事実そのものなので、
-	 * reconstructed_qty と同じ理由で holdings には出す（抑止の妥当性こそ検算対象）。
-	 */
+	/** #89: #80 の抑止とクランプ発火は同一銘柄で構造的に重なりうる。出していない realized_pnl を指すクランプ警告は出さず、qty_clamp_count は検算対象として holdings に出す。 */
 	it('クランプ発火と #80 抑止が同一銘柄で重なっても、出していない realized_pnl を指す警告は出さない', async () => {
 		const buyThenOversell = {
 			trades: [
@@ -6300,10 +5724,8 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 		const eth = holdingOf(result.data.holdings, 'eth');
 		expect(eth?.cost_basis_unavailable_reason).toBe('deposit_price_fetch_failed');
 		expect(eth?.realized_pnl).toBeUndefined();
-		// クランプの発火事実そのものは検算対象として出す（#87 と同じ「入力は握り潰さない」方針）
 		expect(eth?.qty_clamp_count).toBe(1);
 		expect(eth?.qty_clamp_absorbed_qty).toBeCloseTo(0.2, 9);
-		// realized_pnl を出していないのに「過大側にずれています」と言う警告は出さない
 		expect(result.meta.warnings?.some((w) => w.includes('復元した保有を超える売却'))).toBe(false);
 		expect(result.summary).not.toContain('復元した保有を超える売却');
 	});
@@ -6330,14 +5752,12 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 		// 信用側は現物と独立に確定するので落とさない
 		expect(result.data.account_pnl?.margin_realized_pnl).toBe(0);
 		expect(result.data.account_pnl?.margin_interest_cost).toBe(0);
-		// LLM が読むのは content テキストだけ。金額を出さず「算出不能」と書く
 		expect(result.summary).toContain('Realized PnL (Spot, 全履歴・売り切り銘柄含む): 算出不能');
 		expect(result.summary).toContain('Account PnL (全履歴): 算出不能');
 	});
 
 	it('回帰: 取得失敗が無ければ従来どおり確定値が出る', async () => {
-		// 入庫は 1 件で、既定 candle から入庫日の始値を解決できる（chunk 取得も要らない）。
-		// 復元数量 2.0 = 買い 2.0 + 入庫 0.5 - 売り 0.5 が onhand と一致する。
+		// 入庫 1 件は既定 candle で解決でき、復元数量 2.0 = 買い 2.0 + 入庫 0.5 - 売り 0.5 が onhand と一致する。
 		setupFetchMock({
 			assets: ethAssets('2.0'),
 			trades: ethTrades,
@@ -6364,9 +5784,7 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 	});
 
 	it('恒久的に解決できない入庫（年足はあるが当日の足が無い）は抑止せず従来どおり値を出す', async () => {
-		// 取得は成功する（上の candleFail を渡さない）が、fixture は 2024 年分しか持たないので
-		// 2023-06-01 の始値は解決できない。再実行しても変わらない不完全さなので抑止対象外——
-		// ここで抑止すると当該銘柄の原価が永久に出せなくなる。
+		// 取得は成功するが fixture に 2023-06-01 の足が無いので解決できない。再実行しても変わらない不完全さなので抑止しない（抑止すると原価が永久に出せない）。
 		setupFetchMock({
 			assets: ethAssets('2.4'),
 			trades: ethTrades,
@@ -6382,12 +5800,10 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 		const eth = holdingOf(result.data.holdings, 'eth');
 		// 原価は数量乖離で抑止されるが、理由は入庫日価格系ではなく従来の has_crypto_deposits
 		expect(eth?.cost_basis_unavailable_reason).toBe('has_crypto_deposits');
-		// realized_pnl は従来どおり出る（#80 の抑止対象ではない）
 		expect(eth?.realized_pnl).toBeDefined();
 		expect(result.data.total_realized_pnl).toBe(eth?.realized_pnl);
 		expect(result.data.total_realized_pnl_unavailable_reason).toBeUndefined();
 		expect(result.data.account_pnl?.spot_realized_pnl).toBe(eth?.realized_pnl);
-		// 取得失敗としても切り落としとしても数えない
 		expect(result.meta.flowPriceChunkFailedDepositCount).toBeUndefined();
 		expect(result.meta.flowPriceChunkTruncatedDepositCount).toBeUndefined();
 		expect(suppressionWarning(result.meta.warnings)).toBeUndefined();
@@ -6452,15 +5868,12 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 		expect(btc?.cost_basis).toBeGreaterThan(0);
 		expect(btc?.realized_pnl).toBeDefined();
 		expect(btc?.unpriced_deposit_count).toBeUndefined();
-		// 合計評価損益は btc ぶんだけで立つ（原価を出せた銘柄の集計。従来の挙動）
 		expect(result.data.total_cost_basis).toBe(btc?.cost_basis);
-		// 合計実現損益だけは部分和を出さない
 		expect(result.data.total_realized_pnl).toBeUndefined();
 	});
 
 	it('売り切り銘柄が抑止対象なら closed_position 系も確定値を出さない', async () => {
-		// xrp は買って全量売ったので holdings に載らない。抑止フィールドの置き場が無いぶん、
-		// closed_position_realized_pnl / total_realized_pnl を落とすことでしか申告できない。
+		// xrp は holdings に載らないので、closed_position_realized_pnl / total_realized_pnl を落とすことでしか抑止を申告できない。
 		const trades = {
 			trades: [
 				...ethTrades.trades,
@@ -6508,22 +5921,18 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 		expect(result.data.holdings.find((h) => h.asset === 'xrp')).toBeUndefined();
 		expect(result.data.closed_position_realized_pnl).toBeUndefined();
 		expect(result.data.closed_position_asset_count).toBeUndefined();
-		// 銘柄別の内訳も部分和を出さない（#92）。抑止されなかった eth 側は算出できているが、
-		// xrp を除いた部分配列を出すと合計不明のまま内訳だけ検算できてしまう。
+		// xrp を除いた部分配列を出すと合計不明のまま内訳だけ検算できてしまうので、closed_positions も出さない（#92）。
 		expect(result.data.closed_positions).toBeUndefined();
 		expect(result.data.total_realized_pnl).toBeUndefined();
 		expect(result.data.total_realized_pnl_unavailable_reason).toBe('deposit_price_fetch_failed');
-		// 保有側の eth は抑止対象ではないので確定値のまま（抑止範囲を広げない）
 		const eth = holdingOf(result.data.holdings, 'eth');
 		expect(eth?.realized_pnl).toBeDefined();
 		expect(eth?.cost_basis).toBeGreaterThan(0);
-		// 銘柄名は警告でしか出せない
 		expect(suppressionWarning(result.meta.warnings)).toContain('XRP（1件）');
 	});
 
 	it('期間実現損益は抑止した銘柄が売却した期間だけ落とす', async () => {
-		// `toFake: ['Date']` で Date だけを固定する。setTimeout まで固めると、年 chunk 取得の
-		// リトライ待機（#81）が進まずハンドラが返ってこない。このテストが要るのは now の固定だけ。
+		// Date だけを固定する。setTimeout まで固めると年 chunk 取得のリトライ待機（#81）が進まずハンドラが返らない。
 		vi.useFakeTimers({ toFake: ['Date'] });
 		// 売り（JST 2024-03-15）は年初来に入り、月初来（2024-06）には入らない now を選ぶ
 		vi.setSystemTime(Date.UTC(2024, 5, 1, 3, 0, 0));
@@ -6541,10 +5950,8 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 			const result = await analyze();
 			assertOk(result);
 
-			// 年初来: 抑止した eth の売却が期間内にあるので確定値を出さない
 			expect(result.data.yearly_realized_pnl?.realized_pnl).toBeUndefined();
 			expect(result.data.yearly_realized_pnl?.realized_pnl_unavailable_reason).toBe('deposit_price_fetch_failed');
-			// 売却件数は原価に依存しないので残す
 			expect(result.data.yearly_realized_pnl?.sell_count).toBe(1);
 			expect(result.data.yearly_account_pnl?.spot_realized_pnl).toBeUndefined();
 			expect(result.data.yearly_account_pnl?.total).toBeUndefined();
@@ -6576,19 +5983,15 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 		expect(warning).toBeDefined();
 		expect(warning).toContain('ETH（1件）');
 		expect(warning).toContain('cost_basis_unavailable_reason=deposit_price_fetch_failed');
-		// 数字は件数だけ。原価・評価額・入庫数量が混ざらない（`.claude/rules/sensitive-data.md` の HIGH 分類）
 		expect(warning?.match(/\d[\d,.]*/g)).toEqual(['1', '1']);
-		// 旧文言（確定値が出る前提の「再実行で解消すると…値が変わります」）は残っていない
 		expect(warning).not.toContain('再実行で解消すると');
-		// `.claude/rules/tools.md`: 計算層 warning は summary 先頭（= content の JSON より前）に出す
 		expect(result.summary.split('\n').slice(0, 5).join('\n')).toContain('ETH（1件）');
 		expect(result.summary).toContain('※ ETH（1件） は入庫日を含む年足を取得できなかった入庫');
 	});
 
 	it('上限切り落としは取得失敗と別の理由コードで抑止する', async () => {
 		const { MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS } = await import('../../src/handlers/portfolio/fetch.js');
-		// 上限は「年が古い順 → 資産名昇順」で埋まる。eth だけが要求する最新年（2023）が
-		// 65 組目に来るよう、他資産は 2018〜2022 に閉じ込める。
+		// 上限は「年が古い順 → 資産名昇順」で埋まるので、eth だけが要求する 2023 が 65 組目に来るよう他資産を 2018〜2022 に閉じ込める。
 		const fillerAssets = ['xrp', 'ltc', 'bcc', 'mona', 'xlm', 'qtum', 'bat', 'link', 'dot', 'doge', 'astr', 'ada'];
 		const fillerDeposits = [2018, 2019, 2020, 2021, 2022].flatMap((year) =>
 			fillerAssets.map((asset) => ({
@@ -6615,12 +6018,10 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 		const result = await analyze();
 		assertOk(result);
 
-		// 切り落とされたのは 1 組（eth の 2023）だけで、取得失敗は 1 件も無い
 		expect(result.meta.flowPriceChunkTruncatedDepositCount).toBe(1);
 		expect(result.meta.flowPriceChunkFailedDepositCount).toBeUndefined();
 
 		const eth = holdingOf(result.data.holdings, 'eth');
-		// 取得失敗（deposit_price_fetch_failed）と混同しない別コードが載る
 		expect(eth?.cost_basis_unavailable_reason).toBe('deposit_price_chunk_truncated');
 		expect(eth?.cost_basis).toBeUndefined();
 		expect(eth?.realized_pnl).toBeUndefined();
@@ -6629,10 +6030,7 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 
 		const warning = suppressionWarning(result.meta.warnings);
 		expect(warning).toContain('cost_basis_unavailable_reason=deposit_price_chunk_truncated');
-		// 上限は決定的だが、原価に入るはずの入庫が落ちている点は取得失敗と同じなので抑止する
 		expect(warning).toContain('上限は決定的なので同じ入力なら同じ結果になります');
-		// 切り落としに巻き込まれなかった filler は holdings に載らず（保有も約定も無い）、
-		// 恒久的に解決できない入庫として従来どおり扱われる
 		expect(result.data.holdings.find((h) => h.asset === 'xrp')).toBeUndefined();
 	});
 
@@ -6660,26 +6058,13 @@ describe('analyze_my_portfolio — 入庫日価格を取得できない銘柄の
 		});
 		const withoutPnl = await analyze({ include_pnl: false });
 		assertOk(withoutPnl);
-		// 損益を出さない構成では原価計算そのものを行わないので理由コードも立たない
 		expect(withoutPnl.data.total_realized_pnl_unavailable_reason).toBeUndefined();
 		expect(withoutPnl.data.account_pnl).toBeUndefined();
 		expect(withoutPnl.data.holdings.find((h) => h.asset === 'eth')?.cost_basis_unavailable_reason).toBeUndefined();
 	});
 });
 
-/**
- * 数量不変条件の入力を出力に露出する（issue #87）。
- *
- * `cost_basis_reliable` は「約定・入庫・出庫のリプレイで復元した数量」と「assets API の実残高」の
- * 突き合わせ結果だが、従来は**判定結果しか出ておらず入力が見えなかった**ため、消費者は
- * 境界付近の判定が妥当かを評価できず、API に現れない取引（販売所での売買など）の存在も
- * 推定できなかった。`reconstructed_qty`（復元数量）と `qty_invariant_tolerance`（許容誤差）を
- * 出して、判定を出力だけで検算できるようにする。
- *
- * 許容誤差は `amount_precision` から決まるが、その桁数は出力に無い。**値を出さないと
- * 消費者側で許容誤差を再現できない**ので、差（`amount − reconstructed_qty`）ではなく
- * 許容誤差の方をフィールドにしている（差は引き算で得られる）。
- */
+/** #87: 判定結果だけでは境界付近の妥当性を評価できないので、reconstructed_qty と qty_invariant_tolerance を出して出力だけで検算できるようにする（許容誤差は出力に無い amount_precision から決まるので、差ではなく許容誤差を出す）。 */
 describe('analyze_my_portfolio — 復元数量と許容誤差の露出（#87）', () => {
 	/** eth 買い 2.0（手数料なし）。復元数量 2.0 の起点 */
 	const ethBuy2 = {
@@ -6723,16 +6108,12 @@ describe('analyze_my_portfolio — 復元数量と許容誤差の露出（#87）
 	const PRICED_DEPOSIT_AT = 1710000100000;
 	/** JST 2023-06-01。candle fixture が 2024 年分しか無いので始値を解決できない入庫日 */
 	const UNPRICED_DEPOSIT_AT = Date.UTC(2023, 4, 31, 15, 0, 0);
-	/**
-	 * JST 暦年 2023 の chunk だけを取得失敗にする述語（#80 の抑止経路の注入。同 describe と同じ細工）。
-	 * JST 1 年は UTC 年 chunk 2 本なので**両方**落とす。片方だけでは部分成功になり注入にならない（#84）。
-	 */
+	/** JST 2023 の chunk だけを取得失敗にする述語（#80 の describe と同じ細工）。 */
 	const eth2023ChunkFails = (urlStr: string) =>
 		['2022', '2023'].some((key) => urlStr.includes(`/eth_jpy/candlestick/1day/${key}`));
 
 	const emptyDw = { deposits: { deposits: [] }, withdrawals: { withdrawals: [] } };
 
-	/** DONE 入庫のみの deposit / withdrawal レスポンスを組み立てる（入庫日で価格解決の可否を振る） */
 	function depositsOf(...entries: Array<{ uuid: string; asset: string; amount: string; at: number }>) {
 		return {
 			deposits: {
@@ -6749,7 +6130,6 @@ describe('analyze_my_portfolio — 復元数量と許容誤差の露出（#87）
 		};
 	}
 
-	/** eth の実残高（onhand）だけを差し替えた assets レスポンス。数量不変条件の成否を振る */
 	function ethAssets(onhand: string) {
 		return {
 			assets: [{ ...assetFixture('eth'), free_amount: onhand, onhand_amount: onhand }, assetFixture('jpy')],
@@ -6765,10 +6145,7 @@ describe('analyze_my_portfolio — 復元数量と許容誤差の露出（#87）
 		});
 	}
 
-	/**
-	 * 出力だけで `cost_basis_reliable` を再現する（本 issue の受け入れ条件そのもの）。
-	 * 消費者が書けるコードと同じものをテストからも呼び、判定と一致することを固定する。
-	 */
+	/** 消費者が書けるのと同じコードで cost_basis_reliable を出力だけから再現する（#87 の受け入れ条件）。 */
 	function replayVerdict(holding: {
 		amount: string;
 		reconstructed_qty?: number;
@@ -6794,9 +6171,7 @@ describe('analyze_my_portfolio — 復元数量と許容誤差の露出（#87）
 	});
 
 	it('受け入れ: 未算入入庫のある銘柄では差が出て、その差が unpriced_deposit_count と整合する', async () => {
-		// 未算入の入庫 0.001 ETH は許容誤差 max(5e-8, 2.501 × 0.1%) の内側なので確定値が出る。
-		// 「cost_basis_reliable=true なのに原価は不完全」という状態で、差 0.001 だけが手掛かり。
-		// 実口座で膠着した「販売所の買いが API に無い」の切り分けは、この差の読み取りそのもの。
+		// 未算入の入庫 0.001 ETH は許容誤差の内側なので確定値が出る。cost_basis_reliable=true なのに原価が不完全な状態で、差 0.001 だけが手掛かりになる。
 		setupFetchMock({
 			assets: ethAssets('2.501'),
 			trades: ethBuy2,
@@ -6833,7 +6208,6 @@ describe('analyze_my_portfolio — 復元数量と許容誤差の露出（#87）
 		expect(eth.reconstructed_qty).toBe(2);
 		expect(eth.qty_invariant_tolerance).toBeCloseTo(tolerance, 12);
 		expect(eth.cost_basis_reliable).toBe(reliable);
-		// 判定が false 側でも入力は出す（抑止が妥当だったかを消費者が評価できる）
 		expect(replayVerdict(eth)).toBe(reliable);
 	});
 
@@ -6841,8 +6215,7 @@ describe('analyze_my_portfolio — 復元数量と許容誤差の露出（#87）
 		{ onhand: '0.00000005', reliable: true, label: '絶対項ちょうど' },
 		{ onhand: '0.00000006', reliable: false, label: '絶対項をわずかに超過' },
 	])('復元数量ゼロのダスト保有（$label）でも 0 をキーごと落とさない', async ({ onhand, reliable }) => {
-		// 約定が 1 件も無いので復元数量は 0。0 は「復元したら 0 だった」という判定の入力そのもので、
-		// 件数フィールドのように省くと「計算していない」と区別できなくなる。
+		// 復元数量 0 は判定の入力そのもので、件数フィールドのように省くと「計算していない」と区別できない。
 		setupFetchMock({ assets: ethAssets(onhand), trades: { trades: [] }, ...emptyDw });
 
 		const result = await analyze();
@@ -6862,9 +6235,7 @@ describe('analyze_my_portfolio — 復元数量と許容誤差の露出（#87）
 	});
 
 	it('amount_precision が異なる銘柄では許容誤差の絶対項が変わる', async () => {
-		// 同じ実残高 0.000004 でも、eth（8 桁）は許容誤差 5e-8 で乖離扱い、
-		// xrp（6 桁）は 5e-6 で許容範囲内。桁数は出力に無いので、許容誤差を出さないと
-		// 消費者はこの差を説明できない。
+		// 同じ実残高 0.000004 でも eth（8 桁）は許容誤差 5e-8 で乖離、xrp（6 桁）は 5e-6 で許容内。桁数は出力に無いので許容誤差を出す必要がある。
 		setupFetchMock({
 			assets: {
 				assets: [
@@ -6900,7 +6271,6 @@ describe('analyze_my_portfolio — 復元数量と許容誤差の露出（#87）
 		expect(eth.cost_basis_reliable).toBe(false);
 		expect(eth.cost_basis_unavailable_reason).toBe('untracked_trade_suspected');
 		expect(eth.cost_basis).toBeUndefined();
-		// 理由コードだけでは「どれだけ乖離したのか」が読めない。約 1000 倍の乖離が数値で出る
 		expect(eth.reconstructed_qty).toBe(0.002);
 		expect(eth.qty_invariant_tolerance).toBe(0.002);
 		expect(Number(eth.amount) - (eth.reconstructed_qty ?? 0)).toBeCloseTo(1.998, 12);
@@ -6908,9 +6278,7 @@ describe('analyze_my_portfolio — 復元数量と許容誤差の露出（#87）
 	});
 
 	it('入出金履歴の取得に失敗した銘柄でも出すが、この経路は数量不変条件より前に抑止している', async () => {
-		// dw_fetch_failed は出庫を反映できないまま原価を落とす経路で、数量不変条件は評価しない。
-		// そのため「検算すると許容誤差内なのに cost_basis_reliable=false」が正しく起きる。
-		// description に書いた非対称をここで固定する（消費者が矛盾と読まないように）。
+		// dw_fetch_failed は数量不変条件を評価しない経路なので、「検算すると許容誤差内なのに cost_basis_reliable=false」が正しく起きる。
 		setupFetchMock({ assets: ethAssets('2.0'), trades: ethBuy2, dwFail: true });
 
 		const result = await analyze();
@@ -6978,13 +6346,9 @@ describe('analyze_my_portfolio — 復元数量と許容誤差の露出（#87）
 		assertOk(result);
 
 		const eth = holdingOf(result.data.holdings, 'eth');
-		// 追加先は structuredContent だけ。保有数量は `.claude/rules/sensitive-data.md` の
-		// HIGH 分類に近く、既に出している amount を超えて text に増やさない
+		// 保有数量は sensitive-data の HIGH 分類に近いので、structuredContent だけに追加し text には増やさない。
 		for (const raw of [result.summary, ...(result.meta.warnings ?? [])]) {
-			// 取得時刻等の ISO タイムスタンプを除去してから部分文字列判定する。
-			// reconstructed_qty は "2.5" のような短い数値文字列になりうるため、
-			// 素のテキストだと `取得時刻: ...T12:39:12.528Z` の "12.528" に偶然含まれて
-			// 秒が 2 で終わり かつ ミリ秒が 5 で始まる実行だけ落ちる（実際に CI で発生）。
+			// ISO タイムスタンプを除去してから判定する。"2.5" のような短い数値が "12.528" などの時刻に偶然含まれて落ちることがある。
 			const text = raw.replace(/\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})/g, '<ts>');
 			expect(text).not.toContain('reconstructed_qty');
 			expect(text).not.toContain('qty_invariant_tolerance');
@@ -6994,14 +6358,6 @@ describe('analyze_my_portfolio — 復元数量と許容誤差の露出（#87）
 	});
 });
 
-/**
- * 売り切り銘柄の実現損益の銘柄別内訳（issue #92）。
- *
- * 銘柄別の realized_pnl はループ内では元々算出済みだったが、closedSum に合計を畳む時点で
- * 捨てられていた。実口座検証で closed_position_realized_pnl の変化がどの銘柄由来か出力から
- * 特定できず調査が膠着したため、捨てずに closed_positions として出力する。
- * 計算ロジックそのもの（各銘柄の realized_pnl の算出方法）は変更していない。
- */
 describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => {
 	/** eth を保有継続（closed 側の集計に巻き込まれないための対照） */
 	const ethBuy2 = {
@@ -7018,15 +6374,11 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 		executed_at: 1710000000000,
 	};
 
-	/** eth のみ保有（onhand 2.0）の assets レスポンス。売り切り銘柄側の検証に集中するための対照 */
 	const ethOnlyAssets = {
 		assets: [{ ...assetFixture('eth'), free_amount: '2.0', onhand_amount: '2.0' }, assetFixture('jpy')],
 	};
 
-	/**
-	 * 買って全量売った売り切り銘柄 1 件ぶんの約定 2 件（数量 100 固定）。
-	 * trade_id は `seed` から機械的に決めるので、テストごとに違う小さい整数を渡せば衝突しない。
-	 */
+	/** trade_id は seed から決めるので、テストごとに違う小さい整数を渡せば衝突しない。 */
 	function closedPositionTrades(seed: number, asset: string, buyPrice: number, sellPrice: number) {
 		const pair = `${asset}_jpy`;
 		const buyId = 9000 + seed * 10 + 1;
@@ -7066,7 +6418,6 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 	/** JST 2023-06-01。candle fixture が 2024 年分しか無いので始値を解決できない入庫日 */
 	const UNPRICED_DEPOSIT_AT = Date.UTC(2023, 4, 31, 15, 0, 0);
 
-	/** DONE 入庫のみの deposit / withdrawal レスポンスを組み立てる（引数無しなら入庫ゼロ件） */
 	function depositsOf(...entries: Array<{ uuid: string; asset: string; amount: string; at: number }>) {
 		return {
 			deposits: {
@@ -7113,7 +6464,6 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 			0,
 		);
 		expect(sum).toBe(result.data.closed_position_realized_pnl);
-		// holdings に載らない売り切り銘柄の実現損益は closed_positions でしか個別に読めない
 		expect(result.data.holdings.find((h) => h.asset === 'xrp' || h.asset === 'doge')).toBeUndefined();
 	});
 
@@ -7129,8 +6479,7 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 	});
 
 	it('売り切り銘柄が存在しない場合は空配列（集計はしたが対象が無い。undefined とは区別する）', async () => {
-		// eth のみを保有・売買し、売り切った銘柄が無い構成。closed_position_realized_pnl /
-		// closed_position_asset_count が「集計した結果ゼロ」を意味する 0 になるのと揃える。
+		// 売り切り銘柄が無い構成。closed_position_realized_pnl / closed_position_asset_count が 0 になるのと揃える。
 		setupFetchMock({ assets: ethOnlyAssets, trades: { trades: [ethBuy2] }, ...depositsOf() });
 
 		const result = await analyze();
@@ -7155,15 +6504,12 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 		assertOk(result);
 		expect(result.data.closed_position_realized_pnl).toBeUndefined();
 		expect(result.data.closed_positions).toBeUndefined();
-		// JSON.stringify が唯一 LLM に届く形なので、その上でキーが増えていないことを見る
 		const wire = JSON.parse(JSON.stringify(result.data)) as Record<string, unknown>;
 		expect(Object.keys(wire)).not.toContain('closed_positions');
 	});
 
 	it('realized_pnl が 0 の売り切り銘柄も内訳に含める（closed_position_asset_count とは配列長が食い違う）', async () => {
-		// xrp は非ゼロ、doge は買値=売値で実現損益がちょうど 0（closed_position_asset_count は
-		// 数えない）。0 円の銘柄を落とすと、この銘柄が非ゼロ⇄ゼロを跨いで動いたときに
-		// closed_position_asset_count の変化が相殺されて見えなくなる（issue #92 の発端）。
+		// doge は実現損益ちょうど 0。0 円の銘柄を落とすと、非ゼロ⇄ゼロを跨いだときに closed_position_asset_count の変化が相殺されて見えなくなる（#92 の発端）。
 		const trades = {
 			trades: [ethBuy2, ...closedPositionTrades(1, 'xrp', 80, 100), ...closedPositionTrades(2, 'doge', 10, 10)],
 		};
@@ -7197,8 +6543,7 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 	});
 
 	it('銘柄ごとの priced_deposit_count / unpriced_deposit_count を内訳に載せる', async () => {
-		// holdings に載らない売り切り銘柄では、この 2 フィールドの置き場が closed_positions
-		// しか無い（#77 で認識済みの制約）。
+		// holdings に載らない売り切り銘柄では、この 2 フィールドの置き場が closed_positions しか無い（#77 で認識済みの制約）。
 		const trades = { trades: [ethBuy2, ...closedPositionTrades(2, 'doge', 10, 12)] };
 		setupFetchMock({
 			assets: ethOnlyAssets,
@@ -7236,9 +6581,7 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 	});
 
 	it('入庫日価格を解決できず抑止された銘柄が 1 件でもあれば内訳全体を undefined にする（部分和を出さない）', async () => {
-		// xrp は入庫日を含む年 chunk（JST 2023 = UTC 2022/2023）の取得に失敗して #80 経路で抑止
-		// される。doge は無関係に売り切っているが、部分和を出さない既存方針により道連れで
-		// undefined になる（closed_position_realized_pnl / closed_position_asset_count と同じ挙動）。
+		// xrp は #80 経路で抑止され、無関係な doge も部分和を出さない方針で道連れに undefined になる。
 		const trades = {
 			trades: [ethBuy2, ...closedPositionTrades(1, 'xrp', 80, 100), ...closedPositionTrades(2, 'doge', 10, 12)],
 		};
@@ -7288,16 +6631,7 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 		expect(closedPositionsIndex).toBeGreaterThan(totalRealizedPnlUnavailableReasonIndex);
 	});
 
-	/**
-	 * ゼロ残高銘柄の取得漏れ検出（issue #93 仕様 1）。
-	 *
-	 * #89 で保有継続中の銘柄の数量乖離は検出できるようになったが、約定も残高も無い銘柄は
-	 * どのループにも乗らず検出できなかった（本 issue が塞ぐ穴）。入出金履歴（DONE の暗号資産
-	 * 入庫）を起点に、約定履歴にも現在残高にも現れない銘柄を検出し、上の closed_positions に
-	 * realized_pnl を持たない検出専用エントリ（realized_pnl_unavailable_reason 付き）として
-	 * 申告する。この配列を新設せず既存の closed_positions に載せているのは #92 とのシナジー
-	 * ——消費者が読む場所を増やさないため。
-	 */
+	/** #93: 約定も残高も無い銘柄を DONE の暗号資産入庫から検出し、realized_pnl を持たないエントリとして closed_positions に載せる（消費者が読む場所を増やさない）。 */
 	describe('ゼロ残高銘柄の取得漏れ検出（#93）', () => {
 		it('受け入れ: 入庫はあるが約定も残高も無い銘柄が closed_positions に申告される（本 issue の核）', async () => {
 			setupFetchMock({
@@ -7316,17 +6650,13 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 			expect(flr.priced_deposit_count).toBeUndefined();
 			expect(flr.unpriced_deposit_count).toBeUndefined();
 
-			// 検出のみのエントリは実額を持たないため、集計系フィールドには寄与しない。
-			// eth（保有継続）以外に売り切り銘柄が無いので、集計自体は「対象なし」の 0 になる
-			// （集計していない undefined とは区別する。#92 の既存方針どおり）。
+			// 検出のみのエントリは集計に寄与しないので、集計は「対象なし」の 0（集計していない undefined とは区別する）。
 			expect(result.data.closed_position_realized_pnl).toBe(0);
 			expect(result.data.closed_position_asset_count).toBe(0);
 
-			// LLM 向けの申告（content にデータを含める: `.claude/rules/tools.md`）
 			expect(result.meta.warnings?.some((w) => w.includes('FLR'))).toBe(true);
 			expect(result.summary).toContain('FLR');
 
-			// JSON 上のキーは asset + realized_pnl_unavailable_reason のみ（未定義キーは落ちる）
 			const wire = JSON.parse(JSON.stringify(result.data)) as { closed_positions: Array<Record<string, unknown>> };
 			const flrWire = wire.closed_positions.find((p) => p.asset === 'flr');
 			expect(Object.keys(flrWire ?? {})).toEqual(['asset', 'realized_pnl_unavailable_reason']);
@@ -7386,8 +6716,7 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 			const result = await analyze();
 			assertOk(result);
 
-			// eth（保有継続）しか無く売り切り銘柄も検出対象も無いので空配列（集計はしたが対象が無い）。
-			// undefined になるのは include_pnl=false か約定履歴が丸ごと 0 件のときだけ。
+			// 集計はしたが対象が無いので空配列。undefined になるのは include_pnl=false か約定履歴が 0 件のときだけ。
 			expect(result.data.closed_positions).toEqual([]);
 		});
 
@@ -7430,16 +6759,14 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 			const result = await analyze();
 			assertOk(result);
 
-			// xrp(+2000) / mona(-200) は実額計算済みなので降順で先頭、arb/oas は検出のみで
-			// realized_pnl を持たず末尾に asset 昇順でまとまる
+			// 実額計算済みの xrp / mona が降順で先頭、検出のみの arb / oas は realized_pnl を持たず末尾に asset 昇順でまとまる。
 			expect(result.data.closed_positions?.map((p) => p.asset)).toEqual(['xrp', 'mona', 'arb', 'oas']);
 			expect(result.data.closed_position_asset_count).toBe(2);
 			expect(result.data.closed_position_realized_pnl).toBe(1800);
 		});
 
 		it('closedSuppressed（他の売り切り銘柄の入庫日価格解決失敗）とは独立に検出結果が残る', async () => {
-			// xrp は入庫日を含む年 chunk の取得に失敗して #80 経路で抑止される（closedSuppressed）。
-			// flr はそれとは無関係な検出専用エントリで、抑止に道連れにならず closed_positions に残る。
+			// xrp は #80 経路で抑止されるが、無関係な検出専用エントリの flr は道連れにならず残る。
 			const trades = { trades: [ethBuy2, ...closedPositionTrades(1, 'xrp', 80, 100)] };
 			setupFetchMock({
 				assets: ethOnlyAssets,
@@ -7469,15 +6796,8 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 			expect(toolDef.description).toContain('bitbank API に含まれない');
 		});
 
-		/**
-		 * CodeRabbit review（PR #95）で指摘: 約定履歴が打ち切られていると tradedAssets が
-		 * 実際の取引所約定の部分集合でしかなく、取引所で売買しただけの銘柄まで
-		 * 「約定に現れない」と誤検出しうる。qtyMismatchReasonFor が history_truncated を
-		 * untracked 系より優先する非対称と揃え、確度が落ちる場合はそちらに倒す。
-		 */
+		/** 約定履歴が打ち切られていると取引所で売買しただけの銘柄まで誤検出しうるので、qtyMismatchReasonFor と同じく history_truncated に倒す。 */
 		it('約定履歴が打ち切られている実行では history_truncated として検出する（誤って「販売所取引」と断定しない）', async () => {
-			// 同一ページ（1000 件フルページ・同一 executed_at）を返し続けると、2 ページ目で
-			// cursor が進まず paginateTrades が truncated=true で終了する（eth の取引のみで構成）。
 			const fullPage = {
 				trades: Array.from({ length: 1000 }, (_, i) => ({
 					...ethBuy2,
@@ -7502,11 +6822,7 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 			expect(result.meta.warnings?.some((w) => w.includes('FLR') && w.includes('販売所'))).toBe(false);
 		});
 
-		/**
-		 * このガードが無いと、外部ウォレットへ送付しただけの銘柄まで「販売所取引の可能性」と
-		 * 誤って警告してしまう（CodeRabbit review 対応時に発見、issue #93 の当初スコープには
-		 * 無かった追加の誤検知パス）。
-		 */
+		/** このガードが無いと、外部ウォレットへ送付しただけの銘柄まで「販売所取引の可能性」と誤警告する。 */
 		it('入庫と出庫がある銘柄は誤検知しない——出庫（他ウォレットへの送付）だけで残高ゼロが説明できる', async () => {
 			setupFetchMock({
 				assets: ethOnlyAssets,
@@ -7544,12 +6860,7 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 			expect(result.meta.warnings?.some((w) => w.includes('FLR')) ?? false).toBe(false);
 		});
 
-		/**
-		 * CodeRabbit review（PR #95）で指摘: 出庫による除外判定は dw.withdrawals の完全性が
-		 * 前提。出庫チャネルの取得に失敗した実行では、本来なら除外されるはずの出庫を
-		 * 見落として誤検出しうる（deposits 自体は取得できているので、ガードが無ければ
-		 * flr は「入庫はあるが約定にも残高にも無い」として検出されてしまう）。
-		 */
+		/** 出庫による除外判定は withdrawals の完全性が前提なので、出庫チャネルの取得に失敗した実行では検出しない。 */
 		it('入出金履歴の取得に失敗した実行では検出しない——出庫の見落としによる誤検出を避ける', async () => {
 			setupFetchMock({
 				assets: ethOnlyAssets,
@@ -7572,7 +6883,6 @@ describe('analyze_my_portfolio — 売り切り銘柄の内訳（#92）', () => 
 			const result = await analyze();
 			assertOk(result);
 
-			// flowUnavailableReason が本当に立っていることを確認したうえで検出結果を見る
 			expect(result.data.total_cost_basis_unavailable_reason).toBe('dw_fetch_failed');
 			expect(result.data.closed_positions?.some((p) => p.asset === 'flr')).toBe(false);
 			expect(result.meta.warnings?.some((w) => w.includes('FLR')) ?? false).toBe(false);

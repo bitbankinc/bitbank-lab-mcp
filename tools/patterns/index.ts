@@ -1,8 +1,3 @@
-/**
- * patterns/index.ts - パターン検出モジュールの再エクスポート
- */
-
-// config
 export {
 	getConvergenceFactorForTf,
 	getDefaultParamsForTf,
@@ -14,7 +9,6 @@ export {
 	resolveParams,
 	SCHEMA_DEFAULTS,
 } from './config.js';
-// regression
 export {
 	clamp01,
 	type LinearRegressionResult,
@@ -23,16 +17,14 @@ export {
 	linearRegressionWithR2,
 	marginFromRelDev,
 	near,
-	pct,
 	type RegressionPoint,
 	relDev,
 	trendlineFit,
 	type XYPoint,
 } from './regression.js';
-// swing
 export {
 	type Candle,
-	type DetectSwingePointsOptions,
+	type DetectSwingPointsOptions,
 	detectSwingPoints,
 	filterPeaks,
 	filterValleys,

@@ -6,7 +6,6 @@ describe('calculateSMA', () => {
 		const prices = [100, 102, 104, 103, 105];
 		const result = calculateSMA(prices, 3);
 		expect(result).toHaveLength(5);
-		// 先頭 2 つは NaN
 		expect(result[0]).toBeNaN();
 		expect(result[1]).toBeNaN();
 		// result[2] = (100 + 102 + 104) / 3 = 102

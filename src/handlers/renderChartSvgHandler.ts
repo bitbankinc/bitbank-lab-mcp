@@ -24,13 +24,10 @@ export const toolDef: ToolDefinition = {
 		const pair = String(meta.pair || (args as Record<string, unknown>).pair || 'pair').toUpperCase();
 		const type = String(meta.type || (args as Record<string, unknown>).type || '1day');
 
-		// 上流 warning（取得層 / 計算層）。LLM が summary だけ見ても不完全性に気づけるよう
-		// content 先頭に必ず連結する。
 		const upstream = {
 			warning: meta.warning as string | undefined,
 			warnings: meta.warnings as string[] | undefined,
 		};
-		// レンダリング層独自の警告（雲不足等）。上流とは別系統。
 		const renderWarnings = meta.renderWarnings as string[] | undefined;
 		const renderWarningBlock =
 			renderWarnings && renderWarnings.length > 0
@@ -70,7 +67,6 @@ export const toolDef: ToolDefinition = {
 			String(data.svg),
 		].join('\n');
 
-		// 自前 renderWarnings は SVG block の直前に別行で表示する（ユーザーへの可視性確保）。
 		return {
 			content: [{ type: 'text', text: summary + renderWarningBlock + svgBlock }],
 			structuredContent: {

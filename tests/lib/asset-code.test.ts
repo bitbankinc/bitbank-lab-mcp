@@ -1,12 +1,4 @@
-/**
- * lib/asset-code — API が返す asset コードの取得境界正規化のユニットテスト。
- *
- * 消費側（portfolio/calc.ts 等）は「asset は小文字」を前提に JPY 判定・prices 検索・
- * Map キーを組んでいる。その前提を担保するのがこのユーティリティなので、
- *   - 大文字が確実に小文字化されること
- *   - 既に小文字のレコード（＝現行 API の実挙動）では出力が 1 バイトも変わらないこと
- * の 2 点を機械的に固定する。
- */
+// 消費側（portfolio/calc.ts 等）は「asset は小文字」を前提に JPY 判定・prices 検索・Map キーを組んでいるので、大文字が確実に小文字化されることと、既に小文字のレコード（現行 API の実挙動）では出力が 1 バイトも変わらないことを固定する。
 
 import { describe, expect, it } from 'vitest';
 import { normalizeAssetCode, normalizeAssetCodes } from '../../lib/asset-code.js';
@@ -54,10 +46,7 @@ describe('normalizeAssetCodes', () => {
 		expect(records[0].asset).toBe('JPY');
 	});
 
-	/**
-	 * 回帰防止の要。現行 API は小文字を返すので、正規化を挟んでも既存出力は変わらない
-	 * ことを「参照が同一」で示す（オブジェクトを作り直していないので JSON も不変）。
-	 */
+	/** 現行 API は小文字を返すので、正規化を挟んでも既存出力が変わらないことを「参照が同一」で示す（オブジェクトを作り直していないので JSON も不変）。 */
 	it('既に小文字のレコードは同一参照のまま通す（既存レスポンスに対してノーオペ）', () => {
 		const records = [
 			{ uuid: 'dep-1', asset: 'jpy', amount: '1000' },

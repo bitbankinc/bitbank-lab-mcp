@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
 	buildVolatilityBeginnerText,
 	buildVolatilityDetailedText,
-	buildVolatilitySummaryText,
 	type VolDetailedInput,
 	type VolViewInput,
 } from '../src/handlers/getVolatilityMetricsHandler.js';
@@ -32,6 +31,17 @@ function makeViewInput(overrides?: Partial<VolViewInput>): VolViewInput {
 }
 
 describe('buildVolatilityBeginnerText', () => {
+	it('安いペアの現在価格と ATR を円の整数に潰さない', () => {
+		const text = buildVolatilityBeginnerText(makeViewInput({ lastClose: 31.2345, atrAbs: 0.987654 }));
+		expect(text).toContain('現在価格: 31.2345円');
+		expect(text).toContain('約0.9877円');
+	});
+
+	it('ATR は価格の水準で桁を決めるので、BTC では 10 万円未満でも円の整数のまま', () => {
+		const text = buildVolatilityBeginnerText(makeViewInput({ atrAbs: 45_678.9 }));
+		expect(text).toContain('約45,679円');
+	});
+
 	it('ペア名・時間足・現在価格を含む', () => {
 		const text = buildVolatilityBeginnerText(makeViewInput());
 		expect(text).toContain('BTC_JPY [1day]');
@@ -59,20 +69,6 @@ describe('buildVolatilityBeginnerText', () => {
 	it('lastClose が null の場合は n/a', () => {
 		const text = buildVolatilityBeginnerText(makeViewInput({ lastClose: null }));
 		expect(text).toContain('n/a');
-	});
-});
-
-describe('buildVolatilitySummaryText', () => {
-	it('1行にペア・サンプル数・各指標・タグを含む', () => {
-		const text = buildVolatilitySummaryText(makeViewInput());
-		expect(text).toContain('BTC_JPY [1day]');
-		expect(text).toContain('samples=30');
-		expect(text).toContain('RV=');
-		expect(text).toContain('ATR=');
-		expect(text).toContain('PK=');
-		expect(text).toContain('GK=');
-		expect(text).toContain('RS=');
-		expect(text).toContain('Tags: volatile, high_vol');
 	});
 });
 

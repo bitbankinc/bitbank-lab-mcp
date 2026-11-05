@@ -12,7 +12,6 @@ import {
 } from '../src/handlers/analyzeIndicatorsHandler.js';
 import analyzeIndicators from '../tools/analyze_indicators.js';
 
-/** デフォルト入力: 全フィールド null/空 → 最小出力 */
 function baseInput(overrides?: Partial<BuildIndicatorsTextInput>): BuildIndicatorsTextInput {
 	return {
 		pair: 'btc_jpy',
@@ -77,8 +76,6 @@ function baseInput(overrides?: Partial<BuildIndicatorsTextInput>): BuildIndicato
 }
 
 describe('buildIndicatorsText', () => {
-	// ── ヘッダー ─────────────────────────────────────────
-
 	it('ヘッダーに pair / type / 時刻を含む', () => {
 		const text = buildIndicatorsText(baseInput());
 		expect(text).toContain('BTC_JPY');
@@ -96,8 +93,6 @@ describe('buildIndicatorsText', () => {
 		expect(text).not.toContain('前日比');
 	});
 
-	// ── 総合判定 ─────────────────────────────────────────
-
 	it('uptrend → 上昇トレンド', () => {
 		const text = buildIndicatorsText(baseInput({ trend: 'uptrend' }));
 		expect(text).toContain('上昇トレンド');
@@ -112,8 +107,6 @@ describe('buildIndicatorsText', () => {
 		const text = buildIndicatorsText(baseInput({ trend: 'neutral' }));
 		expect(text).toContain('中立/レンジ');
 	});
-
-	// ── RSI 判定 ─────────────────────────────────────────
 
 	it('RSI < 30 → 売られすぎ', () => {
 		const text = buildIndicatorsText(baseInput({ rsi: 25 }));
@@ -150,8 +143,6 @@ describe('buildIndicatorsText', () => {
 		const text = buildIndicatorsText(baseInput({ recentRsiFormatted: ['50.0'] }));
 		expect(text).not.toContain('RSI推移');
 	});
-
-	// ── MACD ─────────────────────────────────────────────
 
 	it('MACD line / signal / hist の3数値がテキストに含まれる', () => {
 		const text = buildIndicatorsText(baseInput({ macdLine: 12345, macdSignal: 6789, macdHist: 5556 }));
@@ -208,8 +199,6 @@ describe('buildIndicatorsText', () => {
 		expect(text).toContain('直近クロス: なし');
 	});
 
-	// ── BB ────────────────────────────────────────────────
-
 	it('sigmaZ <= -1 → 売られすぎ', () => {
 		const text = buildIndicatorsText(baseInput({ sigmaZ: -1.5 }));
 		expect(text).toContain('-1.5σ');
@@ -249,8 +238,6 @@ describe('buildIndicatorsText', () => {
 		expect(text).toContain('現在: 1σ');
 	});
 
-	// ── 一目均衡表 ───────────────────────────────────────
-
 	it('above_cloud → 強気', () => {
 		const text = buildIndicatorsText(baseInput({ cloudPos: 'above_cloud' }));
 		expect(text).toContain('雲の上 → 強気');
@@ -286,8 +273,6 @@ describe('buildIndicatorsText', () => {
 		const text = buildIndicatorsText(baseInput({ cloudThickness: 200000, cloudThicknessPct: 2.0 }));
 		expect(text).toContain('雲の厚さ');
 	});
-
-	// ── ストキャスティクス ────────────────────────────────
 
 	it('stochK <= 20 → 売られすぎゾーン', () => {
 		const text = buildIndicatorsText(baseInput({ stochK: 15, stochD: 18 }));
@@ -332,8 +317,6 @@ describe('buildIndicatorsText', () => {
 		expect(text).toMatch(/ストキャスティクス[\s\S]*データ不足/);
 	});
 
-	// ── OBV ──────────────────────────────────────────────
-
 	it('OBV rising → 出来高が上昇を支持', () => {
 		const text = buildIndicatorsText(baseInput({ obvTrend: 'rising' }));
 		expect(text).toContain('出来高が上昇を支持');
@@ -372,14 +355,10 @@ describe('buildIndicatorsText', () => {
 		expect(text).toMatch(/OBV[\s\S]*データ不足/);
 	});
 
-	// ── deltaLabel バリエーション ─────────────────────────
-
 	it('timeframe week → 前週比ラベル対応', () => {
 		const text = buildIndicatorsText(baseInput({ deltaLabel: '前週比' }));
 		expect(text).toContain('前週比');
 	});
-
-	// ── 全セクション存在確認 ──────────────────────────────
 
 	it('全セクションのヘッダーが含まれる', () => {
 		const text = buildIndicatorsText(baseInput());
@@ -392,8 +371,6 @@ describe('buildIndicatorsText', () => {
 		expect(text).toContain('【OBV (On-Balance Volume)】');
 		expect(text).toContain('【次に確認すべきこと】');
 	});
-
-	// ── null 多数でも crash しない ────────────────────────
 
 	it('strong_downtrend + rsi < 30 + エクスパンション → 総合判定が全て反映', () => {
 		const text = buildIndicatorsText(baseInput({ trend: 'strong_downtrend', rsi: 20, bandWidthPct: 25 }));
@@ -504,20 +481,16 @@ describe('buildIndicatorsText', () => {
 	});
 });
 
-// ── toolDef.handler テスト ───────────────────────────
-
 describe('toolDef.handler', () => {
 	const mockedAnalyze = vi.mocked(analyzeIndicators);
 
 	afterEach(() => vi.clearAllMocks());
 
-	/** handler が必要とする analyzeIndicators の戻り値を構築 */
-	/** ichi_series を「今日の雲」の値（spanA[len-26]/spanB[len-26]）から構築 */
+	/** 「今日の雲」の値は spanA / spanB[len - ICHIMOKU_SHIFT] にだけ置き、他の位置は雲を 500 万円上にずらして、読む位置が 1 本でもずれたら雲との位置関係が変わるようにする。 */
 	function buildIchiSeries(todaySpanA: number, todaySpanB: number, length = 30) {
-		// 末尾 26 本前が「今日の雲」、末尾は「26 本後の雲」（今日計算された先行スパン）。
-		// 末尾のみ別値を入れて区別する。
-		const spanA = Array.from({ length }, () => todaySpanA);
-		const spanB = Array.from({ length }, () => todaySpanB);
+		const todayIdx = length - ICHIMOKU_SHIFT;
+		const spanA = Array.from({ length }, (_, i) => (i === todayIdx ? todaySpanA : todaySpanA + 5_000_000));
+		const spanB = Array.from({ length }, (_, i) => (i === todayIdx ? todaySpanB : todaySpanB + 5_000_000));
 		return {
 			tenkan: Array.from({ length }, () => todaySpanA),
 			kijun: Array.from({ length }, () => todaySpanB),
@@ -529,9 +502,6 @@ describe('toolDef.handler', () => {
 
 	function mockResult(overrides?: Record<string, unknown>) {
 		// 本番（computeAllIndicators）が返す flat 形状を再現する。
-		// ⚠️ 以前は存在しない `series` キーを注入しており、本番が series を返さないバグを隠蔽していた。
-		// この手組み形状が本番からズレていないかは tests/indicators-contract.test.ts が
-		// computeAllIndicators の出力を IndicatorsInternalSchema に直接通して構造的に担保する。
 		const indicators = {
 			RSI_14: 55,
 			RSI_14_series: Array.from({ length: 10 }, (_, i) => 50 + i),
@@ -548,7 +518,6 @@ describe('toolDef.handler', () => {
 			ICHIMOKU_spanB: 9400000,
 			ICHIMOKU_conversion: 9900000,
 			ICHIMOKU_base: 9700000,
-			// flat な series キー（本番形状）
 			sma_25_series: Array.from({ length: 20 }, (_, i) => 9700000 + i * 1000),
 			sma_75_series: Array.from({ length: 20 }, (_, i) => 9500000 + i * 500),
 			sma_200_series: Array.from({ length: 20 }, (_, i) => 9000000 + i * 200),
@@ -562,8 +531,7 @@ describe('toolDef.handler', () => {
 				middle: Array.from({ length: 20 }, () => 9800000),
 				lower: Array.from({ length: 20 }, () => 9400000),
 			},
-			// 「今日の雲」判定は ichi_series.spanA/B の末尾 26 本前を参照する。
-			// tenkan/kijun は転換線・基準線の slope 計算にも使われる。
+			// 「今日の雲」判定は ichi_series.spanA/B の末尾 26 本前を参照し、tenkan/kijun は転換線・基準線の slope 計算にも使われる。
 			ichi_series: buildIchiSeries(9600000, 9400000),
 			STOCH_RSI_K: 65,
 			STOCH_RSI_D: 60,
@@ -600,16 +568,12 @@ describe('toolDef.handler', () => {
 		expect(res.content[0].text).toContain('【総合判定】');
 	});
 
-	// OBV 単位は pair の base 通貨から導出する（他ツールと同じ規約）。
-	// build_indicators_handler_text.test.ts は obvUnit を固定入力で渡すため、
-	// handler の導出ロジック自体はここで検証する。
+	// build_indicators_handler_text.test.ts は obvUnit を固定入力で渡すので、handler の導出ロジック自体はここで検証する。
 	it('obvUnit を pair の base 通貨から導出する（eth_jpy → ETH）', async () => {
 		mockedAnalyze.mockResolvedValueOnce(mockResult() as never);
 		const res = (await toolDef.handler({ pair: 'eth_jpy', type: '1day', limit: 200 })) as {
 			content: Array<{ text: string }>;
 		};
-		// OBV セクションの「現在値」行に base 通貨が単位として付く。
-		// 修正前は pair が 'btc' を含まないため空文字になっていた。
 		const obvLine = res.content[0].text.split('\n').find((l) => l.trim().startsWith('現在値:'));
 		expect(obvLine).toBeDefined();
 		expect(obvLine).toContain('ETH');
@@ -625,9 +589,7 @@ describe('toolDef.handler', () => {
 		expect(obvLine).toContain('BTC');
 	});
 
-	// pair 欠損時は base 通貨を導出できないため単位は空（formatter の baseCcy と同じ `?? ''`）。
-	// 本番は schema default('btc_jpy') で到達しないが、String(pair) 経由で
-	// "UNDEFINED" 化していた退行を防ぐ防御的回帰。末尾に通貨コードが付かないこと。
+	// pair 欠損は本番では schema default('btc_jpy') で到達しないが、String(pair) 経由の "UNDEFINED" 化を防ぐ防御的回帰。
 	it('obvUnit は pair が undefined でも UNDEFINED 化せず単位が空になる', async () => {
 		mockedAnalyze.mockResolvedValueOnce(mockResult() as never);
 		const res = (await toolDef.handler({ pair: undefined as never, type: '1day', limit: 200 })) as {
@@ -810,14 +772,9 @@ describe('toolDef.handler', () => {
 		expect(res.content[0].text).toContain('雲の上');
 	});
 
-	// ── 「今日の雲」判定のバグ修正（spanA[len-ICHIMOKU_SHIFT] を使うこと）──
-
 	it('「今日の雲」判定は ichi_series.spanA/B の末尾 ICHIMOKU_SHIFT 本前を使う（ICHIMOKU_spanA/B とズレているケース）', async () => {
 		const m = mockResult();
-		// 末尾の ICHIMOKU_spanA/B（= ICHIMOKU_SHIFT 本後の雲）と「今日の雲」（= spanA[len-ICHIMOKU_SHIFT]）が
-		// 大きく異なるケース。close=10M。
-		// - ICHIMOKU_spanA/B（末尾＝ICHIMOKU_SHIFT 本後）: 6M/5M → これを使うと above_cloud（バグ）
-		// - 今日の雲（spanA/B[len-ICHIMOKU_SHIFT]）: 11M/10.5M → 正しくは below_cloud
+		// 末尾の ICHIMOKU_spanA/B（= ICHIMOKU_SHIFT 本後の雲）は 6M/5M で、これを使うと above_cloud（バグ）。今日の雲（spanA/B[len-ICHIMOKU_SHIFT]）は 11M/10.5M で、close=10M なら正しくは below_cloud。
 		(m.data.indicators as Record<string, unknown>).ICHIMOKU_spanA = 6000000;
 		(m.data.indicators as Record<string, unknown>).ICHIMOKU_spanB = 5000000;
 		const length = ICHIMOKU_SHIFT + 4;
@@ -845,7 +802,6 @@ describe('toolDef.handler', () => {
 		// 「今日の雲」（spanA[len-ICHIMOKU_SHIFT]=11M, spanB[len-ICHIMOKU_SHIFT]=10.5M）の下に close=10M がある
 		expect(res.content[0].text).toContain('雲の下');
 		expect(res.content[0].text).not.toContain('雲の上');
-		// 表示される先行スパンも「今日の雲」の値であること
 		expect(res.content[0].text).toContain('先行スパンA: 11,000,000');
 		expect(res.content[0].text).toContain('先行スパンB: 10,500,000');
 	});
@@ -874,7 +830,6 @@ describe('toolDef.handler', () => {
 		expect(text).not.toContain('雲の下 → 弱気');
 		expect(text).not.toContain('雲の中 → 中立');
 		expect(text).toContain('n/a（雲データ不足）');
-		// 先行スパン表示も n/a（= spanA/B が null にフォールバック）
 		expect(text).toContain('先行スパンA: n/a');
 		expect(text).toContain('先行スパンB: n/a');
 	});
@@ -882,7 +837,6 @@ describe('toolDef.handler', () => {
 	it('ichi_series が欠落していても雲判定は null にフォールバック', async () => {
 		const m = mockResult();
 		delete (m.data.indicators as Record<string, unknown>).ichi_series;
-		// 末尾の scalar 値（= 26 本後の雲）だけは存在するが、判定には使わない
 		(m.data.indicators as Record<string, unknown>).ICHIMOKU_spanA = 9600000;
 		(m.data.indicators as Record<string, unknown>).ICHIMOKU_spanB = 9400000;
 		mockedAnalyze.mockResolvedValueOnce(m as never);
@@ -966,9 +920,7 @@ describe('toolDef.handler', () => {
 	});
 
 	it('bwTrend 収縮中の検出', async () => {
-		// calcBandWidthTrend は at(-1) と at(-6) を比較する。
-		// 幅を i に対して単調減少させ、計測点（index 14 → 19）で確実に縮むようにする
-		// （以前のしきい値方式だと両計測点が同幅で「不変」になりうる）。
+		// calcBandWidthTrend は at(-1) と at(-6) を比較するので、幅を i に対して単調減少させ、計測点（index 14 → 19）で確実に縮むようにする。
 		const m = mockResult({
 			bb2_series: {
 				upper: Array.from({ length: 20 }, (_, i) => 10_000_000 + (20 - i) * 50_000),
@@ -981,7 +933,6 @@ describe('toolDef.handler', () => {
 			content: Array<{ text: string }>;
 		};
 		const text = res.content[0].text;
-		// 幅が単調に縮小しているので「収縮中」を決め打ちで検証する
 		expect(text).toContain('収縮中');
 	});
 
@@ -1005,8 +956,6 @@ describe('toolDef.handler', () => {
 		expect(res.content[0].text).toContain('ベアリッシュ');
 	});
 
-	// ── 上流 warning / 指標不足 warnings の prepend ─────────
-
 	it('meta.warning が content[0].text の先頭に出る', async () => {
 		const m = mockResult();
 		(m as { meta?: Record<string, unknown> }).meta = {
@@ -1016,10 +965,8 @@ describe('toolDef.handler', () => {
 		const res = (await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 200 })) as {
 			content: Array<{ text: string }>;
 		};
-		// content の最先頭が警告行で始まる
 		expect(res.content[0].text.startsWith('⚠️')).toBe(true);
 		expect(res.content[0].text).toContain('3日中1日の取得に失敗');
-		// 警告行のあとに本文セクションが続く
 		const idxWarning = res.content[0].text.indexOf('⚠️');
 		const idxBody = res.content[0].text.indexOf('【総合判定】');
 		expect(idxWarning).toBeLessThan(idxBody);
@@ -1036,11 +983,9 @@ describe('toolDef.handler', () => {
 			content: Array<{ text: string }>;
 		};
 		const text = res.content[0].text;
-		// 上流 warning と 指標不足 warnings の両方が含まれる
 		expect(text).toContain('4年中1年');
 		expect(text).toContain('SMA_200: データ不足');
 		expect(text).toContain('EMA_200: データ不足');
-		// 別行で並ぶ
 		const lines = text.split('\n');
 		const warningLineIdx = lines.findIndex((l) => l.includes('4年中1年'));
 		const sma200LineIdx = lines.findIndex((l) => l.includes('SMA_200'));
@@ -1058,8 +1003,6 @@ describe('toolDef.handler', () => {
 		expect(res.content[0].text.startsWith('===')).toBe(true);
 	});
 
-	// ── 形成中足（meta.provisional）の注記 ─────────────────
-
 	it('meta.provisional=true で「未確定（形成中）」注記が content[0].text に出る', async () => {
 		const m = mockResult();
 		(m as { meta?: Record<string, unknown> }).meta = { provisional: true };
@@ -1069,7 +1012,6 @@ describe('toolDef.handler', () => {
 		};
 		const text = res.content[0].text;
 		expect(text).toContain('未確定（形成中）');
-		// 注記は本文より前に出る
 		const idxNote = text.indexOf('未確定（形成中）');
 		const idxBody = text.indexOf('【総合判定】');
 		expect(idxNote).toBeGreaterThanOrEqual(0);

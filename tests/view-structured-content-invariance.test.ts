@@ -1,21 +1,7 @@
-/**
- * `view` は `content` だけを変え、`structuredContent` の中身を変えない — の横断テスト。
- *
- * 根拠: docs/internal/view-vocabulary-unification.md §3-2 規約 4
- *   「view は structuredContent からフィールドを削ってはならない。
- *     一方、階梯外の view がその view でしか計算しないデータを *足す* のは許容する」
- *
- * なぜ削ってはいけないか（同 §2-0）: LLM は structuredContent を参照しない
- * （.claude/rules/tools.md）。削ってもトークンは 1 つも減らず、宣言スキーマを満たさない
- * 応答が非 LLM クライアントに渡るだけになる。
- *
- * 時刻の固定: meta.fetchedAt / meta.serverTime は呼び出しごとの実時刻なので、
- * Date だけを固定して view 間の deep-equal が壊れないようにする（timer は実物のまま）。
- */
+// LLM は structuredContent を参照しないので、view で structuredContent のフィールドを削ってもトークンは減らず、宣言スキーマを満たさない応答が非 LLM クライアントに渡るだけになる（docs/internal/view-vocabulary-unification.md §3-2 規約 4）。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// detect_macd_cross（スクリーニングモード）と detect_patterns は上流ツールをモックする。
-// この 2 つは「例外の明示」テストでのみ使う。
+// detect_macd_cross（スクリーニングモード）と detect_patterns は「例外の明示」テストでのみ使うので、上流ツールをモックする。
 vi.mock('../tools/analyze_indicators.js', () => ({ default: vi.fn() }));
 vi.mock('../tools/detect_patterns.js', () => ({ default: vi.fn() }));
 
@@ -30,24 +16,16 @@ import { toolDef as flowMetricsTool } from '../tools/get_flow_metrics.js';
 import { toolDef as transactionsTool } from '../tools/get_transactions.js';
 import { asMockResult } from './_assertResult.js';
 
-// ── helpers ───────────────────────────────────────────────
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/**
- * ハンドラ応答から、MCP クライアントが受け取る structuredContent を取り出す。
- * src/server.ts の respond() と同じ規則:
- *   `{ content, structuredContent }` を返していれば内側の structuredContent、
- *   生の Result を返していれば Result 自体が structuredContent になる。
- */
+/** src/server.ts の respond() と同じ規則で、`{ content, structuredContent }` を返していれば内側の structuredContent、生の Result を返していれば Result 自体が structuredContent になる。 */
 function structuredOf(res: unknown): Record<string, unknown> {
 	if (!isPlainObject(res)) throw new Error('handler がオブジェクトを返していない');
 	return isPlainObject(res.structuredContent) ? res.structuredContent : res;
 }
 
-/** 各 view を同一入力で実行し、view → structuredContent の対応を返す。 */
 async function collectByView<V extends string>(
 	views: readonly V[],
 	run: (view: V) => Promise<unknown>,
@@ -59,7 +37,6 @@ async function collectByView<V extends string>(
 	return out;
 }
 
-/** 先頭 view を基準に、全 view の structuredContent が deep-equal であることを検証する。 */
 function expectSameStructuredContent(entries: Array<[string, Record<string, unknown>]>): void {
 	const [baseView, baseline] = entries[0];
 	for (const [view, actual] of entries.slice(1)) {
@@ -67,24 +44,44 @@ function expectSameStructuredContent(entries: Array<[string, Record<string, unkn
 	}
 }
 
-/**
- * `actual` が `expected` の上位集合であることを検証する（削る・書き換えるのは禁止、足すのは許容）。
- * 配列・スカラーは値として deep-equal を要求し、プレーンオブジェクトのみ再帰的に緩める。
- */
-function expectSuperset(actual: unknown, expected: unknown, path = 'structuredContent'): void {
-	if (isPlainObject(expected)) {
-		expect(isPlainObject(actual), `${path} がオブジェクトでなくなっている`).toBe(true);
-		const target = actual as Record<string, unknown>;
-		for (const [key, value] of Object.entries(expected)) {
-			expect(Object.hasOwn(target, key), `${path}.${key} が view で消えている（削るのは禁止）`).toBe(true);
-			expectSuperset(target[key], value, `${path}.${key}`);
-		}
+type SupersetLeaf = { actual: unknown; expected: unknown; path: string };
+
+// 構造の欠落は missing に、値として比べる葉は leaves に集め、expect は expectSuperset で 1 か所にまとめて呼ぶ。
+function collectSuperset(
+	actual: unknown,
+	expected: unknown,
+	path: string,
+	missing: string[],
+	leaves: SupersetLeaf[],
+): void {
+	if (!isPlainObject(expected)) {
+		leaves.push({ actual, expected, path });
 		return;
 	}
-	expect(actual, `${path} の値が view で書き換わっている`).toEqual(expected);
+	if (!isPlainObject(actual)) {
+		missing.push(`${path} がオブジェクトでなくなっている`);
+		return;
+	}
+	for (const [key, value] of Object.entries(expected)) {
+		if (!Object.hasOwn(actual, key)) {
+			missing.push(`${path}.${key} が view で消えている（削るのは禁止）`);
+			continue;
+		}
+		collectSuperset(actual[key], value, `${path}.${key}`, missing, leaves);
+	}
 }
 
-/** `actual` が `expected` に対して追加しているキーのパス一覧（浅い順に列挙）。 */
+/** 配列・スカラーは値として deep-equal を要求し、プレーンオブジェクトのみ再帰的に緩める（削る・書き換えるのは禁止、足すのは許容）。 */
+function expectSuperset(actual: unknown, expected: unknown, path = 'structuredContent'): void {
+	const missing: string[] = [];
+	const leaves: SupersetLeaf[] = [];
+	collectSuperset(actual, expected, path, missing, leaves);
+	expect(missing, missing.join('\n')).toEqual([]);
+	for (const leaf of leaves) {
+		expect(leaf.actual, `${leaf.path} の値が view で書き換わっている`).toEqual(leaf.expected);
+	}
+}
+
 function addedPaths(actual: unknown, expected: unknown, path = ''): string[] {
 	if (!isPlainObject(actual) || !isPlainObject(expected)) return [];
 	const found: string[] = [];
@@ -99,16 +96,12 @@ function addedPaths(actual: unknown, expected: unknown, path = ''): string[] {
 	return found.sort();
 }
 
-// ── fixtures ──────────────────────────────────────────────
-
-/** 約定 3 件（0 / 1 / 2 分）。get_flow_metrics / get_transactions 用。 */
 const TX_ROWS = [
 	{ price: '5000000', amount: '0.1', side: 'buy', executed_at: '1700000000000' },
 	{ price: '5000100', amount: '0.2', side: 'sell', executed_at: '1700000060000' },
 	{ price: '5000200', amount: '0.3', side: 'buy', executed_at: '1700000120000' },
 ];
 
-/** OHLCV 行: [open, high, low, close, volume, timestampMs] */
 function ohlcvRows(count: number): string[][] {
 	const startMs = Date.UTC(2025, 0, 1);
 	const rows: string[][] = [];
@@ -141,11 +134,9 @@ const mockTransactions = () => mockFetchJson({ success: 1, data: { transactions:
 const mockCandles = (count: number) =>
 	mockFetchJson({ success: 1, data: { candlestick: [{ type: '1day', ohlcv: ohlcvRows(count) }] } });
 
-// ── tests ─────────────────────────────────────────────────
-
 describe('view は structuredContent を変えない（§3-2 規約 4）', () => {
 	beforeEach(() => {
-		// Date のみ固定する。setTimeout 等は実物のままにして fetch のリトライ待ちを壊さない。
+		// meta.fetchedAt / meta.serverTime は呼び出しごとの実時刻なので Date だけ固定する（setTimeout 等は実物のままにして fetch のリトライ待ちを壊さない）。
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(dayjs.utc('2026-03-01T00:00:00Z').valueOf());
 	});
@@ -161,7 +152,6 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 			return flowMetricsTool.handler({ pair: 'btc_jpy', limit: 3, date: '20240101', bucketMs: 60_000, view });
 		});
 		expectSameStructuredContent(entries);
-		// 回帰の本体: 旧実装は summary で series.buckets をキーごと削除していた。
 		for (const [view, structured] of entries) {
 			const series = (structured.data as { series: { buckets: unknown[] } }).series;
 			expect(Array.isArray(series.buckets), `view=${view} に series.buckets が無い`).toBe(true);
@@ -195,24 +185,13 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 		expectSameStructuredContent(entries);
 	});
 
-	/**
-	 * get_candles は PR 1 時点で唯一の逸脱だった——`view=items` が structuredContent を
-	 * `{ items, meta }` に差し替え、Result 封筒（ok / summary / data.{raw,keyPoints,volumeStats}）を
-	 * 落としていた。`items` を `view=full` + `format=json` へ置き換える PR 3 で同時に直したので
-	 * （破壊を 1 回に集約するため。§5-0 分割の原則 2）、他ツールと同じ deep-equal で検証する。
-	 *
-	 * `format` は content の**形式**を選ぶパラメータであって structuredContent の契約を
-	 * 変えるパラメータではない（§3-2 規約 4 は view についての規約だが、根拠——LLM は
-	 * structuredContent を参照しないので削ってもトークンは減らない——は format にもそのまま当たる）。
-	 * したがって view × format の全組み合わせで同一であることを要求する。
-	 */
+	/** `format` は content の形式を選ぶパラメータで structuredContent の契約を変えない（規約 4 の根拠は format にもそのまま当たる）ので、view × format の全組み合わせで同一であることを要求する。 */
 	it('get_candles: view × format（deprecated alias の items を含む）で同一', async () => {
 		const variants = {
 			'full/text': { view: 'full', format: 'text' },
 			'full/json': { view: 'full', format: 'json' },
 			'items(alias)': { view: 'items' },
-			// alias は format 指定より優先される（get_candles の effectiveFormat）。
-			// content の形は変わるが structuredContent は同一、が本テストの主張。
+			// alias は format 指定より優先される（get_candles の effectiveFormat）ので content の形は変わるが、structuredContent は同一。
 			'items(alias)/text': { view: 'items', format: 'text' },
 			'items(alias)/json': { view: 'items', format: 'json' },
 		} as const;
@@ -222,7 +201,6 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 		});
 		expectSameStructuredContent(entries);
 
-		// 回帰の本体: 旧 items は封筒ごと差し替わり `{ items, meta }` になっていた。
 		for (const [label, structured] of entries) {
 			expect(Object.keys(structured).sort(), `${label} の structuredContent が Result 封筒でない`).toEqual([
 				'data',
@@ -234,8 +212,6 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 			expect(Array.isArray((structured.data as { normalized: unknown }).normalized)).toBe(true);
 		}
 	});
-
-	// ── 明示された例外: 階梯外 view が「足す」のは許容（§3-2 規約 4） ──
 
 	it('detect_patterns: detailed / debug は足すだけ（summary / full とは同一）', async () => {
 		const base = {
@@ -260,8 +236,7 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 				pair: 'btc_jpy',
 				type: '1day',
 				count: 1,
-				// #184 で出力スキーマに宣言した実効パラメータ。**view で削られないこと**が規約 2 の対象で、
-				// 宣言前は parse で strip されて structuredContent に一度も現れていなかった（欠陥 D）。
+				// 実効パラメータ（#184）も view で削られないことが規約 2 の対象。
 				effective_params: {
 					swingDepth: { value: 6, source: 'auto' },
 					minBarsBetweenSwings: { value: 4, source: 'auto' },
@@ -282,14 +257,11 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 		const byView = new Map(entries);
 		const baseline = byView.get('summary') as Record<string, unknown>;
 
-		// 階梯上の view（summary / full）は完全一致
 		expect(byView.get('full')).toEqual(baseline);
 
-		// detailed は usage_example を足すだけ
 		expectSuperset(byView.get('detailed'), baseline);
 		expect(addedPaths(byView.get('detailed'), baseline)).toEqual(['usage_example']);
 
-		// debug（階梯外）は data.candidates を足すだけ
 		expectSuperset(byView.get('debug'), baseline);
 		expect(addedPaths(byView.get('debug'), baseline)).toEqual(['data.candidates']);
 	});
@@ -316,8 +288,7 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 		const baseline = byView.get('summary') as Record<string, unknown>;
 		const detailed = byView.get('detailed') as Record<string, unknown>;
 
-		// meta.view は要求パラメータのエコーなので view ごとに変わる。
-		// データを削っても書き換えてもいないため、比較対象からは除外する。
+		// meta.view は要求パラメータのエコーなので view ごとに変わるが、データを削っても書き換えてもいないので比較対象から除外する。
 		expect((baseline.meta as { view: string }).view).toBe('summary');
 		expect((detailed.meta as { view: string }).view).toBe('detailed');
 		const stripView = (structured: Record<string, unknown>) => {

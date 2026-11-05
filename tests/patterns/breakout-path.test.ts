@@ -1,18 +1,3 @@
-/**
- * tests/patterns/breakout-path.test.ts
- *
- * `detectPivotBeforeBreakout`（`tools/patterns/structural.ts`）の単体テスト（issue #242）。
- *
- * 検証するのは 4 点:
- *
- * 1. **区間の両端を含まない。** 最終構成点そのもの・ブレイク足そのものは「間」ではない
- * 2. **同種のピボットだけを見る。** `side='top'` は `kind='H'` のみ、`'bottom'` は `'L'` のみ
- * 3. **水準は問わない。** 同水準でなくても（低い山・浅い谷でも）落とす
- * 4. **理由コードは種別を跨いで 1 語。** `peak_after_last_pivot` / `trough_after_last_pivot`
- *
- * エッジケースの並びは `.claude/rules/testing.md` の優先順位（空配列 → 欠損 → 重複 →
- * 単一要素 → 境界）に従う。
- */
 import { describe, expect, it } from 'vitest';
 import { detectPivotBeforeBreakout } from '../../tools/patterns/structural.js';
 import type { Pivot } from '../../tools/patterns/swing.js';
@@ -97,8 +82,6 @@ describe('detectPivotBeforeBreakout: 同種と異種', () => {
 
 describe('detectPivotBeforeBreakout: 水準は問わない・理由コード', () => {
 	it('構成点より十分低い山でも落とす（top）', () => {
-		// 実例（#242）: 山1 / 山2 の高安 12,807,555 / 12,800,000 に対し
-		// 間の H ピボットの高安は 12,731,234（0.6% 低い）。同水準判定では拾えない。
 		const pivots = [pivot(55, 'H', 12_711_037)];
 		const res = detectPivotBeforeBreakout({ pivots, lastPivotIdx: 50, breakoutIdx: 56, side: 'top' });
 		expect(res).toEqual({ found: true, reason: 'peak_after_last_pivot', pivot: pivots[0] });

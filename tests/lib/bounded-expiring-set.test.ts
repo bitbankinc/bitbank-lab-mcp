@@ -206,11 +206,9 @@ describe('BoundedExpiringSet — 件数上限', () => {
 		s.add('a', NOW + TTL, NOW);
 		s.add('b', NOW + TTL, NOW);
 
-		// 追加は拒否される
 		expect(s.add('c', NOW + TTL, NOW)).toEqual({ added: false, reason: 'capacity_exceeded' });
 
-		// 追い出しが起きていれば、一度 add した生存 key が再び add できてしまう。
-		// = その token / nonce の replay が黙って通る状態。
+		// 追い出しが起きていれば、一度 add した生存 key が再び add できてしまう（= その token / nonce の replay が黙って通る）。
 		expect(s.add('a', NOW + TTL, NOW)).toEqual({ added: false, reason: 'already_recorded' });
 		expect(s.add('b', NOW + TTL, NOW)).toEqual({ added: false, reason: 'already_recorded' });
 		expect(s.has('a', NOW)).toBe(true);

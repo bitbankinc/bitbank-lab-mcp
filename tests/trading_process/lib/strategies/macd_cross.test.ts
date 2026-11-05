@@ -153,8 +153,7 @@ describe('macdCrossStrategy', () => {
 			const candles = makeCandles(N);
 			const line = zeros(N);
 			const signal = zeros(N);
-			// default params: fast=12, slow=26, signal=9 → startIdx = 34
-			// Golden cross at i=34: prev macd <= signal, curr macd > signal
+			// default params: fast=12, slow=26, signal=9 → startIdx = 34。Golden cross at i=34: prev macd <= signal, curr macd > signal
 			line[33] = -1;
 			signal[33] = 0;
 			line[34] = 1;

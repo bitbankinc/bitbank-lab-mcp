@@ -12,7 +12,6 @@ import {
 } from '../../lib/candle-validate.js';
 import { dayjs } from '../../lib/datetime.js';
 
-/** ヘルパー: N本の正常ローソク足を生成（1hour 間隔） */
 function makeCandles(n: number, baseTs = 1704067200000): CandleRow[] {
 	return Array.from({ length: n }, (_, i) => ({
 		open: 100 + i,
@@ -35,7 +34,6 @@ describe('checkCompleteness', () => {
 
 	it('歯抜けデータの欠損を検出する', () => {
 		const candles = makeCandles(24);
-		// 3本目と5本目を削除
 		const sparse = candles.filter((_, i) => i !== 2 && i !== 4);
 		const result = checkCompleteness(sparse, '1hour');
 		expect(result.missing).toBe(2);
@@ -69,7 +67,6 @@ describe('checkDuplicates', () => {
 
 	it('重複タイムスタンプを検出する', () => {
 		const candles = makeCandles(5);
-		// 3本目と同じタイムスタンプを追加
 		candles.push({ ...candles[2] });
 		const result = checkDuplicates(candles);
 		expect(result.count).toBe(1);

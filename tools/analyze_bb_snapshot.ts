@@ -40,7 +40,6 @@ export interface BuildBbDefaultTextInput {
 	timeseries: BbTimeseriesEntry[] | null;
 }
 
-/** テキスト組み立て（BBデフォルトモード表示）— テスト可能な純粋関数 */
 export function buildBbDefaultText(input: BuildBbDefaultTextInput): string {
 	const {
 		baseSummary,
@@ -109,11 +108,9 @@ export default async function analyzeBbSnapshot(
 				fail(indRes?.summary || 'indicators failed', (indRes?.meta as { errorType?: string })?.errorType || 'internal'),
 			) as ReturnType<typeof fail>;
 
-		// 上流 analyze_indicators の meta.warning（取得層）と meta.warnings（計算層）を別系統で伝播する。
 		const { warning, warnings } = extractUpstreamWarning(indRes.meta);
 
-		// 最新足が形成中（未確定）か。BB の最新値（middle/upper/lower/zScore）は最新足の終値に依存するため、
-		// analyze_indicators と同じ流儀で最新足 ts から判定し注記を出す（warning 2 系統とは別系統の情報注記）。
+		// BB の最新値は最新足の終値に依存するので、形成中なら注記を出す。
 		const provisional = isLatestBarProvisional(indRes.data.normalized.at(-1)?.timestamp, String(type));
 
 		const close = indRes.data.normalized.at(-1)?.close ?? null;
@@ -138,7 +135,6 @@ export default async function analyzeBbSnapshot(
 			latest: close ?? undefined,
 			extra: `z=${zScore?.toFixed(2) ?? 'n/a'} bw=${bandWidthPct?.toFixed(2) ?? 'n/a'}%`,
 		});
-		// Build helper timeseries (last 30)
 		const candles = indRes?.data?.normalized as Array<{ isoTime?: string; close: number }> | undefined;
 		const bbSeries = (
 			indRes?.data?.indicators as { bb2_series?: { upper: number[]; middle: number[]; lower: number[] } }
@@ -185,7 +181,6 @@ export default async function analyzeBbSnapshot(
 									: 'lower_zone';
 			const bw = bandWidthPct ?? 0;
 			const bandwidth_state = bw <= 8 ? 'squeeze' : bw <= 18 ? 'normal' : bw <= 30 ? 'expanding' : 'wide';
-			// 統計情報の計算（過去30本のバンド幅から）
 			const context = (() => {
 				if (!timeseries || timeseries.length === 0 || bandWidthPct == null) {
 					return {
@@ -219,7 +214,6 @@ export default async function analyzeBbSnapshot(
 				};
 			})();
 
-			// ボラティリティトレンドの判定（直近5本 vs それ以前）
 			const volatility_trend = (() => {
 				if (!timeseries || timeseries.length < 10) return 'stable' as const;
 				const recent5 = timeseries
@@ -245,7 +239,6 @@ export default async function analyzeBbSnapshot(
 			if (position === 'near_middle') signals.push('Price consolidating near middle band');
 			if (bandwidth_state === 'normal') signals.push('Band width around typical levels');
 
-			// 統計情報を使った追加シグナル
 			if (context.bandWidthPct_30d_avg != null && context.current_vs_avg != null) {
 				if (context.bandWidthPct_percentile != null) {
 					if (context.bandWidthPct_percentile < 20) {
@@ -282,7 +275,6 @@ export default async function analyzeBbSnapshot(
 				signals,
 				next_steps,
 			};
-			// content 強化用: LLM が本文だけ見ても要点が掴めるように複数行の要約を生成
 			const baseSummaryLines = buildBbDefaultText({
 				baseSummary: summaryBase,
 				position: interpretation.position,
@@ -324,7 +316,6 @@ export default async function analyzeBbSnapshot(
 			return AnalyzeBbSnapshotOutputSchema.parse(ok(summaryLines, data, meta));
 		}
 
-		// extended mode
 		const bbBands: Record<string, number | null> = {
 			'+3σ': null,
 			'+2σ': upper,
@@ -379,7 +370,6 @@ export default async function analyzeBbSnapshot(
 			`\n\n---\n📌 含まれるもの: ボリンジャーバンド拡張（±1σ/±2σ/±3σ）、Zスコア、バンド幅` +
 			`\n📌 含まれないもの: 他のテクニカル指標（RSI・MACD・一目均衡表）、出来高フロー、板情報` +
 			`\n📌 補完ツール: analyze_indicators（他指標）, get_flow_metrics（出来高）, get_volatility_metrics（ボラ詳細）`;
-		// 順序は ⚠️ warning → ℹ️ 注記 → 本文（warning を最優先で見せる）。
 		const extSummary = prependWarnings(
 			prependProvisionalNote(baseExtSummary, provisional, { separator: '\n' }),
 			{ warning, warnings },
@@ -391,7 +381,6 @@ export default async function analyzeBbSnapshot(
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'analyze_bb_snapshot',
 	description: `[Bollinger Bands / BB / Squeeze] ボリンジャーバンド（BB / squeeze / bandwidth / zScore）の数値スナップショット。軽量・BB特化。

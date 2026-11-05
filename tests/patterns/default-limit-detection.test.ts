@@ -1,26 +1,4 @@
-/**
- * tests/patterns/default-limit-detection.test.ts
- *
- * issue #118 問題 1 / 2 / 3 の回帰テスト。
- *
- * `tests/patterns/invariants.test.ts` の不変条件 9（到達性）は「閾値の**最小側**がスキャン窓に
- * 収まるか」という算術だけを見る。閾値が収まっていても検出器が実際に候補を返すとは限らず、
- * **最大側は見ていない**ので、ここでは合成データを既定 `limit`（90 本）ぶん与えて
- * **検出器が実際にパターンを返すこと**を時間足ごとに固定する。
- *
- * 問題 1 / 2（wedge / triple）の修正前は次のとおり 0 件だった（`limit` を上げても `4hour` の
- * 151 本要求までは届かず、`1hour` の 601 本要求はスキーマ上限 365 でも到達不能）:
- *
- * | 時間足 | 完成済み wedge | 形成中 triple |
- * |---|---|---|
- * | `1day`  | 1 件 | 1 件 |
- * | `4hour` | **0 件** | **0 件** |
- * | `1hour` | **0 件** | **0 件** |
- *
- * 問題 3（形成中 double / H&S）は最大側の問題で、最小側だけを見る到達性テストをすり抜けていた。
- * 下の専用 describe を参照。**double 側は #268 案 C で形成中経路ごと削除されたので、
- * 残っているのは H&S だけ**（形成中 triple は上の describe が既定 `limit` だけを見ている）。
- */
+// invariants.test.ts の到達性（不変条件 9）は閾値の最小側の算術だけを見るので、既定 `limit`（90 本）の合成データで検出器が実際にパターンを返すことを時間足ごとに固定する（#118）。
 import { describe, expect, it } from 'vitest';
 import { dayjs } from '../../lib/datetime.js';
 import { CandleTypeEnum } from '../../src/schema/base.js';
@@ -33,7 +11,6 @@ import {
 import { detectHeadAndShoulders, getHsFormingBarParams } from '../../tools/patterns/detect_hs.js';
 import { detectTriples } from '../../tools/patterns/detect_triples.js';
 import { detectWedges } from '../../tools/patterns/detect_wedges.js';
-import { linearRegressionWithR2 } from '../../tools/patterns/regression.js';
 import { detectSwingPoints } from '../../tools/patterns/swing.js';
 import type { CandleData, DetectContext } from '../../tools/patterns/types.js';
 
@@ -50,27 +27,15 @@ function mkCandle(index: number, o: number, h: number, l: number, c: number): Ca
 	return { open: o, high: h, low: l, close: c, isoTime: dayjs.utc('2026-01-01').add(index, 'day').toISOString() };
 }
 
-/** 三角波の山 / 谷を作るカーネル（`center` で 1、`width` 本離れると 0）。 */
 const bump = (i: number, center: number, width: number) => Math.max(0, 1 - Math.abs(i - center) / Math.max(3, width));
 
-/**
- * 形成中の反転パターンの生成で、左ピボットより前に置く助走バー数。
- * `validatePriorTrend` が見る先行トレンドをここで作る。
- */
+/** `validatePriorTrend` が見る先行トレンドをここで作る。 */
 const FORMING_LEAD_BARS = 29;
 
-/**
- * 既定スキャン窓（90 本）に収まる形成バー数。`29 + 60 + 1 = 90`。
- * 全時間足の最小要求（最大でも `4hour` 系の 42 本）を上回り、最大要求（最小でも `1day` H&S の
- * 99 本）を下回るので、1 つの形状で全時間足を賄える。
- */
+/** 全時間足の最小要求（最大でも `4hour` 系の 42 本）を上回り、最大要求（最小でも `1day` H&S の 99 本）を下回るので、1 つの形状で全時間足を賄える。 */
 const DEFAULT_FORMATION_BARS = DEFAULT_SCAN_WINDOW - FORMING_LEAD_BARS - 1;
 
-/**
- * スキャン窓と同じ本数のローソク足から `DetectContext` を組む。
- * `detect_patterns.ts` と同じく時間足の既定パラメータ（`getDefaultParamsForTf` /
- * `getDefaultToleranceForTf`）を使い、呼び出し側のオプションは与えない。
- */
+/** `detect_patterns.ts` と同じく時間足の既定パラメータ（`getDefaultParamsForTf` / `getDefaultToleranceForTf`）を使い、呼び出し側のオプションは与えない。 */
 function buildCtx(tf: string, candles: CandleData[], includeForming: boolean): DetectContext {
 	const { swingDepth, minBarsBetweenSwings } = getDefaultParamsForTf(tf);
 	const tolerancePct = getDefaultToleranceForTf(tf);
@@ -90,17 +55,10 @@ function buildCtx(tf: string, candles: CandleData[], includeForming: boolean): D
 		sizeThresholds: getSizeThresholdsForTf(tf),
 		hsShoulderMaxPct: getHsShoulderMaxPctForTf(tf),
 		swingDepth,
-		near: (a, b) => Math.abs(a - b) <= Math.max(a, b) * tolerancePct,
-		pct: (a, b) => ((b - a) / Math.max(1, a)) * 100,
-		lrWithR2: (pts) => linearRegressionWithR2(pts),
 	};
 }
 
-/**
- * Falling Wedge 形状（`tests/patterns/detect_wedges.test.ts` と同じ生成則）。
- *   upper(i) = 200 - 0.5*i（急な下落） / lower(i) = 180 - 0.25*i（緩やかな下落 → 収束）
- * period=8 の振動で上下のトレンドラインにタッチを作る。
- */
+/** Falling Wedge 形状（`tests/patterns/detect_wedges.test.ts` と同じ生成則）。 */
 function buildFallingWedgeCandles(nBars: number): CandleData[] {
 	const candles: CandleData[] = [];
 	for (let i = 0; i < nBars; i++) {
@@ -129,12 +87,7 @@ function buildFallingWedgeCandles(nBars: number): CandleData[] {
 	return candles;
 }
 
-/**
- * 形成中 Triple Top 形状。確定済みの山を 2 つ（idx=12 / idx=52）置き、
- * 直近足を同じ水準まで戻して 3 山目を「現在価格」で暫定にする。
- * formationBars = 89 - 12 = 77 で、`1day`[23,99] / `4hour`[42,180] / `1hour`[34,146] の
- * いずれのレンジにも収まる。
- */
+/** formationBars = 89 - 12 = 77 で、`1day`[23,99] / `4hour`[42,180] / `1hour`[34,146] のいずれのレンジにも収まる。 */
 function buildFormingTripleTopCandles(nBars: number): CandleData[] {
 	const peak1 = 12;
 	const peak2 = 52;
@@ -152,12 +105,7 @@ function buildFormingTripleTopCandles(nBars: number): CandleData[] {
 	return candles;
 }
 
-/**
- * 形成中 H&S 形状。左肩を `FORMING_LEAD_BARS` に置き、頭 → 頭後谷 → 直近を左肩水準（暫定右肩）にする。
- * 暫定右肩は最終足なので `formationBars = 右肩.idx - 左肩.idx = lastIdx - 左肩.idx`。
- *
- * @param formationBars 返るローソク足は `FORMING_LEAD_BARS + formationBars + 1` 本。
- */
+/** 暫定右肩は最終足なので `formationBars = 右肩.idx - 左肩.idx = lastIdx - 左肩.idx`。 */
 function buildFormingHeadAndShouldersCandles(formationBars: number): CandleData[] {
 	const nBars = FORMING_LEAD_BARS + formationBars + 1;
 	const last = nBars - 1;
@@ -177,7 +125,6 @@ function buildFormingHeadAndShouldersCandles(formationBars: number): CandleData[
 	return out;
 }
 
-/** 形成中 head_and_shoulders を返した件数。 */
 function countFormingHeadAndShoulders(tf: string, formationBars: number): number {
 	const ctx = buildCtx(tf, buildFormingHeadAndShouldersCandles(formationBars), true);
 	return detectHeadAndShoulders(ctx).patterns.filter((p) => p.type === 'head_and_shoulders' && p.status === 'forming')
@@ -208,16 +155,6 @@ describe('既定 limit（90 本）での検出可能性 — issue #118 問題 1 
 	}
 });
 
-// ──────────────────────────────────────────────
-// 形成中 H&S — issue #118 問題 3 の回帰
-//
-// 旧実装は手書きの bars-per-day（`1day`→1 / `1week`→7 / **それ以外→1**）で
-// `patternDays = Math.round(formationBars × daysPerBar)` を作り 21〜90 日で判定していた。
-// `1week` の受理域は `formationBars ∈ [3, 12]` で、構造的下限（25 本）を下回るため
-// **形成中 H&S が実質検出不能**だった。バー数へ統一して解消したことを固定する。
-// **形成中 double は同じ問題を抱えていたが、#268 案 C で経路ごと削除された**ので回帰対象外。
-// ──────────────────────────────────────────────
-
 describe('既定 limit（90 本）での検出可能性 — issue #118 問題 3（形成中 H&S）', () => {
 	it('既定 limit の形状はちょうど 90 本になる（助走 + 形成 + 端点 1 本）', () => {
 		expect(buildFormingHeadAndShouldersCandles(DEFAULT_FORMATION_BARS)).toHaveLength(DEFAULT_SCAN_WINDOW);
@@ -233,21 +170,10 @@ describe('既定 limit（90 本）での検出可能性 — issue #118 問題 3�
 	}
 });
 
-// ──────────────────────────────────────────────
-// 形成中 H&S — バー数レンジの境界
-//
-// 既定 limit のテスト（上）は `formationBars = 60` の 1 点しか見ないので、下限 / 上限を
-// 取り違えていても 60 を受理する限り通ってしまう。ここでは `patternBarRange` が返す
-// 実際の境界値を検出器に食わせて、`minBars - 1` / `minBars` / `maxBars` / `maxBars + 1` の
-// 4 点で受理・棄却が反転することを固定する。
-//
-// 形状生成は `formationBars` だけを可変にしてあるので、隣り合う 2 点の差はバー数レンジの
-// 判定に帰属できる（形が壊れて 0 件になったのではない）。
-// ──────────────────────────────────────────────
+// 既定 limit のテスト（上）は `formationBars = 60` の 1 点しか見ないので、下限 / 上限を取り違えていても 60 を受理する限り通ってしまう。
 
 describe('形成中 H&S — バー数レンジの境界', () => {
-	// **`double_top` の行は #268 案 C で削除した。** 形成中 double の経路が無くなり、
-	// `getDoubleFormingBarParams`（バー数レンジ）も一緒に消えたので、固定する境界が無い。
+	// 形成中 double は #268 案 C で経路ごと削除されたので、固定する境界が無い。
 	const cases = [
 		{
 			label: 'head_and_shoulders',

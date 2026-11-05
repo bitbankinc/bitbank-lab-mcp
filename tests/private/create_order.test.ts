@@ -1,9 +1,3 @@
-/**
- * create_order ツールのユニットテスト。
- * stop 注文のトリガー価格バリデーションは preview_order に移動したため、
- * ここでは確認トークンの検証と注文実行を検証する。
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateToken } from '../../src/private/confirmation.js';
 import { assertFail, assertOk } from '../_assertResult.js';
@@ -11,13 +5,7 @@ import { mockBitbankSuccess, mockSpotPairsResponse } from '../fixtures/private-a
 
 const originalFetch = globalThis.fetch;
 
-/**
- * fetch モックのセットアップ。
- * `/spot/pairs`（create_order の事前再検証）と `/ticker`（stop 系のトリガー価格再チェック）
- * はデフォルトの正常レスポンスを返し、それ以外のリクエスト（= 注文 API）は responses 配列を順に返す。
- *
- * 個別テストでペア仕様失敗 / トリガー乖離をテストする場合は `globalThis.fetch` を直接上書きする。
- */
+/** /spot/pairs（事前再検証）と /ticker（stop 系のトリガー価格再チェック）は既定の正常応答、それ以外（= 注文 API）は responses を順に返す。 */
 function setupFetchMockSequence(responses: { body: unknown; status?: number }[]) {
 	const orderResponses = [...responses];
 	const mock = vi.fn(async (input: RequestInfo | URL) => {
@@ -38,7 +26,6 @@ function setupFetchMockSequence(responses: { body: unknown; status?: number }[])
 	return mock;
 }
 
-/** 注文成功レスポンスを返すヘルパー */
 function orderSuccessResponse(overrides: Record<string, unknown> = {}) {
 	return {
 		success: 1,
@@ -58,7 +45,6 @@ function orderSuccessResponse(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-/** 有効な確認トークンを生成するヘルパー */
 function validToken(params: Record<string, unknown>, nowMs = Date.now()) {
 	const { token, expiresAt } = generateToken('create_order', params, nowMs);
 	return { confirmation_token: token, token_expires_at: expiresAt, nowMs };
@@ -189,8 +175,7 @@ describe('create_order — エラーコード別ハンドリング', () => {
 	});
 
 	it('数量下限エラー（60003）に適切なメッセージ', async () => {
-		// 事前再検証（pairs spec）を通過する amount を使い、bitbank API 側で 60003 が返るケースを模す。
-		// 実運用では pair 仕様の変更等で事前検証をすり抜け得るため、API エラーマッピングは引き続き必要。
+		// 事前再検証を通る amount で、bitbank 側が 60003 を返すケース（pair 仕様の変更などで事前検証をすり抜けうるので、API エラーの対応付けは要る）。
 		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
 		const { confirmation_token, token_expires_at } = validToken(params);
 
@@ -386,62 +371,26 @@ describe('create_order — 非 PrivateApiError の generic catch', () => {
 	});
 });
 
-// take_profit / stop_loss / losscut は公式 spec に列挙されているが本実装では意図的に未対応。
-// CreateOrderInputSchema が Zod 段階で拒否し、注文 API には到達しないことを保証する。
-// 詳細は docs/private-api.md「対応注文タイプ」節 / docs/api-contract-checklist.md §3.4 を参照。
-//
-// 失敗理由が「type フィールド由来」であることを issues.path で確認する。
-// success===false のみだと、他フィールドの欠落（confirmation_token 未指定等）でも
-// テストが通ってしまい、type 列挙の閉鎖性を検証できなくなるため。
+// 拒否理由が type 由来であることを issues.path で確かめる（success===false だけだと他フィールドの欠落でも通ってしまう）。
 describe('create_order — 未対応の注文タイプ（take_profit / stop_loss / losscut）', () => {
-	it('take_profit は CreateOrderInputSchema で拒否される', async () => {
+	it.each([
+		['take_profit', { trigger_price: '16000000' }],
+		['stop_loss', { trigger_price: '13000000' }],
+		// losscut はシステム発動のみのタイプ
+		['losscut', {}],
+	] as const)('%s は CreateOrderInputSchema で拒否される', async (type, extra) => {
 		const { CreateOrderInputSchema } = await import('../../src/private/schemas.js');
 		const result = CreateOrderInputSchema.safeParse({
 			pair: 'btc_jpy',
 			amount: '0.01',
 			side: 'sell',
-			type: 'take_profit',
-			trigger_price: '16000000',
+			type,
+			...extra,
 			confirmation_token: 'dummy',
 			token_expires_at: Date.now() + 60_000,
 		});
 		expect(result.success).toBe(false);
-		if (!result.success) {
-			expect(result.error.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-		}
-	});
-
-	it('stop_loss は CreateOrderInputSchema で拒否される', async () => {
-		const { CreateOrderInputSchema } = await import('../../src/private/schemas.js');
-		const result = CreateOrderInputSchema.safeParse({
-			pair: 'btc_jpy',
-			amount: '0.01',
-			side: 'sell',
-			type: 'stop_loss',
-			trigger_price: '13000000',
-			confirmation_token: 'dummy',
-			token_expires_at: Date.now() + 60_000,
-		});
-		expect(result.success).toBe(false);
-		if (!result.success) {
-			expect(result.error.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-		}
-	});
-
-	it('losscut は CreateOrderInputSchema で拒否される（システム発動のみのタイプ）', async () => {
-		const { CreateOrderInputSchema } = await import('../../src/private/schemas.js');
-		const result = CreateOrderInputSchema.safeParse({
-			pair: 'btc_jpy',
-			amount: '0.01',
-			side: 'sell',
-			type: 'losscut',
-			confirmation_token: 'dummy',
-			token_expires_at: Date.now() + 60_000,
-		});
-		expect(result.success).toBe(false);
-		if (!result.success) {
-			expect(result.error.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
-		}
+		expect(result.error?.issues.some((i) => i.path.join('.') === 'type')).toBe(true);
 	});
 });
 
@@ -493,10 +442,7 @@ describe('create_order — handler (toolDef)', () => {
 });
 
 describe('create_order — POST 自動リトライ無効化（二重発注防止）', () => {
-	// 注文 API（POST /v1/user/spot/order）が 5xx を返した場合、
-	// client.post は retries=0 を強制するため再送せず単発で失敗する。
-	// 失敗した発注がサーバー側で実際には受理されていた場合でも、
-	// クライアント側のリトライで同じ注文が二重に飛ぶ事故は起きない。
+	// client.post は retries=0 を強制するので、5xx でも再送せず単発で失敗する（サーバー側で受理済みでも二重に飛ばない）。
 	it('5xx 時に注文 API（POST）は 1 回しか呼ばれない', async () => {
 		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
 		const { confirmation_token, token_expires_at } = validToken(params);
@@ -509,7 +455,6 @@ describe('create_order — POST 自動リトライ無効化（二重発注防止
 			if (url.includes('/ticker')) {
 				return new Response(JSON.stringify(mockBitbankSuccess({ last: '15000000' })), { status: 200 });
 			}
-			// 注文 API は常に 5xx を返す
 			return new Response('', { status: 500 });
 		});
 		globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -526,7 +471,6 @@ describe('create_order — POST 自動リトライ無効化（二重発注防止
 		assertFail(result);
 		expect(result.meta.errorType).toBe('upstream_error');
 
-		// /user/spot/order への POST 呼び出しが正確に 1 回であることを assert（旧実装では 3 回叩かれていた）
 		const orderCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/user/spot/order'));
 		expect(orderCalls).toHaveLength(1);
 	});
@@ -537,8 +481,7 @@ describe('create_order — トークン再利用拒否（ワンショット）',
 		const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
 		const { confirmation_token, token_expires_at } = validToken(params);
 
-		// 1 回目用に成功レスポンスをセット。2 回目はトークン検証でブロックされ
-		// fetch は呼ばれない想定。
+		// 2 回目はトークン検証で止まり fetch を呼ばないので、成功レスポンスは 1 回分だけ用意する。
 		setupFetchMockSequence([{ body: orderSuccessResponse({ side: 'buy', type: 'limit', price: '14000000' }) }]);
 
 		const { default: createOrder } = await import('../../tools/private/create_order.js');
@@ -633,8 +576,7 @@ describe('create_order — トークン再利用拒否（ワンショット）',
 
 describe('create_order — stop_limit / post_only / trigger_price', () => {
 	it('stop_limit 注文で trigger_price がサマリーに含まれる', async () => {
-		// デフォルト ticker mock は last=15_000_000 を返すため、
-		// stop buy のトリガー価格は 15_000_000 超に設定（即時発動チェックを通過させる）
+		// 既定の ticker mock は last=15_000_000 なので、stop buy のトリガー価格は 15_000_000 超にして即時発動チェックを通す。
 		const params = {
 			pair: 'btc_jpy',
 			amount: '0.001',
@@ -978,9 +920,7 @@ describe('create_order — 信用取引エラーコード', () => {
 	});
 });
 
-// 方針 B（preview = 主検証、create = 軽量再検証）の create 側ガード。
-// preview から create までの間に状態が変化し得る項目（pair 仕様 / 市場価格）を
-// 軽く再チェックする。詳細は docs/private-api.md「検証の責務分担」節。
+// preview と create の間に変わりうる項目（pair 仕様 / 市場価格）だけを create 側で軽く再チェックする。
 describe('create_order — 事前再検証（ペア仕様 / トリガー価格）', () => {
 	it('amount が最小注文数量を下回ると validation_error で発注前に弾く', async () => {
 		// mockSpotPairsResponse の btc_jpy は unit_amount=0.0001 / amount_digits=8
@@ -1004,7 +944,6 @@ describe('create_order — 事前再検証（ペア仕様 / トリガー価格�
 		assertFail(result);
 		expect(result.meta.errorType).toBe('validation_error');
 		expect(result.summary).toContain('最小注文数量');
-		// 注文 API が呼ばれていないこと
 		const orderCall = fetchMock.mock.calls.find((c) => String(c[0]).includes('/user/spot/order'));
 		expect(orderCall).toBeUndefined();
 	});
@@ -1036,7 +975,6 @@ describe('create_order — 事前再検証（ペア仕様 / トリガー価格�
 		assertOk(result);
 		expect(result.meta.warnings).toBeDefined();
 		expect(result.meta.warnings?.[0]).toContain('/spot/pairs');
-		// summary 末尾にも warning が出る
 		expect(result.summary).toContain('スキップ');
 		expect(result.summary).toContain('注文発注完了');
 	});
@@ -1067,8 +1005,7 @@ describe('create_order — 事前再検証（ペア仕様 / トリガー価格�
 	});
 
 	it('stop sell でトリガー価格が現在価格以上に乖離していると validation_error で弾く', async () => {
-		// preview 時点では trigger=13_000_000 < current=15_000_000 だったが、
-		// create 直前に市場が下落して current=12_000_000 になり、即時発動レベルになったケース
+		// preview 時点では trigger 13_000_000 < current 15_000_000 だったが、create 直前に current 12_000_000 まで下落して即時発動レベルになったケース。
 		const params = {
 			pair: 'btc_jpy',
 			amount: '0.001',
@@ -1106,7 +1043,6 @@ describe('create_order — 事前再検証（ペア仕様 / トリガー価格�
 		assertFail(result);
 		expect(result.meta.errorType).toBe('validation_error');
 		expect(result.summary).toContain('即時発動');
-		// 注文 API が呼ばれていないこと
 		const orderCall = fetchMock.mock.calls.find((c) => String(c[0]).includes('/user/spot/order'));
 		expect(orderCall).toBeUndefined();
 	});
@@ -1209,11 +1145,7 @@ describe('create_order — 事前再検証（ペア仕様 / トリガー価格�
 	});
 });
 
-/**
- * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
- * `data.order.pair` の小文字契約を保つのが目的。リクエストボディの `pair` と表示・JPY 判定は
- * ユーザー入力のままで不変。防御的正規化（現行 API は小文字）。
- */
+/** data.order.pair を小文字契約に保つ。リクエストボディの pair と表示・JPY 判定はユーザー入力のまま。 */
 describe('create_order — API pair の取得境界正規化', () => {
 	const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '14000000' };
 

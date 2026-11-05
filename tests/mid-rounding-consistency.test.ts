@@ -1,31 +1,15 @@
-/**
- * mid（中値）丸め規約のツール間整合テスト。
- *
- * 同一の /depth スナップショットを get_orderbook（全 mode）/ prepare_depth_data /
- * lib/get-depth に通したとき、mid が経路によって食い違わない（同一板 → 同一 mid）
- * ことを固定する。
- *
- * 背景: 以前は経路ごとに toFixed(2)（小数2桁）と Math.round（整数）が混在し、
- * 奇数 spread の板で LLM が複数ツールをクロスチェックすると mid が乖離していた。
- * 丸め規約は lib/price.ts（roundPrice）へ集約し、JPY ペアは整数へ統一した。
- *
- * 設計は tests/fee-source-consistency.test.ts（別経路の同一量一致を固定する）に倣う。
- */
+// LLM が複数ツールをクロスチェックするので、同一板の mid は経路（get_orderbook 全 mode / prepare_depth_data / lib/get-depth）によらず一致させる（丸め規約は lib/price.ts の roundMidPrice に集約）。
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import getDepth from '../lib/get-depth.js';
-import { isJpyPair, roundPrice } from '../lib/price.js';
+import { fractionDigits, roundMidPrice, roundSpread } from '../lib/price.js';
 import getOrderbook from '../tools/get_orderbook.js';
 import prepareDepthData from '../tools/prepare_depth_data.js';
 import { asMockResult, assertOk } from './_assertResult.js';
 
 const TS = 1_700_000_000_000;
 
-/**
- * 単一の /depth レスポンスを返す fetch モック。
- * get_orderbook（直接 fetch）と prepare_depth_data / get-depth（lib/get-depth 経由 fetch）の
- * 両経路が同一スナップショットを共有する。mockResolvedValue で複数回の fetch に応答する。
- */
+/** get_orderbook（直接 fetch）と prepare_depth_data / get-depth（lib/get-depth 経由 fetch）の両経路に同一スナップショットを返す。 */
 function mockDepth(asks: [string, string][], bids: [string, string][]) {
 	vi.spyOn(globalThis, 'fetch').mockResolvedValue(
 		asMockResult<Response>({
@@ -42,28 +26,40 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe('lib/price — roundPrice / isJpyPair（丸め規約の単一ソース）', () => {
-	it('isJpyPair: _jpy 接尾辞のみ true', () => {
-		expect(isJpyPair('btc_jpy')).toBe(true);
-		expect(isJpyPair('eth_jpy')).toBe(true);
-		expect(isJpyPair('btc_usdt')).toBe(false);
+describe('lib/price — 中値とスプレッドの丸め（丸め規約の単一ソース）', () => {
+	it('fractionDigits: 数値の小数の桁数（指数表記も読む）', () => {
+		expect(fractionDigits(5_000_000)).toBe(0);
+		expect(fractionDigits(312.345)).toBe(3);
+		expect(fractionDigits(31.2346)).toBe(4);
+		expect(fractionDigits(1.5e-7)).toBe(8);
+		expect(fractionDigits(Number.NaN)).toBe(0);
 	});
 
-	it('JPY ペアは整数（四捨五入）に丸める — 円未満は無意味', () => {
-		expect(roundPrice(5_000_050.5, true)).toBe(5_000_051);
-		expect(roundPrice(5_000_050.4, true)).toBe(5_000_050);
-		expect(roundPrice(5_000_050, true)).toBe(5_000_050);
+	it('10 万円以上の中値は円の整数（半端は +∞ 方向）', () => {
+		expect(roundMidPrice(5_000_000, 5_000_101)).toBe(5_000_051);
+		expect(roundMidPrice(5_000_000, 5_000_100)).toBe(5_000_050);
 	});
 
-	it('非 JPY ペアは小数2桁に丸める', () => {
-		expect(roundPrice(123.456, false)).toBe(123.46);
-		expect(roundPrice(123.4, false)).toBe(123.4);
+	it('安いペアの中値を円の整数に潰さない', () => {
+		expect(roundMidPrice(312.345, 312.347)).toBe(312.346);
+		expect(roundMidPrice(31.2345, 31.2347)).toBe(31.2346);
+	});
+
+	// 1,000 円台で 0.001 円刻みのペアは有効数字が 7 桁ある。価格の水準の桁（6 桁）だけで丸めると 2,500.12 になり、最良の買い気配より下に出る。
+	it('刻みの細かいペアでも中値が最良気配の内側に収まる', () => {
+		const mid = roundMidPrice(2500.123, 2500.124);
+		expect(mid).toBeGreaterThanOrEqual(2500.123);
+		expect(mid).toBeLessThanOrEqual(2500.124);
+	});
+
+	it('スプレッドは気配の桁で丸め、2 進の誤差を残さない', () => {
+		expect(roundSpread(312.345, 312.346)).toBe(0.001);
+		expect(roundSpread(5_000_000, 5_000_101)).toBe(101);
 	});
 });
 
 describe('mid 丸め規約 — ツール間整合（同一板 → 同一 mid）', () => {
-	// 偶数 spread（mid=整数）/ 奇数 spread（mid に .5 が出る）の両方を固定する。
-	// 奇数ケースは再現手順そのもの（bestAsk=5000101 / bestBid=5000000 → mid=5000050.5）。
+	// 偶数 spread（mid=整数）/ 奇数 spread（mid に .5 が出る）の両方を固定する。奇数ケースは再現手順そのもの（bestAsk=5000101 / bestBid=5000000 → mid=5000050.5）。
 	const cases = [
 		{ label: '偶数 spread (mid=整数)', bestAsk: '5000100', bestBid: '5000000', expectedMid: 5_000_050 },
 		{ label: '奇数 spread (mid=.5 → 丸め)', bestAsk: '5000101', bestBid: '5000000', expectedMid: 5_000_051 },
@@ -82,39 +78,72 @@ describe('mid 丸め規約 — ツール間整合（同一板 → 同一 mid）'
 
 		mockDepth(asks, bids);
 
-		// 1. get_orderbook summary（normalized.mid）
 		const summary = await getOrderbook({ pair: 'btc_jpy', mode: 'summary' });
 		assertOk(summary);
 		expect(summary.data.normalized.mid).toBe(expectedMid);
 
-		// 2. get_orderbook statistics（basic.currentPrice = mid）
 		const stats = await getOrderbook({ pair: 'btc_jpy', mode: 'statistics' });
 		assertOk(stats);
 		expect(stats.data.basic.currentPrice).toBe(expectedMid);
 
-		// 3. get_orderbook pressure（bands[].baseMid）
 		const pressure = await getOrderbook({ pair: 'btc_jpy', mode: 'pressure' });
 		assertOk(pressure);
 		expect(pressure.data.bands[0].baseMid).toBe(expectedMid);
 
-		// 4. get_orderbook raw（mid はテキスト表示のみ）
 		const raw = await getOrderbook({ pair: 'btc_jpy', mode: 'raw' });
 		assertOk(raw);
 		expect(raw.summary).toContain(`中値: ${midText}`);
 
-		// 5. prepare_depth_data（data.mid）
 		const pdd = await prepareDepthData({ pair: 'btc_jpy' });
 		assertOk(pdd);
 		expect(pdd.data.mid).toBe(expectedMid);
 
-		// 6. lib/get-depth（mid はテキスト表示のみ）
 		const depth = await getDepth('btc_jpy');
 		assertOk(depth);
 		expect(depth.summary).toContain(`中値: ${midText}`);
 	});
 
+	it('安いペア（0.0001 円刻み）: 全経路の mid が円の整数に潰れず一致し、本文も最後の桁まで出す', async () => {
+		mockDepth(
+			[
+				['31.2347', '1000'],
+				['31.2400', '2000'],
+			],
+			[
+				['31.2345', '1500'],
+				['31.2300', '2500'],
+			],
+		);
+
+		const summary = await getOrderbook({ pair: 'doge_jpy', mode: 'summary' });
+		const stats = await getOrderbook({ pair: 'doge_jpy', mode: 'statistics' });
+		const pressure = await getOrderbook({ pair: 'doge_jpy', mode: 'pressure' });
+		const raw = await getOrderbook({ pair: 'doge_jpy', mode: 'raw' });
+		const pdd = await prepareDepthData({ pair: 'doge_jpy' });
+		const depth = await getDepth('doge_jpy');
+		assertOk(summary);
+		assertOk(stats);
+		assertOk(pressure);
+		assertOk(raw);
+		assertOk(pdd);
+		assertOk(depth);
+
+		expect(summary.data.normalized.mid).toBe(31.2346);
+		expect(summary.data.normalized.spread).toBe(0.0002);
+		expect(stats.data.basic.currentPrice).toBe(31.2346);
+		expect(stats.data.basic.spread).toBe(0.0002);
+		expect(pressure.data.bands[0].baseMid).toBe(31.2346);
+		expect(pdd.data.mid).toBe(31.2346);
+		expect(pdd.data.spread).toBe(0.0002);
+		expect(pdd.data.bestBid).toBe(31.2345);
+		expect(pdd.data.bids[0][0]).toBe(31.2345);
+		for (const text of [summary.summary, raw.summary, depth.summary]) {
+			expect(text).toContain('中値: 31.2346円');
+			expect(text).toContain('31.2345円');
+		}
+	});
+
 	it('奇数 spread: 構造化 mid（summary / statistics / pressure / prepare_depth_data）が相互に一致', async () => {
-		// 再現手順の固定板。経路差ゼロ（Set サイズ=1）を保証する。
 		const asks: [string, string][] = [
 			['5000101', '0.2'],
 			['5000200', '0.4'],
@@ -140,7 +169,6 @@ describe('mid 丸め規約 — ツール間整合（同一板 → 同一 mid）'
 			pressure.data.bands[0].baseMid,
 			pdd.data.mid,
 		];
-		// 全経路が単一値（以前は summary=5000050.5 / prepare_depth_data=5000051 と乖離していた）。
 		expect(new Set(mids).size).toBe(1);
 		expect(mids[0]).toBe(5_000_051);
 	});

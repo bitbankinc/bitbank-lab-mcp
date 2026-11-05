@@ -1,8 +1,3 @@
-/**
- * get_orders_info ツールのユニットテスト。
- * 複数注文の一括取得の成功・部分取得・エラーハンドリングを検証する。
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertFail, assertOk } from '../_assertResult.js';
 import { mockBitbankError, mockBitbankSuccess } from '../fixtures/private-api.js';
@@ -27,7 +22,6 @@ function setupFetchMock(response: unknown, status = 200) {
 		.mockResolvedValue(new Response(JSON.stringify(response), { status })) as unknown as typeof fetch;
 }
 
-/** 注文データ */
 function orderData(id: number, side: 'buy' | 'sell' = 'buy', overrides: Record<string, unknown> = {}) {
 	return {
 		order_id: id,
@@ -341,11 +335,7 @@ describe('get_orders_info — handler (toolDef)', () => {
 	});
 });
 
-/**
- * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
- * `data.orders[].pair` の小文字契約を保つのが目的で、表示・JPY 判定は引数の `pair`
- * （ユーザー入力）を使うため出力の他の部分は不変。防御的正規化（現行 API は小文字）。
- */
+/** data.orders[].pair を小文字契約に保つ（表示・JPY 判定は引数の pair を使うので出力の他の部分は変わらない）。 */
 describe('get_orders_info — API pair の取得境界正規化', () => {
 	it('小文字レスポンスでは出力が変わらない（回帰なし）', async () => {
 		setupFetchMock(mockBitbankSuccess({ orders: [orderData(4001), orderData(4002, 'sell')] }));
@@ -377,10 +367,7 @@ describe('get_orders_info — API pair の取得境界正規化', () => {
 	});
 });
 
-/**
- * ユーザー入力 pair の JPY 建て判定（`lib/pair-code.ts` の `isJpyQuotedPair`）。
- * `get_orders_info` も表示・価格フォーマットを引数の `pair` から作るため取得境界を通らない。
- */
+/** get_orders_info も表示・価格フォーマットを引数の pair から作り取得境界を通らないので、BTC_JPY 入力でも円建て判定が外れないこと。 */
 describe('get_orders_info — ユーザー入力 pair の JPY 判定', () => {
 	it('大文字入力でも価格が円フォーマットされる', async () => {
 		setupFetchMock(mockBitbankSuccess({ orders: [orderData(4001)] }));

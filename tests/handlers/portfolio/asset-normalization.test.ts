@@ -1,15 +1,4 @@
-/**
- * portfolio — API が返す asset コードの取得境界正規化（`lib/asset-code.ts`）の統合テスト。
- *
- * `portfolio/calc.ts` の各関数は「asset は小文字」を前提に JPY 判定・`prices` 検索・
- * holdings の Map キーを組んでいる。前提を担保するのは取得境界（`portfolio/fetch.ts`）だけ
- * なので、本テストは **fetch 層を通した結果を calc 層へ流す** 形で検証する。
- * calc 側に `.toLowerCase()` を撒く実装へ退行したらこのテストは意味を失うため、
- * 検証は必ず `fetchDepositWithdrawal` 経由で行うこと。
- *
- * 現行 API は小文字を返す（`docs/internal/bitbank-api-fields.md`）ので、これは防御的正規化。
- * 併せて「小文字レスポンスでは出力が変わらない」回帰ケースも固定する。
- */
+// calc 層は「asset は小文字」を前提に JPY 判定・`prices` 検索・holdings の Map キーを組んでおり、前提を担保するのは取得境界（`portfolio/fetch.ts`）だけなので、検証は必ず `fetchDepositWithdrawal` 経由で行う（calc 側に `.toLowerCase()` を撒く実装へ退行するとこのテストは意味を失う）。現行 API は小文字を返すので、これは防御的正規化。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -43,10 +32,7 @@ interface DwFixture {
 	jpyWithdrawals?: unknown[];
 }
 
-/**
- * `fetchDepositWithdrawal` の 4 チャネル（暗号資産 / JPY × 入金 / 出金）を
- * URL の `asset=jpy` 有無で振り分けて返す fetcher を組み、取得結果を返す。
- */
+/** `fetchDepositWithdrawal` の 4 チャネル（暗号資産 / JPY × 入金 / 出金）を URL の `asset=jpy` 有無で振り分けて返す。 */
 async function fetchDw(fixture: DwFixture): Promise<DepositWithdrawalData> {
 	const fetcher = (async (url: string) => {
 		const isJpyChannel = url.includes('asset=jpy');
@@ -95,18 +81,13 @@ const PRICES = new Map<string, number>([
 	['doge', 20],
 ]);
 
-/**
- * 本ファイルの検証対象は asset コードの正規化なので、価格解決は現在価格 1 経路に固定する。
- * 入出庫日価格を混ぜると、突き合わせ失敗が「大文字のまま」なのか「その日の足が無い」なのか
- * 切り分けられなくなる（入出庫日価格そのものの検証は calc.test.ts / fetch.test.ts の担当）。
- */
+/** 入出庫日価格を混ぜると、突き合わせ失敗が「大文字のまま」なのか「その日の足が無い」なのか切り分けられなくなるので、価格解決は現在価格 1 経路に固定する（入出庫日価格そのものの検証は calc.test.ts / fetch.test.ts の担当）。 */
 const FLOW_PRICING = currentPriceOnly(PRICES);
 
 describe('取得境界での asset 正規化 — 入出金（fetch → calc）', () => {
 	it('大文字 JPY の入出金が fiat として net_flow_jpy に計上される', async () => {
 		const dw = await fetchDw(UPPERCASE_FIXTURE);
 
-		// 取得境界を抜けた時点で小文字になっている
 		expect(dw.deposits.map((d) => d.asset).sort()).toEqual(['doge', 'jpy']);
 		expect(dw.withdrawals.map((w) => w.asset).sort()).toEqual(['btc', 'jpy']);
 
@@ -116,7 +97,7 @@ describe('取得境界での asset 正規化 — 入出金（fetch → calc）',
 		expect(flow.net_flow_jpy).toBe(1_000_000 + 20_000 - 5_000_000 - 200_000);
 		// 出金手数料: JPY 550 + BTC 0.0006*10,000,000
 		expect(flow.withdrawal_fee_jpy).toBe(550 + 6_000);
-		// 正規化前は 'JPY' が「価格を引けない暗号資産」として落ち、金額も warning もずれていた
+		// 正規化されないと 'JPY' が「価格を引けない暗号資産」として落ち、金額も warning もずれる
 		expect(flow.unpriced_assets).toBeUndefined();
 	});
 
@@ -158,7 +139,7 @@ describe('取得境界での asset 正規化 — 入出金（fetch → calc）',
 		const flow = calcPeriodNetFlow(dw, 0, FLOW_PRICING);
 
 		expect(flow.net_flow_jpy).toBe(1000 * 20 - 500 * 20);
-		// warning の誤検知が起きないこと（PR #37 の unpriced_flow_assets 経路）
+		// unpriced_flow_assets の warning を誤検知しないこと
 		expect(flow.unpriced_assets).toBeUndefined();
 	});
 
@@ -185,12 +166,7 @@ describe('取得境界での asset 正規化 — 入出金（fetch → calc）',
 });
 
 describe('取得境界での asset 正規化 — 損益・保有復元（fetch → calc）', () => {
-	/**
-	 * 買い 1 BTC @10,000,000 → 出庫 0.8 BTC（0.7994 + 手数料 0.0006）→ 売り 0.5 BTC @12,000,000。
-	 * 出庫が原価按分に反映されると、売り時点の保有は 0.2 BTC しかなく原価は 2,000,000 に減る。
-	 * 反映されない（＝大文字 asset がマッチしない）場合は 0.5 BTC 分の原価 5,000,000 が
-	 * 引かれ、realized_pnl も cost_basis も別の値になる。
-	 */
+	/** 買い 1 BTC @10,000,000 → 出庫 0.8 BTC（0.7994 + 手数料 0.0006）→ 売り 0.5 BTC @12,000,000。出庫が原価按分に反映されると売り時点の保有は 0.2 BTC で原価は 2,000,000、反映されない（大文字 asset がマッチしない）と 0.5 BTC 分の原価 5,000,000 が引かれる。 */
 	const TRADES: RawTrade[] = [
 		{
 			trade_id: 1,

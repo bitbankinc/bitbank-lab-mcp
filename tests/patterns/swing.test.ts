@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { Candle } from '../../tools/patterns/swing.js';
 import { detectSwingPoints, filterPeaks, filterValleys } from '../../tools/patterns/swing.js';
 
-/** V字のローソク足データを生成するヘルパー */
 function makeCandles(prices: number[]): Candle[] {
 	return prices.map((p) => ({
 		open: p,
@@ -23,7 +22,6 @@ describe('detectSwingPoints', () => {
 	});
 
 	it('明確なスイングハイを検出する', () => {
-		// 上昇→ピーク→下降
 		const prices = [100, 110, 120, 130, 120, 110, 100];
 		const candles = makeCandles(prices);
 		const pivots = detectSwingPoints(candles, { swingDepth: 2 });
@@ -33,7 +31,6 @@ describe('detectSwingPoints', () => {
 	});
 
 	it('明確なスイングローを検出する', () => {
-		// 下降→ボトム→上昇
 		const prices = [130, 120, 110, 100, 110, 120, 130];
 		const candles = makeCandles(prices);
 		const pivots = detectSwingPoints(candles, { swingDepth: 2 });
@@ -46,7 +43,6 @@ describe('detectSwingPoints', () => {
 		const prices = [100, 110, 120, 130, 125, 120, 100];
 		const candles = makeCandles(prices);
 		const pivots = detectSwingPoints(candles, { swingDepth: 2, strictPivots: false });
-		// 緩和モードでもスイングを検出
 		expect(pivots.length).toBeGreaterThanOrEqual(1);
 	});
 
@@ -60,10 +56,9 @@ describe('detectSwingPoints', () => {
 		];
 		const pivots = detectSwingPoints(candles, { swingDepth: 1 });
 		const peaks = pivots.filter((p) => p.kind === 'H');
-		if (peaks.length > 0) {
-			// price は close 値（125）であって high（130）ではない
-			expect(peaks[0].price).toBe(125);
-		}
+		expect(peaks.length).toBeGreaterThan(0);
+		// price は close 値（125）であって high（130）ではない
+		expect(peaks[0].price).toBe(125);
 	});
 });
 
@@ -101,11 +96,7 @@ describe('filterValleys', () => {
 	});
 });
 
-// ──────────────────────────────────────────────
-// 価格基準の透明化（#125）
-//   極値判定は high / low、格納する price は close。両者が別物であることを
-//   出力から検算できるように extremePrice を持たせている。
-// ──────────────────────────────────────────────
+// 極値判定は high / low、格納する price は close。両者が別物であることを出力から検算できるように extremePrice を持たせている（#125）。
 describe('detectSwingPoints: price と extremePrice の関係', () => {
 	/** ヒゲの長さを指定できるローソク足（close と high/low を明確にずらす） */
 	function makeWickyCandles(prices: number[], wick: number): Candle[] {
@@ -154,16 +145,7 @@ describe('detectSwingPoints: price と extremePrice の関係', () => {
 	});
 });
 
-// ──────────────────────────────────────────────
-// 窓の前後 swingDepth 本の余白（#277）
-//   走査範囲が [swingDepth, length − swingDepth) に閉じているので、窓の**最後の**
-//   swingDepth 本は**極値であってもピボットにならない**。#242 の経路ゲートは
-//   このピボット列で判定するため、終端の余白にある戻しを見ない。
-//   検出器を通した仕様の固定は tests/patterns/breakout-path-double.test.ts。
-//
-//   ここでは**両端の境界そのものを実行して固定する**——余白の内外を挟むだけの
-//   テストは [swingDepth + 1, length − swingDepth − 1) を走査する実装でも通ってしまう。
-// ──────────────────────────────────────────────
+// 余白の内外を挟むだけのテストは `[swingDepth + 1, length − swingDepth − 1)` を走査する実装でも通ってしまうので、両端の境界そのものを実行して固定する（#277）。
 describe('detectSwingPoints: 窓の前後 swingDepth 本はピボットにならない（issue #277）', () => {
 	const DEPTH = 3;
 	/** idx 5 が明確な極値（高値 111）。窓をどこで切るかで余白の内外が変わる。 */
@@ -184,9 +166,7 @@ describe('detectSwingPoints: 窓の前後 swingDepth 本はピボットになら
 		expect(detectSwingPoints(candles, { swingDepth: DEPTH })).toEqual([]);
 	});
 
-	// ── 終端側の境界そのもの（idx 5 を動かさず、後ろの本数だけ 1 本ずつ増やす）──
-	//   最後にピボットになりうるのは length − swingDepth − 1（終端からちょうど swingDepth 本前）。
-	//   idx 5 に対しては length = 9 がその位置で、length = 8 はまだ余白の中。
+	// 最後にピボットになりうるのは length − swingDepth − 1。idx 5 に対しては length = 9 がその位置で、length = 8 はまだ余白の中。
 
 	it('終端まであと swingDepth − 1 本（length = 8）では、まだピボットにならない', () => {
 		const candles = makeCandles([...PRICES, 104]);
@@ -207,8 +187,6 @@ describe('detectSwingPoints: 窓の前後 swingDepth 本はピボットになら
 	it('さらに後ろを伸ばしてもピボットのまま（境界を越えた側の対照）', () => {
 		expect(kinds(makeCandles([...PRICES, 104, 103, 102]))).toEqual(['H5']);
 	});
-
-	// ── 先頭側の境界そのもの（前後は対称）──
 
 	it('窓の先頭 swingDepth 本も候補から外れる（idx = swingDepth − 1 は落ちる）', () => {
 		// idx 1 が明確な極値だが、swingDepth = 3 では i < 3 を走査しない。

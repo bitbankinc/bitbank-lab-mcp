@@ -18,7 +18,6 @@ export interface NormalizedTicker {
 	volumeInJPY: number | null;
 }
 
-/** ranked ビューのテキスト組み立て — テスト可能な純粋関数 */
 export function buildTickersJpyRankedText(
 	totalItems: number,
 	ranked: NormalizedTicker[],
@@ -35,7 +34,6 @@ export function buildTickersJpyRankedText(
 	return [`全${totalItems}ペア取得（sortBy=${sortBy}, ${order}, top${limit}）`, '', lines.join('\n')].join('\n');
 }
 
-/** items ビューのテキスト組み立て — テスト可能な純粋関数 */
 export function buildTickersJpyItemsText(items: NormalizedTicker[]): string {
 	const lines: string[] = [];
 	lines.push(`全${items.length}ペア取得`);
@@ -85,7 +83,6 @@ export const toolDef: ToolDefinition = {
 			[key: string]: unknown;
 		}>;
 
-		// normalize numeric fields（open/high/low 追加）
 		const norm = items.map((it) => {
 			const lastN = toNum(it?.last);
 			const openN = toNum(it?.open);
@@ -107,7 +104,6 @@ export const toolDef: ToolDefinition = {
 			return { ...it, lastN, openN, highN, lowN, buyN, sellN, changeN, volN, volumeInJPY };
 		});
 
-		// ranking logic
 		const cmpNum = (a?: number | null, b?: number | null) => {
 			const aa = a == null ? -Infinity : a;
 			const bb = b == null ? -Infinity : b;
@@ -139,7 +135,6 @@ export const toolDef: ToolDefinition = {
 			};
 		}
 
-		// view=items: 全データ一覧（上位5件をサマリ表示）
 		const text = buildTickersJpyItemsText(norm);
 		const structured = GetTickersJpyHandlerOutputSchema.parse({
 			ok: true,

@@ -1,10 +1,3 @@
-/**
- * tools/get_ui_snapshot.ts のユニットテスト。
- *
- * MCP Apps ウィジェットの pull 型 hydration 用ツールの入力スキーマと
- * ok / fail 分岐を検証する。
- */
-
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CONFIRMATION_META_KEY } from '../src/mcp-apps-meta.js';
 import { clientSupportsElicitation, isAppUiExecuteAllowed } from '../src/private/elicitation.js';
@@ -120,10 +113,7 @@ describe('handler', () => {
 		expect(orderResult.structuredContent).toBe(orderSnap);
 	});
 
-	// #27: url モードだけを宣言したホストは form 形式の elicitation を処理できず、preview 側は
-	// fallback（＝`_meta` にトークンを載せる経路）へ倒れる。snapshot 側の
-	// `isAppUiExecuteAllowed && !clientSupportsElicitation` も同じ述語なので、ここで判定が
-	// ずれない（＝url のみホストでも `_meta` を返す）ことを固定する。
+	// url モードだけを宣言したホストは form 形式の elicitation を処理できず、preview 側は fallback（`_meta` にトークンを載せる経路）へ倒れる。snapshot 側の `isAppUiExecuteAllowed && !clientSupportsElicitation` も同じ述語なので、ここで判定がずれないことを固定する（#27）。
 	it('url モードのみを宣言したホストで snapshot 側の判定が preview 側と一致する（#27）', async () => {
 		vi.stubEnv('BITBANK_MCP_APPS_EXECUTE', '1');
 		const meta = { [CONFIRMATION_META_KEY]: { confirmation_token: 'tok-url-only', expires_at: Date.now() + 60_000 } };

@@ -1,10 +1,4 @@
-/**
- * src/mcp-apps-hydration.ts のユニットテスト。
- *
- * 確認 UI（iframe）の pull 型 hydration を駆動する純粋モジュールなので、React も jsdom も
- * 使わず node 環境 + フェイクタイマーで固定する。issue #29 の 3 点（リトライが無い /
- * アンマウント後も promise チェーンが走る / 2 ファイルに複製）のうち、前 2 点の挙動をここで固定する。
- */
+// 確認 UI（iframe）の pull 型 hydration を駆動する純粋モジュールなので、React も jsdom も使わず node 環境 + フェイクタイマーで固定する（issue #29）。
 
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import {
@@ -127,7 +121,6 @@ describe('startSnapshotHydration', () => {
 		expect(h.phases.at(-1)).toBe('failed');
 		expect(vi.getTimerCount()).toBe(0);
 
-		// 上限到達後にいくら時間が進んでも追加の試行は無い
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(h.fetchSnapshot).toHaveBeenCalledTimes(3);
 		expect(h.phases.filter((p) => p === 'failed')).toHaveLength(1);
@@ -316,9 +309,7 @@ describe('apply が例外を投げる', () => {
 	});
 
 	it('UI と同じ形の apply（取り込めなければ投げる）で、空スナップショットが failed に到達する', async () => {
-		// 両 UI の apply は applyPreviewResult のあと hasPreviewRef が false なら投げる。
-		// resolve したが preview を含まないスナップショット（サーバー側キャッシュが未投入 等）は
-		// **成功として扱ってはいけない**——黙って終わると「復元中」のまま固まる（#29 の要点）。
+		// resolve したが preview を含まないスナップショット（サーバー側キャッシュが未投入 等）を成功として扱うと「復元中」のまま固まるので、両 UI と同じく applyPreviewResult のあと hasPreviewRef が false なら投げる（#29）。
 		const h = makeHarness();
 		let hasPreview = false;
 		h.fetchSnapshot.mockResolvedValue({ structuredContent: { ok: true } });

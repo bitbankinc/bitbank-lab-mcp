@@ -8,9 +8,6 @@ import {
 import type { Signal } from '../../../tools/trading_process/lib/strategies/types.js';
 import type { Candle, Trade } from '../../../tools/trading_process/types.js';
 
-// ---------------------------------------------------------------------------
-// ヘルパー
-// ---------------------------------------------------------------------------
 function makeCandles(count: number, basePrice: number = 100): Candle[] {
 	return Array.from({ length: count }, (_, i) => ({
 		time: `2024-01-${String(i + 1).padStart(2, '0')}`,
@@ -21,11 +18,7 @@ function makeCandles(count: number, basePrice: number = 100): Candle[] {
 	}));
 }
 
-/**
- * `runBacktestEngine` へ渡す入力を組み立てる。
- * `effective_*` は取得範囲のメタ情報で、エンジンは計算に使わず結果へエコーするだけなので
- * 常に candles と整合させる。
- */
+/** `effective_*` は取得範囲のメタ情報でエンジンは計算に使わず結果へエコーするだけなので、常に candles と整合させる。 */
 function makeEngineInput(candles: Candle[], overrides: Partial<BacktestEngineInput> = {}): BacktestEngineInput {
 	return {
 		pair: 'btc_jpy',
@@ -41,9 +34,6 @@ function makeEngineInput(candles: Candle[], overrides: Partial<BacktestEngineInp
 	};
 }
 
-// ---------------------------------------------------------------------------
-// executeTradesFromSignals
-// ---------------------------------------------------------------------------
 describe('executeTradesFromSignals', () => {
 	it('空のシグナルはトレードなし', () => {
 		const candles = makeCandles(10);
@@ -164,9 +154,6 @@ describe('executeTradesFromSignals', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// calculateSummary
-// ---------------------------------------------------------------------------
 describe('calculateSummary', () => {
 	it('トレードなしの場合のサマリー', () => {
 		const candles = makeCandles(10);
@@ -290,7 +277,6 @@ describe('calculateSummary', () => {
 			confirmed_pct: 21,
 		}));
 		const summary = calculateSummary(trades, 0, candles, equityCurve, '1D');
-		// 複利: 1.1 * 1.1 = 1.21 → 21%
 		expect(summary.total_pnl_pct).toBe(21);
 	});
 
@@ -327,9 +313,6 @@ describe('calculateSummary', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// sharpe_ratio の timeframe 年率換算
-// ---------------------------------------------------------------------------
 describe('calculateSummary - sharpe_ratio timeframe annualization', () => {
 	// 単調変動するエクイティカーブ（stdev > 0 を担保）
 	function makeEquityCurve(length: number) {
@@ -377,10 +360,7 @@ describe('calculateSummary - sharpe_ratio timeframe annualization', () => {
 	});
 
 	it('warmup 区間の equity_pct=0 連続は Sharpe 計算から除外される', () => {
-		// warmup 100 本 + 評価 2 本（i=100, 101）。warmup は equity_pct=0 のフラット、
-		// 評価範囲のみで変動するケース。slice(warmupBars) しないと、warmup の
-		// ゼロリターンが平均/分散を歪めて非 null の Sharpe が返ってしまう。
-		// 評価範囲だけならバーリターン数 < 2 で calcSharpeRatio は null を返す。
+		// warmup 100 本（equity_pct=0 のフラット）+ 評価 2 本（i=100, 101）。slice(warmupBars) しないと warmup のゼロリターンが平均 / 分散を歪めて非 null の Sharpe が返るが、評価範囲だけならバーリターン数 < 2 で calcSharpeRatio は null を返す。
 		const length = 102;
 		const warmupBars = 100;
 		const c = makeCandles(length);
@@ -390,19 +370,16 @@ describe('calculateSummary - sharpe_ratio timeframe annualization', () => {
 			confirmed_pct: 0,
 		}));
 
-		// バグ再現（参考）: warmup を含む全期間で計算するとサンプル不足にならず非 null が返る
+		// 対照: warmup を含む全期間で計算するとサンプル不足にならず非 null が返る
 		const sharpeWithWarmup = calculateSummary([], 0, c, curve, '1D').sharpe_ratio;
 		expect(sharpeWithWarmup).not.toBeNull();
 
-		// 修正後: warmup を slice すると評価範囲はバー 2 本 → リターン 1 本 → null
+		// warmup を slice すると評価範囲はバー 2 本 → リターン 1 本 → null
 		const sharpeEvalOnly = calculateSummary([], 0, c, curve, '1D', warmupBars).sharpe_ratio;
 		expect(sharpeEvalOnly).toBeNull();
 	});
 });
 
-// ---------------------------------------------------------------------------
-// calculateSummary - evaluation_* / warmup_bars メタ情報
-// ---------------------------------------------------------------------------
 describe('calculateSummary - evaluation metadata', () => {
 	it('evaluation_start / end / bars / warmup_bars が tradableStartIdx に応じて返される', () => {
 		const candles = makeCandles(10); // t0 .. t9
@@ -468,9 +445,6 @@ describe('calculateSummary - evaluation metadata', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// runBacktestEngine
-// ---------------------------------------------------------------------------
 describe('runBacktestEngine', () => {
 	it('全パイプラインを通してバックテスト結果を返す', () => {
 		const candles = makeCandles(20);
@@ -505,9 +479,6 @@ describe('runBacktestEngine', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// executeTradesFromSignals - warmupBars 引数（回帰防止）
-// ---------------------------------------------------------------------------
 describe('executeTradesFromSignals - warmupBars', () => {
 	it('warmupBars=5 で signals[2]=buy, signals[4]=sell は除外され trades=[] になる', () => {
 		const candles = makeCandles(10);
@@ -566,9 +537,6 @@ describe('executeTradesFromSignals - warmupBars', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// runBacktestEngine - warmup 区間のシグナルがトレードに含まれない（回帰防止）
-// ---------------------------------------------------------------------------
 describe('runBacktestEngine - warmup boundary', () => {
 	it('ウォームアップ区間内 (i<5) のシグナルは除外され、ウォームアップ後 (i>=5) のみトレードになる', () => {
 		const candles = makeCandles(20);
@@ -634,13 +602,9 @@ describe('runBacktestEngine - warmup boundary', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// runBacktestEngine - 末尾未決済ポジションの含み損益反映（回帰防止）
-// ---------------------------------------------------------------------------
 describe('runBacktestEngine - open position carry forward', () => {
 	it('未決済ポジションが equity_pct / total_pnl_pct に反映される', () => {
-		// computeRequiredBars=2 → warmup=2、i=2 で buy → entry は candles[3]
-		// candles[3].open=100, 最終 candles[7].close=200 → 含み益 +100%
+		// computeRequiredBars=2 → warmup=2、i=2 で buy → entry は candles[3]。candles[3].open=100、最終 candles[7].close=200 → 含み益 +100%
 		const candles: Candle[] = [
 			{ time: 't0', open: 90, high: 95, low: 85, close: 90 },
 			{ time: 't1', open: 95, high: 100, low: 90, close: 95 },
@@ -675,7 +639,6 @@ describe('runBacktestEngine - open position carry forward', () => {
 		// 未決済ポジションは trades に含まれない（契約維持）
 		expect(result.trades).toHaveLength(0);
 		expect(result.summary.trade_count).toBe(0);
-		// equity_pct[last] / total_pnl_pct は +100% を反映
 		expect(result.equity_curve[result.equity_curve.length - 1].equity_pct).toBeCloseTo(100, 1);
 		expect(result.summary.total_pnl_pct).toBeCloseTo(100, 1);
 	});
@@ -716,14 +679,9 @@ describe('runBacktestEngine - open position carry forward', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// executeTradesFromSignals - 数値精度・手数料モデルの契約（回帰防止）
-// ---------------------------------------------------------------------------
 describe('executeTradesFromSignals - precision and fee model contract', () => {
 	it('toFixed(6) で潰れる微小利益が net_return / pnl_pct に保持される', () => {
-		// entry=10_000_000, exit=10_000_004, fee_bp=0
-		// 厳密な netReturn = 1.0000004。旧実装の toFixed(6) では 1.000000 に潰れていた。
-		// buy at signals[0] → entry at candles[1].open、sell at signals[2] → exit at candles[3].open
+		// entry=10_000_000, exit=10_000_004, fee_bp=0 → 厳密な netReturn = 1.0000004（toFixed(6) では 1.000000 に潰れる）。buy at signals[0] → entry at candles[1].open、sell at signals[2] → exit at candles[3].open
 		const candles: Candle[] = [
 			{ time: 't0', open: 0, high: 0, low: 0, close: 0 },
 			{ time: 't1', open: 10_000_000, high: 0, low: 0, close: 0 },
@@ -743,18 +701,12 @@ describe('executeTradesFromSignals - precision and fee model contract', () => {
 	});
 
 	it('微小利益の連続トレードで total_pnl_pct が複利の実値を反映する', () => {
-		// 10 回の微小利益トレード。各 net_return = 1.0000004。
-		// 期待: total_pnl_pct ≈ (1.0000004^10 - 1) * 100 ≈ 0.0004%
-		// 旧実装では各 net_return が 1.000000 に丸められ total_pnl_pct === 0 になっていた。
+		// 10 回の微小利益トレード（各 net_return = 1.0000004）。calculateSummary の total_pnl_pct は小数 2 桁丸めで 0 になるので、丸め前の複利 (1.0000004^10 - 1) * 100 ≈ 0.0004% を trades から見る（net_return を toFixed(6) で丸めるとこれも 0 になる）。
 		const TRADE_COUNT = 10;
 		const candles: Candle[] = [];
 		const signals: Signal[] = [];
-		// 各トレードは 2 バー消費（buy → t+1 で entry, sell → t+1 で exit）。
-		// signals[i] が buy のとき candles[i+1].open が entry price になる。
-		// 1 トレード = buy at i, sell at i+2 のように 2 バー単位で繰り返す。
-		// 価格は entry→exit で 10_000_000 → 10_000_004 を全トレード共通とする。
+		// signals[i] が buy のとき candles[i+1].open が entry price になるので、1 トレードを buy → entry → sell → exit の 4 バーで組み、価格は entry→exit で 10_000_000 → 10_000_004 を全トレード共通とする。
 		for (let i = 0; i < TRADE_COUNT; i++) {
-			// 4 バー使ってループ: buy → entry → sell → exit
 			candles.push({ time: `b${i}-0`, open: 0, high: 0, low: 0, close: 0 });
 			candles.push({ time: `b${i}-1`, open: 10_000_000, high: 0, low: 0, close: 10_000_000 });
 			candles.push({ time: `b${i}-2`, open: 0, high: 0, low: 0, close: 0 });
@@ -771,19 +723,14 @@ describe('executeTradesFromSignals - precision and fee model contract', () => {
 		const { trades } = executeTradesFromSignals(candles, signals, 0);
 		expect(trades).toHaveLength(TRADE_COUNT);
 
-		// 各トレードの net_return を複利計算
 		const compound = trades.reduce((acc, t) => acc * t.net_return, 1);
 		const expectedCompound = 1.0000004 ** TRADE_COUNT;
 		expect(compound).toBeCloseTo(expectedCompound, 9);
-		// (1.0000004^10 - 1) * 100 ≈ 0.0004%（単体 0.00004% を 10 回複利）
 		expect((compound - 1) * 100).toBeCloseTo((expectedCompound - 1) * 100, 9);
 	});
 
 	it('手数料モデルは 1 - 2f の線形近似である（(1-f)^2 ではない）', () => {
-		// fee_bp=100 (f=0.01), 価格変化なし。
-		// 線形近似: net_return = 1 - 2*0.01 = 0.98、pnl_pct = -2.00%
-		// 厳密複利: (1 - 0.01)^2 = 0.9801（採用していない）。
-		// このテストは「線形近似の挙動を保証する契約」として固定する。
+		// fee_bp=100 (f=0.01)、価格変化なし → 線形近似の net_return = 1 - 2*0.01 = 0.98、pnl_pct = -2.00%（厳密複利 (1 - 0.01)^2 = 0.9801 は採用していない）。この線形近似の挙動を契約として固定する。
 		const candles: Candle[] = [
 			{ time: 't0', open: 100, high: 0, low: 0, close: 0 },
 			{ time: 't1', open: 100, high: 0, low: 0, close: 0 },
@@ -806,9 +753,6 @@ describe('executeTradesFromSignals - precision and fee model contract', () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// executeTradesFromSignals - open_position の entry_fee_multiplier（回帰防止）
-// ---------------------------------------------------------------------------
 describe('executeTradesFromSignals - open_position entry_fee_multiplier', () => {
 	function buyOnlySignals(length: number): Signal[] {
 		return Array.from({ length }, (_, i) =>
@@ -835,9 +779,6 @@ describe('executeTradesFromSignals - open_position entry_fee_multiplier', () => 
 	});
 });
 
-// ---------------------------------------------------------------------------
-// runBacktestEngine - 未決済ポジションへの片道手数料反映（回帰防止）
-// ---------------------------------------------------------------------------
 describe('runBacktestEngine - open position entry fee', () => {
 	function makeFlatCandles(length: number, price: number): Candle[] {
 		return Array.from({ length }, (_, i) => ({
@@ -893,8 +834,7 @@ describe('runBacktestEngine - open position entry fee', () => {
 	});
 
 	it('fee_bp=100、価格 +100% 上昇の未決済は片道手数料分だけ目減りする', () => {
-		// entry at candles[3].open=100、last close=200。
-		// entryEquity = 1.0 * 0.99 = 0.99、equity = 0.99 * (200/100) = 1.98 → +98%
+		// entry at candles[3].open=100、last close=200 → entryEquity = 1.0 * 0.99 = 0.99、equity = 0.99 * (200/100) = 1.98 → +98%
 		const candles: Candle[] = [
 			{ time: 't0', open: 90, high: 95, low: 85, close: 90 },
 			{ time: 't1', open: 95, high: 100, low: 90, close: 95 },

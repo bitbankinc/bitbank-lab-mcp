@@ -43,7 +43,6 @@ const SMA_FOOTER = [
 	'📌 補完ツール: analyze_indicators（他指標）, analyze_bb_snapshot（BB）, get_flow_metrics（出来高）, get_orderbook（板情報）',
 ];
 
-/** テキスト組み立て（SMAスナップショット）— テスト可能な純粋関数 */
 export function buildSmaSnapshotText(input: BuildSmaSnapshotTextInput): string {
 	return buildMaSnapshotText({ ...input, prefix: 'SMA', footerLines: SMA_FOOTER });
 }
@@ -63,11 +62,9 @@ export default async function analyzeSmaSnapshot(
 				fail(indRes.summary || 'indicators failed', indRes.meta.errorType || 'internal'),
 			);
 
-		// 上流 analyze_indicators の meta.warning（取得層）と meta.warnings（計算層）を別系統で伝播する。
 		const { warning, warnings } = extractUpstreamWarning(indRes.meta);
 
-		// 最新足が形成中（未確定）か。SMA の最新値・配列・乖離は最新足の終値に依存するため、
-		// analyze_indicators と同じ流儀で最新足 ts から判定し注記を出す（warning 2 系統とは別系統の情報注記）。
+		// SMA の最新値・配列・乖離は最新足の終値に依存するので、形成中なら注記を出す。
 		const provisional = isLatestBarProvisional(indRes.data.normalized.at(-1)?.timestamp, String(type));
 
 		const close = indRes.data.normalized.at(-1)?.close ?? null;
@@ -148,7 +145,6 @@ export default async function analyzeSmaSnapshot(
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'analyze_sma_snapshot',
 	description:

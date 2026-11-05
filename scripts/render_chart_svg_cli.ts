@@ -10,10 +10,8 @@ async function main() {
 	const type = positional[1] || '1day';
 	const limit = intArg(positional[2], 60);
 
-	// indicators を CLI フラグから構築
 	const indicators: string[] = [];
 
-	// --sma=5,20,50
 	if (typeof flags.sma === 'string' && flags.sma.length > 0) {
 		for (const v of flags.sma.split(',')) {
 			const n = parseInt(v.trim(), 10);
@@ -21,7 +19,6 @@ async function main() {
 		}
 	}
 
-	// --with-ichimoku / --ichimoku-mode=default|extended
 	if (flags['with-ichimoku'] === true || typeof flags['ichimoku-mode'] === 'string') {
 		const mode = String(flags['ichimoku-mode'] ?? 'default').toLowerCase();
 		indicators.push(mode === 'extended' ? 'ICHIMOKU_EXTENDED' : 'ICHIMOKU');
@@ -45,7 +42,6 @@ async function main() {
 		indicators.push('BB');
 	}
 	if (flags['sma-only'] === true) {
-		// SMA 以外を除去
 		const smaOnly = indicators.filter((i) => i.startsWith('SMA_'));
 		indicators.length = 0;
 		indicators.push(...smaOnly);
@@ -58,12 +54,10 @@ async function main() {
 		indicators,
 	};
 
-	// forceLayers
 	if (flags['force-layers'] === true || flags['no-auto-lighten'] === true) {
 		options.forceLayers = true;
 	}
 
-	// Style: --style=candles|line|depth
 	if (typeof flags.style === 'string') {
 		const style = flags.style;
 		if (style === 'candles' || style === 'line' || style === 'depth') {
@@ -71,7 +65,6 @@ async function main() {
 		}
 	}
 
-	// Depth options: --depth-levels=200
 	if (typeof flags['depth-levels'] === 'string') {
 		const levels = parseInt(flags['depth-levels'], 10);
 		if (Number.isFinite(levels)) {

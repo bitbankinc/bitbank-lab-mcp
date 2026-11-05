@@ -1,17 +1,9 @@
-/**
- * lib/tickers の fetchTickerPricesMap ユニットテスト。
- *
- * testing.md 準拠: fetch モックは vi.spyOn(globalThis, 'fetch')、afterEach で
- * vi.restoreAllMocks()。TICKERS_JPY_URL を弄るテストは afterEach で env を復元する。
- */
-
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BITBANK_API_BASE } from '../../lib/http.js';
 import { fetchTickerPricesMap } from '../../lib/tickers.js';
 
 const ORIGINAL_TICKERS_JPY_URL = process.env.TICKERS_JPY_URL;
 
-/** success=1 のレスポンスを返す fetch モックを張る。 */
 function mockTickerResponse(body: unknown, status = 200) {
 	return vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(body), { status }));
 }

@@ -629,7 +629,7 @@ claude.ai 向けトラッカーが Desktop の直接の窓口とみなせる）�
 | 結果レベル `_meta` の透過 | `src/server.ts` の `respond()` |
 | スナップショットの `_meta` 保持と期限 | `src/ui-snapshot-cache.ts` の `getUiSnapshotMeta()` |
 | pull 型 hydration のゲート | `tools/get_ui_snapshot.ts` |
-| execute ハンドラの条件付き解錠 | `tools/private/{create_order,cancel_order,cancel_orders}.ts` |
+| execute ハンドラの条件付き解錠 | `src/private/execute-gate.ts` の `runAppUiExecute()`（呼び出し元は `tools/private/{create_order,cancel_order,cancel_orders}.ts` の handler） |
 | iframe のボタン | `ui/{order,cancel}-confirm/src/App.tsx` |
 | 不変条件のテスト | `tests/private/mcp-apps-execute.test.ts`（PR で走る） |
 | wire レベルの `_meta` 透過回帰 | `tests/e2e/mcp-apps-meta.test.ts`（手動 / nightly のみ） |

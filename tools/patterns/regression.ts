@@ -1,36 +1,23 @@
-/**
- * patterns/regression.ts - 回帰・トレンドライン計算
- *
- * パターン検出で使用する線形回帰およびトレンドラインフィット計算。
- */
-
-/** 回帰に使用するポイント（idx/price形式） */
 export interface RegressionPoint {
 	idx: number;
 	price: number;
 }
 
-/** 回帰に使用するポイント（x/y形式） */
 export interface XYPoint {
 	x: number;
 	y: number;
 }
 
-/** 線形回帰の結果 */
 export interface LinearRegressionResult {
 	slope: number;
 	intercept: number;
 }
 
-/** R2付き線形回帰の結果 */
 export interface LinearRegressionWithR2Result extends LinearRegressionResult {
 	r2: number;
 	valueAt: (x: number) => number;
 }
 
-/**
- * 線形回帰（三角保ち合い向け）
- */
 export function linearRegression(points: RegressionPoint[]): LinearRegressionResult {
 	const n = points.length;
 	if (!n) return { slope: 0, intercept: 0 };
@@ -53,9 +40,6 @@ export function linearRegression(points: RegressionPoint[]): LinearRegressionRes
 	return { slope, intercept };
 }
 
-/**
- * トレンドラインへのフィット度を計算（0-1）
- */
 export function trendlineFit(points: RegressionPoint[], line: LinearRegressionResult): number {
 	if (!points.length) return 0;
 
@@ -70,9 +54,6 @@ export function trendlineFit(points: RegressionPoint[], line: LinearRegressionRe
 	return Math.max(0, Math.min(1, 1 - avgDev));
 }
 
-/**
- * R2（決定係数）付きの線形回帰（ウェッジ用）
- */
 export function linearRegressionWithR2(points: XYPoint[]): LinearRegressionWithR2Result {
 	const n = points.length;
 	if (n < 2) {
@@ -99,7 +80,6 @@ export function linearRegressionWithR2(points: XYPoint[]): LinearRegressionWithR
 	const slope = (n * sumXY - sumX * sumY) / denom;
 	const intercept = (sumY - slope * sumX) / n;
 
-	// R^2
 	const meanY = sumY / n;
 	let ssTot = 0,
 		ssRes = 0;
@@ -115,39 +95,55 @@ export function linearRegressionWithR2(points: XYPoint[]): LinearRegressionWithR
 	return { slope, intercept, r2, valueAt };
 }
 
-// --- ヘルパー関数 ---
-
-/**
- * 2つの値が許容誤差内で近いかどうかを判定
- */
 export function near(a: number, b: number, tolerancePct: number): boolean {
 	return Math.abs(a - b) <= Math.max(a, b) * tolerancePct;
 }
 
-/**
- * パーセント変化を計算
- */
-export function pct(a: number, b: number): number {
-	return (b - a) / (a === 0 ? 1 : a);
-}
-
-/**
- * 0-1にクランプ
- */
 export function clamp01(x: number): number {
 	return Math.max(0, Math.min(1, x));
 }
 
-/**
- * 相対偏差を計算
- */
+// 分母に 1 円の下限を付けると、1 円未満の価格で差が実際より小さく見える。
 export function relDev(a: number, b: number): number {
-	return Math.abs(a - b) / Math.max(1, Math.max(a, b));
+	const max = Math.max(Math.abs(a), Math.abs(b));
+	if (max === 0) return 0;
+	return Math.abs(a - b) / max;
 }
 
-/**
- * 相対偏差からマージンを計算
- */
 export function marginFromRelDev(rd: number, tol: number): number {
 	return clamp01(1 - rd / Math.max(1e-12, tol));
+}
+
+function findWorstResidualIdx(
+	current: readonly RegressionPoint[],
+	line: Pick<LinearRegressionWithR2Result, 'valueAt'>,
+): number {
+	let worstIdx = 0;
+	let worstResidual = 0;
+	for (let j = 0; j < current.length; j++) {
+		const residual = Math.abs(current[j].price - line.valueAt(current[j].idx));
+		if (residual > worstResidual) {
+			worstResidual = residual;
+			worstIdx = j;
+		}
+	}
+	return worstIdx;
+}
+
+// R² が閾値を超えるまで点を捨てるので、捨てた割合の上限は呼び出し側で課す。3 点まで捨てれば R² は自動的に高くなる（#141）。
+export function robustFit(
+	pts: readonly RegressionPoint[],
+	minPoints: number,
+	minR2: number,
+): { line: LinearRegressionWithR2Result; filtered: RegressionPoint[] } {
+	let current = [...pts];
+	let line = linearRegressionWithR2(current.map((p) => ({ x: p.idx, y: p.price })));
+	const maxRemovals = Math.max(0, pts.length - minPoints);
+	for (let r = 0; r < maxRemovals && line.r2 < minR2; r++) {
+		const worstIdx = findWorstResidualIdx(current, line);
+		current = current.filter((_, j) => j !== worstIdx);
+		if (current.length < minPoints) break;
+		line = linearRegressionWithR2(current.map((p) => ({ x: p.idx, y: p.price })));
+	}
+	return { line, filtered: current };
 }

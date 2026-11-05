@@ -1,10 +1,3 @@
-/**
- * get_my_orders — 自分のアクティブな注文一覧を取得する Private API ツール。
- *
- * bitbank Private API `/v1/user/spot/active_orders` を呼び出し、
- * LLM が分析しやすい形に整形して返す。
- */
-
 import { nowIso, parseIso8601, toIsoMs } from '../../lib/datetime.js';
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
 import { normalizePairCodes } from '../../lib/pair-code.js';
@@ -14,7 +7,6 @@ import { GetMyOrdersInputSchema, GetMyOrdersOutputSchema } from '../../src/priva
 import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
-/** bitbank /v1/user/spot/active_orders のレスポンス型 */
 interface RawOrder {
 	order_id: number;
 	pair: string;
@@ -40,12 +32,10 @@ export default async function getMyOrders(args: { pair?: string; count?: number;
 	const client = getDefaultClient();
 
 	try {
-		// クエリパラメータを組み立て
 		const params: Record<string, string> = {};
 		if (pair) params.pair = pair;
 		if (count !== 100) params.count = String(count);
 
-		// ISO8601 → unix ms 変換（strict parse で不正日時を弾く）
 		if (since) {
 			const parsed = parseIso8601(since);
 			if (!parsed) {
@@ -68,19 +58,10 @@ export default async function getMyOrders(args: { pair?: string; count?: number;
 
 		const timestamp = nowIso();
 
-		// bitbank API の active_orders は稀に CANCELED_UNFILLED 等の非アクティブ
-		// ステータスを含めて返すケースがあるため、サーバー側でも保険として
-		// 「ユーザーから見てまだ生きている」注文のみに絞り込む。
-		// - INACTIVE: stop / stop_limit のトリガー前。user_cancelable: true で
-		//   bitbank アプリでも未約定注文として表示される。
-		// - UNFILLED: 通常の指値・成行で未約定。
-		// - PARTIALLY_FILLED: 部分約定。残量分はまだ生きている。
-		// - TRIGGERED: stop がトリガーされ、後続の指値/成行が処理待ち。
-		// FULLY_FILLED や CANCELED_* は終端状態なので除外する。
+		// active_orders は稀に CANCELED_UNFILLED 等の非アクティブな注文も返すので、ユーザーから見てまだ生きている注文だけに絞る（INACTIVE は stop のトリガー前、TRIGGERED は後続注文の処理待ち）。
 		const ACTIVE_STATUSES = new Set(['INACTIVE', 'UNFILLED', 'PARTIALLY_FILLED', 'TRIGGERED']);
 
-		// 注文データの整形。取得境界で pair を小文字化してから整形する
-		// （下の JPY 判定 `o.pair.includes('jpy')` が価格フォーマットを決める。`lib/pair-code.ts` 参照）。
+		// 下の JPY 判定（`o.pair.includes('jpy')`）が価格フォーマットを決めるので、取得境界で pair を小文字化してから整形する。
 		const orders = normalizePairCodes(rawData.orders)
 			.filter((o) => ACTIVE_STATUSES.has(o.status))
 			.map((o) => ({
@@ -103,7 +84,6 @@ export default async function getMyOrders(args: { pair?: string; count?: number;
 				triggered_at: o.triggered_at != null ? (toIsoMs(Number(o.triggered_at)) ?? String(o.triggered_at)) : undefined,
 			}));
 
-		// サマリー文字列の生成
 		const lines: string[] = [];
 		const pairLabel = pair ? formatPair(pair) : '全ペア';
 		lines.push(`アクティブ注文: ${pairLabel} ${orders.length}件`);
@@ -125,7 +105,6 @@ export default async function getMyOrders(args: { pair?: string; count?: number;
 				);
 			}
 
-			// 集計
 			const buyCount = orders.filter((o) => o.side === 'buy').length;
 			const sellCount = orders.filter((o) => o.side === 'sell').length;
 			lines.push('');
@@ -150,12 +129,10 @@ export default async function getMyOrders(args: { pair?: string; count?: number;
 
 		return GetMyOrdersOutputSchema.parse(ok(summary, data, meta));
 	} catch (err) {
-		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
 		return GetMyOrdersOutputSchema.parse(failPrivateToolError(err, '注文情報取得中に予期しないエラーが発生しました'));
 	}
 }
 
-// ── MCP ツール定義（tool-registry から自動収集） ──
 export const toolDef: ToolDefinition = {
 	name: 'get_my_orders',
 	description:

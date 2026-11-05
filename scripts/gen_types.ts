@@ -1,4 +1,3 @@
-// Generate .d.ts from Zod schemas in src/schemas.ts (TSX版)
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -21,13 +20,11 @@ chunks.push('  GetIndicatorsDataSchema,');
 chunks.push('  GetIndicatorsMetaSchema,');
 chunks.push("} from '../schemas.js';");
 
-// Enums and inputs
 chunks.push(section('Enums & Inputs'));
 chunks.push('export type CandleType = z.infer<typeof CandleTypeEnum>;');
 chunks.push('export type RenderChartSvgInput = z.infer<typeof RenderChartSvgInputSchema>;');
 chunks.push('export type RenderChartSvgOutput = z.infer<typeof RenderChartSvgOutputSchema>;');
 
-// Indicators
 chunks.push(section('Indicators DTOs'));
 chunks.push('export type ChartPayloadFromSchema = z.infer<typeof ChartPayloadSchema>;');
 chunks.push('export type GetIndicatorsDataFromSchema = z.infer<typeof GetIndicatorsDataSchema>;');

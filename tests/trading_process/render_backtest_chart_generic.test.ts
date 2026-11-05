@@ -216,7 +216,6 @@ describe('renderBacktestChartGeneric', () => {
 				panel: 'price',
 			};
 			const data = makeChartData({ overlays: [lineWithNaN] });
-			// Should not throw
 			const svg = renderBacktestChartGeneric(data, 'full');
 			expect(svg).toContain('</svg>');
 		});
@@ -240,7 +239,6 @@ describe('renderBacktestChartGeneric', () => {
 			const drawdown_curve: DrawdownPoint[] = candles.map((c) => ({ time: c.time, drawdown_pct: 0 }));
 			const data = makeChartData({ candles, trades: [trade], equity_curve, drawdown_curve });
 			const svg = renderBacktestChartGeneric(data, 'full');
-			// Entry marker (▲) and exit marker (▼)
 			expect(svg).toContain('▲');
 			expect(svg).toContain('▼');
 		});
@@ -356,7 +354,6 @@ describe('renderBacktestChartGeneric', () => {
 			const drawdown_curve: DrawdownPoint[] = candles.map((c) => ({ time: c.time, drawdown_pct: 0 }));
 			const data = makeChartData({ candles, equity_curve, drawdown_curve });
 			const svg = renderBacktestChartGeneric(data, 'default');
-			// B&H pct in legend should be positive
 			expect(svg).toContain('B&amp;H: +');
 		});
 

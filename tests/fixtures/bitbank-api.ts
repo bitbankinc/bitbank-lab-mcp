@@ -1,9 +1,5 @@
-/**
- * Bitbank API レスポンスのフィクスチャ集
- * ユニットテスト・E2Eテストの両方で再利用する
- */
+// ユニットテスト・E2E テストの両方で再利用する Bitbank API レスポンスのフィクスチャ。
 
-/** GET /{pair}/ticker — 正常レスポンス */
 export const tickerBtcJpy = {
 	success: 1,
 	data: {
@@ -19,13 +15,11 @@ export const tickerBtcJpy = {
 	},
 } as const;
 
-/** GET /{pair}/ticker — success:0 エラーレスポンス */
 export const tickerError = {
 	success: 0,
 	data: { code: 10000 },
 } as const;
 
-/** GET /{pair}/depth — 正常レスポンス（最小） */
 export const depthBtcJpy = {
 	success: 1,
 	data: {
@@ -44,19 +38,16 @@ export const depthBtcJpy = {
 	},
 } as const;
 
-/** GET /{pair}/depth — success:0 エラーレスポンス */
 export const depthError = {
 	success: 0,
 	data: { code: 20003 },
 } as const;
 
-/** GET /{pair}/candlestick — success:0 エラーレスポンス */
 export const candlesError = {
 	success: 0,
 	data: { code: 10000 },
 } as const;
 
-/** GET /{pair}/transactions — 正常レスポンス（最小） */
 export const transactionsBtcJpy = {
 	success: 1,
 	data: {
@@ -86,13 +77,6 @@ export const transactionsBtcJpy = {
 	},
 } as const;
 
-/**
- * OHLCV ジェネレーター
- * @param count 本数
- * @param intervalMs 間隔（ms）。デフォルト 1day
- * @param basePrice 開始価格。デフォルト 15,000,000
- * @param baseTs 開始タイムスタンプ。デフォルト 2024-03-08T00:00:00Z
- */
 export function generateOhlcv(count: number, intervalMs = 86400000, basePrice = 15000000, baseTs = 1709856000000) {
 	const rows: [string, string, string, string, string, number][] = [];
 	for (let i = 0; i < count; i++) {
@@ -122,13 +106,7 @@ export const candlesBtcJpy1day120 = {
 	},
 };
 
-/**
- * `Date.now()`（fake timers 含む）付近までカバーする 1day 120 本。
- *
- * 静的 `candlesBtcJpy1day120`（2024 起点）だと実行時点の期初始値が解決できず、
- * `buildPeriodPerformance` の始値欠損検出（#86）が誤発火する。`setupFetchMock` の
- * 既定はこちらにする。
- */
+/** 静的 `candlesBtcJpy1day120`（2024 起点）だと実行時点の期初始値が解決できず `buildPeriodPerformance` の始値欠損検出（#86）が誤発火するので、`setupFetchMock` の既定はこちらにする。 */
 export function candlesBtcJpy1day120Near(nowMs = Date.now()) {
 	const dayMs = 86400000;
 	const baseTs = nowMs - 119 * dayMs;
@@ -148,7 +126,6 @@ export const candlesBtcJpy5min = {
 	},
 };
 
-/** GET /tickers_jpy — 正常レスポンス（複数ペア） */
 export const tickersJpy = {
 	success: 1,
 	data: [

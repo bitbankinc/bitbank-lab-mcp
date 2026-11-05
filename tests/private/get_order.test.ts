@@ -1,8 +1,3 @@
-/**
- * get_order ツールのユニットテスト。
- * 注文詳細取得の成功・エラーハンドリングを検証する。
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertFail, assertOk } from '../_assertResult.js';
 import { mockBitbankError, mockBitbankSuccess } from '../fixtures/private-api.js';
@@ -27,7 +22,6 @@ function setupFetchMock(response: unknown, status = 200) {
 		.mockResolvedValue(new Response(JSON.stringify(response), { status })) as unknown as typeof fetch;
 }
 
-/** 注文レスポンスデータ */
 function orderResponse(overrides: Record<string, unknown> = {}) {
 	return {
 		order_id: 2001,
@@ -154,8 +148,7 @@ describe('get_order', () => {
 		const { default: getOrder } = await import('../../tools/private/get_order.js');
 		const readResult = await getOrder({ pair: 'btc_jpy', order_id: 2001 });
 
-		// 後続の cancel_order が同じ singleton client / 消費済み Response を踏まないよう
-		// モジュールキャッシュをリセットして fresh な client を再構築する
+		// 後続の cancel_order が同じ singleton client / 消費済み Response を踏まないよう、モジュールキャッシュをリセットする
 		vi.resetModules();
 		setupFetchMock(mockBitbankError(50009), 400);
 		const { generateToken } = await import('../../src/private/confirmation.js');
@@ -374,11 +367,7 @@ describe('get_order — handler (toolDef)', () => {
 	});
 });
 
-/**
- * API が返す pair は取得境界で小文字へ正規化する（`lib/pair-code.ts`）。
- * `data.order.pair` の小文字契約を保つのが目的で、表示・JPY 判定は引数の `pair`
- * （ユーザー入力）を使うため出力の他の部分は不変。防御的正規化（現行 API は小文字）。
- */
+/** data.order.pair を小文字契約に保つ（表示・JPY 判定は引数の pair を使うので出力の他の部分は変わらない）。 */
 describe('get_order — API pair の取得境界正規化', () => {
 	it('小文字レスポンスでは出力が変わらない（回帰なし）', async () => {
 		setupFetchMock(mockBitbankSuccess(orderResponse()));
@@ -406,12 +395,7 @@ describe('get_order — API pair の取得境界正規化', () => {
 	});
 });
 
-/**
- * ユーザー入力 pair の JPY 建て判定（`lib/pair-code.ts` の `isJpyQuotedPair`）。
- * `get_order` は表示・価格フォーマットを引数の `pair` から作るため、取得境界を通らない。
- * `BTC_JPY` 入力で円建て判定が外れると `data.order.pair` は小文字なのに価格だけ生文字列になる
- * ——`get_margin_positions` で入力側も直したのと同じ対称性の問題。
- */
+/** get_order は表示・価格フォーマットを引数の pair から作り取得境界を通らないので、BTC_JPY 入力でも円建て判定が外れないこと。 */
 describe('get_order — ユーザー入力 pair の JPY 判定', () => {
 	it('大文字入力でも価格が円フォーマットされる', async () => {
 		setupFetchMock(mockBitbankSuccess(orderResponse()));

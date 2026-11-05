@@ -1,12 +1,3 @@
-/**
- * get_order — 注文詳細を取得する Private API ツール。
- *
- * bitbank Private API `GET /v1/user/spot/order` を呼び出し、
- * 指定した注文IDの詳細情報を返す。
- *
- * ※ 約定・キャンセルから3ヶ月以上経過した注文は取得不可（エラー 50009）。
- */
-
 import { nowIso, toIsoMs } from '../../lib/datetime.js';
 import { formatOrderPositionLabel, formatPair, formatPrice } from '../../lib/formatter.js';
 import { isJpyQuotedPair, withNormalizedPair } from '../../lib/pair-code.js';
@@ -17,7 +8,6 @@ import { GetOrderInputSchema, GetOrderOutputSchema } from '../../src/private/sch
 import { failPrivateToolError } from '../../src/private/tool-error.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
-/** 注文情報を人間可読な文字列に整形 */
 function formatOrderSummary(o: OrderResponse, pair: string): string {
 	const sideLabel = o.side === 'buy' ? '買' : '売';
 	const posLabel = formatOrderPositionLabel(o.position_side);
@@ -51,8 +41,7 @@ export default async function getOrder(args: { pair: string; order_id: number })
 	const client = getDefaultClient();
 
 	try {
-		// 取得境界での pair 正規化（`lib/pair-code.ts`）。`data.order.pair` は小文字契約で返す。
-		// 表示・JPY 判定は引数の `pair`（ユーザー入力）を使うので、ここは出力契約のためだけ。
+		// `data.order.pair` は小文字契約で返す（表示・JPY 判定は引数の `pair` を使うので、この正規化は出力契約のためだけ）。
 		const rawOrder = withNormalizedPair(
 			await client.get<OrderResponse>('/v1/user/spot/order', {
 				pair,
@@ -76,7 +65,6 @@ export default async function getOrder(args: { pair: string; order_id: number })
 			),
 		);
 	} catch (err) {
-		// PrivateApiError は分類済み文言を素通し、未知エラーは err.message を伏せて汎用文に置換する。
 		return GetOrderOutputSchema.parse(failPrivateToolError(err, '注文情報取得中に予期しないエラーが発生しました'));
 	}
 }

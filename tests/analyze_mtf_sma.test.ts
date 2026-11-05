@@ -125,8 +125,6 @@ describe('analyze_mtf_sma', () => {
 		expect(mockedAnalyzeSmaSnapshot).toHaveBeenCalledTimes(2);
 	});
 
-	// ── 上流 warning の伝播 ──────────────────────────────
-
 	function smaSnapshotOk(
 		alignment: 'bullish' | 'bearish' | 'mixed' | 'unknown',
 		metaExtra: { warning?: string; warnings?: string[] } = {},
