@@ -18,6 +18,7 @@
     "mcp",
     "botters-lab"
   ],
+  "skills": "./plugins/bitbank-lab-mcp/skills/",
   "mcpServers": {
     "bitbank": {
       "command": "npx",
