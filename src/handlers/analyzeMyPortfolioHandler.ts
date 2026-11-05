@@ -294,13 +294,22 @@ function buildPerformanceLines(label: string, p: PeriodPerformance): string[] {
 	if (p.net_flow_jpy !== 0 || p.withdrawal_fee_jpy > 0) {
 		const adjSign = p.adjusted_change_jpy >= 0 ? '+' : '';
 		lines.push(
-			`  入出金調整後: ${adjSign}${formatYenAmount(p.adjusted_change_jpy)}${p.adjusted_change_pct != null ? ` (${formatPercent(p.adjusted_change_pct, { sign: true })})` : ''}`,
+			`  入出金調整後: ${adjSign}${formatYenAmount(p.adjusted_change_jpy)}${p.adjusted_change_pct != null ? ` (期初評価額比 ${formatPercent(p.adjusted_change_pct, { sign: true })})` : ''}`,
 		);
 		const flowSign = p.net_flow_jpy >= 0 ? '+' : '';
 		lines.push(`  純入出金（元本）: ${flowSign}${formatYenAmount(p.net_flow_jpy)}`);
 		if (p.withdrawal_fee_jpy > 0) {
 			lines.push(`  出金手数料: -${formatYenAmount(p.withdrawal_fee_jpy)}`);
 		}
+	}
+	if (p.staking_reward_jpy != null) {
+		lines.push(
+			`  ステーキング報酬: +${formatYenAmount(p.staking_reward_jpy)}（入庫日の価格で換算。元本ではなく成果として増減に含む）`,
+		);
+	} else if (p.staking_reward_unpriced_assets) {
+		lines.push(
+			`  ステーキング報酬: ${p.staking_reward_unpriced_assets.map((a) => a.toUpperCase()).join(', ')} の価格を解決できず額を出せません（成果として増減には含まれています）`,
+		);
 	}
 	return lines;
 }
@@ -511,9 +520,15 @@ function buildAccountReturnLines(dwSummary: DepositWithdrawalSummary): string[] 
 				`  暗号資産出庫の評価: -${formatYenAmount(dwSummary.crypto_withdrawal_estimated_jpy)}（${valuedWithdrawalCount}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_withdrawal_valuation?.basis ?? 'current_price_fallback']}）`,
 			);
 		}
+		if (dwSummary.staking_reward_estimated_jpy) {
+			lines.push(
+				`  うちステーキング報酬: ${formatYenAmount(dwSummary.staking_reward_estimated_jpy)}（${dwSummary.staking_reward_count ?? 0}件。元本ではないので純投入額から除き、リターンに含めています）`,
+			);
+		}
 		// 内訳の式は実際に載っている項だけを並べる（0 円の項を書くと読み手が総額を追えない）。
 		const netInvestedTerms = [
 			dwSummary.crypto_deposit_estimated_jpy ? '+ 暗号資産入庫の評価額' : '',
+			dwSummary.staking_reward_estimated_jpy ? '- ステーキング報酬の評価額' : '',
 			dwSummary.crypto_withdrawal_estimated_jpy ? '- 暗号資産出庫の評価額' : '',
 		].filter(Boolean);
 		lines.push(

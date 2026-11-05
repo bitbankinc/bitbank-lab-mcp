@@ -1,7 +1,7 @@
 {
   "repo": "bitbankinc/bitbank-api-docs",
   "files": {
-    "rest-api_JP.md": { "commit": "71980979d7da6c0fc591d5031d54e4469a8ede2f", "fetched_at": "2026-06-08" },
-    "rest-api.md": { "commit": "71980979d7da6c0fc591d5031d54e4469a8ede2f", "fetched_at": "2026-06-08" }
+    "rest-api_JP.md": { "commit": "17b2f22feaf3f9b1f6901fa2c1f212e9203cd097", "fetched_at": "2026-11-05" },
+    "rest-api.md": { "commit": "0badd68019646171826625b074cfef4235c3e713", "fetched_at": "2026-11-05" }
   }
 }
