@@ -407,8 +407,11 @@ const DepositWithdrawalSummarySchema = z
 			.number()
 			.optional()
 			.describe(
-				'crypto_deposit_estimated_jpy のうちステーキング報酬の分。換算方法は crypto_deposit_estimated_jpy と同じで、価格を解決できなかった報酬は含まない。net_jpy_invested からはこの額を除く。ステーキング報酬が無い / 全件で価格を解決できなかった場合は undefined',
+				'crypto_deposit_estimated_jpy のうちステーキング報酬の分。換算方法は crypto_deposit_estimated_jpy と同じで、価格を解決できた報酬だけの合計（件数と換算方式は staking_reward_valuation。staking_reward_count より少なければ残りは未算入）。net_jpy_invested からはこの額を除く。ステーキング報酬が無い / 全件で価格を解決できなかった場合は undefined',
 			),
+		staking_reward_valuation: FlowValuationSchema.optional().describe(
+			'staking_reward_estimated_jpy の換算方式の内訳。ステーキング報酬が無い / 全件で価格を解決できなかった場合は undefined',
+		),
 	})
 	.optional()
 	.describe(
@@ -617,7 +620,7 @@ const PeriodPerformanceSchema = z
 			.array(z.string())
 			.optional()
 			.describe(
-				'ステーキング報酬を入庫日価格・現在価格のいずれでも換算できなかった暗号資産シンボル一覧（小文字・昇順）。この場合 staking_reward_jpy は出さない。報酬は net_flow_jpy に入らないので adjusted_change_jpy には影響しない。該当なしは undefined',
+				'ステーキング報酬を入庫日価格・現在価格のいずれでも換算できなかった暗号資産シンボル一覧（小文字・昇順）。この場合 staking_reward_jpy は出さない。報酬は net_flow_jpy に入らないので純入出金はずれない。ただし現在価格も無いので、保有中なら current_value_jpy からも抜けており（unpriced_current_assets に載る）、その分 change_jpy / adjusted_change_jpy に報酬が入っていない。該当なしは undefined',
 			),
 		unpriced_start_assets: z
 			.array(z.string())
@@ -849,7 +852,7 @@ export const AnalyzeMyPortfolioMetaSchema = z.object({
 		.nonnegative()
 		.optional()
 		.describe(
-			'入出庫日の日次価格を解決できず現在価格で仮評価した入出庫の件数。1 件以上あると deposit_withdrawal_summary / *_dw_summary / *_performance.net_flow_jpy の該当分が相場と連動して動く。該当なしのときは undefined。この件数は「年 chunk の取得上限で切り落とした」「取得に失敗した」「上場前で本当に価格が無い」を合算した値なので、再実行で解消しうるかは本フィールドだけでは判断できない（内訳は flowPriceChunkTruncated* / flowPriceChunkFailed*）。',
+			'入出庫日の日次価格を解決できず現在価格で仮評価した入出庫の件数。1 件以上あると deposit_withdrawal_summary / *_dw_summary / *_performance.net_flow_jpy の該当分が相場と連動して動く。ステーキング報酬（入金種別 STAKING）も数えるが、その分は net_flow_jpy には入らず、*_performance.staking_reward_jpy と deposit_withdrawal_summary.staking_reward_estimated_jpy の側で動く。該当なしのときは undefined。この件数は「年 chunk の取得上限で切り落とした」「取得に失敗した」「上場前で本当に価格が無い」を合算した値なので、再実行で解消しうるかは本フィールドだけでは判断できない（内訳は flowPriceChunkTruncated* / flowPriceChunkFailed*）。',
 		),
 	flowPriceChunkTruncatedDepositCount: z
 		.number()

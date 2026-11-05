@@ -613,6 +613,7 @@ export function calcDepositWithdrawalSummary(
 	const stakingCount = cryptoDeposits.filter(isStakingReward).length;
 	let stakingEstimatedJpy = 0;
 	let hasStakingEstimate = false;
+	const stakingValuation = new FlowValuationCounter();
 	for (const d of cryptoDeposits) {
 		const amount = Number(d.amount);
 		if (!Number.isFinite(amount) || amount <= 0) continue;
@@ -623,6 +624,7 @@ export function calcDepositWithdrawalSummary(
 		hasEstimate = true;
 		if (isStakingReward(d)) {
 			stakingEstimatedJpy += amount * resolved.price;
+			stakingValuation.count(resolved.basis);
 			hasStakingEstimate = true;
 		}
 	}
@@ -670,6 +672,8 @@ export function calcDepositWithdrawalSummary(
 	// 該当なしのときはキーごと省き、暗号資産入出庫が無い口座の出力を従来と JSON 一致させる。
 	if (stakingCount > 0) summary.staking_reward_count = stakingCount;
 	if (hasStakingEstimate) summary.staking_reward_estimated_jpy = Math.round(stakingEstimatedJpy);
+	const stakingBreakdown = stakingValuation.toBreakdown();
+	if (stakingBreakdown) summary.staking_reward_valuation = stakingBreakdown;
 	const valuation = depositValuation.toBreakdown();
 	if (valuation) summary.crypto_deposit_valuation = valuation;
 	const wdValuation = withdrawalValuation.toBreakdown();

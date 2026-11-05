@@ -76,9 +76,9 @@ export default async function getMarginPositions(args: { pair?: string }) {
 			const known = NOTICE_LABELS[n.what];
 			const label = known != null ? `${known}（${n.what}）` : n.what;
 			if (n.what === 'settled') {
-				// settled は金額・期日が常に null なので、代わりに発生日時を出す。
+				// settled は完了した精算なので ⚠ を付けない（get_margin_status も SETTLED を警告にしない）。金額・期日は常に null なので発生日時を出す。
 				const occurred = n.occurred_at != null ? (toIsoMs(n.occurred_at) ?? String(n.occurred_at)) : '—';
-				lines.push(`⚠ ${label}（発生: ${occurred}）`);
+				lines.push(`通知: ${label}（発生: ${occurred}）`);
 			} else {
 				const dueDate = n.due_date_at != null ? (toIsoMs(n.due_date_at) ?? String(n.due_date_at)) : '—';
 				const amountText = n.amount != null ? `${formatPrice(Number(n.amount))} 円` : '—';

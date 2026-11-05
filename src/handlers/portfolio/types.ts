@@ -188,6 +188,7 @@ export interface DepositWithdrawalSummary {
 	crypto_withdrawal_valuation?: FlowValuationBreakdown;
 	staking_reward_count?: number;
 	staking_reward_estimated_jpy?: number;
+	staking_reward_valuation?: FlowValuationBreakdown;
 }
 
 export interface PeriodDWSummary {

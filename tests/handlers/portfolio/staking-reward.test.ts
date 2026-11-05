@@ -166,8 +166,26 @@ describe('calcDepositWithdrawalSummary — ステーキング報酬', () => {
 		expect(summary.crypto_deposit_estimated_jpy).toBe(400_000);
 		expect(summary.staking_reward_count).toBe(1);
 		expect(summary.staking_reward_estimated_jpy).toBe(400_000);
+		expect(summary.staking_reward_valuation).toEqual({
+			deposit_date_price_count: 0,
+			current_price_fallback_count: 1,
+			basis: 'current_price_fallback',
+		});
 		expect(summary.net_jpy_invested).toBe(1_000_000);
 		expect(summary.account_return_jpy).toBe(500_000);
+	});
+
+	it('一部の報酬だけ価格を解決できたとき、件数は全件・換算の内訳は解決できた分だけを数える', () => {
+		const dw = dwOf([
+			deposit({ uuid: 'eth-staking', amount: '1', category: 'STAKING' }),
+			deposit({ uuid: 'dot-staking', asset: 'dot', amount: '3', category: 'STAKING' }),
+		]);
+		const summary = calcDepositWithdrawalSummary(dw, 400_000, currentPriceOnly(ETH_PRICE));
+
+		expect(summary.staking_reward_count).toBe(2);
+		expect(summary.staking_reward_estimated_jpy).toBe(400_000);
+		expect(summary.staking_reward_valuation?.current_price_fallback_count).toBe(1);
+		expect(summary.net_jpy_invested).toBe(0);
 	});
 
 	it('ステーキング報酬が無ければキーごと出さない', () => {

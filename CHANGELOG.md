@@ -15,18 +15,18 @@
 ### Added
 
 - `get_my_deposit_withdrawal`：入金種別 `category` を出力に追加。本文の明細には `NORMAL` 以外の種別を出す（issue #177）。
-- `analyze_my_portfolio`：期間ごとのステーキング報酬の円換算額 `staking_reward_jpy`（換算できない報酬があるときは `staking_reward_unpriced_assets`）と、`deposit_withdrawal_summary` の `staking_reward_count` / `staking_reward_estimated_jpy` を追加（issue #177）。
+- `analyze_my_portfolio`：期間ごとのステーキング報酬の円換算額 `staking_reward_jpy`（換算できない報酬があるときは `staking_reward_unpriced_assets`）と、`deposit_withdrawal_summary` の `staking_reward_count` / `staking_reward_estimated_jpy` / `staking_reward_valuation` を追加（issue #177）。
 - `get_margin_positions`：建玉の `locked_amount`（決済注文に充てている数量）を出力に追加し、正のときは本文にも出す（issue #177）。
 
 ### Fixed
 
 - Codex の plugin で、同梱の Skill（`investment-onboarding`）が読み込まれていなかった。Codex は manifest に `skills` が無いと plugin 直下の `skills/` だけを探すが、0.5.2 で plugin 本体を `plugins/bitbank-lab-mcp/` に移していた。Codex と Cursor の manifest に `skills` を足した（issue #408）。
-- `get_margin_positions`：追証などの通知の種別を、API の値（`margin_call` / `debt` / `settled`）のまま出していた。日本語の種別を添え、`settled` では常に空の金額・期日の代わりに発生日時を出す（issue #177）。
+- `get_margin_positions`：追証などの通知の種別を、API の値（`margin_call` / `debt` / `settled`）のまま出していた。日本語の種別を添える。完了した精算の `settled` には `⚠` を付けず、常に空の金額・期日の代わりに発生日時を出す（issue #177）。
 
 ### Schema
 
 - `DepositItemSchema` に `category`、`MarginPositionSchema` に `locked_amount`（いずれも optional）を追加。
-- `*_performance` に `staking_reward_jpy` / `staking_reward_unpriced_assets`、`DepositWithdrawalSummarySchema` に `staking_reward_count` / `staking_reward_estimated_jpy`（いずれも optional）を追加。
+- `*_performance` に `staking_reward_jpy` / `staking_reward_unpriced_assets`、`DepositWithdrawalSummarySchema` に `staking_reward_count` / `staking_reward_estimated_jpy` / `staking_reward_valuation`（いずれも optional）を追加。
 - `adjusted_change_pct` の description に、分母が期初評価額でフロー加重の収益率ではないことを明記した（issue #111）。
 
 ### Internal

@@ -269,7 +269,7 @@ describe('get_margin_positions', () => {
 		expect(result.summary.split('\n')[0]).toBe(`⚠ ${label}: ¥100,000 円（期日: 2024-03-11T23:33:20.000Z）`);
 	});
 
-	it('notice.what=settled は金額・期日（どちらも null）の代わりに発生日時を出す', async () => {
+	it('notice.what=settled は ⚠ を付けず、金額・期日（どちらも null）の代わりに発生日時を出す', async () => {
 		const settled = {
 			...rawMarginPositionsResponse,
 			notice: { what: 'settled', occurred_at: 1710000000000, amount: null, due_date_at: null },
@@ -282,7 +282,8 @@ describe('get_margin_positions', () => {
 		assertOk(result);
 		expect(result.meta.hasNotice).toBe(true);
 		const firstLine = result.summary.split('\n')[0];
-		expect(firstLine).toBe('⚠ 精算済み（settled）（発生: 2024-03-09T16:00:00.000Z）');
+		expect(firstLine).toBe('通知: 精算済み（settled）（発生: 2024-03-09T16:00:00.000Z）');
+		expect(result.summary).not.toContain('⚠');
 		expect(firstLine).not.toContain('期日');
 	});
 

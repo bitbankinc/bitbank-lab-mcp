@@ -1605,7 +1605,50 @@ describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', ()
 		expect(dw.staking_reward_count).toBe(1);
 		expect(dw.net_jpy_invested).toBe(dw.total_jpy_deposited - dw.total_jpy_withdrawn);
 		expect(result.summary).toContain(`ステーキング報酬: +${reward.toLocaleString('ja-JP')}円`);
-		expect(result.summary).toContain('うちステーキング報酬');
+		expect(result.summary).toContain('ステーキング報酬 1件（暗号資産入庫の内数）');
+		expect(result.summary).toContain('リターンに含めています');
+	});
+
+	it('口座全体リターンを算出できない（純投入額が 0）ときも、ステーキング報酬の行を出す', async () => {
+		const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
+		const inPeriodMs = Date.UTC(2026, 4, 16, 1, 0, 0, 0);
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		setupFetchMock({
+			deposits: {
+				deposits: [
+					{
+						uuid: 'dep-eth-staking',
+						asset: 'eth',
+						amount: '0.01',
+						status: 'DONE',
+						category: 'STAKING',
+						found_at: inPeriodMs,
+						confirmed_at: inPeriodMs,
+					},
+				],
+			},
+			withdrawals: { withdrawals: [] },
+		});
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		const dw = requireDefined(result.data.deposit_withdrawal_summary, 'result.data.deposit_withdrawal_summary');
+		expect(dw.net_jpy_invested).toBe(0);
+		expect(dw.account_return_jpy).toBeUndefined();
+		expect(result.summary).toContain('口座全体リターン: 算出不可');
+		const stakingLine = result.summary
+			.split('\n')
+			.find((l) => l.includes('ステーキング報酬 1件（暗号資産入庫の内数）'));
+		expect(stakingLine).toBeDefined();
+		expect(stakingLine).toContain('純投入額から除いています');
+		expect(stakingLine).not.toContain('リターンに含めています');
 	});
 
 	it('include_pnl=false: 入出金 API を余計に呼ばない（呼び出し増の回帰防止）', async () => {
