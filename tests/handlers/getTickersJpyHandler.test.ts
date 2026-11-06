@@ -153,7 +153,7 @@ describe('toolDef handler', () => {
 		);
 		const res = await toolDef.handler({ includeRanked: false, sortBy: 'name', order: 'asc', limit: 1 });
 		const { content, structuredContent } = asMcp<{ data: Record<string, unknown> }>(res);
-		expect(structuredContent.data).toHaveProperty('items');
+		expect(structuredContent.data.items).toHaveLength(2);
 		expect(structuredContent.data).not.toHaveProperty('ranked');
 		const text = content[0].text;
 		expect(text).not.toContain('top1');

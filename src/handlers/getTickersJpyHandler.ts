@@ -58,7 +58,7 @@ const InputSchema = z.object({
 		.optional()
 		.default(true)
 		.describe(
-			'true（既定）: sortBy / order / limit で並べた上位を本文に出し、data.ranked も返す。false: data.ranked を返さず、本文は全ペア数と API 順の先頭 5 件だけ（sortBy / order / limit は使わない）',
+			'data.items はどちらでも全ペア。true（既定）: sortBy / order / limit で並べた上位を本文と data.ranked に出す。false: data.ranked を返さず、本文は全ペア数と API 順の先頭 5 件だけ（sortBy / order / limit は使わない）',
 		),
 	sortBy: z.enum(['change24h', 'volume', 'name']).optional().default('change24h'),
 	order: z.enum(['asc', 'desc']).optional().default('desc'),
