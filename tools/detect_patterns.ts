@@ -98,7 +98,7 @@ const REVERSAL_PATTERN_TYPES = new Set([
 const PIPELINE_REJECTION_REASONS = new Set(['reversal_history_insufficient', TRIPLE_HS_EXCLUSION_REASON]);
 
 // identifier は開始日までしか持たない（#200）ので、同じ日に始まる同種のパターンが並ぶとぶつかる。並べた後の 2 つ目以降に連番を付けて、結果の中で一意にする。
-function uniquifyDiagramIdentifiers(patterns: DeduplicablePattern[]): DeduplicablePattern[] {
+export function uniquifyDiagramIdentifiers(patterns: DeduplicablePattern[]): DeduplicablePattern[] {
 	const seen = new Map<string, number>();
 	return patterns.map((p) => {
 		const diagram = p.structureDiagram as PatternEntry['structureDiagram'];

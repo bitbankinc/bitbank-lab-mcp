@@ -11,6 +11,7 @@
 
 - `analyze_my_portfolio`：ステーキング報酬（入金履歴の `category` が `STAKING` の入庫）を、元本の入金ではなく成果として扱う。`*_performance.net_flow_jpy`、資産推移の `flow_jpy`、`deposit_withdrawal_summary.net_jpy_invested` から外す。そのためステーキング報酬のある口座では、`adjusted_change_jpy` と `account_return_*` が報酬の分だけ大きくなる。数量の復元と取得原価（入庫日の価格）は変わらない。`category` を返さない入庫は従来どおり元本として扱う（issue #177）。
 - `analyze_my_portfolio`：本文の入出金調整後の率に「期初評価額比」と添えた（issue #111）。
+- `detect_patterns`：H&S（三尊）にも、逆 H&S と同じ肩の深さの判定を入れた。左右の肩がそれぞれ、隣の谷から頭の深さの 20% 以上離れていない候補は `shoulder_depth_insufficient` で落とす。肩がネックラインのすぐ上にしか無い V 字の途中を三尊と読まないため。手元の実データ（1hour）では、落ちた 97 件のうち 96 件がブレイク前の `near_completion`、1 件が `invalid` で、ネックラインを抜けた `completed` の H&S は落ちなかった（issue #412）。
 
 ### Added
 

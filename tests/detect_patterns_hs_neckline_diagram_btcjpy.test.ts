@@ -1,4 +1,4 @@
-// 実データ A（`btc_jpy` `1day`）の窓先頭 relaxed H&S が履歴不足で出力から除外されることをパイプライン全体で固定する（構造図とネックラインの値一致は `tests/patterns/hs-neckline-diagram-consistency.test.ts` が見る。issue #297）。
+// 実データ A（`btc_jpy` `1day`）の窓先頭 relaxed H&S が出力に出ないことをパイプライン全体で固定する（構造図とネックラインの値一致は `tests/patterns/hs-neckline-diagram-consistency.test.ts` が見る。issue #297）。
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../tools/analyze_indicators.js', () => ({ default: vi.fn() }));
@@ -24,15 +24,22 @@ function mockCandles() {
 	);
 }
 
-describe('detect_patterns（実データ A / btc_jpy 1day）: 窓先頭の relaxed H&S を履歴不足で除外（issue #297）', () => {
-	it('data.patterns 側: 窓先頭の relaxed H&S は履歴不足として除外される', async () => {
+describe('detect_patterns（実データ A / btc_jpy 1day）: 窓先頭の relaxed H&S を出力しない（issue #297）', () => {
+	it('data.patterns 側: 窓先頭の relaxed H&S は肩の深さで落ち、出力に出ない', async () => {
 		mockCandles();
 		const res = await detectPatterns('btc_jpy', '1day', 90, { ...RELAXED_OPTS });
 		assertOk(res);
 
 		const hs = (res.data.patterns as Array<Record<string, unknown>>).filter((p) => p.type === 'head_and_shoulders');
 		expect(hs).toHaveLength(0);
-		expect((res.meta.reduction as { reversalHistoryExcluded: number }).reversalHistoryExcluded).toBeGreaterThan(0);
+		// 履歴不足の段より手前で落ちるので、窓先頭の候補は reversal_history_insufficient に届かない（H&S 系の履歴不足は detect_patterns_triple_hs_exclusion が見る）。
+		const candidates = (res.meta.debug as { candidates: Array<{ type: string; reason?: string; indices?: number[] }> })
+			.candidates;
+		const windowHead = candidates.filter(
+			(c) => c.type === 'head_and_shoulders' && c.indices?.join('-') === '9-13-17-20-24',
+		);
+		expect(windowHead.map((c) => c.reason)).toContain('shoulder_depth_insufficient');
+		expect(candidates.some((c) => c.type === 'head_and_shoulders' && c.reason === 'fallback_relaxed')).toBe(false);
 	});
 
 	it('content 側: view=full の内訳に履歴不足段を出す', async () => {

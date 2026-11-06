@@ -1,29 +1,49 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import { uniquifyDiagramIdentifiers } from '../tools/detect_patterns.js';
+import type { DeduplicablePattern } from '../tools/patterns/types.js';
 
-vi.mock('../tools/analyze_indicators.js', () => ({ default: vi.fn() }));
+// 手元の実データには同じ日に始まる同種のパターンが並ぶ入力が無いので、関数を直接呼ぶ。
+function withDiagram(type: string, identifier: string): DeduplicablePattern {
+	return { type, structureDiagram: { svg: '<svg/>', artifact: { identifier, title: identifier } } };
+}
 
-import analyzeIndicators from '../tools/analyze_indicators.js';
-import detectPatterns from '../tools/detect_patterns.js';
-import { asMockResult, assertOk } from './_assertResult.js';
-import { buildBtcJpy1hour202608Candles } from './fixtures/btc_jpy_1hour_2026_08.js';
+function idsOf(patterns: DeduplicablePattern[]): Array<string | undefined> {
+	return patterns.map(
+		(p) => (p as { structureDiagram?: { artifact?: { identifier?: string } } }).structureDiagram?.artifact?.identifier,
+	);
+}
 
 describe('detect_patterns: 構造図の identifier', () => {
-	it('同じ日に始まる同種のパターンが並んでも、結果の中で identifier がぶつからない', async () => {
-		// 1hour の実データで、2026-08-21 に始まる H&S が 2 つ（完成と形成中）出る。
-		const candles = buildBtcJpy1hour202608Candles();
-		vi.mocked(analyzeIndicators).mockResolvedValueOnce(
-			asMockResult({ ok: true, summary: 'ok', data: { chart: { candles } } }),
-		);
+	it('同じ日に始まる同種のパターンが並んでも、結果の中で identifier がぶつからない', () => {
+		const out = uniquifyDiagramIdentifiers([
+			withDiagram('head_and_shoulders', 'head_and_shoulders-diagram-2026-08-21'),
+			withDiagram('double_top', 'double_top-diagram-2026-08-21'),
+			withDiagram('head_and_shoulders', 'head_and_shoulders-diagram-2026-08-21'),
+			{ type: 'rising_wedge' },
+			withDiagram('head_and_shoulders', 'head_and_shoulders-diagram-2026-08-21'),
+		]);
 
-		const res = await detectPatterns('btc_jpy', '1hour', 365, { includeForming: true });
-		assertOk(res);
+		expect(idsOf(out)).toEqual([
+			'head_and_shoulders-diagram-2026-08-21',
+			'double_top-diagram-2026-08-21',
+			'head_and_shoulders-diagram-2026-08-21-2',
+			undefined,
+			'head_and_shoulders-diagram-2026-08-21-3',
+		]);
+	});
 
-		const ids = res.data.patterns.flatMap((p) => {
-			const id = (p as { structureDiagram?: { artifact?: { identifier?: string } } }).structureDiagram?.artifact
-				?.identifier;
-			return id ? [id] : [];
+	it('連番を付けるのは identifier だけで、元のパターンは書き換えない', () => {
+		const input = [
+			withDiagram('head_and_shoulders', 'head_and_shoulders-diagram-2026-08-21'),
+			withDiagram('head_and_shoulders', 'head_and_shoulders-diagram-2026-08-21'),
+		];
+		const out = uniquifyDiagramIdentifiers(input);
+
+		expect(idsOf(input)).toEqual(['head_and_shoulders-diagram-2026-08-21', 'head_and_shoulders-diagram-2026-08-21']);
+		expect(out[0]).toBe(input[0]);
+		expect(out[1].structureDiagram).toMatchObject({
+			svg: '<svg/>',
+			artifact: { title: 'head_and_shoulders-diagram-2026-08-21' },
 		});
-		expect(ids).toEqual(['head_and_shoulders-diagram-2026-08-21', 'head_and_shoulders-diagram-2026-08-21-2']);
-		expect(new Set(ids).size).toBe(ids.length);
 	});
 });
