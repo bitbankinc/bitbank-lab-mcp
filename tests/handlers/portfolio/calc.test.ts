@@ -1312,18 +1312,16 @@ describe('buildAccountPnl', () => {
 		expect(result.total).toBe(1234);
 	});
 
-	/** #72: `_cost` サフィックス無しの旧フィールドは alias として同じ正値を出し続ける（削除目標は `DEPRECATED_FIELD_REMOVAL_TARGET`）。 */
-	it('旧フィールド margin_interest / margin_fee は新フィールドと同じ正値を返す（alias）', () => {
+	it('旧フィールド margin_interest / margin_fee は出さない（#72 の別名は 0.7.0 で削除）', () => {
 		const result = buildAccountPnl(1000, {
 			margin_realized_pnl: 500,
 			margin_interest_cost: 100,
 			margin_fee_cost: 50,
 		});
-		expect(result.margin_interest).toBe(result.margin_interest_cost);
-		expect(result.margin_fee).toBe(result.margin_fee_cost);
-		// alias も「コスト = 正値」のまま（負値に反転させない）
-		expect(result.margin_interest).toBe(100);
-		expect(result.margin_fee).toBe(50);
+		expect(result).not.toHaveProperty('margin_interest');
+		expect(result).not.toHaveProperty('margin_fee');
+		expect(result.margin_interest_cost).toBe(100);
+		expect(result.margin_fee_cost).toBe(50);
 	});
 
 	/** JSON を直読みする消費者が `_cost` を引き算して total を再現できること。足し込むと符号が反転する（#72 の症状）ので、その向きも固定する。 */
@@ -1393,8 +1391,6 @@ describe('buildPeriodAccountPnl', () => {
 		);
 		expect(result.margin_interest_cost).toBe(15);
 		expect(result.margin_fee_cost).toBe(75);
-		expect(result.margin_interest).toBe(15);
-		expect(result.margin_fee).toBe(75);
 		const spot = definedAmount(result.spot_realized_pnl, 'spot_realized_pnl');
 		expect(result.total).toBe(spot + result.margin_realized_pnl - result.margin_interest_cost - result.margin_fee_cost);
 		expect(result.total).toBe(410);

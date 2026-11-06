@@ -212,9 +212,17 @@ async function collectContentByView<V extends string>(
 	return out;
 }
 
-const runFlow = (view: string, bucketsN = 2) => {
+const runFlow = (view: string, bucketsN = 2, nonZeroOnly?: boolean) => {
 	mockTransactions();
-	return flowMetricsTool.handler({ pair: 'btc_jpy', limit: 5, date: '20240101', bucketMs: 60_000, view, bucketsN });
+	return flowMetricsTool.handler({
+		pair: 'btc_jpy',
+		limit: 5,
+		date: '20240101',
+		bucketMs: 60_000,
+		view,
+		bucketsN,
+		nonZeroOnly,
+	});
 };
 
 // 7 件にするのは `detailed`（上位 5 件）⊊ `full`（全件）を成立させるため。5 件以下だと両者が同じ集合になり、包含テストが自明に通ってしまう。
@@ -444,11 +452,9 @@ describe('階梯上の view の content は下位 view の上位集合（§3-2 �
 		vi.restoreAllMocks();
 	});
 
-	// `buckets` / `compact` は deprecated alias だが、alias 期間中は旧値を送るクライアントの content も階梯規約を満たしている必要があるので、旧値のまま呼ぶ。
-
-	it('get_flow_metrics: 定型要素が summary ⊆ buckets ⊆ full', async () => {
-		const byView = await collectContentByView(['summary', 'buckets', 'full'] as const, (view) => runFlow(view));
-		const [summary, buckets, full] = [byView.get('summary'), byView.get('buckets'), byView.get('full')] as string[];
+	it('get_flow_metrics: 定型要素が summary ⊆ detailed ⊆ full', async () => {
+		const byView = await collectContentByView(['summary', 'detailed', 'full'] as const, (view) => runFlow(view));
+		const [summary, detailed, full] = [byView.get('summary'), byView.get('detailed'), byView.get('full')] as string[];
 
 		// 抽出が空振り（空集合同士で自明に通る）していないことを先に固定する
 		const summaryElements = fixedElements(summary);
@@ -456,33 +462,33 @@ describe('階梯上の view の content は下位 view の上位集合（§3-2 �
 		expect(summaryElements).toContain('pair=BTC_JPY');
 		expect([...summaryElements].some((e) => e.startsWith('lastValue='))).toBe(true);
 
-		expectSupersetOf(fixedElements(buckets), fixedElements(summary), 'buckets ⊇ summary');
-		expectSupersetOf(fixedElements(full), fixedElements(buckets), 'full ⊇ buckets');
+		expectSupersetOf(fixedElements(detailed), fixedElements(summary), 'detailed ⊇ summary');
+		expectSupersetOf(fixedElements(full), fixedElements(detailed), 'full ⊇ detailed');
 	});
 
-	it('get_flow_metrics: バケット行のキー集合が summary ⊆ buckets ⊆ full', async () => {
-		const byView = await collectContentByView(['summary', 'buckets', 'full'] as const, (view) => runFlow(view));
+	it('get_flow_metrics: バケット行のキー集合が summary ⊆ detailed ⊆ full', async () => {
+		const byView = await collectContentByView(['summary', 'detailed', 'full'] as const, (view) => runFlow(view));
 		const keys = {
 			summary: bucketRowKeys(byView.get('summary') as string),
-			buckets: bucketRowKeys(byView.get('buckets') as string),
+			detailed: bucketRowKeys(byView.get('detailed') as string),
 			full: bucketRowKeys(byView.get('full') as string),
 		};
 
 		expect(keys.summary.size).toBe(0);
-		expect(keys.buckets.size).toBe(2);
+		expect(keys.detailed.size).toBe(2);
 		expect(keys.full.size).toBe(5);
-		expectSupersetOf(keys.buckets, keys.summary, 'buckets ⊇ summary（バケット行）');
-		expectSupersetOf(keys.full, keys.buckets, 'full ⊇ buckets（バケット行）');
+		expectSupersetOf(keys.detailed, keys.summary, 'detailed ⊇ summary（バケット行）');
+		expectSupersetOf(keys.full, keys.detailed, 'full ⊇ detailed（バケット行）');
 	});
 
-	it('get_flow_metrics: buckets / full で最終約定価格・スパイク詳細・4 行フッタが消えない（P3 の回帰）', async () => {
-		const byView = await collectContentByView(['summary', 'buckets', 'full'] as const, (view) => runFlow(view));
+	it('get_flow_metrics: detailed / full で最終約定価格・スパイク詳細・4 行フッタが消えない（P3 の回帰）', async () => {
+		const byView = await collectContentByView(['summary', 'detailed', 'full'] as const, (view) => runFlow(view));
 		const summary = byView.get('summary') as string;
 
 		// フィクスチャが実際にスパイクを含んでいること（含まなければ以下の assert は無意味）
 		expect(summary).toContain('スパイク1件:');
 
-		for (const view of ['buckets', 'full'] as const) {
+		for (const view of ['detailed', 'full'] as const) {
 			const text = byView.get(view) as string;
 			// 最終約定価格（formatSummary の 中値=）
 			expect(text, `view=${view}`).toContain('中値=5,000,400円');
@@ -496,13 +502,13 @@ describe('階梯上の view の content は下位 view の上位集合（§3-2 �
 		}
 	});
 
-	it('get_flow_metrics: 取得層 ⚠️/ℹ️ と計算層 ⚠️ の注記行が buckets / full でも残る', async () => {
-		const byView = await collectContentByView(['summary', 'buckets', 'full'] as const, (view) => runFlow(view));
+	it('get_flow_metrics: 取得層 ⚠️/ℹ️ と計算層 ⚠️ の注記行が detailed / full でも残る', async () => {
+		const byView = await collectContentByView(['summary', 'detailed', 'full'] as const, (view) => runFlow(view));
 		const summaryNotes = annotationLines(byView.get('summary') as string).filter((l) => !l.startsWith('📌'));
 
 		// date 指定（要求 1440 分）に対し実データは 4 分しかないので、取得層・計算層の両方が立つ
 		expect(summaryNotes.length).toBeGreaterThanOrEqual(2);
-		for (const view of ['buckets', 'full'] as const) {
+		for (const view of ['detailed', 'full'] as const) {
 			const notes = new Set(annotationLines(byView.get(view) as string));
 			expectSupersetOf(notes, new Set(summaryNotes), `${view} ⊇ summary（注記行）`);
 			// 同じ warning を再掲して LLM のノイズにしない（res.summary 側に 1 度だけ出す）
@@ -513,10 +519,11 @@ describe('階梯上の view の content は下位 view の上位集合（§3-2 �
 
 	it('get_flow_metrics: nonZeroOnly（絞り込みの軸）も res.summary の定型要素を保つ', async () => {
 		// nonZeroOnly は量ではなく絞り込みの指定なので階梯には乗らないが、階梯上の view（full）と組み合わせて使う以上、定型要素は落とせない。
-		// §3-3 の「旧 compact と完全一致」はバケット行の一致として読む（ヘッダ 2 行を削ると今度は §3-2 規約 3 に反する）。
-		const byView = await collectContentByView(['summary', 'compact'] as const, (view) => runFlow(view));
+		const byView = await collectContentByView(['summary', 'full'] as const, (view) =>
+			runFlow(view, 2, view === 'full'),
+		);
 		expectSupersetOf(
-			fixedElements(byView.get('compact') as string),
+			fixedElements(byView.get('full') as string),
 			fixedElements(byView.get('summary') as string),
 			'full + nonZeroOnly ⊇ summary',
 		);

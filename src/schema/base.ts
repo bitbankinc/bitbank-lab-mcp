@@ -85,14 +85,15 @@ export const VIEW_CONTRACT_NOTE =
 	'（その view でしか計算しないデータを足すツールはあり、その場合は当該 view の説明に明記しています）。' +
 	'content[0].text は LLM への唯一のチャネルなので、軽い view は「短い表示」ではなく「LLM が明細を受け取らない」を意味します。';
 
-export const DEPRECATED_VIEW_REMOVAL_TARGET = '0.4.0';
+// 今は非推奨の値もフィールドも無い。新たに非推奨にするときは、2 つの定数を削除する版に書き換えてから使う。
+export const DEPRECATED_VIEW_REMOVAL_TARGET = '0.7.0';
 
 export function deprecatedViewNote(replacement: string): string {
 	return `非推奨。${replacement} を使うこと。${DEPRECATED_VIEW_REMOVAL_TARGET} で削除予定`;
 }
 
 /** 値は `DEPRECATED_VIEW_REMOVAL_TARGET` と同じだが、削除の単位（enum 値 / 出力フィールド）が別なので、片方だけ期日を動かせるよう定数を分けている。 */
-export const DEPRECATED_FIELD_REMOVAL_TARGET = '0.4.0';
+export const DEPRECATED_FIELD_REMOVAL_TARGET = '0.7.0';
 
 export function deprecatedFieldNote(replacement: string): string {
 	return `**非推奨**（${replacement} の別名）。同じ値を返します。${DEPRECATED_FIELD_REMOVAL_TARGET} で削除予定なので ${replacement} へ移行してください`;

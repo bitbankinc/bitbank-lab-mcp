@@ -408,7 +408,6 @@ export function calcPeriodRealizedPnl(
 	};
 }
 
-// 内部の受け渡しには _cost 付きだけを使う。deprecated な別名は wire の互換のためだけにある（#72）。
 export interface MarginPnlTotals {
 	margin_realized_pnl: number;
 	margin_interest_cost: number;
@@ -461,7 +460,6 @@ export function calcPeriodMarginPnl(
 	return { ...result, period_start: periodStart, period_end: periodEnd };
 }
 
-// DEPRECATED_FIELD_REMOVAL_TARGET で別名を消すときは、margin_interest / margin_fee の 2 行とスキーマ・型定義・summary の参照をまとめて落とす。
 export function buildAccountPnl(
 	spotRealizedPnl: number | undefined,
 	marginPnl: MarginPnlTotals,
@@ -470,8 +468,6 @@ export function buildAccountPnl(
 	return {
 		spot_realized_pnl: spotRealizedPnl,
 		margin_realized_pnl: marginPnl.margin_realized_pnl,
-		margin_interest: marginPnl.margin_interest_cost,
-		margin_fee: marginPnl.margin_fee_cost,
 		total:
 			spotRealizedPnl == null
 				? undefined

@@ -65,9 +65,9 @@ describe('GetCandlesInputSchema', () => {
 		expect(result.tz).toBe('Asia/Tokyo');
 	});
 
-	it('deprecated alias（items）を受理し、enum 外は拒否する', () => {
-		// alias 期間中も enum は閉じたままであること。ここを固定しないと、誰かが view を z.string() に緩めてもテストが通り、ハンドラ側の alias 正規化が唯一の受理経路でなくなったことに気づけない。
-		expect(GetCandlesInputSchema.parse({ pair: 'btc_jpy', type: '1day', view: 'items' }).view).toBe('items');
+	it('削除した旧 view（items）と enum 外の値を拒否する', () => {
+		// enum は閉じたままにする。z.string() に緩めると、削除した旧値が既定の分岐へ黙って落ちる。
+		expect(() => GetCandlesInputSchema.parse({ pair: 'btc_jpy', type: '1day', view: 'items' })).toThrow();
 		expect(() => GetCandlesInputSchema.parse({ pair: 'btc_jpy', type: '1day', view: 'summary' })).toThrow();
 		expect(() => GetCandlesInputSchema.parse({ pair: 'btc_jpy', type: '1day', format: 'yaml' })).toThrow();
 	});
@@ -113,9 +113,9 @@ describe('GetTransactionsInputSchema', () => {
 		expect(result.format).toBe('text');
 	});
 
-	it('deprecated alias（summary / items）を受理し、enum 外は拒否する', () => {
-		expect(GetTransactionsInputSchema.parse({ view: 'summary' }).view).toBe('summary');
-		expect(GetTransactionsInputSchema.parse({ view: 'items' }).view).toBe('items');
+	it('削除した旧 view（summary / items）と enum 外の値を拒否する', () => {
+		expect(() => GetTransactionsInputSchema.parse({ view: 'summary' })).toThrow();
+		expect(() => GetTransactionsInputSchema.parse({ view: 'items' })).toThrow();
 		expect(() => GetTransactionsInputSchema.parse({ view: 'verbose' })).toThrow();
 		expect(() => GetTransactionsInputSchema.parse({ format: 'yaml' })).toThrow();
 	});
@@ -141,9 +141,9 @@ describe('GetFlowMetricsInputSchema', () => {
 		expect(result.tz).toBe('Asia/Tokyo');
 	});
 
-	it('deprecated alias（compact / buckets）を受理し、enum 外は拒否する', () => {
-		expect(GetFlowMetricsInputSchema.parse({ view: 'compact' }).view).toBe('compact');
-		expect(GetFlowMetricsInputSchema.parse({ view: 'buckets' }).view).toBe('buckets');
+	it('削除した旧 view（compact / buckets）と enum 外の値を拒否する', () => {
+		expect(() => GetFlowMetricsInputSchema.parse({ view: 'compact' })).toThrow();
+		expect(() => GetFlowMetricsInputSchema.parse({ view: 'buckets' })).toThrow();
 		expect(GetFlowMetricsInputSchema.parse({ view: 'detailed' }).view).toBe('detailed');
 		expect(() => GetFlowMetricsInputSchema.parse({ view: 'verbose' })).toThrow();
 		expect(() => GetFlowMetricsInputSchema.parse({ nonZeroOnly: 'true' })).toThrow();

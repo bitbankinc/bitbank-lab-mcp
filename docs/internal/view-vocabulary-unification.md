@@ -613,7 +613,7 @@ PR 3  語彙統一 Phase 1（破壊的変更はここに全部集約）         
         ↓
 PR 4  呼び出し側の追従 + ドキュメント                                            ✅ 完了
         ↓（1 リリース以上 かつ 3 ヶ月以上あける）
-PR 5  Phase 2（alias 削除）                                                    ← 次はここ
+PR 5  Phase 2（alias 削除）                                                    ✅ 完了（0.7.0）
 PR 6  Phase 3（軽量 summary の opt-in 追加、需要ベース・任意）                  実施しない（§6-2）
 ```
 
@@ -823,7 +823,7 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 | PR 2 | §5-3 | **完了** | [#22](https://github.com/tjackiet/bitbank-lab-mcp/pull/22) | **P3**（重い view が軽い view の上位集合になっていない） |
 | PR 3 | §5-5 | **完了** | — | **P1 / P2 / P5 / P7** ＋ **P4 の残り**（`get_candles(view=items)` の封筒） |
 | PR 4 | §5-6 | **完了** | — | （呼び出し側追従とドキュメント。指摘の解消ではない） |
-| PR 5 | §5-7 | 未着手 | — | （Phase 2: alias 削除） |
+| PR 5 | §5-7 | **完了**（0.7.0） | — | （Phase 2: alias 削除。[tjackiet/bitbank-lab-mcp#415](https://github.com/tjackiet/bitbank-lab-mcp/issues/415) と同じ PR で、出力フィールドの別名もあわせて削除） |
 | PR 6 | §5-8 | **実施しない** | — | （Phase 3: 軽量 `summary` の opt-in 追加。§6-2 で用意しないと決定） |
 
 ### 7-1. PR 1（#20）で実際に入ったもの
@@ -956,27 +956,8 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
   **本 PR ではやらない**——`content` が旧 `items` と完全一致であることが alias 写像の要件
   （§4-4）で、既存テストもその構造を固定しているため。**alias を削除する PR 5 と同時に行う**のが適切。
 - **`get_tickers_jpy` の `view`（`items` / `ranked`）は名前が誤用**（射影であって量でも形式でもない）。
-  §6-3 の決定どおり本統一の対象外。**当リポジトリは GitHub Issues が無効化されているため
-  issue を立てられなかった**ので、切り出す内容を下記に残す（Issues を有効化した時点でそのまま起票できる）。
-
-  > **タイトル**: `get_tickers_jpy` の `view`（items / ranked）は名前が誤用 — `includeRanked` 等へ改名する
-  >
-  > `view` は統一後の語彙では**出力量の 1 軸**（`summary` < `detailed` < `full`、`full` は常に最重量）だが、
-  > `get_tickers_jpy` の `items` / `ranked` は**射影**（並び順と `data.ranked` の有無）を指しており
-  > この定義に当てはまらない。text の量は両者ほぼ同じ（§1-6）。同じ `view` という名前で公開されている以上、
-  > 呼び出し側からは「量のつまみ」に見えてしまう。
-  > さらに `view=items` が `structuredContent` から `data.ranked` を落としている点は
-  > §3-2 規約 4（`view` は `structuredContent` からフィールドを削ってはならない）にも反する。
-  >
-  > **提案**: `view` を廃止し `includeRanked: boolean`（既定 `true`）へ改名する。
-  > 並び順・件数は既にある `sortBy` / `limit` が担当している。破壊的変更なので、
-  > 旧 `view` 値の削除（`0.4.0`、PR 5）と足並みを揃えるのが自然。
-  >
-  > **PR 3 のスコープ外にした根拠**: PR 3 は「量の語彙の統一」が対象で、射影の問題は別軸。
-  > 1 つの PR に混ぜるとレビューの観点（互換性の判断 vs. パラメータ設計）が混ざる。
-  >
-  > **参考**: 本ドキュメント §1-6（挙動）/ §3-4（判断）/ §6-3（決定）、実装は
-  > `src/handlers/getTickersJpyHandler.ts`。
+  §6-3 の決定どおり本統一の対象外とし、[tjackiet/bitbank-lab-mcp#415](https://github.com/tjackiet/bitbank-lab-mcp/issues/415)
+  で `includeRanked: boolean`（既定 `true`）に置き換えた（0.7.0。利用者がほぼいないため alias の猶予は置いていない）。
 
 ### 7-4. PR 4 で実際に入ったもの
 

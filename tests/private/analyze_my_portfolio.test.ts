@@ -273,8 +273,6 @@ describe('analyze_my_portfolio', () => {
 		assertOk(result);
 		assertDefined(result.data.account_pnl, 'result.data.account_pnl');
 		expect(result.data.account_pnl.margin_realized_pnl).toBe(0);
-		expect(result.data.account_pnl.margin_interest).toBe(0);
-		expect(result.data.account_pnl.margin_fee).toBe(0);
 		expect(result.data.account_pnl.margin_interest_cost).toBe(0);
 		expect(result.data.account_pnl.margin_fee_cost).toBe(0);
 		expect(result.data.account_pnl.total).toBe(result.data.account_pnl.spot_realized_pnl);
@@ -296,13 +294,13 @@ describe('analyze_my_portfolio', () => {
 		const pnl = result.data.account_pnl;
 		assertDefined(pnl, 'result.data.account_pnl');
 		expect(pnl.margin_realized_pnl).toBe(5000);
-		expect(pnl.margin_interest).toBe(30);
-		expect(pnl.margin_fee).toBe(155);
+		expect(pnl.margin_interest_cost).toBe(30);
+		expect(pnl.margin_fee_cost).toBe(155);
 		assertDefined(pnl.spot_realized_pnl, 'result.data.account_pnl.spot_realized_pnl');
 		expect(pnl.total).toBe(pnl.spot_realized_pnl + 5000 - 30 - 155);
 	});
 
-	it('account_pnl: margin_*_cost が旧フィールドと同値で、total を減算で検算できる', async () => {
+	it('account_pnl: margin_*_cost で total を減算で検算でき、旧フィールド（margin_interest / margin_fee）は出さない', async () => {
 		setupFetchMock({ marginTrades: rawMarginTradeHistoryResponse });
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -316,8 +314,6 @@ describe('analyze_my_portfolio', () => {
 		const pnl = requireDefined(result.data.account_pnl, 'result.data.account_pnl');
 		expect(pnl.margin_interest_cost).toBe(30);
 		expect(pnl.margin_fee_cost).toBe(155);
-		expect(pnl.margin_interest).toBe(pnl.margin_interest_cost);
-		expect(pnl.margin_fee).toBe(pnl.margin_fee_cost);
 		assertDefined(pnl.spot_realized_pnl, 'result.data.account_pnl.spot_realized_pnl');
 		expect(pnl.total).toBe(
 			pnl.spot_realized_pnl + pnl.margin_realized_pnl - pnl.margin_interest_cost - pnl.margin_fee_cost,
@@ -326,8 +322,6 @@ describe('analyze_my_portfolio', () => {
 		expect(Object.keys(pnl)).toEqual([
 			'spot_realized_pnl',
 			'margin_realized_pnl',
-			'margin_interest',
-			'margin_fee',
 			'total',
 			'margin_interest_cost',
 			'margin_fee_cost',
@@ -391,9 +385,9 @@ describe('analyze_my_portfolio', () => {
 		const pnl = result.data.account_pnl;
 		assertDefined(pnl, 'result.data.account_pnl');
 		expect(pnl.margin_realized_pnl).toBe(5000);
-		expect(pnl.margin_interest).toBe(30);
+		expect(pnl.margin_interest_cost).toBe(30);
 		// 現物の 9999 が混入していたら 9999+155=10154 になるはずだが、フィルタで除外されて 155 のみ
-		expect(pnl.margin_fee).toBe(155);
+		expect(pnl.margin_fee_cost).toBe(155);
 		assertDefined(pnl.spot_realized_pnl, 'result.data.account_pnl.spot_realized_pnl');
 		expect(pnl.total).toBe(pnl.spot_realized_pnl + 5000 - 30 - 155);
 	});
@@ -414,8 +408,8 @@ describe('analyze_my_portfolio', () => {
 		expect(result.meta.marginFetchFailed).toBe(true);
 		assertDefined(result.data.account_pnl, 'result.data.account_pnl');
 		expect(result.data.account_pnl.margin_realized_pnl).toBe(0);
-		expect(result.data.account_pnl.margin_interest).toBe(0);
-		expect(result.data.account_pnl.margin_fee).toBe(0);
+		expect(result.data.account_pnl.margin_interest_cost).toBe(0);
+		expect(result.data.account_pnl.margin_fee_cost).toBe(0);
 		// 信用 fetch 失敗時は信用側 truncated 警告を抑止（メッセージ重複回避）
 		expect(result.summary).not.toContain('※ 約定履歴（信用）');
 		expect(result.summary).not.toContain('※ 約定履歴（現物 / 信用）');
@@ -686,18 +680,16 @@ describe('analyze_my_portfolio', () => {
 			// yearly: 両方含む（1000 + 500, 10 + 5, 50 + 25）
 			assertDefined(result.data.yearly_account_pnl, 'result.data.yearly_account_pnl');
 			expect(result.data.yearly_account_pnl.margin_realized_pnl).toBe(1500);
-			expect(result.data.yearly_account_pnl.margin_interest).toBe(15);
-			expect(result.data.yearly_account_pnl.margin_fee).toBe(75);
+			expect(result.data.yearly_account_pnl.margin_interest_cost).toBe(15);
+			expect(result.data.yearly_account_pnl.margin_fee_cost).toBe(75);
 			// monthly: 月初後のみ（500, 5, 25）
 			assertDefined(result.data.monthly_account_pnl, 'result.data.monthly_account_pnl');
 			expect(result.data.monthly_account_pnl.margin_realized_pnl).toBe(500);
-			expect(result.data.monthly_account_pnl.margin_interest).toBe(5);
-			expect(result.data.monthly_account_pnl.margin_fee).toBe(25);
+			expect(result.data.monthly_account_pnl.margin_interest_cost).toBe(5);
+			expect(result.data.monthly_account_pnl.margin_fee_cost).toBe(25);
 
 			for (const periodPnl of [result.data.yearly_account_pnl, result.data.monthly_account_pnl]) {
 				assertDefined(periodPnl.spot_realized_pnl, 'periodPnl.spot_realized_pnl');
-				expect(periodPnl.margin_interest_cost).toBe(periodPnl.margin_interest);
-				expect(periodPnl.margin_fee_cost).toBe(periodPnl.margin_fee);
 				expect(periodPnl.total).toBe(
 					periodPnl.spot_realized_pnl +
 						periodPnl.margin_realized_pnl -
@@ -707,8 +699,6 @@ describe('analyze_my_portfolio', () => {
 				expect(Object.keys(periodPnl)).toEqual([
 					'spot_realized_pnl',
 					'margin_realized_pnl',
-					'margin_interest',
-					'margin_fee',
 					'total',
 					'period_start',
 					'period_end',
@@ -5563,8 +5553,8 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 		for (const period of [result.data.yearly_realized_pnl, result.data.monthly_realized_pnl]) {
 			expect(period?.unpriced_deposit_count_all_time).toBe(1);
 			expect(period?.priced_deposit_count_all_time).toBe(1);
-			expect(period?.unpriced_deposit_count).toBe(period?.unpriced_deposit_count_all_time);
-			expect(period?.priced_deposit_count).toBe(period?.priced_deposit_count_all_time);
+			expect(period).not.toHaveProperty('unpriced_deposit_count');
+			expect(period).not.toHaveProperty('priced_deposit_count');
 		}
 		// 銘柄別の holdings[] は改名しない（配置と意味が一致している）
 		expect(result.data.holdings.find((h) => h.asset === 'eth')?.unpriced_deposit_count).toBe(1);
@@ -5638,9 +5628,6 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 			'sell_count',
 			'period_start',
 			'period_end',
-			// 旧名は同じ位置に alias として残す（#85）
-			'priced_deposit_count',
-			'unpriced_deposit_count',
 			'realized_pnl_unavailable_reason',
 			'priced_deposit_count_all_time',
 			'unpriced_deposit_count_all_time',

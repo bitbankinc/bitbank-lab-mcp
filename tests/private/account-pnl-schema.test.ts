@@ -1,7 +1,6 @@
-// コスト項の符号規約・alias の写像先と削除目標・wire のキー順を、description と宣言順で機械的に固定する（#72）。
+// コスト項の符号規約と wire のキー順を、description と宣言順で機械的に固定する（#72）。
 import { describe, expect, it } from 'vitest';
 import { AnalyzeMyPortfolioDataSchema } from '../../src/private/schemas.js';
-import { DEPRECATED_FIELD_REMOVAL_TARGET } from '../../src/schema/base.js';
 
 function shapeOf(
 	field: 'account_pnl' | 'yearly_account_pnl' | 'monthly_account_pnl',
@@ -15,8 +14,6 @@ function shapeOf(
 const ALL_HISTORY_KEYS = [
 	'spot_realized_pnl',
 	'margin_realized_pnl',
-	'margin_interest',
-	'margin_fee',
 	'total',
 	'margin_interest_cost',
 	'margin_fee_cost',
@@ -26,8 +23,6 @@ const ALL_HISTORY_KEYS = [
 const PERIOD_KEYS = [
 	'spot_realized_pnl',
 	'margin_realized_pnl',
-	'margin_interest',
-	'margin_fee',
 	'total',
 	'period_start',
 	'period_end',
@@ -52,22 +47,6 @@ describe('AccountPnl スキーマ（#72: 信用コスト項の命名）', () => 
 		expect(description).toContain('margin_realized_pnl');
 		expect(description).toContain('margin_interest_cost');
 		expect(description).toContain('margin_fee_cost');
-	});
-
-	it('旧フィールドの description に写像先と削除目標バージョンが書いてある', () => {
-		const shape = shapeOf('account_pnl');
-		const cases = [
-			['margin_interest', 'margin_interest_cost'],
-			['margin_fee', 'margin_fee_cost'],
-		] as const;
-		for (const [deprecated, replacement] of cases) {
-			const description = shape[deprecated].description ?? '';
-			expect(description, `${deprecated} の description`).toContain('非推奨');
-			expect(description, `${deprecated} の description`).toContain(replacement);
-			expect(description, `${deprecated} の description`).toContain(DEPRECATED_FIELD_REMOVAL_TARGET);
-			// alias は符号も含めて同じ値。「負値になる」と読める書き方をしない
-			expect(description, `${deprecated} の description`).toContain('コスト = 正値');
-		}
 	});
 
 	it('新設キーは既存キーの後ろに宣言されている（wire のキー順が中間から変わらない）', () => {

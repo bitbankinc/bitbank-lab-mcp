@@ -740,7 +740,6 @@ export const toolDef: ToolDefinition = {
 		type,
 		date,
 		limit,
-		view,
 		format,
 		tz,
 	}: {
@@ -748,15 +747,12 @@ export const toolDef: ToolDefinition = {
 		type: '1min' | '5min' | '15min' | '30min' | '1hour' | '4hour' | '8hour' | '12hour' | '1day' | '1week' | '1month';
 		date?: string;
 		limit?: number;
-		// 手書きのリテラルにすると enum から items を消しても型が変わらず、下の alias 分岐が黙って生き残る（tools.md §7）。
-		view?: z.infer<typeof GetCandlesInputSchema>['view'];
 		format?: z.infer<typeof GetCandlesInputSchema>['format'];
 		tz?: string;
 	}) => {
 		const result = await getCandles(pair, type, date, limit, tz);
 		if (!result.ok) return result;
-		// alias の正規化はここ 1 箇所だけで行い、以降は format しか見ない。0.4.0 で enum から削除予定。
-		const effectiveFormat: 'text' | 'json' = view === 'items' ? 'json' : (format ?? 'text');
+		const effectiveFormat: 'text' | 'json' = format ?? 'text';
 		if (effectiveFormat === 'json') {
 			const items = result?.data?.normalized ?? [];
 			const content: Array<{ type: 'text'; text: string }> = [{ type: 'text', text: JSON.stringify(items, null, 2) }];
@@ -764,7 +760,7 @@ export const toolDef: ToolDefinition = {
 			const meta = result.meta as { warning?: string; provisional?: boolean } | undefined;
 			if (meta?.warning) content.push({ type: 'text', text: meta.warning });
 			if (meta?.provisional) content.push({ type: 'text', text: PROVISIONAL_BAR_NOTE });
-			// format は content の形式だけを選び、structuredContent の契約は変えない（旧 view=items の消費者は structuredContent.data.normalized に読み替える）。
+			// format は content の形式だけを選び、structuredContent の契約は変えない。
 			return { content, structuredContent: toStructured(result) };
 		}
 		try {

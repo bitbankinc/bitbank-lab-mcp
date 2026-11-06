@@ -80,26 +80,13 @@ export function renderCompactBucketLines(
 	return { lines, shown, gapBuckets };
 }
 
-// リテラルを手書きせず Zod から導出する（enum から alias を消したとき、残った alias 分岐が型エラーになる。tools.md §7）。
+// リテラルを手書きせず Zod から導出する（enum から値を消したとき、残った分岐が型エラーになる。tools.md §7）。
 export type FlowMetricsView = NonNullable<z.infer<typeof GetFlowMetricsInputSchema>['view']>;
 
-export type FlowMetricsCanonicalView = 'summary' | 'detailed' | 'full';
-
-// 正規化はハンドラ入口の 1 箇所だけで行う（alias を各分岐に散らすと削除時に取りこぼす）。compact + nonZeroOnly=false は自己矛盾なので写像の値を優先する。
-export function normalizeFlowMetricsView(
-	view: FlowMetricsView | undefined,
-	nonZeroOnly: boolean | undefined,
-): { view: FlowMetricsCanonicalView; nonZeroOnly: boolean } {
-	if (view === 'compact') return { view: 'full', nonZeroOnly: true };
-	if (view === 'buckets') return { view: 'detailed', nonZeroOnly: false };
-	return { view: view ?? 'summary', nonZeroOnly: nonZeroOnly === true };
-}
-
-// 必ず renderCompactBucketLines を通し、見出しも旧 compact と同一文言にする（旧値経由のバケット行を 1 バイトも変えない）。
 function renderNonZeroSection(
 	buckets: FlowMetricsBucket[],
 	fmt: (b: FlowMetricsBucket, index: number) => string,
-	view: FlowMetricsCanonicalView,
+	view: FlowMetricsView,
 ): string {
 	const { lines, shown, gapBuckets } = renderCompactBucketLines(buckets, fmt);
 	const gapNote = gapBuckets > 0 ? ` (+${gapBuckets} no-data buckets shown as ranges)` : '';
@@ -626,7 +613,8 @@ export const toolDef: ToolDefinition = {
 		);
 		if (!res?.ok) return res;
 
-		const { view: effectiveView, nonZeroOnly: effectiveNonZeroOnly } = normalizeFlowMetricsView(view, nonZeroOnly);
+		const effectiveView = view ?? 'summary';
+		const effectiveNonZeroOnly = nonZeroOnly === true;
 		const buckets = (res?.data?.series?.buckets ?? []) as FlowMetricsBucket[];
 
 		// view は content だけを変え、structuredContent は変えない（tools.md 規約 2）。出口で宣言スキーマを通し、view 分岐が structuredContent を加工したら CI で落とす（parse は冪等）。
