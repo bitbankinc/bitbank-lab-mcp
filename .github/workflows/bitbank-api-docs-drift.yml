@@ -1,9 +1,6 @@
 name: bitbank-api-docs drift check
 
-# 公式 docs (bitbankinc/bitbank-api-docs) の更新を検知し、ローカルミラー
-# (docs/internal/bitbank-api-fields.md) の鮮度が切れたら issue を起票する。
-# 「鮮度維持」はネットのある CI 側に置き、P4「外部 API 契約整合」診断側は
-# オフラインのミラーで完結させる（診断側に fetch を持たせない）。
+# 公式 docs の取得はこの workflow だけで行う。P4「外部 API 契約整合」の診断はオフラインのミラーで完結させる。
 
 on:
   schedule:
