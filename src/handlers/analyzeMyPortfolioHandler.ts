@@ -294,13 +294,22 @@ function buildPerformanceLines(label: string, p: PeriodPerformance): string[] {
 	if (p.net_flow_jpy !== 0 || p.withdrawal_fee_jpy > 0) {
 		const adjSign = p.adjusted_change_jpy >= 0 ? '+' : '';
 		lines.push(
-			`  入出金調整後: ${adjSign}${formatYenAmount(p.adjusted_change_jpy)}${p.adjusted_change_pct != null ? ` (${formatPercent(p.adjusted_change_pct, { sign: true })})` : ''}`,
+			`  入出金調整後: ${adjSign}${formatYenAmount(p.adjusted_change_jpy)}${p.adjusted_change_pct != null ? ` (期初評価額比 ${formatPercent(p.adjusted_change_pct, { sign: true })})` : ''}`,
 		);
 		const flowSign = p.net_flow_jpy >= 0 ? '+' : '';
 		lines.push(`  純入出金（元本）: ${flowSign}${formatYenAmount(p.net_flow_jpy)}`);
 		if (p.withdrawal_fee_jpy > 0) {
 			lines.push(`  出金手数料: -${formatYenAmount(p.withdrawal_fee_jpy)}`);
 		}
+	}
+	if (p.staking_reward_jpy != null) {
+		lines.push(
+			`  ステーキング報酬: +${formatYenAmount(p.staking_reward_jpy)}（入庫日の価格で換算し、取得できない分は現在価格で仮評価。元本ではなく成果として増減に含む）`,
+		);
+	} else if (p.staking_reward_unpriced_assets) {
+		lines.push(
+			`  ステーキング報酬: ${p.staking_reward_unpriced_assets.map((a) => a.toUpperCase()).join(', ')} の入庫日の価格も現在価格も解決できず額を出せません（保有中なら現在評価額にも含まれておらず、増減にも入っていない可能性があります）`,
+		);
 	}
 	return lines;
 }
@@ -489,6 +498,21 @@ function buildAccountReturnLines(dwSummary: DepositWithdrawalSummary): string[] 
 	const unvaluedDepositCount = (dwSummary.crypto_deposit_count ?? 0) - valuedDepositCount;
 	const unvaluedWithdrawalCount = (dwSummary.crypto_withdrawal_count ?? 0) - valuedWithdrawalCount;
 
+	const stakingRewardLine = (returnShown: boolean): string | undefined => {
+		const count = dwSummary.staking_reward_count;
+		if (count == null) return undefined;
+		const valued = valuedCounts(dwSummary.staking_reward_valuation);
+		const amount =
+			dwSummary.staking_reward_estimated_jpy != null
+				? `${formatYenAmount(dwSummary.staking_reward_estimated_jpy)}（${valued}件、${FLOW_VALUATION_LABEL[dwSummary.staking_reward_valuation?.basis ?? 'current_price_fallback']}）`
+				: '評価額を算出できません';
+		const unvalued = count - valued > 0 ? `。${count - valued}件は価格を取得できず評価額に含まれていません` : '';
+		const treatment = returnShown
+			? '元本ではないので純投入額から除き、リターンに含めています'
+			: '元本ではないので純投入額から除いています';
+		return `  ステーキング報酬 ${count}件（暗号資産入庫の内数）: ${amount}${unvalued}。${treatment}`;
+	};
+
 	if (dwSummary.account_return_jpy != null) {
 		const sign = dwSummary.account_return_jpy >= 0 ? '+' : '';
 		const approxLabel = dwSummary.is_complete ? '' : '（概算）';
@@ -511,9 +535,12 @@ function buildAccountReturnLines(dwSummary: DepositWithdrawalSummary): string[] 
 				`  暗号資産出庫の評価: -${formatYenAmount(dwSummary.crypto_withdrawal_estimated_jpy)}（${valuedWithdrawalCount}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_withdrawal_valuation?.basis ?? 'current_price_fallback']}）`,
 			);
 		}
+		const stakingLine = stakingRewardLine(true);
+		if (stakingLine) lines.push(stakingLine);
 		// 内訳の式は実際に載っている項だけを並べる（0 円の項を書くと読み手が総額を追えない）。
 		const netInvestedTerms = [
 			dwSummary.crypto_deposit_estimated_jpy ? '+ 暗号資産入庫の評価額' : '',
+			dwSummary.staking_reward_estimated_jpy ? '- ステーキング報酬の評価額' : '',
 			dwSummary.crypto_withdrawal_estimated_jpy ? '- 暗号資産出庫の評価額' : '',
 		].filter(Boolean);
 		lines.push(
@@ -552,6 +579,8 @@ function buildAccountReturnLines(dwSummary: DepositWithdrawalSummary): string[] 
 		lines.push(
 			`口座全体リターン: 算出不可（${withdrawalCause}純投入額が ${formatYenAmount(dwSummary.net_jpy_invested)} と 0 以下になりました。引き出しが投入を上回る口座ではリターン率を定義できません）`,
 		);
+		const stakingLine = stakingRewardLine(false);
+		if (stakingLine) lines.push(stakingLine);
 	}
 	return lines;
 }

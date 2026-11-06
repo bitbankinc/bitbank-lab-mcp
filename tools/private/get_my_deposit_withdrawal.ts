@@ -22,9 +22,14 @@ interface RawDeposit {
 	amount: string;
 	txid?: string | null;
 	status: string;
+	category?: string;
 	found_at: number;
 	confirmed_at: number;
 }
+
+// NORMAL は通常の入金なので明細に出さない。それ以外は値をそのまま出す（MANUAL は意味が公表されていない）。
+const depositCategoryText = (category: string | undefined) =>
+	category != null && category !== 'NORMAL' ? ` / 種別: ${category}` : '';
 
 interface RawWithdrawal {
 	uuid: string;
@@ -238,6 +243,7 @@ export default async function getMyDepositWithdrawal(args: {
 			network: d.network || undefined,
 			txid: d.txid || undefined,
 			status: d.status,
+			category: d.category || undefined,
 			found_at: toIsoMs(d.found_at) ?? undefined,
 			confirmed_at: toIsoMs(d.confirmed_at) ?? undefined,
 		}));
@@ -279,16 +285,18 @@ export default async function getMyDepositWithdrawal(args: {
 				lines.push(`  JPY 入金: ${jpyDeposits.length}件 合計 ${formatPrice(Math.round(totalJpy))}`);
 				for (const d of jpyDeposits.slice(0, 5)) {
 					lines.push(
-						`    [${d.uuid}] JPY ${formatPrice(Math.round(Number(d.amount)))} (${d.status})${d.found_at ? ` ${d.found_at}` : ''}`,
+						`    [${d.uuid}] JPY ${formatPrice(Math.round(Number(d.amount)))} (${d.status}${depositCategoryText(d.category)})${d.found_at ? ` ${d.found_at}` : ''}`,
 					);
 				}
 				if (jpyDeposits.length > 5) lines.push(`    ... 他 ${jpyDeposits.length - 5}件`);
 			}
 			if (cryptoDeposits.length > 0) {
-				lines.push(`  暗号資産入庫: ${cryptoDeposits.length}件（明細表示は先頭5件のみ）`);
+				const stakingCount = cryptoDeposits.filter((d) => d.category === 'STAKING').length;
+				const stakingText = stakingCount > 0 ? `、うちステーキング報酬（種別: STAKING）${stakingCount}件` : '';
+				lines.push(`  暗号資産入庫: ${cryptoDeposits.length}件${stakingText}（明細表示は先頭5件のみ）`);
 				for (const d of cryptoDeposits.slice(0, 5)) {
 					lines.push(
-						`    [${d.uuid}] ${d.asset.toUpperCase()} ${d.amount} (${d.status})${d.found_at ? ` ${d.found_at}` : ''}`,
+						`    [${d.uuid}] ${d.asset.toUpperCase()} ${d.amount} (${d.status}${depositCategoryText(d.category)})${d.found_at ? ` ${d.found_at}` : ''}`,
 					);
 				}
 				if (cryptoDeposits.length > 5) lines.push(`    ... 他 ${cryptoDeposits.length - 5}件`);

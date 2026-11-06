@@ -368,7 +368,7 @@ const DepositWithdrawalSummarySchema = z
 		net_jpy_invested: z
 			.number()
 			.describe(
-				'純投入額（JPY入金 - JPY出金 + 暗号資産入庫の JPY 換算額 - 暗号資産出庫の JPY 換算額）。暗号資産の入出庫がある場合は JPY 純入金だけでなく換算分も含む。出庫は JPY 出金と同じ「元本の回収」として減算する（外部ウォレットへ移して保有を続けていても口座外の値動きは測定できないため）',
+				'純投入額（JPY入金 - JPY出金 + 暗号資産入庫の JPY 換算額 - 暗号資産出庫の JPY 換算額）。ステーキング報酬（入金種別 STAKING）は元本ではないので入庫の換算額から除く（account_return_* には成果として残る。額は staking_reward_estimated_jpy）。暗号資産の入出庫がある場合は JPY 純入金だけでなく換算分も含む。出庫は JPY 出金と同じ「元本の回収」として減算する（外部ウォレットへ移して保有を続けていても口座外の値動きは測定できないため）',
 			),
 		crypto_deposit_count: z.number().describe('暗号資産入庫件数'),
 		crypto_deposit_estimated_jpy: z
@@ -397,6 +397,20 @@ const DepositWithdrawalSummarySchema = z
 			),
 		crypto_withdrawal_valuation: FlowValuationSchema.optional().describe(
 			'crypto_withdrawal_estimated_jpy の換算方式の内訳。暗号資産出庫が無い / 全件で価格を解決できなかった場合は undefined',
+		),
+		staking_reward_count: z
+			.number()
+			.int()
+			.optional()
+			.describe('crypto_deposit_count のうちステーキング報酬（入金種別 STAKING）の件数。0 件のときは undefined'),
+		staking_reward_estimated_jpy: z
+			.number()
+			.optional()
+			.describe(
+				'crypto_deposit_estimated_jpy のうちステーキング報酬の分。換算方法は crypto_deposit_estimated_jpy と同じで、価格を解決できた報酬だけの合計（件数と換算方式は staking_reward_valuation。staking_reward_count より少なければ残りは未算入）。net_jpy_invested からはこの額を除く。ステーキング報酬が無い / 全件で価格を解決できなかった場合は undefined',
+			),
+		staking_reward_valuation: FlowValuationSchema.optional().describe(
+			'staking_reward_estimated_jpy の換算方式の内訳。ステーキング報酬が無い / 全件で価格を解決できなかった場合は undefined',
 		),
 	})
 	.optional()
@@ -555,7 +569,7 @@ const PeriodPerformanceSchema = z
 			.number()
 			.nullable()
 			.describe(
-				'期間中の純入出金額（JPY、元本移動のみ）。正=純入金、負=純出金。出金手数料は含まない。暗号資産の入出庫は入出庫日（入庫: confirmed_at / 出庫: requested_at）の 1day open で換算し、日次価格を解決できなかった分のみ現在価格で仮評価する（内訳は flow_valuation）。null=未計測（入出金履歴が無く「本当にゼロ」と区別できないため 0 を返さない。理由は flow_unavailable_reason）',
+				'期間中の純入出金額（JPY、元本移動のみ）。正=純入金、負=純出金。出金手数料は含まない。**ステーキング報酬（入金種別 STAKING）は元本ではなく成果として扱い、含めない**（額は staking_reward_jpy、成績としては adjusted_change_jpy に残る）。暗号資産の入出庫は入出庫日（入庫: confirmed_at / 出庫: requested_at）の 1day open で換算し、日次価格を解決できなかった分のみ現在価格で仮評価する（内訳は flow_valuation）。null=未計測（入出金履歴が無く「本当にゼロ」と区別できないため 0 を返さない。理由は flow_unavailable_reason）',
 			),
 		withdrawal_fee_jpy: z
 			.number()
@@ -567,14 +581,14 @@ const PeriodPerformanceSchema = z
 			.number()
 			.nullable()
 			.describe(
-				'調整後増減額 = change_jpy - net_flow_jpy（入出金元本の影響を除いた成績。出金手数料コストは含む）。null=純入出金が未計測のため算出不能。**change_jpy_overstated=true のときは change_jpy と同じ額だけ過大**、**change_jpy_understated=true のときは同じ額だけ過小**（いずれも純入出金は両端の評価額と無関係なのでずれがそのまま残る）。unpriced_start_assets / unpriced_current_assets があってどちらのフラグも無い場合もずれの向きが確定しないだけで成績としては読めない',
+				'調整後増減額 = change_jpy - net_flow_jpy（入出金元本の影響を除いた成績。出金手数料コストとステーキング報酬は含む）。null=純入出金が未計測のため算出不能。**change_jpy_overstated=true のときは change_jpy と同じ額だけ過大**、**change_jpy_understated=true のときは同じ額だけ過小**（いずれも純入出金は両端の評価額と無関係なのでずれがそのまま残る）。unpriced_start_assets / unpriced_current_assets があってどちらのフラグも無い場合もずれの向きが確定しないだけで成績としては読めない',
 			),
 		adjusted_change_pct: z
 			.number()
 			.nullable()
 			.optional()
 			.describe(
-				'調整後増減率（%）= adjusted_change_jpy / start_value_jpy。null=純入出金が未計測で算出不能。undefined=change_pct と同じ理由で率を出せない（start_value_jpy が 0、current_value_jpy の 1% 未満、期初始値の解決欠損で start_value_jpy が過小、または現在価格の解決欠損で current_value_jpy が過小。理由は change_pct_unavailable_reason）。change_pct と抑止条件が共通なので必ず両方同時に起きる',
+				'調整後増減率（%）= adjusted_change_jpy / start_value_jpy。**分母は期初評価額のままで、期中に入った資金は分母に入らない**。そのため期初評価額に比べて期中の入金が大きい期間では、投下資本あたりの運用成績よりずっと大きな率になる（フロー加重の収益率ではない。#111）。null=純入出金が未計測で算出不能。undefined=change_pct と同じ理由で率を出せない（start_value_jpy が 0、current_value_jpy の 1% 未満、期初始値の解決欠損で start_value_jpy が過小、または現在価格の解決欠損で current_value_jpy が過小。理由は change_pct_unavailable_reason）。change_pct と抑止条件が共通なので必ず両方同時に起きる',
 			),
 		period_start: z.string().describe('期間の開始日時（ISO8601 JST）'),
 		period_end: z.string().describe('期間の終了日時（ISO8601 JST）'),
@@ -594,8 +608,20 @@ const PeriodPerformanceSchema = z
 				'net_flow_jpy の算出時に入出庫日価格・現在価格のいずれも解決できなかった暗号資産シンボル一覧（小文字）。該当資産の入出庫は 0 円計上と等価。ずれの向きは方向で逆になり、未計上が入庫なら net_flow_jpy は過小・出庫なら過大。adjusted_change_jpy = change_jpy - net_flow_jpy なので、そちらは常に net_flow_jpy と逆向きにずれる（入庫の取りこぼしで過大、出庫の取りこぼしで過小）。出庫では withdrawal_fee_jpy も同時に過小になる。全て解決できた場合は undefined。',
 			),
 		flow_valuation: FlowValuationSchema.optional().describe(
-			'net_flow_jpy に計上した暗号資産入出庫の換算方式の内訳。期間中に暗号資産の入出庫が無い / 全件で価格を解決できなかった場合は undefined（JPY のみの入出金は換算不要なので数えない）',
+			'net_flow_jpy に計上した暗号資産入出庫の換算方式の内訳。期間中に暗号資産の入出庫が無い / 全件で価格を解決できなかった場合は undefined（JPY のみの入出金は換算不要なので数えない）。ステーキング報酬は net_flow_jpy に計上しないので数えない',
 		),
+		staking_reward_jpy: z
+			.number()
+			.optional()
+			.describe(
+				'期間中に入庫したステーキング報酬（入金種別 STAKING の DONE 入庫）の JPY 換算額。入庫日（confirmed_at）の 1day open で換算し、日次価格を解決できなかった分のみ現在価格で仮評価する。net_flow_jpy には含めず、adjusted_change_jpy の内数（報酬を受け取った後の値動きは含まない）。期間中にステーキング報酬が無い場合、純入出金が未計測の場合、1 件でも換算できなかった場合（資産名は staking_reward_unpriced_assets）は undefined。税務上の所得額の確定値ではない',
+			),
+		staking_reward_unpriced_assets: z
+			.array(z.string())
+			.optional()
+			.describe(
+				'ステーキング報酬を入庫日価格・現在価格のいずれでも換算できなかった暗号資産シンボル一覧（小文字・昇順）。この場合 staking_reward_jpy は出さない。報酬は net_flow_jpy に入らないので純入出金はずれない。ただし現在価格も無いので、保有中なら current_value_jpy からも抜けており（unpriced_current_assets に載る）、その分 change_jpy / adjusted_change_jpy に報酬が入っていない。該当なしは undefined',
+			),
 		unpriced_start_assets: z
 			.array(z.string())
 			.optional()
@@ -633,7 +659,7 @@ const EquityPointSchema = z.object({
 		.number()
 		.optional()
 		.describe(
-			'この点から**次の点まで**の区間に発生した純入出金（元本移動のみ、円）。正 = 純入金、負 = 純出金。value_jpy は「その時点で入出金を巻き戻した」値なので、この点の入出金が評価額に現れるのは次の点から: value_jpy[i+1] - value_jpy[i] - flow_jpy[i] = 区間 i の市場変動（最終点も同式に載る）。この向きにより timestamp は入出金の発生日（月次点なら発生月）そのものを指す。出金手数料は含まない（*_performance.net_flow_jpy と同一定義。手数料コストは上式の残差に市場変動と一緒に残る）。JPY の入出金と、JPY 換算できた暗号資産入出庫の合計。換算は入出庫日の始値を優先し、**その日の価格を解決できなかった分は現在価格にフォールバックしたうえで計上する**（本値は全額が入出庫日で固定された評価額とは限らない。フォールバック件数は meta.flowValuationFallbackCount / meta.flowValuationBasis と summary 先頭の「n 件は現在価格で仮評価」が申告する）。どちらでも価格を解決できなかった入出庫は計上せず、資産名は同じ期間を張る *_performance.unpriced_flow_assets（monthly_equity_series ↔ monthly_performance、yearly_equity_series ↔ yearly_performance）で申告される。同じ区間の入金と出金は純額で相殺する（日次点ならその日、月次点ならその月の純額）。入出金履歴が欠けている構成（取得失敗 / 一部チャネル失敗 / 件数上限による打ち切り）では部分集合の合計を確定値として出さず全点で undefined になる。**undefined は「マーカーを出していない」であって「入出金が無かった」ではない**: (1) その区間に対象の入出金が無い、(2) 入金と出金が相殺して純額がゼロに丸まった、(3) その区間の入出庫がすべて価格解決できず計上対象が残らなかった（資産名は *_performance.unpriced_flow_assets）、(4) 最終点（現在のリアルタイム評価額。次の点が無く区間が空なので常に undefined）、(5) 入出金履歴が欠けていて全点で抑止した、のいずれか。(1)〜(4) は「計測できたうえでマーカーが立たない」、(5) は「そもそも計測していない」で意味が異なり、**本フィールドの有無だけでは区別できない**。区別が必要な場合は *_performance.flow_measured（false なら (5)）と flow_unavailable_reason を参照する',
+			'この点から**次の点まで**の区間に発生した純入出金（元本移動のみ、円）。正 = 純入金、負 = 純出金。ステーキング報酬（入金種別 STAKING）は元本ではないので含めない（成果として市場変動の側に残る）。value_jpy は「その時点で入出金を巻き戻した」値なので、この点の入出金が評価額に現れるのは次の点から: value_jpy[i+1] - value_jpy[i] - flow_jpy[i] = 区間 i の市場変動（最終点も同式に載る）。この向きにより timestamp は入出金の発生日（月次点なら発生月）そのものを指す。出金手数料は含まない（*_performance.net_flow_jpy と同一定義。手数料コストは上式の残差に市場変動と一緒に残る）。JPY の入出金と、JPY 換算できた暗号資産入出庫の合計。換算は入出庫日の始値を優先し、**その日の価格を解決できなかった分は現在価格にフォールバックしたうえで計上する**（本値は全額が入出庫日で固定された評価額とは限らない。フォールバック件数は meta.flowValuationFallbackCount / meta.flowValuationBasis と summary 先頭の「n 件は現在価格で仮評価」が申告する）。どちらでも価格を解決できなかった入出庫は計上せず、資産名は同じ期間を張る *_performance.unpriced_flow_assets（monthly_equity_series ↔ monthly_performance、yearly_equity_series ↔ yearly_performance）で申告される。同じ区間の入金と出金は純額で相殺する（日次点ならその日、月次点ならその月の純額）。入出金履歴が欠けている構成（取得失敗 / 一部チャネル失敗 / 件数上限による打ち切り）では部分集合の合計を確定値として出さず全点で undefined になる。**undefined は「マーカーを出していない」であって「入出金が無かった」ではない**: (1) その区間に対象の入出金が無い、(2) 入金と出金が相殺して純額がゼロに丸まった、(3) その区間の入出庫がすべて価格解決できず計上対象が残らなかった（資産名は *_performance.unpriced_flow_assets）、(4) 最終点（現在のリアルタイム評価額。次の点が無く区間が空なので常に undefined）、(5) 入出金履歴が欠けていて全点で抑止した、のいずれか。(1)〜(4) は「計測できたうえでマーカーが立たない」、(5) は「そもそも計測していない」で意味が異なり、**本フィールドの有無だけでは区別できない**。区別が必要な場合は *_performance.flow_measured（false なら (5)）と flow_unavailable_reason を参照する',
 		),
 });
 
@@ -826,7 +852,7 @@ export const AnalyzeMyPortfolioMetaSchema = z.object({
 		.nonnegative()
 		.optional()
 		.describe(
-			'入出庫日の日次価格を解決できず現在価格で仮評価した入出庫の件数。1 件以上あると deposit_withdrawal_summary / *_dw_summary / *_performance.net_flow_jpy の該当分が相場と連動して動く。該当なしのときは undefined。この件数は「年 chunk の取得上限で切り落とした」「取得に失敗した」「上場前で本当に価格が無い」を合算した値なので、再実行で解消しうるかは本フィールドだけでは判断できない（内訳は flowPriceChunkTruncated* / flowPriceChunkFailed*）。',
+			'入出庫日の日次価格を解決できず現在価格で仮評価した入出庫の件数。1 件以上あると deposit_withdrawal_summary / *_dw_summary / *_performance.net_flow_jpy の該当分が相場と連動して動く。ステーキング報酬（入金種別 STAKING）も数えるが、その分は net_flow_jpy には入らず、*_performance.staking_reward_jpy と deposit_withdrawal_summary.staking_reward_estimated_jpy の側で動く。該当なしのときは undefined。この件数は「年 chunk の取得上限で切り落とした」「取得に失敗した」「上場前で本当に価格が無い」を合算した値なので、再実行で解消しうるかは本フィールドだけでは判断できない（内訳は flowPriceChunkTruncated* / flowPriceChunkFailed*）。',
 		),
 	flowPriceChunkTruncatedDepositCount: z
 		.number()
@@ -905,6 +931,12 @@ const DepositItemSchema = z.object({
 	network: z.string().optional().describe('ネットワーク（暗号資産のみ）'),
 	txid: z.string().optional().describe('トランザクションID（暗号資産のみ）'),
 	status: z.string().describe('ステータス（FOUND / CONFIRMED / DONE）'),
+	category: z
+		.string()
+		.optional()
+		.describe(
+			'入金種別（NORMAL / MANUAL / STAKING）。STAKING はステーキング報酬の入庫で、analyze_my_portfolio は元本ではなく成果として扱う。API が返さない場合は undefined',
+		),
 	found_at: z.string().optional().describe('検出日時（ISO8601）'),
 	confirmed_at: z.string().optional().describe('確認日時（ISO8601）'),
 });
@@ -1007,6 +1039,12 @@ const MarginPositionSchema = z.object({
 	pair: z.string().describe('通貨ペア'),
 	position_side: z.enum(['long', 'short']).describe('ロング / ショート'),
 	open_amount: z.string().describe('建玉数量'),
+	locked_amount: z
+		.string()
+		.optional()
+		.describe(
+			'建玉ロック数量（アクティブな信用決済注文の remaining_amount の合計）。open_amount のうち決済注文に充てられている分。API が返さない場合は undefined',
+		),
 	product: z.string().describe('建玉評価額'),
 	average_price: z.string().describe('平均取得価格'),
 	unrealized_fee_amount: z.string().describe('未収手数料'),
@@ -1015,10 +1053,16 @@ const MarginPositionSchema = z.object({
 
 const MarginNoticeSchema = z
 	.object({
-		what: z.string().nullable().describe('追証・不足金の種別（イベント無しは null）'),
+		what: z
+			.string()
+			.nullable()
+			.describe('通知の種別: margin_call（追証）/ debt（不足金あり）/ settled（精算済み）。通知が無いときは null'),
 		occurred_at: z.number().nullable().describe('発生日時（unix ms、無しは null）'),
-		amount: z.string().nullable().describe('追証・不足金額（無しは null）'),
-		due_date_at: z.number().nullable().describe('期日（unix ms、無しは null）'),
+		amount: z.string().nullable().describe('通知の金額（JPY）。通知が無いとき、または what が settled のときは null'),
+		due_date_at: z
+			.number()
+			.nullable()
+			.describe('対応期限（unix ms）。通知が無いとき、または what が settled のときは null'),
 	})
 	.nullable();
 

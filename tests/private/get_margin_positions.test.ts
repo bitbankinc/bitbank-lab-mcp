@@ -86,7 +86,7 @@ describe('get_margin_positions', () => {
 		const withNotice = {
 			...rawMarginPositionsResponse,
 			notice: {
-				what: '追証',
+				what: 'margin_call',
 				occurred_at: 1710000000000,
 				amount: '100000',
 				due_date_at: 1710200000000,
@@ -170,7 +170,7 @@ describe('get_margin_positions', () => {
 		const withBoth = {
 			...rawMarginPositionsResponse,
 			notice: {
-				what: '追証',
+				what: 'margin_call',
 				occurred_at: 1710000000000,
 				amount: '100000',
 				due_date_at: 1710200000000,
@@ -236,7 +236,7 @@ describe('get_margin_positions', () => {
 	it('notice にイベントあり（一部フィールドのみ非 null）でも ⚠ 行を出す', async () => {
 		const partialNotice = {
 			...rawMarginPositionsResponse,
-			notice: { what: '追証', occurred_at: null, amount: '100000', due_date_at: null },
+			notice: { what: 'margin_call', occurred_at: null, amount: '100000', due_date_at: null },
 		};
 		setupFetchMock(mockBitbankSuccess(partialNotice));
 
@@ -250,6 +250,84 @@ describe('get_margin_positions', () => {
 		expect(firstLine).toContain('追証');
 		expect(firstLine).toContain('100,000');
 		expect(firstLine).toContain('期日: —');
+	});
+
+	it.each([
+		['margin_call', '追証（margin_call）'],
+		['debt', '不足金（debt）'],
+	])('notice.what=%s は日本語の種別と API の値を並べて出す', async (what, label) => {
+		const withNotice = {
+			...rawMarginPositionsResponse,
+			notice: { what, occurred_at: 1710000000000, amount: '100000', due_date_at: 1710200000000 },
+		};
+		setupFetchMock(mockBitbankSuccess(withNotice));
+
+		const { default: getMarginPositions } = await import('../../tools/private/get_margin_positions.js');
+		const result = await getMarginPositions({});
+
+		assertOk(result);
+		expect(result.summary.split('\n')[0]).toBe(`⚠ ${label}: ¥100,000 円（期日: 2024-03-11T23:33:20.000Z）`);
+	});
+
+	it('notice.what=settled は ⚠ を付けず、金額・期日（どちらも null）の代わりに発生日時を出す', async () => {
+		const settled = {
+			...rawMarginPositionsResponse,
+			notice: { what: 'settled', occurred_at: 1710000000000, amount: null, due_date_at: null },
+		};
+		setupFetchMock(mockBitbankSuccess(settled));
+
+		const { default: getMarginPositions } = await import('../../tools/private/get_margin_positions.js');
+		const result = await getMarginPositions({});
+
+		assertOk(result);
+		expect(result.meta.hasNotice).toBe(true);
+		const firstLine = result.summary.split('\n')[0];
+		expect(firstLine).toBe('通知: 精算済み（settled）（発生: 2024-03-09T16:00:00.000Z）');
+		expect(result.summary).not.toContain('⚠');
+		expect(firstLine).not.toContain('期日');
+	});
+
+	it('notice.what が未知の値なら日本語の文言を当てず、API の値をそのまま出す', async () => {
+		const unknown = {
+			...rawMarginPositionsResponse,
+			notice: { what: 'new_kind', occurred_at: null, amount: '100000', due_date_at: null },
+		};
+		setupFetchMock(mockBitbankSuccess(unknown));
+
+		const { default: getMarginPositions } = await import('../../tools/private/get_margin_positions.js');
+		const result = await getMarginPositions({});
+
+		assertOk(result);
+		expect(result.summary.split('\n')[0]).toBe('⚠ new_kind: ¥100,000 円（期日: —）');
+	});
+
+	it('locked_amount が正の建玉だけ「決済注文中」を出し、data にも locked_amount を残す', async () => {
+		setupFetchMock(mockBitbankSuccess(rawMarginPositionsResponse));
+
+		const { default: getMarginPositions } = await import('../../tools/private/get_margin_positions.js');
+		const result = await getMarginPositions({});
+
+		assertOk(result);
+		expect(result.data.positions[0].locked_amount).toBe('0');
+		expect(result.data.positions[1].locked_amount).toBe('0.4');
+		const lines = result.summary.split('\n');
+		expect(lines.find((l) => l.startsWith('BTC/JPY'))).not.toContain('決済注文中');
+		expect(lines.find((l) => l.startsWith('ETH/JPY'))).toContain('決済注文中: 0.4');
+	});
+
+	it('locked_amount を返さない応答でも ok:true で、「決済注文中」を出さない', async () => {
+		const withoutLocked = {
+			...rawMarginPositionsResponse,
+			positions: rawMarginPositionsResponse.positions.map(({ locked_amount: _locked, ...p }) => p),
+		};
+		setupFetchMock(mockBitbankSuccess(withoutLocked));
+
+		const { default: getMarginPositions } = await import('../../tools/private/get_margin_positions.js');
+		const result = await getMarginPositions({});
+
+		assertOk(result);
+		expect(result.data.positions[1].locked_amount).toBeUndefined();
+		expect(result.summary).not.toContain('決済注文中');
 	});
 
 	it('notice: null（後方互換）でも ok:true で建玉を返す', async () => {

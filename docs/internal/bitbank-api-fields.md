@@ -26,8 +26,8 @@ Zod スキーマ・フィクスチャ）との P4「外部 API 契約整合」�
 | 項目 | 値 |
 |---|---|
 | source | `bitbankinc/bitbank-api-docs`（`rest-api_JP.md` / `rest-api.md`） |
-| upstream commit | `71980979d7da6c0fc591d5031d54e4469a8ede2f`（両ファイル共通・取得時点の per-file 最新コミット） |
-| 取得日 | 2026-06-08 (JST) |
+| upstream commit | `rest-api_JP.md`: `17b2f22feaf3f9b1f6901fa2c1f212e9203cd097` / `rest-api.md`: `0badd68019646171826625b074cfef4235c3e713`（取得時点の per-file 最新コミット。2 ファイルで異なる） |
+| 取得日 | 2026-11-05 (JST) |
 | 取得方法 | ローカル取得。本文は `raw.githubusercontent.com/.../master/rest-api_JP.md`、commit SHA は `git clone --filter=blob:none` 後の per-file `git log -1 --format=%H -- <file>`（= API `commits?path=` と同値）。サンドボックスから `api.github.com` は rate limit のため git/raw 経由 |
 | 機械可読 lock | [`bitbank-api-docs.lock.json`](./bitbank-api-docs.lock.json)（ドリフト検知 CI が参照） |
 | 照合方法 | P4「外部 API 契約整合」診断（docs のフィールド/パラメータを実コードへ逐語照合） |
@@ -36,9 +36,10 @@ Zod スキーマ・フィクスチャ）との P4「外部 API 契約整合」�
 確度の凡例: **verbatim** = 公式 docs の Name/Type 表と JSON 例の両方を逐語確認 / **table-verbatim** =
 Name/Type 表のみ逐語確認（JSON 例なし）/ **params-verbatim** = パラメータ表のみ逐語確認。
 
-> **行番号は locked commit（`71980979…`）時点の `rest-api_JP.md` に対応する。** docs 改訂で行は動くため、
+> **行番号は locked commit（`17b2f22…`）時点の `rest-api_JP.md` に対応する。** docs 改訂で行は動くため、
 > スナップショットの正は SHA。行番号がズレたら本ミラーが古い兆候 → 鮮度ゲート / CI を参照。
-> 英語版 `rest-api.md` も同一 SHA で相互確認できる（lock の 2 ファイルは同コミット）。
+> 英語版 `rest-api.md` の locked commit（`0badd68…`）は日本語版より 1 つ新しい。差分は本ミラーの対象外の
+> エンドポイント（未承認入金・入金元情報）の説明文だけで、本ミラーが扱うフィールドは両版で一致する。
 
 ## ミラー鮮度ゲート（P4 プロンプト前置きに追記する文言）
 
@@ -56,7 +57,7 @@ Name/Type 表のみ逐語確認（JSON 例なし）/ **params-verbatim** = パ�
 （ground truth の優先順位は live > ミラー。ミラーは常に snapshot として扱い、live を名乗らせない。）
 ```
 
-現在の基準日は **2026-06-08**（lock 参照）。upstream との照合は週次の
+現在の基準日は **2026-11-05**（lock 参照）。upstream との照合は週次の
 [`bitbank-api-docs-drift.yml`](../../.github/workflows/bitbank-api-docs-drift.yml) が自動実行し、
 drift 時に「ミラー要更新」issue を起票する。
 
@@ -197,7 +198,7 @@ drift 時に「ミラー要更新」issue を起票する。
 }
 ```
 
-コード対応: `src/private/schemas.ts` `GetOrderDataSchema`（`:997` 付近、`canceled_at` を含む）、
+コード対応: `src/private/schemas.ts` `GetOrderDataSchema`（`:1020` 付近、`canceled_at` を含む）、
 `tools/private/get_order.ts`。
 
 ## `/v1/user/spot/active_orders`（アクティブ注文）
@@ -305,16 +306,38 @@ drift 時に「ミラー要更新」issue を起票する。
 
 ## `/v1/user/margin/positions`（建玉・追証・不足金額情報）
 
-確度: **verbatim**（表 `:851-856` / JSON `:879-909`）。パラメータ無し。
+確度: **verbatim**（表 `:851-856`・`notice` 内訳 `:860-865`・`positions` 内訳 `:869-878` / JSON `:901-932`）。パラメータ無し。
 
 | フィールド | 型 | 備考 | docs 行 |
 |---|---|---|---|
-| `notice` | `{what:string\|null, occurred_at:number\|null, amount:string\|null, due_date_at:number\|null}` | `追証` / `不足金` / `精算` に関する情報（内側フィールドが nullable） | `:853` |
+| `notice` | `{what:string\|null, occurred_at:number\|null, amount:string\|null, due_date_at:number\|null}` | `追証` / `不足金` / `精算` に関する情報（内側フィールドが nullable。内訳は下表） | `:853` |
 | `payables` | `{amount:string}` | 不足金額 | `:854` |
-| `positions` | `[{pair, position_side, open_amount, product, average_price, unrealized_fee_amount, unrealized_interest_amount}]`（各 string） | 建玉情報 | `:855` |
+| `positions` | `[{pair, position_side, open_amount, locked_amount, product, average_price, unrealized_fee_amount, unrealized_interest_amount}]`（各 string。内訳は下表） | 建玉情報 | `:855` |
 | `losscut_threshold` | `{individual:string, company:string}` | 強制決済掛け目 | `:856` |
 
-### 公式 JSON 例（verbatim, `:879-909`）
+`notice` の内訳:
+
+| フィールド | 型 | 備考 | docs 行 |
+|---|---|---|---|
+| `what` | string \| null | `margin_call`（追証）/ `debt`（不足金あり）/ `settled`（精算済）。通知が無いときは `null` | `:862` |
+| `occurred_at` | number \| null | 通知発生日時の UNIX タイムスタンプ。通知が無いときは `null` | `:863` |
+| `amount` | string \| null | 通知の金額（JPY）。通知が無いとき、または `what` が `settled` のときは `null` | `:864` |
+| `due_date_at` | number \| null | 対応期限の UNIX タイムスタンプ。通知が無いとき、または `what` が `settled` のときは `null` | `:865` |
+
+`positions` の各要素:
+
+| フィールド | 型 | 備考 | docs 行 |
+|---|---|---|---|
+| `pair` | string | 通貨ペア | `:871` |
+| `position_side` | string | `long` / `short` | `:872` |
+| `open_amount` | string | 建玉数量 | `:873` |
+| `locked_amount` | string | 建玉ロック数量（アクティブ信用決済注文の `remaining_amount` の合計） | `:874` |
+| `product` | string | この建玉の quote 量 | `:875` |
+| `average_price` | string | 平均約定価格（`product` / `open_amount`） | `:876` |
+| `unrealized_fee_amount` | string | 未実現手数料 | `:877` |
+| `unrealized_interest_amount` | string | 未実現利息 | `:878` |
+
+### 公式 JSON 例（verbatim, `:901-932`）
 
 ```json
 {
@@ -332,6 +355,7 @@ drift 時に「ミラー要更新」issue を起票する。
         "pair": "string",
         "position_side": "string",
         "open_amount": "0",
+        "locked_amount": "0",
         "product": "0",
         "average_price": "0",
         "unrealized_fee_amount": "0",
@@ -344,37 +368,39 @@ drift 時に「ミラー要更新」issue を起票する。
 ```
 
 コード対応: `src/private/schemas.ts` `GetMarginPositionsDataSchema`。`notice` 全体を `null` 許容として
-扱うコードは docs の「内側 nullable」より緩い（建玉ゼロ時の挙動は live 要確認）。
+扱うコードは docs の「内側 nullable」より緩い（建玉ゼロ時の挙動は live 要確認）。`locked_amount` は
+`MarginPositionSchema` で optional（live 確認済み 2026-11-05: `positions[]` に `locked_amount` あり。古い応答に備えて optional のままにする）。`what` の表示は `tools/private/get_margin_positions.ts`
+の値ごとの表で日本語にし、表に無い値はそのまま出す。
 
 ## `/v1/user/spot/trade_history`（約定履歴）
 
-確度: **verbatim**（表 `:933-949` / JSON `:972-996`）。パラメータ `pair` / `count`(≤1000) / `order_id` /
-`since`(ms) / `end`(ms) / `order`(`asc`/`desc`、既定 `desc`)（`:922-929`）。
+確度: **verbatim**（表 `:956-972` / JSON `:995-1019`）。パラメータ `pair` / `count`(≤1000) / `order_id` /
+`since`(ms) / `end`(ms) / `order`(`asc`/`desc`、既定 `desc`)（`:945-952`）。
 
 | フィールド | 型 | 備考 | docs 行 |
 |---|---|---|---|
-| `trade_id` | number | trade id | `:935` |
-| `pair` | string | 通貨ペア | `:936` |
-| `order_id` | number | 注文ID | `:937` |
-| `side` | string | `buy` / `sell` | `:938` |
-| `position_side` | string \| undefined | `long` / `short`（信用のみ） | `:939` |
-| `type` | string | `limit` / `market` / `stop` / `stop_limit` / `take_profit` / `stop_loss` / `losscut` | `:940` |
-| `amount` | string | 注文量 | `:941` |
-| `price` | string | 価格 | `:942` |
-| `maker_taker` | string | `maker` / `taker` | `:943` |
-| `fee_amount_base` | string | base 手数料 | `:944` |
-| `fee_amount_quote` | string | quote 手数料 | `:945` |
-| `fee_occurred_amount_quote` | string | quote 発生手数料。後ほど徴収される。**現物取引では `fee_amount_quote` と同値** | `:946` |
-| `profit_loss` | string \| undefined | 実現損益 | `:947` |
-| `interest` | string \| undefined | 利息 | `:948` |
-| `executed_at` | number | 約定日時（UnixTime ミリ秒） | `:949` |
+| `trade_id` | number | trade id | `:958` |
+| `pair` | string | 通貨ペア | `:959` |
+| `order_id` | number | 注文ID | `:960` |
+| `side` | string | `buy` / `sell` | `:961` |
+| `position_side` | string \| undefined | `long` / `short`（信用のみ） | `:962` |
+| `type` | string | `limit` / `market` / `stop` / `stop_limit` / `take_profit` / `stop_loss` / `losscut` | `:963` |
+| `amount` | string | 注文量 | `:964` |
+| `price` | string | 価格 | `:965` |
+| `maker_taker` | string | `maker` / `taker` | `:966` |
+| `fee_amount_base` | string | base 手数料 | `:967` |
+| `fee_amount_quote` | string | quote 手数料 | `:968` |
+| `fee_occurred_amount_quote` | string | quote 発生手数料。後ほど徴収される。**現物取引では `fee_amount_quote` と同値** | `:969` |
+| `profit_loss` | string \| undefined | 実現損益 | `:970` |
+| `interest` | string \| undefined | 利息 | `:971` |
+| `executed_at` | number | 約定日時（UnixTime ミリ秒） | `:972` |
 
-> **doc 内不整合（記録）: `fee_occurred_amount_quote` は Name/Type 表（`:946`）には在るが JSON 例
-> （`:972-996`）には無い。** コードは正しく表に従い `fee_occurred_amount_quote` を採用する
+> **doc 内不整合（記録）: `fee_occurred_amount_quote` は Name/Type 表（`:969`）には在るが JSON 例
+> （`:995-1019`）には無い。** コードは正しく表に従い `fee_occurred_amount_quote` を採用する
 > （`src/private/schemas.ts:83`, `src/handlers/portfolio/types.ts:56,73`, `calc.ts:301`）。
 > 実績の手数料・利息はここ（`fee_occurred_amount_quote` + `interest`）が正。見積りは `lib/fees.ts`。
 
-### 公式 JSON 例（verbatim, `:972-996`。`fee_occurred_amount_quote` は表のみで JSON 例には未掲載）
+### 公式 JSON 例（verbatim, `:995-1019`。`fee_occurred_amount_quote` は表のみで JSON 例には未掲載）
 
 ```json
 {
@@ -407,25 +433,26 @@ drift 時に「ミラー要更新」issue を起票する。
 
 ## `/v1/user/deposit_history`（入金履歴）
 
-確度: **verbatim**（表 `:1017-1027` / JSON `:1056-1073`）。パラメータ `asset` / `count`(≤100) /
-`since`(ms) / `end`(ms)（`:1008-1013`）。
+確度: **verbatim**（表 `:1040-1051` / JSON `:1080-1098`）。パラメータ `asset` / `count`(≤100) /
+`since`(ms) / `end`(ms)（`:1031-1036`）。
 
 | フィールド | 型 | 備考 | docs 行 |
 |---|---|---|---|
-| `uuid` | string | 入金識別 uuid | `:1019` |
-| `address` | string | 入金 address（暗号資産入金のみ）。**公式は表のみ・JSON 例には未掲載**だが live 確認済み（2026-06-08, `deposits[]` キーに `address` あり / jpy 入金は無し） | `:1020` |
-| `asset` | string | アセット名 | `:1021` |
-| `network` | string | ネットワーク名 | `:1022` |
-| `amount` | number（表）/ "string"（JSON 例） | 入金数量。**表は `number`・JSON 例は `"string"` で不一致（記録）** | `:1023` |
-| `txid` | string \| null | 入金トランザクションID（暗号資産のみ） | `:1024` |
-| `status` | string | `FOUND` / `CONFIRMED` / `DONE` | `:1025` |
-| `found_at` | number | 検知 UnixTime（ミリ秒） | `:1026` |
-| `confirmed_at` | number | 承認 UnixTime（ミリ秒、承認後のみ存在） | `:1027` |
+| `uuid` | string | 入金識別 uuid | `:1042` |
+| `address` | string | 入金 address（暗号資産入金のみ）。**公式は表のみ・JSON 例には未掲載**だが live 確認済み（2026-06-08, `deposits[]` キーに `address` あり / jpy 入金は無し） | `:1043` |
+| `asset` | string | アセット名 | `:1044` |
+| `network` | string | ネットワーク名 | `:1045` |
+| `amount` | number（表）/ "string"（JSON 例） | 入金数量。**表は `number`・JSON 例は `"string"` で不一致（記録）** | `:1046` |
+| `txid` | string \| null | 入金トランザクションID（暗号資産のみ） | `:1047` |
+| `status` | string | `FOUND` / `CONFIRMED` / `DONE` | `:1048` |
+| `category` | string | 入金種別 `NORMAL` / `MANUAL` / `STAKING`。**`MANUAL` の意味は docs に無い**。live 確認済み（2026-11-05, 暗号資産入金の `deposits[]` に `category` あり。値は `NORMAL` / `MANUAL` を観測、`STAKING` は未観測） | `:1049` |
+| `found_at` | number | 検知 UnixTime（ミリ秒） | `:1050` |
+| `confirmed_at` | number | 承認 UnixTime（ミリ秒、承認後のみ存在） | `:1051` |
 
-> 注意事項（`:1033`）: 入金履歴レスポンスには宛先タグ・メモおよび銀行口座情報は含まれない。
+> 注意事項（`:1057`）: 入金履歴レスポンスには宛先タグ・メモおよび銀行口座情報は含まれない。
 > 他システムとの突合には `txid` を使う。
 
-### 公式 JSON 例（verbatim, `:1056-1073`）
+### 公式 JSON 例（verbatim, `:1080-1098`）
 
 ```json
 {
@@ -439,6 +466,7 @@ drift 時に「ミラー要更新」issue を起票する。
         "amount": "string",
         "txid": "string",
         "status": "string",
+        "category": "string",
         "found_at": 0,
         "confirmed_at": 0
       }
@@ -447,34 +475,37 @@ drift 時に「ミラー要更新」issue を起票する。
 }
 ```
 
-コード対応: `GetMyDepositWithdrawalDataSchema` / `tools/private/get_my_deposit_withdrawal.ts`。
+コード対応: `GetMyDepositWithdrawalDataSchema` / `tools/private/get_my_deposit_withdrawal.ts`（`category` はパススルー）。
+`analyze_my_portfolio` は `category=STAKING` をステーキング報酬として元本から外す（`src/handlers/portfolio/calc.ts`
+`isStakingReward`。純入出金・純投入額・フローマーカーから除き、数量の復元と取得原価には他の入庫と同じく入れる）。
+`category` が無い入庫は従来どおり元本として扱う。
 
 ## `/v1/user/withdrawal_history`（出金履歴）
 
-確度: **verbatim**（表 `:1504-1522` / JSON `:1550-1580`）。パラメータ `asset` / `count`(≤100) /
-`since`(ms) / `end`(ms)（`:1495-1500`）。
+確度: **verbatim**（表 `:1529-1547` / JSON `:1575-1605`）。パラメータ `asset` / `count`(≤100) /
+`since`(ms) / `end`(ms)（`:1520-1525`）。
 
 | フィールド | 型 | 備考 | docs 行 |
 |---|---|---|---|
-| `uuid` | string | 出金識別ID | `:1506` |
-| `asset` | string | アセット名 | `:1507` |
-| `account_uuid` | string | 出金アカウントのID **（機密・出力除外）** | `:1508` |
-| `amount` | string | 出金数量 | `:1509` |
-| `fee` | string | 出金手数料（**カテゴリ C: パススルー**） | `:1510` |
-| `label` | string | 出金先アドレスのラベル（暗号資産のみ） | `:1511` |
-| `address` | string | 出金先アドレス（暗号資産のみ） | `:1512` |
-| `network` | string | ネットワーク名（暗号資産のみ） | `:1513` |
-| `destination_tag` | number or string | 宛先タグ/メモ（タグ/メモ指定の暗号資産出金時のみ） | `:1514` |
-| `txid` | string \| null | 出金トランザクションID（暗号資産のみ） | `:1515` |
-| `bank_name` | string | 出金先銀行（法定通貨のみ） | `:1516` |
-| `branch_name` | string | 出金先銀行支店（法定通貨のみ）**（機密・出力除外）** | `:1517` |
-| `account_type` | string | 出金先口座種別（法定通貨のみ）**（機密・出力除外）** | `:1518` |
-| `account_number` | string | 出金先口座番号（法定通貨のみ）**（機密・出力除外）** | `:1519` |
-| `account_owner` | string | 出金先口座名義（法定通貨のみ）**（機密・出力除外）** | `:1520` |
-| `status` | string | `CONFIRMING` / `EXAMINING` / `SENDING` / `DONE` / `REJECTED` / `CANCELED` / `CONFIRM_TIMEOUT` | `:1521` |
-| `requested_at` | number | リクエスト日時 UnixTime（ミリ秒） | `:1522` |
+| `uuid` | string | 出金識別ID | `:1531` |
+| `asset` | string | アセット名 | `:1532` |
+| `account_uuid` | string | 出金アカウントのID **（機密・出力除外）** | `:1533` |
+| `amount` | string | 出金数量 | `:1534` |
+| `fee` | string | 出金手数料（**カテゴリ C: パススルー**） | `:1535` |
+| `label` | string | 出金先アドレスのラベル（暗号資産のみ） | `:1536` |
+| `address` | string | 出金先アドレス（暗号資産のみ） | `:1537` |
+| `network` | string | ネットワーク名（暗号資産のみ） | `:1538` |
+| `destination_tag` | number or string | 宛先タグ/メモ（タグ/メモ指定の暗号資産出金時のみ） | `:1539` |
+| `txid` | string \| null | 出金トランザクションID（暗号資産のみ） | `:1540` |
+| `bank_name` | string | 出金先銀行（法定通貨のみ） | `:1541` |
+| `branch_name` | string | 出金先銀行支店（法定通貨のみ）**（機密・出力除外）** | `:1542` |
+| `account_type` | string | 出金先口座種別（法定通貨のみ）**（機密・出力除外）** | `:1543` |
+| `account_number` | string | 出金先口座番号（法定通貨のみ）**（機密・出力除外）** | `:1544` |
+| `account_owner` | string | 出金先口座名義（法定通貨のみ）**（機密・出力除外）** | `:1545` |
+| `status` | string | `CONFIRMING` / `EXAMINING` / `SENDING` / `DONE` / `REJECTED` / `CANCELED` / `CONFIRM_TIMEOUT` | `:1546` |
+| `requested_at` | number | リクエスト日時 UnixTime（ミリ秒） | `:1547` |
 
-### 公式 JSON 例（verbatim, `:1550-1580`）
+### 公式 JSON 例（verbatim, `:1575-1605`）
 
 ```json
 {
@@ -513,57 +544,57 @@ drift 時に「ミラー要更新」issue を起票する。
 
 ## `/v1/spot/pairs`（銘柄詳細・public・手数料率の源）
 
-確度: **verbatim**（表 `:1649-1687` / JSON `:1705-1751`）。**認証不要**・パラメータ無し。
+確度: **verbatim**（表 `:1674-1712` / JSON `:1730-1776`）。**認証不要**・パラメータ無し。
 **手数料 taxonomy（`.claude/rules/fees.md`）の見積りソース**: 取引手数料（A）と信用手数料（B）の率は
 すべてここから解決する（`lib/fees.ts` 経由必須。`||` 禁止・`??` 必須・クランプ禁止）。
 
 | フィールド | 型 | 単位/備考（fees taxonomy） | docs 行 |
 |---|---|---|---|
-| `name` | string | 通貨ペア | `:1651` |
-| `base_asset` | string | 原資産 | `:1652` |
-| `quote_asset` | string | クオート資産（**表のみ。JSON 例には未掲載**） | `:1653` |
-| `maker_fee_rate_base` | string | メイカー手数料率(原資産) | `:1654` |
-| `taker_fee_rate_base` | string | テイカー手数料率(原資産) | `:1655` |
-| `maker_fee_rate_quote` | string | メイカー手数料率(クオート資産)。**A: maker 見積り源** | `:1656` |
-| `taker_fee_rate_quote` | string | テイカー手数料率(クオート資産)。**A: taker 見積り源** | `:1657` |
-| `margin_open_maker_fee_rate_quote` | string \| null | 新規建て maker 手数料率。**B: open/maker** | `:1658` |
-| `margin_open_taker_fee_rate_quote` | string \| null | 新規建て taker 手数料率。**B: open/taker** | `:1659` |
-| `margin_close_maker_fee_rate_quote` | string \| null | 決済 maker 手数料率。**B: close/maker** | `:1660` |
-| `margin_close_taker_fee_rate_quote` | string \| null | 決済 taker 手数料率。**B: close/taker**（docs の説明文は「決済maker」と誤記だがフィールド名は taker） | `:1661` |
-| `margin_long_interest` | string \| null | ロング利息率/日（**見積りでは扱わない**。実績は `trade_history.interest`） | `:1662` |
-| `margin_short_interest` | string \| null | ショート利息率/日（同上） | `:1663` |
-| `margin_current_individual_ratio` | string \| null | 現在の個人のリスク想定比率 | `:1664` |
-| `margin_current_individual_until` | number \| null | 同・適用終了日時（UnixTime ミリ秒） | `:1665` |
-| `margin_current_company_ratio` | string \| null | 現在の法人のリスク想定比率 | `:1666` |
-| `margin_current_company_until` | number \| null | 同・適用終了日時 | `:1667` |
-| `margin_next_individual_ratio` | string \| null | 次の個人のリスク想定比率 | `:1668` |
-| `margin_next_individual_until` | number \| null | 同・適用終了日時 | `:1669` |
-| `margin_next_company_ratio` | string \| null | 次の法人のリスク想定比率 | `:1670` |
-| `margin_next_company_until` | number \| null | 同・適用終了日時 | `:1671` |
-| `unit_amount` | string | 最小注文数量 | `:1672` |
-| `limit_max_amount` | string | 最大注文数量 | `:1673` |
-| `market_max_amount` | string | 成行注文時の最大数量 | `:1674` |
-| `market_allowance_rate` | string | 成行買注文時の余裕率 | `:1675` |
-| `price_digits` | number | 価格切り捨て対象桁数(0起点) | `:1676` |
-| `amount_digits` | number | 数量切り捨て対象桁数(0起点) | `:1677` |
-| `is_enabled` | boolean | 通貨ペアステータス(有効/無効) | `:1678` |
-| `stop_order` | boolean | 注文停止ステータス | `:1679` |
-| `stop_order_and_cancel` | boolean | 注文および注文キャンセル停止 | `:1680` |
-| `stop_market_order` | boolean | 成行注文停止 | `:1681` |
-| `stop_stop_order` | boolean | 逆指値(成行)注文停止 | `:1682` |
-| `stop_stop_limit_order` | boolean | 逆指値(指値)注文停止 | `:1683` |
-| `stop_margin_long_order` | boolean | ロング新規建て注文停止 | `:1684` |
-| `stop_margin_short_order` | boolean | ショート新規建て注文停止 | `:1685` |
-| `stop_buy_order` | boolean | 買い注文停止 | `:1686` |
-| `stop_sell_order` | boolean | 売り注文停止 | `:1687` |
+| `name` | string | 通貨ペア | `:1676` |
+| `base_asset` | string | 原資産 | `:1677` |
+| `quote_asset` | string | クオート資産（**表のみ。JSON 例には未掲載**） | `:1678` |
+| `maker_fee_rate_base` | string | メイカー手数料率(原資産) | `:1679` |
+| `taker_fee_rate_base` | string | テイカー手数料率(原資産) | `:1680` |
+| `maker_fee_rate_quote` | string | メイカー手数料率(クオート資産)。**A: maker 見積り源** | `:1681` |
+| `taker_fee_rate_quote` | string | テイカー手数料率(クオート資産)。**A: taker 見積り源** | `:1682` |
+| `margin_open_maker_fee_rate_quote` | string \| null | 新規建て maker 手数料率。**B: open/maker** | `:1683` |
+| `margin_open_taker_fee_rate_quote` | string \| null | 新規建て taker 手数料率。**B: open/taker** | `:1684` |
+| `margin_close_maker_fee_rate_quote` | string \| null | 決済 maker 手数料率。**B: close/maker** | `:1685` |
+| `margin_close_taker_fee_rate_quote` | string \| null | 決済 taker 手数料率。**B: close/taker**（docs の説明文は「決済maker」と誤記だがフィールド名は taker） | `:1686` |
+| `margin_long_interest` | string \| null | ロング利息率/日（**見積りでは扱わない**。実績は `trade_history.interest`） | `:1687` |
+| `margin_short_interest` | string \| null | ショート利息率/日（同上） | `:1688` |
+| `margin_current_individual_ratio` | string \| null | 現在の個人のリスク想定比率 | `:1689` |
+| `margin_current_individual_until` | number \| null | 同・適用終了日時（UnixTime ミリ秒） | `:1690` |
+| `margin_current_company_ratio` | string \| null | 現在の法人のリスク想定比率 | `:1691` |
+| `margin_current_company_until` | number \| null | 同・適用終了日時 | `:1692` |
+| `margin_next_individual_ratio` | string \| null | 次の個人のリスク想定比率 | `:1693` |
+| `margin_next_individual_until` | number \| null | 同・適用終了日時 | `:1694` |
+| `margin_next_company_ratio` | string \| null | 次の法人のリスク想定比率 | `:1695` |
+| `margin_next_company_until` | number \| null | 同・適用終了日時 | `:1696` |
+| `unit_amount` | string | 最小注文数量 | `:1697` |
+| `limit_max_amount` | string | 最大注文数量 | `:1698` |
+| `market_max_amount` | string | 成行注文時の最大数量 | `:1699` |
+| `market_allowance_rate` | string | 成行買注文時の余裕率 | `:1700` |
+| `price_digits` | number | 価格切り捨て対象桁数(0起点) | `:1701` |
+| `amount_digits` | number | 数量切り捨て対象桁数(0起点) | `:1702` |
+| `is_enabled` | boolean | 通貨ペアステータス(有効/無効) | `:1703` |
+| `stop_order` | boolean | 注文停止ステータス | `:1704` |
+| `stop_order_and_cancel` | boolean | 注文および注文キャンセル停止 | `:1705` |
+| `stop_market_order` | boolean | 成行注文停止 | `:1706` |
+| `stop_stop_order` | boolean | 逆指値(成行)注文停止 | `:1707` |
+| `stop_stop_limit_order` | boolean | 逆指値(指値)注文停止 | `:1708` |
+| `stop_margin_long_order` | boolean | ロング新規建て注文停止 | `:1709` |
+| `stop_margin_short_order` | boolean | ショート新規建て注文停止 | `:1710` |
+| `stop_buy_order` | boolean | 買い注文停止 | `:1711` |
+| `stop_sell_order` | boolean | 売り注文停止 | `:1712` |
 
 > **fees taxonomy 対応**: A=取引手数料 maker/taker は `*_fee_rate_quote`、B=信用は
 > `margin_{open,close}_{maker,taker}_fee_rate_quote`。信用率が `null`（API 未提供）の場合は公称 taker
 > （`DEFAULT_TAKER_FALLBACK`）で概算し note を付す。利息（`margin_long/short_interest`）は見積りに含めない。
 > 詳細は `.claude/rules/fees.md`。
-> **doc 内不整合（記録）: `quote_asset` は Name/Type 表（`:1653`）には在るが JSON 例（`:1705-1751`）には無い。**
+> **doc 内不整合（記録）: `quote_asset` は Name/Type 表（`:1678`）には在るが JSON 例（`:1730-1776`）には無い。**
 
-### 公式 JSON 例（verbatim, `:1705-1751`。`quote_asset` は表のみで JSON 例には未掲載）
+### 公式 JSON 例（verbatim, `:1730-1776`。`quote_asset` は表のみで JSON 例には未掲載）
 
 ```json
 {

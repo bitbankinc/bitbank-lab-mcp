@@ -23,6 +23,7 @@ interface RawMarginPositionsResponse {
 		pair: string;
 		position_side: 'long' | 'short';
 		open_amount: string;
+		locked_amount?: string;
 		product: string;
 		average_price: string;
 		unrealized_fee_amount: string;
@@ -33,6 +34,13 @@ interface RawMarginPositionsResponse {
 		company: string;
 	};
 }
+
+// 未知の値には文言を当てず、API の値をそのまま出す。
+const NOTICE_LABELS: Record<string, string> = {
+	margin_call: '追証',
+	debt: '不足金',
+	settled: '精算済み',
+};
 
 export default async function getMarginPositions(args: { pair?: string }) {
 	// 下のクライアント側フィルタは API 応答の pair と `===` で突き合わせるので、入力も小文字の空間に乗せる（大文字入力で建玉が全件消える）。
@@ -63,11 +71,19 @@ export default async function getMarginPositions(args: { pair?: string }) {
 		// 危険情報（追証・不足金）は LLM が見落とさないよう summary の先頭に出す（get_margin_status.ts と揃える）。
 		const lines: string[] = [];
 
-		if (hasNotice && raw.notice) {
-			const n = raw.notice;
-			const dueDate = n.due_date_at != null ? (toIsoMs(n.due_date_at) ?? String(n.due_date_at)) : '—';
-			const amountText = n.amount != null ? `${formatPrice(Number(n.amount))} 円` : '—';
-			lines.push(`⚠ ${n.what}: ${amountText}（期日: ${dueDate}）`);
+		const n = raw.notice;
+		if (n?.what != null) {
+			const known = NOTICE_LABELS[n.what];
+			const label = known != null ? `${known}（${n.what}）` : n.what;
+			if (n.what === 'settled') {
+				// settled は完了した精算なので ⚠ を付けない（get_margin_status も SETTLED を警告にしない）。金額・期日は常に null なので発生日時を出す。
+				const occurred = n.occurred_at != null ? (toIsoMs(n.occurred_at) ?? String(n.occurred_at)) : '—';
+				lines.push(`通知: ${label}（発生: ${occurred}）`);
+			} else {
+				const dueDate = n.due_date_at != null ? (toIsoMs(n.due_date_at) ?? String(n.due_date_at)) : '—';
+				const amountText = n.amount != null ? `${formatPrice(Number(n.amount))} 円` : '—';
+				lines.push(`⚠ ${label}: ${amountText}（期日: ${dueDate}）`);
+			}
 		}
 		if (hasPayables) {
 			lines.push(`⚠ 不足金: ${formatPrice(toNum(raw.payables.amount))} 円`);
@@ -85,8 +101,9 @@ export default async function getMarginPositions(args: { pair?: string }) {
 				const sideLabel = p.position_side === 'long' ? 'ロング' : 'ショート';
 				const isJpy = p.pair.includes('jpy');
 				const avgPrice = isJpy ? formatPrice(Number(p.average_price)) : p.average_price;
+				const lockedText = (toNum(p.locked_amount) ?? 0) > 0 ? `, 決済注文中: ${p.locked_amount}` : '';
 				lines.push(
-					`${formatPair(p.pair)} ${sideLabel} ${p.open_amount} @ ${avgPrice} (評価額: ${formatPrice(Number(p.product))} 円)`,
+					`${formatPair(p.pair)} ${sideLabel} ${p.open_amount} @ ${avgPrice} (評価額: ${formatPrice(Number(p.product))} 円${lockedText})`,
 				);
 			}
 
@@ -127,7 +144,7 @@ export default async function getMarginPositions(args: { pair?: string }) {
 export const toolDef: ToolDefinition = {
 	name: 'get_margin_positions',
 	description:
-		'[Margin Positions / 信用建玉一覧] 信用取引の保有建玉一覧（通貨ペア・方向・数量・評価額・平均取得価格）を取得。追証・不足金がある場合はアラート表示。通貨ペアでフィルタ可能。Private API。',
+		'[Margin Positions / 信用建玉一覧] 信用取引の保有建玉一覧（通貨ペア・方向・数量・決済注文中の数量・評価額・平均取得価格）を取得。追証・不足金がある場合はアラート表示。通貨ペアでフィルタ可能。Private API。',
 	inputSchema: GetMarginPositionsInputSchema,
 	handler: async (args: { pair?: string }) => getMarginPositions(args),
 };

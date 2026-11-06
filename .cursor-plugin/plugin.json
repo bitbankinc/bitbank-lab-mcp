@@ -19,6 +19,7 @@
     "botters-lab"
   ],
   "category": "data",
+  "skills": "./plugins/bitbank-lab-mcp/skills/",
   "mcpServers": {
     "bitbank": {
       "command": "npx",

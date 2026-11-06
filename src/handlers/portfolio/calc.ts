@@ -496,6 +496,11 @@ export function buildPeriodAccountPnl(
 	};
 }
 
+// 元本ではなく成果なので純入出金・純投入額からは外す。数量の復元と取得原価（入庫日の価格）には他の入庫と同じく入れる。
+export function isStakingReward(d: RawDeposit): boolean {
+	return d.category === 'STAKING';
+}
+
 // 非有限な atMs は portfolioDayStartMs が throw するので、日次価格を引かずに現在価格に落とす。
 export function resolveFlowPrice(
 	pricing: FlowPricing,
@@ -605,6 +610,10 @@ export function calcDepositWithdrawalSummary(
 	let cryptoDepositEstimatedJpy = 0;
 	let hasEstimate = false;
 	const depositValuation = new FlowValuationCounter();
+	const stakingCount = cryptoDeposits.filter(isStakingReward).length;
+	let stakingEstimatedJpy = 0;
+	let hasStakingEstimate = false;
+	const stakingValuation = new FlowValuationCounter();
 	for (const d of cryptoDeposits) {
 		const amount = Number(d.amount);
 		if (!Number.isFinite(amount) || amount <= 0) continue;
@@ -613,6 +622,11 @@ export function calcDepositWithdrawalSummary(
 		cryptoDepositEstimatedJpy += amount * resolved.price;
 		depositValuation.count(resolved.basis);
 		hasEstimate = true;
+		if (isStakingReward(d)) {
+			stakingEstimatedJpy += amount * resolved.price;
+			stakingValuation.count(resolved.basis);
+			hasStakingEstimate = true;
+		}
 	}
 
 	// 手数料（w.fee）は元本に含めない。JPY 出金も amount だけを集計しているので、暗号資産出庫だけ手数料込みにすると非対称になる。
@@ -632,7 +646,7 @@ export function calcDepositWithdrawalSummary(
 	const netJpyInvested =
 		totalJpyDeposited -
 		totalJpyWithdrawn +
-		(hasEstimate ? cryptoDepositEstimatedJpy : 0) -
+		(hasEstimate ? cryptoDepositEstimatedJpy - stakingEstimatedJpy : 0) -
 		(hasWithdrawalEstimate ? cryptoWithdrawalEstimatedJpy : 0);
 
 	let accountReturnPct: number | undefined;
@@ -656,6 +670,10 @@ export function calcDepositWithdrawalSummary(
 		analysis_basis: 'deposit_withdrawal',
 	};
 	// 該当なしのときはキーごと省き、暗号資産入出庫が無い口座の出力を従来と JSON 一致させる。
+	if (stakingCount > 0) summary.staking_reward_count = stakingCount;
+	if (hasStakingEstimate) summary.staking_reward_estimated_jpy = Math.round(stakingEstimatedJpy);
+	const stakingBreakdown = stakingValuation.toBreakdown();
+	if (stakingBreakdown) summary.staking_reward_valuation = stakingBreakdown;
 	const valuation = depositValuation.toBreakdown();
 	if (valuation) summary.crypto_deposit_valuation = valuation;
 	const wdValuation = withdrawalValuation.toBreakdown();
@@ -850,7 +868,9 @@ export function buildEquityFlowByPoint(
 		byPoint.set(key, (byPoint.get(key) ?? 0) + signum * jpy);
 	};
 
-	for (const d of dw.deposits) add(d.asset, d.amount, d.status, d.confirmed_at, 1);
+	for (const d of dw.deposits) {
+		if (!isStakingReward(d)) add(d.asset, d.amount, d.status, d.confirmed_at, 1);
+	}
 	for (const w of dw.withdrawals) add(w.asset, w.amount, w.status, w.requested_at, -1);
 
 	// value_jpy と同じ粒度に丸め、相殺してゼロになった点はキーごと落とす。
@@ -971,6 +991,9 @@ export function calcPeriodNetFlow(
 	let withdrawalFee = 0;
 	const unpricedAssets = new Set<string>();
 	const valuation = new FlowValuationCounter();
+	let stakingCount = 0;
+	let stakingReward = 0;
+	const unpricedStakingAssets = new Set<string>();
 
 	for (const d of completedDeposits) {
 		if (d.asset === 'jpy') {
@@ -980,6 +1003,12 @@ export function calcPeriodNetFlow(
 		const amount = Number(d.amount);
 		if (!Number.isFinite(amount) || amount <= 0) continue;
 		const resolved = resolveFlowPrice(pricing, d.asset, d.confirmed_at);
+		if (isStakingReward(d)) {
+			stakingCount++;
+			if (resolved) stakingReward += amount * resolved.price;
+			else unpricedStakingAssets.add(d.asset);
+			continue;
+		}
 		if (resolved) {
 			netFlow += amount * resolved.price;
 			valuation.count(resolved.basis);
@@ -1018,11 +1047,14 @@ export function calcPeriodNetFlow(
 	if (unpricedAssets.size > 0) result.unpriced_assets = [...unpricedAssets].sort();
 	const breakdown = valuation.toBreakdown();
 	if (breakdown) result.valuation = breakdown;
+	// 1 件でも換算できなければ額は出さない。部分集合の合計を確定値として出さない。
+	if (unpricedStakingAssets.size > 0) result.staking_reward_unpriced_assets = [...unpricedStakingAssets].sort();
+	else if (stakingCount > 0) result.staking_reward_jpy = Math.round(stakingReward);
 	return result;
 }
 
 export const PERFORMANCE_NOTE =
-	'期初評価額は現在の保有状態から約定・入出金を逆算して復元し、期初時点の始値（1day candle open）で評価。暗号資産の入出庫は入出庫日（入庫: confirmed_at / 出庫: requested_at）の始値で JPY 換算し、その日の価格を取得できなかった分のみ現在価格で仮評価する（内訳は flow_valuation）。純入出金は元本移動のみ（出金手数料を含まない）。調整後増減 = 単純増減 - 純入出金（市場変動 + 出金手数料コスト）。増減率（change_pct / adjusted_change_pct）は期初評価額が 0、現在評価額の 1% 未満、期初の始値を解決できなかった暗号資産があり期初評価額が過小、または現在価格を解決できなかった保有があり現在評価額が過小のときは出さない（分母が小さすぎて率が運用成績を表さない、過小な分母になる、または分子が過小になるため。理由は change_pct_unavailable_reason、資産名は unpriced_start_assets / unpriced_current_assets、増減額は通常どおり出る）。期初評価額・現在評価額そのものは過小である場合でも金額を出すが、過小であることは unpriced_start_assets / unpriced_current_assets と理由コードで申告する（黙って出さない）。';
+	'期初評価額は現在の保有状態から約定・入出金を逆算して復元し、期初時点の始値（1day candle open）で評価。暗号資産の入出庫は入出庫日（入庫: confirmed_at / 出庫: requested_at）の始値で JPY 換算し、その日の価格を取得できなかった分のみ現在価格で仮評価する（内訳は flow_valuation）。純入出金は元本移動のみ（出金手数料を含まない。ステーキング報酬（入金種別 STAKING）は元本ではなく成果として扱い、純入出金に含めない。額は staking_reward_jpy）。調整後増減 = 単純増減 - 純入出金（市場変動 + 出金手数料コスト）。増減率（change_pct / adjusted_change_pct）は期初評価額が 0、現在評価額の 1% 未満、期初の始値を解決できなかった暗号資産があり期初評価額が過小、または現在価格を解決できなかった保有があり現在評価額が過小のときは出さない（分母が小さすぎて率が運用成績を表さない、過小な分母になる、または分子が過小になるため。理由は change_pct_unavailable_reason、資産名は unpriced_start_assets / unpriced_current_assets、増減額は通常どおり出る）。期初評価額・現在評価額そのものは過小である場合でも金額を出すが、過小であることは unpriced_start_assets / unpriced_current_assets と理由コードで申告する（黙って出さない）。';
 
 export const PERFORMANCE_NOTE_CHANGE_OVERSTATED =
 	'この期間は期初の始値を解決できなかった暗号資産があり（change_pct_unavailable_reason=start_boundary_unpriced）、期初評価額から脱落した分がそのまま増減額に乗るため change_jpy / adjusted_change_jpy も同じ額だけ過大（change_jpy_overstated=true）。増減額を運用成績として読まないこと。この期間の値動きはこの結果からは算出できない（資産推移シリーズも同じ日次価格に依存するため代替にならない）。';
@@ -1179,6 +1211,9 @@ export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerforman
 	if (unavailableReason) performance.flow_unavailable_reason = unavailableReason;
 	if (flow.unpriced_assets) performance.unpriced_flow_assets = flow.unpriced_assets;
 	if (flow.valuation) performance.flow_valuation = flow.valuation;
+	if (flow.staking_reward_jpy != null) performance.staking_reward_jpy = flow.staking_reward_jpy;
+	if (flow.staking_reward_unpriced_assets)
+		performance.staking_reward_unpriced_assets = flow.staking_reward_unpriced_assets;
 	if (unpricedStart) performance.unpriced_start_assets = unpricedStart;
 	if (unpricedCurrent) performance.unpriced_current_assets = unpricedCurrent;
 	if (pctUnavailableReason) performance.change_pct_unavailable_reason = pctUnavailableReason;

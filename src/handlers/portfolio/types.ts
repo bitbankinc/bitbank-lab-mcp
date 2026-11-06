@@ -75,6 +75,7 @@ export interface RawDeposit {
 	asset: string;
 	amount: string;
 	status: string;
+	category?: string;
 	found_at: number;
 	confirmed_at: number;
 }
@@ -185,6 +186,9 @@ export interface DepositWithdrawalSummary {
 	/** wire 上のキー順は interface や代入順ではなく DepositWithdrawalSummarySchema の宣言順で決まる。 */
 	crypto_deposit_valuation?: FlowValuationBreakdown;
 	crypto_withdrawal_valuation?: FlowValuationBreakdown;
+	staking_reward_count?: number;
+	staking_reward_estimated_jpy?: number;
+	staking_reward_valuation?: FlowValuationBreakdown;
 }
 
 export interface PeriodDWSummary {
@@ -219,6 +223,8 @@ export interface PeriodPerformance {
 	flow_unavailable_reason?: PortfolioFlowUnavailableReason;
 	unpriced_flow_assets?: string[];
 	flow_valuation?: FlowValuationBreakdown;
+	staking_reward_jpy?: number;
+	staking_reward_unpriced_assets?: string[];
 	unpriced_start_assets?: string[];
 	unpriced_current_assets?: string[];
 	change_pct_unavailable_reason?: PortfolioChangePctUnavailableReason;
@@ -247,6 +253,8 @@ export interface PeriodNetFlowResult {
 	/** 資産名だけを申告し、金額は載せない（sensitive-data の HIGH 分類）。該当なしは undefined。 */
 	unpriced_assets?: string[];
 	valuation?: FlowValuationBreakdown;
+	staking_reward_jpy?: number;
+	staking_reward_unpriced_assets?: string[];
 }
 
 export interface MarginStatusData extends z.infer<typeof GetMarginStatusDataSchema> {}
