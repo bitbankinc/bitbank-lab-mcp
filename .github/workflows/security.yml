@@ -30,8 +30,7 @@ jobs:
       - name: npm audit (high/critical)
         run: npm audit --audit-level=high
 
-  # gitleaks-action は organization 利用時にライセンスキーが必要なため、
-  # owner transfer 後も動くようバイナリを直接実行する（バージョン + SHA256 固定）。
+  # gitleaks-action は organization ではライセンスキーが要るので、バイナリを直接実行する。
   gitleaks:
     runs-on: ubuntu-latest
     env:

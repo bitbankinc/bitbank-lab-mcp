@@ -33,6 +33,7 @@
 ### Internal
 
 - 公式 API docs のミラー（`docs/internal/bitbank-api-fields.md`）と lock を upstream の最新に更新した（issue #177）。
+- `.github/workflows/` のコメントを `.claude/rules/comments.md` の基準で整理した（issue #416）。コメントだけの変更で、動きは変えていない。
 
 ## [0.6.0] - 2026-11-04
 

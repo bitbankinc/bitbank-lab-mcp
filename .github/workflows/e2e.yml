@@ -1,8 +1,6 @@
 name: E2E
 
-# E2E は実サブプロセス + tsx + StdioClientTransport を必要とするため
-# サンドボックスや GH Actions の一時的な network/process 制約で flaky になりやすい。
-# PR ごとには走らせず、手動実行 + 週次スケジュールで回す。
+# PR では走らせない。実サブプロセスを起こすので、Actions の一時的な network / process の制約で flaky になりやすい。
 on:
   workflow_dispatch: {}
   schedule:
