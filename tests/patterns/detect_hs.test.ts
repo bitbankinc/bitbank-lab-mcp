@@ -403,6 +403,47 @@ describe('detectHeadAndShoulders', () => {
 		).toBe(true);
 	});
 
+	it('H&S の肩が浅すぎる場合も shoulder_depth_insufficient で rejected', () => {
+		// 逆 H&S の判定を上下反転したもの。左右肩は谷から 1、頭は 45 上なので、肩の深さ比は約 2.2%。
+		const { candles, pivots } = buildHS({ leftShoulder: 86, rightShoulder: 86, head: 130 });
+		const ctx = buildCtx({ candles, pivots });
+		const result = detectHeadAndShoulders(ctx);
+
+		expect(result.patterns.filter((p) => p.type === 'head_and_shoulders')).toHaveLength(0);
+		const rejected = ctx.debugCandidates.find(
+			(d) => d.type === 'head_and_shoulders' && d.reason === 'shoulder_depth_insufficient',
+		);
+		const details = rejected?.details as Record<string, unknown> | undefined;
+		expect(details).toMatchObject({ minShoulderDepthRatio: 0.2, headDepth: 45 });
+		expect(Number(details?.leftShoulderDepthRatio)).toBeCloseTo(1 / 45, 3);
+	});
+
+	it('relaxed H&S でも浅い肩を救済しない', () => {
+		// 肩の差は strict の tolerance(4%)を超えるが、relaxed と cap(5%)には収まる。左肩 1 / 45・右肩 5 / 45 はどちらも 20% に届かない。
+		const { candles, pivots } = buildHS({ leftShoulder: 86, rightShoulder: 90, head: 130 });
+		const ctx = buildCtx({ candles, pivots });
+		const result = detectHeadAndShoulders(ctx);
+
+		expect(result.patterns.filter((p) => p.type === 'head_and_shoulders')).toHaveLength(0);
+		expect(
+			ctx.debugCandidates.some((d) => d.type === 'head_and_shoulders' && d.reason === 'shoulder_depth_insufficient'),
+		).toBe(true);
+	});
+
+	it.each([
+		[95, true],
+		[93, false],
+	] as const)('H&S の肩の深さの下限付近: 両肩 %d（谷 85・頭 130）で検出されるのは %s', (shoulder, detected) => {
+		const { candles, pivots } = buildHS({ leftShoulder: shoulder, rightShoulder: shoulder, head: 130 });
+		const ctx = buildCtx({ candles, pivots });
+		const result = detectHeadAndShoulders(ctx);
+
+		expect(result.patterns.some((p) => p.type === 'head_and_shoulders')).toBe(detected);
+		expect(
+			ctx.debugCandidates.some((d) => d.type === 'head_and_shoulders' && d.reason === 'shoulder_depth_insufficient'),
+		).toBe(!detected);
+	});
+
 	it('頭が両肩より低くない → head_not_lower で rejected', () => {
 		// head=97, shoulders=100 → 97 < 100*(1-headProminencePct=0.04)=96? No (97 > 96)（tolerancePct は無関係。issue #149）
 		const { candles, pivots } = buildInverseHS({ head: 97 });

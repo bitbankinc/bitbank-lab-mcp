@@ -47,17 +47,12 @@ type HsShoulderDepthCheck =
 			details: Record<string, number>;
 	  };
 
-function checkInverseHsShoulderDepth(
-	leftShoulder: Pivot,
-	neckline1: Pivot,
-	head: Pivot,
-	neckline2: Pivot,
-	rightShoulder: Pivot,
-): HsShoulderDepthCheck {
+function checkHsShoulderDepth(side: ReversalSide, w: HsWindow): HsShoulderDepthCheck {
+	const { p0: leftShoulder, p1: neckline1, p2: head, p3: neckline2, p4: rightShoulder } = w;
 	const necklinePrice = (neckline1.price + neckline2.price) / 2;
-	const headDepth = necklinePrice - head.price;
-	const leftDepth = neckline1.price - leftShoulder.price;
-	const rightDepth = neckline2.price - rightShoulder.price;
+	const headDepth = side === 'top' ? head.price - necklinePrice : necklinePrice - head.price;
+	const leftDepth = side === 'top' ? leftShoulder.price - neckline1.price : neckline1.price - leftShoulder.price;
+	const rightDepth = side === 'top' ? rightShoulder.price - neckline2.price : neckline2.price - rightShoulder.price;
 	const leftRatio = headDepth > 0 ? leftDepth / headDepth : Number.NaN;
 	const rightRatio = headDepth > 0 ? rightDepth / headDepth : Number.NaN;
 	if (
@@ -511,21 +506,18 @@ function buildHsPattern(
 		debugCandidates.push({ type, accepted: false, reason: sizeReason, indices: hsIndices(w) });
 		return null;
 	}
-	// TODO(#412): 天井にも肩の深さの判定を入れるか決める。それまで底だけに当てる。
-	if (side === 'bottom') {
-		const shoulderDepth = checkInverseHsShoulderDepth(p0, p1, p2, p3, p4);
-		if (!shoulderDepth.ok) {
-			if (!relaxedFactors || isFinalRelaxedStage(relaxedFactors)) {
-				debugCandidates.push({
-					type,
-					accepted: false,
-					reason: 'shoulder_depth_insufficient',
-					details: shoulderDepth.details,
-					indices: hsIndices(w),
-				});
-			}
-			return null;
+	const shoulderDepth = checkHsShoulderDepth(side, w);
+	if (!shoulderDepth.ok) {
+		if (!relaxedFactors || isFinalRelaxedStage(relaxedFactors)) {
+			debugCandidates.push({
+				type,
+				accepted: false,
+				reason: 'shoulder_depth_insufficient',
+				details: shoulderDepth.details,
+				indices: hsIndices(w),
+			});
 		}
+		return null;
 	}
 
 	// ゲートは左肩より前へ遡るので、strict でも傾いた線ではなく 2 点の平均を水準として渡す。
