@@ -146,10 +146,18 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 		vi.restoreAllMocks();
 	});
 
-	it('get_flow_metrics: summary / compact / buckets / full で同一', async () => {
-		const entries = await collectByView(['summary', 'compact', 'buckets', 'full'] as const, async (view) => {
+	it('get_flow_metrics: summary / detailed / full で同一', async () => {
+		// bucketsN をバケット数（3）より小さくしないと、detailed が本文を絞る経路を通らない。
+		const entries = await collectByView(['summary', 'detailed', 'full'] as const, async (view) => {
 			mockTransactions();
-			return flowMetricsTool.handler({ pair: 'btc_jpy', limit: 3, date: '20240101', bucketMs: 60_000, view });
+			return flowMetricsTool.handler({
+				pair: 'btc_jpy',
+				limit: 3,
+				date: '20240101',
+				bucketMs: 60_000,
+				bucketsN: 2,
+				view,
+			});
 		});
 		expectSameStructuredContent(entries);
 		for (const [view, structured] of entries) {
@@ -159,10 +167,10 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 		}
 	});
 
-	it('get_transactions: summary / items で同一', async () => {
-		const entries = await collectByView(['summary', 'items'] as const, async (view) => {
+	it('get_transactions: format=text / json で同一', async () => {
+		const entries = await collectByView(['text', 'json'] as const, async (format) => {
 			mockTransactions();
-			return transactionsTool.handler({ pair: 'btc_jpy', limit: 3, date: '20240101', view });
+			return transactionsTool.handler({ pair: 'btc_jpy', limit: 3, date: '20240101', format });
 		});
 		expectSameStructuredContent(entries);
 	});
@@ -186,14 +194,10 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 	});
 
 	/** `format` は content の形式を選ぶパラメータで structuredContent の契約を変えない（規約 4 の根拠は format にもそのまま当たる）ので、view × format の全組み合わせで同一であることを要求する。 */
-	it('get_candles: view × format（deprecated alias の items を含む）で同一', async () => {
+	it('get_candles: view × format で同一', async () => {
 		const variants = {
 			'full/text': { view: 'full', format: 'text' },
 			'full/json': { view: 'full', format: 'json' },
-			'items(alias)': { view: 'items' },
-			// alias は format 指定より優先される（get_candles の effectiveFormat）ので content の形は変わるが、structuredContent は同一。
-			'items(alias)/text': { view: 'items', format: 'text' },
-			'items(alias)/json': { view: 'items', format: 'json' },
 		} as const;
 		const entries = await collectByView(Object.keys(variants) as Array<keyof typeof variants>, async (label) => {
 			mockCandles(10);
@@ -208,7 +212,6 @@ describe('view は structuredContent を変えない（§3-2 規約 4）', () =>
 				'ok',
 				'summary',
 			]);
-			// 旧 structuredContent.items の読み替え先
 			expect(Array.isArray((structured.data as { normalized: unknown }).normalized)).toBe(true);
 		}
 	});

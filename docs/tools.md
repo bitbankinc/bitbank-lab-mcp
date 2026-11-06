@@ -240,7 +240,7 @@ API の応答をそのまま、または軽量整形して返す。指標計算�
 | `get_volatility_metrics` | **`summary`** / `detailed` / `full` | `beginner` | |
 | `detect_macd_cross` | **`summary`** / `detailed` | — | **`pair` 省略時（複数銘柄スクリーニング）でのみ有効。** `pair` 指定の単一ペア深掘りモードでは無視される |
 
-> `get_tickers_jpy` は `view` を持ちません。0.6.0 までの `view`（`ranked` / `items`）は量ではなく `data.ranked` の有無の指定だったため、0.7.0 で `includeRanked`（`true` / `false`、既定 `true`）に置き換えました。`structuredContent.data.items` はどちらでも全ペアです。`includeRanked=true` では、`sortBy` / `order` / `limit` で並べた上位を本文と `data.ranked` に出します。`false` では `data.ranked` を返さず、本文は API 順の先頭 5 件だけになり、`sortBy` / `order` / `limit` は使いません。
+> `get_tickers_jpy` は `view` を持ちません。0.6.0 までの `view`（`ranked` / `items`）は量ではなく `data.ranked` の有無の指定だったため、0.7.0 で `includeRanked`（`true` / `false`、既定 `true`）に置き換えました。`structuredContent.data.items` はどちらでも、対応ペア（既定では `lib/validate.ts` の `ALLOWED_PAIRS`）に絞ったあとの全件です。`includeRanked=true` では、`sortBy` / `order` / `limit` で並べた上位を本文と `data.ranked` に出します。`false` では `data.ranked` を返さず、本文は絞ったあとの API 順の先頭 5 件だけになり、`sortBy` / `order` / `limit` は使いません。
 
 ### 0.7.0 で削除した旧い値
 

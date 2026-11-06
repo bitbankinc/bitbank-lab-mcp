@@ -223,7 +223,7 @@ describe('カバレッジ申告（hours=24, 進行中 UTC 日に穴があるケ�
 			pair: 'btc_jpy',
 			bucketMs: 60_000,
 			hours: 24,
-			view: 'buckets',
+			view: 'detailed',
 			bucketsN: 3,
 		})) as { content: Array<{ text: string }> };
 
