@@ -162,6 +162,19 @@ describe('get_margin_status', () => {
 		expect(result.summary).toContain('新規建て可能額');
 	});
 
+	it('金額は「¥」を付けずに円で出す（¥ と 円 を重ねない）', async () => {
+		setupFetchMock(mockBitbankSuccess(rawMarginStatusResponse));
+
+		const { default: getMarginStatus } = await import('../../tools/private/get_margin_status.js');
+		const result = await getMarginStatus({});
+
+		assertOk(result);
+		expect(result.summary).toContain('保証金合計: 1,000,000円');
+		expect(result.summary).toContain('与信 — 買建: 500,000円 / 売建: 450,000円');
+		expect(result.summary).toContain('BTC/JPY — ロング: 500,000円 / ショート: 450,000円');
+		expect(result.summary).not.toMatch(/¥[\d,.-]+ ?円/);
+	});
+
 	it('強制決済率が設定されている場合サマリーに含む', async () => {
 		setupFetchMock(mockBitbankSuccess(rawMarginStatusResponse));
 

@@ -1,5 +1,5 @@
 import { nowIso, parseIso8601, toIsoMs } from '../../lib/datetime.js';
-import { formatPair, formatPrice } from '../../lib/formatter.js';
+import { formatPair, formatPrice, formatYenAmount } from '../../lib/formatter.js';
 import { normalizePairCodes } from '../../lib/pair-code.js';
 import { fail, ok } from '../../lib/result.js';
 import { type BitbankPrivateClient, getDefaultClient } from '../../src/private/client.js';
@@ -163,7 +163,7 @@ export default async function getMarginTradeHistory(args: {
 				const posLabel = t.position_side === 'long' ? 'ロング' : t.position_side === 'short' ? 'ショート' : '';
 				const isJpy = t.pair.includes('jpy');
 				const price = isJpy ? formatPrice(Number(t.price)) : t.price;
-				const plInfo = t.profit_loss ? ` 損益: ${formatPrice(Number(t.profit_loss))} 円` : '';
+				const plInfo = t.profit_loss ? ` 損益: ${formatYenAmount(Number(t.profit_loss))}` : '';
 				lines.push(
 					`[trade: ${t.trade_id} / order: ${t.order_id}] ${t.executed_at} ${formatPair(t.pair)} ${posLabel}${sideLabel} ${t.amount} @ ${price} (${t.maker_taker})${plInfo}`,
 				);

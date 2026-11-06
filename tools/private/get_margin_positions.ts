@@ -1,6 +1,6 @@
 import { toNum } from '../../lib/conversions.js';
 import { nowIso, toIsoMs } from '../../lib/datetime.js';
-import { formatPair, formatPrice } from '../../lib/formatter.js';
+import { formatPair, formatPrice, formatYenAmount } from '../../lib/formatter.js';
 import { normalizePairCodes } from '../../lib/pair-code.js';
 import { ok } from '../../lib/result.js';
 import { normalizePair } from '../../lib/validate.js';
@@ -81,12 +81,12 @@ export default async function getMarginPositions(args: { pair?: string }) {
 				lines.push(`通知: ${label}（発生: ${occurred}）`);
 			} else {
 				const dueDate = n.due_date_at != null ? (toIsoMs(n.due_date_at) ?? String(n.due_date_at)) : '—';
-				const amountText = n.amount != null ? `${formatPrice(Number(n.amount))} 円` : '—';
+				const amountText = n.amount != null ? formatYenAmount(Number(n.amount)) : '—';
 				lines.push(`⚠ ${label}: ${amountText}（期日: ${dueDate}）`);
 			}
 		}
 		if (hasPayables) {
-			lines.push(`⚠ 不足金: ${formatPrice(toNum(raw.payables.amount))} 円`);
+			lines.push(`⚠ 不足金: ${formatYenAmount(toNum(raw.payables.amount))}`);
 		}
 		if (lines.length > 0) {
 			lines.push('');
@@ -103,7 +103,7 @@ export default async function getMarginPositions(args: { pair?: string }) {
 				const avgPrice = isJpy ? formatPrice(Number(p.average_price)) : p.average_price;
 				const lockedText = (toNum(p.locked_amount) ?? 0) > 0 ? `, 決済注文中: ${p.locked_amount}` : '';
 				lines.push(
-					`${formatPair(p.pair)} ${sideLabel} ${p.open_amount} @ ${avgPrice} (評価額: ${formatPrice(Number(p.product))} 円${lockedText})`,
+					`${formatPair(p.pair)} ${sideLabel} ${p.open_amount} @ ${avgPrice} (評価額: ${formatYenAmount(Number(p.product))}${lockedText})`,
 				);
 			}
 

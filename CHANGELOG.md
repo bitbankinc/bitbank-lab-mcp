@@ -22,6 +22,7 @@
 
 - Codex の plugin で、同梱の Skill（`investment-onboarding`）が読み込まれていなかった。Codex は manifest に `skills` が無いと plugin 直下の `skills/` だけを探すが、0.5.2 で plugin 本体を `plugins/bitbank-lab-mcp/` に移していた。Codex と Cursor の manifest に `skills` を足した（issue #408）。
 - `get_margin_positions`：追証などの通知の種別を、API の値（`margin_call` / `debt` / `settled`）のまま出していた。日本語の種別を添える。完了した精算の `settled` には `⚠` を付けず、常に空の金額・期日の代わりに発生日時を出す（issue #177）。
+- `get_margin_status` / `get_margin_positions` / `get_margin_trade_history` と `analyze_my_portfolio` の建玉の行で、金額が「¥100,000 円」のように通貨記号を重ねて出ていた。金額は `formatYenAmount` で「100,000円」の形に揃えた（マイナスの損益も「-5,000円」になる。円未満は四捨五入）。
 
 ### Schema
 

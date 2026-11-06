@@ -124,6 +124,7 @@ describe('get_margin_trade_history', () => {
 		assertOk(result);
 		expect(result.summary).toContain('損益');
 		expect(result.summary).toContain('5,000');
+		expect(result.summary).not.toMatch(/¥[\d,.-]+ ?円/);
 	});
 
 	it('pair 指定を API に渡す', async () => {

@@ -4452,7 +4452,7 @@ describe('analyze_my_portfolio — ゼロ建玉の表示抑制', () => {
 		const result = await callHandler();
 
 		assertOk(result);
-		expect(result.summary).toContain('BTC/JPY ロング 0 (評価額: ¥150,000円)');
+		expect(result.summary).toContain('BTC/JPY ロング 0 (評価額: 150,000円)');
 		expect(result.summary).toContain('集計: ロング 1件 / ショート 0件 / ゼロ建玉 1件省略');
 	});
 });
