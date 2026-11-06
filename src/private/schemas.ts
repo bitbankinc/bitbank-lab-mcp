@@ -508,7 +508,7 @@ const marginCostShape = {
 
 const realizedPnlSuppressionShape = {
 	spot_realized_pnl_unavailable_reason: PortfolioUnresolvedDepositReasonEnum.optional().describe(
-		'spot_realized_pnl / total を確定値として出せなかった理由。設定されている場合その 2 フィールドは undefined で、信用側の 4 フィールドはそのまま出る。deposit_price_fetch_failed=入庫日を含む年足 chunk の取得に失敗した入庫がある銘柄を抑止した（取得の成否は実行ごとに変わるため値の再現性が無い）, deposit_price_chunk_truncated=同じく年足 chunk が件数上限で取りに行けなかった銘柄を抑止した。両方に該当する銘柄が居る実行では deposit_price_fetch_failed を載せる（再現性が無い方を優先して申告する）。銘柄別の理由は holdings[].cost_basis_unavailable_reason、銘柄名と件数は meta.warnings / summary の警告行',
+		'spot_realized_pnl / total を確定値として出せなかった理由。設定されている場合その 2 フィールドは undefined で、信用側の 3 フィールド（margin_realized_pnl / margin_interest_cost / margin_fee_cost）はそのまま出る。deposit_price_fetch_failed=入庫日を含む年足 chunk の取得に失敗した入庫がある銘柄を抑止した（取得の成否は実行ごとに変わるため値の再現性が無い）, deposit_price_chunk_truncated=同じく年足 chunk が件数上限で取りに行けなかった銘柄を抑止した。両方に該当する銘柄が居る実行では deposit_price_fetch_failed を載せる（再現性が無い方を優先して申告する）。銘柄別の理由は holdings[].cost_basis_unavailable_reason、銘柄名と件数は meta.warnings / summary の警告行',
 	),
 };
 
