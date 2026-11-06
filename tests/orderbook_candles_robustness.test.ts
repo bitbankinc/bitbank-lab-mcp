@@ -155,7 +155,7 @@ describe('P2 提示層: get_orderbook の出来高単位がペア依存', () => 
 	}
 });
 
-describe('P1 提示層: get_candles view=items の warning / meta 保持', () => {
+describe('P1 提示層: get_candles format=json の warning / meta 保持', () => {
 	function mockPartialMultiDay() {
 		let call = 0;
 		return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: unknown) => {
@@ -203,12 +203,13 @@ describe('P1 提示層: get_candles view=items の warning / meta 保持', () =>
 		expect(text).toMatch(/失敗しました/);
 	});
 
-	it('items view: 同条件で警告が content に保持され、structuredContent に meta が含まれる', async () => {
+	it('format=json: 同条件で警告が content に保持され、structuredContent に meta が含まれる', async () => {
 		mockPartialMultiDay();
-		const out = (await getDef().handler({ pair: 'btc_jpy', type: '1hour', limit: 96, view: 'items' })) as {
+		const out = (await getDef().handler({ pair: 'btc_jpy', type: '1hour', limit: 96, format: 'json' })) as {
 			content?: Array<{ text: string }>;
 			structuredContent?: Record<string, unknown>;
 		};
+		expect(Array.isArray(JSON.parse(out.content?.[0]?.text ?? ''))).toBe(true);
 		const text = (out.content ?? []).map((c) => c.text).join('\n');
 		expect(text).toMatch(/失敗しました/); // ← 警告が保持される
 		expect(text).toContain('"open"');
