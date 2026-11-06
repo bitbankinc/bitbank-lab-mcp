@@ -40,6 +40,7 @@
 
 - 公式 API docs のミラー（`docs/internal/bitbank-api-fields.md`）と lock を upstream の最新に更新した（issue #177）。
 - `.github/workflows/` のコメントを `.claude/rules/comments.md` の基準で整理した（issue #416）。コメントだけの変更で、動きは変えていない。
+- `tools/patterns/detect_hs.ts`：H&S の上下 × strict / relaxed で 4 つあった判定を、側を引数に取る形にまとめた（issue #412）。検出結果と debug の候補は変えていない。relaxed の信頼度の割引 `0.95` に `RELAXED_CONFIDENCE_PENALTY` と名前を付けた（値は issue #413 で検討する）。
 
 ## [0.6.0] - 2026-11-04
 
