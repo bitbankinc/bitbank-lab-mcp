@@ -11,6 +11,8 @@
 
 - `analyze_my_portfolio`：ステーキング報酬（入金履歴の `category` が `STAKING` の入庫）を、元本の入金ではなく成果として扱う。`*_performance.net_flow_jpy`、資産推移の `flow_jpy`、`deposit_withdrawal_summary.net_jpy_invested` から外す。そのためステーキング報酬のある口座では、`adjusted_change_jpy` と `account_return_*` が報酬の分だけ大きくなる。数量の復元と取得原価（入庫日の価格）は変わらない。`category` を返さない入庫は従来どおり元本として扱う（issue #177）。
 - `analyze_my_portfolio`：本文の入出金調整後の率に「期初評価額比」と添えた（issue #111）。
+- `get_tickers_jpy`：**入力の変更。** `view`（`ranked` / `items`）を `includeRanked`（真偽値、既定 `true`）に置き換えた。`view=items` と同じ出力は `includeRanked=false` で得られる。`view` は受け付けなくなり、渡しても無視されて既定の `includeRanked=true` になる（issue #415）。
+- 非推奨の `view` の値（`get_candles` / `get_transactions` / `get_flow_metrics`）と、`analyze_my_portfolio` の別名フィールドの削除予定を `0.4.0` から `0.7.0` に改めた。0.4.0 を過ぎても削除しておらず、description と `docs/tools.md` の期日が過去のままだった。
 
 ### Added
 

@@ -53,7 +53,13 @@ export function buildTickersJpyItemsText(items: NormalizedTicker[]): string {
 }
 
 const InputSchema = z.object({
-	view: z.enum(['items', 'ranked']).optional().default('ranked'),
+	includeRanked: z
+		.boolean()
+		.optional()
+		.default(true)
+		.describe(
+			'true（既定）: sortBy / order / limit で並べた上位を本文に出し、data.ranked も返す。false: data.ranked を返さず、本文は全ペア数と API 順の先頭 5 件だけ（sortBy / order / limit は使わない）',
+		),
 	sortBy: z.enum(['change24h', 'volume', 'name']).optional().default('change24h'),
 	order: z.enum(['asc', 'desc']).optional().default('desc'),
 	limit: z.number().int().min(1).max(50).optional().default(5),
@@ -66,7 +72,7 @@ export const toolDef: ToolDefinition = {
 	inputSchema: InputSchema,
 	handler: async (args: Record<string, unknown>) => {
 		const parsed = InputSchema.parse(args);
-		const { view, sortBy, order, limit } = parsed;
+		const { includeRanked, sortBy, order, limit } = parsed;
 		const res = await getTickersJpy();
 		if (!res?.ok) return res;
 		const items = (Array.isArray(res?.data) ? res.data : []) as Array<{
@@ -121,7 +127,7 @@ export const toolDef: ToolDefinition = {
 		if ((order || 'desc') === 'desc') sorted.reverse();
 		const ranked = sorted.slice(0, Number(limit || 5));
 
-		if (view === 'ranked') {
+		if (includeRanked) {
 			const text = buildTickersJpyRankedText(items.length, ranked, sortBy, order, limit);
 			const structured = GetTickersJpyHandlerOutputSchema.parse({
 				ok: true,

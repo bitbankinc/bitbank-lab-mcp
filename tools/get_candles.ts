@@ -755,7 +755,7 @@ export const toolDef: ToolDefinition = {
 	}) => {
 		const result = await getCandles(pair, type, date, limit, tz);
 		if (!result.ok) return result;
-		// alias の正規化はここ 1 箇所だけで行い、以降は format しか見ない。0.4.0 で enum から削除予定。
+		// alias の正規化はここ 1 箇所だけで行い、以降は format しか見ない。DEPRECATED_VIEW_REMOVAL_TARGET で enum から削除する。
 		const effectiveFormat: 'text' | 'json' = view === 'items' ? 'json' : (format ?? 'text');
 		if (effectiveFormat === 'json') {
 			const items = result?.data?.normalized ?? [];

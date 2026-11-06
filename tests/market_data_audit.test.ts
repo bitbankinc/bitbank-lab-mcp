@@ -656,7 +656,7 @@ describe('PR5 audit / 5. content visibility (warning / drop / count / timestamp 
 		const def = allToolDefs.find((t) => t.name === 'get_tickers_jpy');
 		expect(def).toBeDefined();
 		// biome-ignore lint/style/noNonNullAssertion: assertion above guarantees def is defined
-		const out = await def!.handler({ view: 'ranked', sortBy: 'change24h', order: 'desc', limit: 5 });
+		const out = await def!.handler({ sortBy: 'change24h', order: 'desc', limit: 5 });
 		// biome-ignore lint/suspicious/noExplicitAny: handler returns McpResponse
 		const r = out as any;
 		const text = getContentText(r);

@@ -118,30 +118,51 @@ describe('toolDef handler', () => {
 
 	it('getTickersJpy が ok:false を返すとそのまま返す', async () => {
 		mockedGetTickersJpy.mockResolvedValueOnce({ ok: false, summary: 'error', error: 'NETWORK' } as never);
-		const res = await toolDef.handler({ view: 'ranked' });
+		const res = await toolDef.handler({});
 		expect((res as { ok: boolean }).ok).toBe(false);
 	});
 
-	it('view=ranked でテキストに ranked 件数が含まれる', async () => {
+	it('includeRanked=true（既定）でテキストに ranked 件数が含まれる', async () => {
 		mockedGetTickersJpy.mockResolvedValueOnce(
 			mockTickerData([
 				{ pair: 'btc_jpy', last: 10_000_000, open: 9_500_000, vol: 200 },
 				{ pair: 'eth_jpy', last: 500_000, open: 480_000, vol: 100 },
 			]) as never,
 		);
-		const res = await toolDef.handler({ view: 'ranked', sortBy: 'change24h', order: 'desc', limit: 2 });
+		const res = await toolDef.handler({ sortBy: 'change24h', order: 'desc', limit: 2 });
 		const text = (res as { content: Array<{ text: string }> }).content[0].text;
 		expect(text).toContain('全2ペア取得');
 		expect(text).toContain('top2');
 	});
 
-	it('view=items でテキストに全件数が含まれる', async () => {
+	it('includeRanked=false でテキストに全件数が含まれる', async () => {
 		mockedGetTickersJpy.mockResolvedValueOnce(
 			mockTickerData([{ pair: 'btc_jpy', last: 10_000_000, open: 9_000_000, vol: 300 }]) as never,
 		);
-		const res = await toolDef.handler({ view: 'items' });
+		const res = await toolDef.handler({ includeRanked: false });
 		const text = (res as { content: Array<{ text: string }> }).content[0].text;
 		expect(text).toContain('全1ペア取得');
+	});
+
+	it('includeRanked=false では data.ranked を返さず、本文は sortBy / limit を使わず API 順になる', async () => {
+		mockedGetTickersJpy.mockResolvedValueOnce(
+			mockTickerData([
+				{ pair: 'eth_jpy', last: 500_000, open: 480_000, vol: 100 },
+				{ pair: 'btc_jpy', last: 10_000_000, open: 9_000_000, vol: 300 },
+			]) as never,
+		);
+		const res = await toolDef.handler({ includeRanked: false, sortBy: 'name', order: 'asc', limit: 1 });
+		const { content, structuredContent } = asMcp<{ data: Record<string, unknown> }>(res);
+		expect(structuredContent.data).toHaveProperty('items');
+		expect(structuredContent.data).not.toHaveProperty('ranked');
+		const text = content[0].text;
+		expect(text).not.toContain('top1');
+		expect(text.indexOf('ETH/JPY')).toBeLessThan(text.indexOf('BTC/JPY'));
+	});
+
+	it('includeRanked に真偽値以外を渡すと入力エラーになる', async () => {
+		await expect(toolDef.handler({ includeRanked: 'false' })).rejects.toThrow();
+		expect(mockedGetTickersJpy).not.toHaveBeenCalled();
 	});
 
 	it('sortBy=volume で出来高の大きいペアが上位にくる', async () => {
@@ -151,7 +172,7 @@ describe('toolDef handler', () => {
 				{ pair: 'eth_jpy', last: 500_000, open: 500_000, vol: 1_000 }, // 大きい出来高
 			]) as never,
 		);
-		const res = await toolDef.handler({ view: 'ranked', sortBy: 'volume', order: 'desc', limit: 2 });
+		const res = await toolDef.handler({ sortBy: 'volume', order: 'desc', limit: 2 });
 		const text = (res as { content: Array<{ text: string }> }).content[0].text;
 		// ETH/JPY が出来高で上位に来る（出来高 = vol × last = 1000 × 500000 = 5億）
 		expect(text).toContain('1. ETH/JPY');
@@ -165,7 +186,7 @@ describe('toolDef handler', () => {
 				{ pair: 'ada_jpy', last: 100, open: 100, vol: 1 },
 			]) as never,
 		);
-		const res = await toolDef.handler({ view: 'ranked', sortBy: 'name', order: 'desc', limit: 2 });
+		const res = await toolDef.handler({ sortBy: 'name', order: 'desc', limit: 2 });
 		const text = (res as { content: Array<{ text: string }> }).content[0].text;
 		// desc=逆順なので btc > ada → BTC/JPY が1位
 		expect(text).toContain('1. BTC/JPY');
@@ -176,7 +197,7 @@ describe('toolDef handler', () => {
 		mockedGetTickersJpy.mockResolvedValueOnce(
 			mockTickerData([{ pair: 'xrp_jpy', last: 110, open: 100, vol: 50 }]) as never,
 		);
-		const res = await toolDef.handler({ view: 'ranked', sortBy: 'change24h', order: 'desc', limit: 1 });
+		const res = await toolDef.handler({ sortBy: 'change24h', order: 'desc', limit: 1 });
 		const text = (res as { content: Array<{ text: string }> }).content[0].text;
 		// change = (110-100)/100*100 = +10%
 		expect(text).toContain('+10.00%');
@@ -186,7 +207,7 @@ describe('toolDef handler', () => {
 		mockedGetTickersJpy.mockResolvedValueOnce(
 			mockTickerData([{ pair: 'btc_jpy', last: 5_000_000, open: 5_000_000, vol: 100 }]) as never,
 		);
-		const res = await toolDef.handler({ view: 'ranked', sortBy: 'change24h', order: 'desc', limit: 5 });
+		const res = await toolDef.handler({ sortBy: 'change24h', order: 'desc', limit: 5 });
 		const sc = asMcp<Record<string, unknown>>(res).structuredContent;
 		expect(sc.ok).toBe(true);
 		expect(sc.data).toHaveProperty('items');
@@ -212,7 +233,7 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 				},
 			]) as never,
 		);
-		const res = await toolDef.handler({ view: 'ranked', sortBy: 'change24h', order: 'desc', limit: 1 });
+		const res = await toolDef.handler({ sortBy: 'change24h', order: 'desc', limit: 1 });
 		const sc = asMcp<{ data: { items: Array<Record<string, unknown>> } }>(res).structuredContent;
 		const item = sc.data.items[0];
 		expect(item.lastN).toBeNull();
@@ -234,7 +255,7 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 				},
 			]) as never,
 		);
-		const res = await toolDef.handler({ view: 'items' });
+		const res = await toolDef.handler({ includeRanked: false });
 		const sc = asMcp<{ data: { items: Array<Record<string, unknown>> } }>(res).structuredContent;
 		const item = sc.data.items[0];
 		expect(item.volN).toBeNull();
@@ -258,7 +279,7 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 				},
 			]) as never,
 		);
-		const res = await toolDef.handler({ view: 'items' });
+		const res = await toolDef.handler({ includeRanked: false });
 		const sc = asMcp<{ data: { items: Array<Record<string, unknown>> } }>(res).structuredContent;
 		const item = sc.data.items[0];
 		expect(item.lastN).toBeNull();
@@ -291,7 +312,7 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 				}, // changeN=null
 			]) as never,
 		);
-		const res = await toolDef.handler({ view: 'ranked', sortBy: 'change24h', order: 'desc', limit: 2 });
+		const res = await toolDef.handler({ sortBy: 'change24h', order: 'desc', limit: 2 });
 		const sc = asMcp<{ data: { ranked: Array<{ pair: string }> } }>(res).structuredContent;
 		expect(sc.data.ranked[0].pair).toBe('good_jpy');
 		expect(sc.data.ranked[1].pair).toBe('bad_jpy');
@@ -322,13 +343,13 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 				},
 			]) as never,
 		);
-		const res = await toolDef.handler({ view: 'ranked', sortBy: 'change24h', order: 'asc', limit: 2 });
+		const res = await toolDef.handler({ sortBy: 'change24h', order: 'asc', limit: 2 });
 		const sc = asMcp<{ data: { ranked: Array<{ pair: string }> } }>(res).structuredContent;
 		expect(sc.data.ranked[0].pair).toBe('bad_jpy');
 		expect(sc.data.ranked[1].pair).toBe('good_jpy');
 	});
 
-	it('view=ranked の structuredContent が GetTickersJpyHandlerOutputSchema.parse() を通る', async () => {
+	it('includeRanked=true の structuredContent が GetTickersJpyHandlerOutputSchema.parse() を通る', async () => {
 		const { GetTickersJpyHandlerOutputSchema } = await import('../../src/schemas.js');
 		mockedGetTickersJpy.mockResolvedValueOnce(
 			makeMockedRes([
@@ -354,12 +375,12 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 				},
 			]) as never,
 		);
-		const res = await toolDef.handler({ view: 'ranked', sortBy: 'change24h', order: 'desc', limit: 5 });
+		const res = await toolDef.handler({ sortBy: 'change24h', order: 'desc', limit: 5 });
 		const sc = asMcp<Record<string, unknown>>(res).structuredContent;
 		expect(() => GetTickersJpyHandlerOutputSchema.parse(sc)).not.toThrow();
 	});
 
-	it('view=items の structuredContent が GetTickersJpyHandlerOutputSchema.parse() を通る', async () => {
+	it('includeRanked=false の structuredContent が GetTickersJpyHandlerOutputSchema.parse() を通る', async () => {
 		const { GetTickersJpyHandlerOutputSchema } = await import('../../src/schemas.js');
 		mockedGetTickersJpy.mockResolvedValueOnce(
 			makeMockedRes([
@@ -385,7 +406,7 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 				},
 			]) as never,
 		);
-		const res = await toolDef.handler({ view: 'items' });
+		const res = await toolDef.handler({ includeRanked: false });
 		const sc = asMcp<Record<string, unknown>>(res).structuredContent;
 		expect(() => GetTickersJpyHandlerOutputSchema.parse(sc)).not.toThrow();
 	});
@@ -405,7 +426,7 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 				},
 			]) as never,
 		);
-		const res = await toolDef.handler({ view: 'items' });
+		const res = await toolDef.handler({ includeRanked: false });
 		const sc = asMcp<{ data: { items: Array<Record<string, unknown>> } }>(res).structuredContent;
 		const item = sc.data.items[0];
 		// 1e308 * 1e308 = Infinity → null に正規化されている
@@ -429,7 +450,7 @@ describe('toolDef handler — NaN/Infinity normalization', () => {
 				},
 			]) as never,
 		);
-		const res = await toolDef.handler({ view: 'ranked', sortBy: 'change24h', order: 'desc', limit: 1 });
+		const res = await toolDef.handler({ sortBy: 'change24h', order: 'desc', limit: 1 });
 		const sc = asMcp<Record<string, unknown>>(res).structuredContent;
 		const json = JSON.stringify(sc);
 		expect(json).not.toContain('NaN');
