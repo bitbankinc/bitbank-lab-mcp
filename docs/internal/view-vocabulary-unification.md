@@ -613,7 +613,7 @@ PR 3  語彙統一 Phase 1（破壊的変更はここに全部集約）         
         ↓
 PR 4  呼び出し側の追従 + ドキュメント                                            ✅ 完了
         ↓（1 リリース以上 かつ 3 ヶ月以上あける）
-PR 5  Phase 2（alias 削除）                                                    ← 次はここ
+PR 5  Phase 2（alias 削除）                                                    ✅ 完了（0.7.0）
 PR 6  Phase 3（軽量 summary の opt-in 追加、需要ベース・任意）                  実施しない（§6-2）
 ```
 
@@ -823,7 +823,7 @@ PR 1 / #20 で「機械的に固定する」方針が `tests/view-structured-con
 | PR 2 | §5-3 | **完了** | [#22](https://github.com/tjackiet/bitbank-lab-mcp/pull/22) | **P3**（重い view が軽い view の上位集合になっていない） |
 | PR 3 | §5-5 | **完了** | — | **P1 / P2 / P5 / P7** ＋ **P4 の残り**（`get_candles(view=items)` の封筒） |
 | PR 4 | §5-6 | **完了** | — | （呼び出し側追従とドキュメント。指摘の解消ではない） |
-| PR 5 | §5-7 | 未着手 | — | （Phase 2: alias 削除） |
+| PR 5 | §5-7 | **完了**（0.7.0） | — | （Phase 2: alias 削除。[tjackiet/bitbank-lab-mcp#415](https://github.com/tjackiet/bitbank-lab-mcp/issues/415) と同じ PR で、出力フィールドの別名もあわせて削除） |
 | PR 6 | §5-8 | **実施しない** | — | （Phase 3: 軽量 `summary` の opt-in 追加。§6-2 で用意しないと決定） |
 
 ### 7-1. PR 1（#20）で実際に入ったもの

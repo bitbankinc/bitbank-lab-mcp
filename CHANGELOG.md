@@ -11,8 +11,6 @@
 
 - `analyze_my_portfolio`：ステーキング報酬（入金履歴の `category` が `STAKING` の入庫）を、元本の入金ではなく成果として扱う。`*_performance.net_flow_jpy`、資産推移の `flow_jpy`、`deposit_withdrawal_summary.net_jpy_invested` から外す。そのためステーキング報酬のある口座では、`adjusted_change_jpy` と `account_return_*` が報酬の分だけ大きくなる。数量の復元と取得原価（入庫日の価格）は変わらない。`category` を返さない入庫は従来どおり元本として扱う（issue #177）。
 - `analyze_my_portfolio`：本文の入出金調整後の率に「期初評価額比」と添えた（issue #111）。
-- `get_tickers_jpy`：**入力の変更。** `view`（`ranked` / `items`）を `includeRanked`（真偽値、既定 `true`）に置き換えた。`view=items` と同じ出力は `includeRanked=false` で得られる。`view` は受け付けなくなり、渡しても無視されて既定の `includeRanked=true` になる（issue #415）。
-- 非推奨の `view` の値（`get_candles` / `get_transactions` / `get_flow_metrics`）と、`analyze_my_portfolio` の別名フィールドの削除予定を `0.4.0` から `0.7.0` に改めた。0.4.0 を過ぎても削除しておらず、description と `docs/tools.md` の期日が過去のままだった。
 
 ### Added
 
@@ -25,6 +23,12 @@
 - Codex の plugin で、同梱の Skill（`investment-onboarding`）が読み込まれていなかった。Codex は manifest に `skills` が無いと plugin 直下の `skills/` だけを探すが、0.5.2 で plugin 本体を `plugins/bitbank-lab-mcp/` に移していた。Codex と Cursor の manifest に `skills` を足した（issue #408）。
 - `get_margin_positions`：追証などの通知の種別を、API の値（`margin_call` / `debt` / `settled`）のまま出していた。日本語の種別を添える。完了した精算の `settled` には `⚠` を付けず、常に空の金額・期日の代わりに発生日時を出す（issue #177）。
 - `get_margin_status` / `get_margin_positions` / `get_margin_trade_history` と `analyze_my_portfolio` の建玉の行で、金額が「¥100,000 円」のように通貨記号を重ねて出ていた。金額は `formatYenAmount` で「100,000円」の形に揃えた（マイナスの損益も「-5,000円」になる。円未満は四捨五入）。
+
+### Schema (breaking)
+
+- `get_tickers_jpy`：`view`（`ranked` / `items`）を `includeRanked`（真偽値、既定 `true`）に置き換えた。`view=items` と同じ出力は `includeRanked=false` で得られる。`view` は受け付けなくなり、渡しても無視されて既定の `includeRanked=true` になる（issue #415）。
+- 移行期間を置いていた旧い `view` の値を削除した。渡すと入力エラーになる。`get_candles` の `items`（→ `view=full` + `format=json`）、`get_transactions` の `summary`（→ `view=full`）と `items`（→ `view=full` + `format=json`）、`get_flow_metrics` の `compact`（→ `view=full` + `nonZeroOnly=true`）と `buckets`（→ `view=detailed`）。削除予定は 0.4.0 だったが、期日を過ぎても残っていた。
+- `analyze_my_portfolio`：出力から別名フィールドを削除した。`account_pnl` / `yearly_account_pnl` / `monthly_account_pnl` の `margin_interest` / `margin_fee`（→ `margin_interest_cost` / `margin_fee_cost`）と、`yearly_realized_pnl` / `monthly_realized_pnl` の `priced_deposit_count` / `unpriced_deposit_count`（→ `priced_deposit_count_all_time` / `unpriced_deposit_count_all_time`）。`holdings[]` の `priced_deposit_count` / `unpriced_deposit_count` は別名ではないので残している。
 
 ### Schema
 

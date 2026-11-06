@@ -318,9 +318,9 @@ describe('get_transactions', () => {
 			expect(res.summary).toContain('補完ツール');
 		});
 
-		it('view=items の場合は content text が JSON 配列', async () => {
+		it('format=json の場合は content text が JSON 配列', async () => {
 			fixture(rows);
-			const res = (await toolDef.handler({ pair: 'btc_jpy', limit: 10, view: 'items' })) as {
+			const res = (await toolDef.handler({ pair: 'btc_jpy', limit: 10, format: 'json' })) as {
 				content: Array<{ type: string; text: string }>;
 			};
 			const parsed = JSON.parse(res.content[0].text);
@@ -328,7 +328,7 @@ describe('get_transactions', () => {
 			expect(parsed).toHaveLength(4);
 		});
 
-		it('view=items でも drop 警告は content に伝搬する（content[0] は JSON 配列を維持し warning は content[1]）', async () => {
+		it('format=json でも drop 警告は content に伝搬する（content[0] は JSON 配列を維持し warning は content[1]）', async () => {
 			const malformed: Array<Record<string, unknown>> = [
 				{ transaction_id: 1, price: '4000000', amount: '0.05', side: 'buy', executed_at: '1700000000000' },
 				{ transaction_id: 2, price: '5000000', amount: '0.5', side: 'sell', executed_at: '1700000001000' },
@@ -337,7 +337,7 @@ describe('get_transactions', () => {
 			];
 			globalThis.fetch = mockFetchOk({ success: 1, data: { transactions: malformed } });
 
-			const res = (await toolDef.handler({ pair: 'btc_jpy', limit: 10, view: 'items' })) as {
+			const res = (await toolDef.handler({ pair: 'btc_jpy', limit: 10, format: 'json' })) as {
 				content: Array<{ type: string; text: string }>;
 			};
 			const parsed = JSON.parse(res.content[0].text);
@@ -347,9 +347,9 @@ describe('get_transactions', () => {
 			expect(res.content[1].text).toContain('1件');
 		});
 
-		it('view=items で drop が無ければ content は 1 要素のまま', async () => {
+		it('format=json で drop が無ければ content は 1 要素のまま', async () => {
 			fixture(rows);
-			const res = (await toolDef.handler({ pair: 'btc_jpy', limit: 10, view: 'items' })) as {
+			const res = (await toolDef.handler({ pair: 'btc_jpy', limit: 10, format: 'json' })) as {
 				content: Array<{ type: string; text: string }>;
 			};
 			expect(res.content).toHaveLength(1);
@@ -557,9 +557,9 @@ describe('get_transactions: フィルタ→limit の順序と truncation メタ'
 		expect((res.data as { raw?: unknown }).raw).toBeUndefined();
 	});
 
-	it('view=items: truncation warning が content の別要素に出る（content[0] は JSON のまま）', async () => {
+	it('format=json: truncation warning が content の別要素に出る（content[0] は JSON のまま）', async () => {
 		globalThis.fetch = mockFetchOk({ success: 1, data: { transactions: buildTransactions(11) } });
-		const res = (await toolDef.handler({ pair: 'btc_jpy', limit: 10, view: 'items' })) as {
+		const res = (await toolDef.handler({ pair: 'btc_jpy', limit: 10, format: 'json' })) as {
 			content: Array<{ type: string; text: string }>;
 		};
 		const parsed = JSON.parse(res.content[0].text);

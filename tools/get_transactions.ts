@@ -289,7 +289,6 @@ export const toolDef: ToolDefinition = {
 		maxAmount,
 		minPrice,
 		maxPrice,
-		view,
 		format,
 	}: {
 		pair?: string;
@@ -299,8 +298,6 @@ export const toolDef: ToolDefinition = {
 		maxAmount?: number;
 		minPrice?: number;
 		maxPrice?: number;
-		// 手書きのリテラルにすると enum から alias を消しても型が変わらず、下の alias 分岐が黙って生き残る（tools.md §7）。
-		view?: z.infer<typeof GetTransactionsInputSchema>['view'];
 		format?: z.infer<typeof GetTransactionsInputSchema>['format'];
 	}) => {
 		// フィルタはコア関数側で limit の前に適用される（handler 層では絞り込まない）。
@@ -325,8 +322,7 @@ export const toolDef: ToolDefinition = {
 		const summary = hasFilter
 			? `${formatPair(pair ?? 'btc_jpy')} フィルタ後 ${items.length}件 (buy=${fBuys} sell=${fSells})${warningBlock}${filteredBody}${TX_SCOPE_FOOTER}`
 			: res.summary;
-		// alias の正規化はここ 1 箇所だけ。軽量な summary は同じ語の意味を差し替えないよう alias 削除後にだけ再導入する。
-		const effectiveFormat: 'text' | 'json' = view === 'items' ? 'json' : (format ?? 'text');
+		const effectiveFormat: 'text' | 'json' = format ?? 'text';
 		if (effectiveFormat === 'json') {
 			const text = JSON.stringify(items, null, 2);
 			const content: Array<{ type: 'text'; text: string }> = [{ type: 'text', text }];

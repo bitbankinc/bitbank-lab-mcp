@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { deprecatedFieldNote } from '../schema/base.js';
 
 // FailResultSchema を直接定義（schemas.ts からの循環参照を避けるため）
 const PrivateFailResultSchema = z.object({
@@ -456,22 +455,6 @@ const PeriodRealizedPnlSchema = z
 		sell_count: z.number().int().describe('期間内の売却約定件数'),
 		period_start: z.string().describe('期間の開始日時（ISO8601 JST）'),
 		period_end: z.string().describe('期間の終了日時（ISO8601 JST）'),
-		priced_deposit_count: z
-			.number()
-			.int()
-			.nonnegative()
-			.optional()
-			.describe(
-				`取得原価に算入した DONE 暗号資産入庫の件数（全履歴・全銘柄）。期間スコープではない。${deprecatedFieldNote('priced_deposit_count_all_time')}`,
-			),
-		unpriced_deposit_count: z
-			.number()
-			.int()
-			.nonnegative()
-			.optional()
-			.describe(
-				`入庫日の始値を解決できず算入しなかった DONE 暗号資産入庫の件数（全履歴・全銘柄）。期間スコープではない。${deprecatedFieldNote('unpriced_deposit_count_all_time')}`,
-			),
 		realized_pnl_unavailable_reason: PortfolioUnresolvedDepositReasonEnum.optional().describe(
 			'この期間の realized_pnl を確定値として出せなかった理由。設定されている場合 realized_pnl は undefined で、同じ期間の *_account_pnl.spot_realized_pnl / total も undefined になる。deposit_price_fetch_failed=入庫日を含む年足 chunk の取得に失敗した入庫がある銘柄が、この期間に売却している（取得の成否は実行ごとに変わるため値の再現性が無い）, deposit_price_chunk_truncated=同じく年足 chunk が件数上限で取りに行けなかった銘柄が、この期間に売却している。抑止しても sell_count は出る（売却件数は原価に依存しないため）。期間内に該当銘柄の売却が無ければ抑止しない（抑止範囲を必要最小限にするための判定）',
 		),
@@ -502,14 +485,6 @@ const accountPnlCoreShape = {
 			'現物の実現損益（JPY、全銘柄 = 現在保有中の銘柄 + 売り切り銘柄）。対象期間は本オブジェクトのスコープに従う（account_pnl=全履歴、yearly_account_pnl / monthly_account_pnl=period_start〜period_end）。全履歴版は total_realized_pnl と同値で、内訳は Σ holdings[].realized_pnl + closed_position_realized_pnl。**入庫日価格の取得失敗・打ち切りで銘柄を抑止した実行では undefined**（理由は spot_realized_pnl_unavailable_reason）——抑止した銘柄を除いた部分和は出さない',
 		),
 	margin_realized_pnl: z.number().describe('信用の決済済み損益（JPY、グロス: 利息・手数料控除前）'),
-	margin_interest: z
-		.number()
-		.describe(`信用の支払利息合計（JPY、コスト = 正値）。${deprecatedFieldNote('margin_interest_cost')}`),
-	margin_fee: z
-		.number()
-		.describe(
-			`信用の発生手数料合計（JPY、fee_occurred_amount_quote の合算。コスト = 正値）。${deprecatedFieldNote('margin_fee_cost')}`,
-		),
 	total: z
 		.number()
 		.optional()
@@ -522,12 +497,12 @@ const marginCostShape = {
 	margin_interest_cost: z
 		.number()
 		.describe(
-			'信用の支払利息合計（JPY）。**コスト = 正値**で保持し、total では**減算**される。total を自前で組み直すときは足さずに引くこと。旧名 margin_interest と同じ値',
+			'信用の支払利息合計（JPY）。**コスト = 正値**で保持し、total では**減算**される。total を自前で組み直すときは足さずに引くこと',
 		),
 	margin_fee_cost: z
 		.number()
 		.describe(
-			'信用の発生手数料合計（JPY、fee_occurred_amount_quote の合算）。**コスト = 正値**で保持し、total では**減算**される。旧名 margin_fee と同じ値',
+			'信用の発生手数料合計（JPY、fee_occurred_amount_quote の合算）。**コスト = 正値**で保持し、total では**減算**される',
 		),
 };
 

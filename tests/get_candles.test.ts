@@ -948,7 +948,7 @@ describe('getCandles', () => {
 	});
 
 	describe('toolDef.handler 経由', () => {
-		it('success:0 + view=items のとき fail を透過し 0件 JSON を返さない', async () => {
+		it('success:0 + format=json のとき fail を透過し 0件 JSON を返さない', async () => {
 			const fetchMock = vi.fn().mockResolvedValue({
 				ok: true,
 				status: 200,
@@ -962,7 +962,7 @@ describe('getCandles', () => {
 				type: '1day',
 				date: '2024',
 				limit: 10,
-				view: 'items',
+				format: 'json',
 			})) as {
 				ok: boolean;
 				meta?: { errorType?: string };
@@ -991,7 +991,7 @@ describe('getCandles', () => {
 			expect(res.meta?.errorType).toBe('upstream');
 		});
 
-		it('正常系 + view=items のとき content text は JSON 配列で N 件含む', async () => {
+		it('正常系 + format=json のとき content text は JSON 配列で N 件含む', async () => {
 			const baseTs = 1704067200000;
 			const ohlcv = Array.from({ length: 3 }, (_, i) => [
 				'100',
@@ -1017,7 +1017,7 @@ describe('getCandles', () => {
 				type: '1day',
 				date: '2024',
 				limit: 10,
-				view: 'items',
+				format: 'json',
 			})) as {
 				content: Array<{ type: string; text: string }>;
 			};
@@ -1877,9 +1877,9 @@ describe('getCandles', () => {
 			expect(res.content[0].text).toContain('未確定（形成中）');
 		});
 
-		it('handler items view: realtime では JSON を content[0] に保ちつつ注記ブロックが残る', async () => {
+		it('handler format=json: realtime では JSON を content[0] に保ちつつ注記ブロックが残る', async () => {
 			mockOhlcv(makeRowsEndingToday(30));
-			const res = (await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 14, view: 'items' })) as {
+			const res = (await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 14, format: 'json' })) as {
 				content: Array<{ type: string; text: string }>;
 			};
 			// content[0] は JSON 配列のまま（既存契約を維持）。
@@ -1888,14 +1888,14 @@ describe('getCandles', () => {
 			expect(res.content.some((c) => c.text.includes('未確定（形成中）'))).toBe(true);
 		});
 
-		it('handler items view: 過去日 anchor では注記ブロックを付けない', async () => {
+		it('handler format=json: 過去日 anchor では注記ブロックを付けない', async () => {
 			mockOhlcv(makePastRows(30));
 			const res = (await toolDef.handler({
 				pair: 'btc_jpy',
 				type: '1day',
 				date: '2024',
 				limit: 14,
-				view: 'items',
+				format: 'json',
 			})) as {
 				content: Array<{ type: string; text: string }>;
 			};

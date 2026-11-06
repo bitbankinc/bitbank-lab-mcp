@@ -250,14 +250,14 @@ describe('get_flow_metrics', () => {
 		assertFail(res);
 	});
 
-	it('handler: view=buckets で直近N件のバケットをテキスト返却', async () => {
+	it('handler: view=detailed で直近N件のバケットをテキスト返却', async () => {
 		mockFetch(txPayload());
 		const res = (await toolDef.handler({
 			pair: 'btc_jpy',
 			limit: 3,
 			date: '20240101',
 			bucketMs: 60_000,
-			view: 'buckets',
+			view: 'detailed',
 			bucketsN: 2,
 		})) as { content: Array<{ text: string }> };
 		expect(res.content).toBeDefined();
@@ -296,7 +296,7 @@ describe('get_flow_metrics', () => {
 		expect(res.content[0].text).not.toContain('📋 全');
 	});
 
-	it('handler: view=compact は content のバケット行のみ絞る（structuredContent は全バケット）', async () => {
+	it('handler: view=full + nonZeroOnly=true は content のバケット行のみ絞る（structuredContent は全バケット）', async () => {
 		// 2約定を 20 分離す → 間の 19 バケットは欠損（ギャップ閾値 15 分超）
 		const payload = {
 			success: 1,
@@ -314,7 +314,8 @@ describe('get_flow_metrics', () => {
 				limit: 10,
 				date: '20240101',
 				bucketMs: 60_000,
-				view: 'compact',
+				view: 'full',
+				nonZeroOnly: true,
 			}),
 		);
 		const buckets = res.structuredContent.data.series.buckets;
@@ -325,7 +326,7 @@ describe('get_flow_metrics', () => {
 		expect(res.content[0].text).toContain('no-data buckets shown as ranges');
 	});
 
-	it('handler: view=compact でもギャップ以外のゼロバケットは structuredContent に残る', async () => {
+	it('handler: view=full + nonZeroOnly=true でもギャップ以外のゼロバケットは structuredContent に残る', async () => {
 		// 約定を 0/2/4 分に置く → 1 分目・3 分目はゼロだが欠損ではない（間隔 2 分 < 閾値 5 分）
 		const payload = {
 			success: 1,
@@ -344,7 +345,8 @@ describe('get_flow_metrics', () => {
 				limit: 10,
 				date: '20240101',
 				bucketMs: 60_000,
-				view: 'compact',
+				view: 'full',
+				nonZeroOnly: true,
 			}),
 		);
 		const buckets = res.structuredContent.data.series.buckets;

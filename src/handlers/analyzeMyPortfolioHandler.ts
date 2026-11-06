@@ -225,7 +225,6 @@ const UNRESOLVED_DEPOSIT_NOTE: Record<PortfolioUnresolvedDepositReason, string> 
 	deposit_price_chunk_truncated: `入庫日を含む年足の追加取得が上限（${MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS}組）に達したため取りに行けず、取得原価に算入していません（上限は決定的なので同じ入力なら同じ結果になりますが、上限に収まる構成に変われば再実行で値が変わります）`,
 };
 
-// DEPRECATED_FIELD_REMOVAL_TARGET で alias を削除するときは、旧名 2 行とスキーマ・description をまとめて落とす（#85）。
 function periodRealizedPnlForWire(
 	period: PeriodRealizedPnl,
 	unavailableReason: PortfolioUnresolvedDepositReason | undefined,
@@ -234,8 +233,6 @@ function periodRealizedPnlForWire(
 	sell_count: number;
 	period_start: string;
 	period_end: string;
-	priced_deposit_count: number | undefined;
-	unpriced_deposit_count: number | undefined;
 	realized_pnl_unavailable_reason: PortfolioUnresolvedDepositReason | undefined;
 	priced_deposit_count_all_time: number | undefined;
 	unpriced_deposit_count_all_time: number | undefined;
@@ -247,8 +244,6 @@ function periodRealizedPnlForWire(
 		sell_count: period.sell_count,
 		period_start: period.period_start,
 		period_end: period.period_end,
-		priced_deposit_count: priced,
-		unpriced_deposit_count: unpriced,
 		realized_pnl_unavailable_reason: unavailableReason,
 		priced_deposit_count_all_time: priced,
 		unpriced_deposit_count_all_time: unpriced,
