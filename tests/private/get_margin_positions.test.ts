@@ -266,7 +266,7 @@ describe('get_margin_positions', () => {
 		const result = await getMarginPositions({});
 
 		assertOk(result);
-		expect(result.summary.split('\n')[0]).toBe(`⚠ ${label}: ¥100,000 円（期日: 2024-03-11T23:33:20.000Z）`);
+		expect(result.summary.split('\n')[0]).toBe(`⚠ ${label}: 100,000円（期日: 2024-03-11T23:33:20.000Z）`);
 	});
 
 	it('notice.what=settled は ⚠ を付けず、金額・期日（どちらも null）の代わりに発生日時を出す', async () => {
@@ -298,7 +298,7 @@ describe('get_margin_positions', () => {
 		const result = await getMarginPositions({});
 
 		assertOk(result);
-		expect(result.summary.split('\n')[0]).toBe('⚠ new_kind: ¥100,000 円（期日: —）');
+		expect(result.summary.split('\n')[0]).toBe('⚠ new_kind: 100,000円（期日: —）');
 	});
 
 	it('locked_amount が正の建玉だけ「決済注文中」を出し、data にも locked_amount を残す', async () => {
@@ -313,6 +313,8 @@ describe('get_margin_positions', () => {
 		const lines = result.summary.split('\n');
 		expect(lines.find((l) => l.startsWith('BTC/JPY'))).not.toContain('決済注文中');
 		expect(lines.find((l) => l.startsWith('ETH/JPY'))).toContain('決済注文中: 0.4');
+		expect(lines.find((l) => l.startsWith('ETH/JPY'))).toContain('評価額: 400,000円');
+		expect(result.summary).not.toMatch(/¥[\d,.-]+ ?円/);
 	});
 
 	it('locked_amount を返さない応答でも ok:true で、「決済注文中」を出さない', async () => {

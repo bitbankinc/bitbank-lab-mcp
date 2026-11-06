@@ -1,5 +1,5 @@
 import { nowIso } from '../../lib/datetime.js';
-import { formatPair, formatPrice } from '../../lib/formatter.js';
+import { formatPair, formatYenAmount } from '../../lib/formatter.js';
 import { normalizePairCodes } from '../../lib/pair-code.js';
 import { ok } from '../../lib/result.js';
 import { getDefaultClient } from '../../src/private/client.js';
@@ -65,22 +65,22 @@ export default async function getMarginStatus(_args: Record<string, unknown>) {
 		}
 
 		lines.push('');
-		lines.push(`保証金合計: ${formatPrice(Number(raw.total_margin_balance))} 円`);
+		lines.push(`保証金合計: ${formatYenAmount(Number(raw.total_margin_balance))}`);
 		if (raw.total_margin_balance_percentage !== null) {
 			lines.push(`保証金率: ${raw.total_margin_balance_percentage}%`);
 		}
 
-		lines.push(`建玉含み損益: ${formatPrice(Number(raw.margin_position_profit_loss))} 円`);
-		lines.push(`未実現コスト: ${formatPrice(Number(raw.unrealized_cost))} 円`);
+		lines.push(`建玉含み損益: ${formatYenAmount(Number(raw.margin_position_profit_loss))}`);
+		lines.push(`未実現コスト: ${formatYenAmount(Number(raw.unrealized_cost))}`);
 		lines.push('');
-		lines.push(`建玉総評価額: ${formatPrice(Number(raw.total_margin_position_product))} 円`);
-		lines.push(`  保有建玉: ${formatPrice(Number(raw.open_margin_position_product))} 円`);
-		lines.push(`  注文中建玉: ${formatPrice(Number(raw.open_margin_order_product))} 円`);
+		lines.push(`建玉総評価額: ${formatYenAmount(Number(raw.total_margin_position_product))}`);
+		lines.push(`  保有建玉: ${formatYenAmount(Number(raw.open_margin_position_product))}`);
+		lines.push(`  注文中建玉: ${formatYenAmount(Number(raw.open_margin_order_product))}`);
 		lines.push('');
-		lines.push(`維持保証金合計: ${formatPrice(Number(raw.total_position_maintenance_margin))} 円`);
-		lines.push(`  ロング: ${formatPrice(Number(raw.total_long_position_maintenance_margin))} 円`);
-		lines.push(`  ショート: ${formatPrice(Number(raw.total_short_position_maintenance_margin))} 円`);
-		lines.push(`  注文: ${formatPrice(Number(raw.total_open_order_maintenance_margin))} 円`);
+		lines.push(`維持保証金合計: ${formatYenAmount(Number(raw.total_position_maintenance_margin))}`);
+		lines.push(`  ロング: ${formatYenAmount(Number(raw.total_long_position_maintenance_margin))}`);
+		lines.push(`  ショート: ${formatYenAmount(Number(raw.total_short_position_maintenance_margin))}`);
+		lines.push(`  注文: ${formatYenAmount(Number(raw.total_open_order_maintenance_margin))}`);
 
 		if (raw.margin_call_percentage !== null || raw.losscut_percentage !== null) {
 			lines.push('');
@@ -94,13 +94,13 @@ export default async function getMarginStatus(_args: Record<string, unknown>) {
 
 		lines.push('');
 		lines.push(
-			`与信 — 買建: ${formatPrice(Number(raw.buy_credit))} 円 / 売建: ${formatPrice(Number(raw.sell_credit))} 円`,
+			`与信 — 買建: ${formatYenAmount(Number(raw.buy_credit))} / 売建: ${formatYenAmount(Number(raw.sell_credit))}`,
 		);
 		if (availableBalances.length > 0) {
 			lines.push('新規建て可能額（ペアごと）:');
 			for (const b of availableBalances) {
 				lines.push(
-					`  ${formatPair(b.pair)} — ロング: ${formatPrice(Number(b.long))} 円 / ショート: ${formatPrice(Number(b.short))} 円`,
+					`  ${formatPair(b.pair)} — ロング: ${formatYenAmount(Number(b.long))} / ショート: ${formatYenAmount(Number(b.short))}`,
 				);
 			}
 		}

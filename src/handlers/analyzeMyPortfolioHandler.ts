@@ -110,7 +110,7 @@ function buildMarginPositionsBlock(info: MarginAccountInfo): string[] {
 	lines.push('信用建玉:');
 	for (const p of openPositions) {
 		const sideLabel = positionSideLabel(p.position_side);
-		lines.push(`  ${formatPair(p.pair)} ${sideLabel} ${p.open_amount} (評価額: ${formatPrice(Number(p.product))}円)`);
+		lines.push(`  ${formatPair(p.pair)} ${sideLabel} ${p.open_amount} (評価額: ${formatYenAmount(Number(p.product))})`);
 	}
 	const longCount = openPositions.filter((p) => p.position_side === 'long').length;
 	const shortCount = openPositions.filter((p) => p.position_side === 'short').length;
