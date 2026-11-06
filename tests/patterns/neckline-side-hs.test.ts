@@ -217,19 +217,24 @@ describe('実データ（`btc_jpy_1hour_2026_08`）の H&S 候補が誤った側
 
 describe('配線の範囲（issue #216 Phase 2・H&S 分）', () => {
 	// 形成中経路には配線しない（暫定右肩を hard reject の材料にしない）。暫定右肩がたまたま正しい側に来る実データでは配線の有無を出力から区別できないので、ソースで固定する。
-	it('完成済み 4 経路にだけ配線されている（形成中 2 経路には無い）', () => {
+	it('完成済みの経路（strict / relaxed の上下）にだけ配線されている（形成中 2 経路には無い）', () => {
 		const src = readFileSync(resolve(import.meta.dirname, '../../tools/patterns/detect_hs.ts'), 'utf8');
-		// import 1 + 呼び出し 4 + docstring 参照。呼び出しだけを数える。
-		const calls = src.split('validateMainPointsAgainstNecklineAt(').length - 1;
-		expect(calls).toBe(4);
-		for (const fn of ['function formingHsForHead(', 'function formingInverseHsForHead(']) {
+		const bodyOf = (fn: string): string => {
 			const from = src.indexOf(fn);
-			expect(from).toBeGreaterThan(-1);
+			expect(from, fn).toBeGreaterThan(-1);
 			// 次の top-level 関数定義までを本体とみなす。
 			const rest = src.slice(from + fn.length);
 			const to = rest.indexOf('\nfunction ');
-			const body = to < 0 ? rest : rest.slice(0, to);
-			expect(body).not.toContain('validateMainPointsAgainstNecklineAt');
+			return to < 0 ? rest : rest.slice(0, to);
+		};
+		// strict / relaxed の上下はすべて buildHsPattern を通るので、呼び出しはそこの 1 か所だけになる。
+		expect(src.split('validateMainPointsAgainstNecklineAt(').length - 1).toBe(1);
+		expect(bodyOf('function buildHsPattern(')).toContain('validateMainPointsAgainstNecklineAt(');
+		for (const fn of ['function findStrictHs(', 'function findRelaxedHs(']) {
+			expect(bodyOf(fn)).toContain('buildHsPattern(');
+		}
+		for (const fn of ['function formingHsForHead(', 'function formingInverseHsForHead(']) {
+			expect(bodyOf(fn)).not.toContain('validateMainPointsAgainstNecklineAt');
 		}
 	});
 });
