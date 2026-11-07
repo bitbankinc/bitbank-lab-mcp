@@ -1,4 +1,3 @@
-// 実データ A（`btc_jpy` `1day`）の窓先頭 relaxed H&S が出力に出ないことをパイプライン全体で固定する（構造図とネックラインの値一致は `tests/patterns/hs-neckline-diagram-consistency.test.ts` が見る。issue #297）。
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../tools/analyze_indicators.js', () => ({ default: vi.fn() }));
