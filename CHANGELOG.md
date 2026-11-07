@@ -13,7 +13,8 @@
 - `analyze_my_portfolio`：本文の入出金調整後の率に「期初評価額比」と添えた（issue #111）。
 - `detect_patterns`：H&S（三尊）にも、逆 H&S と同じ肩の深さの判定を入れた。左右の肩がそれぞれ、隣の谷から頭の深さの 20% 以上離れていない候補は `shoulder_depth_insufficient` で落とす。肩がネックラインのすぐ上にしか無い V 字の途中を三尊と読まないため。手元の実データ（1hour）では、落ちた 97 件のうち 96 件がブレイク前の `near_completion`、1 件が `invalid` で、ネックラインを抜けた `completed` の H&S は落ちなかった（issue #412）。
 - `detect_patterns`：整合度 `confidence` の計算を見直した（issue #422）。種別ごとの補正（H&S ×1.1、triple ×1.05、triangle・flag・pennant ×0.95）と、relaxed で拾った候補の割引（double ×0.85、triple・H&S ×0.95）をやめた。反転パターン（double / triple / H&S）は、構成点の水準の揃い方 `levelMargin` を strict の許容幅を物差しにして測り（relaxed で拾った候補は、緩めた分だけ低くなる）、測れた軸の単純平均を整合度にする。期間の軸は、完成済みのパターンに期間のゲートが無く物差しが決まらないので外した。そのため triangle・flag・pennant は 1/0.95 倍ほど上がり、H&S は下がり、double は水準の差が許容幅に近いほど下がる。wedge は変わらない。完成済み triple の整合度の下限 0.6（`confidence_below_min`）も外した。手元の実データでは、外しても出力は 1 件も変わらなかった。丸めで同点だった隣接窓の triangle が 0.01 差になり、重複統合で残る候補が替わることがある。
-- `detect_patterns`：triangle・flag・pennant の整合度も、測れた軸の単純平均にした（issue #422）。軸の重み（triangle は 0.25 / 0.25 / 0.3 / 0.2、flag・pennant は 0.3 / 0.25 / 0.2 / 0.25）をやめ、各軸の物差しを検出のゲートから取る。トレンドラインの当てはまりは R² のゲートからの余裕、収束はゲートの収束比、点数はゲートの点数、ポールはゲートの ATR 倍率を基準にする。上昇・下降三角の対称性に置いていた固定値 0.5 は、水平側のラインの平らさに置き換えた。2 点しかない線の R²（常に 1）は当てはまりに数えない。手元の実データでは、triangle が平均 0.85〜0.91 → 0.69〜0.70、flag が 0.94 → 0.71、pennant が 0.89 → 0.63 に下がる。wedge（まだ重み付きのまま。issue #422 の次の段で直す）や double より下に並ぶことが増え、重複統合で残る窓も替わる。
+- `detect_patterns`：triangle・flag・pennant の整合度も、測れた軸の単純平均にした（issue #422）。軸の重み（triangle は 0.25 / 0.25 / 0.3 / 0.2、flag・pennant は 0.3 / 0.25 / 0.2 / 0.25）をやめ、各軸の物差しを検出のゲートから取る。トレンドラインの当てはまりは R² のゲートからの余裕、収束はゲートの収束比、点数はゲートの点数、ポールはゲートの ATR 倍率を基準にする。上昇・下降三角の対称性に置いていた固定値 0.5 は、水平側のラインの平らさに置き換えた。2 点しかない線の R²（常に 1）は当てはまりに数えない。手元の実データでは、triangle が平均 0.85〜0.91 → 0.69〜0.70、flag が 0.94 → 0.71、pennant が 0.89 → 0.63 に下がる。double より下に並ぶことが増え、重複統合で残る窓も替わる。
+- `detect_patterns`：wedge の整合度も、測れた軸の単純平均にした（issue #422）。6 軸の重み（0.25 / 0.25 / 0.35 / 0.07 / 0.05 / 0.03）、収束の点数の中の手置きの係数（頂点 0.35・加速 0.25 など）、期間の軸、ライン内に収まる足の割合（ゲートの無い高安版）をやめた。軸は、トレンドラインの当てはまり・収束・タッチ数・タッチの交互さ・終値の包含率で、どれも strict のゲート（R² 0.55、収束比 0.7、6 点、交互率 0.25、包含率 0.85）を物差しにする。形成中の経路（既定で出る wedge のほとんど）も strict の物差しで測るので、緩いゲート（収束比 0.8 未満、5 点）で拾った分だけ低くなり、上限 0.9 は外した。2 点を通す線で引くので当てはまりの軸は出さない。点数での足切り（strict・形成中とも 0.5）も外した。手元の実データでは、この足切りで落ちた候補は 0 件だった。手元の実データでは、wedge が平均 0.70〜0.72 → 0.42〜0.45 に下がる。出力に残った wedge の 44% は収束比が strict のゲート（0.7）を超えていて、収束の軸が 0 になる。
 
 ### Added
 
@@ -40,6 +41,7 @@
 - `*_performance` に `staking_reward_jpy` / `staking_reward_unpriced_assets`、`DepositWithdrawalSummarySchema` に `staking_reward_count` / `staking_reward_estimated_jpy` / `staking_reward_valuation`（いずれも optional）を追加。
 - `adjusted_change_pct` の description に、分母が期初評価額でフロー加重の収益率ではないことを明記した（issue #111）。
 - `detect_patterns`：triangle・flag・pennant にも `scoreComponents` を出す。`lineFit` / `convergence` / `touches` / `slopeSymmetry` / `flatness` / `pole` / `parallelism` を追加（いずれも optional。issue #422）。
+- `detect_patterns`：wedge にも `scoreComponents` を出す。`alternation` / `containment` を追加し、`lineFit` / `convergence` / `touches` を wedge でも使う（いずれも optional。issue #422）。
 
 ### Internal
 

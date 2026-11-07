@@ -195,6 +195,40 @@ describe('debug candidates: status / breakoutDirection の配線（issue #160）
 		}
 	});
 
+	it('回帰パスの wedge は lineFit を含む 5 軸を strict のゲートで測り、confidence はその単純平均（#422）', async () => {
+		const res = await run(buildCompletedFallingWedgeCandles({ breakout: true }), { patterns: ['falling_wedge'] });
+		assertOk(res);
+		const cands = (res.meta.debug?.candidates ?? []) as Candidate[];
+		const accepted = cands.filter((c) => c.accepted && c.reason === 'revamped_ok');
+		expect(accepted.length).toBeGreaterThan(0);
+		for (const c of accepted) {
+			const d = c.details as {
+				r2High: number;
+				r2Low: number;
+				converge: { ratio: number };
+				containment: { ratio: number };
+				touches: { up: number; lo: number };
+				alternation: number;
+				scoreComponents: Record<string, number>;
+			};
+			const r2Margin = (r2: number) => Math.max(0, (r2 - 0.55) / 0.45);
+			expect(d.scoreComponents.lineFit).toBeCloseTo((r2Margin(d.r2High) + r2Margin(d.r2Low)) / 2, 4);
+			expect(d.scoreComponents.convergence).toBeCloseTo(1 - d.converge.ratio / 0.7, 4);
+			expect(d.scoreComponents.touches).toBeCloseTo(1 - 6 / (d.touches.up + d.touches.lo), 4);
+			expect(d.scoreComponents.alternation).toBeCloseTo((d.alternation - 0.25) / 0.75, 4);
+			expect(d.scoreComponents.containment).toBeCloseTo((d.containment.ratio - 0.85) / 0.15, 4);
+		}
+		const regression = res.data.patterns.filter(
+			(p) => p.type === 'falling_wedge' && p.scoreComponents?.lineFit !== undefined,
+		);
+		expect(regression.length).toBeGreaterThan(0);
+		for (const p of regression) {
+			const axes = Object.values(p.scoreComponents ?? {}) as number[];
+			expect(axes).toHaveLength(5);
+			expect(p.confidence).toBeCloseTo(axes.reduce((sum, v) => sum + v, 0) / axes.length, 2);
+		}
+	});
+
 	it('ブレイク未検出の完成済みウェッジ候補は status=near_completion で breakoutDirection を出さない', async () => {
 		const res = await run(buildCompletedFallingWedgeCandles({ breakout: false }), { patterns: ['falling_wedge'] });
 		assertOk(res);

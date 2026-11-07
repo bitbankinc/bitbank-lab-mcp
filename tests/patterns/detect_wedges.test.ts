@@ -377,6 +377,26 @@ describe('detectWedges', () => {
 		expect(fromFormingPath[0]?.type).toMatch(/wedge/);
 	});
 
+	it('形成中の経路は lineFit を出さず、残る 4 軸を strict のゲートで測る（#422）', () => {
+		const ctx = buildCtx({ candles: buildRisingWedgeCandles(80), pivots: [], includeForming: true });
+		const forming = detectWedges(ctx).patterns.filter((p) => (p as { _method?: string })._method === 'forming_relaxed');
+		expect(forming.length).toBeGreaterThan(0);
+		for (const p of forming) {
+			const sc = p.scoreComponents ?? {};
+			expect(Object.keys(sc).sort()).toEqual(['alternation', 'containment', 'convergence', 'touches']);
+			const axes = Object.values(sc) as number[];
+			expect(p.confidence).toBeCloseTo(axes.reduce((sum, v) => sum + v, 0) / axes.length, 2);
+			const debug = ctx.debugCandidates.find(
+				(d) =>
+					d.accepted &&
+					JSON.stringify((d.details as { scoreComponents?: unknown }).scoreComponents) === JSON.stringify(sc),
+			);
+			const details = debug?.details as { touches: { up: number; lo: number }; alternation: number };
+			expect(sc.touches).toBeCloseTo(Math.max(0, 1 - 6 / (details.touches.up + details.touches.lo)), 4);
+			expect(sc.alternation).toBeCloseTo(Math.max(0, (details.alternation - 0.25) / 0.75), 4);
+		}
+	});
+
 	it('Falling Wedge の apex が近い場合 near_completion または completed になる', () => {
 		// apex ≈ i=80, endIdx=79 → barsToApex=1 ≤ 10 → near_completion
 		const candles = buildFallingWedgeCandles(80);

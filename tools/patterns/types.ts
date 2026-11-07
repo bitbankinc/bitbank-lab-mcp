@@ -21,24 +21,6 @@ export interface WedgeParams {
 	windowSizeMax?: number;
 }
 
-export interface PatternScoreComponents {
-	fitScore: number;
-	convergeScore: number;
-	touchScore: number;
-	alternationScore: number;
-	insideScore: number;
-	durationScore: number;
-}
-
-export interface PatternScoreWeights {
-	fit: number;
-	converge: number;
-	touch: number;
-	alternation: number;
-	inside: number;
-	duration: number;
-}
-
 export interface TouchPoint {
 	index: number;
 	distance: number;
@@ -50,7 +32,6 @@ export interface TouchResult {
 	lowerTouches: TouchPoint[];
 	upperQuality: number;
 	lowerQuality: number;
-	score: number;
 }
 
 export interface DeduplicablePattern {
@@ -142,6 +123,8 @@ export interface PatternScoreBreakdown {
 	flatness?: number;
 	pole?: number;
 	parallelism?: number;
+	alternation?: number;
+	containment?: number;
 }
 
 export interface PatternStructureGate {
