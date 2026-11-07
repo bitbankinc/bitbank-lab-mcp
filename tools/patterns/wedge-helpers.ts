@@ -1,12 +1,7 @@
-import type {
-	CandleData,
-	PatternScoreComponents,
-	PatternScoreWeights,
-	TouchPoint,
-	TouchResult,
-	TrendLine,
-	WedgeParams,
-} from './types.js';
+import type { CandleData, TouchPoint, TouchResult, TrendLine, WedgeParams } from './types.js';
+
+// 収束のゲートと convergence の物差しを兼ねる。
+export const WEDGE_MAX_CONVERGENCE = 0.7;
 
 export interface WedgeBreakResult {
 	detected: boolean;
@@ -147,26 +142,10 @@ export function checkContainment(
 }
 
 export function checkConvergenceEx(upper: TrendLine, lower: TrendLine, startIdx: number, endIdx: number) {
-	const midIdx = Math.floor((startIdx + endIdx) / 2);
 	const gapStart = upper.valueAt(startIdx) - lower.valueAt(startIdx);
-	const gapMid = upper.valueAt(midIdx) - lower.valueAt(midIdx);
 	const gapEnd = upper.valueAt(endIdx) - lower.valueAt(endIdx);
 	const ratio = gapEnd / Math.max(1e-12, gapStart);
-
-	if (!(gapEnd > 0) || !(ratio < 0.7)) return { isConverging: false, gapStart, gapEnd, ratio };
-
-	const apex = calcApex(upper, lower, endIdx);
-
-	const firstHalf = gapStart - gapMid;
-	const secondHalf = gapMid - gapEnd;
-	const isAccelerating = secondHalf > firstHalf * 1.2;
-
-	const convergenceComponent = 0.4 * (1 - ratio);
-	const apexComponent = 0.35 * (apex.isValid ? 1 : 0.3);
-	const accelComponent = 0.25 * (isAccelerating ? 1 : 0.4);
-	const score = Math.max(0, Math.min(1, convergenceComponent + apexComponent + accelComponent));
-
-	return { isConverging: true, gapStart, gapMid, gapEnd, ratio, isAccelerating, apex, score };
+	return { isConverging: gapEnd > 0 && ratio < WEDGE_MAX_CONVERGENCE, gapStart, gapEnd, ratio };
 }
 
 export function evaluateTouchesEx(
@@ -195,8 +174,7 @@ export function evaluateTouchesEx(
 	}
 	const upQ = upperTouches.filter((t) => !t.isBreak).length;
 	const loQ = lowerTouches.filter((t) => !t.isBreak).length;
-	const score = Math.max(0, Math.min(1, (upQ + loQ) / 8));
-	return { upperTouches, lowerTouches, upperQuality: upQ, lowerQuality: loQ, score };
+	return { upperTouches, lowerTouches, upperQuality: upQ, lowerQuality: loQ };
 }
 
 export function calcAlternationScoreEx(touches: TouchResult): number {
@@ -210,49 +188,4 @@ export function calcAlternationScoreEx(touches: TouchResult): number {
 		if (all[i].type !== all[i - 1].type) alternations++;
 	}
 	return Math.max(0, Math.min(1, alternations / Math.max(1, all.length - 1)));
-}
-
-export function calcInsideRatioEx(
-	candles: readonly CandleData[],
-	upper: Pick<TrendLine, 'valueAt'>,
-	lower: Pick<TrendLine, 'valueAt'>,
-	startIdx: number,
-	endIdx: number,
-): number {
-	let inside = 0,
-		total = 0;
-	for (let i = startIdx; i <= endIdx; i++) {
-		const c = candles[i];
-		if (!c) continue;
-		total++;
-		const u = upper.valueAt(i),
-			l = lower.valueAt(i);
-		if (c.high <= u && c.low >= l) inside++;
-	}
-	return total ? inside / total : 0;
-}
-
-export function calcDurationScoreEx(
-	bars: number,
-	params: Pick<WedgeParams, 'windowSizeMin' | 'windowSizeMax'>,
-): number {
-	const min = params?.windowSizeMin ?? 25,
-		max = params?.windowSizeMax ?? 90;
-	if (bars < min) return 0;
-	if (bars > max) return 0;
-	const mid = (min + max) / 2;
-	const dist = Math.abs(bars - mid) / Math.max(1, (max - min) / 2);
-	return Math.max(0, Math.min(1, 1 - dist));
-}
-
-export function calculatePatternScoreEx(components: PatternScoreComponents, weights?: PatternScoreWeights): number {
-	const w = weights || { fit: 0.25, converge: 0.25, touch: 0.35, alternation: 0.07, inside: 0.05, duration: 0.03 };
-	return (
-		w.fit * components.fitScore +
-		w.converge * components.convergeScore +
-		w.touch * components.touchScore +
-		w.alternation * components.alternationScore +
-		w.inside * components.insideScore +
-		w.duration * components.durationScore
-	);
 }

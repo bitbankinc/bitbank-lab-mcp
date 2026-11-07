@@ -4,15 +4,13 @@ import type { CandleData, DeduplicablePattern, TrendLine } from '../../tools/pat
 import {
 	calcAlternationScoreEx,
 	calcApex,
-	calcDurationScoreEx,
-	calcInsideRatioEx,
-	calculatePatternScoreEx,
 	checkContainment,
 	checkConvergenceEx,
 	detectWedgeBreak,
 	determineWedgeType,
 	evaluateTouchesEx,
 	generateWindows,
+	WEDGE_MAX_CONVERGENCE,
 } from '../../tools/patterns/wedge-helpers.js';
 
 function makeTrendLine(slope: number, intercept: number): TrendLine {
@@ -120,7 +118,15 @@ describe('checkConvergenceEx', () => {
 		const lower = makeTrendLine(0.5, 50);
 		const result = checkConvergenceEx(upper, lower, 0, 80);
 		expect(result.isConverging).toBe(true);
-		expect(result.score).toBeGreaterThan(0);
+		expect(result.ratio).toBeCloseTo(30 / 150, 10);
+	});
+
+	it('収束比がゲートちょうどなら isConverging=false', () => {
+		const upper = makeTrendLine(-0.3, 110);
+		const lower = makeTrendLine(0, 100);
+		const result = checkConvergenceEx(upper, lower, 0, 10);
+		expect(result.ratio).toBeCloseTo(WEDGE_MAX_CONVERGENCE, 10);
+		expect(result.isConverging).toBe(false);
 	});
 
 	it('発散するラインで isConverging=false', () => {
@@ -144,8 +150,8 @@ describe('evaluateTouchesEx', () => {
 		const result = evaluateTouchesEx(candles, upper, lower, 0, 19);
 		expect(result.upperTouches.length).toBeGreaterThanOrEqual(0);
 		expect(result.lowerTouches.length).toBeGreaterThanOrEqual(0);
-		expect(result.score).toBeGreaterThanOrEqual(0);
-		expect(result.score).toBeLessThanOrEqual(1);
+		expect(result.upperQuality).toBe(result.upperTouches.filter((t) => !t.isBreak).length);
+		expect(result.lowerQuality).toBe(result.lowerTouches.filter((t) => !t.isBreak).length);
 	});
 });
 
@@ -162,7 +168,6 @@ describe('calcAlternationScoreEx', () => {
 			],
 			upperQuality: 2,
 			lowerQuality: 2,
-			score: 0.5,
 		};
 		expect(calcAlternationScoreEx(touches)).toBe(1);
 	});
@@ -177,7 +182,6 @@ describe('calcAlternationScoreEx', () => {
 			lowerTouches: [],
 			upperQuality: 3,
 			lowerQuality: 0,
-			score: 0.375,
 		};
 		expect(calcAlternationScoreEx(touches)).toBe(0);
 	});
@@ -188,84 +192,8 @@ describe('calcAlternationScoreEx', () => {
 			lowerTouches: [],
 			upperQuality: 1,
 			lowerQuality: 0,
-			score: 0.125,
 		};
 		expect(calcAlternationScoreEx(touches)).toBe(0);
-	});
-});
-
-describe('calcInsideRatioEx', () => {
-	it('全て内側なら 1', () => {
-		const candles: readonly CandleData[] = [
-			{ open: 100, close: 100, high: 105, low: 95 },
-			{ open: 100, close: 100, high: 105, low: 95 },
-		];
-		const upper = { valueAt: () => 110 };
-		const lower = { valueAt: () => 90 };
-		expect(calcInsideRatioEx(candles, upper, lower, 0, 1)).toBe(1);
-	});
-
-	it('全て外側なら 0', () => {
-		const candles: readonly CandleData[] = [{ open: 100, close: 100, high: 120, low: 80 }];
-		const upper = { valueAt: () => 105 };
-		const lower = { valueAt: () => 95 };
-		expect(calcInsideRatioEx(candles, upper, lower, 0, 0)).toBe(0);
-	});
-});
-
-describe('calcDurationScoreEx', () => {
-	it('範囲内の中央値で最高スコア', () => {
-		const score = calcDurationScoreEx(57, { windowSizeMin: 25, windowSizeMax: 90 });
-		expect(score).toBeCloseTo(1, 1);
-	});
-
-	it('範囲外なら 0', () => {
-		expect(calcDurationScoreEx(10, { windowSizeMin: 25, windowSizeMax: 90 })).toBe(0);
-		expect(calcDurationScoreEx(100, { windowSizeMin: 25, windowSizeMax: 90 })).toBe(0);
-	});
-
-	it('デフォルトパラメータを使用', () => {
-		const score = calcDurationScoreEx(57, {});
-		expect(score).toBeGreaterThan(0);
-	});
-});
-
-describe('calculatePatternScoreEx', () => {
-	it('全コンポーネント=1 なら 1', () => {
-		const components = {
-			fitScore: 1,
-			convergeScore: 1,
-			touchScore: 1,
-			alternationScore: 1,
-			insideScore: 1,
-			durationScore: 1,
-		};
-		expect(calculatePatternScoreEx(components)).toBeCloseTo(1, 5);
-	});
-
-	it('全コンポーネント=0 なら 0', () => {
-		const components = {
-			fitScore: 0,
-			convergeScore: 0,
-			touchScore: 0,
-			alternationScore: 0,
-			insideScore: 0,
-			durationScore: 0,
-		};
-		expect(calculatePatternScoreEx(components)).toBe(0);
-	});
-
-	it('カスタム重みを使用可能', () => {
-		const components = {
-			fitScore: 1,
-			convergeScore: 0,
-			touchScore: 0,
-			alternationScore: 0,
-			insideScore: 0,
-			durationScore: 0,
-		};
-		const weights = { fit: 1, converge: 0, touch: 0, alternation: 0, inside: 0, duration: 0 };
-		expect(calculatePatternScoreEx(components, weights)).toBe(1);
 	});
 });
 

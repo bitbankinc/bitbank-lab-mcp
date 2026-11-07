@@ -3,8 +3,9 @@ import { EPSILON } from '../../lib/math.js';
 import { generatePatternDiagram, type PatternDiagramData } from '../../lib/pattern-diagrams.js';
 import { roundPriceAtLevel } from '../../lib/price.js';
 import { patternBarRange } from './bar-thresholds.js';
-import { calcATR, deduplicatePatterns } from './helpers.js';
+import { calcATR, deduplicatePatterns, finalizeConf } from './helpers.js';
 import { linearRegressionWithR2 } from './regression.js';
+import { averageDefinedAxes, marginOverGate, marginToOne, marginUnderGate, roundAxes } from './scoring.js';
 import { smoothCandleExtremes } from './smoothing.js';
 import type { Pivot } from './swing.js';
 import { computeTargetReach, omittedTargetReach, type TargetReachResult, targetReachFields } from './target-reach.js';
@@ -14,6 +15,7 @@ import type {
 	DeduplicablePattern,
 	DetectContext,
 	DetectResult,
+	PatternScoreBreakdown,
 	TouchPoint,
 	TouchResult,
 } from './types.js';
@@ -21,15 +23,13 @@ import {
 	type ApexResult,
 	calcAlternationScoreEx,
 	calcApex,
-	calcDurationScoreEx,
-	calcInsideRatioEx,
-	calculatePatternScoreEx,
 	checkContainment,
 	checkConvergenceEx,
 	detectWedgeBreak,
 	determineWedgeType,
 	evaluateTouchesEx,
 	generateWindows,
+	WEDGE_MAX_CONVERGENCE,
 } from './wedge-helpers.js';
 
 const SG_WINDOW_MAX = 11;
@@ -41,7 +41,6 @@ const SLOPE_RATIO_MIN = 1.15;
 const SLOPE_RATIO_MIN_RISING = 1.2;
 const MIN_WEAKER_SLOPE_RATIO = 0.3;
 const MIN_TOUCHES_PER_LINE = 3;
-const MIN_SCORE = 0.5;
 const MIN_CONTAINMENT = 0.85;
 
 const MIN_ALTERNATION = 0.25;
@@ -49,9 +48,6 @@ const MIN_TOUCH_BALANCE = 0.45;
 
 const MIN_R2_THRESHOLD = 0.55;
 const MIN_HIGHS_RATIO = 0.99;
-
-const RELAXED_CONFIDENCE_MAX = 0.9;
-const RELAXED_MIN_SCORE = 0.5;
 
 const FORMING_MIN_CONTAINMENT = 0.85;
 const FORMING_MAX_CONV_RATIO = 0.8;
@@ -111,12 +107,35 @@ interface RegLine {
 
 interface RegressionValidation {
 	apex: { isValid: boolean; apexIdx: number; barsToApex: number };
-	conv: { isConverging: boolean; gapStart: number; gapEnd: number; ratio: number; score?: number };
+	conv: { isConverging: boolean; gapStart: number; gapEnd: number; ratio: number };
 	containment: { closeInsideRatio: number; violations: number; total: number };
 	touches: TouchResult;
 	alternation: number;
-	insideRatio: number;
-	score: number;
+	scoreComponents: PatternScoreBreakdown;
+	confidence: number;
+}
+
+// 形成中の経路も strict のゲートを物差しにするので、緩めたゲートで拾った分だけ点が下がる（#422）。
+function wedgeScore(m: {
+	r2?: readonly [number, number];
+	convergenceRatio: number;
+	touchCount: number;
+	alternation: number;
+	containmentRatio: number;
+}): { scoreComponents: PatternScoreBreakdown; confidence: number } {
+	const lineFit = m.r2
+		? (marginToOne(m.r2[0], MIN_R2_THRESHOLD) + marginToOne(m.r2[1], MIN_R2_THRESHOLD)) / 2
+		: undefined;
+	const convergence = marginUnderGate(m.convergenceRatio, WEDGE_MAX_CONVERGENCE);
+	const touches = marginOverGate(m.touchCount, MIN_TOUCHES_PER_LINE * 2);
+	const alternation = marginToOne(m.alternation, MIN_ALTERNATION);
+	const containment = marginToOne(m.containmentRatio, MIN_CONTAINMENT);
+	// convergence 以降は常に数値なので averageDefinedAxes は undefined を返さない（?? には届かない）。
+	const base = averageDefinedAxes([lineFit, convergence, touches, alternation, containment]) ?? convergence;
+	return {
+		scoreComponents: roundAxes({ lineFit, convergence, touches, alternation, containment }),
+		confidence: finalizeConf(base),
+	};
 }
 
 function preparePivots(ctx: DetectContext): PivotData {
@@ -281,17 +300,6 @@ function validateRegressionCandidate(
 		return null;
 	}
 
-	const insideRatio = calcInsideRatioEx(candles, upper, lower, startIdx, endIdx);
-	const durationParams = { windowSizeMin: barParams.windowSizeMin, windowSizeMax: barParams.windowSizeMax };
-	const score = calculatePatternScoreEx({
-		fitScore: (upper.r2 + lower.r2) / 2,
-		convergeScore: conv.score ?? 0,
-		touchScore: touches.score,
-		alternationScore: alternation,
-		insideScore: insideRatio,
-		durationScore: calcDurationScoreEx(endIdx - startIdx, durationParams),
-	});
-
 	if (Number(alternation ?? 0) < MIN_ALTERNATION) {
 		debugCandidates.push({
 			type: wedgeType,
@@ -308,29 +316,14 @@ function validateRegressionCandidate(
 		return null;
 	}
 
-	if (score < MIN_SCORE) {
-		debugCandidates.push({
-			type: wedgeType,
-			accepted: false,
-			reason: 'score_below_threshold',
-			indices: [startIdx, endIdx],
-			details: {
-				score: Number(score.toFixed(3)),
-				minScore: MIN_SCORE,
-				components: {
-					fit: Number(((upper.r2 + lower.r2) / 2).toFixed(3)),
-					converge: Number((conv.score ?? 0).toFixed(3)),
-					touch: Number((touches.score ?? 0).toFixed(3)),
-					alternation: Number((alternation ?? 0).toFixed(3)),
-					inside: Number((insideRatio ?? 0).toFixed(3)),
-					duration: Number(calcDurationScoreEx(endIdx - startIdx, durationParams).toFixed(3)),
-				},
-			},
-		});
-		return null;
-	}
-
-	return { apex, conv, containment, touches, alternation, insideRatio, score };
+	const { scoreComponents, confidence } = wedgeScore({
+		r2: [upper.r2, lower.r2],
+		convergenceRatio: conv.ratio,
+		touchCount: upQ + loQ,
+		alternation,
+		containmentRatio: containment.closeInsideRatio,
+	});
+	return { apex, conv, containment, touches, alternation, scoreComponents, confidence };
 }
 
 // 線ごとの isBreak だけでは足りないので、idx >= breakIdx の点は線を問わず落とす。evaluateTouchesEx は isBreak を線ごとに独立に立てる（#281）。
@@ -406,8 +399,7 @@ function buildRegressionEntry(
 	const expectedBreakoutDirection = wedgeType === 'falling_wedge' ? 'up' : 'down';
 	const isSuccessfulBreakout = breakInfo.detected && breakoutDirection === expectedBreakoutDirection;
 
-	const { apex, conv, containment, touches, alternation, insideRatio, score } = v;
-	const confidence = Math.max(0, Math.min(1, Number(score.toFixed(2))));
+	const { apex, conv, containment, touches, alternation, scoreComponents, confidence } = v;
 
 	const patternHeight = Math.abs(upper.valueAt(startIdx) - lower.valueAt(startIdx));
 	let breakoutTarget: number | undefined;
@@ -502,8 +494,7 @@ function buildRegressionEntry(
 			converge: conv,
 			touches: { up: touches.upperQuality, lo: touches.lowerQuality },
 			alternation,
-			insideRatio,
-			score,
+			scoreComponents,
 			smoothed: useSmoothed,
 			breakInfo: breakInfo.detected ? { ...breakInfo, direction: breakoutDirection } : null,
 		},
@@ -514,6 +505,7 @@ function buildRegressionEntry(
 		confidence,
 		range: { start, end },
 		status: status4b,
+		scoreComponents,
 		pivots,
 		daysToApex: apex.isValid ? Math.max(0, apex.apexIdx - actualEndIdx) : undefined,
 		breakoutDirection: breakoutDirection ?? undefined,
@@ -548,7 +540,6 @@ function detectRegressionWedges(
 		slopeRatioMinRising: SLOPE_RATIO_MIN_RISING,
 		minWeakerSlopeRatio: MIN_WEAKER_SLOPE_RATIO,
 		minTouchesPerLine: MIN_TOUCHES_PER_LINE,
-		minScore: MIN_SCORE,
 		minContainment: MIN_CONTAINMENT,
 		slopeRatioMinFalling: SLOPE_RATIO_MIN,
 	};
@@ -1049,7 +1040,6 @@ function checkFormingTouches(
 		lowerTouches: validLower,
 		upperQuality: validUpper.length,
 		lowerQuality: validLower.length,
-		score: Math.min(1, totalTouches / 8),
 	};
 	const fAlternation = calcAlternationScoreEx(cleanTouches);
 	if (fAlternation < MIN_ALTERNATION) {
@@ -1207,7 +1197,7 @@ function detectFormingWedges(
 			if (shape.debug) formingWedgeDebug.push(shape.debug);
 			continue;
 		}
-		const { wedgeType, absU, absL, convRatio, fApex, fContainment } = shape.value;
+		const { wedgeType, convRatio, fApex, fContainment } = shape.value;
 
 		const touches = checkFormingTouches(candles, upperLine, lowerLine, startIdx, endIdx, wedgeType);
 		if (!touches.ok) {
@@ -1232,31 +1222,13 @@ function detectFormingWedges(
 
 		if (overlapsExistingWedge(allPatterns, wedgeType, start, end)) continue;
 
-		const convergenceScore = 1 - convRatio;
-		const slopeScore = Math.min(absU, absL) / Math.max(absU, absL);
-		const durationScore = calcDurationScoreEx(endIdx - startIdx, {
-			windowSizeMin: barParams.formingWindowMin,
-			windowSizeMax: barParams.formingWindowMax,
+		// 2 点を通す線なので R² が無く、lineFit は出さない。包含率はゲートより狭い strict の許容（幅の 0.3%）で測り直す。
+		const { scoreComponents, confidence } = wedgeScore({
+			convergenceRatio: convRatio,
+			touchCount: validUpper.length + validLower.length,
+			alternation: fAlternation,
+			containmentRatio: checkContainment(candles, upperLine, lowerLine, startIdx, endIdx).closeInsideRatio,
 		});
-		const score = calculatePatternScoreEx({
-			fitScore: slopeScore,
-			convergeScore: convergenceScore,
-			touchScore: cleanTouches.score,
-			alternationScore: fAlternation,
-			insideScore: fContainment.closeInsideRatio,
-			durationScore,
-		});
-		if (score < RELAXED_MIN_SCORE) {
-			formingWedgeDebug.push({
-				type: wedgeType,
-				accepted: false,
-				reason: 'score_below_threshold',
-				indices: [startIdx, endIdx],
-				details: { score: Number(score.toFixed(3)), minRequired: RELAXED_MIN_SCORE },
-			});
-			continue;
-		}
-		const confidence = Math.min(RELAXED_CONFIDENCE_MAX, Number(score.toFixed(2)));
 
 		let status: 'forming' | 'near_completion' | 'completed' | 'invalid' = 'forming';
 		let outcome: 'success' | 'failure' | undefined;
@@ -1289,6 +1261,7 @@ function detectFormingWedges(
 			confidence,
 			range: { start, end },
 			status,
+			scoreComponents,
 			pivots: fPivots,
 			daysToApex: fApex.isValid ? Math.max(0, fApex.apexIdx - actualEndIdx) : undefined,
 			breakoutDirection: breakoutDirection ?? undefined,
@@ -1316,7 +1289,7 @@ function detectFormingWedges(
 				containment: fContainment.closeInsideRatio,
 				touches: { up: validUpper.length, lo: validLower.length },
 				alternation: fAlternation,
-				score,
+				scoreComponents,
 			},
 		});
 	}

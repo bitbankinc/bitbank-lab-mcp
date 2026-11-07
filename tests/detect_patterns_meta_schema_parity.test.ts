@@ -181,7 +181,7 @@ const DATA_PARITY_FIXTURES = [
 		],
 	},
 	{
-		label: '実データ 1day（triangle と flag の scoreComponents を踏む）',
+		label: '実データ 1day（triangle / flag / wedge の scoreComponents を踏む）',
 		build: () => buildBtcJpy2026ThroughSep30Candles().slice(6, 96),
 		opts: { includeInvalid: true },
 		// この窓には `breakout` を載せる反転系の候補が出ないので、allowlist から外す。
@@ -194,6 +194,8 @@ const DATA_PARITY_FIXTURES = [
 			'patterns[].scoreComponents.flatness',
 			'patterns[].scoreComponents.pole',
 			'patterns[].scoreComponents.parallelism',
+			'patterns[].scoreComponents.alternation',
+			'patterns[].scoreComponents.containment',
 		],
 	},
 ] as const;
