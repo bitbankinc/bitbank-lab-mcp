@@ -5,7 +5,6 @@ export {
 	getMinFitForTf,
 	getTriangleCoeffForTf,
 	getTriangleWindowSize,
-	MIN_CONFIDENCE,
 	resolveParams,
 	SCHEMA_DEFAULTS,
 } from './config.js';

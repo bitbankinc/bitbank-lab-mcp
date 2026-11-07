@@ -475,7 +475,7 @@ export function detectPennantsFlags(ctx: DetectContext): DetectResult {
 				? spread.spreadStability
 				: clamp01(1 - spread.convergenceRatio); // pennant: convergenceRatio 小さいほど良い
 		const baseScore = poleScore * 0.3 + shapeScore * 0.25 + fitScore * 0.2 + touchScore * 0.25;
-		const confidence = finalizeConf(baseScore, flagType);
+		const confidence = finalizeConf(baseScore);
 
 		const outcome = hasBreakout ? (isExpectedBreakout ? 'success' : 'failure') : undefined;
 		const poleStartPrice = candles[pole.poleStart].close;

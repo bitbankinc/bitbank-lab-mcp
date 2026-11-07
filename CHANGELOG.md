@@ -12,6 +12,7 @@
 - `analyze_my_portfolio`：ステーキング報酬（入金履歴の `category` が `STAKING` の入庫）を、元本の入金ではなく成果として扱う。`*_performance.net_flow_jpy`、資産推移の `flow_jpy`、`deposit_withdrawal_summary.net_jpy_invested` から外す。そのためステーキング報酬のある口座では、`adjusted_change_jpy` と `account_return_*` が報酬の分だけ大きくなる。数量の復元と取得原価（入庫日の価格）は変わらない。`category` を返さない入庫は従来どおり元本として扱う（issue #177）。
 - `analyze_my_portfolio`：本文の入出金調整後の率に「期初評価額比」と添えた（issue #111）。
 - `detect_patterns`：H&S（三尊）にも、逆 H&S と同じ肩の深さの判定を入れた。左右の肩がそれぞれ、隣の谷から頭の深さの 20% 以上離れていない候補は `shoulder_depth_insufficient` で落とす。肩がネックラインのすぐ上にしか無い V 字の途中を三尊と読まないため。手元の実データ（1hour）では、落ちた 97 件のうち 96 件がブレイク前の `near_completion`、1 件が `invalid` で、ネックラインを抜けた `completed` の H&S は落ちなかった（issue #412）。
+- `detect_patterns`：整合度 `confidence` の計算を見直した（issue #422）。種別ごとの補正（H&S ×1.1、triple ×1.05、triangle・flag・pennant ×0.95）と、relaxed で拾った候補の割引（double ×0.85、triple・H&S ×0.95）をやめた。反転パターン（double / triple / H&S）は、構成点の水準の揃い方 `levelMargin` を strict の許容幅を物差しにして測り（relaxed で拾った候補は、緩めた分だけ低くなる）、測れた軸の単純平均を整合度にする。期間の軸は、完成済みのパターンに期間のゲートが無く物差しが決まらないので外した。そのため triangle・flag・pennant は 1/0.95 倍ほど上がり、H&S は下がり、double は水準の差が許容幅に近いほど下がる。wedge は変わらない。完成済み triple の整合度の下限 0.6（`confidence_below_min`）も外した。手元の実データでは、外しても出力は 1 件も変わらなかった。丸めで同点だった隣接窓の triangle が 0.01 差になり、重複統合で残る候補が替わることがある。
 
 ### Added
 
@@ -30,6 +31,7 @@
 - `get_tickers_jpy`：`view`（`ranked` / `items`）を `includeRanked`（真偽値、既定 `true`）に置き換えた。`view=items` と同じ出力は `includeRanked=false` で得られる。`view` は受け付けなくなり、渡しても無視されて既定の `includeRanked=true` になる（issue #415）。
 - 移行期間を置いていた旧い `view` の値を削除した。渡すと入力エラーになる。`get_candles` の `items`（→ `view=full` + `format=json`）、`get_transactions` の `summary`（→ `view=full`）と `items`（→ `view=full` + `format=json`）、`get_flow_metrics` の `compact`（→ `view=full` + `nonZeroOnly=true`）と `buckets`（→ `view=detailed`）。削除予定は 0.4.0 だったが、期日を過ぎても残っていた。
 - `analyze_my_portfolio`：出力から別名フィールドを削除した。`account_pnl` / `yearly_account_pnl` / `monthly_account_pnl` の `margin_interest` / `margin_fee`（→ `margin_interest_cost` / `margin_fee_cost`）と、`yearly_realized_pnl` / `monthly_realized_pnl` の `priced_deposit_count` / `unpriced_deposit_count`（→ `priced_deposit_count_all_time` / `unpriced_deposit_count_all_time`）。`holdings[]` の `priced_deposit_count` / `unpriced_deposit_count` は別名ではないので残している。
+- `detect_patterns`：`scoreComponents` から `symmetry` と `duration` を削除した。double と H&S の水準の揃い方は、triple と同じ `levelMargin`（`1 − 平均 relDev ÷ strict の許容幅`）で出す。`symmetry`（`1 − relDev`）とは物差しが違い、値は小さくなる（issue #422）。
 
 ### Schema
 
@@ -41,7 +43,7 @@
 
 - 公式 API docs のミラー（`docs/internal/bitbank-api-fields.md`）と lock を upstream の最新に更新した（issue #177）。
 - `.github/workflows/` のコメントを `.claude/rules/comments.md` の基準で整理した（issue #416）。コメントだけの変更で、動きは変えていない。
-- `tools/patterns/detect_hs.ts`：H&S の上下 × strict / relaxed で 4 つあった判定を、側を引数に取る形にまとめた（issue #412）。検出結果と debug の候補は変えていない。relaxed の信頼度の割引 `0.95` に `RELAXED_CONFIDENCE_PENALTY` と名前を付けた（値は issue #413 で検討する）。
+- `tools/patterns/detect_hs.ts`：H&S の上下 × strict / relaxed で 4 つあった判定を、側を引数に取る形にまとめた（issue #412）。検出結果と debug の候補は変えていない。
 
 ## [0.6.0] - 2026-11-04
 

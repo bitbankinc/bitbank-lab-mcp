@@ -668,7 +668,7 @@ describe('detect_patterns fixtures', () => {
 			expect(rejected).toBeDefined();
 		});
 
-		it('既存 double_top fixture は引き続き検出され、confidence は維持される', async () => {
+		it('既存 double_top fixture は引き続き検出され、confidence は scoreComponents の単純平均のまま減点されない', async () => {
 			mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(buildCompletedDoubleTopCandles())));
 			const res = await detectPatterns('btc_jpy', '1day', 26, {
 				patterns: ['double_top'],
@@ -680,7 +680,10 @@ describe('detect_patterns fixtures', () => {
 			assertOk(res);
 			const dt = res.data.patterns.filter((p: { type: string }) => p.type === 'double_top');
 			expect(dt).toHaveLength(1);
-			expect(dt[0].confidence).toBeGreaterThanOrEqual(0.6);
+			const sc = dt[0].scoreComponents as Record<string, number>;
+			expect(sc.levelMargin).toBeCloseTo(1 - 1 / 130 / 0.02, 4);
+			const axes = Object.values(sc);
+			expect(dt[0].confidence).toBeCloseTo(axes.reduce((sum, v) => sum + v, 0) / axes.length, 2);
 		});
 
 		it('既存 forming double_bottom fixture は引き続き検出され、confidence は維持される', async () => {

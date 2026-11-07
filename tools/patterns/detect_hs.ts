@@ -2,10 +2,10 @@ import { EPSILON } from '../../lib/math.js';
 import { generatePatternDiagram } from '../../lib/pattern-diagrams.js';
 import { roundPriceAtLevel } from '../../lib/price.js';
 import { patternBarRange } from './bar-thresholds.js';
-import { finalizeConf, periodScoreDays } from './helpers.js';
+import { finalizeConf } from './helpers.js';
 import { clamp01, near, relDev } from './regression.js';
 import { applyPostBreakoutGates, applyReversalGate, buildStructureGate } from './reversal-gate.js';
-import { averageDefinedAxes, breakoutQualityScore, retracementScore } from './scoring.js';
+import { averageDefinedAxes, breakoutQualityScore, levelMarginScore, retracementScore } from './scoring.js';
 import {
 	BREAKOUT_BUFFER_PCT,
 	buildPrecedingTrend,
@@ -167,6 +167,8 @@ export function necklineProjectionHeight(args: {
 
 function buildHsScore(opts: {
 	shoulders: readonly [number, number];
+	/** strict の肩の判定と同じ幅（tolerancePct と hsShoulderMaxPct の小さいほう）。 */
+	strictShoulderTolerancePct: number;
 	headPrice: number;
 	shoulderIdxs: readonly [number, number];
 	headIdx: number;
@@ -178,10 +180,8 @@ function buildHsScore(opts: {
 	patternHeight: number | undefined;
 	side: ReversalSide;
 	retracementRatio?: number;
-	durationScore: number;
 }): { components: PatternScoreBreakdown; base: number } {
-	const [s1, s2] = opts.shoulders;
-	const symmetry = clamp01(1 - relDev(s1, s2));
+	const levelMargin = levelMarginScore(opts.shoulders, opts.strictShoulderTolerancePct);
 	const headProminence = headProminenceScore(opts.headPrice, opts.shoulders, opts.side, opts.headProminenceGate);
 	const timeSymmetry = timeSymmetryScore(opts.shoulderIdxs, opts.headIdx);
 	const retracement = retracementScore(opts.retracementRatio);
@@ -192,17 +192,15 @@ function buildHsScore(opts: {
 		opts.side,
 	);
 	const components: PatternScoreBreakdown = {
-		symmetry: Number(symmetry.toFixed(4)),
+		levelMargin: Number(levelMargin.toFixed(4)),
 		...(headProminence !== undefined ? { headProminence: Number(headProminence.toFixed(4)) } : {}),
 		...(timeSymmetry !== undefined ? { timeSymmetry: Number(timeSymmetry.toFixed(4)) } : {}),
 		...(retracement !== undefined ? { retracement: Number(retracement.toFixed(4)) } : {}),
 		...(breakoutQuality !== undefined ? { breakoutQuality: Number(breakoutQuality.toFixed(4)) } : {}),
-		duration: Number(opts.durationScore.toFixed(4)),
 	};
 	// 算出できなかった軸は 0 として混ぜず、平均から外す（欠測を減点にしないため）。
 	const base =
-		averageDefinedAxes([symmetry, headProminence, timeSymmetry, retracement, breakoutQuality, opts.durationScore]) ??
-		symmetry;
+		averageDefinedAxes([levelMargin, headProminence, timeSymmetry, retracement, breakoutQuality]) ?? levelMargin;
 	return { components, base };
 }
 
@@ -418,9 +416,6 @@ const HS_SIDES: Record<ReversalSide, HsSide> = {
 	},
 };
 
-// TODO(#413): ダブルは 0.85。そろえるかは検出結果と順位の変わり方を数えてから決める。
-const RELAXED_CONFIDENCE_PENALTY = 0.95;
-
 function hsIndices(w: HsWindow): number[] {
 	return [w.p0.idx, w.p1.idx, w.p2.idx, w.p3.idx, w.p4.idx];
 }
@@ -619,6 +614,7 @@ function buildHsPattern(
 
 	const { components: scoreComponents, base } = buildHsScore({
 		shoulders: [p0.price, p4.price],
+		strictShoulderTolerancePct: Math.min(ctx.tolerancePct, ctx.hsShoulderMaxPct),
 		headPrice: p2.price,
 		shoulderIdxs: [p0.idx, p4.idx],
 		headIdx: p2.idx,
@@ -628,9 +624,8 @@ function buildHsPattern(
 		patternHeight: height,
 		side,
 		retracementRatio: gate.retracementRatio,
-		durationScore: periodScoreDays(start, end),
 	});
-	const confidence = finalizeConf(relaxedFactors ? base * RELAXED_CONFIDENCE_PENALTY : base, type);
+	const confidence = finalizeConf(base);
 
 	// invalid の候補は #242 のゲートが棄却として記録済みなので、成功としては記録しない。
 	if (!postGate) {

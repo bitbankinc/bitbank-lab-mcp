@@ -221,7 +221,7 @@ function buildTriangleResult(c: TriangleCandidateCtx): { pattern: PatternEntry; 
 				)
 			: 0.5;
 	const baseScore = fitScore * 0.25 + convScore * 0.25 + touchScore * 0.3 + symScore * 0.2;
-	const confidence = finalizeConf(baseScore, triangleType);
+	const confidence = finalizeConf(baseScore);
 
 	// この検出器の swing の price は既に high / low なので、extremePrice は price と同じ値になる。
 	// 外側バーは高値と安値の両方で極値になり、同じ idx が H と L で 2 回入る。重複ではないので dedup しない（#141）。

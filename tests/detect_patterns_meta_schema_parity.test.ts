@@ -28,7 +28,7 @@ function buildNoisyCandles(): Candle[] {
 }
 
 // 右肩からブレイクまでは単調に落とし、間にピボットを作らず（#242 の経路ゲート）肩ゾーン（上限 116.5）にも戻らない。`swingDepth: 3` を明示するのは、1day のオート値 6 ではこの長さで 5 点が立たないため。
-/** 完成済み strict H&S を 1 件だけ出す価格列（H&S の 6 軸 `scoreComponents` を踏む）。役割と idx：先行安値 3 / 左肩 7 / 谷1 11 / 頭 15 / 谷2 19 / 右肩 23 / ネックライン下抜け 26。 */
+/** 完成済み strict H&S を 1 件だけ出す価格列（H&S の 5 軸 `scoreComponents` を踏む）。役割と idx：先行安値 3 / 左肩 7 / 谷1 11 / 頭 15 / 谷2 19 / 右肩 23 / ネックライン下抜け 26。 */
 function buildCompletedHsCandles(): Candle[] {
 	const closes = [
 		90, 88, 86, 84, 92, 100, 110, 120, 112, 105, 101, 100, 108, 120, 132, 140, 130, 115, 105, 100, 106, 113, 118, 120,
@@ -45,7 +45,6 @@ function buildCompletedHsCandles(): Candle[] {
 }
 
 // relaxed は strict がその種別を 1 件も見つけられなかったときだけ走るので、3 山を 1000 / 1000 / 958 に置き、山1-山3 の相対差 4.2% を `tolerancePct`（4%）超・`tolerancePct × 1.25`（5%）以内にして、strict を落とし relaxed 第 1 段で拾わせる。
-// 山3（idx 42）からの下落は idx 44 で 845 まで落とし、ネックライン 900 をパターン高さの 64% ぶん割らせる（浅いブレイクだと `breakoutQuality` で confidence が `MIN_CONFIDENCE` を割り、relaxed 経路の検証が空振りする）。
 function buildRelaxedTripleTopCandles(): Candle[] {
 	// [idx, close] のアンカー。区間は線形補間する（単調区間なのでピボットはアンカー上にだけ立つ）。
 	const anchors: ReadonlyArray<readonly [number, number]> = [
@@ -150,7 +149,7 @@ const DATA_PARITY_FIXTURES = [
 		requiredKeys: ['patterns[].confidence', 'patterns[].breakout.idx', 'patterns[]._method'],
 	},
 	{
-		label: '完成済み H&S（strict。6 軸の scoreComponents を踏む唯一の入力）',
+		label: '完成済み H&S（strict。5 軸の scoreComponents を踏む唯一の入力）',
 		build: buildCompletedHsCandles,
 		opts: { swingDepth: 3 },
 		// `patterns[]._method` は完成済み経路では載らない（形成中の 6 経路だけが付ける）ので、要求もしないし allowlist からも外す（allowlist は「挙げたのに strip されていない」でも落ちる）。
@@ -159,12 +158,11 @@ const DATA_PARITY_FIXTURES = [
 			'patterns[].confidence',
 			'patterns[].breakout.idx',
 			// `headProminence` / `timeSymmetry` は H&S にしか付かないので、踏むフィクスチャで別途固定しないと宣言漏れを検出できない。
-			'patterns[].scoreComponents.symmetry',
+			'patterns[].scoreComponents.levelMargin',
 			'patterns[].scoreComponents.headProminence',
 			'patterns[].scoreComponents.timeSymmetry',
 			'patterns[].scoreComponents.retracement',
 			'patterns[].scoreComponents.breakoutQuality',
-			'patterns[].scoreComponents.duration',
 		],
 	},
 	{
@@ -176,11 +174,9 @@ const DATA_PARITY_FIXTURES = [
 			'patterns[]._method',
 			// ここが false になったら relaxed 経路を踏めておらず、`_fallback` の宣言漏れを検出できなくなる（#189）。
 			'patterns[]._fallback',
-			// triple の整合度の内訳は double 系の `symmetry` とは別フィールドなので、triple を踏むフィクスチャで別途固定しないと宣言漏れを検出できない（#199）。
 			'patterns[].scoreComponents.levelMargin',
 			'patterns[].scoreComponents.retracement',
 			'patterns[].scoreComponents.breakoutQuality',
-			'patterns[].scoreComponents.duration',
 		],
 	},
 ] as const;

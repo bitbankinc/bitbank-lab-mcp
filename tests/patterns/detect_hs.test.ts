@@ -1954,7 +1954,7 @@ describe('detectHeadAndShoulders: 整合度の多軸化（issue #204）', () => 
 		return a.y + ((b.y - a.y) * (clampedI - a.x)) / (b.x - a.x);
 	}
 
-	it('完成済み H&S は scoreComponents を出し、triple 用の levelMargin は含まない', () => {
+	it('完成済み H&S は levelMargin ほか 5 軸を出し、symmetry と duration は出さない（#422）', () => {
 		const { candles, pivots } = buildHsWithBreakout();
 		const hs = detectHeadAndShoulders(buildCtx({ candles, pivots })).patterns.find(
 			(p) => p.type === 'head_and_shoulders',
@@ -1962,13 +1962,12 @@ describe('detectHeadAndShoulders: 整合度の多軸化（issue #204）', () => 
 		expect(hs?.status).toBe('completed');
 		const sc = hs?.scoreComponents;
 		expect(sc).toBeDefined();
-		// `levelMargin` は triple 専用（正規化した同水準度）。H&S は生の `symmetry` を使う。
-		expect(sc).not.toHaveProperty('levelMargin');
-		expect(sc?.symmetry).toBe(1); // 両肩とも 100
+		expect(sc).not.toHaveProperty('symmetry');
+		expect(sc).not.toHaveProperty('duration');
+		expect(sc?.levelMargin).toBe(1); // 両肩とも 100
 		expect(sc?.headProminence).toBeGreaterThan(0);
 		expect(sc?.timeSymmetry).toBe(1); // 左肩→頭 30 本 / 頭→右肩 30 本
 		expect(sc?.breakoutQuality).toBeGreaterThan(0);
-		expect(sc?.duration).toBeGreaterThan(0);
 	});
 
 	it('未ブレイク（near_completion）では breakoutQuality が付かない', () => {
@@ -1979,7 +1978,22 @@ describe('detectHeadAndShoulders: 整合度の多軸化（issue #204）', () => 
 		);
 		expect(hs?.status).toBe('near_completion');
 		expect(hs?.scoreComponents).not.toHaveProperty('breakoutQuality');
-		expect(hs?.scoreComponents?.symmetry).toBeDefined();
+		expect(hs?.scoreComponents?.levelMargin).toBeDefined();
+	});
+
+	it('levelMargin の物差しは strict の肩の判定と同じ幅（tolerancePct と肩の上限の小さいほう）', () => {
+		// 両肩 100 / 102: relDev = 2 / 102。1day の肩の上限（hsShoulderMaxPct）は tolerancePct 0.04 より広いので、物差しは 0.04。
+		const { candles, pivots } = buildHS({ leftShoulder: 100, rightShoulder: 102 });
+		const ctx = buildCtx({ candles, pivots });
+		expect(ctx.hsShoulderMaxPct).toBeGreaterThan(0.04);
+		const hs = detectHeadAndShoulders(ctx).patterns.find((p) => p.type === 'head_and_shoulders');
+		expect(hs?.scoreComponents?.levelMargin).toBeCloseTo(1 - 2 / 102 / 0.04, 4);
+
+		// 肩の上限のほうが狭いときは、上限が物差しになる。
+		const narrow = buildCtx({ candles, pivots });
+		narrow.hsShoulderMaxPct = 0.03;
+		const narrowHs = detectHeadAndShoulders(narrow).patterns.find((p) => p.type === 'head_and_shoulders');
+		expect(narrowHs?.scoreComponents?.levelMargin).toBeCloseTo(1 - 2 / 102 / 0.03, 4);
 	});
 
 	it('headProminence は突出ゲートに対する余裕（ゲートの 2 倍で 0.5）', () => {
@@ -2101,8 +2115,8 @@ describe('detectHeadAndShoulders: 整合度の多軸化（issue #204）', () => 
 		const tallHs = run(tall);
 		const shallowHs = run(shallow);
 
-		expect(tallHs?.scoreComponents?.symmetry).toBe(shallowHs?.scoreComponents?.symmetry);
-		expect(tallHs?.scoreComponents?.duration).toBe(shallowHs?.scoreComponents?.duration);
+		expect(tallHs?.scoreComponents?.levelMargin).toBeDefined();
+		expect(tallHs?.scoreComponents?.levelMargin).toBe(shallowHs?.scoreComponents?.levelMargin);
 		expect(tallHs?.confidence).toBeGreaterThan(Number(shallowHs?.confidence));
 	});
 });
