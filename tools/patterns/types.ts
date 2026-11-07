@@ -130,14 +130,11 @@ export interface AftermathResult {
 }
 
 export interface PatternScoreBreakdown {
-	symmetry?: number;
-	/** symmetry とは別の量（許容幅で正規化）。symmetry の意味を差し替えて流用しない（.claude/rules/tools.md 規約 7）。 */
 	levelMargin?: number;
 	headProminence?: number;
 	timeSymmetry?: number;
 	retracement?: number;
 	breakoutQuality?: number;
-	duration?: number;
 }
 
 export interface PatternStructureGate {

@@ -1,9 +1,9 @@
 import { EPSILON } from '../../lib/math.js';
 import { generatePatternDiagram } from '../../lib/pattern-diagrams.js';
 import { roundPriceAtLevel } from '../../lib/price.js';
-import { deduplicatePatterns, finalizeConf, periodScoreDays } from './helpers.js';
-import { clamp01, near, relDev } from './regression.js';
-import { averageDefinedAxes, breakoutQualityScore, retracementScore } from './scoring.js';
+import { deduplicatePatterns, finalizeConf } from './helpers.js';
+import { near, relDev } from './regression.js';
+import { averageDefinedAxes, breakoutQualityScore, levelMarginScore, retracementScore } from './scoring.js';
 import {
 	type BreakoutPathRejectReason,
 	buildPrecedingTrend,
@@ -39,7 +39,6 @@ import {
 } from './types.js';
 
 const RELAXED_TOLERANCE_FACTOR = 1.3;
-const RELAXED_CONFIDENCE_PENALTY = 0.85;
 // findBreakoutIdx が突破を探す窓と同じ長さにする。過ぎた候補は以後 completed にならないため（#126）。
 const FORMING_EXPIRY_BARS = MAX_BARS_FROM_EXTREMUM;
 
@@ -214,24 +213,23 @@ function buildStructureGate(gate: ReversalStructureResult): PatternStructureGate
 function buildDoubleScore(opts: {
 	outer1: number;
 	outer2: number;
+	strictTolerancePct: number;
 	necklinePrice: number;
 	breakoutClose: number;
 	patternHeight: number;
 	side: ReversalSide;
 	retracementRatio?: number;
-	durationScore: number;
 }): { components: PatternScoreBreakdown; base: number } {
-	const symmetry = clamp01(1 - relDev(opts.outer1, opts.outer2));
+	const levelMargin = levelMarginScore([opts.outer1, opts.outer2], opts.strictTolerancePct);
 	const retracement = retracementScore(opts.retracementRatio);
 	const breakoutQuality = breakoutQualityScore(opts.necklinePrice, opts.breakoutClose, opts.patternHeight, opts.side);
 	const components: PatternScoreBreakdown = {
-		symmetry: Number(symmetry.toFixed(4)),
+		levelMargin: Number(levelMargin.toFixed(4)),
 		...(retracement !== undefined ? { retracement: Number(retracement.toFixed(4)) } : {}),
 		...(breakoutQuality !== undefined ? { breakoutQuality: Number(breakoutQuality.toFixed(4)) } : {}),
-		duration: Number(opts.durationScore.toFixed(4)),
 	};
-	// symmetry は常に数値なので averageDefinedAxes は undefined を返さない（?? には届かない）。
-	const base = averageDefinedAxes([symmetry, retracement, breakoutQuality, opts.durationScore]) ?? symmetry;
+	// levelMargin は常に数値なので averageDefinedAxes は undefined を返さない（?? には届かない）。
+	const base = averageDefinedAxes([levelMargin, retracement, breakoutQuality]) ?? levelMargin;
 	return { components, base };
 }
 
@@ -437,7 +435,6 @@ function evaluateDouble(
 		{ x: a.idx, y: necklinePrice },
 		{ x: isCompleted ? breakoutIdx : c.idx, y: necklinePrice },
 	];
-	const per = periodScoreDays(start, end);
 	const outerAvg = (a.price + c.price) / 2;
 	const patternHeight = side === 'top' ? outerAvg - necklinePrice : necklinePrice - outerAvg;
 	// 未ブレイクは NaN にして、breakoutQualityScore に軸ごと外させる。
@@ -445,14 +442,14 @@ function evaluateDouble(
 	const { components: scoreComponents, base } = buildDoubleScore({
 		outer1: a.price,
 		outer2: c.price,
+		strictTolerancePct: tolerancePct,
 		necklinePrice,
 		breakoutClose,
 		patternHeight,
 		side,
 		retracementRatio: gate.retracementRatio,
-		durationScore: per,
 	});
-	const confidence = finalizeConf(relaxed ? base * RELAXED_CONFIDENCE_PENALTY : base, type);
+	const confidence = finalizeConf(base);
 	const diagram = generatePatternDiagram(
 		type,
 		[

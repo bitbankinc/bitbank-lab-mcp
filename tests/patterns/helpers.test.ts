@@ -1,13 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-	barsPerDay,
-	deduplicatePatterns,
-	finalizeConf,
-	globalDedup,
-	PERIOD_SCORE_BAR_BUCKETS,
-	periodScoreBars,
-	periodScoreDays,
-} from '../../tools/patterns/helpers.js';
+import { barsPerDay, deduplicatePatterns, finalizeConf, globalDedup } from '../../tools/patterns/helpers.js';
 import type { CandleData, DeduplicablePattern, TrendLine } from '../../tools/patterns/types.js';
 import {
 	calcAlternationScoreEx,
@@ -277,85 +269,19 @@ describe('calculatePatternScoreEx', () => {
 	});
 });
 
-describe('periodScoreDays（暦日基準。double / H&S が使う）', () => {
-	it('ISO文字列なしは 0.7', () => {
-		expect(periodScoreDays()).toBe(0.7);
-	});
-
-	it('短期間は低スコア', () => {
-		expect(periodScoreDays('2024-01-01', '2024-01-03')).toBe(0.6);
-	});
-
-	it('15-30日は高スコア', () => {
-		expect(periodScoreDays('2024-01-01', '2024-01-20')).toBe(0.9);
-	});
-
-	// 30 日以上だけ 0.9 → 0.7 と下がる。この非単調性は暦日版の仕様として固定する（バー数版には引き継いでいない）。
-	it('30日以上は 0.9 から 0.7 に下がる（非単調。引数なしと同じ中立値）', () => {
-		expect(periodScoreDays('2024-01-01', '2024-02-05')).toBe(0.7);
-		expect(periodScoreDays('2024-01-01', '2024-02-05')).toBe(periodScoreDays());
-	});
-});
-
-describe('periodScoreBars（バー数基準。triple が使う）', () => {
-	it('境界は 12 / 18 / 26 バー', () => {
-		expect(PERIOD_SCORE_BAR_BUCKETS).toEqual([12, 18, 26]);
-	});
-
-	it.each([
-		[0, 0.6],
-		[11, 0.6],
-		[12, 0.7],
-		[17, 0.7],
-		[18, 0.8],
-		[25, 0.8],
-		[26, 0.9],
-		[1000, 0.9],
-	])('%i バー → %f', (bars, expected) => {
-		expect(periodScoreBars(bars)).toBe(expected);
-	});
-
-	// ここが崩れると「由来不明の段差をバー空間に持ち込まない」という #199 候補 2 の判断が黙って戻る。
-	it('単調非減少（暦日版の 0.9 → 0.7 の段差を引き継いでいない）', () => {
-		const scores = Array.from({ length: 60 }, (_, bars) => periodScoreBars(bars));
-		for (let i = 1; i < scores.length; i++) {
-			expect(scores[i]).toBeGreaterThanOrEqual(scores[i - 1]);
-		}
-		expect(Math.max(...scores)).toBe(0.9);
-	});
-
-	it('時間足に依らない（引数はバー数だけで tf を受け取らない）', () => {
-		expect(periodScoreBars.length).toBe(1);
-	});
-
-	it('非有限値は中立値 0.7', () => {
-		expect(periodScoreBars(Number.NaN)).toBe(0.7);
-		expect(periodScoreBars(Number.POSITIVE_INFINITY)).toBe(0.7);
-	});
-});
-
 describe('finalizeConf', () => {
-	it('head_and_shoulders はボーナス（*1.1）', () => {
-		const result = finalizeConf(0.8, 'head_and_shoulders');
-		expect(result).toBeCloseTo(0.88, 2);
-	});
-
-	it('triple_top はボーナス（*1.05）', () => {
-		const result = finalizeConf(0.8, 'triple_top');
-		expect(result).toBeCloseTo(0.84, 2);
-	});
-
-	it('triangle はペナルティ（*0.95）', () => {
-		const result = finalizeConf(0.8, 'triangle_ascending');
-		expect(result).toBeCloseTo(0.76, 2);
+	it('種別ごとの補正を掛けず、小数 2 桁に丸めるだけ（#422）', () => {
+		expect(finalizeConf(0.8)).toBe(0.8);
+		expect(finalizeConf(0.8149)).toBe(0.81);
+		expect(finalizeConf(0.815)).toBe(0.82);
 	});
 
 	it('1 を超えない', () => {
-		expect(finalizeConf(1, 'head_and_shoulders')).toBeLessThanOrEqual(1);
+		expect(finalizeConf(1.3)).toBe(1);
 	});
 
 	it('0 未満にならない', () => {
-		expect(finalizeConf(0, 'unknown')).toBeGreaterThanOrEqual(0);
+		expect(finalizeConf(-0.2)).toBe(0);
 	});
 });
 

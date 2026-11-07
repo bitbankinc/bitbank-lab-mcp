@@ -1,6 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { averageDefinedAxes, breakoutQualityScore, retracementScore } from '../../tools/patterns/scoring.js';
+import {
+	averageDefinedAxes,
+	breakoutQualityScore,
+	levelMarginScore,
+	retracementScore,
+} from '../../tools/patterns/scoring.js';
 import { RETRACEMENT_MAX, RETRACEMENT_MIN } from '../../tools/patterns/structural.js';
+
+describe('levelMarginScore', () => {
+	it('主構成点が完全に一致すれば 1', () => {
+		expect(levelMarginScore([100, 100], 0.04)).toBe(1);
+	});
+
+	it('ずれが strict の許容幅の半分なら 0.5', () => {
+		// relDev(100, 98) = 2 / 100 = 0.02 = 0.04 の半分
+		expect(levelMarginScore([100, 98], 0.04)).toBeCloseTo(0.5, 10);
+	});
+
+	it('許容幅ちょうど以上は 0（relaxed で拾った候補は 0 に寄る）', () => {
+		expect(levelMarginScore([100, 96], 0.04)).toBeCloseTo(0, 10);
+		expect(levelMarginScore([100, 94], 0.04)).toBe(0);
+	});
+
+	it('3 点は全ての組の relDev を平均して測る', () => {
+		// relDev: (100, 99) = 0.01、(99, 98) = 1 / 99、(100, 98) = 0.02
+		const avg = (0.01 + 1 / 99 + 0.02) / 3;
+		expect(levelMarginScore([100, 99, 98], 0.04)).toBeCloseTo(1 - avg / 0.04, 10);
+	});
+});
 
 describe('retracementScore', () => {
 	const center = (RETRACEMENT_MIN + RETRACEMENT_MAX) / 2;

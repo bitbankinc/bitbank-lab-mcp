@@ -1051,22 +1051,22 @@ tjackiet/bitbank-lab-mcp#249 の計測記録）。**この状態は
 内訳は `data.patterns[*].scoreComponents`、ゲートが実際に計測した値は
 `data.patterns[*].structureGate` にある。
 
-`scoreComponents` の軸は**種別によって違う**（同じキーが両方に出ることはない）:
+反転系（double / triple / H&S）の `confidence` は、`scoreComponents` の軸の**単純平均**を小数 2 桁に丸めた値。
+各軸は 0〜1 で、1 が理想、0 が検出のゲートの境目。**物差しは strict のゲートか、測った量どうしの比だけ**で、
+種別ごとの補正や relaxed 経路の一律の割引は掛けない（relaxed で拾った候補も strict の物差しで測るので、
+緩めた分だけ `levelMargin` が下がる）。種別ごとの補正は継続系にも掛けないが、継続系（triangle / flag /
+pennant / wedge）の軸の重み付け、wedge の relaxed の上限 0.9、形成中のパターンの計算は、まだ種別ごとの
+ままで、issue #422 で順にそろえる。
 
 | 軸 | 出る種別 | 意味 |
 |---|---|---|
-| `symmetry` | double 系 | 2 構成点（谷-谷 / 山-山）の同水準度。**正規化していない生の relDev** |
-| `levelMargin` | triple 系 | 3 構成点の同水準度を、その経路の許容幅（`tolerancePct`。relaxed は係数倍）で正規化した値 |
-| `retracement` | 共通 | 中間構成点の戻り率が許容帯の中央にどれだけ近いか |
-| `breakoutQuality` | 共通 | 突破足の終値がネックラインをパターン高さの何割ぶん超えたか。**未ブレイクでは出ない** |
-| `duration` | 共通 | 形成期間スコア。**種別で基準が違う**——triple 系は**バー数基準**（外側 2 構成点の距離。< 12 本 → 0.6 / < 18 → 0.7 / < 26 → 0.8 / 26 本以上 → 0.9）、double 系と H&S 系は**暦日基準**（< 5 日 → 0.6 / < 15 → 0.8 / < 30 → 0.9 / それ以外 → 0.7） |
+| `levelMargin` | 反転系 | 主構成点（double は 2 点、triple は 3 点、H&S は左右の肩）の同水準度。`1 − 平均 relDev ÷ strict の許容幅`（double / triple は `tolerancePct`、H&S は `tolerancePct` と肩の上限の小さいほう） |
+| `headProminence` | H&S 系 | 頭が strict の突出ゲートをどれだけ上回っているか。`1 − ゲート ÷ 実測突出率` |
+| `timeSymmetry` | H&S 系 | 左肩→頭 と 頭→右肩 のバー数の釣り合い（`min ÷ max`） |
+| `retracement` | 反転系 | 中間構成点の戻り率が許容帯の中央にどれだけ近いか |
+| `breakoutQuality` | 反転系 | 突破足の終値がネックラインをパターン高さの何割ぶん超えたか。**未ブレイクでは出ない** |
 
-`duration` も**種別を跨いで横に並べない**。triple 系だけがバー数基準で、しかも単調な階梯
-（長いほど高い）だが、double / H&S 系の暦日基準は最長バケットだけ 0.7 に下がる非単調な形をしている
-（issue #199 候補 2。triple だけ移したのは、暦日基準では intraday で値が定数に張り付いていたため）。
-
-`symmetry` と `levelMargin` は**別の量**なので数値を横に並べて比較しない
-（`symmetry=0.9` は「10% ずれている」、`levelMargin=0.9` は「許容幅の 10% ぶんしかずれていない」）。
+形成期間は、完成済みのパターンに期間のゲートが無く物差しが決まらないので、平均に入れない。
 算出できなかった軸（未ブレイク時の `breakoutQuality` 等）は**平均から外す**——
 0 として混ぜると欠測が減点になるため。
 

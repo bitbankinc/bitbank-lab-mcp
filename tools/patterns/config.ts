@@ -9,13 +9,6 @@ import {
 	type SizeThresholds,
 } from './structural.js';
 
-// triple だけなのは意図的。double / H&S には下限を置かない（#206）。
-// 0.6 は detect_triples.ts の FORMING_MAX_CONFIDENCE（0.59）と、detectPatternsViewsHandler の低整合度ラベル（< 0.6）にそろえている。
-export const MIN_CONFIDENCE: Record<string, number> = {
-	triple_top: 0.6,
-	triple_bottom: 0.6,
-};
-
 // src/schema/patterns.ts の .default() と同じ値にそろえている。
 export const SCHEMA_DEFAULTS = {
 	swingDepth: 7,

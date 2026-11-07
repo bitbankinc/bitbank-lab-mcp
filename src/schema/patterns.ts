@@ -450,8 +450,8 @@ export const DetectedPatternSchema = z.object({
 				'**表記は検出器ごとに揃っていない**——triple は数値を文字列化するので 2.0 が `x2` になり、' +
 				'H&S は固定文字列のタグなので `x2.0_0.4` のまま `.0` が残る。前方一致（`relaxed_triple_x`）で判別し、' +
 				'係数の数値比較に使わないこと。' +
-				'**confidence から provenance は推測できない。** relaxed のペナルティ係数が検出器ごとに違い' +
-				'（double 0.85 / triple 0.95 / H&S 0.95）、さらに `finalizeConf` の種別別係数と小数 2 桁丸めを通るので逆算も保証されない。' +
+				'**confidence から provenance は推測できない。** relaxed で拾った候補も strict の物差しで採点するので' +
+				'緩めた分だけ `levelMargin` が下がるが、一律の割引は掛けておらず、点数だけでは strict と区別できない。' +
 				'**content にも出る**（issue #191 B）: summary / detailed / full の `検出経路:` 行が件数と段の内訳を申告し、' +
 				'detailed / full ではパターン見出し行の末尾に `[relaxed_triple_x1.25]` として同じ値が付く' +
 				'（`view` の説明を参照）。',
@@ -607,27 +607,21 @@ export const DetectedPatternSchema = z.object({
 	/** 構造ゲートを通過した候補どうしの形の良さの比較にだけ使う値で、構造的な妥当性はゲート（hard reject）側が担保している。 */
 	scoreComponents: z
 		.object({
-			symmetry: z
-				.number()
-				.optional()
-				.describe(
-					'2 つの主構成点（谷-谷 / 山-山 / 左肩-右肩）の同水準度。1 = 完全一致。' +
-						'**double 系と H&S 系**（triple は正規化した `levelMargin` を使う）',
-				),
 			levelMargin: z
 				.number()
 				.optional()
 				.describe(
-					'主構成点（3 山 / 3 谷）の同水準度を、その経路の許容幅（`tolerancePct`。' +
-						'relaxed 経路は係数倍した値）で正規化したもの。1 = 完全一致、0 = 許容幅ちょうど。' +
-						'**`symmetry` とは別の量**——`symmetry` は正規化していない生の relDev なので、' +
-						'同じ数値でも意味が違う。**triple 系のみ**',
+					'主構成点（double は 2 山 / 2 谷、triple は 3 山 / 3 谷、H&S は左右の肩）の同水準度。' +
+						'`1 − 主構成点どうしの平均 relDev ÷ strict の許容幅` で、1 = 完全一致、0 = 許容幅ちょうど以上。' +
+						'許容幅は strict の判定と同じで、double / triple は `tolerancePct`、H&S は `tolerancePct` と' +
+						'時間足別の肩の上限の小さいほう。relaxed 経路でも strict の幅で測るので、緩めた分だけ 0 に寄る。' +
+						'**double / triple / H&S 系**',
 				),
 			headProminence: z
 				.number()
 				.optional()
 				.describe(
-					'頭が突出ゲート（`headProminencePct`。relaxed 経路は段の係数を掛けた値）を' +
+					'頭が突出ゲート（`headProminencePct`。relaxed 経路でも strict のゲート）を' +
 						'どれだけ上回っているかの余裕。`1 − ゲート ÷ 実測突出率` で、ゲートちょうど = 0、' +
 						'突出率がゲートの 2 倍 = 0.5。**H&S 系のみ**',
 				),
@@ -636,7 +630,7 @@ export const DetectedPatternSchema = z.object({
 				.optional()
 				.describe(
 					'左肩→頭 と 頭→右肩 のバー数の釣り合い（`min ÷ max`）。1 = 左右が同じ長さ。' +
-						'価格ではなく**時間軸**の対称性で、`symmetry`（肩の水準差）とは別の量。**H&S 系のみ**',
+						'価格ではなく**時間軸**の対称性で、`levelMargin`（肩の水準差）とは別の量。**H&S 系のみ**',
 				),
 			retracement: z
 				.number()
@@ -648,16 +642,6 @@ export const DetectedPatternSchema = z.object({
 				.describe(
 					'ネックライン突破の質。突破足の終値がネックラインをパターン高さの何割ぶん' +
 						'超えたかで測る。形成中パターンには付かない',
-				),
-			duration: z
-				.number()
-				.optional()
-				.describe(
-					'パターンの形成期間スコア。**基準が type で違う**（issue #199 候補 2）: ' +
-						'triple 系は**バー数基準**（外側 2 構成点の距離。< 12 本 → 0.6 / < 18 → 0.7 / ' +
-						'< 26 → 0.8 / 26 本以上 → 0.9 の単調な階梯）、`double` 系と H&S 系は**暦日基準**' +
-						'（< 5 日 → 0.6 / < 15 → 0.8 / < 30 → 0.9 / それ以外 → 0.7）。' +
-						'triple だけバー数なのは、暦日基準では intraday で値が定数に張り付いていたため',
 				),
 		})
 		.optional()

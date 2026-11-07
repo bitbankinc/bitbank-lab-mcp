@@ -1,6 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { DetectPatternsInputSchema } from '../../src/schemas.js';
 import {
@@ -13,37 +10,10 @@ import {
 	getSizeThresholdsForTf,
 	getTriangleCoeffForTf,
 	getTriangleWindowSize,
-	MIN_CONFIDENCE,
 	resolveParams,
 	SCHEMA_DEFAULTS,
 } from '../../tools/patterns/config.js';
 import { MIN_DEPTH_PCT, MIN_PATTERN_HEIGHT_PCT } from '../../tools/patterns/structural.js';
-
-// triple の 0.6 が非任意なのは分布の空白帯（0.55〜0.59）に置いた線だからで、H&S / double にはその性質が無い（#206）。
-describe('MIN_CONFIDENCE', () => {
-	it('エントリは triple の 2 つだけ（double / H&S は #206 で削除。増やさない）', () => {
-		expect(Object.keys(MIN_CONFIDENCE).sort()).toEqual(['triple_bottom', 'triple_top']);
-		expect(MIN_CONFIDENCE.triple_top).toBe(0.6);
-		expect(MIN_CONFIDENCE.triple_bottom).toBe(0.6);
-	});
-
-	it('値は 0-1 の範囲', () => {
-		for (const v of Object.values(MIN_CONFIDENCE)) {
-			expect(v).toBeGreaterThanOrEqual(0);
-			expect(v).toBeLessThanOrEqual(1);
-		}
-	});
-
-	// tripwire であって証明ではない（再 export 経由の間接参照は拾えない）。
-	it('`MIN_CONFIDENCE` を読む検出器は detect_triples.ts だけ', () => {
-		const patternsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'tools', 'patterns');
-		const readers = fs
-			.readdirSync(patternsDir)
-			.filter((f) => f.startsWith('detect_') && f.endsWith('.ts'))
-			.filter((f) => /\bMIN_CONFIDENCE\b/.test(fs.readFileSync(path.join(patternsDir, f), 'utf8')));
-		expect(readers).toEqual(['detect_triples.ts']);
-	});
-});
 
 describe('SCHEMA_DEFAULTS', () => {
 	it('既定値が正しい', () => {

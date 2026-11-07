@@ -119,18 +119,24 @@ describe('detect_patterns: data.patterns の実データスナップショット
 			Number(p.breakoutBarIndex) === 280 && String(p.type) === 'inverse_head_and_shoulders';
 		const isPr9HistoryExcluded = (p: Record<string, unknown>) =>
 			Number(p.breakoutBarIndex) === 118 && String(p.type) === 'inverse_head_and_shoulders';
+		// 丸めで同点だった隣接窓が 0.01 差になり dedup の勝者がブレイク足 295 から 297 に替わった。進捗の計算ではなく選別の差分（#422）。
+		const isDedupSwap422 = (p: Record<string, unknown>) =>
+			String(p.type) === 'triangle_ascending' && [295, 297].includes(Number(p.breakoutBarIndex));
+		expect(res.data.patterns.filter((p) => isDedupSwap422(p)).map((p) => p.breakoutBarIndex)).toEqual([297]);
 		expect(
 			project(
 				res.data.patterns
 					.filter(nonWedge)
 					.filter((p) => !isPr3Reclassification(p))
-					.filter((p) => !isPr9HistoryExcluded(p)),
+					.filter((p) => !isPr9HistoryExcluded(p))
+					.filter((p) => !isDedupSwap422(p)),
 			),
 		).toEqual(
 			targetReachPre288
 				.filter(nonWedge)
 				.filter((p) => !isPr3Reclassification(p))
-				.filter((p) => !isPr9HistoryExcluded(p)),
+				.filter((p) => !isPr9HistoryExcluded(p))
+				.filter((p) => !isDedupSwap422(p)),
 		);
 	});
 });
