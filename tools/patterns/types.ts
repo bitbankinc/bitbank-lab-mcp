@@ -135,6 +135,13 @@ export interface PatternScoreBreakdown {
 	timeSymmetry?: number;
 	retracement?: number;
 	breakoutQuality?: number;
+	lineFit?: number;
+	convergence?: number;
+	touches?: number;
+	slopeSymmetry?: number;
+	flatness?: number;
+	pole?: number;
+	parallelism?: number;
 }
 
 export interface PatternStructureGate {

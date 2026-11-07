@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../../lib/datetime.js';
 import { getHsShoulderMaxPctForTf, getSizeThresholdsForTf } from '../../tools/patterns/config.js';
-import { detectPennantsFlags } from '../../tools/patterns/detect_pennants.js';
+import { detectPennantsFlags, getFlagParams } from '../../tools/patterns/detect_pennants.js';
 import type { Pivot } from '../../tools/patterns/swing.js';
 import type { CandleData, DetectContext } from '../../tools/patterns/types.js';
 
@@ -172,6 +172,31 @@ describe('detectPennantsFlags — scanStart 修正の境界テスト（PR3）', 
 			expect(p.targetReachedPct).toBeGreaterThanOrEqual(100);
 			expect(p.targetReachedPrice).toBe(0);
 		}
+	});
+});
+
+describe('detectPennantsFlags — 整合度（#422）', () => {
+	it('flag は pole / parallelism / lineFit / touches を出し、confidence はその単純平均', () => {
+		const ctx = buildCtx({
+			candles: closesToCandles(buildBullFlagCloses()),
+			want: new Set(['flag']),
+			includeForming: true,
+		});
+		const flag = detectPennantsFlags(ctx).patterns.find((p) => p.type === 'bull_flag');
+		expect(flag).toBeDefined();
+		const sc = flag?.scoreComponents ?? {};
+		expect(Object.keys(sc).sort()).toEqual(['lineFit', 'parallelism', 'pole', 'touches']);
+		const axes = Object.values(sc) as number[];
+		expect(flag?.confidence).toBeCloseTo(axes.reduce((sum, v) => sum + v, 0) / axes.length, 2);
+		expect(sc.pole).toBeCloseTo(1 - getFlagParams('1day').minPoleATRMult / Number(flag?.poleATRMult), 2);
+		expect(sc.parallelism).toBeCloseTo((Number(flag?.spreadStability) - 0.7) / 0.3, 2);
+		const touchCounts = ctx.debugCandidates
+			.filter((d) => d.type === 'bull_flag' && d.reason === 'detected')
+			.map((d) => d.details as { touchCount: number; confidence: number; poleATRMult: number })
+			.filter((d) => d.confidence === flag?.confidence && d.poleATRMult === flag?.poleATRMult)
+			.map((d) => d.touchCount);
+		expect(new Set(touchCounts).size).toBe(1);
+		expect(sc.touches).toBeCloseTo(1 - 6 / touchCounts[0], 4);
 	});
 });
 

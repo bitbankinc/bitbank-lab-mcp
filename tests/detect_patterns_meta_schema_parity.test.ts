@@ -9,6 +9,7 @@ import analyzeIndicators from '../tools/analyze_indicators.js';
 import detectPatterns from '../tools/detect_patterns.js';
 import { asMockResult } from './_assertResult.js';
 import { expectNoStrippedKeys, keyPaths } from './_schemaKeyParity.js';
+import { buildBtcJpy2026ThroughSep30Candles } from './fixtures/btc_jpy_1day_2026.js';
 
 type Candle = { isoTime: string; open: number; high: number; low: number; close: number; volume: number };
 
@@ -179,6 +180,22 @@ const DATA_PARITY_FIXTURES = [
 			'patterns[].scoreComponents.breakoutQuality',
 		],
 	},
+	{
+		label: '実データ 1day（triangle と flag の scoreComponents を踏む）',
+		build: () => buildBtcJpy2026ThroughSep30Candles().slice(6, 96),
+		opts: { includeInvalid: true },
+		// この窓には `breakout` を載せる反転系の候補が出ないので、allowlist から外す。
+		knownStrips: KNOWN_DATA_STRIPS.filter((k) => k === 'patterns[]._method'),
+		requiredKeys: [
+			'patterns[].scoreComponents.lineFit',
+			'patterns[].scoreComponents.convergence',
+			'patterns[].scoreComponents.touches',
+			'patterns[].scoreComponents.slopeSymmetry',
+			'patterns[].scoreComponents.flatness',
+			'patterns[].scoreComponents.pole',
+			'patterns[].scoreComponents.parallelism',
+		],
+	},
 ] as const;
 
 describe('detect_patterns: meta に載せたキーが出力スキーマで strip されない', () => {
@@ -232,7 +249,7 @@ describe('detect_patterns: meta に載せたキーが出力スキーマで strip
 	});
 
 	it('relaxed 経路の provenance（_fallback）が parse 後も残る（#189）', async () => {
-		// strict で拾えたのか relaxed が拾い直したのかは confidence からは逆算できない（ペナルティ係数が検出器ごとに 0.85 / 0.95 と不揃いで、`finalizeConf` の種別別係数と丸めも通る）。
+		// strict で拾えたのか relaxed が拾い直したのかは confidence からは逆算できない（relaxed も strict の物差しで測るので、値に経路の印が残らない）。
 		const { output } = await runAndCapture({}, buildRelaxedTripleTopCandles());
 		const patterns = dataOf(output).patterns as Array<{ type: string; _fallback?: string }>;
 
