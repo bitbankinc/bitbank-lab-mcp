@@ -643,6 +643,56 @@ export const DetectedPatternSchema = z.object({
 					'ネックライン突破の質。突破足の終値がネックラインをパターン高さの何割ぶん' +
 						'超えたかで測る。形成中パターンには付かない',
 				),
+			lineFit: z
+				.number()
+				.optional()
+				.describe(
+					'上下のトレンドラインの当てはまり。線ごとに `(R² − ゲート) ÷ (1 − ゲート)` を取って平均する' +
+						'（ゲートは triangle 0.6、flag / pennant 0.5）。2 点しかない線は R² が 1 に張り付くので除く。' +
+						'**triangle / flag / pennant**',
+				),
+			convergence: z
+				.number()
+				.optional()
+				.describe(
+					'上下のラインの収束の深さ。`1 − 収束比（終端の幅 ÷ 始端の幅）÷ ゲート` で、ゲートちょうど = 0、' +
+						'終端で交わる = 1（ゲートは triangle 0.9、pennant 0.7）。**triangle / pennant**',
+				),
+			touches: z
+				.number()
+				.optional()
+				.describe(
+					'トレンドラインに使った高値・安値の点数。`1 − ゲートの点数 ÷ 点数` で、ゲートちょうど = 0、' +
+						'2 倍 = 0.5（ゲートは triangle 4 点、flag / pennant 6 点）。**triangle / flag / pennant**',
+				),
+			slopeSymmetry: z
+				.number()
+				.optional()
+				.describe(
+					'上下のラインの傾きの釣り合い。`1 − ||上の傾き| − |下の傾き|| ÷ (|上の傾き| + |下の傾き|)` で、' +
+						'1 = 同じ角度。**triangle_symmetrical のみ**',
+				),
+			flatness: z
+				.number()
+				.optional()
+				.describe(
+					'水平側のラインの平らさ。`1 − |窓全体での傾き| ÷ 水平とみなす上限（3%）`。' +
+						'**triangle_ascending（上側）/ triangle_descending（下側）のみ**',
+				),
+			pole: z
+				.number()
+				.optional()
+				.describe(
+					'ポール（旗竿）の強さ。`1 − ゲートの ATR 倍率 ÷ 実測の ATR 倍率` で、ゲートちょうど = 0、' +
+						'2 倍 = 0.5（ゲートは時間足ごとに 2.0〜3.0）。**flag / pennant**',
+				),
+			parallelism: z
+				.number()
+				.optional()
+				.describe(
+					'保ち合いの幅の一定さ。`(spreadStability − 0.7) ÷ 0.3` で、ゲート（0.7）ちょうど = 0、' +
+						'幅が一定 = 1。**flag のみ**',
+				),
 		})
 		.optional()
 		.describe(

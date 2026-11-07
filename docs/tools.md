@@ -1051,12 +1051,11 @@ tjackiet/bitbank-lab-mcp#249 の計測記録）。**この状態は
 内訳は `data.patterns[*].scoreComponents`、ゲートが実際に計測した値は
 `data.patterns[*].structureGate` にある。
 
-反転系（double / triple / H&S）の `confidence` は、`scoreComponents` の軸の**単純平均**を小数 2 桁に丸めた値。
-各軸は 0〜1 で、1 が理想、0 が検出のゲートの境目。**物差しは strict のゲートか、測った量どうしの比だけ**で、
-種別ごとの補正や relaxed 経路の一律の割引は掛けない（relaxed で拾った候補も strict の物差しで測るので、
-緩めた分だけ `levelMargin` が下がる）。種別ごとの補正は継続系にも掛けないが、継続系（triangle / flag /
-pennant / wedge）の軸の重み付け、wedge の relaxed の上限 0.9、形成中のパターンの計算は、まだ種別ごとの
-ままで、issue #422 で順にそろえる。
+反転系（double / triple / H&S）と triangle / flag / pennant の `confidence` は、`scoreComponents` の軸の
+**単純平均**を小数 2 桁に丸めた値。各軸は 0〜1 で、1 が理想、0 が検出のゲートの境目。
+**物差しは strict のゲートか、測った量どうしの比だけ**で、軸の重み・種別ごとの補正・relaxed 経路の一律の割引は
+掛けない（relaxed で拾った候補も strict の物差しで測るので、緩めた分だけ `levelMargin` が下がる）。
+wedge の重み付けと relaxed の上限 0.9、形成中のパターンの計算は、まだ種別ごとのままで、issue #422 で順にそろえる。
 
 | 軸 | 出る種別 | 意味 |
 |---|---|---|
@@ -1065,6 +1064,13 @@ pennant / wedge）の軸の重み付け、wedge の relaxed の上限 0.9、形�
 | `timeSymmetry` | H&S 系 | 左肩→頭 と 頭→右肩 のバー数の釣り合い（`min ÷ max`） |
 | `retracement` | 反転系 | 中間構成点の戻り率が許容帯の中央にどれだけ近いか |
 | `breakoutQuality` | 反転系 | 突破足の終値がネックラインをパターン高さの何割ぶん超えたか。**未ブレイクでは出ない** |
+| `lineFit` | triangle / flag / pennant | 上下のトレンドラインの当てはまり。線ごとの `(R² − ゲート) ÷ (1 − ゲート)` の平均（ゲートは triangle 0.6、flag / pennant 0.5）。2 点しかない線は R² が 1 に張り付くので除く |
+| `convergence` | triangle / pennant | 収束の深さ。`1 − 収束比 ÷ ゲート`（収束比は終端の幅 ÷ 始端の幅。ゲートは triangle 0.9、pennant 0.7） |
+| `touches` | triangle / flag / pennant | ラインに使った高値・安値の点数。`1 − ゲートの点数 ÷ 点数`（ゲートは triangle 4 点、flag / pennant 6 点） |
+| `slopeSymmetry` | 対称三角 | 上下の傾きの釣り合い。上下の傾きの大きさの差を和で割り、1 から引いた値（1 = 同じ角度） |
+| `flatness` | 上昇・下降三角 | 水平側のラインの平らさ。`1 − 窓全体での傾き ÷ 水平とみなす上限（3%）` |
+| `pole` | flag / pennant | ポールの強さ。`1 − ゲートの ATR 倍率 ÷ 実測の ATR 倍率`（ゲートは時間足ごとに 2.0〜3.0） |
+| `parallelism` | flag | 保ち合いの幅の一定さ。`(spreadStability − 0.7) ÷ 0.3` |
 
 形成期間は、完成済みのパターンに期間のゲートが無く物差しが決まらないので、平均に入れない。
 算出できなかった軸（未ブレイク時の `breakoutQuality` 等）は**平均から外す**——

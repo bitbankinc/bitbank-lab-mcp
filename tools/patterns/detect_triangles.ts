@@ -2,6 +2,7 @@ import { roundPriceAtLevel } from '../../lib/price.js';
 import { patternBarsCap, structuralFloorBars } from './bar-thresholds.js';
 import { barsPerDay, calcATR, deduplicatePatterns, finalizeConf } from './helpers.js';
 import { clamp01, robustFit } from './regression.js';
+import { averageDefinedAxes, lineFitScore, marginOverGate, marginUnderGate, roundAxes } from './scoring.js';
 import { BREAKOUT_AGAINST_EXPECTATION } from './structural.js';
 import { detectRelaxedSwings } from './swing.js';
 import { computeTargetReach, omittedTargetReach, type TargetReachResult, targetReachFields } from './target-reach.js';
@@ -29,6 +30,9 @@ export function getTriangleParams(tf: string) {
 		minConvergence,
 	};
 }
+
+// touches の物差しにも使うので、ゲートと値をそろえる。
+const MIN_SWINGS_PER_LINE = 2;
 
 type RegLine = { slope: number; intercept: number; r2: number; valueAt: (x: number) => number };
 type SwingPoint = { idx: number; price: number };
@@ -147,6 +151,7 @@ function determineTriangleStatus(
 
 interface TriangleCandidateCtx {
 	candles: readonly { open: number; close: number; high: number; low: number; isoTime?: string }[];
+	params: ReturnType<typeof getTriangleParams>;
 	triangleType: TriangleType;
 	upperLine: RegLine;
 	lowerLine: RegLine;
@@ -174,6 +179,7 @@ interface TriangleCandidateCtx {
 function buildTriangleResult(c: TriangleCandidateCtx): { pattern: PatternEntry; debug: CandDebugEntry } {
 	const {
 		candles,
+		params,
 		triangleType,
 		upperLine,
 		lowerLine,
@@ -209,19 +215,34 @@ function buildTriangleResult(c: TriangleCandidateCtx): { pattern: PatternEntry; 
 		{ x: winEnd, y: roundPriceAtLevel(necklineLine.valueAt(winEnd), necklineLine.valueAt(winEnd), 2) },
 	];
 
-	const fitScore = (upperLine.r2 + lowerLine.r2) / 2;
-	const convScore = clamp01((1 - convergenceRatio) / 0.5);
-	const touchScore = clamp01((filteredPeaks.length + filteredValleys.length) / 8);
-	const symScore =
+	const lineFit = lineFitScore(
+		[
+			{ r2: upperLine.r2, points: filteredPeaks.length },
+			{ r2: lowerLine.r2, points: filteredValleys.length },
+		],
+		params.minR2,
+	);
+	const convergence = marginUnderGate(convergenceRatio, params.minConvergence);
+	const touches = marginOverGate(filteredPeaks.length + filteredValleys.length, MIN_SWINGS_PER_LINE * 2);
+	const slopeSymmetry =
 		triangleType === 'triangle_symmetrical'
 			? clamp01(
 					1 -
 						Math.abs(Math.abs(upperRelSlope) - Math.abs(lowerRelSlope)) /
 							Math.max(1e-12, Math.abs(upperRelSlope) + Math.abs(lowerRelSlope)),
 				)
-			: 0.5;
-	const baseScore = fitScore * 0.25 + convScore * 0.25 + touchScore * 0.3 + symScore * 0.2;
-	const confidence = finalizeConf(baseScore);
+			: undefined;
+	const flatness =
+		triangleType === 'triangle_ascending'
+			? marginUnderGate(upperRelSlope, params.flatThreshold)
+			: triangleType === 'triangle_descending'
+				? marginUnderGate(lowerRelSlope, params.flatThreshold)
+				: undefined;
+	const scoreComponents = roundAxes({ lineFit, convergence, touches, slopeSymmetry, flatness });
+	// convergence と touches は常に数値なので averageDefinedAxes は undefined を返さない（?? には届かない）。
+	const confidence = finalizeConf(
+		averageDefinedAxes([lineFit, convergence, touches, slopeSymmetry, flatness]) ?? convergence,
+	);
 
 	// この検出器の swing の price は既に high / low なので、extremePrice は price と同じ値になる。
 	// 外側バーは高値と安値の両方で極値になり、同じ idx が H と L で 2 回入る。重複ではないので dedup しない（#141）。
@@ -258,6 +279,7 @@ function buildTriangleResult(c: TriangleCandidateCtx): { pattern: PatternEntry; 
 		...(status === 'invalid' ? { invalidReason: BREAKOUT_AGAINST_EXPECTATION } : {}),
 		pivots: allPivots,
 		neckline,
+		scoreComponents,
 		trendlineLabel,
 		breakoutDirection: breakoutDirection ?? undefined,
 		outcome: hasBreakout ? (status === 'completed' ? 'success' : 'failure') : undefined,
@@ -346,7 +368,7 @@ export function detectTriangles(ctx: DetectContext): DetectResult {
 			const peaks = relaxedPeaks.filter((p) => p.idx >= winStart && p.idx <= winEnd);
 			const valleys = relaxedValleys.filter((p) => p.idx >= winStart && p.idx <= winEnd);
 
-			if (peaks.length < 2 || valleys.length < 2) continue;
+			if (peaks.length < MIN_SWINGS_PER_LINE || valleys.length < MIN_SWINGS_PER_LINE) continue;
 
 			const minPtsForFit = 3;
 			let { line: upperLine, filtered: filteredPeaks } = robustFit(peaks, minPtsForFit, params.minR2);
@@ -492,6 +514,7 @@ export function detectTriangles(ctx: DetectContext): DetectResult {
 
 			const { pattern, debug } = buildTriangleResult({
 				candles,
+				params,
 				triangleType,
 				upperLine,
 				lowerLine,
