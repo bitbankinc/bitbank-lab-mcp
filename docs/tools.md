@@ -1051,11 +1051,12 @@ tjackiet/bitbank-lab-mcp#249 の計測記録）。**この状態は
 内訳は `data.patterns[*].scoreComponents`、ゲートが実際に計測した値は
 `data.patterns[*].structureGate` にある。
 
-完成済みの検出経路の `confidence` は、種別を問わず `scoreComponents` の軸の**単純平均**を小数 2 桁に丸めた値。
+`confidence` は、種別と経路を問わず `scoreComponents` の軸の**単純平均**を小数 2 桁に丸めた値。
 各軸は 0〜1 で、1 が理想、0 が検出のゲートの境目。**物差しは strict のゲートか、測った量どうしの比だけ**で、
-軸の重み・種別ごとの補正・relaxed 経路の一律の割引や上限は掛けない。緩いゲートで拾った候補も strict の物差しで
-測るので、緩めた分だけ点が下がる（反転系の relaxed は `levelMargin`、wedge の形成中の経路は `convergence` /
-`touches` が下がる）。形成中の H&S / triple の計算は、まだ種別ごとのままで、issue #422 で直す。
+軸の重み・種別ごとの補正・relaxed 経路や暫定の構成点への一律の割引や上限は掛けない。緩いゲートで拾った候補も
+strict の物差しで測るので、緩めた分だけ点が下がる（反転系の relaxed と形成中は `levelMargin`、wedge の形成中の
+経路は `convergence` / `touches` が下がる）。形成中の H&S / triple は完成済みと同じ軸で測り、まだブレイクしていない
+ので `breakoutQuality` が出ない。構成点が暫定であることは整合度ではなく `status: 'forming'` が示す。
 
 | 軸 | 出る種別 | 意味 |
 |---|---|---|

@@ -84,8 +84,6 @@ const FORMING_MAX_DAYS = 90;
 export const FORMING_MIN_DAYS = 21;
 // 現行の重みでは completion の最小値が 0.675 なので発火しない。重みを変えたときのためのガード。
 export const FORMING_MIN_COMPLETION = 0.4;
-// detect_triples.ts と同じ値にそろえている。
-const FORMING_MIN_CONFIDENCE = 0.5;
 
 export function getHsFormingBarParams(tf: string): { minBars: number; maxBars: number } {
 	return patternBarRange(tf, FORMING_MIN_DAYS, FORMING_MAX_DAYS);
@@ -897,20 +895,6 @@ function formingHsForHead(
 				{ x: postHeadValley.idx, y: postHeadValley.price },
 			];
 
-	const confBase = Math.min(1, Math.max(0, 0.6 * closeness + 0.4 * progress));
-	const confidence = Math.round(confBase * (isProvisional ? 0.9 : 1.0) * 100) / 100;
-
-	if (confidence < FORMING_MIN_CONFIDENCE) {
-		ctx.debugCandidates.push({
-			type: 'head_and_shoulders',
-			accepted: false,
-			reason: 'confidence_below_min_forming',
-			indices: [left.idx, head.idx, postHeadValley.idx, rightShoulder.idx],
-			details: { confidence, threshold: FORMING_MIN_CONFIDENCE },
-		});
-		return null;
-	}
-
 	const hsSizeReason = validatePatternSize(
 		'top',
 		preHeadValley ? [left, preHeadValley, head, postHeadValley, rightShoulder] : [head, postHeadValley, rightShoulder],
@@ -941,6 +925,22 @@ function formingHsForHead(
 	});
 	if (!gate) return null;
 	const structureGate = buildStructureGate(gate);
+
+	// 完成済みと同じ物差しで測る。未ブレイクなので breakoutQuality は出ない（#422）。
+	const { components: scoreComponents, base } = buildHsScore({
+		shoulders: [left.price, rightShoulder.price],
+		strictShoulderTolerancePct: Math.min(ctx.tolerancePct, ctx.hsShoulderMaxPct),
+		headPrice: head.price,
+		shoulderIdxs: [left.idx, rightShoulder.idx],
+		headIdx: head.idx,
+		headProminenceGate: ctx.headProminencePct,
+		necklinePrice: formHsNl,
+		breakoutClose: Number.NaN,
+		patternHeight: undefined,
+		side: 'top',
+		retracementRatio: gate.retracementRatio,
+	});
+	const confidence = finalizeConf(base);
 
 	const start = isoAt(left.idx);
 	const end = isoAt(rightShoulder.idx);
@@ -1020,6 +1020,7 @@ function formingHsForHead(
 			},
 		],
 		neckline,
+		scoreComponents,
 		...(structureGate ? { structureGate } : {}),
 		trendlineLabel: 'ネックライン',
 		...(formHsTarget !== undefined
@@ -1156,20 +1157,6 @@ function formingInverseHsForHead(
 				{ x: postHeadPeak.idx, y: postHeadPeak.price },
 			];
 
-	const confBase = Math.min(1, Math.max(0, 0.6 * closeness + 0.4 * progress));
-	const confidence = Math.round(confBase * (isProvisional ? 0.9 : 1.0) * 100) / 100;
-
-	if (confidence < FORMING_MIN_CONFIDENCE) {
-		ctx.debugCandidates.push({
-			type: 'inverse_head_and_shoulders',
-			accepted: false,
-			reason: 'confidence_below_min_forming',
-			indices: [left.idx, head.idx, postHeadPeak.idx, rightShoulder.idx],
-			details: { confidence, threshold: FORMING_MIN_CONFIDENCE },
-		});
-		return null;
-	}
-
 	const ihsSizeReason = validatePatternSize(
 		'bottom',
 		preHeadPeak ? [left, preHeadPeak, head, postHeadPeak, rightShoulder] : [head, postHeadPeak, rightShoulder],
@@ -1200,6 +1187,21 @@ function formingInverseHsForHead(
 	});
 	if (!gate) return null;
 	const structureGate = buildStructureGate(gate);
+
+	const { components: scoreComponents, base } = buildHsScore({
+		shoulders: [left.price, rightShoulder.price],
+		strictShoulderTolerancePct: Math.min(ctx.tolerancePct, ctx.hsShoulderMaxPct),
+		headPrice: head.price,
+		shoulderIdxs: [left.idx, rightShoulder.idx],
+		headIdx: head.idx,
+		headProminenceGate: ctx.headProminencePct,
+		necklinePrice: formIhsNl,
+		breakoutClose: Number.NaN,
+		patternHeight: undefined,
+		side: 'bottom',
+		retracementRatio: gate.retracementRatio,
+	});
+	const confidence = finalizeConf(base);
 
 	const start = isoAt(left.idx);
 	const end = isoAt(rightShoulder.idx);
@@ -1273,6 +1275,7 @@ function formingInverseHsForHead(
 			},
 		],
 		neckline,
+		scoreComponents,
 		...(structureGate ? { structureGate } : {}),
 		trendlineLabel: 'ネックライン',
 		...(formIhsTarget !== undefined

@@ -614,8 +614,8 @@ export const DetectedPatternSchema = z.object({
 					'主構成点（double は 2 山 / 2 谷、triple は 3 山 / 3 谷、H&S は左右の肩）の同水準度。' +
 						'`1 − 主構成点どうしの平均 relDev ÷ strict の許容幅` で、1 = 完全一致、0 = 許容幅ちょうど以上。' +
 						'許容幅は strict の判定と同じで、double / triple は `tolerancePct`、H&S は `tolerancePct` と' +
-						'時間足別の肩の上限の小さいほう。relaxed 経路でも strict の幅で測るので、緩めた分だけ 0 に寄る。' +
-						'**double / triple / H&S 系**',
+						'時間足別の肩の上限の小さいほう。relaxed 経路と形成中の経路でも strict の幅で測るので、緩めた分だけ 0 に寄る' +
+						'（形成中は、triple の 3 点目と H&S の暫定右肩に最新足の終値を使う）。**double / triple / H&S 系**',
 				),
 			headProminence: z
 				.number()
