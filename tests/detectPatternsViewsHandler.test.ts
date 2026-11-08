@@ -1337,35 +1337,45 @@ describe('formatPatternLine', () => {
 		expect(result).not.toMatch(/\n\s+- 期間: 2/);
 	});
 
-	it('confidence < 0.6 → 「形状不十分」「低信頼」などの警告ラベルを表示する', () => {
-		const p = makePattern({ confidence: 0.45 });
-		const result = formatPatternLine(p, 0, 'detailed', emptyMeta);
-		expect(result).toMatch(/形状不十分|低信頼|信頼度: 低/);
+	it('scoreComponents を「整合度の内訳」行に軸の日本語名で出す（detailed / full）', () => {
+		const p = makePattern({
+			confidence: 0.62,
+			scoreComponents: { levelMargin: 0.6154, retracement: 0.3077, breakoutQuality: 0.95 },
+		});
+		for (const view of ['detailed', 'full'] as const) {
+			expect(formatPatternLine(p, 0, view, emptyMeta)).toContain(
+				'   - 整合度の内訳: 水準の揃い 0.62 / 戻り率 0.31 / ブレイクの強さ 0.95',
+			);
+		}
 	});
 
-	it('confidence = 0.01 は強いシグナル扱いされず警告ラベルが付く（非常に低い）', () => {
-		const p = makePattern({ type: 'inverse_head_and_shoulders', confidence: 0.01 });
-		const result = formatPatternLine(p, 0, 'detailed', emptyMeta);
-		expect(result).toMatch(/非常に低い|除外候補/);
-		expect(result).not.toMatch(/参考材料/);
+	it('0 の軸があると strict の基準に届かない軸として警告する', () => {
+		const p = makePattern({
+			type: 'falling_wedge',
+			confidence: 0.3,
+			scoreComponents: { convergence: 0, touches: 0.8, alternation: 0, containment: 0.4 },
+		});
+		expect(formatPatternLine(p, 0, 'detailed', emptyMeta)).toContain(
+			'   - ⚠️ strict の基準に届かない軸: 収束、タッチの交互さ',
+		);
 	});
 
-	it('confidence >= 0.6 → 低信頼警告は付かない', () => {
-		const p = makePattern({ confidence: 0.75 });
+	it('整合度が低くても点数だけでは警告しない（何点以上という帯は置かない。#422）', () => {
+		const p = makePattern({ confidence: 0.2, scoreComponents: { levelMargin: 0.1, retracement: 0.3 } });
 		const result = formatPatternLine(p, 0, 'detailed', emptyMeta);
+		expect(result).not.toContain('⚠️');
 		expect(result).not.toMatch(/形状不十分|信頼度: 低|信頼度: 非常に低い/);
 	});
 
-	it('confidence < 0.3 は除外候補レベルの強い警告を出す', () => {
-		const p = makePattern({ confidence: 0.2 });
-		const result = formatPatternLine(p, 0, 'detailed', emptyMeta);
-		expect(result).toMatch(/非常に低い|除外候補/);
+	it('scoreComponents が無ければ内訳行を出さない', () => {
+		expect(formatPatternLine(makePattern({ confidence: 0.75 }), 0, 'detailed', emptyMeta)).not.toContain(
+			'整合度の内訳',
+		);
 	});
 
-	it('confidence < 0.6 の警告は full view でも出る', () => {
-		const p = makePattern({ confidence: 0.4 });
-		const result = formatPatternLine(p, 0, 'full', emptyMeta);
-		expect(result).toMatch(/形状不十分|低信頼|信頼度: 低/);
+	it('表に無い軸は名前を当てず、キー名のまま出す', () => {
+		const p = makePattern({ scoreComponents: { futureAxis: 0.5 } as PatternEntry['scoreComponents'] });
+		expect(formatPatternLine(p, 0, 'detailed', emptyMeta)).toContain('整合度の内訳: futureAxis 0.50');
 	});
 
 	// forming triple は pivots に確定した主構成点が 2 点しか入らないので、LLM が「3 山構造」と誤読しないよう、現在価格を 3 点目に仮置きしている旨を明示する。

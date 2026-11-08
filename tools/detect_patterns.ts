@@ -7,6 +7,7 @@ import { DetectPatternsOutputSchema, type PatternFilterEnum } from '../src/schem
 import analyzeIndicators from './analyze_indicators.js';
 import { buildStatistics } from './patterns/aftermath.js';
 import { filterCandidatesByWant } from './patterns/candidate-filter.js';
+import { CONFIDENCE_NOTE, formatScoreBreakdownLines } from './patterns/confidence-text.js';
 import {
 	getHsShoulderMaxPctForTf,
 	getPriorTrendParamsForTf,
@@ -38,6 +39,7 @@ import {
 	type DeduplicablePattern,
 	type DetectContext,
 	type PatternEntry,
+	type PatternScoreBreakdown,
 	pushCand,
 } from './patterns/types.js';
 
@@ -64,6 +66,7 @@ interface SummaryPattern extends DeduplicablePattern {
 	outcome?: string;
 	neckline?: Array<{ y?: number }>;
 	trendlineLabel?: string;
+	scoreComponents?: PatternScoreBreakdown;
 	daysToApex?: number;
 	breakoutTarget?: number;
 	targetMethod?: string;
@@ -481,14 +484,7 @@ export default async function detectPatterns(
 				const endDate = formatDateInTz(endMs, tz) ?? '?';
 				let detail = `${idx + 1}. ${p.type}【${tfLabel}】(パターン整合度: ${p.confidence})\n   - 時間足: ${tfLabel}（${type}）\n   - 期間: ${startDate} ~ ${endDate}`;
 
-				const confNum = Number(p.confidence ?? NaN);
-				if (Number.isFinite(confNum) && confNum < 0.6) {
-					if (confNum < 0.3) {
-						detail += '\n   - ⚠️ 信頼度: 非常に低い（形状不十分・除外候補レベル、単独判断不可）';
-					} else {
-						detail += '\n   - ⚠️ 信頼度: 低い（形状不十分・単独判断不可、他指標と必ず併用）';
-					}
-				}
+				for (const line of formatScoreBreakdownLines(p.scoreComponents)) detail += `\n${line}`;
 
 				if (p.status) {
 					const statusJa: Record<string, string> = {
@@ -635,7 +631,7 @@ export default async function detectPatterns(
 			.join(', ');
 
 		const baseSummary =
-			`${pair.toUpperCase()} ${tfLabel}（${type}） ${limit}本から${patterns.length}件を検出（${typeCountStr}）${periodText}\n\n【検出パターン（全件）】\n${patternSummaries || 'なし'}${statsText}\n\nチャート連携: data.overlays を render_chart_svg.overlays に渡すと注釈/範囲を描画できます。\n\nパターン整合度について（構成点の水準の揃い方・戻り率・ブレイク品質などから算出。軸の構成は種別で異なる）:\n  ※整合度は**構造ゲートを通過した候補どうしの形の良さ**の比較値であって、構造的妥当性の指標ではない。\n    ネックラインが先行値幅の起点を越えている等の構造的に無効な形は、整合度が下がるのではなく検出結果に出ない。\n    内訳は data.patterns[].scoreComponents、ゲートの計測値は data.patterns[].structureGate を参照。\n  0.8以上 = 理想的な形状（教科書的パターン）\n  0.7-0.8 = 標準的な形状（他指標と併用推奨）\n  0.6-0.7 = やや不明瞭（慎重に判断）\n  0.6未満 = 形状不十分` +
+			`${pair.toUpperCase()} ${tfLabel}（${type}） ${limit}本から${patterns.length}件を検出（${typeCountStr}）${periodText}\n\n【検出パターン（全件）】\n${patternSummaries || 'なし'}${statsText}\n\nチャート連携: data.overlays を render_chart_svg.overlays に渡すと注釈/範囲を描画できます。\n\n${CONFIDENCE_NOTE}\n  ※構造的に無効な形（ネックラインが先行値幅の起点を越えている等）は、整合度が下がるのではなく検出結果に出ない。\n    ゲートの計測値は data.patterns[].structureGate を参照。` +
 			`\n\n---\n📌 含まれるもの: チャートパターン検出（種類・整合度・期間）、ブレイク情報、統計` +
 			`\n📌 含まれないもの: 出来高によるパターン確認、テクニカル指標値、板情報` +
 			`\n📌 補完ツール: analyze_indicators（指標でパターンを裏付け）, get_flow_metrics（出来高確認）, get_orderbook（板情報）`;
