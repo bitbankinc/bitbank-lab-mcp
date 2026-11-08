@@ -1000,9 +1000,8 @@ describe('detectHeadAndShoulders', () => {
 		expect(forming.precedingTrend).toBeDefined();
 	});
 
-	it('forming inverse H&S: 右肩が左肩から遠く confidence < 0.5 → 結果に含まれない & reject 理由が残る', () => {
-		// closeness = 1 - |107 - 100| / (100 * 0.08) = 0.125、confBase = 0.6 * 0.125 + 0.4 * 0.125 = 0.125、confidence = round(0.125 * 0.9 * 100)/100 = 0.11 → < 0.5
-		// completion = (0.75 + 0.25 * 0.125) * 0.9 = 0.703 → >= 0.4（残るのは confidence 側のみ）
+	it('forming inverse H&S: 右肩が左肩から遠くても整合度の下限では落とさず、strict の物差しで levelMargin が 0 になる（#422）', () => {
+		// 右肩（現在値 107）は左肩 100 から 7%。形成中のゲート 8% は通るが、strict の肩の許容幅を超える。
 		const total = 66;
 		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 90, 95, 85, 90));
 		candles[5] = mkCandle(total - 5, 100, 102, 99, 100);
@@ -1033,19 +1032,15 @@ describe('detectHeadAndShoulders', () => {
 		const result = detectHeadAndShoulders(ctx);
 
 		const forming = result.patterns.filter((p) => p.type === 'inverse_head_and_shoulders' && p.status === 'forming');
-		expect(forming).toHaveLength(0);
-
-		const rejected = ctx.debugCandidates.find(
-			(d) =>
-				d.type === 'inverse_head_and_shoulders' && d.accepted === false && d.reason === 'confidence_below_min_forming',
-		);
-		expect(rejected).toBeDefined();
-		const details = rejected?.details as Record<string, unknown> | undefined;
-		expect(Number(details?.threshold)).toBe(0.5);
-		expect(Number(details?.confidence)).toBeLessThan(0.5);
+		expect(forming).toHaveLength(1);
+		expect(forming[0].scoreComponents?.levelMargin).toBe(0);
+		expect(forming[0].scoreComponents?.breakoutQuality).toBeUndefined();
+		const axes = Object.values(forming[0].scoreComponents ?? {}) as number[];
+		expect(forming[0].confidence).toBeCloseTo(axes.reduce((sum, v) => sum + v, 0) / axes.length, 2);
+		expect(ctx.debugCandidates.some((d) => String(d.reason ?? '').startsWith('confidence_below_min'))).toBe(false);
 	});
 
-	it('forming H&S: 右肩が左肩から遠く confidence < 0.5 → 結果に含まれない & reject 理由が残る', () => {
+	it('forming H&S: 右肩が左肩から遠くても整合度の下限では落とさず、strict の物差しで levelMargin が 0 になる（#422）', () => {
 		const total = 66;
 		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 90, 95, 85, 90));
 		candles[5] = mkCandle(total - 5, 99, 100, 97, 100);
@@ -1076,12 +1071,10 @@ describe('detectHeadAndShoulders', () => {
 		const result = detectHeadAndShoulders(ctx);
 
 		const forming = result.patterns.filter((p) => p.type === 'head_and_shoulders' && p.status === 'forming');
-		expect(forming).toHaveLength(0);
-
-		const rejected = ctx.debugCandidates.find(
-			(d) => d.type === 'head_and_shoulders' && d.accepted === false && d.reason === 'confidence_below_min_forming',
-		);
-		expect(rejected).toBeDefined();
+		expect(forming).toHaveLength(1);
+		expect(forming[0].scoreComponents?.levelMargin).toBe(0);
+		expect(forming[0].scoreComponents?.breakoutQuality).toBeUndefined();
+		expect(ctx.debugCandidates.some((d) => String(d.reason ?? '').startsWith('confidence_below_min'))).toBe(false);
 	});
 
 	it('H&S: 右肩後にネックライン下抜け → status=completed, confirmation=neckline_breakout', () => {

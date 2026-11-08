@@ -582,8 +582,13 @@ describe('detectTriples', () => {
 		expect(forming.length).toBeGreaterThanOrEqual(1);
 		expect(forming[0]?.completionPct).toBeDefined();
 		expect(forming[0]?.breakoutTarget).toBeDefined();
-		// forming triple は confidence 上限が抑えられている（標準的扱い禁止）。
-		expect(forming[0]?.confidence).toBeLessThanOrEqual(0.59);
+		// 未ブレイクなので breakoutQuality は出ず、上限も掛けない（#422）。
+		expect(forming[0]?.scoreComponents?.breakoutQuality).toBeUndefined();
+		const axes = Object.values(forming[0]?.scoreComponents ?? {}) as number[];
+		// 軸は 4 桁に丸めて出すので、丸める前の平均から作る confidence とは最大 0.005 ずれる。
+		expect(
+			Math.abs(Number(forming[0]?.confidence) - axes.reduce((sum, v) => sum + v, 0) / axes.length),
+		).toBeLessThanOrEqual(0.0051);
 	});
 
 	it('includeForming=true + 2確定谷 + 現在価格が谷水準に再到達 → forming triple_bottom 検出', () => {
@@ -620,7 +625,11 @@ describe('detectTriples', () => {
 		expect(forming.length).toBeGreaterThanOrEqual(1);
 		expect(forming[0]?.completionPct).toBeDefined();
 		expect(forming[0]?.breakoutTarget).toBeDefined();
-		expect(forming[0]?.confidence).toBeLessThanOrEqual(0.59);
+		expect(forming[0]?.scoreComponents?.breakoutQuality).toBeUndefined();
+		const axes = Object.values(forming[0]?.scoreComponents ?? {}) as number[];
+		expect(
+			Math.abs(Number(forming[0]?.confidence) - axes.reduce((sum, v) => sum + v, 0) / axes.length),
+		).toBeLessThanOrEqual(0.0051);
 	});
 
 	it.each([
@@ -638,7 +647,7 @@ describe('detectTriples', () => {
 			necks: [121, 121],
 			current: 102.5,
 		},
-	])('forming $type の完成度はネックラインまでの進み具合、信頼度は確定 2 点の水準のずれで決まる', ({
+	])('forming $type の完成度はネックラインまでの進み具合、levelMargin は確定 2 点と現在値を strict の許容幅で測る', ({
 		type,
 		mains,
 		necks,
@@ -688,8 +697,15 @@ describe('detectTriples', () => {
 		expect(forming).toHaveLength(1);
 		// 0.66 + (1.75 / 20.25) × 0.34 = 0.689
 		expect(forming[0]?.completionPct).toBe(69);
-		// (1 - (1.5 / 101.5) / 0.048) × 0.8 = 0.554
-		expect(forming[0]?.confidence).toBe(0.55);
+		const pts = [mains[0], mains[1], current];
+		const devs = [
+			[0, 1],
+			[0, 2],
+			[1, 2],
+		].map(([i, j]) => Math.abs(pts[i] - pts[j]) / Math.max(pts[i], pts[j]));
+		expect(forming[0]?.scoreComponents?.levelMargin).toBeCloseTo(1 - devs.reduce((sum, v) => sum + v, 0) / 3 / 0.04, 4);
+		const axes = Object.values(forming[0]?.scoreComponents ?? {}) as number[];
+		expect(forming[0]?.confidence).toBeCloseTo(axes.reduce((sum, v) => sum + v, 0) / axes.length, 2);
 	});
 
 	it('forming triple_top: 3 山が単調に切り上がる場合は forming_stair_step_up で reject', () => {

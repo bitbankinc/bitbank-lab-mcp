@@ -64,9 +64,6 @@ const FORMING_MAX_DAYS = 90;
 
 const FORMING_TOLERANCE_MULTIPLIER = 1.2;
 const FORMING_MIN_COMPLETION = 0.4;
-const FORMING_MIN_CONFIDENCE = 0.5;
-// 3 点目が暫定なので、detectPatternsViewsHandler の低信頼ラベル（< 0.6）に入るよう抑える。
-const FORMING_MAX_CONFIDENCE = 0.59;
 // 形成中に validateLevelSpread を入れていないのは不採用の決定で、未配線ではない（#178）。
 const FORMING_LEVEL_SPREAD_FACTOR = 1.0; // tripleTolerancePct × 1.0
 // 完成済みの NECKLINE_SLOPE_LIMIT（2%）ではなく tolerancePct 基準にする。3 点目が暫定で、2% では形成中を拾えないため。
@@ -608,8 +605,6 @@ function tryFormingTriple(ctx: DetectContext, side: ReversalSide): DeduplicableP
 		const height = top ? avgMain - avgNeck : avgNeck - avgMain;
 		const progress = (top ? avgMain - currentPrice : currentPrice - avgMain) / Math.max(1e-12, height);
 		const completion = Math.min(1, 0.66 + Math.min(1, progress) * 0.34);
-		const rawConfidence = Math.round((1 - mainDiff / tripleTolerancePct) * 0.8 * 100) / 100;
-		const confidence = Math.min(rawConfidence, FORMING_MAX_CONFIDENCE);
 
 		const structurePts = () => [
 			{ role: `${spec.mainRole}1`, idx: main1.idx, price: main1.price },
@@ -619,11 +614,11 @@ function tryFormingTriple(ctx: DetectContext, side: ReversalSide): DeduplicableP
 			{ role: 'current', idx: lastIdx, price: currentPrice },
 		];
 
-		if (completion < FORMING_MIN_COMPLETION || confidence < FORMING_MIN_CONFIDENCE) {
+		if (completion < FORMING_MIN_COMPLETION) {
 			pcand({
 				type,
 				accepted: false,
-				reason: completion < FORMING_MIN_COMPLETION ? 'forming_completion_below_min' : 'forming_confidence_below_min',
+				reason: 'forming_completion_below_min',
 				idxs: [...idxs],
 				pts: structurePts(),
 			});
@@ -669,6 +664,17 @@ function tryFormingTriple(ctx: DetectContext, side: ReversalSide): DeduplicableP
 
 		const structureGate = buildStructureGate(gate);
 
+		// 完成済みと同じ物差しで、3 点目に現在値を使って測る。未ブレイクなので breakoutQuality は出ない（#422）。
+		const { components: scoreComponents, base } = buildTripleScore({
+			points: [main1.price, main2.price, currentPrice],
+			strictTolerancePct: tolerancePct,
+			necklinePrice: avgNeck,
+			breakoutClose: Number.NaN,
+			side,
+			retracementRatio: gate.retracementRatio,
+		});
+		const confidence = finalizeConf(base);
+
 		const neckline = [
 			{ x: main1.idx, y: avgNeck },
 			{ x: lastIdx, y: avgNeck },
@@ -692,6 +698,7 @@ function tryFormingTriple(ctx: DetectContext, side: ReversalSide): DeduplicableP
 				{ idx: n2.idx, price: n2.price, kind: spec.neckKind, extremePrice: n2.extremePrice },
 			],
 			neckline,
+			scoreComponents,
 			...(structureGate ? { structureGate } : {}),
 			...(priorTrend.precedingTrend ? { precedingTrend: priorTrend.precedingTrend } : {}),
 			trendlineLabel: 'ネックライン',
