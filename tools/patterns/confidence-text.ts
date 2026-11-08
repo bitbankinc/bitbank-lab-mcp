@@ -4,7 +4,7 @@ import type { PatternScoreBreakdown } from './types.js';
 export const CONFIDENCE_NOTE =
 	'パターン整合度について（軸の構成は種別で異なり、各パターンの「整合度の内訳」行に出す）:\n' +
 	'  各軸は 0〜1 で、1 = 理想、0 = 検出の strict な基準ちょうど。整合度はその単純平均。\n' +
-	'  緩い基準で拾った候補（relaxed・形成中）は、strict の基準に届かない軸が 0 になる。\n' +
+	'  緩い基準で拾った候補（relaxed・形成中）は、strict の基準に届かない軸も 0 になる（0 は「余裕が無い」で、基準ちょうどと届かないを区別しない）。\n' +
 	'  整合度は形の良さの比較値で、当たりやすさ（確率）ではない。何点以上なら信頼できるという基準は置いていない（過去の実績で較正するまで）。';
 
 const AXIS_LABELS: Record<keyof PatternScoreBreakdown, string> = {
@@ -34,10 +34,12 @@ export function formatScoreBreakdownLines(scoreComponents: PatternScoreBreakdown
 	);
 	if (entries.length === 0) return [];
 	const lines = [`   - 整合度の内訳: ${entries.map(([key, v]) => `${axisLabel(key)} ${v.toFixed(2)}`).join(' / ')}`];
-	// 軸の 0 は strict のゲートの境目かその外なので、緩い基準で拾ったことを点数とは別に伝える。
-	const failing = entries.filter(([, v]) => v === 0).map(([key]) => axisLabel(key));
-	if (failing.length > 0) {
-		lines.push(`   - ⚠️ strict の基準に届かない軸: ${failing.join('、')}（緩い基準で拾った候補。単独では判断しない）`);
+	// 0 は基準ちょうどでも届かなくても付く（物差しを 0 で切るため）ので、どちらかに断定しない。
+	const noMargin = entries.filter(([, v]) => v === 0).map(([key]) => axisLabel(key));
+	if (noMargin.length > 0) {
+		lines.push(
+			`   - ⚠️ 余裕が無い軸（strict の基準ちょうど、または届かない）: ${noMargin.join('、')}（検出の境目にある候補。単独では判断しない）`,
+		);
 	}
 	return lines;
 }

@@ -1349,15 +1349,15 @@ describe('formatPatternLine', () => {
 		}
 	});
 
-	it('0 の軸があると strict の基準に届かない軸として警告する', () => {
+	it('0 の軸があると余裕が無い軸として警告し、「届かない」とは断定しない', () => {
 		const p = makePattern({
 			type: 'falling_wedge',
 			confidence: 0.3,
 			scoreComponents: { convergence: 0, touches: 0.8, alternation: 0, containment: 0.4 },
 		});
-		expect(formatPatternLine(p, 0, 'detailed', emptyMeta)).toContain(
-			'   - ⚠️ strict の基準に届かない軸: 収束、タッチの交互さ',
-		);
+		const result = formatPatternLine(p, 0, 'detailed', emptyMeta);
+		expect(result).toContain('   - ⚠️ 余裕が無い軸（strict の基準ちょうど、または届かない）: 収束、タッチの交互さ');
+		expect(result).not.toContain('基準に届かない軸');
 	});
 
 	it('整合度が低くても点数だけでは警告しない（何点以上という帯は置かない。#422）', () => {
