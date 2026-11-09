@@ -657,15 +657,15 @@ export const DetectedPatternSchema = z.object({
 				.optional()
 				.describe(
 					'上下のトレンドラインの当てはまり。線ごとに `(R² − ゲート) ÷ (1 − ゲート)` を取って平均する' +
-						'（ゲートは triangle 0.6、flag / pennant 0.5、wedge 0.55）。2 点しかない線は R² が 1 に張り付くので除く' +
-						'（2 点を通す線で引く形成中の wedge には付かない）。**triangle / flag / pennant / wedge**',
+						'（ゲートは triangle 0.6、flag / pennant 0.5）。2 点しかない線は R² が 1 に張り付くので除く' +
+						'（wedge は 2 点を通す線で引くので付かない）。**triangle / flag / pennant**',
 				),
 			convergence: z
 				.number()
 				.optional()
 				.describe(
 					'上下のラインの収束の深さ。`1 − 収束比（終端の幅 ÷ 始端の幅）÷ ゲート` で、ゲートちょうど = 0、' +
-						'終端で交わる = 1（ゲートは triangle 0.9、pennant / wedge 0.7。形成中の wedge も strict の 0.7 で測る）。' +
+						'終端で交わる = 1（ゲートは triangle 0.9、pennant 0.7。wedge は検出のゲート 0.8 より厳しい strict の基準 0.7）。' +
 						'**triangle / pennant / wedge**',
 				),
 			touches: z
@@ -673,7 +673,7 @@ export const DetectedPatternSchema = z.object({
 				.optional()
 				.describe(
 					'トレンドラインに使った高値・安値の点数。`1 − ゲートの点数 ÷ 点数` で、ゲートちょうど = 0、' +
-						'2 倍 = 0.5（ゲートは triangle 4 点、flag / pennant / wedge 6 点。形成中の wedge も strict の 6 点で測る）。' +
+						'2 倍 = 0.5（ゲートは triangle 4 点、flag / pennant 6 点。wedge は検出のゲート 5 点より厳しい strict の基準 6 点）。' +
 						'**triangle / flag / pennant / wedge**',
 				),
 			slopeSymmetry: z

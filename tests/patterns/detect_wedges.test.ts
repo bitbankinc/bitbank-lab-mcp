@@ -1,4 +1,3 @@
-// 4b（回帰ベース完成済み）は要件が厳しいため、4d（形成中ウェッジ）を主なターゲットにしたデータジェネレータを使う。
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../../lib/datetime.js';
 import { getHsShoulderMaxPctForTf, getSizeThresholdsForTf, resolveParams } from '../../tools/patterns/config.js';
@@ -339,8 +338,6 @@ describe('detectWedges', () => {
 		expect(failed?.targetProgressOmittedReason).toBe('breakout_against_expectation');
 	});
 
-	// aftermath は回帰ベース（4b）パスでのみ付与されるので、aftermath.targetReached と top-level targetReached の整合性は現行フィクスチャでは直接 assert できない。
-
 	it('検出試行後 debugCandidates に採用と棄却（理由付き）の両方が記録される', () => {
 		const candles = buildRisingWedgeCandles(80);
 		const pivots: Pivot[] = [];
@@ -448,7 +445,7 @@ describe('detectWedges', () => {
 		}
 	});
 
-	// 1hour の実効値は windowSizeMin=34 / formingWindowMin=34 / formingWindowMax=204。
+	// 1hour の実効値は formingWindowMin=34 / formingWindowMax=204。
 
 	function buildRisingWedge1Hour(nBars: number): CandleData[] {
 		const candles: CandleData[] = [];
@@ -499,7 +496,7 @@ describe('detectWedges', () => {
 		expect(rw[0]?.confidence).toBeGreaterThan(0);
 	});
 
-	// 1week は日数換算値（round(25 × 1/7) = 4 本）が小さすぎるので構造的下限 25 本でクランプされる側。実効値は windowSizeMin=25 / windowSizeMax=90 / formingWindowMin=25 / formingWindowMax=150。
+	// 1week は日数換算値（round(25 × 1/7) = 4 本）が小さすぎるので構造的下限 25 本でクランプされる側。実効値は formingWindowMin=25 / formingWindowMax=150。
 
 	function buildRisingWedge1Week(nBars: number): CandleData[] {
 		const candles: CandleData[] = [];
@@ -538,8 +535,8 @@ describe('detectWedges', () => {
 		expect(Array.isArray(result.patterns)).toBe(true);
 	});
 
-	it('1week: windowSizeMin（25 バー）にデータが届かない場合でも例外を投げない', () => {
-		// 20 バーは windowSizeMin=25 / formingWindowMin=25 を割るので通常のウィンドウは生成されないが、形成中の「最新に揃えた特別ウィンドウ」は start を max(0, lastIdx - size) に clamp して必ず積むため評価自体は走る。
+	it('1week: formingWindowMin（25 バー）にデータが届かない場合でも例外を投げない', () => {
+		// 20 バーは formingWindowMin=25 を割るので通常のウィンドウは生成されないが、形成中の「最新に揃えた特別ウィンドウ」は start を max(0, lastIdx - size) に clamp して必ず積むため評価自体は走る。
 		const candles = buildRisingWedge1Week(20);
 		const pivots: Pivot[] = [];
 		const ctx = buildCtx({ candles, pivots, includeForming: true, type: '1week', swingDepth: 2 });
@@ -555,10 +552,9 @@ describe('detectWedges', () => {
 		expect(() => detectWedges(ctx1d)).not.toThrow();
 		expect(() => detectWedges(ctx1w)).not.toThrow();
 	});
-	// ここで踏むのは 4d（形成中）パス。4b（回帰ベース）は合成フィクスチャでも実データでも 1 件も出ないが、両パスとも同じ `buildTouchPivots` を通すので契約はここで固定できる。
 
 	describe('pivots（構成点）', () => {
-		/** `detectWedges` は回帰パス（4b）の結果を先に並べるので、型と検出経路の両方で絞る（`_wedge` で終わる最初の 1 件を拾うと、別の型や 4b の結果が assert を満たしてしまう）。 */
+		/** 型で絞る（`_wedge` で終わる最初の 1 件を拾うと、別の型の結果が assert を満たしてしまう）。 */
 		function formingWedge(candles: CandleData[], type: 'rising_wedge' | 'falling_wedge') {
 			const ctx = buildCtx({ candles, pivots: [], includeForming: true });
 			const result = detectWedges(ctx);

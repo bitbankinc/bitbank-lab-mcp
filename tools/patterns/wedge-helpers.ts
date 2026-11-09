@@ -1,98 +1,4 @@
-import type { CandleData, TouchPoint, TouchResult, TrendLine, WedgeParams } from './types.js';
-
-// 収束のゲートと convergence の物差しを兼ねる。
-export const WEDGE_MAX_CONVERGENCE = 0.7;
-
-export interface WedgeBreakResult {
-	detected: boolean;
-	breakIdx: number;
-	breakIsoTime: string | null;
-	breakPrice: number | null;
-}
-
-export function detectWedgeBreak(
-	candles: CandleData[],
-	_wedgeType: 'falling_wedge' | 'rising_wedge',
-	upper: { valueAt: (x: number) => number },
-	lower: { valueAt: (x: number) => number },
-	_startIdx: number,
-	endIdx: number,
-	lastIdx: number,
-	atr: number,
-): WedgeBreakResult {
-	// 形成区間の内側を再走査すると、後の点で引いた線を過去へ外挿した look-ahead bias になるので、次の足から探す。
-	const scanStart = endIdx + 1;
-	const scanEnd = Math.min(lastIdx, candles.length - 1);
-
-	let firstBreakIdx = -1;
-
-	// 両方向を見て最初のブレイクを返す。期待方向かどうかは呼び出し側（detect_wedges.ts）が判定する。
-	for (let i = scanStart; i <= scanEnd; i++) {
-		const close = Number(candles[i]?.close ?? NaN);
-		if (!Number.isFinite(close)) continue;
-
-		const uLine = upper.valueAt(i);
-		const lLine = lower.valueAt(i);
-		if (!Number.isFinite(uLine) || !Number.isFinite(lLine)) continue;
-
-		if (close > uLine + atr * 0.5 || close < lLine - atr * 0.5) {
-			firstBreakIdx = i;
-			break;
-		}
-	}
-
-	if (firstBreakIdx !== -1) {
-		return {
-			detected: true,
-			breakIdx: firstBreakIdx,
-			breakIsoTime: candles[firstBreakIdx]?.isoTime ?? null,
-			breakPrice: Number(candles[firstBreakIdx]?.close ?? NaN),
-		};
-	}
-	return { detected: false, breakIdx: -1, breakIsoTime: null, breakPrice: null };
-}
-
-export function generateWindows(
-	totalBars: number,
-	minSize: number,
-	maxSize: number,
-	step: number,
-): Array<{ startIdx: number; endIdx: number }> {
-	const out: Array<{ startIdx: number; endIdx: number }> = [];
-	for (let size = minSize; size <= maxSize; size += step) {
-		for (let start = 0; start + size < totalBars; start += step) {
-			out.push({ startIdx: start, endIdx: start + size });
-		}
-	}
-	return out;
-}
-
-export function determineWedgeType(
-	slopeHigh: number,
-	slopeLow: number,
-	params: WedgeParams,
-): 'rising_wedge' | 'falling_wedge' | null {
-	const minSlope = params?.minSlope ?? 0.0001;
-	const ratioMinRising = params?.slopeRatioMinRising ?? 1.2;
-	const ratioMinFalling = params?.slopeRatioMinFalling ?? params?.slopeRatioMin ?? 1.15;
-	const minWeakerSlopeRatio = params?.minWeakerSlopeRatio ?? 0.3;
-
-	if (slopeHigh > minSlope && slopeLow > minSlope) {
-		if (slopeHigh < slopeLow * minWeakerSlopeRatio) return null;
-		if (Math.abs(slopeLow) >= Math.abs(slopeHigh) * ratioMinRising) return 'rising_wedge';
-	}
-	if (slopeHigh < -minSlope && slopeLow < -minSlope) {
-		const absHi = Math.abs(slopeHigh);
-		const absLo = Math.abs(slopeLow);
-		const weakerRatio = Math.min(absHi, absLo) / Math.max(absHi, absLo);
-		if (weakerRatio < minWeakerSlopeRatio) return null;
-		if (absHi >= absLo * ratioMinFalling) return 'falling_wedge';
-		return null;
-	}
-	const slopeRatio = Math.abs(slopeLow / (slopeHigh || slopeLow * 1e-6));
-	if (slopeRatio > 0.9 && slopeRatio < 1.1) return null;
-	return null;
-}
+import type { CandleData, TouchPoint, TouchResult, TrendLine } from './types.js';
 
 export interface ApexResult {
 	apexIdx: number;
@@ -139,13 +45,6 @@ export function checkContainment(
 		}
 	}
 	return { closeInsideRatio: total > 0 ? inside / total : 0, violations, total };
-}
-
-export function checkConvergenceEx(upper: TrendLine, lower: TrendLine, startIdx: number, endIdx: number) {
-	const gapStart = upper.valueAt(startIdx) - lower.valueAt(startIdx);
-	const gapEnd = upper.valueAt(endIdx) - lower.valueAt(endIdx);
-	const ratio = gapEnd / Math.max(1e-12, gapStart);
-	return { isConverging: gapEnd > 0 && ratio < WEDGE_MAX_CONVERGENCE, gapStart, gapEnd, ratio };
 }
 
 export function evaluateTouchesEx(

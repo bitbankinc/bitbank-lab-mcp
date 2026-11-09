@@ -10,7 +10,6 @@ import { getHsFormingBarParams } from '../../tools/patterns/detect_hs.js';
 import { getFlagParams } from '../../tools/patterns/detect_pennants.js';
 import { getTriangleParams } from '../../tools/patterns/detect_triangles.js';
 import { getTripleFormingBarParams } from '../../tools/patterns/detect_triples.js';
-import { getWedgeBarParams } from '../../tools/patterns/detect_wedges.js';
 import {
 	isDetectorReachable,
 	MIN_BARS_DETECTORS,
@@ -124,16 +123,6 @@ describe('minBarsForDetector — 導出式', () => {
 		});
 	});
 
-	it('completed_wedge: generateWindows が窓を 1 つ生成できる最小本数（windowSizeMin + 1）', () => {
-		for (const tf of ALL_TIMEFRAMES) {
-			const { windowSizeMin } = getWedgeBarParams(tf);
-			const bars = minBarsForDetector(tf, 'completed_wedge');
-			// generateWindows は `start + size < totalBars` で回すので `size < totalBars` が要る
-			expect(windowSizeMin, `${tf}`).toBeLessThan(bars);
-			expect(windowSizeMin, `${tf}（1 本余分でない）`).toBeGreaterThanOrEqual(bars - 1);
-		}
-	});
-
 	it('triangle: windowSizes が空にならない最小本数（時間足でスケールする）', () => {
 		for (const tf of ALL_TIMEFRAMES) {
 			const { minWindowBars } = getTriangleParams(tf);
@@ -216,7 +205,6 @@ describe('docs/tools.md 「`limit` の実効下限」表との一致', () => {
 		const columnToDetector: Record<string, MinBarsDetector> = {
 			'forming triple（21日由来）': 'forming_triple',
 			'forming H&S（21日由来）': 'forming_hs',
-			'完成済み wedge（25日窓由来）': 'completed_wedge',
 			'flag / pennant（最小 1+2日由来）': 'flag_pennant',
 		};
 		const detectorsByColumn = (headerCells as string[]).map((h) => {
