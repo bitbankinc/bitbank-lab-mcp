@@ -466,6 +466,41 @@ describe('analyze_bb_snapshot', () => {
 		expect(res.summary).toContain('above_upper_band_risk');
 	});
 
+	it('extended mode: 到達本数は丸める前の z で数える（1.997σ は ±2σ に届いていない）', async () => {
+		// 直前の 1 本（i=89）を大きく外し、最終本は丸める前で約 1.997σ・小数 2 桁で 2σ になる値にする
+		const base = 10_000_000;
+		const { year2026, year2025 } = make2026And2025Rows(
+			(i) => (i === 89 ? base + 5_000_000 : i === 90 ? base + 2_836_672 : base),
+			base,
+		);
+		mockFetchByYear(year2026, year2025);
+
+		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'extended');
+		assertOk(res);
+		const z = res.data.bb.zScore as number;
+		expect(z).toBeGreaterThan(1.995);
+		expect(z).toBeLessThan(2);
+		const series = (res.meta as { extra?: { timeseries?: { last_30_candles: Array<{ zScore: number }> } } }).extra
+			?.timeseries?.last_30_candles;
+		expect(series?.at(-1)?.zScore).toBe(2);
+		const events = res.data.extreme_events as Record<string, number | null>;
+		// 届いているのは外れ値の 1 本目（i=89）だけ。丸めた値で数えると最終本も数えてしまう
+		expect(events.touches_2σ_last_30d).toBe(1);
+		expect(events.touches_3σ_last_30d).toBe(1);
+	});
+
+	it('extended mode: 直近 30 本のどこかで BB の助走が足りないときは、到達本数を出さない', async () => {
+		// 全部で 40 本しか無いと、直近 30 本のうち最初の数本は BB（20 本）の助走中で z が取れない
+		mockFetch(makeAlternatingRows(40, () => 0.02));
+
+		const res = await analyzeBbSnapshot('btc_jpy', '1day', 40, 'extended');
+		assertOk(res);
+		const events = res.data.extreme_events as Record<string, number | null>;
+		expect(events.touches_2σ_last_30d).toBeNull();
+		expect(events.touches_3σ_last_30d).toBeNull();
+		expect(res.summary).toContain('直近30本の終値: ±2σ 以上 n/a本 / ±3σ 以上 n/a本');
+	});
+
 	it('extended mode: fetch 失敗時は ok: false を返す', async () => {
 		globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed')) as unknown as typeof fetch;
 

@@ -25,6 +25,8 @@ import {
 import type { ToolDefinition } from '../src/tool-definition.js';
 import analyzeIndicators from './analyze_indicators.js';
 
+const BB_TOUCH_WINDOW = 30;
+
 export interface BbTimeseriesEntry {
 	time: string;
 	zScore: number | null;
@@ -198,10 +200,19 @@ export default async function analyzeBbSnapshot(
 		const bbSeries = (
 			indRes?.data?.indicators as { bb2_series?: { upper: number[]; middle: number[]; lower: number[] } }
 		)?.bb2_series;
+		// 到達本数は丸める前の z で数える（丸めると 1.996σ が 2σ に届いたことになる）。
+		const recentRawZ: Array<number | null> = [];
+		let recentBandsMissing = false;
 		const timeseries = (() => {
 			try {
 				if (!candles || !bbSeries) return null;
-				const n = Math.min(30, candles.length, bbSeries.middle.length, bbSeries.upper.length, bbSeries.lower.length);
+				const n = Math.min(
+					BB_TOUCH_WINDOW,
+					candles.length,
+					bbSeries.middle.length,
+					bbSeries.upper.length,
+					bbSeries.lower.length,
+				);
 				const arr: Array<{ time: string; zScore: number | null; bandWidthPct: number | null }> = [];
 				for (let i = n; i >= 1; i--) {
 					const idx = candles.length - i;
@@ -210,6 +221,8 @@ export default async function analyzeBbSnapshot(
 					const u = bbSeries.upper[idx];
 					const l = bbSeries.lower[idx];
 					const z = bbZScore(candles[idx]?.close, m, u, l);
+					recentRawZ.push(z);
+					if (![m, u, l].every((v) => v != null && Number.isFinite(v))) recentBandsMissing = true;
 					const bw = m ? ((u - l) / m) * 100 : null;
 					arr.push({
 						time: t,
@@ -377,9 +390,13 @@ export default async function analyzeBbSnapshot(
 			'±2σ': bandWidthPct,
 			'±3σ': widthPct(bbBands['+3σ'], bbBands['-3σ']),
 		};
-		const recentZ = (timeseries ?? []).map((e) => e.zScore).filter((z): z is number => z != null);
-		const touches2 = timeseries ? recentZ.filter((z) => Math.abs(z) >= BB_STDDEV).length : null;
-		const touches3 = timeseries ? recentZ.filter((z) => Math.abs(z) >= 3).length : null;
+		// 直近 BB_TOUCH_WINDOW 本のどこかで BB の助走が足りないと数え漏れになるので、本数を出さない。幅 0（z が無い）の足は届いていないと数える。
+		const fullWindow =
+			recentRawZ.length === BB_TOUCH_WINDOW && !recentBandsMissing
+				? recentRawZ.filter((z): z is number => z != null)
+				: null;
+		const touches2 = fullWindow ? fullWindow.filter((z) => Math.abs(z) >= BB_STDDEV).length : null;
+		const touches3 = fullWindow ? fullWindow.filter((z) => Math.abs(z) >= 3).length : null;
 		const widthState = bbWidthState(bandWidthRank);
 		const current_zone =
 			zScore == null
@@ -430,7 +447,7 @@ export default async function analyzeBbSnapshot(
 			currentZone: current_zone,
 			touches2,
 			touches3,
-			touchWindow: timeseries?.length ?? 0,
+			touchWindow: BB_TOUCH_WINDOW,
 			widthState,
 			bandWidthRank,
 			tags,
