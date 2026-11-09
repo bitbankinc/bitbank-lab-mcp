@@ -1373,10 +1373,11 @@ describe('formatPatternLine', () => {
 		);
 	});
 
-	it('説明文は、整合度が確率ではなく、過去の実績で目標到達を予測しなかったことを伝える（#422 Phase B）', () => {
+	it('説明文は、整合度が確率ではなく、過去の実績で到達しやすさと結びつかなかったことを、範囲を限って伝える（#422 Phase B）', () => {
 		const full = formatFullView('hdr', [makePattern()], '', '', emptyMeta, emptyRes).content[0].text;
 		expect(full).toContain('当たりやすさ（確率）ではない');
-		expect(full).toContain('目標到達を予測せず');
+		expect(full).toContain('整合度が高いほど目標に届きやすいという関係は無かった');
+		expect(full).toContain('反転系は件数が足りず未検証');
 		expect(full).not.toMatch(/0\.8以上|0\.6未満|形状不十分/);
 	});
 

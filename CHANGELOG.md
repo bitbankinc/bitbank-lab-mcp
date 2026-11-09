@@ -17,7 +17,7 @@
 - `detect_patterns`：wedge の整合度も、測れた軸の単純平均にした（issue #422）。6 軸の重み（0.25 / 0.25 / 0.35 / 0.07 / 0.05 / 0.03）、収束の点数の中の手置きの係数（頂点 0.35・加速 0.25 など）、期間の軸、ライン内に収まる足の割合（ゲートの無い高安版）をやめた。軸は、トレンドラインの当てはまり・収束・タッチ数・タッチの交互さ・終値の包含率で、どれも strict のゲート（R² 0.55、収束比 0.7、6 点、交互率 0.25、包含率 0.85）を物差しにする。形成中の経路（既定で出る wedge のほとんど）も strict の物差しで測るので、緩いゲート（収束比 0.8 未満、5 点）で拾った分だけ低くなり、上限 0.9 は外した。2 点を通す線で引くので当てはまりの軸は出さない。点数での足切り（strict・形成中とも 0.5）も外した。手元の実データでは、この足切りで落ちた候補は 0 件だった。手元の実データでは、wedge が平均 0.70〜0.72 → 0.42〜0.45 に下がる。出力に残った wedge の 44% は収束比が strict のゲート（0.7）を超えていて、収束の軸が 0 になる。
 - `detect_patterns`：形成中の H&S と triple の整合度も、完成済みと同じ軸の単純平均にした（issue #422）。まだブレイクしていないので `breakoutQuality` は出ない。H&S は「0.6 × 肩の近さ + 0.4 × 進み具合」（進み具合は肩の近さと同じ値なので、実際は肩の近さそのもの）に、暫定の右肩なら × 0.9 を掛けていた。triple は「(1 − 確定 2 点の差 ÷ 許容幅の 1.2 倍) × 0.8」に上限 0.59 を掛けていた。どちらも外した。構成点が暫定であることは、整合度ではなく `status: 'forming'` で示す。整合度の下限 0.5（H&S の `confidence_below_min_forming`、triple の `forming_confidence_below_min`）も外した。triple の下限は、実際には「確定 2 点の差が許容幅の 45% 以内」という明示されないゲートとして効いていた。手元の実データでは、H&S の下限を外しても出力は変わらず、triple は 600 回のうち 30 回で形成中の候補が増えた（増えた候補の整合度は多くが 0.2〜0.5）。整合度は、形成中の H&S が平均 0.56〜0.60 → 0.23〜0.24（右肩が strict の肩の許容幅を超え、`levelMargin` が 0 になる）、形成中の triple が 0.50〜0.59 → 0.18〜0.89 に変わる。
 - `detect_patterns`：本文の整合度の帯（0.8 以上 = 理想的 / 0.7〜0.8 = 標準的 / 0.6〜0.7 = やや不明瞭 / 0.6 未満 = 形状不十分）と、0.6 未満・0.3 未満で付けていた「⚠️ 信頼度: 低い / 非常に低い」のラベルをやめた（issue #422）。帯の境目は旧い計算に合わせた手置きの値で、過去の実績で較正するまで決められないため。代わりに、各パターンに「整合度の内訳」行（軸ごとの点数。`view=detailed` は上位 5 件、`view=full` は全件）を出し、0 点の軸（strict の基準ちょうどか、届かない）があるときだけ「⚠️ 余裕が無い軸」として名前を挙げる。プロンプト「中級：BTCのパターン分析をして」の重要度も、整合度の点数ではなくこの警告の有無で分ける。
-- `detect_patterns`：整合度を過去の実績と突き合わせた結果を、本文の説明と `docs/tools.md` に書いた（issue #422 Phase B）。7 ペアの日足・4 時間足（2017〜2026 年）の 3.8 万件では、整合度は目標到達を予測せず（AUC 0.50）、種別ごとに較正しても予測は良くならなかった。到達を左右したのは目標までの距離だった。整合度は確率に置き換えず、形の良さの比較値のまま扱う。
+- `detect_patterns`：整合度を過去の実績と突き合わせた結果を、本文の説明と `docs/tools.md` に書いた（issue #422 Phase B）。7 ペアの日足・4 時間足（2017〜2026 年）の完成済みパターン 3.8 万件（検出した足から 60 本以内の到達）では、整合度が高いほど目標に届きやすいという関係は無く（全種別をまとめた AUC 0.50。flag・pennant・wedge はむしろ逆向き、反転系は件数不足で未検証）、種別ごとに較正しても予測は良くならなかった。到達を左右したのは目標までの距離だった。整合度は確率に置き換えず、形の良さの比較値のまま扱う。
 
 ### Added
 
@@ -43,7 +43,7 @@
 - `DepositItemSchema` に `category`、`MarginPositionSchema` に `locked_amount`（いずれも optional）を追加。
 - `*_performance` に `staking_reward_jpy` / `staking_reward_unpriced_assets`、`DepositWithdrawalSummarySchema` に `staking_reward_count` / `staking_reward_estimated_jpy` / `staking_reward_valuation`（いずれも optional）を追加。
 - `adjusted_change_pct` の description に、分母が期初評価額でフロー加重の収益率ではないことを明記した（issue #111）。
-- `detect_patterns`：`confidence` に description を付けた（確率ではないこと、過去の実績では目標到達を予測しなかったこと。issue #422）。
+- `detect_patterns`：`confidence` に description を付けた（確率ではないこと、過去の実績では整合度が高いほど目標に届きやすいという関係は無かったこと。issue #422）。
 - `detect_patterns`：triangle・flag・pennant にも `scoreComponents` を出す。`lineFit` / `convergence` / `touches` / `slopeSymmetry` / `flatness` / `pole` / `parallelism` を追加（いずれも optional。issue #422）。
 - `detect_patterns`：wedge にも `scoreComponents` を出す。`alternation` / `containment` を追加し、`lineFit` / `convergence` / `touches` を wedge でも使う（いずれも optional。issue #422）。
 - `detect_patterns`：形成中の H&S と triple にも `scoreComponents` を出す（既存の軸。issue #422）。
