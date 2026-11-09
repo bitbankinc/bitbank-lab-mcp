@@ -3,6 +3,7 @@
 export const RSI_PERIOD = 14;
 export const RSI_OVERBOUGHT = 70;
 export const RSI_OVERSOLD = 30;
+export const RSI_MIDLINE = 50;
 
 export const BB_PERIOD = 20;
 export const BB_STDDEV = 2;
@@ -16,6 +17,8 @@ export const MACD_SIGNAL = 9;
 export const STOCH_PERIOD = 14;
 export const STOCH_SMOOTH_K = 3;
 export const STOCH_SMOOTH_D = 3;
+export const STOCH_OVERBOUGHT = 80;
+export const STOCH_OVERSOLD = 20;
 
 export const OBV_SMA_PERIOD = 20;
 export const OBV_TREND_THRESHOLD = 0.02;

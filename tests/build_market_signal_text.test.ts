@@ -50,9 +50,9 @@ describe('buildMarketSignalText', () => {
 	it('SMA詳細セクション: 3本の移動平均を表示', () => {
 		const text = buildMarketSignalText(makeInput());
 		expect(text).toContain('【SMA詳細】');
-		expect(text).toContain('短期（25日平均）');
-		expect(text).toContain('中期（75日平均）');
-		expect(text).toContain('長期（200日平均）');
+		expect(text).toContain('短期（SMA25）');
+		expect(text).toContain('中期（SMA75）');
+		expect(text).toContain('長期（SMA200）');
 		expect(text).toContain('4,900,000円');
 		expect(text).toContain('4,800,000円');
 		expect(text).toContain('4,500,000円');
@@ -117,6 +117,16 @@ describe('buildMarketSignalText', () => {
 		);
 		expect(text).toContain('直近クロス: 7日前にデッドクロス');
 		expect(text).toContain('下抜け');
+	});
+
+	it('直近クロスの単位は足の種類で変わる（週足は週、4 時間足は本）', () => {
+		const cross = { type: 'golden_cross', pair: '25/75', barsAgo: 3 } as const;
+		expect(buildMarketSignalText(makeInput({ type: '1week', recentCross: cross }))).toContain(
+			'直近クロス: 3週前にゴールデンクロス（SMA25がSMA75を上抜け）',
+		);
+		expect(buildMarketSignalText(makeInput({ type: '4hour', recentCross: cross }))).toContain(
+			'直近クロス: 3本前にゴールデンクロス',
+		);
 	});
 
 	it('クロスなしの場合はクロス行を出力しない', () => {
@@ -269,9 +279,9 @@ describe('buildMarketSignalText', () => {
 			}),
 		);
 		expect(text).toContain('現在価格: n/a');
-		expect(text).toContain('短期（25日平均）: n/a');
-		expect(text).toContain('中期（75日平均）: n/a');
-		expect(text).toContain('長期（200日平均）: n/a');
+		expect(text).toContain('短期（SMA25）: n/a');
+		expect(text).toContain('中期（SMA75）: n/a');
+		expect(text).toContain('長期（SMA200）: n/a');
 	});
 
 	it('スコアが負の場合も正しく表示', () => {

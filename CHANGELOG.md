@@ -31,6 +31,8 @@
 - Codex の plugin で、同梱の Skill（`investment-onboarding`）が読み込まれていなかった。Codex は manifest に `skills` が無いと plugin 直下の `skills/` だけを探すが、0.5.2 で plugin 本体を `plugins/bitbank-lab-mcp/` に移していた。Codex と Cursor の manifest に `skills` を足した（issue #408）。
 - `get_margin_positions`：追証などの通知の種別を、API の値（`margin_call` / `debt` / `settled`）のまま出していた。日本語の種別を添える。完了した精算の `settled` には `⚠` を付けず、常に空の金額・期日の代わりに発生日時を出す（issue #177）。
 - `get_margin_status` / `get_margin_positions` / `get_margin_trade_history` と `analyze_my_portfolio` の建玉の行で、金額が「¥100,000 円」のように通貨記号を重ねて出ていた。金額は `formatYenAmount` で「100,000円」の形に揃えた（マイナスの損益も「-5,000円」になる。円未満は四捨五入）。
+- `analyze_indicators` / `analyze_market_signal` / `analyze_ichimoku_snapshot` / `get_candles`：週足・月足・時間足でも「5日前」「26日後の雲」「直近7日間の平均 … /日」のように日で数えていた。日足は「日」、週足は「週」、月足は「か月」、それ以外の足は「本」で数える。移動平均線は「25日線」ではなく「SMA25」と書く。前の足との比較は、時間足・分足では「前足比」にした（4 時間足でも「前時間比」と出ていた）。`get_candles` の「今日」は「最新」に、一目均衡表の「今日の雲」は「現在の雲」にした。`get_candles` で本数が 90 本に満たないとき「90日前」と書いていた最古の足には、実際の本数を付ける。`volumeStats.judgment` の「前週比較不可（前7日間の出来高ゼロ）」は「比較不可（その前7日の出来高ゼロ）」（単位は足の種類による）に変わる（issue #431）。
+- RSI の判定の区切りが、ツールや欄ごとに違っていた。`analyze_indicators` は同じ出力の中で、RSI 37 を総合判定では「中立圏」、モメンタム欄では「弱め（反発余地）」と書いていた。`analyze_market_signal` は 30・70 ちょうどを中立圏にしていた。どちらも、30 以下 = 売られすぎ圏、50 未満 = 中立圏（50未満）、50 以上 = 中立圏（50以上）、70 以上 = 買われすぎ圏 に揃えた。「反発の可能性」「反落の可能性」「反発余地」のような先の値動きを示す言葉は外した。ストキャスティクスは、`analyze_stoch_snapshot` が 80 以上・20 以下で判定しながら「(>80)」「(<20)」と出していたので「買われすぎ圏（80以上）」「売られすぎ圏（20以下）」に直し、`analyze_indicators` にだけあった 10 以下・90 以上の「強い」段を外した（issue #431）。
 
 ### Schema (breaking)
 
@@ -54,6 +56,7 @@
 - 公式 API docs のミラー（`docs/internal/bitbank-api-fields.md`）と lock を upstream の最新に更新した（issue #177）。
 - `.github/workflows/` のコメントを `.claude/rules/comments.md` の基準で整理した（issue #416）。コメントだけの変更で、動きは変えていない。
 - `tools/patterns/detect_hs.ts`：H&S の上下 × strict / relaxed で 4 つあった判定を、側を引数に取る形にまとめた（issue #412）。検出結果と debug の候補は変えていない。
+- 足の種類から本数の単位を付ける関数を `lib/formatter.ts` に、RSI とストキャスティクスの判定の区切りを `lib/indicator-zones.ts` に置き、各ツールから使う（issue #431）。
 
 ## [0.6.0] - 2026-11-04
 

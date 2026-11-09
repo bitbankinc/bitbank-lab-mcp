@@ -1,7 +1,6 @@
-import { RSI_OVERBOUGHT, RSI_OVERSOLD } from '../../lib/indicator-config.js';
+import { RSI_MIDLINE, RSI_OVERBOUGHT, RSI_OVERSOLD } from '../../lib/indicator-config.js';
 import { niceTicks } from './svg-utils.js';
 
-const RSI_MIDLINE = 50;
 const PRICE_PANEL_HEIGHT = 420;
 
 export interface SubPanelContext {

@@ -255,7 +255,7 @@ describe('getCandles', () => {
 			assertOk(res);
 			expect(res.data.volumeStats).not.toBeNull();
 			expect(res.data.volumeStats?.changePct).toBeNull();
-			expect(res.data.volumeStats?.judgment).toBe('前週比較不可（前7日間の出来高ゼロ）');
+			expect(res.data.volumeStats?.judgment).toBe('比較不可（その前7日の出来高ゼロ）');
 			expect(res.data.volumeStats?.previous7DaysAvg).toBe(0);
 		});
 
@@ -285,7 +285,7 @@ describe('getCandles', () => {
 			assertOk(res);
 			expect(res.data.volumeStats).not.toBeNull();
 			expect(res.data.volumeStats?.changePct).toBeNull();
-			expect(res.data.volumeStats?.judgment).toBe('前週比較不可（前7日間の出来高ゼロ）');
+			expect(res.data.volumeStats?.judgment).toBe('比較不可（その前7日の出来高ゼロ）');
 			expect(res.data.volumeStats?.recent7DaysAvg).toBe(0);
 			expect(res.data.volumeStats?.previous7DaysAvg).toBe(0);
 		});
@@ -321,7 +321,7 @@ describe('getCandles', () => {
 			const text = res.content[0].text;
 			expect(text).not.toMatch(/Infinity/);
 			expect(text).not.toMatch(/NaN/);
-			expect(text).toContain('前週比較不可');
+			expect(text).toContain('比較不可（その前7日の出来高ゼロ）');
 		});
 	});
 

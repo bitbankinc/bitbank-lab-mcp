@@ -83,9 +83,9 @@ describe('buildMarketSignalHandlerText', () => {
 	it('SMA詳細ブロックが含まれる', () => {
 		const text = buildMarketSignalHandlerText(makeTextInput());
 		expect(text).toContain('【SMA（移動平均線）詳細】');
-		expect(text).toContain('短期（25日）');
-		expect(text).toContain('中期（75日）');
-		expect(text).toContain('長期（200日）');
+		expect(text).toContain('短期（SMA25）');
+		expect(text).toContain('中期（SMA75）');
+		expect(text).toContain('長期（SMA200）');
 	});
 
 	it('bullish arrangement → 上昇順・上昇トレンド構造と表示される', () => {

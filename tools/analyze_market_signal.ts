@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import { formatExactPrice, formatPercent, formatPriceJPY } from '../lib/formatter.js';
+import { barsAgoLabel, formatExactPrice, formatPercent, formatPriceJPY } from '../lib/formatter.js';
 import { lastCrossover, sma } from '../lib/indicators.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
@@ -132,7 +132,7 @@ export function buildMarketSignalText(input: BuildMarketSignalTextInput): string
 		const jpType = recentCross.type === 'golden_cross' ? 'ゴールデンクロス' : 'デッドクロス';
 		const action = recentCross.type === 'golden_cross' ? '上抜け' : '下抜け';
 		const ago = recentCross.barsAgo || 0;
-		return `直近クロス: ${ago}日前に${jpType}（25日が75日を${action}）`;
+		return `直近クロス: ${barsAgoLabel(ago, type)}に${jpType}（SMA25がSMA75を${action}）`;
 	})();
 
 	return [
@@ -144,9 +144,9 @@ export function buildMarketSignalText(input: BuildMarketSignalTextInput): string
 		`現在価格: ${priceNowStr}`,
 		'',
 		'【SMA詳細】',
-		`- 短期（25日平均）: ${sma25Line}`,
-		`- 中期（75日平均）: ${sma75Line}`,
-		`- 長期（200日平均）: ${sma200Line}`,
+		`- 短期（SMA25）: ${sma25Line}`,
+		`- 中期（SMA75）: ${sma75Line}`,
+		`- 長期（SMA200）: ${sma200Line}`,
 		`配置: ${smaArrangement === 'bearish' ? '下降順' : smaArrangement === 'bullish' ? '上昇順' : '混在'}${orderStr ? `（${orderStr}）` : ''} → トレンド: ${trendLabel}`,
 		`位置: ${positionLabel}`,
 		...(crossLine ? [crossLine] : []),
