@@ -272,14 +272,35 @@ describe('analyze_bb_snapshot', () => {
 		expect(['upper_zone', 'near_middle', 'at_upper']).toContain(position);
 	});
 
-	it('bandwidth_state: フラット相場では squeeze になる', async () => {
+	it('bandwidth_state: 幅がずっと一定なら、過去と比べて標準（50%）', async () => {
 		const rows = makeFlatOhlcvRows(400, 10_000_000);
 		mockFetch(rows);
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
 		assertOk(res);
-		// フラット相場では bandWidthPct ≈ 0 なので squeeze
+		expect(res.data.interpretation.bandwidth_state).toBe('normal');
+		expect(res.data.context.bandWidthPct_percentile).toBe(50);
+	});
+
+	it('bandwidth_state: 直近だけ振れが小さいと、幅の絶対値に依らず squeeze', async () => {
+		// 前半は ±5%（幅 ≈ 20%）、直近 30 本は ±2%（幅 ≈ 8%）。固定の区切りなら 8% は squeeze の境目だが、ここでは過去との比較で決まる
+		const rows = makeAlternatingRows(400, (i) => (i >= 370 ? 0.02 : 0.05));
+		mockFetch(rows);
+
+		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
+		assertOk(res);
 		expect(res.data.interpretation.bandwidth_state).toBe('squeeze');
+		expect(res.data.signals.some((s: string) => s.includes('Band width compressed'))).toBe(true);
+	});
+
+	it('bandwidth_state: 直近だけ振れが大きいと wide', async () => {
+		const rows = makeAlternatingRows(400, (i) => (i >= 370 ? 0.05 : 0.02));
+		mockFetch(rows);
+
+		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
+		assertOk(res);
+		expect(res.data.interpretation.bandwidth_state).toBe('wide');
+		expect(res.data.signals.some((s: string) => s.includes('high volatility phase'))).toBe(true);
 	});
 
 	it('bandwidth_state: トレンド相場では normal/expanding/wide のいずれか', async () => {
@@ -330,7 +351,7 @@ describe('analyze_bb_snapshot', () => {
 	});
 
 	it('Band width around typical levels シグナル: bandwidth_state が normal のとき付与', async () => {
-		// バンド幅 ≈ 12%（normal は 8% 超 18% 以下）
+		// 振れ幅が一定なので、幅の順位は 50%（normal）
 		const rows = makeAlternatingRows(400, () => 0.03);
 		mockFetch(rows);
 
@@ -652,13 +673,14 @@ describe('analyze_bb_snapshot', () => {
 		expect(['lower_zone', 'near_middle', 'at_lower']).toContain(position);
 	});
 
-	it('bandwidth_state: 高ボラ相場では wide または expanding になる', async () => {
+	it('bandwidth_state: 高ボラでも、ずっと同じ振れ幅なら標準（幅の絶対値では決めない）', async () => {
 		const rows = makeHighVolRows(400);
 		mockFetch(rows);
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
 		assertOk(res);
-		expect(['expanding', 'wide']).toContain(res.data.interpretation.bandwidth_state);
+		expect((res.data.bb as { bandWidthPct: number }).bandWidthPct).toBeGreaterThan(30);
+		expect(res.data.interpretation.bandwidth_state).toBe('normal');
 	});
 
 	it('above_upper_band_risk タグ: zScore > 1 のとき付与される', async () => {
@@ -888,8 +910,9 @@ describe('analyze_bb_snapshot', () => {
 			baseSummary: 'BTC/JPY summary',
 			position: 'at_upper',
 			bandwidth_state: 'wide',
+			bandWidthRank: { percentile: 97, sampleSize: 120 },
 			volatility_trend: 'increasing',
-			bandWidthPct_percentile: 95,
+			bandWidthPct_percentile: 97,
 			current_vs_avg: '+80.0%',
 			signals: ['Band width expanded (95th percentile) - high volatility phase'],
 			next_steps: {
@@ -1084,8 +1107,7 @@ describe('analyze_bb_snapshot', () => {
 		expect(res.data.interpretation.position).toBe('lower_zone');
 	});
 
-	it('year-aware mock: bandwidth_state normal (8 < bw <= 18)', async () => {
-		// 3% 交互振動 → bw ≈ 12% → normal
+	it('year-aware mock: 振れ幅が一定なら bandwidth_state は normal', async () => {
 		const base = 10_000_000;
 		const D = base * 0.03;
 		const { year2026, year2025 } = make2026And2025Rows((i) => base + (i % 2 === 0 ? D : -D), base);
@@ -1096,28 +1118,18 @@ describe('analyze_bb_snapshot', () => {
 		expect(res.data.interpretation.bandwidth_state).toBe('normal');
 	});
 
-	it('year-aware mock: bandwidth_state expanding (18 < bw <= 30)', async () => {
-		// 5% 交互振動 → bw ≈ 20% → expanding
+	it('year-aware mock: 振れ幅が 3% でも 8% でも、ずっと一定なら同じ normal（幅の水準に依らない）', async () => {
 		const base = 10_000_000;
-		const D = base * 0.05;
-		const { year2026, year2025 } = make2026And2025Rows((i) => base + (i % 2 === 0 ? D : -D), base);
-		mockFetchByYear(year2026, year2025);
+		for (const swing of [0.03, 0.08]) {
+			clearIndicatorCache();
+			const D = base * swing;
+			const { year2026, year2025 } = make2026And2025Rows((i) => base + (i % 2 === 0 ? D : -D), base);
+			mockFetchByYear(year2026, year2025);
 
-		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'default');
-		assertOk(res);
-		expect(res.data.interpretation.bandwidth_state).toBe('expanding');
-	});
-
-	it('year-aware mock: bandwidth_state wide (bw > 30)', async () => {
-		// 8% 交互振動 → bw ≈ 32% → wide
-		const base = 10_000_000;
-		const D = base * 0.08;
-		const { year2026, year2025 } = make2026And2025Rows((i) => base + (i % 2 === 0 ? D : -D), base);
-		mockFetchByYear(year2026, year2025);
-
-		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'default');
-		assertOk(res);
-		expect(res.data.interpretation.bandwidth_state).toBe('wide');
+			const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'default');
+			assertOk(res);
+			expect(res.data.interpretation.bandwidth_state).toBe('normal');
+		}
 	});
 
 	it('year-aware mock: volatility_trend increasing', async () => {
@@ -1263,8 +1275,8 @@ describe('analyze_bb_snapshot', () => {
 		expect(typeof res.data.context.current_vs_avg).toBe('string');
 	});
 
-	it('near_middle + bandwidth normal: Price consolidating + Band width around typical levels', async () => {
-		// near_middle かつ bandwidth_state=normal のときシグナルが 2 つ付く
+	it('near_middle: Price consolidating シグナルが付く', async () => {
+		// 最終本を平均値にすると直近の幅が窓の中で最も小さくなるので、幅の状態はここでは見ない（normal のシグナルは別のテストで見る）
 		const base = 10_000_000;
 		const D = base * 0.03;
 		const { year2026, year2025 } = make2026And2025Rows((i) => {
@@ -1277,8 +1289,6 @@ describe('analyze_bb_snapshot', () => {
 		assertOk(res);
 		expect(res.data.interpretation.position).toBe('near_middle');
 		expect(res.data.signals).toContain('Price consolidating near middle band');
-		expect(res.data.interpretation.bandwidth_state).toBe('normal');
-		expect(res.data.signals).toContain('Band width around typical levels');
 	});
 
 	// 親 describe の afterEach が fetch 復元 + clearIndicatorCache() を実行する。

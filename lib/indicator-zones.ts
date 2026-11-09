@@ -1,8 +1,10 @@
 import {
+	BB_PERIOD,
 	BB_STDDEV,
-	BB_WIDTH_EXPANDING_MAX_PCT,
-	BB_WIDTH_NORMAL_MAX_PCT,
-	BB_WIDTH_SQUEEZE_MAX_PCT,
+	BB_WIDTH_EXPANDING_BELOW_PCTL,
+	BB_WIDTH_NORMAL_BELOW_PCTL,
+	BB_WIDTH_RANK_WINDOW,
+	BB_WIDTH_SQUEEZE_BELOW_PCTL,
 	RSI_MIDLINE,
 	RSI_OVERBOUGHT,
 	RSI_OVERSOLD,
@@ -86,24 +88,59 @@ export function bbPositionLabel(position: BbPosition): string {
 	return BB_POSITION_LABELS[position];
 }
 
+export interface BbWidthRank {
+	// 丸める前の値。区切りはこの値で判定し、表示だけ丸める。
+	percentile: number;
+	sampleSize: number;
+}
+
+type Series = ReadonlyArray<number | null | undefined>;
+
+// 幅の水準は足の種類で大きく違う（4 時間足は数 %、週足は数十 %）ので、固定値ではなく同じ足の過去の幅と比べる（#437）。
+export function bbWidthRank(
+	upper: Series,
+	middle: Series,
+	lower: Series,
+	window: number = BB_WIDTH_RANK_WINDOW,
+): BbWidthRank | null {
+	const n = Math.min(upper.length, middle.length, lower.length);
+	const widths: number[] = [];
+	for (let i = n - 1; i >= 0 && widths.length < window; i--) {
+		const u = upper[i];
+		const m = middle[i];
+		const l = lower[i];
+		const valid = u != null && m != null && l != null && Number.isFinite(u) && Number.isFinite(l) && m > 0;
+		if (!valid) {
+			if (i === n - 1) return null;
+			continue;
+		}
+		widths.push(((u - l) / m) * 100);
+	}
+	if (widths.length < BB_PERIOD) return null;
+	const current = widths[0];
+	const below = widths.filter((w) => w < current).length;
+	const equal = widths.filter((w) => w === current).length;
+	// 同じ値は半分ずつ数える（幅が一定のとき 50%）。下回る数だけだと、一定の幅がスクイーズに化ける。
+	return { percentile: ((below + equal / 2) / widths.length) * 100, sampleSize: widths.length };
+}
+
 export type BbWidthState = 'squeeze' | 'normal' | 'expanding' | 'wide';
 
-// 幅の区切りは足の種類に依らない固定値（#431）。
-export function bbWidthState(bandWidthPct: number | null | undefined): BbWidthState | null {
-	if (bandWidthPct == null || !Number.isFinite(bandWidthPct)) return null;
-	if (bandWidthPct <= BB_WIDTH_SQUEEZE_MAX_PCT) return 'squeeze';
-	if (bandWidthPct <= BB_WIDTH_NORMAL_MAX_PCT) return 'normal';
-	if (bandWidthPct <= BB_WIDTH_EXPANDING_MAX_PCT) return 'expanding';
+export function bbWidthState(rank: BbWidthRank | null | undefined): BbWidthState | null {
+	if (rank == null || !Number.isFinite(rank.percentile)) return null;
+	if (rank.percentile < BB_WIDTH_SQUEEZE_BELOW_PCTL) return 'squeeze';
+	if (rank.percentile < BB_WIDTH_NORMAL_BELOW_PCTL) return 'normal';
+	if (rank.percentile < BB_WIDTH_EXPANDING_BELOW_PCTL) return 'expanding';
 	return 'wide';
 }
 
-const BB_WIDTH_STATE_LABELS: Record<BbWidthState, string> = {
-	squeeze: `スクイーズ（${BB_WIDTH_SQUEEZE_MAX_PCT}%以下）`,
-	normal: `標準（${BB_WIDTH_SQUEEZE_MAX_PCT}〜${BB_WIDTH_NORMAL_MAX_PCT}%）`,
-	expanding: `拡大（${BB_WIDTH_NORMAL_MAX_PCT}〜${BB_WIDTH_EXPANDING_MAX_PCT}%）`,
-	wide: `大きく拡大（${BB_WIDTH_EXPANDING_MAX_PCT}%超）`,
+const BB_WIDTH_STATE_NAMES: Record<BbWidthState, string> = {
+	squeeze: 'スクイーズ',
+	normal: '標準',
+	expanding: '拡大',
+	wide: '大きく拡大',
 };
 
-export function bbWidthStateLabel(state: BbWidthState): string {
-	return BB_WIDTH_STATE_LABELS[state];
+export function bbWidthStateLabel(state: BbWidthState, rank: BbWidthRank): string {
+	return `${BB_WIDTH_STATE_NAMES[state]}（直近${rank.sampleSize}本の幅の中で下から${Math.round(rank.percentile)}%）`;
 }

@@ -4,9 +4,11 @@ import { formatSummary } from '../lib/formatter.js';
 import { BB_STDDEV } from '../lib/indicator-config.js';
 import {
 	type BbPosition,
+	type BbWidthRank,
 	type BbWidthState,
 	bbPosition,
 	bbPositionLabel,
+	bbWidthRank,
 	bbWidthState,
 	bbWidthStateLabel,
 	bbZScore,
@@ -33,6 +35,7 @@ export interface BuildBbDefaultTextInput {
 	baseSummary: string;
 	position: BbPosition | null;
 	bandwidth_state: BbWidthState | null;
+	bandWidthRank?: BbWidthRank | null;
 	volatility_trend: string | null;
 	bandWidthPct_percentile: number | null;
 	current_vs_avg: string | null;
@@ -55,6 +58,7 @@ export function buildBbDefaultText(input: BuildBbDefaultTextInput): string {
 		baseSummary,
 		position,
 		bandwidth_state,
+		bandWidthRank = null,
 		volatility_trend,
 		bandWidthPct_percentile,
 		current_vs_avg,
@@ -72,7 +76,7 @@ export function buildBbDefaultText(input: BuildBbDefaultTextInput): string {
 			String(baseSummary),
 			'',
 			`Position: ${position ? `${position} / ${bbPositionLabel(position)}` : 'n/a'}`,
-			`Band State: ${bandwidth_state ? `${bandwidth_state} / ${bbWidthStateLabel(bandwidth_state)}` : 'n/a'}`,
+			`Band State: ${bandwidth_state && bandWidthRank ? `${bandwidth_state} / ${bbWidthStateLabel(bandwidth_state, bandWidthRank)}` : 'n/a'}`,
 			`Volatility Trend: ${volatility_trend ?? 'n/a'}`,
 			...(bandWidthPct_percentile != null
 				? [`Band Width Percentile: ${bandWidthPct_percentile}th (${current_vs_avg} vs avg)`]
@@ -131,6 +135,12 @@ export default async function analyzeBbSnapshot(
 		const zScore = bbZScore(close, mid, upper, lower);
 		let bandWidthPct: number | null = null;
 		if (upper != null && lower != null && mid != null && mid !== 0) bandWidthPct = ((upper - lower) / mid) * 100;
+		const bbSeriesForRank = (
+			indRes?.data?.indicators as { bb2_series?: { upper: number[]; middle: number[]; lower: number[] } }
+		)?.bb2_series;
+		const bandWidthRank = bbSeriesForRank
+			? bbWidthRank(bbSeriesForRank.upper, bbSeriesForRank.middle, bbSeriesForRank.lower)
+			: null;
 
 		const tags: string[] = [];
 		if (zScore != null && zScore > BB_STDDEV) tags.push('above_upper_band_risk');
@@ -172,12 +182,14 @@ export default async function analyzeBbSnapshot(
 
 		if (mode === 'default') {
 			const position = bbPosition(zScore);
-			const bandwidth_state = bbWidthState(bandWidthPct);
+			const bandwidth_state = bbWidthState(bandWidthRank);
+			// 順位は状態の判定と同じ窓（直近 BB_WIDTH_RANK_WINDOW 本）で出す。平均との差は直近 30 本のまま。
+			const rankPercentile = bandWidthRank ? Math.round(bandWidthRank.percentile) : null;
 			const context = (() => {
 				if (!timeseries || timeseries.length === 0 || bandWidthPct == null) {
 					return {
 						bandWidthPct_30d_avg: null as number | null,
-						bandWidthPct_percentile: null as number | null,
+						bandWidthPct_percentile: rankPercentile,
 						current_vs_avg: null as string | null,
 					};
 				}
@@ -187,21 +199,18 @@ export default async function analyzeBbSnapshot(
 				if (bandWidths.length === 0) {
 					return {
 						bandWidthPct_30d_avg: null as number | null,
-						bandWidthPct_percentile: null as number | null,
+						bandWidthPct_percentile: rankPercentile,
 						current_vs_avg: null as string | null,
 					};
 				}
 
 				const avg = bandWidths.reduce((a, b) => a + b, 0) / bandWidths.length;
-				const sorted = [...bandWidths].sort((a, b) => a - b);
-				const below = sorted.filter((bw) => bw < (bandWidthPct as number)).length;
-				const percentile = Math.round((below / sorted.length) * 100);
 				const diffPct = avg !== 0 ? (((bandWidthPct as number) - avg) / avg) * 100 : 0;
 				const current_vs_avg = `${diffPct > 0 ? '+' : ''}${diffPct.toFixed(1)}%`;
 
 				return {
 					bandWidthPct_30d_avg: Number(avg.toFixed(2)),
-					bandWidthPct_percentile: percentile,
+					bandWidthPct_percentile: rankPercentile,
 					current_vs_avg,
 				};
 			})();
@@ -231,18 +240,17 @@ export default async function analyzeBbSnapshot(
 			if (position === 'near_middle') signals.push('Price consolidating near middle band');
 			if (bandwidth_state === 'normal') signals.push('Band width around typical levels');
 
+			// 状態と食い違わないよう、シグナルも状態から出す。
+			if (bandWidthRank && bandwidth_state === 'squeeze') {
+				signals.push(
+					`Band width compressed (${rankPercentile}th percentile of last ${bandWidthRank.sampleSize} bars) - potential breakout setup`,
+				);
+			} else if (bandWidthRank && (bandwidth_state === 'expanding' || bandwidth_state === 'wide')) {
+				signals.push(
+					`Band width expanded (${rankPercentile}th percentile of last ${bandWidthRank.sampleSize} bars) - high volatility phase`,
+				);
+			}
 			if (context.bandWidthPct_30d_avg != null && context.current_vs_avg != null) {
-				if (context.bandWidthPct_percentile != null) {
-					if (context.bandWidthPct_percentile < 20) {
-						signals.push(
-							`Band width compressed (${context.bandWidthPct_percentile}th percentile) - potential breakout setup`,
-						);
-					} else if (context.bandWidthPct_percentile > 80) {
-						signals.push(
-							`Band width expanded (${context.bandWidthPct_percentile}th percentile) - high volatility phase`,
-						);
-					}
-				}
 				signals.push(`Band width ${context.current_vs_avg} vs 30-day average`);
 			}
 
@@ -271,6 +279,7 @@ export default async function analyzeBbSnapshot(
 				baseSummary: summaryBase,
 				position: interpretation.position,
 				bandwidth_state: interpretation.bandwidth_state,
+				bandWidthRank,
 				volatility_trend: interpretation.volatility_trend,
 				bandWidthPct_percentile: context.bandWidthPct_percentile,
 				current_vs_avg: context.current_vs_avg,

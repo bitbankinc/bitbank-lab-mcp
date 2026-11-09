@@ -7,9 +7,10 @@ export const RSI_MIDLINE = 50;
 
 export const BB_PERIOD = 20;
 export const BB_STDDEV = 2;
-export const BB_WIDTH_SQUEEZE_MAX_PCT = 8;
-export const BB_WIDTH_NORMAL_MAX_PCT = 18;
-export const BB_WIDTH_EXPANDING_MAX_PCT = 30;
+export const BB_WIDTH_RANK_WINDOW = 120;
+export const BB_WIDTH_SQUEEZE_BELOW_PCTL = 20;
+export const BB_WIDTH_NORMAL_BELOW_PCTL = 80;
+export const BB_WIDTH_EXPANDING_BELOW_PCTL = 95;
 
 export const SMA_DEFAULT_PERIOD = 25;
 

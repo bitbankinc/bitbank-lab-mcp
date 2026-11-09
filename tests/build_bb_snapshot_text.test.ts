@@ -6,6 +6,7 @@ function makeInput(overrides?: Partial<BuildBbDefaultTextInput>): BuildBbDefault
 		baseSummary: 'BTC/JPY [1day] z=0.5 bw=12.3%',
 		position: 'near_middle',
 		bandwidth_state: 'normal',
+		bandWidthRank: { percentile: 45.4, sampleSize: 120 },
 		volatility_trend: 'expanding',
 		bandWidthPct_percentile: 65,
 		current_vs_avg: 'above',
@@ -29,7 +30,7 @@ describe('buildBbDefaultText', () => {
 		const text = buildBbDefaultText(makeInput());
 		expect(text).toContain('BTC/JPY [1day] z=0.5');
 		expect(text).toContain('Position: near_middle / 中心付近（±1σ以内）');
-		expect(text).toContain('Band State: normal / 標準（8〜18%）');
+		expect(text).toContain('Band State: normal / 標準（直近120本の幅の中で下から45%）');
 	});
 
 	it('Volatility Trend が含まれる', () => {

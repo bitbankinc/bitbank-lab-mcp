@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
 	bbPosition,
 	bbPositionLabel,
+	bbWidthRank,
 	bbWidthState,
+	bbWidthStateLabel,
 	bbZScore,
 	rsiZone,
 	rsiZoneLabel,
@@ -94,20 +96,55 @@ describe('bbPosition', () => {
 	});
 });
 
-describe('bbWidthState', () => {
-	it.each([
-		[8, 'squeeze'],
-		[8.01, 'normal'],
-		[18, 'normal'],
-		[18.01, 'expanding'],
-		[30, 'expanding'],
-		[30.01, 'wide'],
-	] as const)('%s%% → %s', (pct, state) => {
-		expect(bbWidthState(pct)).toBe(state);
+describe('bbWidthRank / bbWidthState', () => {
+	const bands = (widthsPct: number[]) => ({
+		upper: widthsPct.map((w) => 100 + w / 2),
+		middle: widthsPct.map(() => 100),
+		lower: widthsPct.map((w) => 100 - w / 2),
 	});
 
-	it('幅が取れないときは squeeze にせず null', () => {
+	it('最新の幅が直近の窓の中で下から何 % かを返す（同じ値は半分ずつ数える）', () => {
+		const b = bands([...Array.from({ length: 29 }, (_, i) => i + 1), 10]);
+		const rank = bbWidthRank(b.upper, b.middle, b.lower);
+		// 30 本中、10 より小さいのが 9 本、10 と等しいのが自分を含めて 2 本
+		expect(rank?.sampleSize).toBe(30);
+		expect(rank?.percentile).toBeCloseTo(((9 + 1) / 30) * 100, 6);
+	});
+
+	it('幅がずっと一定なら 50%', () => {
+		const b = bands(Array.from({ length: 40 }, () => 8));
+		expect(bbWidthRank(b.upper, b.middle, b.lower)?.percentile).toBe(50);
+	});
+
+	it('窓は直近 window 本だけ見る', () => {
+		const b = bands([...Array.from({ length: 50 }, () => 100), ...Array.from({ length: 30 }, (_, i) => i + 1)]);
+		const rank = bbWidthRank(b.upper, b.middle, b.lower, 30);
+		expect(rank?.sampleSize).toBe(30);
+		expect(rank?.percentile).toBeCloseTo((29.5 / 30) * 100, 6);
+	});
+
+	it('最新の足が欠けているか、有効な幅が BB の期間（20 本）に満たなければ null', () => {
+		const short = bands(Array.from({ length: 19 }, () => 8));
+		expect(bbWidthRank(short.upper, short.middle, short.lower)).toBeNull();
+		const b = bands(Array.from({ length: 40 }, () => 8));
+		expect(bbWidthRank([...b.upper, null], [...b.middle, 100], [...b.lower, 99])).toBeNull();
 		expect(bbWidthState(null)).toBeNull();
-		expect(bbWidthState(Number.NaN)).toBeNull();
+	});
+
+	it.each([
+		[19.99, 'squeeze'],
+		[20, 'normal'],
+		[79.99, 'normal'],
+		[80, 'expanding'],
+		[94.99, 'expanding'],
+		[95, 'wide'],
+	] as const)('下から %s%% → %s', (percentile, state) => {
+		expect(bbWidthState({ percentile, sampleSize: 120 })).toBe(state);
+	});
+
+	it('ラベルに窓の本数と順位を入れる', () => {
+		expect(bbWidthStateLabel('squeeze', { percentile: 12.4, sampleSize: 120 })).toBe(
+			'スクイーズ（直近120本の幅の中で下から12%）',
+		);
 	});
 });
