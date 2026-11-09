@@ -383,6 +383,7 @@ export default async function getCandles(
 	let json: unknown = null;
 	let fetchWarning: string | undefined;
 	let lastRateLimit: RateLimitInfo | null = null;
+	let yearKeysFetched: number | undefined;
 
 	try {
 		if (useYearlyMultiFetch || useLegacyMultiYear) {
@@ -393,6 +394,7 @@ export default async function getCandles(
 			// 全部が下限より前なら、上流の応答（エラー）をそのまま返すために絞らない。
 			const yearKeys = inRangeYearKeys.length > 0 ? inRangeYearKeys : requestedYearKeys;
 			const skippedEarlyYears = yearKeys.length < requestedYearKeys.length;
+			yearKeysFetched = yearKeys.length;
 
 			const merged = await mergeChunks(yearKeys, (key) =>
 				fetchCandleChunk(chk.pair, type, key, { timeoutMs: CANDLE_FETCH.chunkTimeoutMs }),
@@ -699,7 +701,7 @@ export default async function getCandles(
 		if (provisional) metaExtra.provisional = true;
 		if (needsMultiYear) {
 			metaExtra.multiYear = {
-				yearsRequested: yearsNeeded,
+				yearsRequested: yearKeysFetched ?? yearsNeeded,
 				totalFetched: ohlcvs.length,
 				limitApplied: limitCheck.value,
 			};

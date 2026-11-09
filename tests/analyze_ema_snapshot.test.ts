@@ -104,7 +104,6 @@ describe('analyze_ema_snapshot', () => {
 
 	describe('独自の周期のデータ不足', () => {
 		it('足が周期より少ない周期は null にし、warnings に出す', async () => {
-			// buildCandlesOk は 40 本
 			mockedGetCandles.mockResolvedValueOnce(asMockResult(buildCandlesOk()));
 
 			const res = await analyzeEmaSnapshot('btc_jpy', '1day', 220, [5, 60]);

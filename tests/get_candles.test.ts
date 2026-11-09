@@ -494,6 +494,9 @@ describe('getCandles', () => {
 			}
 			assertOk(res);
 			expect(res.meta.warning).toContain('UTC 暦年 2010 以前は bitbank に足が無いため取得していません');
+			// 出力に残るのは data.raw._multiYear（meta.multiYear は出力スキーマに無い）。実際に取りに行った 2011〜2017 年の 7 年
+			const raw = res.data.raw as { _multiYear?: { years: number[] } };
+			expect([...(raw._multiYear?.years ?? [])].sort()).toEqual([2011, 2012, 2013, 2014, 2015, 2016, 2017]);
 		});
 
 		it('下限より前を切り詰めなかったときは注記を出さない', async () => {
