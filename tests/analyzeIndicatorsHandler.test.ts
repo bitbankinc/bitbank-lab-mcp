@@ -215,6 +215,11 @@ describe('buildIndicatorsText', () => {
 		expect(text).toContain('現在位置: 1.5σ → 中心より上（+1σ〜+2σ）');
 	});
 
+	it('位置は丸める前の σ で区切る（表示は 2 桁に丸める）', () => {
+		expect(buildIndicatorsText(baseInput({ sigmaZ: 1.996 }))).toContain('現在位置: 2σ → 中心より上（+1σ〜+2σ）');
+		expect(buildIndicatorsText(baseInput({ sigmaZ: -1.0004 }))).toContain('現在位置: -1σ → 中心より下（-1σ〜-2σ）');
+	});
+
 	it('見出しの ±2σ（バンド）に届いたら売られすぎ / 買われすぎ', () => {
 		expect(buildIndicatorsText(baseInput({ sigmaZ: -2 }))).toContain('現在位置: -2σ → 売られすぎ圏（-2σ以下）');
 		expect(buildIndicatorsText(baseInput({ sigmaZ: 2.3 }))).toContain('現在位置: 2.3σ → 買われすぎ圏（+2σ以上）');

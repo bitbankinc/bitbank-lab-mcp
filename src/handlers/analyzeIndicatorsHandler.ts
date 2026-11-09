@@ -197,7 +197,9 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	if (crossInfo) lines.push(`  ${crossInfo}`);
 	lines.push('');
 	lines.push('【ボラティリティ（ボリンジャーバンド±2σ）】');
-	lines.push(`  現在位置: ${sigmaZ != null ? `${sigmaZ}σ` : 'n/a'} → ${position ? bbPositionLabel(position) : '—'}`);
+	lines.push(
+		`  現在位置: ${sigmaZ != null ? `${Number(sigmaZ.toFixed(2))}σ` : 'n/a'} → ${position ? bbPositionLabel(position) : '—'}`,
+	);
 	lines.push(`  middle: ${formatPriceJPY(bbMid)} (${vsCurPct(bbMid)})`);
 	lines.push(`  upper:  ${formatPriceJPY(bbUp)} (${vsCurPct(bbUp)})`);
 	lines.push(
@@ -470,8 +472,8 @@ export const toolDef: ToolDefinition = {
 		const bbMid = ind.BB_middle ?? ind.BB2_middle ?? null;
 		const bbUp = ind.BB_upper ?? ind.BB2_upper ?? null;
 		const bbLo = ind.BB_lower ?? ind.BB2_lower ?? null;
-		const rawSigmaZ = bbZScore(close, bbMid, bbUp, bbLo);
-		const sigmaZ = rawSigmaZ == null ? null : Number(rawSigmaZ.toFixed(2));
+		// 丸めるのは表示だけ。丸めてから区切ると、境目の近くで analyze_bb_snapshot と位置が食い違う。
+		const sigmaZ = bbZScore(close, bbMid, bbUp, bbLo);
 		const bandWidthPct =
 			bbUp != null && bbLo != null && bbMid ? Number((((bbUp - bbLo) / bbMid) * 100).toFixed(2)) : null;
 		const macdLine = ind.MACD_line ?? null;
