@@ -61,10 +61,13 @@ describe('analyze_sma_snapshot', () => {
 		expect(parse).toThrow();
 	});
 
-	it('inputSchema: periods は正の整数のみ許可する', () => {
+	it('inputSchema: periods は 1〜365 の整数のみ許可する', () => {
 		expect(() => toolDef.inputSchema.parse({ pair: 'btc_jpy', periods: [0] })).toThrow();
 		expect(() => toolDef.inputSchema.parse({ pair: 'btc_jpy', periods: [-5] })).toThrow();
 		expect(() => toolDef.inputSchema.parse({ pair: 'btc_jpy', periods: [6, 12] })).not.toThrow();
+		expect(() => toolDef.inputSchema.parse({ pair: 'btc_jpy', periods: [365] })).not.toThrow();
+		// 取得本数は「周期・200・limit の最大 + 199」なので、limit と同じ 365 を超える周期は get_candles の上限を超えうる
+		expect(() => toolDef.inputSchema.parse({ pair: 'btc_jpy', type: '1min', periods: [9900] })).toThrow();
 	});
 
 	it('analyze_indicators が持たない周期（6 / 12）も取得した足から計算する', async () => {

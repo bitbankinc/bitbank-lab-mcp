@@ -55,7 +55,7 @@
 - `detect_patterns`：wedge にも `scoreComponents` を出す。`alternation` / `containment` を追加し、`convergence` / `touches` を wedge でも使う（いずれも optional。issue #422）。
 - `detect_patterns`：形成中の H&S と triple にも `scoreComponents` を出す（既存の軸。issue #422）。
 - `analyze_bb_snapshot`：`zScore` に description を付けた（σ 単位で、±2 が上下のバンド。issue #431）。
-- `analyze_sma_snapshot` / `analyze_mtf_sma`：`periods` を正の整数に限った。0 や負の値は入力エラーになる（これまでは値が `null` になるだけだった。issue #431）。
+- `analyze_sma_snapshot` / `analyze_mtf_sma`：`periods` を 1〜365 の整数に限った。0 や負の値はこれまで値が `null` になるだけで、`limit` の上限（365）を超える周期は取得本数が `get_candles` の上限を超えて失敗することがあった。どちらも入力エラーになる（issue #431）。
 
 ### Internal
 
