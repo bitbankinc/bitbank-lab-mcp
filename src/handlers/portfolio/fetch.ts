@@ -1,5 +1,6 @@
 import { toYearKey } from '../../../lib/calendar.js';
 import { retryAsync } from '../../../lib/http.js';
+import { rsiZone } from '../../../lib/indicator-zones.js';
 import { normalizePairCodes } from '../../../lib/pair-code.js';
 import { fetchTickerPricesMap } from '../../../lib/tickers.js';
 import analyzeIndicators from '../../../tools/analyze_indicators.js';
@@ -428,12 +429,11 @@ export async function fetchTechnical(pairs: string[]): Promise<TechnicalSummary[
 			const isBullish = trend === 'uptrend' || trend === 'strong_uptrend';
 			const isBearish = trend === 'downtrend' || trend === 'strong_downtrend';
 			let signal = 'neutral';
-			if (rsi14 != null) {
-				if (rsi14 >= 70) {
-					signal = isBullish ? 'bullish' : 'overbought';
-				} else if (rsi14 <= 30) {
-					signal = isBearish ? 'bearish' : 'oversold';
-				}
+			const zone = rsiZone(rsi14);
+			if (zone === 'overbought') {
+				signal = isBullish ? 'bullish' : 'overbought';
+			} else if (zone === 'oversold') {
+				signal = isBearish ? 'bearish' : 'oversold';
 			}
 			if (signal === 'neutral') {
 				if (isBullish) signal = 'bullish';

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+	barCountLabel,
+	barsAgoLabel,
+	barsAheadLabel,
 	formatCurrency,
 	formatCurrencyShort,
 	formatDeviation,
@@ -18,7 +21,31 @@ import {
 	formatTrendSymbol,
 	formatVolumeJPY,
 	formatYenAmount,
+	perBarLabel,
+	prevBarChangeLabel,
 } from '../../lib/formatter.js';
+
+describe('足の種類から本数の単位を付ける', () => {
+	it.each([
+		['1day', '5日前', '26日後', '7日', '/日', '前日比'],
+		['1week', '5週前', '26週後', '7週', '/週', '前週比'],
+		['1month', '5か月前', '26か月後', '7か月', '/月', '前月比'],
+		['4hour', '5本前', '26本後', '7本', '/本', '前足比'],
+		['1hour', '5本前', '26本後', '7本', '/本', '前足比'],
+		['1min', '5本前', '26本後', '7本', '/本', '前足比'],
+	])('%s', (type, ago, ahead, count, per, prev) => {
+		expect(barsAgoLabel(5, type)).toBe(ago);
+		expect(barsAheadLabel(26, type)).toBe(ahead);
+		expect(barCountLabel(7, type)).toBe(count);
+		expect(perBarLabel(type)).toBe(per);
+		expect(prevBarChangeLabel(type)).toBe(prev);
+	});
+
+	it('未知の値やプロトタイプのキー名は「本」で数える', () => {
+		expect(barsAgoLabel(3, '')).toBe('3本前');
+		expect(barsAgoLabel(3, 'constructor')).toBe('3本前');
+	});
+});
 
 describe('formatPair', () => {
 	it('アンダースコアをスラッシュに変換し大文字化する', () => {
@@ -288,5 +315,75 @@ describe('formatSummary', () => {
 	it('extra を末尾に追加する', () => {
 		const result = formatSummary({ pair: 'btc_jpy', extra: '追加情報' });
 		expect(result).toContain('追加情報');
+	});
+
+	const point = (index: number, close: number) => ({ index, date: `d${index}`, close, changePct: 1 });
+	const volumeStats = { recent7DaysAvg: 10, previous7DaysAvg: 8, last30DaysAvg: 9, changePct: 25, judgment: 'x' };
+
+	it('期間別の推移と出来高の単位は足の種類で数える（4 時間足は本）', () => {
+		const result = formatSummary({
+			pair: 'btc_jpy',
+			timeframe: '4hour',
+			totalItems: 100,
+			keyPoints: {
+				today: { index: 99, date: 'd99', close: 100 },
+				sevenDaysAgo: point(92, 90),
+				thirtyDaysAgo: point(69, 80),
+				ninetyDaysAgo: point(9, 70),
+			},
+			volumeStats,
+		});
+		expect(result).toContain('- 最新 (d99, data[99])');
+		expect(result).toContain('- 7本前 (d92, data[92])');
+		expect(result).toContain('- 30本前 (d69, data[69])');
+		expect(result).toContain('- 90本前 (d9, data[9])');
+		expect(result).toContain('- 直近7本の平均: 10 BTC/本');
+		expect(result).toContain('- その前7本の平均: 8 BTC/本');
+		expect(result).toContain('- 過去30本の平均: 9 BTC/本');
+		expect(result).not.toMatch(/日前|日間|\/日|今日/);
+	});
+
+	it('週足は週で数える', () => {
+		const result = formatSummary({
+			pair: 'btc_jpy',
+			timeframe: '1week',
+			totalItems: 40,
+			keyPoints: { today: { index: 39, date: 'd39', close: 100 }, sevenDaysAgo: point(32, 90) },
+			volumeStats,
+		});
+		expect(result).toContain('- 7週前 (d32, data[32])');
+		expect(result).toContain('- 直近7週の平均: 10 BTC/週');
+	});
+
+	it('90 本に満たないとき、最古の足には実際の本数のラベルを付け、同じ足を 2 度出さない', () => {
+		const result = formatSummary({
+			pair: 'btc_jpy',
+			timeframe: '1day',
+			totalItems: 8,
+			keyPoints: {
+				today: { index: 7, date: 'd7', close: 100 },
+				sevenDaysAgo: point(0, 90),
+				ninetyDaysAgo: point(0, 90),
+			},
+		});
+		expect(result).toContain('- 7日前 (d0, data[0])');
+		expect(result).not.toContain('90日前');
+		expect(result.match(/\(d0, data\[0\]\)/g)).toHaveLength(1);
+	});
+
+	it('最古の足が 90 本より手前で止まるときは、その本数で出す', () => {
+		const result = formatSummary({
+			pair: 'btc_jpy',
+			timeframe: '1day',
+			totalItems: 60,
+			keyPoints: {
+				today: { index: 59, date: 'd59', close: 100 },
+				sevenDaysAgo: point(52, 90),
+				thirtyDaysAgo: point(29, 80),
+				ninetyDaysAgo: point(0, 70),
+			},
+		});
+		expect(result).toContain('- 59日前 (d0, data[0])');
+		expect(result).not.toContain('90日前');
 	});
 });

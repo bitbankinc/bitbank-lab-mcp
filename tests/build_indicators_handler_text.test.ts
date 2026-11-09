@@ -13,7 +13,6 @@ function makeInput(overrides?: Partial<BuildIndicatorsTextInput>): BuildIndicato
 		trend: 'uptrend',
 		rsi: 55,
 		recentRsiFormatted: ['48.0', '50.5', '52.3', '55.0'],
-		rsiUnitLabel: '日',
 		macdLine: 10000,
 		macdSignal: 5000,
 		macdHist: 5000,
@@ -123,12 +122,12 @@ describe('buildIndicatorsText', () => {
 
 	it('RSI < 30 で売られすぎ判定', () => {
 		const text = buildIndicatorsText(makeInput({ rsi: 25 }));
-		expect(text).toContain('売られすぎ圏（反発の可能性）');
+		expect(text).toContain('売られすぎ圏（30以下）');
 	});
 
 	it('RSI >= 70 で買われすぎ判定', () => {
 		const text = buildIndicatorsText(makeInput({ rsi: 75 }));
-		expect(text).toContain('買われすぎ圏（反落の可能性）');
+		expect(text).toContain('買われすぎ圏（70以上）');
 	});
 
 	it('MACD セクション: line / signal / hist とクロス情報', () => {
@@ -196,9 +195,9 @@ describe('buildIndicatorsText', () => {
 		expect(text).toContain('中立圏');
 	});
 
-	it('Stoch %K <= 20 で売られすぎゾーン', () => {
+	it('Stoch %K <= 20 で売られすぎ圏', () => {
 		const text = buildIndicatorsText(makeInput({ stochK: 15, stochD: 20 }));
-		expect(text).toContain('売られすぎゾーン');
+		expect(text).toContain('売られすぎ圏（20以下）');
 	});
 
 	it('Stoch クロス上抜けの検出', () => {

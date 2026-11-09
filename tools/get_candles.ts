@@ -25,7 +25,7 @@ import {
 } from '../lib/candle-fetch.js';
 import { formatDateInTz, toIsoTime, toIsoWithTz } from '../lib/datetime.js';
 import { getErrorMessage } from '../lib/error.js';
-import { formatSummary } from '../lib/formatter.js';
+import { barCountLabel, formatSummary } from '../lib/formatter.js';
 import {
 	BITBANK_API_BASE,
 	DEFAULT_RETRIES,
@@ -589,7 +589,7 @@ export default async function getCandles(
 				previous7DaysAvg === 0 ? null : ((recent7DaysAvg - previous7DaysAvg) / previous7DaysAvg) * 100;
 
 			let judgment: string;
-			if (volumeChangePct === null) judgment = '前週比較不可（前7日間の出来高ゼロ）';
+			if (volumeChangePct === null) judgment = `比較不可（その前${barCountLabel(7, String(type))}の出来高ゼロ）`;
 			else if (volumeChangePct > 20) judgment = '活発になっています';
 			else if (volumeChangePct < -20) judgment = '落ち着いています';
 			else judgment = 'ほぼ変わりません';
