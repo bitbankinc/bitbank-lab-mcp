@@ -350,6 +350,11 @@ const AnalyzeBbSnapshotDataSchemaLegacy = z.object({
 	tags: z.array(z.string()),
 });
 
+const BbZScoreSchema = z
+	.number()
+	.nullable()
+	.describe('終値の中心からの距離を σ 単位で表した値。±2 が上下のバンド（中心 ± 2σ）。');
+
 const AnalyzeBbSnapshotDataSchemaStructured = z.object({
 	mode: z.enum(['default', 'extended']),
 	price: z.number().nullable(),
@@ -359,14 +364,14 @@ const AnalyzeBbSnapshotDataSchemaStructured = z.object({
 			middle: z.number().nullable(),
 			upper: z.number().nullable(),
 			lower: z.number().nullable(),
-			zScore: z.number().nullable(),
+			zScore: BbZScoreSchema,
 			bandWidthPct: z.number().nullable(),
 		}),
 		// mode=extended
 		z.object({
 			middle: z.number().nullable(),
 			bands: z.record(z.string(), z.number().nullable()).optional(),
-			zScore: z.number().nullable(),
+			zScore: BbZScoreSchema,
 			bandWidthPct: z.union([z.number().nullable(), z.record(z.string(), z.number().nullable())]),
 		}),
 	]),

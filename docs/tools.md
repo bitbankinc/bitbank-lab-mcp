@@ -46,7 +46,7 @@ API の応答をそのまま、または軽量整形して返す。指標計算�
 | ツール | 概要 |
 |--------|------|
 | `analyze_indicators` | 統合指標（SMA / EMA / RSI / BB / 一目 / MACD / Stochastic / StochRSI） |
-| `analyze_bb_snapshot` | BB の広がりと終値位置（z-score・帯幅・スクイーズ判定） |
+| `analyze_bb_snapshot` | BB の広がりと終値位置（σ 単位の z-score・帯幅・スクイーズ判定） |
 | `analyze_ichimoku_snapshot` | 一目の状態スナップショット（雲との位置関係・転換/基準線・雲の傾き・`lookback` で履歴本数を指定） |
 | `analyze_sma_snapshot` | SMA 整列/クロス分析（bullish/bearish/mixed・傾き） |
 | `analyze_ema_snapshot` | EMA 整列/クロス分析（SMA より直近価格に敏感。デフォルト期間: 12, 26, 50, 200） |
