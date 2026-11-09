@@ -4,7 +4,9 @@ import type { Candle } from '../src/schemas.js';
 import { asMockResult, assertFail, assertOk } from './_assertResult.js';
 import { requireDefined } from './helpers/assert.js';
 
-vi.mock('../tools/analyze_indicators.js', () => ({
+// 独自の周期の計算で sma を使うので、default だけを差し替えて他の export は実物を残す。
+vi.mock('../tools/analyze_indicators.js', async (importOriginal) => ({
+	...(await importOriginal<typeof import('../tools/analyze_indicators.js')>()),
 	default: vi.fn(),
 }));
 
@@ -57,6 +59,39 @@ describe('analyze_sma_snapshot', () => {
 	it('inputSchema: limit は 200 以上のみ許可する', () => {
 		const parse = () => toolDef.inputSchema.parse({ pair: 'btc_jpy', type: '1day', limit: 199 });
 		expect(parse).toThrow();
+	});
+
+	it('inputSchema: periods は正の整数のみ許可する', () => {
+		expect(() => toolDef.inputSchema.parse({ pair: 'btc_jpy', periods: [0] })).toThrow();
+		expect(() => toolDef.inputSchema.parse({ pair: 'btc_jpy', periods: [-5] })).toThrow();
+		expect(() => toolDef.inputSchema.parse({ pair: 'btc_jpy', periods: [6, 12] })).not.toThrow();
+	});
+
+	it('analyze_indicators が持たない周期（6 / 12）も取得した足から計算する', async () => {
+		// buildIndicatorsOk の終値は 39 本が 120、最新の 1 本だけ 140
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(buildIndicatorsOk()));
+
+		const res = await analyzeSmaSnapshot('btc_jpy', '1day', 220, [6, 12, 20]);
+
+		assertOk(res);
+		expect(res.data.sma.SMA_6).toBeCloseTo((5 * 120 + 140) / 6, 2);
+		expect(res.data.sma.SMA_12).toBeCloseTo((11 * 120 + 140) / 12, 2);
+		expect(res.data.sma.SMA_20).toBe(120);
+		expect(res.data.smas?.['6']?.slope).toBe('rising');
+		expect(res.summary).not.toMatch(/SMA\(6\): n\/a/);
+		expect(res.data.crosses.map((c) => `${c.a}/${c.b}`)).toContain('SMA_6/SMA_12');
+		expect(res.meta.warnings).toBeUndefined();
+	});
+
+	it('足が周期より少ない独自の周期は null にし、warnings に出す', async () => {
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(buildIndicatorsOk()));
+
+		const res = await analyzeSmaSnapshot('btc_jpy', '1day', 220, [6, 60]);
+
+		assertOk(res);
+		expect(res.data.sma.SMA_60).toBeNull();
+		expect(res.meta.warnings).toEqual(['SMA_60: データ不足']);
+		expect(res.summary).toContain('⚠️ SMA_60: データ不足');
 	});
 
 	it('analyze_indicators が失敗を返した場合は ok: false を返す', async () => {

@@ -407,7 +407,13 @@ export const AnalyzeBbSnapshotOutputSchema = toolResultSchema(
 export const AnalyzeSmaSnapshotInputSchema = BasePairInputSchema.extend({
 	type: CandleTypeEnum.optional().default('1day'),
 	limit: z.number().int().min(200).max(365).optional().default(220),
-	periods: z.array(z.number().int()).optional().default([25, 75, 200]),
+	periods: z
+		.array(z.number().int().positive())
+		.optional()
+		.default([25, 75, 200])
+		.describe(
+			'SMA の周期（本数）。どの周期も取得した足から計算する。足が周期より少ないと値は null になり warnings に出る。',
+		),
 });
 
 export const AnalyzeSmaSnapshotDataSchemaOut = z
@@ -582,7 +588,7 @@ export const AnalyzeStochSnapshotOutputSchema = toolResultSchema(
 
 export const AnalyzeMtfSmaInputSchema = BasePairInputSchema.extend({
 	timeframes: z.array(CandleTypeEnum).min(1).optional().default(['1hour', '4hour', '1day']),
-	periods: z.array(z.number().int()).optional().default([25, 75, 200]),
+	periods: z.array(z.number().int().positive()).optional().default([25, 75, 200]),
 });
 
 const MtfSmaPerTimeframeSchema = z
