@@ -459,6 +459,53 @@ describe('getCandles', () => {
 			}
 		});
 
+		// 要求された暦年の月足 12 本を返す。2010 年以前は上流と同じく success:0。
+		const buildMonthlyByYearMock = () =>
+			vi.fn().mockImplementation(async (url: unknown) => {
+				const year = Number(String(url).split('/').at(-1));
+				const ohlcv = Array.from({ length: 12 }, (_, m) => [
+					'100',
+					'110',
+					'90',
+					'105',
+					'1.0',
+					String(Date.UTC(year, m, 1)),
+				]);
+				return {
+					ok: true,
+					status: 200,
+					statusText: 'OK',
+					json: async () =>
+						year >= 2011 ? { success: 1, data: { candlestick: [{ ohlcv }] } } : { success: 0, data: { code: 10000 } },
+				};
+			});
+
+		it('上流に足が無い 2010 年以前の暦年は取りに行かず、切り詰めたことを注記する', async () => {
+			const fetchMock = buildMonthlyByYearMock();
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			// 2017 年を起点に 420 本 = 35 年ぶん遡ると 1983 年まで届く
+			const res = await getCandles('btc_jpy', '1month', '2017', 420);
+
+			const calledUrls = fetchMock.mock.calls.map((call) => String(call[0]));
+			expect(calledUrls.some((u) => u.endsWith('/btc_jpy/candlestick/1month/2011'))).toBe(true);
+			for (let y = 1983; y <= 2010; y++) {
+				expect(calledUrls.some((u) => u.endsWith(`/btc_jpy/candlestick/1month/${y}`))).toBe(false);
+			}
+			assertOk(res);
+			expect(res.meta.warning).toContain('UTC 暦年 2010 以前は bitbank に足が無いため取得していません');
+		});
+
+		it('下限より前を切り詰めなかったときは注記を出さない', async () => {
+			const fetchMock = buildMonthlyByYearMock();
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			const res = await getCandles('btc_jpy', '1month', '2017', 24);
+
+			assertOk(res);
+			expect(res.meta.warning ?? '').not.toContain('bitbank に足が無いため');
+		});
+
 		it('date 未指定時は現在年を起点に過去年を取得する（従来挙動）', async () => {
 			const fetchMock = buildSuccessMock();
 			globalThis.fetch = fetchMock as unknown as typeof fetch;

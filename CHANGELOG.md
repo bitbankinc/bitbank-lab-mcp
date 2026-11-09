@@ -37,6 +37,7 @@
 - `analyze_market_signal`：RSI のタグ `oversold_bias` / `overbought_risk` を 35 未満 / 65 超で付けていた。本文の判定と同じ 30 以下 / 70 以上で付ける（issue #431）。
 - `analyze_sma_snapshot` / `analyze_mtf_sma`：`periods` に 5 / 20 / 25 / 50 / 75 / 200 以外の周期（例：6・12）を指定すると、足が足りていても値が `null`（n/a）になっていた。`analyze_indicators` が計算する SMA がこの 6 つだけで、それ以外は黙って捨てていた。どの周期も取得した足から計算する。足が周期より少ない周期は、従来どおり `null` にしたうえで `meta.warnings` に「SMA_N: データ不足」と出す（issue #431）。
 - `analyze_ema_snapshot`：独自の周期（12 / 26 / 50 / 200 以外）で足が周期より少ないとき、値が `null` になるだけで警告が出なかった。`meta.warnings` に「EMA_N: データ不足」と出す（`analyze_sma_snapshot` と同じ。issue #440）。
+- `get_candles`：年単位で取る足（4hour〜1month）で、`limit` に合わせて上流に足の無い 2010 年以前の暦年まで並列に取りに行っていた（月足で `limit` 420 なら 19 年分の空振り）。上流で最も古い足（btc_jpy の 2011 年）より前は取得しない。切り詰めたときは `meta.warning` に「UTC 暦年 2010 以前は bitbank に足が無いため取得していません」と 1 行で出す（これまでは空の年を全部並べていた。issue #439）。
 
 ### Schema (breaking)
 

@@ -59,6 +59,9 @@ const FETCH_CHUNK_TZ = 'UTC';
 
 const YEARLY_TYPES: Set<string> = new Set(['4hour', '8hour', '12hour', '1day', '1week', '1month']);
 
+// 上流で最も古い足は btc_jpy の 2011 年。それより前の暦年 chunk は success:0 を返すだけなので取りに行かない（#439）。
+const EARLIEST_CANDLE_YEAR = 2011;
+
 const DAILY_TYPES: Set<string> = new Set(['1min', '5min', '15min', '30min', '1hour']);
 
 const BARS_PER_YEAR: Record<string, number> = {
@@ -383,9 +386,13 @@ export default async function getCandles(
 
 	try {
 		if (useYearlyMultiFetch || useLegacyMultiYear) {
-			const yearKeys = yearlyTzWindowActive
+			const requestedYearKeys = yearlyTzWindowActive
 				? multiYearUtcKeys
 				: Array.from({ length: yearsNeeded }, (_, i) => String(anchorYear - i));
+			const inRangeYearKeys = requestedYearKeys.filter((key) => Number(key) >= EARLIEST_CANDLE_YEAR);
+			// 全部が下限より前なら、上流の応答（エラー）をそのまま返すために絞らない。
+			const yearKeys = inRangeYearKeys.length > 0 ? inRangeYearKeys : requestedYearKeys;
+			const skippedEarlyYears = yearKeys.length < requestedYearKeys.length;
 
 			const merged = await mergeChunks(yearKeys, (key) =>
 				fetchCandleChunk(chk.pair, type, key, { timeoutMs: CANDLE_FETCH.chunkTimeoutMs }),
@@ -398,7 +405,10 @@ export default async function getCandles(
 				pendingSuffix: '',
 			});
 			if (!outcome.ok) return outcome;
-			fetchWarning = outcome.warning;
+			const skippedNote = skippedEarlyYears
+				? `ℹ️ UTC 暦年 ${EARLIEST_CANDLE_YEAR - 1} 以前は bitbank に足が無いため取得していません。取得できた期間のみで応答しています。`
+				: undefined;
+			fetchWarning = [outcome.warning, skippedNote].filter(Boolean).join('\n') || undefined;
 
 			ohlcvs = merged.rows;
 			const years = yearKeys.map(Number);
