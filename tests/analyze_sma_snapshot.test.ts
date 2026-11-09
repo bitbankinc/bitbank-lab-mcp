@@ -66,6 +66,7 @@ describe('analyze_sma_snapshot', () => {
 		expect(() => toolDef.inputSchema.parse({ pair: 'btc_jpy', periods: [-5] })).toThrow();
 		expect(() => toolDef.inputSchema.parse({ pair: 'btc_jpy', periods: [6, 12] })).not.toThrow();
 		expect(() => toolDef.inputSchema.parse({ pair: 'btc_jpy', periods: [365] })).not.toThrow();
+		expect(() => toolDef.inputSchema.parse({ pair: 'btc_jpy', periods: [366] })).toThrow();
 		// 取得本数は「周期・200・limit の最大 + 199」なので、limit と同じ 365 を超える周期は get_candles の上限を超えうる
 		expect(() => toolDef.inputSchema.parse({ pair: 'btc_jpy', type: '1min', periods: [9900] })).toThrow();
 	});
