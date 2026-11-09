@@ -1,6 +1,16 @@
 import type { z } from 'zod';
 import { calendarDateFromIso, nowIso } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
+import { BB_STDDEV } from '../lib/indicator-config.js';
+import {
+	type BbPosition,
+	type BbWidthState,
+	bbPosition,
+	bbPositionLabel,
+	bbWidthState,
+	bbWidthStateLabel,
+	bbZScore,
+} from '../lib/indicator-zones.js';
 import { isLatestBarProvisional, prependProvisionalNote } from '../lib/provisional-bar.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
@@ -21,8 +31,8 @@ export interface BbTimeseriesEntry {
 
 export interface BuildBbDefaultTextInput {
 	baseSummary: string;
-	position: string | null;
-	bandwidth_state: string | null;
+	position: BbPosition | null;
+	bandwidth_state: BbWidthState | null;
 	volatility_trend: string | null;
 	bandWidthPct_percentile: number | null;
 	current_vs_avg: string | null;
@@ -61,8 +71,8 @@ export function buildBbDefaultText(input: BuildBbDefaultTextInput): string {
 		[
 			String(baseSummary),
 			'',
-			`Position: ${position ?? 'n/a'}`,
-			`Band State: ${bandwidth_state ?? 'n/a'}`,
+			`Position: ${position ? `${position} / ${bbPositionLabel(position)}` : 'n/a'}`,
+			`Band State: ${bandwidth_state ? `${bandwidth_state} / ${bbWidthStateLabel(bandwidth_state)}` : 'n/a'}`,
 			`Volatility Trend: ${volatility_trend ?? 'n/a'}`,
 			...(bandWidthPct_percentile != null
 				? [`Band Width Percentile: ${bandWidthPct_percentile}th (${current_vs_avg} vs avg)`]
@@ -76,11 +86,11 @@ export function buildBbDefaultText(input: BuildBbDefaultTextInput): string {
 			`- ${next_steps.if_need_visualization}`,
 			'',
 			'📊 数値データ:',
-			`BB middle:${mid} upper:${upper} lower:${lower} zScore:${zScore?.toFixed(3)} bw:${bandWidthPct?.toFixed(2)}%`,
+			`BB middle:${mid} upper:${upper} lower:${lower} zScore:${zScore != null ? `${zScore.toFixed(3)}σ` : 'n/a'} bw:${bandWidthPct?.toFixed(2)}%`,
 			...(timeseries
 				? [
 						'',
-						`📋 直近${timeseries.length}本のBB推移:`,
+						`📋 直近${timeseries.length}本のBB推移（z は σ 単位）:`,
 						...timeseries.map(
 							(t) => `${calendarDateFromIso(t.time) ?? t.time.slice(0, 10)} z:${t.zScore} bw:${t.bandWidthPct}%`,
 						),
@@ -118,17 +128,13 @@ export default async function analyzeBbSnapshot(
 		const upper = indRes.data.indicators.BB2_upper ?? indRes.data.indicators.BB_upper ?? null;
 		const lower = indRes.data.indicators.BB2_lower ?? indRes.data.indicators.BB_lower ?? null;
 
-		let zScore: number | null = null;
-		if (close != null && mid != null && upper != null && lower != null) {
-			const halfWidth = (upper - lower) / 2;
-			if (halfWidth > 0) zScore = (close - mid) / halfWidth;
-		}
+		const zScore = bbZScore(close, mid, upper, lower);
 		let bandWidthPct: number | null = null;
 		if (upper != null && lower != null && mid != null && mid !== 0) bandWidthPct = ((upper - lower) / mid) * 100;
 
 		const tags: string[] = [];
-		if (zScore != null && zScore > 1) tags.push('above_upper_band_risk');
-		if (zScore != null && zScore < -1) tags.push('below_lower_band_risk');
+		if (zScore != null && zScore > BB_STDDEV) tags.push('above_upper_band_risk');
+		if (zScore != null && zScore < -BB_STDDEV) tags.push('below_lower_band_risk');
 
 		const summaryBase = formatSummary({
 			pair: chk.pair,
@@ -150,9 +156,7 @@ export default async function analyzeBbSnapshot(
 					const m = bbSeries.middle[idx];
 					const u = bbSeries.upper[idx];
 					const l = bbSeries.lower[idx];
-					const c = candles[idx]?.close;
-					const half = (u - l) / 2;
-					const z = m != null && half > 0 ? (c - m) / half : null;
+					const z = bbZScore(candles[idx]?.close, m, u, l);
 					const bw = m ? ((u - l) / m) * 100 : null;
 					arr.push({
 						time: t,
@@ -167,20 +171,8 @@ export default async function analyzeBbSnapshot(
 		})();
 
 		if (mode === 'default') {
-			const position =
-				zScore == null
-					? null
-					: Math.abs(zScore) < 0.3
-						? 'near_middle'
-						: zScore >= 1.8
-							? 'at_upper'
-							: zScore <= -1.8
-								? 'at_lower'
-								: zScore > 0
-									? 'upper_zone'
-									: 'lower_zone';
-			const bw = bandWidthPct ?? 0;
-			const bandwidth_state = bw <= 8 ? 'squeeze' : bw <= 18 ? 'normal' : bw <= 30 ? 'expanding' : 'wide';
+			const position = bbPosition(zScore);
+			const bandwidth_state = bbWidthState(bandWidthPct);
 			const context = (() => {
 				if (!timeseries || timeseries.length === 0 || bandWidthPct == null) {
 					return {
@@ -383,7 +375,7 @@ export default async function analyzeBbSnapshot(
 
 export const toolDef: ToolDefinition = {
 	name: 'analyze_bb_snapshot',
-	description: `[Bollinger Bands / BB / Squeeze] ボリンジャーバンド（BB / squeeze / bandwidth / zScore）の数値スナップショット。軽量・BB特化。
+	description: `[Bollinger Bands / BB / Squeeze] ボリンジャーバンド（BB / squeeze / bandwidth / zScore）の数値スナップショット。軽量・BB特化。zScore は σ 単位（±2 が上下のバンド）。
 
 mode=default: ±2σ帯の基本情報 / mode=extended: ±1σ/±2σ/±3σの詳細分析。
 

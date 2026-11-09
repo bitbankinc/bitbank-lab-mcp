@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import { barsAgoLabel, formatExactPrice, formatPercent, formatPriceJPY } from '../lib/formatter.js';
+import { rsiZone } from '../lib/indicator-zones.js';
 import { lastCrossover, sma } from '../lib/indicators.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
@@ -338,8 +339,8 @@ export default async function analyzeMarketSignal(pair: string = 'btc_jpy', opts
 		if (buyPressure > 0.2) tags.push('buy_pressure');
 		if (cvdTrend > 0.2) tags.push('positive_cvd');
 		if (volatilityFactor > 0.2) tags.push('low_vol');
-		if (rsi != null && rsi < 35) tags.push('oversold_bias');
-		if (rsi != null && rsi > 65) tags.push('overbought_risk');
+		if (rsiZone(rsi) === 'oversold') tags.push('oversold_bias');
+		if (rsiZone(rsi) === 'overbought') tags.push('overbought_risk');
 
 		function calculateConfidence(
 			contributions: { buyPressure: number; cvdTrend: number; momentum: number; volatility: number; smaTrend: number },

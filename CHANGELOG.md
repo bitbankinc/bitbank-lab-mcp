@@ -33,6 +33,8 @@
 - `get_margin_status` / `get_margin_positions` / `get_margin_trade_history` と `analyze_my_portfolio` の建玉の行で、金額が「¥100,000 円」のように通貨記号を重ねて出ていた。金額は `formatYenAmount` で「100,000円」の形に揃えた（マイナスの損益も「-5,000円」になる。円未満は四捨五入）。
 - `analyze_indicators` / `analyze_market_signal` / `analyze_ichimoku_snapshot` / `get_candles`：週足・月足・時間足でも「5日前」「26日後の雲」「直近7日間の平均 … /日」のように日で数えていた。日足は「日」、週足は「週」、月足は「か月」、それ以外の足は「本」で数える。移動平均線は「25日線」ではなく「SMA25」と書く。前の足との比較は、時間足・分足では「前足比」にした（4 時間足でも「前時間比」と出ていた）。`get_candles` の「今日」は「最新」に、一目均衡表の「今日の雲」は「現在の雲」にした。`get_candles` で本数が 90 本に満たないとき「90日前」と書いていた最古の足には、実際の本数を付ける。`volumeStats.judgment` の「前週比較不可（前7日間の出来高ゼロ）」は「比較不可（その前7日の出来高ゼロ）」（単位は足の種類による）に変わる（issue #431）。
 - RSI の判定の区切りが、ツールや欄ごとに違っていた。`analyze_indicators` は同じ出力の中で、RSI 37 を総合判定では「中立圏」、モメンタム欄では「弱め（反発余地）」と書いていた。`analyze_market_signal` は 30・70 ちょうどを中立圏にしていた。どちらも、30 以下 = 売られすぎ圏、50 未満 = 中立圏（50未満）、50 以上 = 中立圏（50以上）、70 以上 = 買われすぎ圏 に揃えた。「反発の可能性」「反落の可能性」「反発余地」のような先の値動きを示す言葉は外した。ストキャスティクスは、`analyze_stoch_snapshot` が 80 以上・20 以下で判定しながら「(>80)」「(<20)」と出していたので「買われすぎ圏（80以上）」「売られすぎ圏（20以下）」に直し、`analyze_indicators` にだけあった 10 以下・90 以上の「強い」段を外した（issue #431）。
+- `analyze_indicators`：ボリンジャーバンドの見出しは「±2σ」なのに、±1σ で「売られすぎ / 買われすぎ」と判定していた。±2σ（上下のバンド）に届いたら売られすぎ圏 / 買われすぎ圏、±1σ〜±2σ は中心より上 / 下、±1σ 以内は中心付近と出す。BB 幅の状態の区切り（8% 未満スクイーズ / 20% 超エクスパンション）が `analyze_bb_snapshot`（8 / 18 / 30%）と違っていたので、`analyze_bb_snapshot` の 4 段に揃えた（issue #431）。
+- `analyze_market_signal`：RSI のタグ `oversold_bias` / `overbought_risk` を 35 未満 / 65 超で付けていた。本文の判定と同じ 30 以下 / 70 以上で付ける（issue #431）。
 
 ### Schema (breaking)
 
@@ -40,6 +42,7 @@
 - 移行期間を置いていた旧い `view` の値を削除した。渡すと入力エラーになる。`get_candles` の `items`（→ `view=full` + `format=json`）、`get_transactions` の `summary`（→ `view=full`）と `items`（→ `view=full` + `format=json`）、`get_flow_metrics` の `compact`（→ `view=full` + `nonZeroOnly=true`）と `buckets`（→ `view=detailed`）。削除予定は 0.4.0 だったが、期日を過ぎても残っていた。
 - `analyze_my_portfolio`：出力から別名フィールドを削除した。`account_pnl` / `yearly_account_pnl` / `monthly_account_pnl` の `margin_interest` / `margin_fee`（→ `margin_interest_cost` / `margin_fee_cost`）と、`yearly_realized_pnl` / `monthly_realized_pnl` の `priced_deposit_count` / `unpriced_deposit_count`（→ `priced_deposit_count_all_time` / `unpriced_deposit_count_all_time`）。`holdings[]` の `priced_deposit_count` / `unpriced_deposit_count` は別名ではないので残している。
 - `detect_patterns`：`scoreComponents` から `symmetry` と `duration` を削除した。double と H&S の水準の揃い方は、triple と同じ `levelMargin`（`1 − 平均 relDev ÷ strict の許容幅`）で出す。`symmetry`（`1 − relDev`）とは物差しが違い、値は小さくなる（issue #422）。
+- `analyze_bb_snapshot`：`zScore`（`data.bb.zScore`、本文と時系列の z）を σ 単位にした。これまではバンドの半幅（= 2σ）を 1 とする単位で、同じ価格でも `analyze_indicators` の σ の半分の値になっていた（+2σ のバンド上で 1.0 → 2.0）。`interpretation.position` の区切りも σ にした。`at_upper` / `at_lower` は ±1.8（約 ±3.6σ。ほぼ出なかった）から ±2σ（バンドに届いたら）に、`near_middle` は ±0.3（約 ±0.6σ）から ±1σ 以内にした。extended の `position_analysis.current_zone` は値を σ と見なして区切っていたので、`within_1σ` が実際には ±2σ 以内を指していた。タグ `above_upper_band_risk` / `below_lower_band_risk`（バンドの外）は意味を変えず、σ 単位の ±2 で付ける。`bandwidth_state` は、幅が取れないときに `squeeze` になっていたので `null` にした（issue #431）。
 
 ### Schema
 
@@ -50,6 +53,7 @@
 - `detect_patterns`：triangle・flag・pennant にも `scoreComponents` を出す。`lineFit` / `convergence` / `touches` / `slopeSymmetry` / `flatness` / `pole` / `parallelism` を追加（いずれも optional。issue #422）。
 - `detect_patterns`：wedge にも `scoreComponents` を出す。`alternation` / `containment` を追加し、`convergence` / `touches` を wedge でも使う（いずれも optional。issue #422）。
 - `detect_patterns`：形成中の H&S と triple にも `scoreComponents` を出す（既存の軸。issue #422）。
+- `analyze_bb_snapshot`：`zScore` に description を付けた（σ 単位で、±2 が上下のバンド。issue #431）。
 
 ### Internal
 
@@ -58,6 +62,7 @@
 - `tools/patterns/detect_hs.ts`：H&S の上下 × strict / relaxed で 4 つあった判定を、側を引数に取る形にまとめた（issue #412）。検出結果と debug の候補は変えていない。
 - 足の種類から本数の単位を付ける関数を `lib/formatter.ts` に、RSI とストキャスティクスの判定の区切りを `lib/indicator-zones.ts` に置き、各ツールから使う（issue #431）。
 - Security Audit の gitleaks ジョブで、本体のダウンロードが 5xx を返すと、エラーページを保存してチェックサム不一致で落ちていた。`curl` に `-f` と `--retry 5 --retry-all-errors` を付け、一時的な 5xx は再試行し、それでも取れなければ HTTP エラーとして落ちるようにした。
+- BB の σ への換算（`bbZScore`）と、位置・幅の区切りを `lib/indicator-zones.ts` に置き、`analyze_indicators` と `analyze_bb_snapshot` から使う（issue #431）。
 
 ## [0.6.0] - 2026-11-04
 

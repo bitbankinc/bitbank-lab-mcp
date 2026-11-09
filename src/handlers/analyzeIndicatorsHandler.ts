@@ -12,7 +12,16 @@ import {
 	prevBarChangeLabel,
 } from '../../lib/formatter.js';
 import { ICHIMOKU_SHIFT, RSI_MIDLINE } from '../../lib/indicator-config.js';
-import { rsiZoneLabel, stochZone, stochZoneLabel } from '../../lib/indicator-zones.js';
+import {
+	bbPosition,
+	bbPositionLabel,
+	bbWidthState,
+	bbWidthStateLabel,
+	bbZScore,
+	rsiZoneLabel,
+	stochZone,
+	stochZoneLabel,
+} from '../../lib/indicator-zones.js';
 import { currentCloudSpans, lastCrossover } from '../../lib/indicators.js';
 import { EPSILON } from '../../lib/math.js';
 import { prependProvisionalNote } from '../../lib/provisional-bar.js';
@@ -150,12 +159,13 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	const trendText =
 		trend === 'strong_downtrend' ? '強い下降トレンド ⚠️' : trend === 'uptrend' ? '上昇トレンド' : '中立/レンジ';
 	const rsiLabel = rsiZoneLabel(rsi) ?? '—';
-	const bwState =
-		bandWidthPct == null ? '—' : bandWidthPct < 8 ? 'スクイーズ' : bandWidthPct > 20 ? 'エクスパンション' : '標準';
+	const widthState = bbWidthState(bandWidthPct);
+	const bwState = widthState ? bbWidthStateLabel(widthState) : '—';
+	const position = bbPosition(sigmaZ);
 	lines.push(`  トレンド: ${trendText}`);
 	lines.push(`  勢い: RSI=${rsi ?? 'n/a'} → ${rsiLabel}`);
 	lines.push(
-		`  リスク: BB幅=${bandWidthPct != null ? `${bandWidthPct}%` : 'n/a'} → ${bwState}${bwTrend ? `（${bwTrend}）` : ''}`,
+		`  リスク: BB幅=${bandWidthPct != null ? `${Number(bandWidthPct.toFixed(2))}%` : 'n/a'} → ${bwState}${bwTrend ? `（${bwTrend}）` : ''}`,
 	);
 	lines.push('');
 	lines.push('【モメンタム】');
@@ -188,14 +198,14 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	lines.push('');
 	lines.push('【ボラティリティ（ボリンジャーバンド±2σ）】');
 	lines.push(
-		`  現在位置: ${sigmaZ != null ? `${sigmaZ}σ` : 'n/a'} → ${sigmaZ != null ? (sigmaZ <= -1 ? '売られすぎ' : sigmaZ >= 1 ? '買われすぎ' : '中立') : '—'}`,
+		`  現在位置: ${sigmaZ != null ? `${Number(sigmaZ.toFixed(2))}σ` : 'n/a'} → ${position ? bbPositionLabel(position) : '—'}`,
 	);
 	lines.push(`  middle: ${formatPriceJPY(bbMid)} (${vsCurPct(bbMid)})`);
 	lines.push(`  upper:  ${formatPriceJPY(bbUp)} (${vsCurPct(bbUp)})`);
 	lines.push(
 		`  lower:  ${formatPriceJPY(bbLo)} (${vsCurPct(bbLo)})${bbLo != null && close != null && Number(bbLo) < Number(close) ? '' : ' ← 現在価格に近い'}`,
 	);
-	if (bandWidthPct != null) lines.push(`  バンド幅: ${bandWidthPct}% → ${bwTrend ?? '—'}`);
+	if (bandWidthPct != null) lines.push(`  バンド幅: ${Number(bandWidthPct.toFixed(2))}% → ${bwTrend ?? '—'}`);
 	if (sigmaHistory?.[0] && sigmaHistory[1]) {
 		const ago5 = sigmaHistory[0]?.z;
 		const curZ = sigmaHistory[1]?.z;
@@ -362,21 +372,17 @@ function calcBandWidthTrend(bbSeries: {
 
 function calcSigmaHistory(
 	candles: Array<{ close?: number }>,
-	bbSeries: { upper: number[] | null; middle: number[] | null },
+	bbSeries: { upper: number[] | null; middle: number[] | null; lower: number[] | null },
 ): Array<{ off: number; z: number } | null> | null {
 	try {
-		if (!bbSeries.upper || !bbSeries.middle) return null;
-		const L = Math.min(candles.length, bbSeries.upper.length, bbSeries.middle.length);
+		if (!bbSeries.upper || !bbSeries.middle || !bbSeries.lower) return null;
+		const L = Math.min(candles.length, bbSeries.upper.length, bbSeries.middle.length, bbSeries.lower.length);
 		if (L < 6) return null;
-		const { upper, middle } = bbSeries;
+		const { upper, middle, lower } = bbSeries;
 		const idxs = [-6, -1];
 		const vals = idxs.map((off) => {
-			const c = Number(candles.at(off)?.close ?? NaN);
-			const m = Number(middle.at(off) ?? NaN);
-			const u = Number(upper.at(off) ?? NaN);
-			if (![c, m, u].every(Number.isFinite)) return null;
-			const z = Number(((2 * (c - m)) / Math.max(EPSILON, u - m)).toFixed(2));
-			return { off, z };
+			const z = bbZScore(candles.at(off)?.close, middle.at(off), upper.at(off), lower.at(off));
+			return z == null ? null : { off, z: Number(z.toFixed(2)) };
 		});
 		return vals;
 	} catch {
@@ -466,12 +472,9 @@ export const toolDef: ToolDefinition = {
 		const bbMid = ind.BB_middle ?? ind.BB2_middle ?? null;
 		const bbUp = ind.BB_upper ?? ind.BB2_upper ?? null;
 		const bbLo = ind.BB_lower ?? ind.BB2_lower ?? null;
-		const sigmaZ =
-			close != null && bbMid != null && bbUp != null && bbUp - bbMid !== 0
-				? Number(((2 * (close - bbMid)) / (bbUp - bbMid)).toFixed(2))
-				: null;
-		const bandWidthPct =
-			bbUp != null && bbLo != null && bbMid ? Number((((bbUp - bbLo) / bbMid) * 100).toFixed(2)) : null;
+		// 丸めるのは表示だけ。丸めてから区切ると、境目の近くで analyze_bb_snapshot と位置・幅の状態が食い違う。
+		const sigmaZ = bbZScore(close, bbMid, bbUp, bbLo);
+		const bandWidthPct = bbUp != null && bbLo != null && bbMid ? ((bbUp - bbLo) / bbMid) * 100 : null;
 		const macdLine = ind.MACD_line ?? null;
 		const macdSignal = ind.MACD_signal ?? null;
 		const macdHist = ind.MACD_hist ?? null;
