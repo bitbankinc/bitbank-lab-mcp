@@ -569,6 +569,34 @@ describe('toolDef.handler', () => {
 		};
 	}
 
+	it('BB の位置と幅の状態は、丸める前の値で区切ってから表示だけ丸める', async () => {
+		// 最新の終値 10,140,000 に対し、z = 1.996σ（表示は 2σ）・幅 8.004%（表示は 8%）になる BB を組む
+		const close = 10_140_000;
+		const widthRatio = 0.08004;
+		const middle = close / (1 + (1.996 / 4) * widthRatio);
+		const halfWidth = (middle * widthRatio) / 2;
+		const upper = middle + halfWidth;
+		const lower = middle - halfWidth;
+		mockedAnalyze.mockResolvedValueOnce(
+			mockResult({
+				BB_middle: middle,
+				BB_upper: upper,
+				BB_lower: lower,
+				bb2_series: {
+					upper: Array.from({ length: 20 }, () => upper),
+					middle: Array.from({ length: 20 }, () => middle),
+					lower: Array.from({ length: 20 }, () => lower),
+				},
+			}) as never,
+		);
+		const res = (await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 200 })) as {
+			content: Array<{ text: string }>;
+		};
+		const text = res.content[0].text;
+		expect(text).toContain('現在位置: 2σ → 中心より上（+1σ〜+2σ）');
+		expect(text).toContain('BB幅=8% → 標準（8〜18%）');
+	});
+
 	it('正常データでテキスト content を返す', async () => {
 		mockedAnalyze.mockResolvedValueOnce(mockResult() as never);
 		const res = (await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 200 })) as {

@@ -165,7 +165,7 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	lines.push(`  トレンド: ${trendText}`);
 	lines.push(`  勢い: RSI=${rsi ?? 'n/a'} → ${rsiLabel}`);
 	lines.push(
-		`  リスク: BB幅=${bandWidthPct != null ? `${bandWidthPct}%` : 'n/a'} → ${bwState}${bwTrend ? `（${bwTrend}）` : ''}`,
+		`  リスク: BB幅=${bandWidthPct != null ? `${Number(bandWidthPct.toFixed(2))}%` : 'n/a'} → ${bwState}${bwTrend ? `（${bwTrend}）` : ''}`,
 	);
 	lines.push('');
 	lines.push('【モメンタム】');
@@ -205,7 +205,7 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	lines.push(
 		`  lower:  ${formatPriceJPY(bbLo)} (${vsCurPct(bbLo)})${bbLo != null && close != null && Number(bbLo) < Number(close) ? '' : ' ← 現在価格に近い'}`,
 	);
-	if (bandWidthPct != null) lines.push(`  バンド幅: ${bandWidthPct}% → ${bwTrend ?? '—'}`);
+	if (bandWidthPct != null) lines.push(`  バンド幅: ${Number(bandWidthPct.toFixed(2))}% → ${bwTrend ?? '—'}`);
 	if (sigmaHistory?.[0] && sigmaHistory[1]) {
 		const ago5 = sigmaHistory[0]?.z;
 		const curZ = sigmaHistory[1]?.z;
@@ -472,10 +472,9 @@ export const toolDef: ToolDefinition = {
 		const bbMid = ind.BB_middle ?? ind.BB2_middle ?? null;
 		const bbUp = ind.BB_upper ?? ind.BB2_upper ?? null;
 		const bbLo = ind.BB_lower ?? ind.BB2_lower ?? null;
-		// 丸めるのは表示だけ。丸めてから区切ると、境目の近くで analyze_bb_snapshot と位置が食い違う。
+		// 丸めるのは表示だけ。丸めてから区切ると、境目の近くで analyze_bb_snapshot と位置・幅の状態が食い違う。
 		const sigmaZ = bbZScore(close, bbMid, bbUp, bbLo);
-		const bandWidthPct =
-			bbUp != null && bbLo != null && bbMid ? Number((((bbUp - bbLo) / bbMid) * 100).toFixed(2)) : null;
+		const bandWidthPct = bbUp != null && bbLo != null && bbMid ? ((bbUp - bbLo) / bbMid) * 100 : null;
 		const macdLine = ind.MACD_line ?? null;
 		const macdSignal = ind.MACD_signal ?? null;
 		const macdHist = ind.MACD_hist ?? null;
