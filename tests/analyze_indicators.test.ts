@@ -67,15 +67,16 @@ describe('analyze_indicators', () => {
 		};
 		const zones = requireDefined(result.structuredContent.data.zones, 'zones');
 		const text = result.content[0].text;
-		// 等差で上がる系列: RSI は 100 付近、終値は BB の中心から約 1.65σ 上。幅の絶対値は一定で中心が上がるので、幅（%）は直近が最も小さい
+		// 等差で上がる系列: RSI は 100 付近で動かないのでストキャスティクス RSI は 50、終値は BB の中心から約 1.65σ 上。幅の絶対値は一定で中心が上がるので、幅（%）は直近が最も小さい
 		expect(zones).toEqual({
 			rsi: 'overbought',
-			stochRsi: zones.stochRsi,
+			stochRsi: 'neutral',
 			bbPosition: 'upper_zone',
 			bbWidth: 'squeeze',
 		});
 		expect(text).toMatch(/RSI\(14\): [\d.]+ → 買われすぎ圏/);
 		expect(text).toContain('→ 中心より上（+1σ〜+2σ）');
+		expect(text).toMatch(/【ストキャスティクスRSI】\n {2}%K: 50\.0 {2}%D: 50\.0\n {2}判定: 中立圏/);
 		expect(text).toMatch(/BB幅=[\d.]+% → スクイーズ/);
 	});
 
