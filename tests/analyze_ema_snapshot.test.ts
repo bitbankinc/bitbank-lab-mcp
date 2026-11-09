@@ -91,6 +91,30 @@ describe('analyze_ema_snapshot', () => {
 			const parse = () => toolDef.inputSchema.parse({ pair: 'btc_jpy', type: '1day', limit: 199 });
 			expect(parse).toThrow();
 		});
+
+		it('periods は 1〜365 の整数のみ許可する（SMA と同じ）', () => {
+			const parse = (periods: number[]) => () => toolDef.inputSchema.parse({ pair: 'btc_jpy', periods });
+			expect(parse([0])).toThrow();
+			expect(parse([-5])).toThrow();
+			expect(parse([366])).toThrow();
+			expect(parse([9900])).toThrow();
+			expect(parse([1, 365])).not.toThrow();
+		});
+	});
+
+	describe('独自の周期のデータ不足', () => {
+		it('足が周期より少ない周期は null にし、warnings に出す', async () => {
+			// buildCandlesOk は 40 本
+			mockedGetCandles.mockResolvedValueOnce(asMockResult(buildCandlesOk()));
+
+			const res = await analyzeEmaSnapshot('btc_jpy', '1day', 220, [5, 60]);
+
+			assertOk(res);
+			expect(res.data.ema.EMA_5).not.toBeNull();
+			expect(res.data.ema.EMA_60).toBeNull();
+			expect(res.meta.warnings).toEqual(['EMA_60: データ不足']);
+			expect(res.summary).toContain('⚠️ EMA_60: データ不足');
+		});
 	});
 
 	describe('invalid pair', () => {
@@ -769,7 +793,7 @@ describe('analyze_ema_snapshot', () => {
 
 			assertOk(res);
 			expect(res.meta.warning).toBe('⚠️ partial fetch (3日中1日の取得に失敗)');
-			// getCandles path では計算層 warnings は出ない
+			// 足が足りていれば、getCandles path の計算層 warnings は出ない
 			expect(res.meta.warnings).toBeUndefined();
 			expect(res.summary.split('\n')[0]).toContain('⚠️ partial fetch');
 		});

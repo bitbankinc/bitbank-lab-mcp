@@ -36,6 +36,7 @@
 - `analyze_indicators`：ボリンジャーバンドの見出しは「±2σ」なのに、±1σ で「売られすぎ / 買われすぎ」と判定していた。±2σ（上下のバンド）に届いたら売られすぎ圏 / 買われすぎ圏、±1σ〜±2σ は中心より上 / 下、±1σ 以内は中心付近と出す。BB 幅の状態の区切り（8% 未満スクイーズ / 20% 超エクスパンション）が `analyze_bb_snapshot`（8 / 18 / 30%）と違っていたので、`analyze_bb_snapshot` の 4 段に揃えた（issue #431）。
 - `analyze_market_signal`：RSI のタグ `oversold_bias` / `overbought_risk` を 35 未満 / 65 超で付けていた。本文の判定と同じ 30 以下 / 70 以上で付ける（issue #431）。
 - `analyze_sma_snapshot` / `analyze_mtf_sma`：`periods` に 5 / 20 / 25 / 50 / 75 / 200 以外の周期（例：6・12）を指定すると、足が足りていても値が `null`（n/a）になっていた。`analyze_indicators` が計算する SMA がこの 6 つだけで、それ以外は黙って捨てていた。どの周期も取得した足から計算する。足が周期より少ない周期は、従来どおり `null` にしたうえで `meta.warnings` に「SMA_N: データ不足」と出す（issue #431）。
+- `analyze_ema_snapshot`：独自の周期（12 / 26 / 50 / 200 以外）で足が周期より少ないとき、値が `null` になるだけで警告が出なかった。`meta.warnings` に「EMA_N: データ不足」と出す（`analyze_sma_snapshot` と同じ。issue #440）。
 
 ### Schema (breaking)
 
@@ -56,6 +57,7 @@
 - `detect_patterns`：形成中の H&S と triple にも `scoreComponents` を出す（既存の軸。issue #422）。
 - `analyze_bb_snapshot`：`zScore` に description を付けた（σ 単位で、±2 が上下のバンド。issue #431）。
 - `analyze_sma_snapshot` / `analyze_mtf_sma`：`periods` を 1〜365 の整数に限った。0 や負の値はこれまで値が `null` になるだけで、`limit` の上限（365）を超える周期は取得本数が `get_candles` の上限を超えて失敗することがあった。どちらも入力エラーになる（issue #431）。
+- `analyze_ema_snapshot`：`periods` を `analyze_sma_snapshot` と同じ 1〜365 の整数に限った。0 や負の周期は終値をそのまま `EMA_N` として返し、大きな周期は取得本数が `get_candles` の上限を超えて失敗していた。どちらも入力エラーになる（issue #440）。
 
 ### Internal
 
