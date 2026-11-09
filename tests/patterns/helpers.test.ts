@@ -5,12 +5,7 @@ import {
 	calcAlternationScoreEx,
 	calcApex,
 	checkContainment,
-	checkConvergenceEx,
-	detectWedgeBreak,
-	determineWedgeType,
 	evaluateTouchesEx,
-	generateWindows,
-	WEDGE_MAX_CONVERGENCE,
 } from '../../tools/patterns/wedge-helpers.js';
 
 function makeTrendLine(slope: number, intercept: number): TrendLine {
@@ -26,45 +21,6 @@ function makeCandles(count: number, basePrice: number = 100): CandleData[] {
 		isoTime: `2024-01-${String(i + 1).padStart(2, '0')}`,
 	}));
 }
-
-describe('generateWindows', () => {
-	it('正しいウィンドウを生成する', () => {
-		const windows = generateWindows(20, 5, 10, 5);
-		expect(windows.length).toBeGreaterThan(0);
-		for (const w of windows) {
-			expect(w.endIdx - w.startIdx).toBeGreaterThanOrEqual(5);
-			expect(w.endIdx - w.startIdx).toBeLessThanOrEqual(10);
-			expect(w.endIdx).toBeLessThan(20);
-		}
-	});
-
-	it('totalBars が minSize 未満なら空を返す', () => {
-		const windows = generateWindows(3, 5, 10, 5);
-		expect(windows).toEqual([]);
-	});
-});
-
-describe('determineWedgeType', () => {
-	it('両ライン上向き・下側が急 → rising_wedge', () => {
-		const result = determineWedgeType(0.001, 0.002, { slopeRatioMinRising: 1.2 });
-		expect(result).toBe('rising_wedge');
-	});
-
-	it('両ライン下向き・上側が急 → falling_wedge', () => {
-		const result = determineWedgeType(-0.003, -0.001, { slopeRatioMinFalling: 1.15 });
-		expect(result).toBe('falling_wedge');
-	});
-
-	it('傾きが小さすぎる場合は null', () => {
-		const result = determineWedgeType(0.00001, 0.00002, {});
-		expect(result).toBeNull();
-	});
-
-	it('比率が 0.9-1.1 の範囲内（ほぼ平行）は null', () => {
-		const result = determineWedgeType(0.001, -0.001, {});
-		expect(result).toBeNull();
-	});
-});
 
 describe('calcApex', () => {
 	it('収束するトレンドラインの Apex を計算', () => {
@@ -109,31 +65,6 @@ describe('checkContainment', () => {
 		const result = checkContainment(candles, upper, lower, 0, 9);
 		expect(result.closeInsideRatio).toBe(0);
 		expect(result.violations).toBe(10);
-	});
-});
-
-describe('checkConvergenceEx', () => {
-	it('収束するラインで isConverging=true', () => {
-		const upper = makeTrendLine(-1, 200);
-		const lower = makeTrendLine(0.5, 50);
-		const result = checkConvergenceEx(upper, lower, 0, 80);
-		expect(result.isConverging).toBe(true);
-		expect(result.ratio).toBeCloseTo(30 / 150, 10);
-	});
-
-	it('収束比がゲートちょうどなら isConverging=false', () => {
-		const upper = makeTrendLine(-0.3, 110);
-		const lower = makeTrendLine(0, 100);
-		const result = checkConvergenceEx(upper, lower, 0, 10);
-		expect(result.ratio).toBeCloseTo(WEDGE_MAX_CONVERGENCE, 10);
-		expect(result.isConverging).toBe(false);
-	});
-
-	it('発散するラインで isConverging=false', () => {
-		const upper = makeTrendLine(2, 200);
-		const lower = makeTrendLine(-1, 50);
-		const result = checkConvergenceEx(upper, lower, 0, 50);
-		expect(result.isConverging).toBe(false);
 	});
 });
 
@@ -210,48 +141,6 @@ describe('finalizeConf', () => {
 
 	it('0 未満にならない', () => {
 		expect(finalizeConf(-0.2)).toBe(0);
-	});
-});
-
-describe('detectWedgeBreak', () => {
-	it('ブレイクがない場合は detected=false', () => {
-		const candles = makeCandles(50, 100);
-		const upper = { valueAt: () => 200 };
-		const lower = { valueAt: () => 0 };
-		const result = detectWedgeBreak(candles, 'falling_wedge', upper, lower, 0, 30, 49, 10);
-		expect(result.detected).toBe(false);
-		expect(result.breakIdx).toBe(-1);
-	});
-
-	it('上方ブレイクを検出する', () => {
-		const candles: CandleData[] = Array.from({ length: 60 }, (_, i) => ({
-			open: 100,
-			close: i >= 40 ? 250 : 100,
-			high: i >= 40 ? 260 : 110,
-			low: 90,
-			isoTime: `2024-01-${String(i + 1).padStart(2, '0')}`,
-		}));
-		const upper = { valueAt: () => 120 };
-		const lower = { valueAt: () => 80 };
-		const result = detectWedgeBreak(candles, 'falling_wedge', upper, lower, 0, 50, 59, 5);
-		expect(result.detected).toBe(true);
-		expect(result.breakIdx).toBe(51);
-		expect(result.breakPrice).toBeGreaterThan(120);
-	});
-
-	it('形成終端以前の境界外終値を過去のブレイクとして検出しない', () => {
-		const candles: CandleData[] = Array.from({ length: 60 }, (_, i) => ({
-			open: 100,
-			close: i === 40 ? 250 : 100,
-			high: i === 40 ? 260 : 110,
-			low: 90,
-			isoTime: `2024-01-${String(i + 1).padStart(2, '0')}`,
-		}));
-		const upper = { valueAt: () => 120 };
-		const lower = { valueAt: () => 80 };
-		const result = detectWedgeBreak(candles, 'falling_wedge', upper, lower, 0, 50, 59, 5);
-		expect(result.detected).toBe(false);
-		expect(result.breakIdx).toBe(-1);
 	});
 });
 

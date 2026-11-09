@@ -11,16 +11,6 @@ export interface TrendLine {
 	valueAt: (x: number) => number;
 }
 
-export interface WedgeParams {
-	minSlope?: number;
-	slopeRatioMinRising?: number;
-	slopeRatioMinFalling?: number;
-	slopeRatioMin?: number;
-	minWeakerSlopeRatio?: number;
-	windowSizeMin?: number;
-	windowSizeMax?: number;
-}
-
 export interface TouchPoint {
 	index: number;
 	distance: number;

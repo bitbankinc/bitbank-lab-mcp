@@ -200,14 +200,9 @@ function formatDetailValue(v: unknown): string {
 	}
 }
 
-// キーが在れば値が null でも次の系統へフォールバックしない。畳むと「未ブレイクなのに方向がある」行が出る。
 function breakDirectionFromDetails(details?: Record<string, unknown>): string | null | undefined {
-	if (!details) return undefined;
-	for (const key of ['breakout', 'breakInfo'] as const) {
-		if (!(key in details)) continue;
-		return (details[key] as { direction?: string | null } | null | undefined)?.direction ?? null;
-	}
-	return undefined;
+	if (!details || !('breakout' in details)) return undefined;
+	return (details.breakout as { direction?: string | null } | null | undefined)?.direction ?? null;
 }
 
 /** tests/detectPatternsViewsHandler.test.ts / tests/view-content-superset.test.ts が抽出に使うので、変えるならテスト側も直す。 */
