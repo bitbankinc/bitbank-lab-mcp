@@ -436,7 +436,16 @@ export type TargetBreakoutConfounder = z.infer<typeof TargetBreakoutConfounderSc
 
 export const DetectedPatternSchema = z.object({
 	type: PatternTypeEnum,
-	confidence: z.number().min(0).max(1),
+	confidence: z
+		.number()
+		.min(0)
+		.max(1)
+		.describe(
+			'パターン整合度。`scoreComponents` の軸の単純平均で、構造ゲートを通過した候補どうしの形の良さの比較値。' +
+				'**確率ではない**。過去の実績（7 ペアの日足・4 時間足、2017〜2026 年の完成済みパターン）では、整合度が高いほど' +
+				'目標に届きやすいという関係は無かった（flag・pennant・wedge はむしろ逆向き、反転系は件数が足りず未検証）ので、' +
+				'確率への較正も「何点以上なら信頼できる」という基準も置かない（issue #422）',
+		),
 	_fallback: z
 		.string()
 		.optional()
