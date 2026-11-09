@@ -62,6 +62,7 @@
 - `analyze_bb_snapshot`：`zScore` に description を付けた（σ 単位で、±2 が上下のバンド。issue #431）。
 - `analyze_sma_snapshot` / `analyze_mtf_sma`：`periods` を 1〜365 の整数に限った。0 や負の値はこれまで値が `null` になるだけで、`limit` の上限（365）を超える周期は取得本数が `get_candles` の上限を超えて失敗することがあった。どちらも入力エラーになる（issue #431）。
 - `analyze_ema_snapshot`：`periods` を `analyze_sma_snapshot` と同じ 1〜365 の整数に限った。0 や負の周期は終値をそのまま `EMA_N` として返し、大きな周期は取得本数が `get_candles` の上限を超えて失敗していた。どちらも入力エラーになる（issue #440）。
+- `analyze_indicators`：`data.zones`（`rsi` / `stochRsi` / `bbPosition` / `bbWidth`）を追加。本文のラベルと同じ判定を列挙値で出す（optional。値が取れない指標は `null`。issue #436）。
 
 ### Internal
 

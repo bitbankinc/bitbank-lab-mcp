@@ -20,6 +20,7 @@ import {
 	STOCH_SMOOTH_D,
 	STOCH_SMOOTH_K,
 } from '../lib/indicator-config.js';
+import { indicatorZones } from '../lib/indicator-zones.js';
 import {
 	ichimokuSnapshot,
 	bollingerBands as rawBollingerBands,
@@ -666,12 +667,23 @@ export default async function analyzeIndicators(
 	});
 	const summary = prependProvisionalNote(baseSummary, provisional, { separator: '\n' });
 
+	const zones = indicatorZones({
+		close: normalized.at(-1)?.close,
+		rsi: indicators.RSI_14,
+		stochRsiK: indicators.STOCH_RSI_K,
+		bbMiddle: indicators.BB_middle ?? indicators.BB2_middle,
+		bbUpper: indicators.BB_upper ?? indicators.BB2_upper,
+		bbLower: indicators.BB_lower ?? indicators.BB2_lower,
+		bbSeries: indicators.bb2_series,
+	});
+
 	const data: GetIndicatorsData = {
 		summary,
 		raw: computed.raw,
 		normalized,
 		indicators,
 		trend,
+		zones,
 		chart: chartData,
 	} satisfies GetIndicatorsData;
 

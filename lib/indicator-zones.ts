@@ -12,7 +12,9 @@ import {
 	STOCH_OVERSOLD,
 } from './indicator-config.js';
 
-export type RsiZone = 'oversold' | 'below_midline' | 'above_midline' | 'overbought';
+// 値の種類はここだけに置き、スキーマ（src/schema/indicators.ts の z.enum）もここから作る（#436）。
+export const RSI_ZONES = ['oversold', 'below_midline', 'above_midline', 'overbought'] as const;
+export type RsiZone = (typeof RSI_ZONES)[number];
 
 export function rsiZone(rsi: number | null | undefined): RsiZone | null {
 	if (rsi == null || !Number.isFinite(rsi)) return null;
@@ -34,7 +36,8 @@ export function rsiZoneLabel(rsi: number | null | undefined): string | null {
 	return zone ? RSI_ZONE_LABELS[zone] : null;
 }
 
-export type StochZone = 'oversold' | 'neutral' | 'overbought';
+export const STOCH_ZONES = ['oversold', 'neutral', 'overbought'] as const;
+export type StochZone = (typeof STOCH_ZONES)[number];
 
 export function stochZone(k: number | null | undefined): StochZone | null {
 	if (k == null || !Number.isFinite(k)) return null;
@@ -66,7 +69,8 @@ export function bbZScore(
 	return (close - middle) / sigma;
 }
 
-export type BbPosition = 'at_lower' | 'lower_zone' | 'near_middle' | 'upper_zone' | 'at_upper';
+export const BB_POSITIONS = ['at_lower', 'lower_zone', 'near_middle', 'upper_zone', 'at_upper'] as const;
+export type BbPosition = (typeof BB_POSITIONS)[number];
 
 export function bbPosition(zScore: number | null | undefined): BbPosition | null {
 	if (zScore == null || !Number.isFinite(zScore)) return null;
@@ -124,7 +128,8 @@ export function bbWidthRank(
 	return { percentile: ((below + equal / 2) / widths.length) * 100, sampleSize: widths.length };
 }
 
-export type BbWidthState = 'squeeze' | 'normal' | 'expanding' | 'wide';
+export const BB_WIDTH_STATES = ['squeeze', 'normal', 'expanding', 'wide'] as const;
+export type BbWidthState = (typeof BB_WIDTH_STATES)[number];
 
 export function bbWidthState(rank: BbWidthRank | null | undefined): BbWidthState | null {
 	if (rank == null || !Number.isFinite(rank.percentile)) return null;
@@ -143,4 +148,32 @@ const BB_WIDTH_STATE_NAMES: Record<BbWidthState, string> = {
 
 export function bbWidthStateLabel(state: BbWidthState, rank: BbWidthRank): string {
 	return `${BB_WIDTH_STATE_NAMES[state]}（直近${rank.sampleSize}本の幅の中で下から${Math.round(rank.percentile)}%）`;
+}
+
+export interface IndicatorZones {
+	rsi: RsiZone | null;
+	stochRsi: StochZone | null;
+	bbPosition: BbPosition | null;
+	bbWidth: BbWidthState | null;
+}
+
+export interface IndicatorZoneInputs {
+	close: number | null | undefined;
+	rsi: number | null | undefined;
+	stochRsiK: number | null | undefined;
+	bbMiddle: number | null | undefined;
+	bbUpper: number | null | undefined;
+	bbLower: number | null | undefined;
+	bbSeries: { upper: Series; middle: Series; lower: Series } | null | undefined;
+}
+
+// analyze_indicators の本文のラベルと同じ値・同じ関数から出す。
+export function indicatorZones(input: IndicatorZoneInputs): IndicatorZones {
+	const { close, rsi, stochRsiK, bbMiddle, bbUpper, bbLower, bbSeries } = input;
+	return {
+		rsi: rsiZone(rsi),
+		stochRsi: stochZone(stochRsiK),
+		bbPosition: bbPosition(bbZScore(close, bbMiddle, bbUpper, bbLower)),
+		bbWidth: bbSeries ? bbWidthState(bbWidthRank(bbSeries.upper, bbSeries.middle, bbSeries.lower)) : null,
+	};
 }

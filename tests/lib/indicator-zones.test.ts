@@ -6,6 +6,7 @@ import {
 	bbWidthState,
 	bbWidthStateLabel,
 	bbZScore,
+	indicatorZones,
 	rsiZone,
 	rsiZoneLabel,
 	stochZone,
@@ -146,5 +147,33 @@ describe('bbWidthRank / bbWidthState', () => {
 		expect(bbWidthStateLabel('squeeze', { percentile: 12.4, sampleSize: 120 })).toBe(
 			'スクイーズ（直近120本の幅の中で下から12%）',
 		);
+	});
+});
+
+describe('indicatorZones', () => {
+	it('各指標の判定をまとめて返し、取れない指標は null', () => {
+		const series = Array.from({ length: 40 }, () => 100);
+		expect(
+			indicatorZones({
+				close: 110,
+				rsi: 72,
+				stochRsiK: 15,
+				bbMiddle: 100,
+				bbUpper: 110,
+				bbLower: 90,
+				bbSeries: { upper: series.map((v) => v + 10), middle: series, lower: series.map((v) => v - 10) },
+			}),
+		).toEqual({ rsi: 'overbought', stochRsi: 'oversold', bbPosition: 'at_upper', bbWidth: 'normal' });
+		expect(
+			indicatorZones({
+				close: null,
+				rsi: null,
+				stochRsiK: null,
+				bbMiddle: null,
+				bbUpper: null,
+				bbLower: null,
+				bbSeries: null,
+			}),
+		).toEqual({ rsi: null, stochRsi: null, bbPosition: null, bbWidth: null });
 	});
 });

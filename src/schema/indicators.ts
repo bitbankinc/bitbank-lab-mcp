@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { BB_POSITIONS, BB_WIDTH_STATES, RSI_ZONES, STOCH_ZONES } from '../../lib/indicator-zones.js';
 import {
 	BaseMetaSchema,
 	BasePairInputSchema,
@@ -93,12 +94,28 @@ export const IndicatorsInternalSchema = z.object({
 	OBV_trend: z.enum(['rising', 'falling', 'flat']).nullable().optional(),
 });
 
+export const IndicatorZonesSchema = z
+	.object({
+		rsi: z.enum(RSI_ZONES).nullable().describe('RSI(14)：30 以下 / 50 未満 / 50 以上 / 70 以上'),
+		stochRsi: z.enum(STOCH_ZONES).nullable().describe('ストキャスティクス RSI の %K：20 以下 / 中立 / 80 以上'),
+		bbPosition: z
+			.enum(BB_POSITIONS)
+			.nullable()
+			.describe('終値の BB（±2σ）に対する位置：±2σ 以上 / ±1σ〜±2σ / ±1σ 以内'),
+		bbWidth: z
+			.enum(BB_WIDTH_STATES)
+			.nullable()
+			.describe('BB の幅の、直近 120 本の中での順位：下から 20% 未満 / 80% 未満 / 95% 未満 / それ以上'),
+	})
+	.describe('本文のラベルと同じ判定を列挙値で出したもの。値が取れない指標は null。');
+
 export const GetIndicatorsDataSchema = z.object({
 	summary: z.string(),
 	raw: z.unknown(),
 	normalized: z.array(CandleSchema),
 	indicators: IndicatorsInternalSchema,
 	trend: TrendLabelEnum,
+	zones: IndicatorZonesSchema.optional(),
 	chart: z.object({
 		candles: z.array(CandleSchema),
 		indicators: ChartIndicatorsSchema,

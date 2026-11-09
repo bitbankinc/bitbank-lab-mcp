@@ -46,6 +46,39 @@ describe('analyze_indicators', () => {
 		expect(parsed.tz).toBe('UTC');
 	});
 
+	it('structuredContent の zones は本文のラベルと同じ判定を列挙値で出す', async () => {
+		const rows = makeOhlcvRows(600);
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: 'OK',
+			json: async () => ({ success: 1, data: { candlestick: [{ type: '1day', ohlcv: rows }] } }),
+		}) as unknown as typeof fetch;
+
+		const result = (await toolDef.handler({
+			pair: 'btc_jpy',
+			type: '1day',
+			date: '20250831',
+			tz: 'UTC',
+			limit: 60,
+		})) as unknown as {
+			content: Array<{ text: string }>;
+			structuredContent: { data: { zones?: Record<string, string | null> } };
+		};
+		const zones = requireDefined(result.structuredContent.data.zones, 'zones');
+		const text = result.content[0].text;
+		// 等差で上がる系列: RSI は 100 付近、終値は BB の中心から約 1.65σ 上。幅の絶対値は一定で中心が上がるので、幅（%）は直近が最も小さい
+		expect(zones).toEqual({
+			rsi: 'overbought',
+			stochRsi: zones.stochRsi,
+			bbPosition: 'upper_zone',
+			bbWidth: 'squeeze',
+		});
+		expect(text).toMatch(/RSI\(14\): [\d.]+ → 買われすぎ圏/);
+		expect(text).toContain('→ 中心より上（+1σ〜+2σ）');
+		expect(text).toMatch(/BB幅=[\d.]+% → スクイーズ/);
+	});
+
 	it('date 指定時の本文ヘッダは現在時刻ではなくアンカー終端を示す', async () => {
 		const rows = makeOhlcvRows(600);
 		globalThis.fetch = vi.fn().mockResolvedValue({
