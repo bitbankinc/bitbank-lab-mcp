@@ -57,6 +57,7 @@
 - `.github/workflows/` のコメントを `.claude/rules/comments.md` の基準で整理した（issue #416）。コメントだけの変更で、動きは変えていない。
 - `tools/patterns/detect_hs.ts`：H&S の上下 × strict / relaxed で 4 つあった判定を、側を引数に取る形にまとめた（issue #412）。検出結果と debug の候補は変えていない。
 - 足の種類から本数の単位を付ける関数を `lib/formatter.ts` に、RSI とストキャスティクスの判定の区切りを `lib/indicator-zones.ts` に置き、各ツールから使う（issue #431）。
+- Security Audit の gitleaks ジョブで、本体のダウンロードが 5xx を返すと、エラーページを保存してチェックサム不一致で落ちていた。`curl` に `-f` と `--retry 5 --retry-all-errors` を付け、一時的な 5xx は再試行し、それでも取れなければ HTTP エラーとして落ちるようにした。
 
 ## [0.6.0] - 2026-11-04
 
