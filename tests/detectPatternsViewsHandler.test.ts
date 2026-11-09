@@ -1373,6 +1373,13 @@ describe('formatPatternLine', () => {
 		);
 	});
 
+	it('説明文は、整合度が確率ではなく、過去の実績で目標到達を予測しなかったことを伝える（#422 Phase B）', () => {
+		const full = formatFullView('hdr', [makePattern()], '', '', emptyMeta, emptyRes).content[0].text;
+		expect(full).toContain('当たりやすさ（確率）ではない');
+		expect(full).toContain('目標到達を予測せず');
+		expect(full).not.toMatch(/0\.8以上|0\.6未満|形状不十分/);
+	});
+
 	it('表に無い軸は名前を当てず、キー名のまま出す', () => {
 		const p = makePattern({ scoreComponents: { futureAxis: 0.5 } as PatternEntry['scoreComponents'] });
 		expect(formatPatternLine(p, 0, 'detailed', emptyMeta)).toContain('整合度の内訳: futureAxis 0.50');
