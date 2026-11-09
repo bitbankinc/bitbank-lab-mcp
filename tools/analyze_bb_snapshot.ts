@@ -107,6 +107,49 @@ export function buildBbDefaultText(input: BuildBbDefaultTextInput): string {
 	);
 }
 
+export interface BuildBbExtendedTextInput {
+	baseSummary: string;
+	middle: number | null;
+	bands: Record<string, number | null>;
+	bandWidthPct: Record<string, number | null>;
+	zScore: number | null;
+	currentZone: string | null;
+	touches2: number | null;
+	touches3: number | null;
+	touchWindow: number;
+	widthState: BbWidthState | null;
+	bandWidthRank: BbWidthRank | null;
+	tags: string[];
+}
+
+const fmtNum = (v: number | null | undefined) => (v == null ? 'n/a' : String(v));
+const fmtPct = (v: number | null | undefined) => (v == null ? 'n/a' : `${v.toFixed(2)}%`);
+
+export function buildBbExtendedText(input: BuildBbExtendedTextInput): string {
+	const { baseSummary, middle, bands, bandWidthPct, zScore, currentZone, touches2, touches3, touchWindow } = input;
+	const { widthState, bandWidthRank, tags } = input;
+	return [
+		String(baseSummary),
+		'',
+		`現在位置: ${zScore != null ? `${zScore.toFixed(3)}σ` : 'n/a'}（current_zone: ${currentZone ?? 'n/a'}）`,
+		`幅の状態: ${widthState && bandWidthRank ? `${widthState} / ${bbWidthStateLabel(widthState, bandWidthRank)}` : 'n/a'}`,
+		'',
+		'📊 バンド:',
+		`+3σ:${fmtNum(bands['+3σ'])} +2σ:${fmtNum(bands['+2σ'])} +1σ:${fmtNum(bands['+1σ'])}`,
+		`middle:${fmtNum(middle)}`,
+		`-1σ:${fmtNum(bands['-1σ'])} -2σ:${fmtNum(bands['-2σ'])} -3σ:${fmtNum(bands['-3σ'])}`,
+		`幅: ±1σ ${fmtPct(bandWidthPct['±1σ'])} / ±2σ ${fmtPct(bandWidthPct['±2σ'])} / ±3σ ${fmtPct(bandWidthPct['±3σ'])}`,
+		'',
+		`直近${touchWindow}本の終値: ±2σ 以上 ${touches2 ?? 'n/a'}本 / ±3σ 以上 ${touches3 ?? 'n/a'}本`,
+		`タグ: ${tags.length > 0 ? tags.join(', ') : 'なし'}`,
+		'',
+		'---',
+		'📌 含まれるもの: ボリンジャーバンド拡張（±1σ/±2σ/±3σ）、Zスコア（σ 単位）、バンド幅、幅の順位、直近の ±2σ・±3σ 到達回数',
+		'📌 含まれないもの: 他のテクニカル指標（RSI・MACD・一目均衡表）、出来高フロー、板情報',
+		'📌 補完ツール: analyze_indicators（他指標）, get_flow_metrics（出来高）, get_volatility_metrics（ボラ詳細）',
+	].join('\n');
+}
+
 export default async function analyzeBbSnapshot(
 	pair: string = 'btc_jpy',
 	type: string = '1day',
@@ -317,15 +360,27 @@ export default async function analyzeBbSnapshot(
 			return AnalyzeBbSnapshotOutputSchema.parse(ok(summaryLines, data, meta));
 		}
 
+		const ind = indRes.data.indicators as Record<string, unknown>;
+		const num = (key: string) => (typeof ind[key] === 'number' ? (ind[key] as number) : null);
+		const widthPct = (u: number | null, l: number | null) =>
+			u != null && l != null && mid != null && mid !== 0 ? ((u - l) / mid) * 100 : null;
 		const bbBands: Record<string, number | null> = {
-			'+3σ': null,
+			'+3σ': num('BB3_upper'),
 			'+2σ': upper,
-			'+1σ': null,
-			'-1σ': null,
+			'+1σ': num('BB1_upper'),
+			'-1σ': num('BB1_lower'),
 			'-2σ': lower,
-			'-3σ': null,
+			'-3σ': num('BB3_lower'),
 		};
-		const bandWidthAll: Record<string, number | null> = { '±1σ': null, '±2σ': bandWidthPct, '±3σ': null };
+		const bandWidthAll: Record<string, number | null> = {
+			'±1σ': widthPct(bbBands['+1σ'], bbBands['-1σ']),
+			'±2σ': bandWidthPct,
+			'±3σ': widthPct(bbBands['+3σ'], bbBands['-3σ']),
+		};
+		const recentZ = (timeseries ?? []).map((e) => e.zScore).filter((z): z is number => z != null);
+		const touches2 = timeseries ? recentZ.filter((z) => Math.abs(z) >= BB_STDDEV).length : null;
+		const touches3 = timeseries ? recentZ.filter((z) => Math.abs(z) >= 3).length : null;
+		const widthState = bbWidthState(bandWidthRank);
 		const current_zone =
 			zScore == null
 				? null
@@ -341,13 +396,13 @@ export default async function analyzeBbSnapshot(
 			price: close ?? null,
 			bb: { middle: mid, bands: bbBands, zScore, bandWidthPct: bandWidthAll },
 			position_analysis: { current_zone },
+			// キー名の 30d は直近 30 本（日足以外でも本数で数える）。
 			extreme_events: {
-				touches_3σ_last_30d: null,
-				touches_2σ_last_30d: null,
-				band_walk_detected: null,
-				squeeze_percentile: null,
+				touches_3σ_last_30d: touches3,
+				touches_2σ_last_30d: touches2,
+				squeeze_percentile: bandWidthRank ? Math.round(bandWidthRank.percentile) : null,
 			},
-			interpretation: { volatility_state: null, extreme_risk: null, mean_reversion_potential: null },
+			interpretation: { volatility_state: widthState },
 			tags,
 		};
 		const meta = createMeta(chk.pair, {
@@ -366,11 +421,20 @@ export default async function analyzeBbSnapshot(
 			...(warnings && warnings.length > 0 ? { warnings } : {}),
 			...(provisional ? { provisional: true } : {}),
 		});
-		const baseExtSummary =
-			summaryBase +
-			`\n\n---\n📌 含まれるもの: ボリンジャーバンド拡張（±1σ/±2σ/±3σ）、Zスコア、バンド幅` +
-			`\n📌 含まれないもの: 他のテクニカル指標（RSI・MACD・一目均衡表）、出来高フロー、板情報` +
-			`\n📌 補完ツール: analyze_indicators（他指標）, get_flow_metrics（出来高）, get_volatility_metrics（ボラ詳細）`;
+		const baseExtSummary = buildBbExtendedText({
+			baseSummary: summaryBase,
+			middle: mid,
+			bands: bbBands,
+			bandWidthPct: bandWidthAll,
+			zScore,
+			currentZone: current_zone,
+			touches2,
+			touches3,
+			touchWindow: timeseries?.length ?? 0,
+			widthState,
+			bandWidthRank,
+			tags,
+		});
 		const extSummary = prependWarnings(
 			prependProvisionalNote(baseExtSummary, provisional, { separator: '\n' }),
 			{ warning, warnings },

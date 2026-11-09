@@ -426,6 +426,46 @@ describe('analyze_bb_snapshot', () => {
 		expect(res.data).toHaveProperty('extreme_events');
 	});
 
+	it('extended mode: ±1σ・±3σ のバンドと幅も返す（±2σ と同じ中心・同じ σ）', async () => {
+		mockFetch(makeAlternatingRows(400, (i) => (i >= 370 ? 0.05 : 0.02)));
+
+		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'extended');
+		assertOk(res);
+		const bb = res.data.bb as {
+			middle: number;
+			bands: Record<string, number>;
+			bandWidthPct: Record<string, number>;
+		};
+		const { bands, bandWidthPct, middle } = bb;
+		expect(bands['+3σ']).toBeGreaterThan(bands['+2σ']);
+		expect(bands['+2σ']).toBeGreaterThan(bands['+1σ']);
+		expect(bands['+1σ']).toBeGreaterThan(middle);
+		expect(bands['-1σ']).toBeLessThan(middle);
+		expect(bands['-3σ']).toBeLessThan(bands['-2σ']);
+		expect(bandWidthPct['±1σ']).toBeCloseTo(bandWidthPct['±2σ'] / 2, 1);
+		expect(bandWidthPct['±3σ']).toBeCloseTo((bandWidthPct['±2σ'] * 3) / 2, 1);
+		expect((res.data.interpretation as { volatility_state: string }).volatility_state).toBe('wide');
+		expect(res.data.interpretation).not.toHaveProperty('extreme_risk');
+		expect(res.data.extreme_events).not.toHaveProperty('band_walk_detected');
+	});
+
+	it('extended mode: 直近 30 本で ±2σ・±3σ に届いた終値の本数を数え、本文にも数値を出す', async () => {
+		// 最終本だけのスパイクは √19 ≈ 4.36σ なので、±2σ・±3σ ともに 1 本
+		const base = 10_000_000;
+		const { year2026, year2025 } = make2026And2025Rows((i) => (i === 90 ? base + 5_000_000 : base), base);
+		mockFetchByYear(year2026, year2025);
+
+		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'extended');
+		assertOk(res);
+		const events = res.data.extreme_events as Record<string, number | null>;
+		expect(events.touches_2σ_last_30d).toBe(1);
+		expect(events.touches_3σ_last_30d).toBe(1);
+		expect(res.summary).toContain('current_zone: beyond_3σ');
+		expect(res.summary).toMatch(/\+3σ:\d/);
+		expect(res.summary).toContain('直近30本の終値: ±2σ 以上 1本 / ±3σ 以上 1本');
+		expect(res.summary).toContain('above_upper_band_risk');
+	});
+
 	it('extended mode: fetch 失敗時は ok: false を返す', async () => {
 		globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed')) as unknown as typeof fetch;
 

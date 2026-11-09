@@ -38,6 +38,7 @@
 - `analyze_sma_snapshot` / `analyze_mtf_sma`：`periods` に 5 / 20 / 25 / 50 / 75 / 200 以外の周期（例：6・12）を指定すると、足が足りていても値が `null`（n/a）になっていた。`analyze_indicators` が計算する SMA がこの 6 つだけで、それ以外は黙って捨てていた。どの周期も取得した足から計算する。足が周期より少ない周期は、従来どおり `null` にしたうえで `meta.warnings` に「SMA_N: データ不足」と出す（issue #431）。
 - `analyze_ema_snapshot`：独自の周期（12 / 26 / 50 / 200 以外）で足が周期より少ないとき、値が `null` になるだけで警告が出なかった。`meta.warnings` に「EMA_N: データ不足」と出す（`analyze_sma_snapshot` と同じ。issue #440）。
 - `get_candles`：年単位で取る足（4hour〜1month）で、`limit` に合わせて上流に足の無い 2010 年以前の暦年まで並列に取りに行っていた（月足で `limit` 420 なら 19 年分の空振り）。上流で最も古い足（btc_jpy の 2011 年）より前は取得しない。切り詰めたときは `meta.warning` に「UTC 暦年 2010 以前は bitbank に足が無いため取得していません」と 1 行で出す（これまでは空の年を全部並べていた。issue #439）。
+- `analyze_bb_snapshot`：extended モードは説明で「±1σ/±2σ/±3σ の詳細分析」としていたのに、±1σ・±3σ のバンドと幅、`extreme_events`、`interpretation` が常に `null` で、本文も 1 行の要約とフッターだけだった。±1σ・±3σ のバンドと幅（`analyze_indicators` が計算済みの値）、直近 30 本の終値が ±2σ・±3σ に届いた本数、幅の順位（`squeeze_percentile`）、幅の状態（`volatility_state`）を出し、本文にもバンド・位置・幅・本数・タグを出す（issue #438）。
 
 ### Schema (breaking)
 
@@ -47,6 +48,7 @@
 - `detect_patterns`：`scoreComponents` から `symmetry` と `duration` を削除した。double と H&S の水準の揃い方は、triple と同じ `levelMargin`（`1 − 平均 relDev ÷ strict の許容幅`）で出す。`symmetry`（`1 − relDev`）とは物差しが違い、値は小さくなる（issue #422）。
 - `analyze_bb_snapshot`：`zScore`（`data.bb.zScore`、本文と時系列の z）を σ 単位にした。これまではバンドの半幅（= 2σ）を 1 とする単位で、同じ価格でも `analyze_indicators` の σ の半分の値になっていた（+2σ のバンド上で 1.0 → 2.0）。`interpretation.position` の区切りも σ にした。`at_upper` / `at_lower` は ±1.8（約 ±3.6σ。ほぼ出なかった）から ±2σ（バンドに届いたら）に、`near_middle` は ±0.3（約 ±0.6σ）から ±1σ 以内にした。extended の `position_analysis.current_zone` は値を σ と見なして区切っていたので、`within_1σ` が実際には ±2σ 以内を指していた。タグ `above_upper_band_risk` / `below_lower_band_risk`（バンドの外）は意味を変えず、σ 単位の ±2 で付ける。`bandwidth_state` は、幅が取れないときに `squeeze` になっていたので `null` にした（issue #431）。
 - `analyze_bb_snapshot`：`interpretation.bandwidth_state`（`squeeze` / `normal` / `expanding` / `wide`）を、幅の固定の区切り（8 / 18 / 30%）ではなく、直近 120 本の幅の中での順位で決める。下から 20% 未満 = `squeeze`、80% 未満 = `normal`、95% 未満 = `expanding`、それ以上 = `wide`（同じ値は半分ずつ数えるので、幅がずっと一定なら 50% で `normal`）。BB の幅は足の長さで水準が大きく違い（4 時間足は数 %、週足は数十 %）、固定の区切りでは 4 時間足が常にスクイーズ寄り、週足が常に「大きく拡大」寄りになっていた。`context.bandWidthPct_percentile` も同じ 120 本の順位にした（これまでは直近 30 本）。幅の圧縮 / 拡大のシグナルも状態から出す（issue #437）。
+- `analyze_bb_snapshot`（extended）：常に `null` だった `extreme_events.band_walk_detected` と、`interpretation.extreme_risk` / `mean_reversion_potential` を削除した。どれも判定の基準が無く、値を入れていなかった（issue #438）。
 
 ### Schema
 
