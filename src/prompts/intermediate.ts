@@ -130,7 +130,7 @@ export const intermediatePrompts: PromptDef[] = [
 2) analyze_candle_patterns(pair=btc_jpy, type=1day, allow_partial_patterns=false)
    ※検出時は render_candle_pattern_diagram でSVG表示
 
-【重要度】整合度0.8+/0.7-0.8/0.7未満。±10%以内+高評価=🔴、+中=🟡、それ以外=⚪
+【重要度】±10%以内で「余裕が無い軸」の警告が無い=🔴、±10%以内で警告あり=🟡、それ以外=⚪。整合度の点数では線を引かない（基準は未較正）
 
 【出力】
 ## 1. 形成中（切迫性順、なければ検出なし）
