@@ -29,7 +29,7 @@ const MIN_WEAKER_SLOPE_RATIO = 0.3;
 const MIN_ALTERNATION = 0.25;
 const MIN_TOUCH_BALANCE = 0.45;
 
-// 整合度の物差し。削除した回帰経路の strict のゲートで、どの経路のゲートでもなくなったが教科書的な基準として使い続ける（#429）。
+// 整合度の物差しにだけ使う教科書的な基準で、検出のゲートではない（#429）。
 const STRICT_MAX_CONVERGENCE = 0.7;
 const STRICT_MIN_TOUCHES_PER_LINE = 3;
 const STRICT_MIN_CONTAINMENT = 0.85;
@@ -46,7 +46,7 @@ const FORMING_PRICE_TOLERANCE_PCT = 0.01;
 // 実効値はバー数。日数は patternBarRange がバー数へ換算する元の値。
 const FORMING_WINDOW_MIN_DAYS = 20;
 const FORMING_WINDOW_MAX_DAYS = 120;
-// 窓の刻みは、削除した回帰経路の最小窓（25 日）の 1/5 のまま。変えると形成中の窓の並びが変わり、検出が動く（#429）。
+// 刻みを変えると形成中の窓の並びが変わり、検出結果が変わる（#429）。
 const WINDOW_STEP_BASE_DAYS = 25;
 const WINDOW_STEP_DIVISOR = 5;
 

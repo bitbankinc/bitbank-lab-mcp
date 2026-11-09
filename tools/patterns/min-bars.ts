@@ -1,5 +1,5 @@
 // docs/tools.md「limit の実効下限」§2 を各検出器の定数から導出する。スイング検出の構造的下限（§1）は scan-window.ts が持つので二重に持たない。
-// wedge は最新に揃えた窓を必ず積み、窓が足りなくても候補が消えないので扱わない（完成済みの回帰経路は #429 で削除）。
+// wedge は最新に揃えた窓を必ず積み、窓が足りなくても候補が消えないので扱わない。
 
 import { getHsFormingBarParams } from './detect_hs.js';
 import { getFlagParams } from './detect_pennants.js';

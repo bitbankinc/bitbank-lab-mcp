@@ -357,7 +357,7 @@ describe('detect_patterns: wedge の分類前ラベル', () => {
 		vi.restoreAllMocks();
 	});
 
-	// 型が決まる前に落ちる棄却は、上下の線の傾きの向きがそろわない窓だけ（#429 で回帰経路を削除してからは形成中の走査のみ）。
+	// 型が決まる前に落ちる棄却は、上下の線の傾きの向きがそろわない窓だけ。
 	const isWedgeScanReject = (c: { reason?: string }) => c.reason === 'slopes_not_same_direction';
 
 	it('上下の傾きの向きがそろわない窓の棄却は umbrella ラベル wedge で積まれ、ウェッジの要求で届く', async () => {
@@ -519,7 +519,7 @@ describe('detect_patterns: cap トリムの申告（#180）', () => {
 
 	// 合成 fixture では 200 に届かないので、実データ fixture を `swingDepth: 2` で走らせる。
 	it('省略があるとき総数と省略件数を申告し content に出す', async () => {
-		// 90 本の BTC 日足では候補が 200 件に届かない（#429 で回帰経路の棄却が無くなった）ので、長い窓を使う。
+		// 90 本の BTC 日足では候補が 200 件に届かないので、長い窓を使う。
 		const candles = buildBtcJpy2026ThroughSep30Candles();
 		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(indicatorsOk(candles)));
 		const res = await detectPatterns('btc_jpy', '1day', candles.length, { swingDepth: 2, includeForming: true });
