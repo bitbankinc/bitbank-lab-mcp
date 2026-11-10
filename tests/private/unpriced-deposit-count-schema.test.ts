@@ -1,7 +1,6 @@
 // realized_pnl の算出条件を出力から復元できることを、description の文面で機械的に固定する（#77。structuredContent を直読みする非 LLM クライアントの唯一の手掛かり）。
 import { describe, expect, it } from 'vitest';
 import { AnalyzeMyPortfolioDataSchema } from '../../src/private/schemas.js';
-import { DEPRECATED_FIELD_REMOVAL_TARGET } from '../../src/schema/base.js';
 
 type Described = { description?: string };
 
@@ -63,9 +62,6 @@ describe('入庫の原価算入件数 — キー順', () => {
 			'sell_count',
 			'period_start',
 			'period_end',
-			// 旧名は同じ位置に alias として残す（#85）
-			'priced_deposit_count',
-			'unpriced_deposit_count',
 			'realized_pnl_unavailable_reason',
 			'priced_deposit_count_all_time',
 			'unpriced_deposit_count_all_time',
@@ -73,20 +69,7 @@ describe('入庫の原価算入件数 — キー順', () => {
 	});
 });
 
-describe('入庫の原価算入件数 — 期間損益の alias（#85）', () => {
-	it.each([
-		['priced_deposit_count', 'priced_deposit_count_all_time'],
-		['unpriced_deposit_count', 'unpriced_deposit_count_all_time'],
-	] as const)('%s の description に写像先と削除目標バージョンが書いてある', (deprecated, replacement) => {
-		for (const field of ['yearly_realized_pnl', 'monthly_realized_pnl'] as const) {
-			const description = descriptionOf(periodRealizedPnlShape(field), deprecated);
-			expect(description, `${field}.${deprecated}`).toContain('非推奨');
-			expect(description, `${field}.${deprecated}`).toContain(replacement);
-			expect(description, `${field}.${deprecated}`).toContain(DEPRECATED_FIELD_REMOVAL_TARGET);
-			expect(description, `${field}.${deprecated}`).toContain('期間スコープではない');
-		}
-	});
-
+describe('入庫の原価算入件数 — holdings[] の命名（#85）', () => {
 	it('holdings[] の unpriced_deposit_count は改名していない（配置と意味が一致しているため）', () => {
 		const keys = Object.keys(holdingShape());
 		expect(keys).toContain('unpriced_deposit_count');

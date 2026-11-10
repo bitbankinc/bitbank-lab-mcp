@@ -213,7 +213,7 @@ describe('analyze_ichimoku_snapshot', () => {
 		// 見出しだけの検証だと【数値データ】が空でも通ってしまうので、モックの入力値がそのまま数値として本文に出ていることまで見る。
 		expect(res.summary).toContain('【数値データ】');
 		expect(res.summary).toContain('転換線: 90 / 基準線: 95');
-		expect(res.summary).toContain('雲(今日): spanA=100 spanB=110');
+		expect(res.summary).toContain('雲(現在): spanA=100 spanB=110');
 		expect(res.summary.split('\n').length).toBeGreaterThan(1);
 	});
 

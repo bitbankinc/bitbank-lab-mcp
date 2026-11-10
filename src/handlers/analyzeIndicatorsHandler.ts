@@ -1,14 +1,29 @@
 import type { z } from 'zod';
 import { nowIso, resolveTz, toDisplayTime } from '../../lib/datetime.js';
 import {
+	barCountLabel,
+	barsAgoLabel,
 	formatDeviation,
 	formatExactPrice,
 	formatPercent,
 	formatPriceAtLevel,
 	formatPriceJPY,
 	formatTrendSymbol,
+	prevBarChangeLabel,
 } from '../../lib/formatter.js';
-import { ICHIMOKU_SHIFT, RSI_OVERBOUGHT, RSI_OVERSOLD } from '../../lib/indicator-config.js';
+import { ICHIMOKU_SHIFT, RSI_MIDLINE } from '../../lib/indicator-config.js';
+import {
+	type BbWidthRank,
+	bbPosition,
+	bbPositionLabel,
+	bbWidthRank,
+	bbWidthState,
+	bbWidthStateLabel,
+	bbZScore,
+	rsiZoneLabel,
+	stochZone,
+	stochZoneLabel,
+} from '../../lib/indicator-zones.js';
 import { currentCloudSpans, lastCrossover } from '../../lib/indicators.js';
 import { EPSILON } from '../../lib/math.js';
 import { prependProvisionalNote } from '../../lib/provisional-bar.js';
@@ -30,7 +45,6 @@ export interface BuildIndicatorsTextInput {
 	trend: string;
 	rsi: number | null;
 	recentRsiFormatted: string[];
-	rsiUnitLabel: string;
 	macdLine: number | null;
 	macdSignal: number | null;
 	macdHist: number | null;
@@ -49,6 +63,7 @@ export interface BuildIndicatorsTextInput {
 	bbLo: number | null;
 	sigmaZ: number | null;
 	bandWidthPct: number | null;
+	bandWidthRank?: BbWidthRank | null;
 	bwTrend: string | null;
 	sigmaHistory: Array<{ off: number; z: number } | null> | null;
 	tenkan: number | null;
@@ -89,7 +104,6 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 		trend,
 		rsi,
 		recentRsiFormatted,
-		rsiUnitLabel,
 		macdLine,
 		macdSignal,
 		macdHist,
@@ -108,6 +122,7 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 		bbLo,
 		sigmaZ,
 		bandWidthPct,
+		bandWidthRank = null,
 		bwTrend,
 		sigmaHistory,
 		tenkan,
@@ -136,13 +151,6 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	} = input;
 
 	const vsCurPct = (ref?: number | null) => formatDeviation(close, ref);
-	const rsiInterp = (val: number | null) => {
-		if (val == null) return '—';
-		if (val <= RSI_OVERSOLD) return '売られすぎ圏（反発の可能性）';
-		if (val < 50) return '弱め（反発余地）';
-		if (val < RSI_OVERBOUGHT) return '中立〜強め';
-		return '買われすぎ圏（反落の可能性）';
-	};
 
 	const lines: string[] = [];
 	lines.push(`=== ${String(pair).toUpperCase()} ${String(type)} 分析 ===`);
@@ -154,26 +162,20 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	lines.push('【総合判定】');
 	const trendText =
 		trend === 'strong_downtrend' ? '強い下降トレンド ⚠️' : trend === 'uptrend' ? '上昇トレンド' : '中立/レンジ';
-	const rsiHint =
-		rsi == null
-			? '—'
-			: Number(rsi) <= RSI_OVERSOLD
-				? '売られすぎ'
-				: Number(rsi) >= RSI_OVERBOUGHT
-					? '買われすぎ'
-					: '中立圏';
-	const bwState =
-		bandWidthPct == null ? '—' : bandWidthPct < 8 ? 'スクイーズ' : bandWidthPct > 20 ? 'エクスパンション' : '標準';
+	const rsiLabel = rsiZoneLabel(rsi) ?? '—';
+	const widthState = bbWidthState(bandWidthRank);
+	const bwState = widthState && bandWidthRank ? bbWidthStateLabel(widthState, bandWidthRank) : '—';
+	const position = bbPosition(sigmaZ);
 	lines.push(`  トレンド: ${trendText}`);
-	lines.push(`  勢い: RSI=${rsi ?? 'n/a'} → ${rsiHint}`);
+	lines.push(`  勢い: RSI=${rsi ?? 'n/a'} → ${rsiLabel}`);
 	lines.push(
-		`  リスク: BB幅=${bandWidthPct != null ? `${bandWidthPct}%` : 'n/a'} → ${bwState}${bwTrend ? `（${bwTrend}）` : ''}`,
+		`  リスク: BB幅=${bandWidthPct != null ? `${Number(bandWidthPct.toFixed(2))}%` : 'n/a'} → ${bwState}${bwTrend ? `（${bwTrend}）` : ''}`,
 	);
 	lines.push('');
 	lines.push('【モメンタム】');
-	lines.push(`  RSI(14): ${rsi ?? 'n/a'} → ${rsiInterp(rsi)}`);
+	lines.push(`  RSI(14): ${rsi ?? 'n/a'} → ${rsiLabel}`);
 	if (recentRsiFormatted.length >= 2) {
-		lines.push(`    【RSI推移（直近${recentRsiFormatted.length}${rsiUnitLabel}）】`);
+		lines.push(`    【RSI推移（直近${barCountLabel(recentRsiFormatted.length, type)}）】`);
 		lines.push('');
 		lines.push(`    ${recentRsiFormatted.join(' → ')}`);
 	}
@@ -200,19 +202,19 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	lines.push('');
 	lines.push('【ボラティリティ（ボリンジャーバンド±2σ）】');
 	lines.push(
-		`  現在位置: ${sigmaZ != null ? `${sigmaZ}σ` : 'n/a'} → ${sigmaZ != null ? (sigmaZ <= -1 ? '売られすぎ' : sigmaZ >= 1 ? '買われすぎ' : '中立') : '—'}`,
+		`  現在位置: ${sigmaZ != null ? `${Number(sigmaZ.toFixed(2))}σ` : 'n/a'} → ${position ? bbPositionLabel(position) : '—'}`,
 	);
 	lines.push(`  middle: ${formatPriceJPY(bbMid)} (${vsCurPct(bbMid)})`);
 	lines.push(`  upper:  ${formatPriceJPY(bbUp)} (${vsCurPct(bbUp)})`);
 	lines.push(
 		`  lower:  ${formatPriceJPY(bbLo)} (${vsCurPct(bbLo)})${bbLo != null && close != null && Number(bbLo) < Number(close) ? '' : ' ← 現在価格に近い'}`,
 	);
-	if (bandWidthPct != null) lines.push(`  バンド幅: ${bandWidthPct}% → ${bwTrend ?? '—'}`);
+	if (bandWidthPct != null) lines.push(`  バンド幅: ${Number(bandWidthPct.toFixed(2))}% → ${bwTrend ?? '—'}`);
 	if (sigmaHistory?.[0] && sigmaHistory[1]) {
 		const ago5 = sigmaHistory[0]?.z;
 		const curZ = sigmaHistory[1]?.z;
 		lines.push('  過去推移:');
-		if (ago5 != null) lines.push(`    ・5日前: ${ago5}σ`);
+		if (ago5 != null) lines.push(`    ・${barsAgoLabel(5, type)}: ${ago5}σ`);
 		if (curZ != null) lines.push(`    ・現在: ${curZ}σ`);
 	}
 	lines.push('');
@@ -244,10 +246,8 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	lines.push('【ストキャスティクスRSI】');
 	if (stochK != null && stochD != null) {
 		lines.push(`  %K: ${Number(stochK).toFixed(1)}  %D: ${Number(stochD).toFixed(1)}`);
-		const stochZone = Number(stochK) <= 20 ? '売られすぎゾーン' : Number(stochK) >= 80 ? '買われすぎゾーン' : '中立圏';
-		const stochStrength =
-			Number(stochK) <= 10 ? '（強い売られすぎ）' : Number(stochK) >= 90 ? '（強い買われすぎ）' : '';
-		lines.push(`  判定: ${stochZone}${stochStrength}`);
+		const zone = stochZone(Number(stochK));
+		lines.push(`  判定: ${zone ? stochZoneLabel(zone) : '—'}`);
 		if (stochPrevK != null && stochPrevD != null) {
 			const prevBelow = Number(stochPrevK) < Number(stochPrevD);
 			const curAbove = Number(stochK) > Number(stochD);
@@ -300,7 +300,7 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	lines.push('');
 	lines.push('【次に確認すべきこと】');
 	lines.push('  ・より詳しく: analyze_bb_snapshot / analyze_ichimoku_snapshot / analyze_sma_snapshot');
-	lines.push('  ・転換サイン例: RSI>40, MACDヒストグラムのプラ転, 25日線の明確な上抜け');
+	lines.push(`  ・転換サイン例: RSIの${RSI_MIDLINE}超え, MACDヒストグラムのプラ転, SMA25の明確な上抜け`);
 	lines.push('');
 	lines.push('詳細は structuredContent.data.indicators / chart を参照。');
 	return lines.join('\n');
@@ -313,32 +313,12 @@ function calcDeltaPrev(close: number | null, prev: number | null): { amt: number
 	return { amt, pct };
 }
 
-function calcDeltaLabel(type: string): string {
-	const t = String(type ?? '').toLowerCase();
-	if (t.includes('day')) return '前日比';
-	if (t.includes('week')) return '前週比';
-	if (t.includes('month')) return '前月比';
-	if (t.includes('hour')) return '前時間比';
-	if (t.includes('min')) return '前足比';
-	return '前回比';
-}
-
 function extractRecentRsi(rsiSeries: unknown[] | null, count: number): (number | null)[] {
 	if (!Array.isArray(rsiSeries) || rsiSeries.length === 0) return [];
 	return rsiSeries.slice(-count).map((v: unknown) => {
 		const num = Number(v);
 		return Number.isFinite(num) ? num : null;
 	});
-}
-
-function calcRsiUnitLabel(type: string): string {
-	const t = String(type ?? '').toLowerCase();
-	if (t.includes('day')) return '日';
-	if (t.includes('week')) return '週';
-	if (t.includes('month')) return '月';
-	if (t.includes('hour')) return '時間';
-	if (t.includes('min')) return '本';
-	return '本';
 }
 
 function detectDivergence(
@@ -366,9 +346,9 @@ function detectDivergence(
 function calcSmaArrangement(curNum: number, s25n: number, s75n: number, s200n: number): string {
 	const pts: Array<{ label: string; v: number }> = [];
 	if (Number.isFinite(curNum)) pts.push({ label: '価格', v: curNum });
-	if (Number.isFinite(s25n)) pts.push({ label: '25日', v: s25n });
-	if (Number.isFinite(s75n)) pts.push({ label: '75日', v: s75n });
-	if (Number.isFinite(s200n)) pts.push({ label: '200日', v: s200n });
+	if (Number.isFinite(s25n)) pts.push({ label: 'SMA25', v: s25n });
+	if (Number.isFinite(s75n)) pts.push({ label: 'SMA75', v: s75n });
+	if (Number.isFinite(s200n)) pts.push({ label: 'SMA200', v: s200n });
 	if (pts.length < 3) return 'n/a';
 	pts.sort((a, b) => a.v - b.v);
 	return pts.map((p) => p.label).join(' < ');
@@ -396,21 +376,17 @@ function calcBandWidthTrend(bbSeries: {
 
 function calcSigmaHistory(
 	candles: Array<{ close?: number }>,
-	bbSeries: { upper: number[] | null; middle: number[] | null },
+	bbSeries: { upper: number[] | null; middle: number[] | null; lower: number[] | null },
 ): Array<{ off: number; z: number } | null> | null {
 	try {
-		if (!bbSeries.upper || !bbSeries.middle) return null;
-		const L = Math.min(candles.length, bbSeries.upper.length, bbSeries.middle.length);
+		if (!bbSeries.upper || !bbSeries.middle || !bbSeries.lower) return null;
+		const L = Math.min(candles.length, bbSeries.upper.length, bbSeries.middle.length, bbSeries.lower.length);
 		if (L < 6) return null;
-		const { upper, middle } = bbSeries;
+		const { upper, middle, lower } = bbSeries;
 		const idxs = [-6, -1];
 		const vals = idxs.map((off) => {
-			const c = Number(candles.at(off)?.close ?? NaN);
-			const m = Number(middle.at(off) ?? NaN);
-			const u = Number(upper.at(off) ?? NaN);
-			if (![c, m, u].every(Number.isFinite)) return null;
-			const z = Number(((2 * (c - m)) / Math.max(EPSILON, u - m)).toFixed(2));
-			return { off, z };
+			const z = bbZScore(candles.at(off)?.close, middle.at(off), upper.at(off), lower.at(off));
+			return z == null ? null : { off, z: Number(z.toFixed(2)) };
 		});
 		return vals;
 	} catch {
@@ -489,24 +465,20 @@ export const toolDef: ToolDefinition = {
 		const anchoredTime = date && Number.isFinite(latestTimestamp) ? toDisplayTime(latestTimestamp, effectiveTz) : null;
 		const timeContext = date ? `${anchoredTime ?? date} 時点（終端 date=${date} 指定）` : undefined;
 		const deltaPrev = calcDeltaPrev(close, prev);
-		const deltaLabel = calcDeltaLabel(type);
+		const deltaLabel = prevBarChangeLabel(type);
 		const rsi = ind.RSI_14 ?? null;
 		const rsiSeries = Array.isArray(res?.data?.indicators?.RSI_14_series) ? res.data.indicators.RSI_14_series : null;
 		const recentRsiRaw = extractRecentRsi(rsiSeries, 7);
 		const recentRsiFormatted = recentRsiRaw.map((v) => (v == null ? 'n/a' : Number(v).toFixed(1)));
-		const rsiUnitLabel = calcRsiUnitLabel(type);
 		const sma25 = ind.SMA_25 ?? null;
 		const sma75 = ind.SMA_75 ?? null;
 		const sma200 = ind.SMA_200 ?? null;
 		const bbMid = ind.BB_middle ?? ind.BB2_middle ?? null;
 		const bbUp = ind.BB_upper ?? ind.BB2_upper ?? null;
 		const bbLo = ind.BB_lower ?? ind.BB2_lower ?? null;
-		const sigmaZ =
-			close != null && bbMid != null && bbUp != null && bbUp - bbMid !== 0
-				? Number(((2 * (close - bbMid)) / (bbUp - bbMid)).toFixed(2))
-				: null;
-		const bandWidthPct =
-			bbUp != null && bbLo != null && bbMid ? Number((((bbUp - bbLo) / bbMid) * 100).toFixed(2)) : null;
+		// 丸めるのは表示だけ。丸めてから区切ると、境目の近くで analyze_bb_snapshot と位置・幅の状態が食い違う。
+		const sigmaZ = bbZScore(close, bbMid, bbUp, bbLo);
+		const bandWidthPct = bbUp != null && bbLo != null && bbMid ? ((bbUp - bbLo) / bbMid) * 100 : null;
 		const macdLine = ind.MACD_line ?? null;
 		const macdSignal = ind.MACD_signal ?? null;
 		const macdHist = ind.MACD_hist ?? null;
@@ -569,6 +541,7 @@ export const toolDef: ToolDefinition = {
 			middle: series.BB_middle,
 		};
 		const bwTrend = calcBandWidthTrend(bbSeries);
+		const bandWidthRank = bbWidthRank(bbSeries.upper ?? [], bbSeries.middle ?? [], bbSeries.lower ?? []);
 		const sigmaHistory = calcSigmaHistory(candles, bbSeries);
 		const cloudThickness = cloudTop != null && cloudBot != null ? cloudTop - cloudBot : null;
 		const cloudThicknessPct =
@@ -600,7 +573,6 @@ export const toolDef: ToolDefinition = {
 			trend,
 			rsi,
 			recentRsiFormatted,
-			rsiUnitLabel,
 			macdLine,
 			macdSignal,
 			macdHist,
@@ -619,6 +591,7 @@ export const toolDef: ToolDefinition = {
 			bbLo,
 			sigmaZ,
 			bandWidthPct,
+			bandWidthRank,
 			bwTrend,
 			sigmaHistory,
 			tenkan,

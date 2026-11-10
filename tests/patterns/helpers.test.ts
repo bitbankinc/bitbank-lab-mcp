@@ -1,26 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import {
-	barsPerDay,
-	deduplicatePatterns,
-	finalizeConf,
-	globalDedup,
-	PERIOD_SCORE_BAR_BUCKETS,
-	periodScoreBars,
-	periodScoreDays,
-} from '../../tools/patterns/helpers.js';
+import { barsPerDay, deduplicatePatterns, finalizeConf, globalDedup } from '../../tools/patterns/helpers.js';
 import type { CandleData, DeduplicablePattern, TrendLine } from '../../tools/patterns/types.js';
 import {
 	calcAlternationScoreEx,
 	calcApex,
-	calcDurationScoreEx,
-	calcInsideRatioEx,
-	calculatePatternScoreEx,
 	checkContainment,
-	checkConvergenceEx,
-	detectWedgeBreak,
-	determineWedgeType,
 	evaluateTouchesEx,
-	generateWindows,
 } from '../../tools/patterns/wedge-helpers.js';
 
 function makeTrendLine(slope: number, intercept: number): TrendLine {
@@ -36,45 +21,6 @@ function makeCandles(count: number, basePrice: number = 100): CandleData[] {
 		isoTime: `2024-01-${String(i + 1).padStart(2, '0')}`,
 	}));
 }
-
-describe('generateWindows', () => {
-	it('正しいウィンドウを生成する', () => {
-		const windows = generateWindows(20, 5, 10, 5);
-		expect(windows.length).toBeGreaterThan(0);
-		for (const w of windows) {
-			expect(w.endIdx - w.startIdx).toBeGreaterThanOrEqual(5);
-			expect(w.endIdx - w.startIdx).toBeLessThanOrEqual(10);
-			expect(w.endIdx).toBeLessThan(20);
-		}
-	});
-
-	it('totalBars が minSize 未満なら空を返す', () => {
-		const windows = generateWindows(3, 5, 10, 5);
-		expect(windows).toEqual([]);
-	});
-});
-
-describe('determineWedgeType', () => {
-	it('両ライン上向き・下側が急 → rising_wedge', () => {
-		const result = determineWedgeType(0.001, 0.002, { slopeRatioMinRising: 1.2 });
-		expect(result).toBe('rising_wedge');
-	});
-
-	it('両ライン下向き・上側が急 → falling_wedge', () => {
-		const result = determineWedgeType(-0.003, -0.001, { slopeRatioMinFalling: 1.15 });
-		expect(result).toBe('falling_wedge');
-	});
-
-	it('傾きが小さすぎる場合は null', () => {
-		const result = determineWedgeType(0.00001, 0.00002, {});
-		expect(result).toBeNull();
-	});
-
-	it('比率が 0.9-1.1 の範囲内（ほぼ平行）は null', () => {
-		const result = determineWedgeType(0.001, -0.001, {});
-		expect(result).toBeNull();
-	});
-});
 
 describe('calcApex', () => {
 	it('収束するトレンドラインの Apex を計算', () => {
@@ -122,23 +68,6 @@ describe('checkContainment', () => {
 	});
 });
 
-describe('checkConvergenceEx', () => {
-	it('収束するラインで isConverging=true', () => {
-		const upper = makeTrendLine(-1, 200);
-		const lower = makeTrendLine(0.5, 50);
-		const result = checkConvergenceEx(upper, lower, 0, 80);
-		expect(result.isConverging).toBe(true);
-		expect(result.score).toBeGreaterThan(0);
-	});
-
-	it('発散するラインで isConverging=false', () => {
-		const upper = makeTrendLine(2, 200);
-		const lower = makeTrendLine(-1, 50);
-		const result = checkConvergenceEx(upper, lower, 0, 50);
-		expect(result.isConverging).toBe(false);
-	});
-});
-
 describe('evaluateTouchesEx', () => {
 	it('タッチポイントを検出する', () => {
 		const candles: readonly CandleData[] = Array.from({ length: 20 }, (_, i) => ({
@@ -152,8 +81,8 @@ describe('evaluateTouchesEx', () => {
 		const result = evaluateTouchesEx(candles, upper, lower, 0, 19);
 		expect(result.upperTouches.length).toBeGreaterThanOrEqual(0);
 		expect(result.lowerTouches.length).toBeGreaterThanOrEqual(0);
-		expect(result.score).toBeGreaterThanOrEqual(0);
-		expect(result.score).toBeLessThanOrEqual(1);
+		expect(result.upperQuality).toBe(result.upperTouches.filter((t) => !t.isBreak).length);
+		expect(result.lowerQuality).toBe(result.lowerTouches.filter((t) => !t.isBreak).length);
 	});
 });
 
@@ -170,7 +99,6 @@ describe('calcAlternationScoreEx', () => {
 			],
 			upperQuality: 2,
 			lowerQuality: 2,
-			score: 0.5,
 		};
 		expect(calcAlternationScoreEx(touches)).toBe(1);
 	});
@@ -185,7 +113,6 @@ describe('calcAlternationScoreEx', () => {
 			lowerTouches: [],
 			upperQuality: 3,
 			lowerQuality: 0,
-			score: 0.375,
 		};
 		expect(calcAlternationScoreEx(touches)).toBe(0);
 	});
@@ -196,208 +123,24 @@ describe('calcAlternationScoreEx', () => {
 			lowerTouches: [],
 			upperQuality: 1,
 			lowerQuality: 0,
-			score: 0.125,
 		};
 		expect(calcAlternationScoreEx(touches)).toBe(0);
 	});
 });
 
-describe('calcInsideRatioEx', () => {
-	it('全て内側なら 1', () => {
-		const candles: readonly CandleData[] = [
-			{ open: 100, close: 100, high: 105, low: 95 },
-			{ open: 100, close: 100, high: 105, low: 95 },
-		];
-		const upper = { valueAt: () => 110 };
-		const lower = { valueAt: () => 90 };
-		expect(calcInsideRatioEx(candles, upper, lower, 0, 1)).toBe(1);
-	});
-
-	it('全て外側なら 0', () => {
-		const candles: readonly CandleData[] = [{ open: 100, close: 100, high: 120, low: 80 }];
-		const upper = { valueAt: () => 105 };
-		const lower = { valueAt: () => 95 };
-		expect(calcInsideRatioEx(candles, upper, lower, 0, 0)).toBe(0);
-	});
-});
-
-describe('calcDurationScoreEx', () => {
-	it('範囲内の中央値で最高スコア', () => {
-		const score = calcDurationScoreEx(57, { windowSizeMin: 25, windowSizeMax: 90 });
-		expect(score).toBeCloseTo(1, 1);
-	});
-
-	it('範囲外なら 0', () => {
-		expect(calcDurationScoreEx(10, { windowSizeMin: 25, windowSizeMax: 90 })).toBe(0);
-		expect(calcDurationScoreEx(100, { windowSizeMin: 25, windowSizeMax: 90 })).toBe(0);
-	});
-
-	it('デフォルトパラメータを使用', () => {
-		const score = calcDurationScoreEx(57, {});
-		expect(score).toBeGreaterThan(0);
-	});
-});
-
-describe('calculatePatternScoreEx', () => {
-	it('全コンポーネント=1 なら 1', () => {
-		const components = {
-			fitScore: 1,
-			convergeScore: 1,
-			touchScore: 1,
-			alternationScore: 1,
-			insideScore: 1,
-			durationScore: 1,
-		};
-		expect(calculatePatternScoreEx(components)).toBeCloseTo(1, 5);
-	});
-
-	it('全コンポーネント=0 なら 0', () => {
-		const components = {
-			fitScore: 0,
-			convergeScore: 0,
-			touchScore: 0,
-			alternationScore: 0,
-			insideScore: 0,
-			durationScore: 0,
-		};
-		expect(calculatePatternScoreEx(components)).toBe(0);
-	});
-
-	it('カスタム重みを使用可能', () => {
-		const components = {
-			fitScore: 1,
-			convergeScore: 0,
-			touchScore: 0,
-			alternationScore: 0,
-			insideScore: 0,
-			durationScore: 0,
-		};
-		const weights = { fit: 1, converge: 0, touch: 0, alternation: 0, inside: 0, duration: 0 };
-		expect(calculatePatternScoreEx(components, weights)).toBe(1);
-	});
-});
-
-describe('periodScoreDays（暦日基準。double / H&S が使う）', () => {
-	it('ISO文字列なしは 0.7', () => {
-		expect(periodScoreDays()).toBe(0.7);
-	});
-
-	it('短期間は低スコア', () => {
-		expect(periodScoreDays('2024-01-01', '2024-01-03')).toBe(0.6);
-	});
-
-	it('15-30日は高スコア', () => {
-		expect(periodScoreDays('2024-01-01', '2024-01-20')).toBe(0.9);
-	});
-
-	// 30 日以上だけ 0.9 → 0.7 と下がる。この非単調性は暦日版の仕様として固定する（バー数版には引き継いでいない）。
-	it('30日以上は 0.9 から 0.7 に下がる（非単調。引数なしと同じ中立値）', () => {
-		expect(periodScoreDays('2024-01-01', '2024-02-05')).toBe(0.7);
-		expect(periodScoreDays('2024-01-01', '2024-02-05')).toBe(periodScoreDays());
-	});
-});
-
-describe('periodScoreBars（バー数基準。triple が使う）', () => {
-	it('境界は 12 / 18 / 26 バー', () => {
-		expect(PERIOD_SCORE_BAR_BUCKETS).toEqual([12, 18, 26]);
-	});
-
-	it.each([
-		[0, 0.6],
-		[11, 0.6],
-		[12, 0.7],
-		[17, 0.7],
-		[18, 0.8],
-		[25, 0.8],
-		[26, 0.9],
-		[1000, 0.9],
-	])('%i バー → %f', (bars, expected) => {
-		expect(periodScoreBars(bars)).toBe(expected);
-	});
-
-	// ここが崩れると「由来不明の段差をバー空間に持ち込まない」という #199 候補 2 の判断が黙って戻る。
-	it('単調非減少（暦日版の 0.9 → 0.7 の段差を引き継いでいない）', () => {
-		const scores = Array.from({ length: 60 }, (_, bars) => periodScoreBars(bars));
-		for (let i = 1; i < scores.length; i++) {
-			expect(scores[i]).toBeGreaterThanOrEqual(scores[i - 1]);
-		}
-		expect(Math.max(...scores)).toBe(0.9);
-	});
-
-	it('時間足に依らない（引数はバー数だけで tf を受け取らない）', () => {
-		expect(periodScoreBars.length).toBe(1);
-	});
-
-	it('非有限値は中立値 0.7', () => {
-		expect(periodScoreBars(Number.NaN)).toBe(0.7);
-		expect(periodScoreBars(Number.POSITIVE_INFINITY)).toBe(0.7);
-	});
-});
-
 describe('finalizeConf', () => {
-	it('head_and_shoulders はボーナス（*1.1）', () => {
-		const result = finalizeConf(0.8, 'head_and_shoulders');
-		expect(result).toBeCloseTo(0.88, 2);
-	});
-
-	it('triple_top はボーナス（*1.05）', () => {
-		const result = finalizeConf(0.8, 'triple_top');
-		expect(result).toBeCloseTo(0.84, 2);
-	});
-
-	it('triangle はペナルティ（*0.95）', () => {
-		const result = finalizeConf(0.8, 'triangle_ascending');
-		expect(result).toBeCloseTo(0.76, 2);
+	it('種別ごとの補正を掛けず、小数 2 桁に丸めるだけ（#422）', () => {
+		expect(finalizeConf(0.8)).toBe(0.8);
+		expect(finalizeConf(0.8149)).toBe(0.81);
+		expect(finalizeConf(0.815)).toBe(0.82);
 	});
 
 	it('1 を超えない', () => {
-		expect(finalizeConf(1, 'head_and_shoulders')).toBeLessThanOrEqual(1);
+		expect(finalizeConf(1.3)).toBe(1);
 	});
 
 	it('0 未満にならない', () => {
-		expect(finalizeConf(0, 'unknown')).toBeGreaterThanOrEqual(0);
-	});
-});
-
-describe('detectWedgeBreak', () => {
-	it('ブレイクがない場合は detected=false', () => {
-		const candles = makeCandles(50, 100);
-		const upper = { valueAt: () => 200 };
-		const lower = { valueAt: () => 0 };
-		const result = detectWedgeBreak(candles, 'falling_wedge', upper, lower, 0, 30, 49, 10);
-		expect(result.detected).toBe(false);
-		expect(result.breakIdx).toBe(-1);
-	});
-
-	it('上方ブレイクを検出する', () => {
-		const candles: CandleData[] = Array.from({ length: 60 }, (_, i) => ({
-			open: 100,
-			close: i >= 40 ? 250 : 100,
-			high: i >= 40 ? 260 : 110,
-			low: 90,
-			isoTime: `2024-01-${String(i + 1).padStart(2, '0')}`,
-		}));
-		const upper = { valueAt: () => 120 };
-		const lower = { valueAt: () => 80 };
-		const result = detectWedgeBreak(candles, 'falling_wedge', upper, lower, 0, 50, 59, 5);
-		expect(result.detected).toBe(true);
-		expect(result.breakIdx).toBe(51);
-		expect(result.breakPrice).toBeGreaterThan(120);
-	});
-
-	it('形成終端以前の境界外終値を過去のブレイクとして検出しない', () => {
-		const candles: CandleData[] = Array.from({ length: 60 }, (_, i) => ({
-			open: 100,
-			close: i === 40 ? 250 : 100,
-			high: i === 40 ? 260 : 110,
-			low: 90,
-			isoTime: `2024-01-${String(i + 1).padStart(2, '0')}`,
-		}));
-		const upper = { valueAt: () => 120 };
-		const lower = { valueAt: () => 80 };
-		const result = detectWedgeBreak(candles, 'falling_wedge', upper, lower, 0, 50, 59, 5);
-		expect(result.detected).toBe(false);
-		expect(result.breakIdx).toBe(-1);
+		expect(finalizeConf(-0.2)).toBe(0);
 	});
 });
 

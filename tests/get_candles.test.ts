@@ -255,7 +255,7 @@ describe('getCandles', () => {
 			assertOk(res);
 			expect(res.data.volumeStats).not.toBeNull();
 			expect(res.data.volumeStats?.changePct).toBeNull();
-			expect(res.data.volumeStats?.judgment).toBe('前週比較不可（前7日間の出来高ゼロ）');
+			expect(res.data.volumeStats?.judgment).toBe('比較不可（その前7日の出来高ゼロ）');
 			expect(res.data.volumeStats?.previous7DaysAvg).toBe(0);
 		});
 
@@ -285,7 +285,7 @@ describe('getCandles', () => {
 			assertOk(res);
 			expect(res.data.volumeStats).not.toBeNull();
 			expect(res.data.volumeStats?.changePct).toBeNull();
-			expect(res.data.volumeStats?.judgment).toBe('前週比較不可（前7日間の出来高ゼロ）');
+			expect(res.data.volumeStats?.judgment).toBe('比較不可（その前7日の出来高ゼロ）');
 			expect(res.data.volumeStats?.recent7DaysAvg).toBe(0);
 			expect(res.data.volumeStats?.previous7DaysAvg).toBe(0);
 		});
@@ -321,7 +321,7 @@ describe('getCandles', () => {
 			const text = res.content[0].text;
 			expect(text).not.toMatch(/Infinity/);
 			expect(text).not.toMatch(/NaN/);
-			expect(text).toContain('前週比較不可');
+			expect(text).toContain('比較不可（その前7日の出来高ゼロ）');
 		});
 	});
 
@@ -457,6 +457,56 @@ describe('getCandles', () => {
 			for (let y = 2018; y <= 2030; y++) {
 				expect(calledUrls.some((u) => u.endsWith(`/btc_jpy/candlestick/1month/${y}`))).toBe(false);
 			}
+		});
+
+		// 要求された暦年の月足 12 本を返す。2010 年以前は上流と同じく success:0。
+		const buildMonthlyByYearMock = () =>
+			vi.fn().mockImplementation(async (url: unknown) => {
+				const year = Number(String(url).split('/').at(-1));
+				const ohlcv = Array.from({ length: 12 }, (_, m) => [
+					'100',
+					'110',
+					'90',
+					'105',
+					'1.0',
+					String(Date.UTC(year, m, 1)),
+				]);
+				return {
+					ok: true,
+					status: 200,
+					statusText: 'OK',
+					json: async () =>
+						year >= 2011 ? { success: 1, data: { candlestick: [{ ohlcv }] } } : { success: 0, data: { code: 10000 } },
+				};
+			});
+
+		it('上流に足が無い 2010 年以前の暦年は取りに行かず、切り詰めたことを注記する', async () => {
+			const fetchMock = buildMonthlyByYearMock();
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			// 2017 年を起点に 420 本 = 35 年ぶん遡ると 1983 年まで届く
+			const res = await getCandles('btc_jpy', '1month', '2017', 420);
+
+			const calledUrls = fetchMock.mock.calls.map((call) => String(call[0]));
+			expect(calledUrls.some((u) => u.endsWith('/btc_jpy/candlestick/1month/2011'))).toBe(true);
+			for (let y = 1983; y <= 2010; y++) {
+				expect(calledUrls.some((u) => u.endsWith(`/btc_jpy/candlestick/1month/${y}`))).toBe(false);
+			}
+			assertOk(res);
+			expect(res.meta.warning).toContain('UTC 暦年 2010 以前は bitbank に足が無いため取得していません');
+			// 出力に残るのは data.raw._multiYear（meta.multiYear は出力スキーマに無い）。実際に取りに行った 2011〜2017 年の 7 年
+			const raw = res.data.raw as { _multiYear?: { years: number[] } };
+			expect([...(raw._multiYear?.years ?? [])].sort()).toEqual([2011, 2012, 2013, 2014, 2015, 2016, 2017]);
+		});
+
+		it('下限より前を切り詰めなかったときは注記を出さない', async () => {
+			const fetchMock = buildMonthlyByYearMock();
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+			const res = await getCandles('btc_jpy', '1month', '2017', 24);
+
+			assertOk(res);
+			expect(res.meta.warning ?? '').not.toContain('bitbank に足が無いため');
 		});
 
 		it('date 未指定時は現在年を起点に過去年を取得する（従来挙動）', async () => {
@@ -948,7 +998,7 @@ describe('getCandles', () => {
 	});
 
 	describe('toolDef.handler 経由', () => {
-		it('success:0 + view=items のとき fail を透過し 0件 JSON を返さない', async () => {
+		it('success:0 + format=json のとき fail を透過し 0件 JSON を返さない', async () => {
 			const fetchMock = vi.fn().mockResolvedValue({
 				ok: true,
 				status: 200,
@@ -962,7 +1012,7 @@ describe('getCandles', () => {
 				type: '1day',
 				date: '2024',
 				limit: 10,
-				view: 'items',
+				format: 'json',
 			})) as {
 				ok: boolean;
 				meta?: { errorType?: string };
@@ -991,7 +1041,7 @@ describe('getCandles', () => {
 			expect(res.meta?.errorType).toBe('upstream');
 		});
 
-		it('正常系 + view=items のとき content text は JSON 配列で N 件含む', async () => {
+		it('正常系 + format=json のとき content text は JSON 配列で N 件含む', async () => {
 			const baseTs = 1704067200000;
 			const ohlcv = Array.from({ length: 3 }, (_, i) => [
 				'100',
@@ -1017,7 +1067,7 @@ describe('getCandles', () => {
 				type: '1day',
 				date: '2024',
 				limit: 10,
-				view: 'items',
+				format: 'json',
 			})) as {
 				content: Array<{ type: string; text: string }>;
 			};
@@ -1877,9 +1927,9 @@ describe('getCandles', () => {
 			expect(res.content[0].text).toContain('未確定（形成中）');
 		});
 
-		it('handler items view: realtime では JSON を content[0] に保ちつつ注記ブロックが残る', async () => {
+		it('handler format=json: realtime では JSON を content[0] に保ちつつ注記ブロックが残る', async () => {
 			mockOhlcv(makeRowsEndingToday(30));
-			const res = (await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 14, view: 'items' })) as {
+			const res = (await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 14, format: 'json' })) as {
 				content: Array<{ type: string; text: string }>;
 			};
 			// content[0] は JSON 配列のまま（既存契約を維持）。
@@ -1888,14 +1938,14 @@ describe('getCandles', () => {
 			expect(res.content.some((c) => c.text.includes('未確定（形成中）'))).toBe(true);
 		});
 
-		it('handler items view: 過去日 anchor では注記ブロックを付けない', async () => {
+		it('handler format=json: 過去日 anchor では注記ブロックを付けない', async () => {
 			mockOhlcv(makePastRows(30));
 			const res = (await toolDef.handler({
 				pair: 'btc_jpy',
 				type: '1day',
 				date: '2024',
 				limit: 14,
-				view: 'items',
+				format: 'json',
 			})) as {
 				content: Array<{ type: string; text: string }>;
 			};

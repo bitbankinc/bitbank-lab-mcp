@@ -436,7 +436,16 @@ export type TargetBreakoutConfounder = z.infer<typeof TargetBreakoutConfounderSc
 
 export const DetectedPatternSchema = z.object({
 	type: PatternTypeEnum,
-	confidence: z.number().min(0).max(1),
+	confidence: z
+		.number()
+		.min(0)
+		.max(1)
+		.describe(
+			'パターン整合度。`scoreComponents` の軸の単純平均で、構造ゲートを通過した候補どうしの形の良さの比較値。' +
+				'**確率ではない**。過去の実績（7 ペアの日足・4 時間足、2017〜2026 年の完成済みパターン）では、整合度が高いほど' +
+				'目標に届きやすいという関係は無かった（flag・pennant・wedge はむしろ逆向き、反転系は件数が足りず未検証）ので、' +
+				'確率への較正も「何点以上なら信頼できる」という基準も置かない（issue #422）',
+		),
 	_fallback: z
 		.string()
 		.optional()
@@ -450,8 +459,8 @@ export const DetectedPatternSchema = z.object({
 				'**表記は検出器ごとに揃っていない**——triple は数値を文字列化するので 2.0 が `x2` になり、' +
 				'H&S は固定文字列のタグなので `x2.0_0.4` のまま `.0` が残る。前方一致（`relaxed_triple_x`）で判別し、' +
 				'係数の数値比較に使わないこと。' +
-				'**confidence から provenance は推測できない。** relaxed のペナルティ係数が検出器ごとに違い' +
-				'（double 0.85 / triple 0.95 / H&S 0.95）、さらに `finalizeConf` の種別別係数と小数 2 桁丸めを通るので逆算も保証されない。' +
+				'**confidence から provenance は推測できない。** relaxed で拾った候補も strict の物差しで採点するので' +
+				'緩めた分だけ `levelMargin` が下がるが、一律の割引は掛けておらず、点数だけでは strict と区別できない。' +
 				'**content にも出る**（issue #191 B）: summary / detailed / full の `検出経路:` 行が件数と段の内訳を申告し、' +
 				'detailed / full ではパターン見出し行の末尾に `[relaxed_triple_x1.25]` として同じ値が付く' +
 				'（`view` の説明を参照）。',
@@ -607,27 +616,21 @@ export const DetectedPatternSchema = z.object({
 	/** 構造ゲートを通過した候補どうしの形の良さの比較にだけ使う値で、構造的な妥当性はゲート（hard reject）側が担保している。 */
 	scoreComponents: z
 		.object({
-			symmetry: z
-				.number()
-				.optional()
-				.describe(
-					'2 つの主構成点（谷-谷 / 山-山 / 左肩-右肩）の同水準度。1 = 完全一致。' +
-						'**double 系と H&S 系**（triple は正規化した `levelMargin` を使う）',
-				),
 			levelMargin: z
 				.number()
 				.optional()
 				.describe(
-					'主構成点（3 山 / 3 谷）の同水準度を、その経路の許容幅（`tolerancePct`。' +
-						'relaxed 経路は係数倍した値）で正規化したもの。1 = 完全一致、0 = 許容幅ちょうど。' +
-						'**`symmetry` とは別の量**——`symmetry` は正規化していない生の relDev なので、' +
-						'同じ数値でも意味が違う。**triple 系のみ**',
+					'主構成点（double は 2 山 / 2 谷、triple は 3 山 / 3 谷、H&S は左右の肩）の同水準度。' +
+						'`1 − 主構成点どうしの平均 relDev ÷ strict の許容幅` で、1 = 完全一致、0 = 許容幅ちょうど以上。' +
+						'許容幅は strict の判定と同じで、double / triple は `tolerancePct`、H&S は `tolerancePct` と' +
+						'時間足別の肩の上限の小さいほう。relaxed 経路と形成中の経路でも strict の幅で測るので、緩めた分だけ 0 に寄る' +
+						'（形成中は、triple の 3 点目と H&S の暫定右肩に最新足の終値を使う）。**double / triple / H&S 系**',
 				),
 			headProminence: z
 				.number()
 				.optional()
 				.describe(
-					'頭が突出ゲート（`headProminencePct`。relaxed 経路は段の係数を掛けた値）を' +
+					'頭が突出ゲート（`headProminencePct`。relaxed 経路でも strict のゲート）を' +
 						'どれだけ上回っているかの余裕。`1 − ゲート ÷ 実測突出率` で、ゲートちょうど = 0、' +
 						'突出率がゲートの 2 倍 = 0.5。**H&S 系のみ**',
 				),
@@ -636,7 +639,7 @@ export const DetectedPatternSchema = z.object({
 				.optional()
 				.describe(
 					'左肩→頭 と 頭→右肩 のバー数の釣り合い（`min ÷ max`）。1 = 左右が同じ長さ。' +
-						'価格ではなく**時間軸**の対称性で、`symmetry`（肩の水準差）とは別の量。**H&S 系のみ**',
+						'価格ではなく**時間軸**の対称性で、`levelMargin`（肩の水準差）とは別の量。**H&S 系のみ**',
 				),
 			retracement: z
 				.number()
@@ -649,15 +652,71 @@ export const DetectedPatternSchema = z.object({
 					'ネックライン突破の質。突破足の終値がネックラインをパターン高さの何割ぶん' +
 						'超えたかで測る。形成中パターンには付かない',
 				),
-			duration: z
+			lineFit: z
 				.number()
 				.optional()
 				.describe(
-					'パターンの形成期間スコア。**基準が type で違う**（issue #199 候補 2）: ' +
-						'triple 系は**バー数基準**（外側 2 構成点の距離。< 12 本 → 0.6 / < 18 → 0.7 / ' +
-						'< 26 → 0.8 / 26 本以上 → 0.9 の単調な階梯）、`double` 系と H&S 系は**暦日基準**' +
-						'（< 5 日 → 0.6 / < 15 → 0.8 / < 30 → 0.9 / それ以外 → 0.7）。' +
-						'triple だけバー数なのは、暦日基準では intraday で値が定数に張り付いていたため',
+					'上下のトレンドラインの当てはまり。線ごとに `(R² − ゲート) ÷ (1 − ゲート)` を取って平均する' +
+						'（ゲートは triangle 0.6、flag / pennant 0.5）。2 点しかない線は R² が 1 に張り付くので除く' +
+						'（wedge は 2 点を通す線で引くので付かない）。**triangle / flag / pennant**',
+				),
+			convergence: z
+				.number()
+				.optional()
+				.describe(
+					'上下のラインの収束の深さ。`1 − 収束比（終端の幅 ÷ 始端の幅）÷ ゲート` で、ゲートちょうど = 0、' +
+						'終端で交わる = 1（ゲートは triangle 0.9、pennant 0.7。wedge は検出のゲート 0.8 より厳しい strict の基準 0.7）。' +
+						'**triangle / pennant / wedge**',
+				),
+			touches: z
+				.number()
+				.optional()
+				.describe(
+					'トレンドラインに使った高値・安値の点数。`1 − ゲートの点数 ÷ 点数` で、ゲートちょうど = 0、' +
+						'2 倍 = 0.5（ゲートは triangle 4 点、flag / pennant 6 点。wedge は検出のゲート 5 点より厳しい strict の基準 6 点）。' +
+						'**triangle / flag / pennant / wedge**',
+				),
+			slopeSymmetry: z
+				.number()
+				.optional()
+				.describe(
+					'上下のラインの傾きの釣り合い。`1 − ||上の傾き| − |下の傾き|| ÷ (|上の傾き| + |下の傾き|)` で、' +
+						'1 = 同じ角度。**triangle_symmetrical のみ**',
+				),
+			flatness: z
+				.number()
+				.optional()
+				.describe(
+					'水平側のラインの平らさ。`1 − |窓全体での傾き| ÷ 水平とみなす上限（3%）`。' +
+						'**triangle_ascending（上側）/ triangle_descending（下側）のみ**',
+				),
+			pole: z
+				.number()
+				.optional()
+				.describe(
+					'ポール（旗竿）の強さ。`1 − ゲートの ATR 倍率 ÷ 実測の ATR 倍率` で、ゲートちょうど = 0、' +
+						'2 倍 = 0.5（ゲートは時間足ごとに 2.0〜3.0）。**flag / pennant**',
+				),
+			parallelism: z
+				.number()
+				.optional()
+				.describe(
+					'保ち合いの幅の一定さ。`(spreadStability − 0.7) ÷ 0.3` で、ゲート（0.7）ちょうど = 0、' +
+						'幅が一定 = 1。**flag のみ**',
+				),
+			alternation: z
+				.number()
+				.optional()
+				.describe(
+					'上下のラインへのタッチが交互に並ぶ度合い。`(交互率 − 0.25) ÷ 0.75` で、ゲート（0.25）ちょうど = 0、' +
+						'完全に交互 = 1。**wedge のみ**',
+				),
+			containment: z
+				.number()
+				.optional()
+				.describe(
+					'終値が上下のラインの内側（幅の 0.3% までのはみ出しは内側）に収まる足の割合。' +
+						'`(割合 − 0.85) ÷ 0.15` で、ゲート（0.85）ちょうど = 0、全部の足が内側 = 1。**wedge のみ**',
 				),
 		})
 		.optional()

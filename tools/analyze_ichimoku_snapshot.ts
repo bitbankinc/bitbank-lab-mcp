@@ -1,5 +1,6 @@
 import type { z } from 'zod';
-import { formatPriceNumber } from '../lib/formatter.js';
+import { barsAheadLabel, formatPriceNumber } from '../lib/formatter.js';
+import { ICHIMOKU_SHIFT } from '../lib/indicator-config.js';
 import { currentCloudSpans } from '../lib/indicators.js';
 import { avg } from '../lib/math.js';
 import { roundPriceAtLevel } from '../lib/price.js';
@@ -125,7 +126,7 @@ export function buildIchimokuSnapshotText(input: BuildIchimokuSnapshotTextInput)
 			`・転換線と基準線: ${tenkanKijun === 'bullish' ? '強気' : tenkanKijun === 'bearish' ? '弱気' : '中立'}配置${tkDist != null ? ` (転換線が${formatPriceNumber(Math.abs(tkDist))}円${tenkan > (kijun as number) ? '上' : '下'})` : ''}`,
 		);
 	lines.push('');
-	lines.push('【雲の状態（今日の雲）】');
+	lines.push('【雲の状態（現在の雲）】');
 	lines.push(`・雲の方向: ${direction}`);
 	if (thickness != null)
 		lines.push(
@@ -135,7 +136,7 @@ export function buildIchimokuSnapshotText(input: BuildIchimokuSnapshotTextInput)
 		lines.push(`・雲の範囲: ${formatPriceNumber(Number(cloudBottom))}円 ~ ${formatPriceNumber(Number(cloudTop))}円`);
 	if (futureCloudTop != null && futureCloudBottom != null) {
 		lines.push('');
-		lines.push('【26日後の雲（先行スパン）】');
+		lines.push(`【${barsAheadLabel(ICHIMOKU_SHIFT, type)}の雲（先行スパン）】`);
 		lines.push(
 			`・雲の範囲: ${formatPriceNumber(Number(futureCloudBottom))}円 ~ ${formatPriceNumber(Number(futureCloudTop))}円`,
 		);
@@ -215,9 +216,11 @@ export function buildIchimokuSnapshotText(input: BuildIchimokuSnapshotTextInput)
 	lines.push('【数値データ】');
 	lines.push(`転換線: ${tenkan} / 基準線: ${kijun}`);
 	lines.push(
-		`雲(今日): spanA=${currentSpanA} spanB=${currentSpanB} top=${cloudTop} bottom=${cloudBottom} 厚み=${thickness}`,
+		`雲(現在): spanA=${currentSpanA} spanB=${currentSpanB} top=${cloudTop} bottom=${cloudBottom} 厚み=${thickness}`,
 	);
-	lines.push(`雲(26日後): spanA=${futureSpanA} spanB=${futureSpanB} top=${futureCloudTop} bottom=${futureCloudBottom}`);
+	lines.push(
+		`雲(${barsAheadLabel(ICHIMOKU_SHIFT, type)}): spanA=${futureSpanA} spanB=${futureSpanB} top=${futureCloudTop} bottom=${futureCloudBottom}`,
+	);
 	lines.push(`転換-基準: 距離=${tkDist}円 (${tkDistPct}%)`);
 	if (chikouSpan.distance != null) lines.push(`遅行スパン距離: ${chikouSpan.distance}円`);
 	if (cloudHistory.length > 0) {
@@ -260,8 +263,8 @@ export default async function analyzeIchimokuSnapshot(
 		const tenkan = latest.ICHIMOKU_conversion ?? null;
 		const kijun = latest.ICHIMOKU_base ?? null;
 		// latest.ICHIMOKU_spanA/B は 26 本後に表示される雲で、今日の雲は ichi_series の 26 本前の値を使う。
-		const futureSpanA = latest.ICHIMOKU_spanA ?? null; // 26日後の雲用
-		const futureSpanB = latest.ICHIMOKU_spanB ?? null; // 26日後の雲用
+		const futureSpanA = latest.ICHIMOKU_spanA ?? null;
+		const futureSpanB = latest.ICHIMOKU_spanB ?? null;
 
 		const series = indRes.data.indicators.ichi_series;
 		const { spanA: currentSpanA, spanB: currentSpanB } = currentCloudSpans(series);
@@ -465,12 +468,10 @@ export default async function analyzeIchimokuSnapshot(
 				close,
 				tenkan,
 				kijun,
-				// 「今日の雲」（現在価格と比較する用）
 				spanA: currentSpanA,
 				spanB: currentSpanB,
 				cloudTop,
 				cloudBottom,
-				// 「26日後の雲」（将来の参考情報）
 				futureSpanA,
 				futureSpanB,
 				futureCloudTop,

@@ -350,6 +350,11 @@ const AnalyzeBbSnapshotDataSchemaLegacy = z.object({
 	tags: z.array(z.string()),
 });
 
+const BbZScoreSchema = z
+	.number()
+	.nullable()
+	.describe('終値の中心からの距離を σ 単位で表した値。±2 が上下のバンド（中心 ± 2σ）。');
+
 const AnalyzeBbSnapshotDataSchemaStructured = z.object({
 	mode: z.enum(['default', 'extended']),
 	price: z.number().nullable(),
@@ -359,14 +364,14 @@ const AnalyzeBbSnapshotDataSchemaStructured = z.object({
 			middle: z.number().nullable(),
 			upper: z.number().nullable(),
 			lower: z.number().nullable(),
-			zScore: z.number().nullable(),
+			zScore: BbZScoreSchema,
 			bandWidthPct: z.number().nullable(),
 		}),
 		// mode=extended
 		z.object({
 			middle: z.number().nullable(),
 			bands: z.record(z.string(), z.number().nullable()).optional(),
-			zScore: z.number().nullable(),
+			zScore: BbZScoreSchema,
 			bandWidthPct: z.union([z.number().nullable(), z.record(z.string(), z.number().nullable())]),
 		}),
 	]),
@@ -399,10 +404,18 @@ export const AnalyzeBbSnapshotOutputSchema = toolResultSchema(
 	AnalyzeBbSnapshotMetaSchemaOut,
 );
 
+// 周期は取得本数を決めるので limit と同じ上限にし、get_candles が受け付ける本数に収める（#431 / #440）。
+const MA_SNAPSHOT_MAX_BARS = 365;
+const MaPeriodsSchema = z.array(z.number().int().positive().max(MA_SNAPSHOT_MAX_BARS));
+
 export const AnalyzeSmaSnapshotInputSchema = BasePairInputSchema.extend({
 	type: CandleTypeEnum.optional().default('1day'),
-	limit: z.number().int().min(200).max(365).optional().default(220),
-	periods: z.array(z.number().int()).optional().default([25, 75, 200]),
+	limit: z.number().int().min(200).max(MA_SNAPSHOT_MAX_BARS).optional().default(220),
+	periods: MaPeriodsSchema.optional()
+		.default([25, 75, 200])
+		.describe(
+			`SMA の周期（本数、1〜${MA_SNAPSHOT_MAX_BARS}）。どの周期も取得した足から計算する。足が周期より少ないと値は null になり warnings に出る。`,
+		),
 });
 
 export const AnalyzeSmaSnapshotDataSchemaOut = z
@@ -463,8 +476,10 @@ export const AnalyzeSmaSnapshotOutputSchema = toolResultSchema(
 
 export const AnalyzeEmaSnapshotInputSchema = BasePairInputSchema.extend({
 	type: CandleTypeEnum.optional().default('1day'),
-	limit: z.number().int().min(200).max(365).optional().default(220),
-	periods: z.array(z.number().int()).optional().default([12, 26, 50, 200]),
+	limit: z.number().int().min(200).max(MA_SNAPSHOT_MAX_BARS).optional().default(220),
+	periods: MaPeriodsSchema.optional()
+		.default([12, 26, 50, 200])
+		.describe(`EMA の周期（本数、1〜${MA_SNAPSHOT_MAX_BARS}）。足が周期より少ないと値は null になり warnings に出る。`),
 });
 
 export const AnalyzeEmaSnapshotDataSchemaOut = z
@@ -577,7 +592,7 @@ export const AnalyzeStochSnapshotOutputSchema = toolResultSchema(
 
 export const AnalyzeMtfSmaInputSchema = BasePairInputSchema.extend({
 	timeframes: z.array(CandleTypeEnum).min(1).optional().default(['1hour', '4hour', '1day']),
-	periods: z.array(z.number().int()).optional().default([25, 75, 200]),
+	periods: MaPeriodsSchema.optional().default([25, 75, 200]),
 });
 
 const MtfSmaPerTimeframeSchema = z

@@ -2,6 +2,14 @@ import { priceDecimals, roundAtDecimalDigits, roundPriceAtLevel } from '../../li
 import { cappedBarsForDays } from './bar-thresholds.js';
 import { barsPerDay, calcATR, deduplicatePatterns, finalizeConf } from './helpers.js';
 import { clamp01, robustFit } from './regression.js';
+import {
+	averageDefinedAxes,
+	lineFitScore,
+	marginOverGate,
+	marginToOne,
+	marginUnderGate,
+	roundAxes,
+} from './scoring.js';
 import { BREAKOUT_AGAINST_EXPECTATION } from './structural.js';
 import { detectRelaxedSwings } from './swing.js';
 import { computeTargetReach, omittedTargetReach, type TargetReachResult, targetReachFields } from './target-reach.js';
@@ -26,6 +34,9 @@ const POLE_MIN_FLOOR_BARS = 2;
 const POLE_MAX_FLOOR_BARS = 5;
 const CONS_MIN_FLOOR_BARS = 3;
 const CONS_MAX_FLOOR_BARS = 10;
+// 分類のゲートと、parallelism / convergence の物差しを兼ねる。
+const FLAG_MIN_SPREAD_STABILITY = 0.7;
+const PENNANT_MAX_CONVERGENCE = 0.7;
 
 // 旗竿はピボット構造ではないので、構造的な下限は掛けない（掛けると 1day で min > max になり全滅する）。
 export function getFlagParams(tf: string): PoleParams {
@@ -172,7 +183,7 @@ function classifyFlag(opts: {
 	}
 
 	// spreadStability は収束形では自然に低くなるので、pennant の判定には使わない。
-	const isSymmetricConvergent = upperSlope < 0 && lowerSlope > 0 && spread.convergenceRatio < 0.7;
+	const isSymmetricConvergent = upperSlope < 0 && lowerSlope > 0 && spread.convergenceRatio < PENNANT_MAX_CONVERGENCE;
 
 	if (isSymmetricConvergent) {
 		return { type: poleUp ? 'bull_pennant' : 'bear_pennant', reason: 'symmetric_convergence' };
@@ -180,7 +191,9 @@ function classifyFlag(opts: {
 
 	const avgSlope = (upperSlope + lowerSlope) / 2;
 	const isStableSpread =
-		spread.spreadStability >= 0.7 && spread.convergenceRatio >= 0.7 && spread.convergenceRatio <= 1.3;
+		spread.spreadStability >= FLAG_MIN_SPREAD_STABILITY &&
+		spread.convergenceRatio >= 0.7 &&
+		spread.convergenceRatio <= 1.3;
 	const isCounterToPole = poleUp ? avgSlope < 0 : avgSlope > 0;
 	// 完全水平のケース: avgSlope ≈ 0 でも flag として認める（教科書的な水平 flag）。
 	const isNearlyHorizontal = Math.abs(avgSlope) < 1e-9 && spread.spreadStability >= 0.85;
@@ -467,15 +480,23 @@ export function detectPennantsFlags(ctx: DetectContext): DetectResult {
 		const poleEndIso = candles[pole.poleEnd]?.isoTime;
 		if (!startIso || !endIso) continue;
 
-		const poleScore = clamp01(pole.atrMult / (params.minPoleATRMult * 3));
-		const fitScore = (upperLine.r2 + lowerLine.r2) / 2;
-		const touchScore = clamp01((filteredHighs.length + filteredLows.length) / 6);
-		const shapeScore =
-			flagType === 'bull_flag' || flagType === 'bear_flag'
-				? spread.spreadStability
-				: clamp01(1 - spread.convergenceRatio); // pennant: convergenceRatio 小さいほど良い
-		const baseScore = poleScore * 0.3 + shapeScore * 0.25 + fitScore * 0.2 + touchScore * 0.25;
-		const confidence = finalizeConf(baseScore, flagType);
+		const poleScore = marginOverGate(pole.atrMult, params.minPoleATRMult);
+		const isFlag = flagType === 'bull_flag' || flagType === 'bear_flag';
+		const parallelism = isFlag ? marginToOne(spread.spreadStability, FLAG_MIN_SPREAD_STABILITY) : undefined;
+		const convergence = isFlag ? undefined : marginUnderGate(spread.convergenceRatio, PENNANT_MAX_CONVERGENCE);
+		const lineFit = lineFitScore(
+			[
+				{ r2: upperLine.r2, points: filteredHighs.length },
+				{ r2: lowerLine.r2, points: filteredLows.length },
+			],
+			minR2,
+		);
+		const touches = marginOverGate(filteredHighs.length + filteredLows.length, minPointsForFit * 2);
+		const scoreComponents = roundAxes({ pole: poleScore, parallelism, convergence, lineFit, touches });
+		// pole と touches は常に数値なので averageDefinedAxes は undefined を返さない（?? には届かない）。
+		const confidence = finalizeConf(
+			averageDefinedAxes([poleScore, parallelism, convergence, lineFit, touches]) ?? poleScore,
+		);
 
 		const outcome = hasBreakout ? (isExpectedBreakout ? 'success' : 'failure') : undefined;
 		const poleStartPrice = candles[pole.poleStart].close;
@@ -497,6 +518,7 @@ export function detectPennantsFlags(ctx: DetectContext): DetectResult {
 			confidence,
 			range: { start: startIso, end: endIso },
 			status,
+			scoreComponents,
 			...(status === 'invalid' ? { invalidReason: BREAKOUT_AGAINST_EXPECTATION } : {}),
 			poleDirection: pole.poleUp ? 'up' : 'down',
 			priorTrendDirection: pole.poleUp ? 'bullish' : 'bearish',

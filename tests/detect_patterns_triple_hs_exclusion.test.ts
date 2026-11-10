@@ -39,7 +39,7 @@ describe('detect_patterns: triple × H&S の型間排他（issue #218 Phase 2）
 		const res = await run();
 		const byType = new Map<string, number>();
 		for (const p of res.data.patterns) byType.set(p.type, (byType.get(p.type) ?? 0) + 1);
-		// 実データ B の 1hour（既定オプション）の内訳。`triple_top` 219-223-232 は `peaks_below_neckline` で、`head_and_shoulders` 2 件は外挿クランプで `near_completion` に落ちて、逆 H&S 2 件は先頭履歴ウォームアップで、いずれも本段に到達する前に除外される。
+		// 実データ B の 1hour（既定オプション）の内訳。`triple_top` 219-223-232 は `peaks_below_neckline` で、`head_and_shoulders` 1 件は外挿クランプで `near_completion` に落ちて、逆 H&S 2 件は先頭履歴ウォームアップで、いずれも本段に到達する前に除外される。
 		expect(Object.fromEntries([...byType].sort())).toEqual({
 			rising_wedge: 2,
 			triangle_ascending: 4,

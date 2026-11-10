@@ -273,8 +273,6 @@ describe('analyze_my_portfolio', () => {
 		assertOk(result);
 		assertDefined(result.data.account_pnl, 'result.data.account_pnl');
 		expect(result.data.account_pnl.margin_realized_pnl).toBe(0);
-		expect(result.data.account_pnl.margin_interest).toBe(0);
-		expect(result.data.account_pnl.margin_fee).toBe(0);
 		expect(result.data.account_pnl.margin_interest_cost).toBe(0);
 		expect(result.data.account_pnl.margin_fee_cost).toBe(0);
 		expect(result.data.account_pnl.total).toBe(result.data.account_pnl.spot_realized_pnl);
@@ -296,13 +294,13 @@ describe('analyze_my_portfolio', () => {
 		const pnl = result.data.account_pnl;
 		assertDefined(pnl, 'result.data.account_pnl');
 		expect(pnl.margin_realized_pnl).toBe(5000);
-		expect(pnl.margin_interest).toBe(30);
-		expect(pnl.margin_fee).toBe(155);
+		expect(pnl.margin_interest_cost).toBe(30);
+		expect(pnl.margin_fee_cost).toBe(155);
 		assertDefined(pnl.spot_realized_pnl, 'result.data.account_pnl.spot_realized_pnl');
 		expect(pnl.total).toBe(pnl.spot_realized_pnl + 5000 - 30 - 155);
 	});
 
-	it('account_pnl: margin_*_cost が旧フィールドと同値で、total を減算で検算できる', async () => {
+	it('account_pnl: margin_*_cost で total を減算で検算でき、旧フィールド（margin_interest / margin_fee）は出さない', async () => {
 		setupFetchMock({ marginTrades: rawMarginTradeHistoryResponse });
 
 		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
@@ -316,8 +314,6 @@ describe('analyze_my_portfolio', () => {
 		const pnl = requireDefined(result.data.account_pnl, 'result.data.account_pnl');
 		expect(pnl.margin_interest_cost).toBe(30);
 		expect(pnl.margin_fee_cost).toBe(155);
-		expect(pnl.margin_interest).toBe(pnl.margin_interest_cost);
-		expect(pnl.margin_fee).toBe(pnl.margin_fee_cost);
 		assertDefined(pnl.spot_realized_pnl, 'result.data.account_pnl.spot_realized_pnl');
 		expect(pnl.total).toBe(
 			pnl.spot_realized_pnl + pnl.margin_realized_pnl - pnl.margin_interest_cost - pnl.margin_fee_cost,
@@ -326,8 +322,6 @@ describe('analyze_my_portfolio', () => {
 		expect(Object.keys(pnl)).toEqual([
 			'spot_realized_pnl',
 			'margin_realized_pnl',
-			'margin_interest',
-			'margin_fee',
 			'total',
 			'margin_interest_cost',
 			'margin_fee_cost',
@@ -391,9 +385,9 @@ describe('analyze_my_portfolio', () => {
 		const pnl = result.data.account_pnl;
 		assertDefined(pnl, 'result.data.account_pnl');
 		expect(pnl.margin_realized_pnl).toBe(5000);
-		expect(pnl.margin_interest).toBe(30);
+		expect(pnl.margin_interest_cost).toBe(30);
 		// 現物の 9999 が混入していたら 9999+155=10154 になるはずだが、フィルタで除外されて 155 のみ
-		expect(pnl.margin_fee).toBe(155);
+		expect(pnl.margin_fee_cost).toBe(155);
 		assertDefined(pnl.spot_realized_pnl, 'result.data.account_pnl.spot_realized_pnl');
 		expect(pnl.total).toBe(pnl.spot_realized_pnl + 5000 - 30 - 155);
 	});
@@ -414,8 +408,8 @@ describe('analyze_my_portfolio', () => {
 		expect(result.meta.marginFetchFailed).toBe(true);
 		assertDefined(result.data.account_pnl, 'result.data.account_pnl');
 		expect(result.data.account_pnl.margin_realized_pnl).toBe(0);
-		expect(result.data.account_pnl.margin_interest).toBe(0);
-		expect(result.data.account_pnl.margin_fee).toBe(0);
+		expect(result.data.account_pnl.margin_interest_cost).toBe(0);
+		expect(result.data.account_pnl.margin_fee_cost).toBe(0);
 		// 信用 fetch 失敗時は信用側 truncated 警告を抑止（メッセージ重複回避）
 		expect(result.summary).not.toContain('※ 約定履歴（信用）');
 		expect(result.summary).not.toContain('※ 約定履歴（現物 / 信用）');
@@ -686,18 +680,16 @@ describe('analyze_my_portfolio', () => {
 			// yearly: 両方含む（1000 + 500, 10 + 5, 50 + 25）
 			assertDefined(result.data.yearly_account_pnl, 'result.data.yearly_account_pnl');
 			expect(result.data.yearly_account_pnl.margin_realized_pnl).toBe(1500);
-			expect(result.data.yearly_account_pnl.margin_interest).toBe(15);
-			expect(result.data.yearly_account_pnl.margin_fee).toBe(75);
+			expect(result.data.yearly_account_pnl.margin_interest_cost).toBe(15);
+			expect(result.data.yearly_account_pnl.margin_fee_cost).toBe(75);
 			// monthly: 月初後のみ（500, 5, 25）
 			assertDefined(result.data.monthly_account_pnl, 'result.data.monthly_account_pnl');
 			expect(result.data.monthly_account_pnl.margin_realized_pnl).toBe(500);
-			expect(result.data.monthly_account_pnl.margin_interest).toBe(5);
-			expect(result.data.monthly_account_pnl.margin_fee).toBe(25);
+			expect(result.data.monthly_account_pnl.margin_interest_cost).toBe(5);
+			expect(result.data.monthly_account_pnl.margin_fee_cost).toBe(25);
 
 			for (const periodPnl of [result.data.yearly_account_pnl, result.data.monthly_account_pnl]) {
 				assertDefined(periodPnl.spot_realized_pnl, 'periodPnl.spot_realized_pnl');
-				expect(periodPnl.margin_interest_cost).toBe(periodPnl.margin_interest);
-				expect(periodPnl.margin_fee_cost).toBe(periodPnl.margin_fee);
 				expect(periodPnl.total).toBe(
 					periodPnl.spot_realized_pnl +
 						periodPnl.margin_realized_pnl -
@@ -707,8 +699,6 @@ describe('analyze_my_portfolio', () => {
 				expect(Object.keys(periodPnl)).toEqual([
 					'spot_realized_pnl',
 					'margin_realized_pnl',
-					'margin_interest',
-					'margin_fee',
 					'total',
 					'period_start',
 					'period_end',
@@ -1562,6 +1552,93 @@ describe('analyze_my_portfolio — 入出金取得の include_pnl 紐づけ', ()
 		expect(daily.adjusted_change_jpy).toBe(daily.change_jpy - 300_000);
 		expect(result.summary).toContain('純入出金（元本）');
 		expect(result.summary).not.toContain('純入出金: 未計測');
+	});
+
+	it('ステーキング報酬（category=STAKING）は純入出金・純投入額から外し、額を本文と data に別出しする', async () => {
+		const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
+		const inPeriodMs = Date.UTC(2026, 4, 16, 1, 0, 0, 0);
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		const depositOf = (uuid: string, asset: string, amount: string, category: string) => ({
+			uuid,
+			asset,
+			amount,
+			status: 'DONE',
+			category,
+			found_at: inPeriodMs,
+			confirmed_at: inPeriodMs,
+		});
+		setupFetchMock({
+			deposits: {
+				deposits: [
+					depositOf('dep-jpy', 'jpy', '500000', 'NORMAL'),
+					depositOf('dep-eth-staking', 'eth', '0.01', 'STAKING'),
+				],
+			},
+			withdrawals: { withdrawals: [] },
+		});
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		const daily = requireDefined(result.data.daily_performance, 'result.data.daily_performance');
+		expect(daily.net_flow_jpy).toBe(500_000);
+		const reward = requireDefined(daily.staking_reward_jpy, 'daily.staking_reward_jpy');
+		expect(reward).toBeGreaterThan(0);
+		expect(daily.adjusted_change_jpy).toBe(daily.change_jpy - 500_000);
+		const dw = requireDefined(result.data.deposit_withdrawal_summary, 'result.data.deposit_withdrawal_summary');
+		expect(dw.staking_reward_count).toBe(1);
+		expect(dw.net_jpy_invested).toBe(dw.total_jpy_deposited - dw.total_jpy_withdrawn);
+		expect(result.summary).toContain(`ステーキング報酬: +${reward.toLocaleString('ja-JP')}円`);
+		expect(result.summary).toContain('ステーキング報酬 1件（暗号資産入庫の内数）');
+		expect(result.summary).toContain('リターンに含めています');
+	});
+
+	it('口座全体リターンを算出できない（純投入額が 0）ときも、ステーキング報酬の行を出す', async () => {
+		const fixedNowMs = Date.UTC(2026, 4, 16, 3, 0, 0, 0);
+		const inPeriodMs = Date.UTC(2026, 4, 16, 1, 0, 0, 0);
+		vi.useFakeTimers();
+		vi.setSystemTime(fixedNowMs);
+		setupFetchMock({
+			deposits: {
+				deposits: [
+					{
+						uuid: 'dep-eth-staking',
+						asset: 'eth',
+						amount: '0.01',
+						status: 'DONE',
+						category: 'STAKING',
+						found_at: inPeriodMs,
+						confirmed_at: inPeriodMs,
+					},
+				],
+			},
+			withdrawals: { withdrawals: [] },
+		});
+
+		const { default: handler } = await import('../../src/handlers/analyzeMyPortfolioHandler.js');
+		const result = await handler({
+			include_technical: false,
+			include_pnl: true,
+			include_deposit_withdrawal: true,
+		});
+
+		assertOk(result);
+		const dw = requireDefined(result.data.deposit_withdrawal_summary, 'result.data.deposit_withdrawal_summary');
+		expect(dw.net_jpy_invested).toBe(0);
+		expect(dw.account_return_jpy).toBeUndefined();
+		expect(result.summary).toContain('口座全体リターン: 算出不可');
+		const stakingLine = result.summary
+			.split('\n')
+			.find((l) => l.includes('ステーキング報酬 1件（暗号資産入庫の内数）'));
+		expect(stakingLine).toBeDefined();
+		expect(stakingLine).toContain('純投入額から除いています');
+		expect(stakingLine).not.toContain('リターンに含めています');
 	});
 
 	it('include_pnl=false: 入出金 API を余計に呼ばない（呼び出し増の回帰防止）', async () => {
@@ -4365,7 +4442,7 @@ describe('analyze_my_portfolio — ゼロ建玉の表示抑制', () => {
 		const result = await callHandler();
 
 		assertOk(result);
-		expect(result.summary).toContain('BTC/JPY ロング 0 (評価額: ¥150,000円)');
+		expect(result.summary).toContain('BTC/JPY ロング 0 (評価額: 150,000円)');
 		expect(result.summary).toContain('集計: ロング 1件 / ショート 0件 / ゼロ建玉 1件省略');
 	});
 });
@@ -5476,8 +5553,8 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 		for (const period of [result.data.yearly_realized_pnl, result.data.monthly_realized_pnl]) {
 			expect(period?.unpriced_deposit_count_all_time).toBe(1);
 			expect(period?.priced_deposit_count_all_time).toBe(1);
-			expect(period?.unpriced_deposit_count).toBe(period?.unpriced_deposit_count_all_time);
-			expect(period?.priced_deposit_count).toBe(period?.priced_deposit_count_all_time);
+			expect(period).not.toHaveProperty('unpriced_deposit_count');
+			expect(period).not.toHaveProperty('priced_deposit_count');
 		}
 		// 銘柄別の holdings[] は改名しない（配置と意味が一致している）
 		expect(result.data.holdings.find((h) => h.asset === 'eth')?.unpriced_deposit_count).toBe(1);
@@ -5551,9 +5628,6 @@ describe('analyze_my_portfolio — 原価に算入できなかった入庫の申
 			'sell_count',
 			'period_start',
 			'period_end',
-			// 旧名は同じ位置に alias として残す（#85）
-			'priced_deposit_count',
-			'unpriced_deposit_count',
 			'realized_pnl_unavailable_reason',
 			'priced_deposit_count_all_time',
 			'unpriced_deposit_count_all_time',

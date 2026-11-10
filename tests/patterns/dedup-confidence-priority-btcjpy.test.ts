@@ -54,13 +54,13 @@ describe('issue #142 dedup の勝者選択 — BTC/JPY 日足 実データ回帰
 	});
 
 	describe('1hour の triangle_symmetrical', () => {
-		it('confidence 0.87 の候補が残り、終端が 2 本新しい 0.86 は残らない', async () => {
+		it('confidence 0.73 の候補が残り、終端が 2 本新しい 0.66 は残らない', async () => {
 			const res = await run('1hour');
 			const near = res.data.patterns.filter(
 				(p) => p.type === 'triangle_symmetrical' && day(p.range.start) >= '2026-07-20',
 			);
 			expect(near).toHaveLength(1);
-			expect(near[0].confidence).toBe(0.87);
+			expect(near[0].confidence).toBe(0.73);
 			expect(day(near[0].range.start)).toBe('2026-07-26');
 			expect(day(near[0].range.end)).toBe('2026-08-14');
 		});

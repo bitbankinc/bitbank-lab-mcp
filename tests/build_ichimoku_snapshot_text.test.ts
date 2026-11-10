@@ -97,7 +97,7 @@ describe('buildIchimokuSnapshotText', () => {
 
 	it('雲の状態セクションが含まれる', () => {
 		const text = buildIchimokuSnapshotText(makeInput());
-		expect(text).toContain('【雲の状態（今日の雲）】');
+		expect(text).toContain('【雲の状態（現在の雲）】');
 		expect(text).toContain('雲の方向: 上昇');
 		expect(text).toContain('雲の厚み:');
 	});
@@ -105,6 +105,15 @@ describe('buildIchimokuSnapshotText', () => {
 	it('26日後の雲セクションが含まれる', () => {
 		const text = buildIchimokuSnapshotText(makeInput());
 		expect(text).toContain('【26日後の雲（先行スパン）】');
+	});
+
+	it('先行スパンの先の長さは足の種類で数える（週足は 26 週後、4 時間足は 26 本後）', () => {
+		const weekly = buildIchimokuSnapshotText(makeInput({ type: '1week' }));
+		expect(weekly).toContain('【26週後の雲（先行スパン）】');
+		expect(weekly).toContain('雲(26週後): spanA=');
+		const h4 = buildIchimokuSnapshotText(makeInput({ type: '4hour' }));
+		expect(h4).toContain('【26本後の雲（先行スパン）】');
+		expect(h4).not.toContain('26日後');
 	});
 
 	it('遅行スパンが含まれる', () => {

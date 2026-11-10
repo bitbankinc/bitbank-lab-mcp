@@ -4,6 +4,7 @@ import { getHsShoulderMaxPctForTf, getSizeThresholdsForTf } from '../../tools/pa
 import { classifyTriangle, detectTriangles, getTriangleParams } from '../../tools/patterns/detect_triangles.js';
 import type { Pivot } from '../../tools/patterns/swing.js';
 import type { CandleData, DetectContext } from '../../tools/patterns/types.js';
+import { buildBtcJpy2026ThroughSep30Candles } from '../fixtures/btc_jpy_1day_2026.js';
 
 function iso(daysAgo: number): string {
 	return dayjs().subtract(daysAgo, 'day').startOf('day').toISOString();
@@ -314,6 +315,43 @@ describe('detectTriangles — whipsaw boundary tests', () => {
 		expect(unreached).toBeDefined();
 		expect(unreached?.targetReachedPct).toBeLessThan(100);
 		expect(unreached?.targetReachedPrice).toBeDefined();
+	});
+});
+
+describe('detectTriangles — 整合度（#422）', () => {
+	type Details = { convergenceRatio: number; touchCount: number; upperRelSlope: number; lowerRelSlope: number };
+	function detectOne(candles: CandleData[], type: string) {
+		const ctx = buildCtx({ candles, want: new Set([type]), includeForming: true });
+		const pattern = detectTriangles(ctx).patterns.find((p) => p.type === type);
+		const debug = ctx.debugCandidates.find(
+			(d) => d.type === type && d.accepted && (d.details as { confidence?: number }).confidence === pattern?.confidence,
+		);
+		return { pattern, details: debug?.details as Details | undefined };
+	}
+
+	it('対称三角は lineFit / convergence / touches / slopeSymmetry を出し、confidence はその単純平均', () => {
+		const { pattern, details } = detectOne(buildSymTriangleBase(40), 'triangle_symmetrical');
+		const sc = pattern?.scoreComponents ?? {};
+		expect(Object.keys(sc).sort()).toEqual(['convergence', 'lineFit', 'slopeSymmetry', 'touches']);
+		const axes = Object.values(sc) as number[];
+		expect(pattern?.confidence).toBeCloseTo(axes.reduce((sum, v) => sum + v, 0) / axes.length, 2);
+		expect(sc.touches).toBeCloseTo(1 - 4 / Number(details?.touchCount), 4);
+		expect(sc.convergence).toBeCloseTo(
+			1 - Number(details?.convergenceRatio) / getTriangleParams('1day').minConvergence,
+			2,
+		);
+	});
+
+	it('上昇三角は slopeSymmetry の代わりに上側の flatness を出す', () => {
+		// 合成の振動では上側が水平の三角が立たないので、上昇三角が出る実データの窓を使う。
+		const { pattern, details } = detectOne(buildBtcJpy2026ThroughSep30Candles().slice(6, 96), 'triangle_ascending');
+		expect(pattern).toBeDefined();
+		const sc = pattern?.scoreComponents ?? {};
+		expect(sc.slopeSymmetry).toBeUndefined();
+		expect(sc.flatness).toBeCloseTo(
+			1 - Math.abs(Number(details?.upperRelSlope)) / getTriangleParams('1day').flatThreshold,
+			2,
+		);
 	});
 });
 

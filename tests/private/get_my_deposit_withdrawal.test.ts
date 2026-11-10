@@ -215,6 +215,41 @@ describe('get_my_deposit_withdrawal', () => {
 		expect(result.summary).toContain('[wd-002]');
 	});
 
+	it('入金種別（category）を data に通し、NORMAL 以外だけ明細に出す', async () => {
+		const deposits = {
+			deposits: [
+				{ uuid: 'dep-n', asset: 'eth', amount: '1', status: 'DONE', category: 'NORMAL', found_at: 1, confirmed_at: 2 },
+				{
+					uuid: 'dep-s',
+					asset: 'eth',
+					amount: '0.01',
+					status: 'DONE',
+					category: 'STAKING',
+					found_at: 3,
+					confirmed_at: 4,
+				},
+				{ uuid: 'dep-m', asset: 'xrp', amount: '5', status: 'DONE', category: 'MANUAL', found_at: 5, confirmed_at: 6 },
+				{ uuid: 'dep-x', asset: 'btc', amount: '0.1', status: 'DONE', found_at: 7, confirmed_at: 8 },
+			],
+		};
+		setupFetchMock({ depositResponse: deposits, withdrawalResponse: { withdrawals: [] } });
+
+		const { default: getMyDepositWithdrawal } = await import('../../tools/private/get_my_deposit_withdrawal.js');
+		const result = await getMyDepositWithdrawal({ type: 'deposit' });
+
+		assertOk(result);
+		const byUuid = new Map(result.data.deposits.map((d) => [d.uuid, d]));
+		expect(byUuid.get('dep-n')?.category).toBe('NORMAL');
+		expect(byUuid.get('dep-s')?.category).toBe('STAKING');
+		expect(byUuid.get('dep-x')?.category).toBeUndefined();
+		const lineOf = (uuid: string) => result.summary.split('\n').find((l) => l.includes(`[${uuid}]`)) ?? '';
+		expect(lineOf('dep-n')).not.toContain('種別');
+		expect(lineOf('dep-s')).toContain('種別: STAKING');
+		expect(lineOf('dep-m')).toContain('種別: MANUAL');
+		expect(lineOf('dep-x')).not.toContain('種別');
+		expect(result.summary).toContain('うちステーキング報酬（種別: STAKING）1件');
+	});
+
 	it('type=deposit で出金 API を呼ばない', async () => {
 		setupFetchMock({});
 

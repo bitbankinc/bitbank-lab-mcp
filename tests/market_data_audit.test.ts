@@ -542,7 +542,7 @@ describe('PR5 audit / 5. content visibility (warning / drop / count / timestamp 
 		expect(res.summary).toContain('上位');
 	});
 
-	it('get_transactions (view=summary): 件数 + 期間 + 警告が summary に出る', async () => {
+	it('get_transactions（既定の view=full）: 件数 + 期間 + 警告が summary に出る', async () => {
 		mockFetchJson(
 			txFixture([
 				{ transaction_id: 1, price: '5000000', amount: '0.01', side: 'buy', executed_at: TS },
@@ -553,7 +553,7 @@ describe('PR5 audit / 5. content visibility (warning / drop / count / timestamp 
 		const def = allToolDefs.find((t) => t.name === 'get_transactions');
 		expect(def).toBeDefined();
 		// biome-ignore lint/style/noNonNullAssertion: assertion above guarantees def is defined
-		const out = await def!.handler({ pair: 'btc_jpy', limit: 10, view: 'summary' });
+		const out = await def!.handler({ pair: 'btc_jpy', limit: 10 });
 		// biome-ignore lint/suspicious/noExplicitAny: handler returns Result | McpResponse union
 		const r = out as any;
 		expect(r.ok).toBe(true);
@@ -562,7 +562,7 @@ describe('PR5 audit / 5. content visibility (warning / drop / count / timestamp 
 		expect(r.summary).toContain('1件');
 	});
 
-	it('get_transactions (view=items): warning が content の別 text に出る', async () => {
+	it('get_transactions (format=json): warning が content の別 text に出る', async () => {
 		mockFetchJson(
 			txFixture([
 				{ transaction_id: 1, price: '5000000', amount: '0.01', side: 'buy', executed_at: TS },
@@ -572,7 +572,7 @@ describe('PR5 audit / 5. content visibility (warning / drop / count / timestamp 
 		const def = allToolDefs.find((t) => t.name === 'get_transactions');
 		expect(def).toBeDefined();
 		// biome-ignore lint/style/noNonNullAssertion: assertion above guarantees def is defined
-		const out = await def!.handler({ pair: 'btc_jpy', limit: 10, view: 'items' });
+		const out = await def!.handler({ pair: 'btc_jpy', limit: 10, format: 'json' });
 		// biome-ignore lint/suspicious/noExplicitAny: handler returns McpResponse
 		const r = out as any;
 		// content[0] は items の JSON、content[1] が warning text
@@ -656,7 +656,7 @@ describe('PR5 audit / 5. content visibility (warning / drop / count / timestamp 
 		const def = allToolDefs.find((t) => t.name === 'get_tickers_jpy');
 		expect(def).toBeDefined();
 		// biome-ignore lint/style/noNonNullAssertion: assertion above guarantees def is defined
-		const out = await def!.handler({ view: 'ranked', sortBy: 'change24h', order: 'desc', limit: 5 });
+		const out = await def!.handler({ sortBy: 'change24h', order: 'desc', limit: 5 });
 		// biome-ignore lint/suspicious/noExplicitAny: handler returns McpResponse
 		const r = out as any;
 		const text = getContentText(r);

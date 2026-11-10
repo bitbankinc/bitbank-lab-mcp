@@ -105,7 +105,9 @@ describe('入庫日価格の抑止 — description', () => {
 		expect(descriptionOf(shape, 'spot_realized_pnl')).toContain('spot_realized_pnl_unavailable_reason');
 		expect(descriptionOf(shape, 'total')).toContain('undefined');
 		const reason = descriptionOf(shape, 'spot_realized_pnl_unavailable_reason');
-		expect(reason).toContain('信用側の 4 フィールドはそのまま出る');
+		expect(reason).toContain(
+			'信用側の 3 フィールド（margin_realized_pnl / margin_interest_cost / margin_fee_cost）はそのまま出る',
+		);
 		for (const value of PortfolioUnresolvedDepositReasonEnum.options) {
 			expect(reason).toContain(value);
 		}

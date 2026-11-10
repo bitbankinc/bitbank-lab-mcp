@@ -7,13 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  # このジョブは typecheck だけでなく lint / format-check / banned-patterns / npm test /
-  # test:coverage をすべて実行する。**チェック名がジョブの実態を過小に表しており**、
-  # 実際にレビューで「CI でテストが走っていないのでは」と誤解された（PR #131）。
-  #
-  # `ci` 等への改名はブランチ保護の required check 名（`typecheck`）に影響し、
-  # リポジトリ設定の更新とセットでないと PR がマージ不能になるため、名前は据え置く。
-  # 改名する場合はブランチ保護の変更と同時に行うこと（#127）。
+  # ジョブ名はブランチ保護の required check 名なので、変えるならブランチ保護の設定と同時に変える（#127）。
   typecheck:
     runs-on: ubuntu-latest
     steps:
@@ -29,10 +23,7 @@ jobs:
       - name: Install deps
         run: npm ci
 
-      # 依存の脆弱性チェックは security.yml（npm audit --audit-level=high・ブロッキング）に
-      # 一本化している。トリガーが同一で high は critical を含むため、ここに audit を置いても
-      # security.yml の部分集合にしかならない。非ブロッキングな audit を重ねると
-      # 「チェックがある」ように見えて実際には止まらないため、あえて置かない。
+      # npm audit は置かない。security.yml が同じトリガーで high 以上をブロックしている。
 
       - name: Generate types from Zod schemas
         run: npm run gen:types

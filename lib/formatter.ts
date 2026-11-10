@@ -19,6 +19,38 @@ export function timeframeLabel(type: string): string {
 	return map[type] || type;
 }
 
+// 本数を暦の長さとして読めるのは日足・週足・月足だけで、それ以外の足は「本」で数える（#431）。
+const CALENDAR_BAR_UNITS: Record<string, { unit: string; per: string; prevChange: string }> = {
+	'1day': { unit: '日', per: '日', prevChange: '前日比' },
+	'1week': { unit: '週', per: '週', prevChange: '前週比' },
+	'1month': { unit: 'か月', per: '月', prevChange: '前月比' },
+};
+const COUNT_BAR_UNIT = { unit: '本', per: '本', prevChange: '前足比' };
+
+function barUnit(type: string) {
+	return Object.hasOwn(CALENDAR_BAR_UNITS, type) ? CALENDAR_BAR_UNITS[type] : COUNT_BAR_UNIT;
+}
+
+export function barsAgoLabel(bars: number, type: string): string {
+	return `${bars}${barUnit(type).unit}前`;
+}
+
+export function barsAheadLabel(bars: number, type: string): string {
+	return `${bars}${barUnit(type).unit}後`;
+}
+
+export function barCountLabel(bars: number, type: string): string {
+	return `${bars}${barUnit(type).unit}`;
+}
+
+export function perBarLabel(type: string): string {
+	return `/${barUnit(type).per}`;
+}
+
+export function prevBarChangeLabel(type: string): string {
+	return barUnit(type).prevChange;
+}
+
 export function formatPair(pair: string): string {
 	return (pair || '').toUpperCase().replace('_', '/');
 }
@@ -194,34 +226,30 @@ export function formatSummary(
 		};
 
 		const today = keyPoints.today;
-		summary += `\n- 今日 (${today.date || '不明'}, data[${today.index}]): ${formatPrice(today.close)}`;
+		const tfType = timeframe ?? '';
+		summary += `\n- 最新 (${today.date || '不明'}, data[${today.index}]): ${formatPrice(today.close)}`;
 
-		if (keyPoints.sevenDaysAgo) {
-			const sd = keyPoints.sevenDaysAgo;
-			summary += `\n- 7日前 (${sd.date || '不明'}, data[${sd.index}]): ${formatPrice(sd.close)}${fmtChange(sd.changePct)}`;
-		}
-
-		if (keyPoints.thirtyDaysAgo) {
-			const td = keyPoints.thirtyDaysAgo;
-			summary += `\n- 30日前 (${td.date || '不明'}, data[${td.index}]): ${formatPrice(td.close)}${fmtChange(td.changePct)}`;
-		}
-
-		if (keyPoints.ninetyDaysAgo) {
-			const nd = keyPoints.ninetyDaysAgo;
-			summary += `\n- 90日前 (${nd.date || '不明'}, data[${nd.index}]): ${formatPrice(nd.close)}${fmtChange(nd.changePct)}`;
+		// 本数が 90 本に満たないとき ninetyDaysAgo は最古の足を指すので、ラベルは添字の差から付け、同じ足は 2 度出さない。
+		const shown = new Set([today.index]);
+		for (const point of [keyPoints.sevenDaysAgo, keyPoints.thirtyDaysAgo, keyPoints.ninetyDaysAgo]) {
+			if (!point || shown.has(point.index)) continue;
+			shown.add(point.index);
+			const label = barsAgoLabel(today.index - point.index, tfType);
+			summary += `\n- ${label} (${point.date || '不明'}, data[${point.index}]): ${formatPrice(point.close)}${fmtChange(point.changePct)}`;
 		}
 
 		if (volumeStats) {
 			// 出来高の単位は pair の base 通貨から導出する（規約元6ツール・OBV と同じ書式）。
 			const baseCcy = (pair ?? '').split('_')[0]?.toUpperCase() ?? '';
+			const per = perBarLabel(tfType);
 			summary += '\n\n【出来高推移】';
-			summary += `\n- 直近7日間の平均: ${volumeStats.recent7DaysAvg.toFixed(0)} ${baseCcy}/日`;
-			summary += `\n- その前7日間の平均: ${volumeStats.previous7DaysAvg.toFixed(0)} ${baseCcy}/日`;
+			summary += `\n- 直近${barCountLabel(7, tfType)}の平均: ${volumeStats.recent7DaysAvg.toFixed(0)} ${baseCcy}${per}`;
+			summary += `\n- その前${barCountLabel(7, tfType)}の平均: ${volumeStats.previous7DaysAvg.toFixed(0)} ${baseCcy}${per}`;
 			if (typeof volumeStats.last30DaysAvg === 'number') {
-				summary += `\n- 過去30日間の平均: ${volumeStats.last30DaysAvg.toFixed(0)} ${baseCcy}/日`;
+				summary += `\n- 過去${barCountLabel(30, tfType)}の平均: ${volumeStats.last30DaysAvg.toFixed(0)} ${baseCcy}${per}`;
 			}
 			if (volumeStats.changePct === null) {
-				summary += '\n- 出来高変化率: N/A（前7日間の出来高ゼロ）';
+				summary += `\n- 出来高変化率: N/A（その前${barCountLabel(7, tfType)}の出来高ゼロ）`;
 			} else {
 				summary += `\n- 出来高変化率: ${volumeStats.changePct >= 0 ? '+' : ''}${volumeStats.changePct}%`;
 			}

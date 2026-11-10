@@ -92,9 +92,9 @@ describe('buildMarketSignalHandlerText', () => {
 		const text = buildMarketSignalHandlerText(makeInput());
 		expect(text).toContain('【SMA（移動平均線）詳細】');
 		expect(text).toContain('現在価格: 5,000,000円');
-		expect(text).toContain('短期（25日）');
-		expect(text).toContain('中期（75日）');
-		expect(text).toContain('長期（200日）');
+		expect(text).toContain('短期（SMA25）');
+		expect(text).toContain('中期（SMA75）');
+		expect(text).toContain('長期（SMA200）');
 	});
 
 	it('SMA配置: bullish → 上昇トレンド構造', () => {
@@ -147,9 +147,9 @@ describe('buildMarketSignalHandlerText', () => {
 		);
 		expect(text).toContain('【SMA（移動平均線）詳細】');
 		expect(text).not.toContain('現在価格:');
-		expect(text).toContain('- 短期（25日）: 4,900,000円');
-		expect(text).toContain('- 中期（75日）: n/a円');
-		expect(text).toContain('- 長期（200日）: n/a円');
+		expect(text).toContain('- 短期（SMA25）: 4,900,000円');
+		expect(text).toContain('- 中期（SMA75）: n/a円');
+		expect(text).toContain('- 長期（SMA200）: n/a円');
 	});
 
 	it('SMA詳細: 現在価格が NaN でも現在価格の行を出さず、短期の移動平均が null なら n/a', () => {
@@ -166,8 +166,8 @@ describe('buildMarketSignalHandlerText', () => {
 		);
 		expect(text).toContain('【SMA（移動平均線）詳細】');
 		expect(text).not.toContain('現在価格:');
-		expect(text).toContain('- 短期（25日）: n/a円');
-		expect(text).toContain('- 長期（200日）: 4,500,000円');
+		expect(text).toContain('- 短期（SMA25）: n/a円');
+		expect(text).toContain('- 長期（SMA200）: 4,500,000円');
 	});
 
 	it('SMA deviations を表示', () => {
@@ -239,7 +239,28 @@ describe('buildMarketSignalHandlerText', () => {
 				},
 			}),
 		);
-		expect(text).toContain('10本前');
+		expect(text).toContain('10本前 SMA25がSMA75を上抜け');
+		expect(text).not.toContain('25日線');
+	});
+
+	it('月足の場合は単位が「か月前」', () => {
+		const text = buildMarketSignalHandlerText(
+			makeInput({
+				type: '1month',
+				sma: {
+					...requireDefined(makeInput().sma, 'makeInput().sma'),
+					recentCross: { type: 'golden_cross', pair: '25/75', barsAgo: 4 },
+				},
+			}),
+		);
+		expect(text).toContain('直近クロス: 4か月前 SMA25がSMA75を上抜け');
+	});
+
+	it('RSI 30 / 70 ちょうどは analyze_indicators と同じく圏内に入れる', () => {
+		const at = (rsi: number) =>
+			buildMarketSignalHandlerText(makeInput({ supplementary: { ...makeInput().supplementary, rsi } }));
+		expect(at(30)).toContain('RSI(14): 30.00（売られすぎ圏（30以下））');
+		expect(at(70)).toContain('RSI(14): 70.00（買われすぎ圏（70以上））');
 	});
 
 	it('補足指標: RSI を表示', () => {

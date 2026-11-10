@@ -544,7 +544,7 @@ describe('detect_patterns handler', () => {
 		expect(patTypes[1]).toBe('inverse_head_and_shoulders');
 	});
 
-	it('低 confidence H&S は detailed view に「形状不十分 / 低信頼」相当の警告を含む', async () => {
+	it('余裕が無い軸がある H&S は detailed view に警告を含む', async () => {
 		mockedDetectPatterns.mockResolvedValueOnce(
 			asMockResult(
 				okResult({
@@ -557,6 +557,7 @@ describe('detect_patterns handler', () => {
 								timeframeLabel: '日足',
 								range: { start: '2026-02-01T00:00:00.000Z', end: '2026-02-25T00:00:00.000Z' },
 								status: 'forming',
+								scoreComponents: { levelMargin: 0, headProminence: 0.5, timeSymmetry: 0.1, retracement: 0.2 },
 							},
 						],
 						overlays: { ranges: [] },
@@ -583,7 +584,8 @@ describe('detect_patterns handler', () => {
 		});
 
 		const text = (res as { content: Array<{ text: string }> }).content[0].text;
-		expect(text).toMatch(/非常に低い|除外候補/);
+		expect(text).toContain('⚠️ 余裕が無い軸（strict の基準ちょうど、または届かない）: 水準の揃い');
+		expect(text).not.toMatch(/形状不十分|非常に低い|除外候補/);
 	});
 	// data.warnings は structuredContent 側にしか無く LLM からは見えないので、スキャン窓不足の警告は content[0].text にも出す必要がある。
 	describe('スキャン窓不足の警告（data.warnings → content）', () => {

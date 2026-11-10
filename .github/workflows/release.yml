@@ -9,7 +9,6 @@ on:
         description: 'Tag to release (e.g. v0.5.0)'
         required: true
 
-# Prevent concurrent releases
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -18,32 +17,16 @@ permissions:
   contents: write
   packages: write
 
-# リリース対象の tag。workflow_dispatch の入力を優先し、tag push では ref 名を使う。
-#
-# 旧実装は `${GITHUB_REF_NAME:-<input>}` だったが、GITHUB_REF_NAME は常に設定されるため
-# `:-` のフォールバックは発動せず、workflow_dispatch では起動元ブランチ名（例: main）が
-# TAG として扱われていた。
-#
-# **`run:` の中で `${{ }}` を直接展開しない。** workflow_dispatch の `tag` は手入力で、
-# 式展開はシェルがパースする**前**に起きるため、引用符やメタ文字を含む値で任意コマンドを
-# 注入できる（zizmor template-injection）。npm-publish は `id-token: write` を持つので、
-# 注入されたコードは OIDC provenance に到達し得る。
-# env 経由なら値はシェルに解釈されないので、`run:` からは必ず "$RELEASE_TAG" で参照する。
-# `with:` はシェルではないため式のまま書いてよい。
+# 入力の tag を先に置く。ref_name は workflow_dispatch でも起動元のブランチ名で埋まる。
+# run: の中では ${{ }} を展開せず "$RELEASE_TAG" で参照する（手入力の tag による template injection。with: は式のままでよい）。
 env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
-  # ──────────────────────────────────────────────
-  # 1. CI gate — re-run full checks on tag code
-  # ──────────────────────────────────────────────
   ci:
     runs-on: ubuntu-latest
     steps:
-      # workflow_dispatch では起動時に選んだ ref と入力 tag が食い違い得る。
-      # checkout を入力 tag に固定しないと、別のコードをその tag として publish できる。
-      # `refs/tags/` を必ず付ける。**未修飾 ref は branch が tag より優先される**ため、
-      # 修飾しないと tag と同名の branch を作るだけでガードを迂回できてしまう。
+      # ref は refs/tags/ を付けて入力の tag に固定する（未修飾だと同名の branch が優先され、別のコードをその tag として publish できる）。
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -73,9 +56,6 @@ jobs:
       - name: Test
         run: npm test
 
-  # ──────────────────────────────────────────────
-  # 2. Publish to npm
-  # ──────────────────────────────────────────────
   npm-publish:
     needs: ci
     runs-on: ubuntu-latest
@@ -84,10 +64,6 @@ jobs:
       id-token: write   # OIDC token for npm provenance
       contents: read
     steps:
-      # workflow_dispatch では起動時に選んだ ref と入力 tag が食い違い得る。
-      # checkout を入力 tag に固定しないと、別のコードをその tag として publish できる。
-      # `refs/tags/` を必ず付ける。**未修飾 ref は branch が tag より優先される**ため、
-      # 修飾しないと tag と同名の branch を作るだけでガードを迂回できてしまう。
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -127,9 +103,6 @@ jobs:
           DIST_TAG: ${{ steps.dist-tag.outputs.tag }}
         run: npm publish --provenance --access public --tag "$DIST_TAG"
 
-  # ──────────────────────────────────────────────
-  # 3. Build & push Docker image to GHCR
-  # ──────────────────────────────────────────────
   docker-push:
     needs: ci
     runs-on: ubuntu-latest
@@ -137,10 +110,6 @@ jobs:
     env:
       REGISTRY: ghcr.io
     steps:
-      # workflow_dispatch では起動時に選んだ ref と入力 tag が食い違い得る。
-      # checkout を入力 tag に固定しないと、別のコードをその tag として publish できる。
-      # `refs/tags/` を必ず付ける。**未修飾 ref は branch が tag より優先される**ため、
-      # 修飾しないと tag と同名の branch を作るだけでガードを迂回できてしまう。
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -187,9 +156,6 @@ jobs:
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.description=MCP server for bitbank cryptocurrency exchange
 
-  # ──────────────────────────────────────────────
-  # 4. Create GitHub Release
-  # ──────────────────────────────────────────────
   github-release:
     needs: [npm-publish, docker-push]
     runs-on: ubuntu-latest

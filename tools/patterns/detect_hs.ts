@@ -2,10 +2,10 @@ import { EPSILON } from '../../lib/math.js';
 import { generatePatternDiagram } from '../../lib/pattern-diagrams.js';
 import { roundPriceAtLevel } from '../../lib/price.js';
 import { patternBarRange } from './bar-thresholds.js';
-import { finalizeConf, periodScoreDays } from './helpers.js';
+import { finalizeConf } from './helpers.js';
 import { clamp01, near, relDev } from './regression.js';
 import { applyPostBreakoutGates, applyReversalGate, buildStructureGate } from './reversal-gate.js';
-import { averageDefinedAxes, breakoutQualityScore, retracementScore } from './scoring.js';
+import { averageDefinedAxes, breakoutQualityScore, levelMarginScore, retracementScore } from './scoring.js';
 import {
 	BREAKOUT_BUFFER_PCT,
 	buildPrecedingTrend,
@@ -35,6 +35,8 @@ const RELAXED_FACTORS = [
 	{ shoulder: 2.0, head: 0.4, tag: 'x2.0_0.4' },
 ] as const;
 
+type RelaxedFactors = (typeof RELAXED_FACTORS)[number];
+
 // V 字の途中（左肩の深さが頭の 7% など）を H&S と読まないための下限。
 const HS_MIN_SHOULDER_DEPTH_RATIO = 0.2;
 
@@ -45,17 +47,12 @@ type HsShoulderDepthCheck =
 			details: Record<string, number>;
 	  };
 
-function checkInverseHsShoulderDepth(
-	leftShoulder: Pivot,
-	neckline1: Pivot,
-	head: Pivot,
-	neckline2: Pivot,
-	rightShoulder: Pivot,
-): HsShoulderDepthCheck {
+function checkHsShoulderDepth(side: ReversalSide, w: HsWindow): HsShoulderDepthCheck {
+	const { p0: leftShoulder, p1: neckline1, p2: head, p3: neckline2, p4: rightShoulder } = w;
 	const necklinePrice = (neckline1.price + neckline2.price) / 2;
-	const headDepth = necklinePrice - head.price;
-	const leftDepth = neckline1.price - leftShoulder.price;
-	const rightDepth = neckline2.price - rightShoulder.price;
+	const headDepth = side === 'top' ? head.price - necklinePrice : necklinePrice - head.price;
+	const leftDepth = side === 'top' ? leftShoulder.price - neckline1.price : neckline1.price - leftShoulder.price;
+	const rightDepth = side === 'top' ? rightShoulder.price - neckline2.price : neckline2.price - rightShoulder.price;
 	const leftRatio = headDepth > 0 ? leftDepth / headDepth : Number.NaN;
 	const rightRatio = headDepth > 0 ? rightDepth / headDepth : Number.NaN;
 	if (
@@ -78,7 +75,7 @@ function checkInverseHsShoulderDepth(
 }
 
 // relaxed の棄却はこの段でだけ記録する。前の段で落ちた窓も次の段で通りうるので、最終的な棄却ではない（#174）。
-function isFinalRelaxedStage(factors: (typeof RELAXED_FACTORS)[number]): boolean {
+function isFinalRelaxedStage(factors: RelaxedFactors): boolean {
 	return factors === RELAXED_FACTORS[RELAXED_FACTORS.length - 1];
 }
 
@@ -87,8 +84,6 @@ const FORMING_MAX_DAYS = 90;
 export const FORMING_MIN_DAYS = 21;
 // 現行の重みでは completion の最小値が 0.675 なので発火しない。重みを変えたときのためのガード。
 export const FORMING_MIN_COMPLETION = 0.4;
-// detect_triples.ts と同じ値にそろえている。
-const FORMING_MIN_CONFIDENCE = 0.5;
 
 export function getHsFormingBarParams(tf: string): { minBars: number; maxBars: number } {
 	return patternBarRange(tf, FORMING_MIN_DAYS, FORMING_MAX_DAYS);
@@ -170,6 +165,8 @@ export function necklineProjectionHeight(args: {
 
 function buildHsScore(opts: {
 	shoulders: readonly [number, number];
+	/** strict の肩の判定と同じ幅（tolerancePct と hsShoulderMaxPct の小さいほう）。 */
+	strictShoulderTolerancePct: number;
 	headPrice: number;
 	shoulderIdxs: readonly [number, number];
 	headIdx: number;
@@ -181,10 +178,8 @@ function buildHsScore(opts: {
 	patternHeight: number | undefined;
 	side: ReversalSide;
 	retracementRatio?: number;
-	durationScore: number;
 }): { components: PatternScoreBreakdown; base: number } {
-	const [s1, s2] = opts.shoulders;
-	const symmetry = clamp01(1 - relDev(s1, s2));
+	const levelMargin = levelMarginScore(opts.shoulders, opts.strictShoulderTolerancePct);
 	const headProminence = headProminenceScore(opts.headPrice, opts.shoulders, opts.side, opts.headProminenceGate);
 	const timeSymmetry = timeSymmetryScore(opts.shoulderIdxs, opts.headIdx);
 	const retracement = retracementScore(opts.retracementRatio);
@@ -195,17 +190,15 @@ function buildHsScore(opts: {
 		opts.side,
 	);
 	const components: PatternScoreBreakdown = {
-		symmetry: Number(symmetry.toFixed(4)),
+		levelMargin: Number(levelMargin.toFixed(4)),
 		...(headProminence !== undefined ? { headProminence: Number(headProminence.toFixed(4)) } : {}),
 		...(timeSymmetry !== undefined ? { timeSymmetry: Number(timeSymmetry.toFixed(4)) } : {}),
 		...(retracement !== undefined ? { retracement: Number(retracement.toFixed(4)) } : {}),
 		...(breakoutQuality !== undefined ? { breakoutQuality: Number(breakoutQuality.toFixed(4)) } : {}),
-		duration: Number(opts.durationScore.toFixed(4)),
 	};
 	// 算出できなかった軸は 0 として混ぜず、平均から外す（欠測を減点にしないため）。
 	const base =
-		averageDefinedAxes([symmetry, headProminence, timeSymmetry, retracement, breakoutQuality, opts.durationScore]) ??
-		symmetry;
+		averageDefinedAxes([levelMargin, headProminence, timeSymmetry, retracement, breakoutQuality]) ?? levelMargin;
 	return { components, base };
 }
 
@@ -384,474 +377,352 @@ function enumerateHsWindows(ctx: DetectContext, side: 'top' | 'bottom'): HsWindo
 	return windows;
 }
 
-function findStrictInverseHS(ctx: DetectContext): { patterns: DeduplicablePattern[]; found: boolean } {
-	const { candles, pivots, tolerancePct, headProminencePct, debugCandidates } = ctx;
+interface HsSide {
+	type: 'head_and_shoulders' | 'inverse_head_and_shoulders';
+	shoulderKind: 'H' | 'L';
+	midKind: 'L' | 'H';
+	priorTrend: 'up' | 'down';
+	breakoutDirection: 'below' | 'above';
+	targetDirection: 'down' | 'up';
+	headNotBeyondReason: 'head_not_higher' | 'head_not_lower';
+	midRoles: readonly [string, string];
+	relaxedTag: 'relaxed_hs' | 'relaxed_ihs';
+}
+
+const HS_SIDES: Record<ReversalSide, HsSide> = {
+	top: {
+		type: 'head_and_shoulders',
+		shoulderKind: 'H',
+		midKind: 'L',
+		priorTrend: 'up',
+		breakoutDirection: 'below',
+		targetDirection: 'down',
+		headNotBeyondReason: 'head_not_higher',
+		midRoles: ['valley1', 'valley2'],
+		relaxedTag: 'relaxed_hs',
+	},
+	bottom: {
+		type: 'inverse_head_and_shoulders',
+		shoulderKind: 'L',
+		midKind: 'H',
+		priorTrend: 'down',
+		breakoutDirection: 'above',
+		targetDirection: 'up',
+		headNotBeyondReason: 'head_not_lower',
+		midRoles: ['peak1', 'peak2'],
+		relaxedTag: 'relaxed_ihs',
+	},
+};
+
+function hsIndices(w: HsWindow): number[] {
+	return [w.p0.idx, w.p1.idx, w.p2.idx, w.p3.idx, w.p4.idx];
+}
+
+function headBeyondShoulders(side: ReversalSide, w: HsWindow, prominence: number): boolean {
+	const { p0, p2, p4 } = w;
+	return side === 'top'
+		? p2.price > Math.max(p0.price, p4.price) * (1 + prominence)
+		: p2.price < Math.min(p0.price, p4.price) * (1 - prominence);
+}
+
+function hsShapeDetails(
+	ctx: DetectContext,
+	w: HsWindow,
+	necklineDiffPct: number,
+	relaxed?: { factor: number; tolerancePct: number },
+): Record<string, number> {
+	const { p0, p1, p2, p3, p4 } = w;
+	return {
+		leftShoulder: p0.price,
+		rightShoulder: p4.price,
+		shouldersDiff: Math.abs(p0.price - p4.price),
+		shouldersDiffPct: relDev(p0.price, p4.price),
+		shoulderMaxPct: ctx.hsShoulderMaxPct,
+		tolerancePct: ctx.tolerancePct,
+		...(relaxed ? { relaxedShoulderFactor: relaxed.factor, relaxedTolerancePct: relaxed.tolerancePct } : {}),
+		head: p2.price,
+		headProminencePct: ctx.headProminencePct,
+		necklineP1: p1.price,
+		necklineP3: p3.price,
+		necklineDiffPct,
+		necklineMaxPct: HS_NECKLINE_MAX_PCT,
+	};
+}
+
+// TODO: relaxed の H&S / 逆 H&S とも、strict と同じ傾きつきネックラインにするか検討する。
+function flatHsNecklineLevel(ctx: DetectContext, side: ReversalSide, w: HsWindow): number {
+	const { p0, p1, p2, p3, p4 } = w;
+	const mids = side === 'top' ? ctx.allValleys : ctx.allPeaks;
+	const pick = (m: Pivot, v: Pivot) => ((side === 'top' ? v.price < m.price : v.price > m.price) ? v : m);
+	const between = mids.filter((v) => v.idx > p0.idx && v.idx < p4.idx);
+	const post = mids.filter((v) => v.idx > p2.idx);
+	const extreme = between.length ? between.reduce(pick) : post.length ? post.reduce(pick) : null;
+	if (extreme) return extreme.price;
+	return side === 'top' ? Math.min(p1.price, p3.price) : Math.max(p1.price, p3.price);
+}
+
+// relaxedFactors が null なら strict。
+function buildHsPattern(
+	ctx: DetectContext,
+	side: ReversalSide,
+	w: HsWindow,
+	relaxedFactors: RelaxedFactors | null,
+): DeduplicablePattern | null {
+	const { candles, pivots, headProminencePct, debugCandidates } = ctx;
+	const spec = HS_SIDES[side];
+	const { type } = spec;
+	const { p0, p1, p2, p3, p4 } = w;
+
+	const start = candles[p0.idx].isoTime;
+	const end = candles[p4.idx].isoTime;
+	if (!start || !end) return null;
+	const trend = validatePriorTrend(candles, p0.idx, p4.idx - p0.idx, spec.priorTrend, ctx.priorTrendParams);
+	if (!trend.ok) {
+		debugCandidates.push({
+			type,
+			accepted: false,
+			reason: `prior_trend_mismatch:${trend.classification}`,
+			indices: hsIndices(w),
+		});
+		return null;
+	}
+	if (trend.classification === 'insufficient_data') {
+		debugCandidates.push({
+			type,
+			accepted: true,
+			reason: 'prior_trend_insufficient_data',
+			indices: hsIndices(w),
+		});
+	}
+	const sizeReason = validatePatternSize(side, [p0, p1, p2, p3, p4], ctx.sizeThresholds);
+	if (sizeReason) {
+		debugCandidates.push({ type, accepted: false, reason: sizeReason, indices: hsIndices(w) });
+		return null;
+	}
+	const shoulderDepth = checkHsShoulderDepth(side, w);
+	if (!shoulderDepth.ok) {
+		if (!relaxedFactors || isFinalRelaxedStage(relaxedFactors)) {
+			debugCandidates.push({
+				type,
+				accepted: false,
+				reason: 'shoulder_depth_insufficient',
+				details: shoulderDepth.details,
+				indices: hsIndices(w),
+			});
+		}
+		return null;
+	}
+
+	// ゲートは左肩より前へ遡るので、strict でも傾いた線ではなく 2 点の平均を水準として渡す。
+	const flatLevel = relaxedFactors ? flatHsNecklineLevel(ctx, side, w) : null;
+	const neckline =
+		flatLevel !== null
+			? [
+					{ x: p1.idx, y: flatLevel },
+					{ x: p3.idx, y: flatLevel },
+				]
+			: [
+					{ x: p1.idx, y: p1.price },
+					{ x: p3.idx, y: p3.price },
+				];
+	const necklineLevel = flatLevel ?? (Number(p1.price) + Number(p3.price)) / 2;
+
+	const gate = applyReversalGate({
+		candles,
+		pivots,
+		side,
+		first: p0,
+		mid: p1,
+		necklinePrice: necklineLevel,
+		type,
+		indices: hsIndices(w),
+		debugCandidates,
+	});
+	if (!gate) return null;
+	const structureGate = buildStructureGate(gate);
+
+	// p1 / p3 はネックラインを引く点なので渡さない。
+	const nlAt = (i: number): number => necklineAt(neckline, i);
+	const necklineSide = validateMainPointsAgainstNecklineAt(side, [p0, p2, p4], nlAt);
+	if (necklineSide.reason) {
+		debugCandidates.push({
+			type,
+			accepted: false,
+			reason: necklineSide.reason,
+			details: necklineSideDetailsFromAt(nlAt, necklineSide.offenders),
+			indices: hsIndices(w),
+		});
+		return null;
+	}
+
+	const breakoutIdx = findHsBreakoutIdx(candles, neckline, p4.idx, spec.breakoutDirection);
+	const completion = buildHsCompletionFields(candles, breakoutIdx, spec.targetDirection, end);
+	if (!completion) return null;
+	const postGate =
+		breakoutIdx >= 0
+			? applyPostBreakoutGates({
+					candles,
+					pivots,
+					side,
+					first: p0,
+					mid: p1,
+					last: p4,
+					breakoutIdx,
+					type,
+					indices: hsIndices(w),
+					debugCandidates,
+				})
+			: null;
+	const rangeEnd = completion.rangeEnd;
+	// relaxed では構造図にもブレイク判定と同じ水準を渡す（#226）。
+	const diagram = generatePatternDiagram(
+		type,
+		[
+			{ ...p0, date: candles[p0.idx]?.isoTime },
+			{ ...p1, date: candles[p1.idx]?.isoTime },
+			{ ...p2, date: candles[p2.idx]?.isoTime },
+			{ ...p3, date: candles[p3.idx]?.isoTime },
+			{ ...p4, date: candles[p4.idx]?.isoTime },
+		],
+		{ price: necklineLevel },
+		{ start, end: rangeEnd },
+		{ tz: ctx.tz, type: ctx.type },
+	);
+	const target = necklineProjectionTarget({
+		neckline,
+		anchorIdx: breakoutIdx >= 0 ? breakoutIdx : p4.idx,
+		headIdx: p2.idx,
+		headPrice: p2.price,
+		direction: spec.targetDirection,
+		fallbackNecklinePrice: necklineLevel,
+	});
+	const height = necklineProjectionHeight({
+		neckline,
+		headIdx: p2.idx,
+		headPrice: p2.price,
+		direction: spec.targetDirection,
+		fallbackNecklinePrice: necklineLevel,
+	});
+	const reach = !completion.breakout
+		? omittedTargetReach('not_broken_out')
+		: target === undefined || height === undefined
+			? omittedTargetReach('no_target')
+			: computeTargetReach(candles, breakoutIdx, completion.breakout.price, target, spec.targetDirection, height);
+	const precedingTrend = buildPrecedingTrend(candles, trend, p0.idx);
+
+	const { components: scoreComponents, base } = buildHsScore({
+		shoulders: [p0.price, p4.price],
+		strictShoulderTolerancePct: Math.min(ctx.tolerancePct, ctx.hsShoulderMaxPct),
+		headPrice: p2.price,
+		shoulderIdxs: [p0.idx, p4.idx],
+		headIdx: p2.idx,
+		headProminenceGate: headProminencePct,
+		necklinePrice: necklineAt(neckline, breakoutIdx),
+		breakoutClose: completion.breakout?.price ?? Number.NaN,
+		patternHeight: height,
+		side,
+		retracementRatio: gate.retracementRatio,
+	});
+	const confidence = finalizeConf(base);
+
+	// invalid の候補は #242 のゲートが棄却として記録済みなので、成功としては記録しない。
+	if (!postGate) {
+		debugCandidates.push(
+			relaxedFactors
+				? { type, accepted: true, reason: 'fallback_relaxed', indices: hsIndices(w) }
+				: {
+						type,
+						accepted: true,
+						indices: hsIndices(w),
+						points: [
+							{ role: 'left_shoulder', idx: p0.idx, price: p0.price, isoTime: candles[p0.idx]?.isoTime },
+							{ role: spec.midRoles[0], idx: p1.idx, price: p1.price, isoTime: candles[p1.idx]?.isoTime },
+							{ role: 'head', idx: p2.idx, price: p2.price, isoTime: candles[p2.idx]?.isoTime },
+							{ role: spec.midRoles[1], idx: p3.idx, price: p3.price, isoTime: candles[p3.idx]?.isoTime },
+							{ role: 'right_shoulder', idx: p4.idx, price: p4.price, isoTime: candles[p4.idx]?.isoTime },
+						],
+					},
+		);
+	}
+
+	return {
+		type,
+		confidence,
+		scoreComponents,
+		range: { start, end: rangeEnd },
+		structureRange: { start, end },
+		status: completion.status,
+		confirmation: completion.confirmation,
+		...(completion.breakout ? { breakout: completion.breakout } : {}),
+		...(completion.breakoutBarIndex !== undefined ? { breakoutBarIndex: completion.breakoutBarIndex } : {}),
+		...(completion.breakoutDate ? { breakoutDate: completion.breakoutDate } : {}),
+		...(completion.breakoutDirection ? { breakoutDirection: completion.breakoutDirection } : {}),
+		...(completion.outcome ? { outcome: completion.outcome } : {}),
+		// status より後ろに置く。#242 のゲートに当たると status を invalid で上書きするため。
+		...postGate,
+		...(precedingTrend ? { precedingTrend } : {}),
+		pivots: [p0, p1, p2, p3, p4],
+		neckline,
+		...(structureGate ? { structureGate } : {}),
+		trendlineLabel: 'ネックライン',
+		...(target !== undefined ? { breakoutTarget: target, targetMethod: 'neckline_projection' as const } : {}),
+		...targetReachFields(reach),
+		structureDiagram: diagram,
+		...(relaxedFactors ? { _fallback: `${spec.relaxedTag}_${relaxedFactors.tag}` } : {}),
+	};
+}
+
+function findStrictHs(ctx: DetectContext, side: ReversalSide): { patterns: DeduplicablePattern[]; found: boolean } {
+	const { tolerancePct, headProminencePct, debugCandidates } = ctx;
+	const spec = HS_SIDES[side];
 	const patterns: DeduplicablePattern[] = [];
 	let found = false;
 
-	for (const { p0, p1, p2, p3, p4 } of enumerateHsWindows(ctx, 'bottom')) {
+	for (const w of enumerateHsWindows(ctx, side)) {
+		const { p0, p1, p3, p4 } = w;
 		// reason にどちらのゲートで落ちたかを出すため、短絡させずに別々に評価する（#172）。
 		const shouldersWithinTolerance = near(p0.price, p4.price, tolerancePct);
 		const shouldersWithinCap = isSameLevel(p0.price, p4.price, ctx.hsShoulderMaxPct);
 		const shouldersNear = shouldersWithinTolerance && shouldersWithinCap;
-		const headLower = p2.price < Math.min(p0.price, p4.price) * (1 - headProminencePct);
+		const headBeyond = headBeyondShoulders(side, w, headProminencePct);
 		const necklineCheck = validateHorizontalNeckline(p1.price, p3.price, HS_NECKLINE_MAX_PCT);
-		if (shouldersNear && headLower && necklineCheck.ok) {
-			const start = candles[p0.idx].isoTime;
-			const end = candles[p4.idx].isoTime;
-			if (start && end) {
-				const trend = validatePriorTrend(candles, p0.idx, p4.idx - p0.idx, 'down', ctx.priorTrendParams);
-				if (!trend.ok) {
-					debugCandidates.push({
-						type: 'inverse_head_and_shoulders',
-						accepted: false,
-						reason: `prior_trend_mismatch:${trend.classification}`,
-						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-					});
-					continue;
-				}
-				if (trend.classification === 'insufficient_data') {
-					debugCandidates.push({
-						type: 'inverse_head_and_shoulders',
-						accepted: true,
-						reason: 'prior_trend_insufficient_data',
-						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-					});
-				}
-				const sizeReason = validatePatternSize('bottom', [p0, p1, p2, p3, p4], ctx.sizeThresholds);
-				if (sizeReason) {
-					debugCandidates.push({
-						type: 'inverse_head_and_shoulders',
-						accepted: false,
-						reason: sizeReason,
-						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-					});
-					continue;
-				}
-				const shoulderDepth = checkInverseHsShoulderDepth(p0, p1, p2, p3, p4);
-				if (!shoulderDepth.ok) {
-					debugCandidates.push({
-						type: 'inverse_head_and_shoulders',
-						accepted: false,
-						reason: 'shoulder_depth_insufficient',
-						details: shoulderDepth.details,
-						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-					});
-					continue;
-				}
-				const neckline = [
-					{ x: p1.idx, y: p1.price },
-					{ x: p3.idx, y: p3.price },
-				];
-				const nlAvg = (Number(p1.price) + Number(p3.price)) / 2;
-
-				// ゲートは左肩より前へ遡るので、傾いた線ではなく 2 点の平均を水準として渡す。
-				const gate = applyReversalGate({
-					candles,
-					pivots,
-					side: 'bottom',
-					first: p0,
-					mid: p1,
-					necklinePrice: nlAvg,
-					type: 'inverse_head_and_shoulders',
-					indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-					debugCandidates,
-				});
-				if (!gate) continue;
-				const structureGate = buildStructureGate(gate);
-
-				// p1 / p3 はネックラインの定義点そのものなので渡さない。
-				const nlAt = (i: number): number => necklineAt(neckline, i);
-				const necklineSide = validateMainPointsAgainstNecklineAt('bottom', [p0, p2, p4], nlAt);
-				if (necklineSide.reason) {
-					debugCandidates.push({
-						type: 'inverse_head_and_shoulders',
-						accepted: false,
-						reason: necklineSide.reason,
-						details: necklineSideDetailsFromAt(nlAt, necklineSide.offenders),
-						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-					});
-					continue;
-				}
-
-				const breakoutIdx = findHsBreakoutIdx(candles, neckline, p4.idx, 'above');
-				const completion = buildHsCompletionFields(candles, breakoutIdx, 'up', end);
-				if (!completion) continue;
-				const postGate =
-					breakoutIdx >= 0
-						? applyPostBreakoutGates({
-								candles,
-								pivots,
-								side: 'bottom',
-								first: p0,
-								mid: p1,
-								last: p4,
-								breakoutIdx,
-								type: 'inverse_head_and_shoulders',
-								indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-								debugCandidates,
-							})
-						: null;
-				const rangeEnd = completion.rangeEnd;
-				const diagram = generatePatternDiagram(
-					'inverse_head_and_shoulders',
-					[
-						{ ...p0, date: candles[p0.idx]?.isoTime },
-						{ ...p1, date: candles[p1.idx]?.isoTime },
-						{ ...p2, date: candles[p2.idx]?.isoTime },
-						{ ...p3, date: candles[p3.idx]?.isoTime },
-						{ ...p4, date: candles[p4.idx]?.isoTime },
-					],
-					{ price: nlAvg },
-					{ start, end: rangeEnd },
-					{ tz: ctx.tz, type: ctx.type },
-				);
-				const targetAnchorIdx = breakoutIdx >= 0 ? breakoutIdx : p4.idx;
-				const ihsTarget = necklineProjectionTarget({
-					neckline,
-					anchorIdx: targetAnchorIdx,
-					headIdx: p2.idx,
-					headPrice: p2.price,
-					direction: 'up',
-					fallbackNecklinePrice: nlAvg,
-				});
-				const ihsHeight = necklineProjectionHeight({
-					neckline,
-					headIdx: p2.idx,
-					headPrice: p2.price,
-					direction: 'up',
-					fallbackNecklinePrice: nlAvg,
-				});
-				const ihsReach = !completion.breakout
-					? omittedTargetReach('not_broken_out')
-					: ihsTarget === undefined || ihsHeight === undefined
-						? omittedTargetReach('no_target')
-						: computeTargetReach(candles, breakoutIdx, completion.breakout.price, ihsTarget, 'up', ihsHeight);
-				const ihsPrecedingTrend = buildPrecedingTrend(candles, trend, p0.idx);
-
-				const { components: scoreComponents, base } = buildHsScore({
-					shoulders: [p0.price, p4.price],
-					headPrice: p2.price,
-					shoulderIdxs: [p0.idx, p4.idx],
-					headIdx: p2.idx,
-					headProminenceGate: headProminencePct,
-					necklinePrice: necklineAt(neckline, breakoutIdx),
-					breakoutClose: completion.breakout?.price ?? Number.NaN,
-					patternHeight: ihsHeight,
-					side: 'bottom',
-					retracementRatio: gate.retracementRatio,
-					durationScore: periodScoreDays(start, end),
-				});
-				const confidence = finalizeConf(base, 'inverse_head_and_shoulders');
-
-				patterns.push({
-					type: 'inverse_head_and_shoulders',
-					confidence,
-					scoreComponents,
-					range: { start, end: rangeEnd },
-					structureRange: { start, end },
-					status: completion.status,
-					confirmation: completion.confirmation,
-					...(completion.breakout ? { breakout: completion.breakout } : {}),
-					...(completion.breakoutBarIndex !== undefined ? { breakoutBarIndex: completion.breakoutBarIndex } : {}),
-					...(completion.breakoutDate ? { breakoutDate: completion.breakoutDate } : {}),
-					...(completion.breakoutDirection ? { breakoutDirection: completion.breakoutDirection } : {}),
-					...(completion.outcome ? { outcome: completion.outcome } : {}),
-					// status より後ろに置く。#242 のゲートに当たると status を invalid で上書きするため。
-					...postGate,
-					...(ihsPrecedingTrend ? { precedingTrend: ihsPrecedingTrend } : {}),
-					pivots: [p0, p1, p2, p3, p4],
-					neckline,
-					...(structureGate ? { structureGate } : {}),
-					trendlineLabel: 'ネックライン',
-					...(ihsTarget !== undefined
-						? { breakoutTarget: ihsTarget, targetMethod: 'neckline_projection' as const }
-						: {}),
-					...targetReachFields(ihsReach),
-					structureDiagram: diagram,
-				});
-				found = true;
-				// invalid の候補は #242 のゲートが棄却として記録済みなので、成功としては記録しない。
-				if (!postGate)
-					debugCandidates.push({
-						type: 'inverse_head_and_shoulders',
-						accepted: true,
-						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-						points: [
-							{ role: 'left_shoulder', idx: p0.idx, price: p0.price, isoTime: candles[p0.idx]?.isoTime },
-							{ role: 'peak1', idx: p1.idx, price: p1.price, isoTime: candles[p1.idx]?.isoTime },
-							{ role: 'head', idx: p2.idx, price: p2.price, isoTime: candles[p2.idx]?.isoTime },
-							{ role: 'peak2', idx: p3.idx, price: p3.price, isoTime: candles[p3.idx]?.isoTime },
-							{ role: 'right_shoulder', idx: p4.idx, price: p4.price, isoTime: candles[p4.idx]?.isoTime },
-						],
-					});
-			}
-		} else {
+		if (!(shouldersNear && headBeyond && necklineCheck.ok)) {
 			const reason = !shouldersNear
 				? shouldersNotNearReason(shouldersWithinTolerance, shouldersWithinCap)
-				: !headLower
-					? 'head_not_lower'
-					: !necklineCheck.ok
-						? 'neckline_not_horizontal'
-						: 'unknown';
+				: !headBeyond
+					? spec.headNotBeyondReason
+					: 'neckline_not_horizontal';
 			debugCandidates.push({
-				type: 'inverse_head_and_shoulders',
+				type: spec.type,
 				accepted: false,
 				reason,
-				details: {
-					leftShoulder: p0.price,
-					rightShoulder: p4.price,
-					shouldersDiff: Math.abs(p0.price - p4.price),
-					shouldersDiffPct: relDev(p0.price, p4.price),
-					shoulderMaxPct: ctx.hsShoulderMaxPct,
-					tolerancePct,
-					head: p2.price,
-					headProminencePct,
-					necklineP1: p1.price,
-					necklineP3: p3.price,
-					necklineDiffPct: necklineCheck.diffPct,
-					necklineMaxPct: HS_NECKLINE_MAX_PCT,
-				},
-				indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
+				details: hsShapeDetails(ctx, w, necklineCheck.diffPct),
+				indices: hsIndices(w),
 			});
+			continue;
 		}
+		const pattern = buildHsPattern(ctx, side, w, null);
+		if (!pattern) continue;
+		patterns.push(pattern);
+		found = true;
 	}
 
 	return { patterns, found };
 }
 
-function findStrictHS(ctx: DetectContext): { patterns: DeduplicablePattern[]; found: boolean } {
-	const { candles, pivots, tolerancePct, headProminencePct, debugCandidates } = ctx;
-	const patterns: DeduplicablePattern[] = [];
-	let found = false;
-
-	for (const { p0, p1, p2, p3, p4 } of enumerateHsWindows(ctx, 'top')) {
-		const shouldersWithinTolerance = near(p0.price, p4.price, tolerancePct);
-		const shouldersWithinCap = isSameLevel(p0.price, p4.price, ctx.hsShoulderMaxPct);
-		const shouldersNear = shouldersWithinTolerance && shouldersWithinCap;
-		const headHigher = p2.price > Math.max(p0.price, p4.price) * (1 + headProminencePct);
-		const necklineCheck = validateHorizontalNeckline(p1.price, p3.price, HS_NECKLINE_MAX_PCT);
-		if (shouldersNear && headHigher && necklineCheck.ok) {
-			const start = candles[p0.idx].isoTime;
-			const end = candles[p4.idx].isoTime;
-			if (start && end) {
-				const trend = validatePriorTrend(candles, p0.idx, p4.idx - p0.idx, 'up', ctx.priorTrendParams);
-				if (!trend.ok) {
-					debugCandidates.push({
-						type: 'head_and_shoulders',
-						accepted: false,
-						reason: `prior_trend_mismatch:${trend.classification}`,
-						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-					});
-					continue;
-				}
-				if (trend.classification === 'insufficient_data') {
-					debugCandidates.push({
-						type: 'head_and_shoulders',
-						accepted: true,
-						reason: 'prior_trend_insufficient_data',
-						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-					});
-				}
-				const sizeReason = validatePatternSize('top', [p0, p1, p2, p3, p4], ctx.sizeThresholds);
-				if (sizeReason) {
-					debugCandidates.push({
-						type: 'head_and_shoulders',
-						accepted: false,
-						reason: sizeReason,
-						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-					});
-					continue;
-				}
-				const neckline = [
-					{ x: p1.idx, y: p1.price },
-					{ x: p3.idx, y: p3.price },
-				];
-				const nlAvg = (Number(p1.price) + Number(p3.price)) / 2;
-
-				const gate = applyReversalGate({
-					candles,
-					pivots,
-					side: 'top',
-					first: p0,
-					mid: p1,
-					necklinePrice: nlAvg,
-					type: 'head_and_shoulders',
-					indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-					debugCandidates,
-				});
-				if (!gate) continue;
-				const structureGate = buildStructureGate(gate);
-
-				const nlAt = (i: number): number => necklineAt(neckline, i);
-				const necklineSide = validateMainPointsAgainstNecklineAt('top', [p0, p2, p4], nlAt);
-				if (necklineSide.reason) {
-					debugCandidates.push({
-						type: 'head_and_shoulders',
-						accepted: false,
-						reason: necklineSide.reason,
-						details: necklineSideDetailsFromAt(nlAt, necklineSide.offenders),
-						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-					});
-					continue;
-				}
-
-				const breakoutIdx = findHsBreakoutIdx(candles, neckline, p4.idx, 'below');
-				const completion = buildHsCompletionFields(candles, breakoutIdx, 'down', end);
-				if (!completion) continue;
-				const postGate =
-					breakoutIdx >= 0
-						? applyPostBreakoutGates({
-								candles,
-								pivots,
-								side: 'top',
-								first: p0,
-								mid: p1,
-								last: p4,
-								breakoutIdx,
-								type: 'head_and_shoulders',
-								indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-								debugCandidates,
-							})
-						: null;
-				const rangeEnd = completion.rangeEnd;
-				const diagram = generatePatternDiagram(
-					'head_and_shoulders',
-					[
-						{ ...p0, date: candles[p0.idx]?.isoTime },
-						{ ...p1, date: candles[p1.idx]?.isoTime },
-						{ ...p2, date: candles[p2.idx]?.isoTime },
-						{ ...p3, date: candles[p3.idx]?.isoTime },
-						{ ...p4, date: candles[p4.idx]?.isoTime },
-					],
-					{ price: nlAvg },
-					{ start, end: rangeEnd },
-					{ tz: ctx.tz, type: ctx.type },
-				);
-				const targetAnchorIdx = breakoutIdx >= 0 ? breakoutIdx : p4.idx;
-				const hsTarget = necklineProjectionTarget({
-					neckline,
-					anchorIdx: targetAnchorIdx,
-					headIdx: p2.idx,
-					headPrice: p2.price,
-					direction: 'down',
-					fallbackNecklinePrice: nlAvg,
-				});
-				const hsHeight = necklineProjectionHeight({
-					neckline,
-					headIdx: p2.idx,
-					headPrice: p2.price,
-					direction: 'down',
-					fallbackNecklinePrice: nlAvg,
-				});
-				const hsReach = !completion.breakout
-					? omittedTargetReach('not_broken_out')
-					: hsTarget === undefined || hsHeight === undefined
-						? omittedTargetReach('no_target')
-						: computeTargetReach(candles, breakoutIdx, completion.breakout.price, hsTarget, 'down', hsHeight);
-				const hsPrecedingTrend = buildPrecedingTrend(candles, trend, p0.idx);
-
-				const { components: scoreComponents, base } = buildHsScore({
-					shoulders: [p0.price, p4.price],
-					headPrice: p2.price,
-					shoulderIdxs: [p0.idx, p4.idx],
-					headIdx: p2.idx,
-					headProminenceGate: headProminencePct,
-					necklinePrice: necklineAt(neckline, breakoutIdx),
-					breakoutClose: completion.breakout?.price ?? Number.NaN,
-					patternHeight: hsHeight,
-					side: 'top',
-					retracementRatio: gate.retracementRatio,
-					durationScore: periodScoreDays(start, end),
-				});
-				const confidence = finalizeConf(base, 'head_and_shoulders');
-
-				patterns.push({
-					type: 'head_and_shoulders',
-					confidence,
-					scoreComponents,
-					range: { start, end: rangeEnd },
-					structureRange: { start, end },
-					status: completion.status,
-					confirmation: completion.confirmation,
-					...(completion.breakout ? { breakout: completion.breakout } : {}),
-					...(completion.breakoutBarIndex !== undefined ? { breakoutBarIndex: completion.breakoutBarIndex } : {}),
-					...(completion.breakoutDate ? { breakoutDate: completion.breakoutDate } : {}),
-					...(completion.breakoutDirection ? { breakoutDirection: completion.breakoutDirection } : {}),
-					...(completion.outcome ? { outcome: completion.outcome } : {}),
-					...postGate,
-					...(hsPrecedingTrend ? { precedingTrend: hsPrecedingTrend } : {}),
-					pivots: [p0, p1, p2, p3, p4],
-					neckline,
-					...(structureGate ? { structureGate } : {}),
-					trendlineLabel: 'ネックライン',
-					...(hsTarget !== undefined ? { breakoutTarget: hsTarget, targetMethod: 'neckline_projection' as const } : {}),
-					...targetReachFields(hsReach),
-					structureDiagram: diagram,
-				});
-				found = true;
-				if (!postGate)
-					debugCandidates.push({
-						type: 'head_and_shoulders',
-						accepted: true,
-						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-						points: [
-							{ role: 'left_shoulder', idx: p0.idx, price: p0.price, isoTime: candles[p0.idx]?.isoTime },
-							{ role: 'valley1', idx: p1.idx, price: p1.price, isoTime: candles[p1.idx]?.isoTime },
-							{ role: 'head', idx: p2.idx, price: p2.price, isoTime: candles[p2.idx]?.isoTime },
-							{ role: 'valley2', idx: p3.idx, price: p3.price, isoTime: candles[p3.idx]?.isoTime },
-							{ role: 'right_shoulder', idx: p4.idx, price: p4.price, isoTime: candles[p4.idx]?.isoTime },
-						],
-					});
-			}
-		} else {
-			const reason = !shouldersNear
-				? shouldersNotNearReason(shouldersWithinTolerance, shouldersWithinCap)
-				: !headHigher
-					? 'head_not_higher'
-					: !necklineCheck.ok
-						? 'neckline_not_horizontal'
-						: 'unknown';
-			debugCandidates.push({
-				type: 'head_and_shoulders',
-				accepted: false,
-				reason,
-				details: {
-					leftShoulder: p0.price,
-					rightShoulder: p4.price,
-					shouldersDiff: Math.abs(p0.price - p4.price),
-					shouldersDiffPct: relDev(p0.price, p4.price),
-					shoulderMaxPct: ctx.hsShoulderMaxPct,
-					tolerancePct,
-					head: p2.price,
-					headProminencePct,
-					necklineP1: p1.price,
-					necklineP3: p3.price,
-					necklineDiffPct: necklineCheck.diffPct,
-					necklineMaxPct: HS_NECKLINE_MAX_PCT,
-				},
-				indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-			});
-		}
-	}
-
-	return { patterns, found };
-}
-
-function findRelaxedHS(ctx: DetectContext): DeduplicablePattern | null {
-	const { candles, pivots, allValleys, tolerancePct, headProminencePct, minDist, debugCandidates } = ctx;
+function findRelaxedHs(ctx: DetectContext, side: ReversalSide): DeduplicablePattern | null {
+	const { pivots, tolerancePct, headProminencePct, minDist, debugCandidates } = ctx;
+	const spec = HS_SIDES[side];
+	const { shoulderKind: s, midKind: m } = spec;
 
 	// invalid の候補で走査を止めると後ろの成立する候補まで失われるので、退避して走査を続ける（#242）。
 	let terminalFallback: DeduplicablePattern | null = null;
 
 	for (const factors of RELAXED_FACTORS) {
 		for (let i = 0; i < pivots.length - 4; i++) {
-			const p0 = pivots[i],
-				p1 = pivots[i + 1],
-				p2 = pivots[i + 2],
-				p3 = pivots[i + 3],
-				p4 = pivots[i + 4];
-			if (!(p0.kind === 'H' && p1.kind === 'L' && p2.kind === 'H' && p3.kind === 'L' && p4.kind === 'H')) continue;
+			const w: HsWindow = { p0: pivots[i], p1: pivots[i + 1], p2: pivots[i + 2], p3: pivots[i + 3], p4: pivots[i + 4] };
+			const { p0, p1, p2, p3, p4 } = w;
+			if (!(p0.kind === s && p1.kind === m && p2.kind === s && p3.kind === m && p4.kind === s)) continue;
 			if (
 				p1.idx - p0.idx < minDist ||
 				p2.idx - p1.idx < minDist ||
@@ -863,466 +734,31 @@ function findRelaxedHS(ctx: DetectContext): DeduplicablePattern | null {
 			const shouldersWithinRelaxedTolerance = relDev(p0.price, p4.price) <= relaxedTolerancePct;
 			const shouldersWithinCap = isSameLevel(p0.price, p4.price, ctx.hsShoulderMaxPct);
 			const shouldersNearRelaxed = shouldersWithinRelaxedTolerance && shouldersWithinCap;
-			const headHigherRelaxed = p2.price > Math.max(p0.price, p4.price) * (1 + headProminencePct * factors.head);
+			const headBeyondRelaxed = headBeyondShoulders(side, w, headProminencePct * factors.head);
 			const necklineCheck = validateHorizontalNeckline(p1.price, p3.price, HS_NECKLINE_MAX_PCT);
-			if (!shouldersNearRelaxed || !headHigherRelaxed || !necklineCheck.ok) {
-				// 頭で落ちた窓は記録しない。strict の head_not_higher とほぼ重なり、relaxed 固有の情報が無いため。
+			if (!(shouldersNearRelaxed && headBeyondRelaxed && necklineCheck.ok)) {
+				// 頭で落ちた窓は記録しない。strict の head_not_higher / head_not_lower とほぼ重なり、relaxed 固有の情報が無いため。
 				const reason = !shouldersNearRelaxed
 					? relaxedShouldersNotNearReason(shouldersWithinRelaxedTolerance, shouldersWithinCap)
-					: headHigherRelaxed && !necklineCheck.ok
+					: headBeyondRelaxed && !necklineCheck.ok
 						? 'relaxed_neckline_not_horizontal'
 						: null;
 				if (reason && isFinalRelaxedStage(factors)) {
 					debugCandidates.push({
-						type: 'head_and_shoulders',
+						type: spec.type,
 						accepted: false,
 						reason,
-						details: {
-							leftShoulder: p0.price,
-							rightShoulder: p4.price,
-							shouldersDiff: Math.abs(p0.price - p4.price),
-							shouldersDiffPct: relDev(p0.price, p4.price),
-							shoulderMaxPct: ctx.hsShoulderMaxPct,
-							tolerancePct,
-							relaxedShoulderFactor: factors.shoulder,
-							relaxedTolerancePct,
-							head: p2.price,
-							headProminencePct,
-							necklineP1: p1.price,
-							necklineP3: p3.price,
-							necklineDiffPct: necklineCheck.diffPct,
-							necklineMaxPct: HS_NECKLINE_MAX_PCT,
-						},
-						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
+						details: hsShapeDetails(ctx, w, necklineCheck.diffPct, {
+							factor: factors.shoulder,
+							tolerancePct: relaxedTolerancePct,
+						}),
+						indices: hsIndices(w),
 					});
 				}
 				continue;
 			}
-			const start = candles[p0.idx].isoTime;
-			const end = candles[p4.idx].isoTime;
-			if (!start || !end) continue;
-			const trend = validatePriorTrend(candles, p0.idx, p4.idx - p0.idx, 'up', ctx.priorTrendParams);
-			if (!trend.ok) {
-				debugCandidates.push({
-					type: 'head_and_shoulders',
-					accepted: false,
-					reason: `prior_trend_mismatch:${trend.classification}`,
-					indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-				});
-				continue;
-			}
-			if (trend.classification === 'insufficient_data') {
-				debugCandidates.push({
-					type: 'head_and_shoulders',
-					accepted: true,
-					reason: 'prior_trend_insufficient_data',
-					indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-				});
-			}
-			const sizeReason = validatePatternSize('top', [p0, p1, p2, p3, p4], ctx.sizeThresholds);
-			if (sizeReason) {
-				debugCandidates.push({
-					type: 'head_and_shoulders',
-					accepted: false,
-					reason: sizeReason,
-					indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-				});
-				continue;
-			}
-			const valleyBetween = allValleys.filter((v: { idx: number }) => v.idx > p0.idx && v.idx < p4.idx);
-			const postValleys = allValleys.filter((v: { idx: number }) => v.idx > p2.idx);
-			const minValley = valleyBetween.length
-				? valleyBetween.reduce((m, v) => (v.price < m.price ? v : m))
-				: postValleys.length
-					? postValleys.reduce((m, v) => (v.price < m.price ? v : m))
-					: null;
-			const nlY = minValley ? minValley.price : Math.min(p1.price, p3.price);
-			const neckline = [
-				{ x: p1.idx, y: nlY },
-				{ x: p3.idx, y: nlY },
-			];
-
-			const gate = applyReversalGate({
-				candles,
-				pivots,
-				side: 'top',
-				first: p0,
-				mid: p1,
-				necklinePrice: nlY,
-				type: 'head_and_shoulders',
-				indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-				debugCandidates,
-			});
-			if (!gate) continue;
-			const structureGate = buildStructureGate(gate);
-
-			const nlAt = (i: number): number => necklineAt(neckline, i);
-			const necklineSide = validateMainPointsAgainstNecklineAt('top', [p0, p2, p4], nlAt);
-			if (necklineSide.reason) {
-				debugCandidates.push({
-					type: 'head_and_shoulders',
-					accepted: false,
-					reason: necklineSide.reason,
-					details: necklineSideDetailsFromAt(nlAt, necklineSide.offenders),
-					indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-				});
-				continue;
-			}
-
-			const breakoutIdx = findHsBreakoutIdx(candles, neckline, p4.idx, 'below');
-			const completion = buildHsCompletionFields(candles, breakoutIdx, 'down', end);
-			if (!completion) continue;
-			const postGate =
-				breakoutIdx >= 0
-					? applyPostBreakoutGates({
-							candles,
-							pivots,
-							side: 'top',
-							first: p0,
-							mid: p1,
-							last: p4,
-							breakoutIdx,
-							type: 'head_and_shoulders',
-							indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-							debugCandidates,
-						})
-					: null;
-			const rangeEnd = completion.rangeEnd;
-			const diagram = generatePatternDiagram(
-				'head_and_shoulders',
-				[
-					{ ...p0, date: candles[p0.idx]?.isoTime },
-					{ ...p1, date: candles[p1.idx]?.isoTime },
-					{ ...p2, date: candles[p2.idx]?.isoTime },
-					{ ...p3, date: candles[p3.idx]?.isoTime },
-					{ ...p4, date: candles[p4.idx]?.isoTime },
-				],
-				// 構造図にもブレイク判定と同じ nlY を渡す（#226）。
-				{ price: nlY },
-				{ start, end: rangeEnd },
-				{ tz: ctx.tz, type: ctx.type },
-			);
-			// TODO: relaxed の H&S / 逆 H&S とも、strict と同じ傾きつきネックラインにするか検討する。
-			const hsRelTarget = necklineProjectionTarget({
-				neckline,
-				anchorIdx: breakoutIdx >= 0 ? breakoutIdx : p4.idx,
-				headIdx: p2.idx,
-				headPrice: p2.price,
-				direction: 'down',
-				fallbackNecklinePrice: nlY,
-			});
-			const hsRelHeight = necklineProjectionHeight({
-				neckline,
-				headIdx: p2.idx,
-				headPrice: p2.price,
-				direction: 'down',
-				fallbackNecklinePrice: nlY,
-			});
-			const hsRelReach = !completion.breakout
-				? omittedTargetReach('not_broken_out')
-				: hsRelTarget === undefined || hsRelHeight === undefined
-					? omittedTargetReach('no_target')
-					: computeTargetReach(candles, breakoutIdx, completion.breakout.price, hsRelTarget, 'down', hsRelHeight);
-			const hsRelPrecedingTrend = buildPrecedingTrend(candles, trend, p0.idx);
-			const { components: scoreComponents, base } = buildHsScore({
-				shoulders: [p0.price, p4.price],
-				headPrice: p2.price,
-				shoulderIdxs: [p0.idx, p4.idx],
-				headIdx: p2.idx,
-				headProminenceGate: headProminencePct,
-				necklinePrice: necklineAt(neckline, breakoutIdx),
-				breakoutClose: completion.breakout?.price ?? Number.NaN,
-				patternHeight: hsRelHeight,
-				side: 'top',
-				retracementRatio: gate.retracementRatio,
-				durationScore: periodScoreDays(start, end),
-			});
-			const confidence = finalizeConf(base * 0.95, 'head_and_shoulders');
-			if (!postGate)
-				debugCandidates.push({
-					type: 'head_and_shoulders',
-					accepted: true,
-					reason: 'fallback_relaxed',
-					indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-				});
-			const entry: DeduplicablePattern = {
-				type: 'head_and_shoulders',
-				confidence,
-				scoreComponents,
-				range: { start, end: rangeEnd },
-				structureRange: { start, end },
-				status: completion.status,
-				confirmation: completion.confirmation,
-				...(completion.breakout ? { breakout: completion.breakout } : {}),
-				...(completion.breakoutBarIndex !== undefined ? { breakoutBarIndex: completion.breakoutBarIndex } : {}),
-				...(completion.breakoutDate ? { breakoutDate: completion.breakoutDate } : {}),
-				...(completion.breakoutDirection ? { breakoutDirection: completion.breakoutDirection } : {}),
-				...(completion.outcome ? { outcome: completion.outcome } : {}),
-				...postGate,
-				...(hsRelPrecedingTrend ? { precedingTrend: hsRelPrecedingTrend } : {}),
-				pivots: [p0, p1, p2, p3, p4],
-				neckline,
-				...(structureGate ? { structureGate } : {}),
-				trendlineLabel: 'ネックライン',
-				...(hsRelTarget !== undefined
-					? { breakoutTarget: hsRelTarget, targetMethod: 'neckline_projection' as const }
-					: {}),
-				...targetReachFields(hsRelReach),
-				structureDiagram: diagram,
-				_fallback: `relaxed_hs_${factors.tag}`,
-			};
-			if (entry.status === 'invalid') {
-				terminalFallback ??= entry;
-				continue;
-			}
-			return entry;
-		}
-	}
-	return terminalFallback;
-}
-
-function findRelaxedInverseHS(ctx: DetectContext): DeduplicablePattern | null {
-	const { candles, pivots, allPeaks, tolerancePct, headProminencePct, minDist, debugCandidates } = ctx;
-
-	let terminalFallback: DeduplicablePattern | null = null;
-
-	for (const factors of RELAXED_FACTORS) {
-		for (let i = 0; i < pivots.length - 4; i++) {
-			const p0 = pivots[i],
-				p1 = pivots[i + 1],
-				p2 = pivots[i + 2],
-				p3 = pivots[i + 3],
-				p4 = pivots[i + 4];
-			if (!(p0.kind === 'L' && p1.kind === 'H' && p2.kind === 'L' && p3.kind === 'H' && p4.kind === 'L')) continue;
-			if (
-				p1.idx - p0.idx < minDist ||
-				p2.idx - p1.idx < minDist ||
-				p3.idx - p2.idx < minDist ||
-				p4.idx - p3.idx < minDist
-			)
-				continue;
-			const relaxedTolerancePct = tolerancePct * factors.shoulder;
-			const shouldersWithinRelaxedTolerance = relDev(p0.price, p4.price) <= relaxedTolerancePct;
-			const shouldersWithinCap = isSameLevel(p0.price, p4.price, ctx.hsShoulderMaxPct);
-			const shouldersNearRelaxed = shouldersWithinRelaxedTolerance && shouldersWithinCap;
-			const headLowerRelaxed = p2.price < Math.min(p0.price, p4.price) * (1 - headProminencePct * factors.head);
-			const necklineCheck = validateHorizontalNeckline(p1.price, p3.price, HS_NECKLINE_MAX_PCT);
-			if (!(shouldersNearRelaxed && headLowerRelaxed && necklineCheck.ok)) {
-				const reason = !shouldersNearRelaxed
-					? relaxedShouldersNotNearReason(shouldersWithinRelaxedTolerance, shouldersWithinCap)
-					: headLowerRelaxed && !necklineCheck.ok
-						? 'relaxed_neckline_not_horizontal'
-						: null;
-				if (reason && isFinalRelaxedStage(factors)) {
-					debugCandidates.push({
-						type: 'inverse_head_and_shoulders',
-						accepted: false,
-						reason,
-						details: {
-							leftShoulder: p0.price,
-							rightShoulder: p4.price,
-							shouldersDiff: Math.abs(p0.price - p4.price),
-							shouldersDiffPct: relDev(p0.price, p4.price),
-							shoulderMaxPct: ctx.hsShoulderMaxPct,
-							tolerancePct,
-							relaxedShoulderFactor: factors.shoulder,
-							relaxedTolerancePct,
-							head: p2.price,
-							headProminencePct,
-							necklineP1: p1.price,
-							necklineP3: p3.price,
-							necklineDiffPct: necklineCheck.diffPct,
-							necklineMaxPct: HS_NECKLINE_MAX_PCT,
-						},
-						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-					});
-				}
-				continue;
-			}
-			const start = candles[p0.idx].isoTime;
-			const end = candles[p4.idx].isoTime;
-			if (!start || !end) continue;
-			const trend = validatePriorTrend(candles, p0.idx, p4.idx - p0.idx, 'down', ctx.priorTrendParams);
-			if (!trend.ok) {
-				debugCandidates.push({
-					type: 'inverse_head_and_shoulders',
-					accepted: false,
-					reason: `prior_trend_mismatch:${trend.classification}`,
-					indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-				});
-				continue;
-			}
-			if (trend.classification === 'insufficient_data') {
-				debugCandidates.push({
-					type: 'inverse_head_and_shoulders',
-					accepted: true,
-					reason: 'prior_trend_insufficient_data',
-					indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-				});
-			}
-			const sizeReason = validatePatternSize('bottom', [p0, p1, p2, p3, p4], ctx.sizeThresholds);
-			if (sizeReason) {
-				debugCandidates.push({
-					type: 'inverse_head_and_shoulders',
-					accepted: false,
-					reason: sizeReason,
-					indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-				});
-				continue;
-			}
-			const shoulderDepth = checkInverseHsShoulderDepth(p0, p1, p2, p3, p4);
-			if (!shoulderDepth.ok) {
-				if (isFinalRelaxedStage(factors)) {
-					debugCandidates.push({
-						type: 'inverse_head_and_shoulders',
-						accepted: false,
-						reason: 'shoulder_depth_insufficient',
-						details: shoulderDepth.details,
-						indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-					});
-				}
-				continue;
-			}
-			const peaksBetween = allPeaks.filter((v: { idx: number }) => v.idx > p0.idx && v.idx < p4.idx);
-			const postPeaks = allPeaks.filter((v: { idx: number }) => v.idx > p2.idx);
-			const maxPeak = peaksBetween.length
-				? peaksBetween.reduce((m, v) => (v.price > m.price ? v : m))
-				: postPeaks.length
-					? postPeaks.reduce((m, v) => (v.price > m.price ? v : m))
-					: null;
-			const nlY = maxPeak ? maxPeak.price : Math.max(p1.price, p3.price);
-			const neckline = [
-				{ x: p1.idx, y: nlY },
-				{ x: p3.idx, y: nlY },
-			];
-
-			const gate = applyReversalGate({
-				candles,
-				pivots,
-				side: 'bottom',
-				first: p0,
-				mid: p1,
-				necklinePrice: nlY,
-				type: 'inverse_head_and_shoulders',
-				indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-				debugCandidates,
-			});
-			if (!gate) continue;
-			const structureGate = buildStructureGate(gate);
-
-			const nlAt = (i: number): number => necklineAt(neckline, i);
-			const necklineSide = validateMainPointsAgainstNecklineAt('bottom', [p0, p2, p4], nlAt);
-			if (necklineSide.reason) {
-				debugCandidates.push({
-					type: 'inverse_head_and_shoulders',
-					accepted: false,
-					reason: necklineSide.reason,
-					details: necklineSideDetailsFromAt(nlAt, necklineSide.offenders),
-					indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-				});
-				continue;
-			}
-
-			const breakoutIdx = findHsBreakoutIdx(candles, neckline, p4.idx, 'above');
-			const completion = buildHsCompletionFields(candles, breakoutIdx, 'up', end);
-			if (!completion) continue;
-			const postGate =
-				breakoutIdx >= 0
-					? applyPostBreakoutGates({
-							candles,
-							pivots,
-							side: 'bottom',
-							first: p0,
-							mid: p1,
-							last: p4,
-							breakoutIdx,
-							type: 'inverse_head_and_shoulders',
-							indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-							debugCandidates,
-						})
-					: null;
-			const rangeEnd = completion.rangeEnd;
-			const diagram = generatePatternDiagram(
-				'inverse_head_and_shoulders',
-				[
-					{ ...p0, date: candles[p0.idx]?.isoTime },
-					{ ...p1, date: candles[p1.idx]?.isoTime },
-					{ ...p2, date: candles[p2.idx]?.isoTime },
-					{ ...p3, date: candles[p3.idx]?.isoTime },
-					{ ...p4, date: candles[p4.idx]?.isoTime },
-				],
-				{ price: nlY },
-				{ start, end: rangeEnd },
-				{ tz: ctx.tz, type: ctx.type },
-			);
-			const ihsRelTarget = necklineProjectionTarget({
-				neckline,
-				anchorIdx: breakoutIdx >= 0 ? breakoutIdx : p4.idx,
-				headIdx: p2.idx,
-				headPrice: p2.price,
-				direction: 'up',
-				fallbackNecklinePrice: nlY,
-			});
-			const ihsRelHeight = necklineProjectionHeight({
-				neckline,
-				headIdx: p2.idx,
-				headPrice: p2.price,
-				direction: 'up',
-				fallbackNecklinePrice: nlY,
-			});
-			const ihsRelReach = !completion.breakout
-				? omittedTargetReach('not_broken_out')
-				: ihsRelTarget === undefined || ihsRelHeight === undefined
-					? omittedTargetReach('no_target')
-					: computeTargetReach(candles, breakoutIdx, completion.breakout.price, ihsRelTarget, 'up', ihsRelHeight);
-			const ihsRelPrecedingTrend = buildPrecedingTrend(candles, trend, p0.idx);
-			const { components: scoreComponents, base } = buildHsScore({
-				shoulders: [p0.price, p4.price],
-				headPrice: p2.price,
-				shoulderIdxs: [p0.idx, p4.idx],
-				headIdx: p2.idx,
-				headProminenceGate: headProminencePct,
-				necklinePrice: necklineAt(neckline, breakoutIdx),
-				breakoutClose: completion.breakout?.price ?? Number.NaN,
-				patternHeight: ihsRelHeight,
-				side: 'bottom',
-				retracementRatio: gate.retracementRatio,
-				durationScore: periodScoreDays(start, end),
-			});
-			const confidence = finalizeConf(base * 0.95, 'inverse_head_and_shoulders');
-			if (!postGate)
-				debugCandidates.push({
-					type: 'inverse_head_and_shoulders',
-					accepted: true,
-					reason: 'fallback_relaxed',
-					indices: [p0.idx, p1.idx, p2.idx, p3.idx, p4.idx],
-				});
-			const entry: DeduplicablePattern = {
-				type: 'inverse_head_and_shoulders',
-				confidence,
-				scoreComponents,
-				range: { start, end: rangeEnd },
-				structureRange: { start, end },
-				status: completion.status,
-				confirmation: completion.confirmation,
-				...(completion.breakout ? { breakout: completion.breakout } : {}),
-				...(completion.breakoutBarIndex !== undefined ? { breakoutBarIndex: completion.breakoutBarIndex } : {}),
-				...(completion.breakoutDate ? { breakoutDate: completion.breakoutDate } : {}),
-				...(completion.breakoutDirection ? { breakoutDirection: completion.breakoutDirection } : {}),
-				...(completion.outcome ? { outcome: completion.outcome } : {}),
-				...postGate,
-				...(ihsRelPrecedingTrend ? { precedingTrend: ihsRelPrecedingTrend } : {}),
-				pivots: [p0, p1, p2, p3, p4],
-				neckline,
-				...(structureGate ? { structureGate } : {}),
-				trendlineLabel: 'ネックライン',
-				...(ihsRelTarget !== undefined
-					? { breakoutTarget: ihsRelTarget, targetMethod: 'neckline_projection' as const }
-					: {}),
-				...targetReachFields(ihsRelReach),
-				structureDiagram: diagram,
-				_fallback: `relaxed_ihs_${factors.tag}`,
-			};
+			const entry = buildHsPattern(ctx, side, w, factors);
+			if (!entry) continue;
 			if (entry.status === 'invalid') {
 				terminalFallback ??= entry;
 				continue;
@@ -1459,20 +895,6 @@ function formingHsForHead(
 				{ x: postHeadValley.idx, y: postHeadValley.price },
 			];
 
-	const confBase = Math.min(1, Math.max(0, 0.6 * closeness + 0.4 * progress));
-	const confidence = Math.round(confBase * (isProvisional ? 0.9 : 1.0) * 100) / 100;
-
-	if (confidence < FORMING_MIN_CONFIDENCE) {
-		ctx.debugCandidates.push({
-			type: 'head_and_shoulders',
-			accepted: false,
-			reason: 'confidence_below_min_forming',
-			indices: [left.idx, head.idx, postHeadValley.idx, rightShoulder.idx],
-			details: { confidence, threshold: FORMING_MIN_CONFIDENCE },
-		});
-		return null;
-	}
-
 	const hsSizeReason = validatePatternSize(
 		'top',
 		preHeadValley ? [left, preHeadValley, head, postHeadValley, rightShoulder] : [head, postHeadValley, rightShoulder],
@@ -1503,6 +925,22 @@ function formingHsForHead(
 	});
 	if (!gate) return null;
 	const structureGate = buildStructureGate(gate);
+
+	// 完成済みと同じ物差しで測る。未ブレイクなので breakoutQuality は出ない（#422）。
+	const { components: scoreComponents, base } = buildHsScore({
+		shoulders: [left.price, rightShoulder.price],
+		strictShoulderTolerancePct: Math.min(ctx.tolerancePct, ctx.hsShoulderMaxPct),
+		headPrice: head.price,
+		shoulderIdxs: [left.idx, rightShoulder.idx],
+		headIdx: head.idx,
+		headProminenceGate: ctx.headProminencePct,
+		necklinePrice: formHsNl,
+		breakoutClose: Number.NaN,
+		patternHeight: undefined,
+		side: 'top',
+		retracementRatio: gate.retracementRatio,
+	});
+	const confidence = finalizeConf(base);
 
 	const start = isoAt(left.idx);
 	const end = isoAt(rightShoulder.idx);
@@ -1582,6 +1020,7 @@ function formingHsForHead(
 			},
 		],
 		neckline,
+		scoreComponents,
 		...(structureGate ? { structureGate } : {}),
 		trendlineLabel: 'ネックライン',
 		...(formHsTarget !== undefined
@@ -1718,20 +1157,6 @@ function formingInverseHsForHead(
 				{ x: postHeadPeak.idx, y: postHeadPeak.price },
 			];
 
-	const confBase = Math.min(1, Math.max(0, 0.6 * closeness + 0.4 * progress));
-	const confidence = Math.round(confBase * (isProvisional ? 0.9 : 1.0) * 100) / 100;
-
-	if (confidence < FORMING_MIN_CONFIDENCE) {
-		ctx.debugCandidates.push({
-			type: 'inverse_head_and_shoulders',
-			accepted: false,
-			reason: 'confidence_below_min_forming',
-			indices: [left.idx, head.idx, postHeadPeak.idx, rightShoulder.idx],
-			details: { confidence, threshold: FORMING_MIN_CONFIDENCE },
-		});
-		return null;
-	}
-
 	const ihsSizeReason = validatePatternSize(
 		'bottom',
 		preHeadPeak ? [left, preHeadPeak, head, postHeadPeak, rightShoulder] : [head, postHeadPeak, rightShoulder],
@@ -1762,6 +1187,21 @@ function formingInverseHsForHead(
 	});
 	if (!gate) return null;
 	const structureGate = buildStructureGate(gate);
+
+	const { components: scoreComponents, base } = buildHsScore({
+		shoulders: [left.price, rightShoulder.price],
+		strictShoulderTolerancePct: Math.min(ctx.tolerancePct, ctx.hsShoulderMaxPct),
+		headPrice: head.price,
+		shoulderIdxs: [left.idx, rightShoulder.idx],
+		headIdx: head.idx,
+		headProminenceGate: ctx.headProminencePct,
+		necklinePrice: formIhsNl,
+		breakoutClose: Number.NaN,
+		patternHeight: undefined,
+		side: 'bottom',
+		retracementRatio: gate.retracementRatio,
+	});
+	const confidence = finalizeConf(base);
 
 	const start = isoAt(left.idx);
 	const end = isoAt(rightShoulder.idx);
@@ -1835,6 +1275,7 @@ function formingInverseHsForHead(
 			},
 		],
 		neckline,
+		scoreComponents,
 		...(structureGate ? { structureGate } : {}),
 		trendlineLabel: 'ネックライン',
 		...(formIhsTarget !== undefined
@@ -1852,27 +1293,27 @@ export function detectHeadAndShoulders(ctx: DetectContext): DetectResult {
 
 	let foundInverseHS = false;
 	if (want.size === 0 || want.has('inverse_head_and_shoulders')) {
-		const result = findStrictInverseHS(ctx);
+		const result = findStrictHs(ctx, 'bottom');
 		patterns.push(...result.patterns);
 		foundInverseHS = result.found;
 	}
 
 	let foundHS = false;
 	if (want.size === 0 || want.has('head_and_shoulders')) {
-		const result = findStrictHS(ctx);
+		const result = findStrictHs(ctx, 'top');
 		patterns.push(...result.patterns);
 		foundHS = result.found;
 	}
 
 	if (!foundHS && (want.size === 0 || want.has('head_and_shoulders'))) {
-		const relaxed = findRelaxedHS(ctx);
+		const relaxed = findRelaxedHs(ctx, 'top');
 		if (relaxed) {
 			patterns.push(relaxed);
 			foundHS = true;
 		}
 	}
 	if (!foundInverseHS && (want.size === 0 || want.has('inverse_head_and_shoulders'))) {
-		const relaxed = findRelaxedInverseHS(ctx);
+		const relaxed = findRelaxedHs(ctx, 'bottom');
 		if (relaxed) {
 			patterns.push(relaxed);
 			foundInverseHS = true;

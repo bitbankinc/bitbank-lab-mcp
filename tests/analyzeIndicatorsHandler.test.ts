@@ -24,7 +24,6 @@ function baseInput(overrides?: Partial<BuildIndicatorsTextInput>): BuildIndicato
 		trend: 'uptrend',
 		rsi: 55,
 		recentRsiFormatted: ['50.0', '52.0', '55.0'],
-		rsiUnitLabel: '日',
 		macdLine: 10000,
 		macdSignal: 5000,
 		macdHist: 5000,
@@ -113,14 +112,21 @@ describe('buildIndicatorsText', () => {
 		expect(text).toContain('売られすぎ');
 	});
 
-	it('RSI 30-50 → 弱め', () => {
+	it('RSI 30〜50 → 中立圏（50未満）', () => {
 		const text = buildIndicatorsText(baseInput({ rsi: 40 }));
-		expect(text).toContain('弱め');
+		expect(text).toContain('中立圏（50未満）');
 	});
 
-	it('RSI 50-70 → 中立〜強め', () => {
+	it('RSI 50〜70 → 中立圏（50以上）', () => {
 		const text = buildIndicatorsText(baseInput({ rsi: 60 }));
-		expect(text).toContain('中立〜強め');
+		expect(text).toContain('中立圏（50以上）');
+	});
+
+	it('総合判定とモメンタム欄の RSI のラベルが食い違わない（RSI 37）', () => {
+		const text = buildIndicatorsText(baseInput({ rsi: 37 }));
+		expect(text).toContain('勢い: RSI=37 → 中立圏（50未満）');
+		expect(text).toContain('RSI(14): 37 → 中立圏（50未満）');
+		expect(text).not.toMatch(/反発|反落|弱め/);
 	});
 
 	it('RSI >= 70 → 買われすぎ', () => {
@@ -199,25 +205,37 @@ describe('buildIndicatorsText', () => {
 		expect(text).toContain('直近クロス: なし');
 	});
 
-	it('sigmaZ <= -1 → 売られすぎ', () => {
+	it('-2σ < sigmaZ < -1σ は中心より下で、売られすぎにしない', () => {
 		const text = buildIndicatorsText(baseInput({ sigmaZ: -1.5 }));
-		expect(text).toContain('-1.5σ');
-		expect(text).toContain('売られすぎ');
+		expect(text).toContain('現在位置: -1.5σ → 中心より下（-1σ〜-2σ）');
 	});
 
-	it('sigmaZ >= 1 → 買われすぎ', () => {
+	it('+1σ < sigmaZ < +2σ は中心より上で、買われすぎにしない', () => {
 		const text = buildIndicatorsText(baseInput({ sigmaZ: 1.5 }));
-		expect(text).toContain('買われすぎ');
+		expect(text).toContain('現在位置: 1.5σ → 中心より上（+1σ〜+2σ）');
 	});
 
-	it('bandWidthPct < 8 → スクイーズ', () => {
-		const text = buildIndicatorsText(baseInput({ bandWidthPct: 5 }));
-		expect(text).toContain('スクイーズ');
+	it('位置は丸める前の σ で区切る（表示は 2 桁に丸める）', () => {
+		expect(buildIndicatorsText(baseInput({ sigmaZ: 1.996 }))).toContain('現在位置: 2σ → 中心より上（+1σ〜+2σ）');
+		expect(buildIndicatorsText(baseInput({ sigmaZ: -1.0004 }))).toContain('現在位置: -1σ → 中心より下（-1σ〜-2σ）');
 	});
 
-	it('bandWidthPct > 20 → エクスパンション', () => {
-		const text = buildIndicatorsText(baseInput({ bandWidthPct: 25 }));
-		expect(text).toContain('エクスパンション');
+	it('見出しの ±2σ（バンド）に届いたら売られすぎ / 買われすぎ', () => {
+		expect(buildIndicatorsText(baseInput({ sigmaZ: -2 }))).toContain('現在位置: -2σ → 売られすぎ圏（-2σ以下）');
+		expect(buildIndicatorsText(baseInput({ sigmaZ: 2.3 }))).toContain('現在位置: 2.3σ → 買われすぎ圏（+2σ以上）');
+	});
+
+	it('BB 幅の状態は、幅の絶対値ではなく直近の幅の中での順位で決まる', () => {
+		const at = (bandWidthPct: number, percentile: number) =>
+			buildIndicatorsText(baseInput({ bandWidthPct, bandWidthRank: { percentile, sampleSize: 120 } }));
+		expect(at(50, 10)).toContain('BB幅=50% → スクイーズ（直近120本の幅の中で下から10%）');
+		expect(at(3, 50)).toContain('BB幅=3% → 標準（直近120本の幅の中で下から50%）');
+		expect(at(3, 85)).toContain('BB幅=3% → 拡大（直近120本の幅の中で下から85%）');
+		expect(at(3, 97)).toContain('BB幅=3% → 大きく拡大（直近120本の幅の中で下から97%）');
+	});
+
+	it('BB 幅の順位が取れないときは状態を出さない', () => {
+		expect(buildIndicatorsText(baseInput({ bandWidthPct: 12 }))).toContain('BB幅=12% → —');
 	});
 
 	it('bbLo >= close で「現在価格に近い」表示', () => {
@@ -274,24 +292,19 @@ describe('buildIndicatorsText', () => {
 		expect(text).toContain('雲の厚さ');
 	});
 
-	it('stochK <= 20 → 売られすぎゾーン', () => {
+	it('stochK <= 20 → 売られすぎ圏', () => {
 		const text = buildIndicatorsText(baseInput({ stochK: 15, stochD: 18 }));
-		expect(text).toContain('売られすぎゾーン');
+		expect(text).toContain('判定: 売られすぎ圏（20以下）');
 	});
 
-	it('stochK >= 80 → 買われすぎゾーン', () => {
+	it('stochK >= 80 → 買われすぎ圏', () => {
 		const text = buildIndicatorsText(baseInput({ stochK: 85, stochD: 82 }));
-		expect(text).toContain('買われすぎゾーン');
+		expect(text).toContain('判定: 買われすぎ圏（80以上）');
 	});
 
-	it('stochK <= 10 → 強い売られすぎ', () => {
-		const text = buildIndicatorsText(baseInput({ stochK: 8, stochD: 12 }));
-		expect(text).toContain('強い売られすぎ');
-	});
-
-	it('stochK >= 90 → 強い買われすぎ', () => {
-		const text = buildIndicatorsText(baseInput({ stochK: 92, stochD: 88 }));
-		expect(text).toContain('強い買われすぎ');
+	it('stochK の 10 以下 / 90 以上にも別の段を設けない（analyze_stoch_snapshot と同じ区切り）', () => {
+		expect(buildIndicatorsText(baseInput({ stochK: 8, stochD: 12 }))).toContain('判定: 売られすぎ圏（20以下）\n');
+		expect(buildIndicatorsText(baseInput({ stochK: 92, stochD: 88 }))).toContain('判定: 買われすぎ圏（80以上）\n');
 	});
 
 	it('%K が %D を上抜け → 買いシグナル', () => {
@@ -372,16 +385,23 @@ describe('buildIndicatorsText', () => {
 		expect(text).toContain('【次に確認すべきこと】');
 	});
 
-	it('strong_downtrend + rsi < 30 + エクスパンション → 総合判定が全て反映', () => {
-		const text = buildIndicatorsText(baseInput({ trend: 'strong_downtrend', rsi: 20, bandWidthPct: 25 }));
+	it('strong_downtrend + rsi < 30 + 幅の拡大 → 総合判定が全て反映', () => {
+		const text = buildIndicatorsText(
+			baseInput({
+				trend: 'strong_downtrend',
+				rsi: 20,
+				bandWidthPct: 25,
+				bandWidthRank: { percentile: 85, sampleSize: 120 },
+			}),
+		);
 		expect(text).toContain('強い下降トレンド');
 		expect(text).toContain('売られすぎ');
-		expect(text).toContain('エクスパンション');
+		expect(text).toContain('拡大（直近120本の幅の中で下から85%）');
 	});
 
-	it('sigmaZ 中立範囲（-1 < z < 1）→ 中立', () => {
+	it('sigmaZ が ±1σ 以内 → 中心付近', () => {
 		const text = buildIndicatorsText(baseInput({ sigmaZ: 0.3 }));
-		expect(text).toContain('中立');
+		expect(text).toContain('中心付近（±1σ以内）');
 	});
 
 	it('bbLo > close で「現在価格に近い」非表示', () => {
@@ -558,6 +578,34 @@ describe('toolDef.handler', () => {
 		};
 	}
 
+	it('BB の位置と幅の状態は、丸める前の値で区切ってから表示だけ丸める', async () => {
+		// 最新の終値 10,140,000 に対し、z = 1.996σ（表示は 2σ）・幅 8.004%（表示は 8%）になる BB を組む
+		const close = 10_140_000;
+		const widthRatio = 0.08004;
+		const middle = close / (1 + (1.996 / 4) * widthRatio);
+		const halfWidth = (middle * widthRatio) / 2;
+		const upper = middle + halfWidth;
+		const lower = middle - halfWidth;
+		mockedAnalyze.mockResolvedValueOnce(
+			mockResult({
+				BB_middle: middle,
+				BB_upper: upper,
+				BB_lower: lower,
+				bb2_series: {
+					upper: Array.from({ length: 20 }, () => upper),
+					middle: Array.from({ length: 20 }, () => middle),
+					lower: Array.from({ length: 20 }, () => lower),
+				},
+			}) as never,
+		);
+		const res = (await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 200 })) as {
+			content: Array<{ text: string }>;
+		};
+		const text = res.content[0].text;
+		expect(text).toContain('現在位置: 2σ → 中心より上（+1σ〜+2σ）');
+		expect(text).toContain('BB幅=8% → 標準（直近20本の幅の中で下から50%）');
+	});
+
 	it('正常データでテキスト content を返す', async () => {
 		mockedAnalyze.mockResolvedValueOnce(mockResult() as never);
 		const res = (await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 200 })) as {
@@ -622,7 +670,8 @@ describe('toolDef.handler', () => {
 			['1day', '前日比'],
 			['1week', '前週比'],
 			['1month', '前月比'],
-			['1hour', '前時間比'],
+			['1hour', '前足比'],
+			['4hour', '前足比'],
 			['5min', '前足比'],
 		] as const) {
 			mockedAnalyze.mockResolvedValueOnce(mockResult() as never);
@@ -633,12 +682,22 @@ describe('toolDef.handler', () => {
 		}
 	});
 
-	it('rsiUnitLabel が timeframe に応じて変わる', async () => {
-		mockedAnalyze.mockResolvedValueOnce(mockResult() as never);
-		const res = (await toolDef.handler({ pair: 'btc_jpy', type: '1week', limit: 200 })) as {
-			content: Array<{ text: string }>;
-		};
-		expect(res.content[0].text).toContain('週');
+	it('本数の単位が timeframe に応じて変わる（日足・週足・月足以外は「本」）', async () => {
+		for (const [type, unit] of [
+			['1day', '日'],
+			['1week', '週'],
+			['1month', 'か月'],
+			['4hour', '本'],
+		] as const) {
+			mockedAnalyze.mockResolvedValueOnce(mockResult() as never);
+			const res = (await toolDef.handler({ pair: 'btc_jpy', type, limit: 200 })) as {
+				content: Array<{ text: string }>;
+			};
+			const text = res.content[0].text;
+			expect(text).toMatch(new RegExp(`【RSI推移（直近\\d+${unit}）】`));
+			expect(text).toContain(`・5${unit}前:`);
+			expect(text).not.toContain('時間）】');
+		}
 	});
 
 	it('BB series なしでも crash しない', async () => {

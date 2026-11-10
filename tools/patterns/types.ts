@@ -11,34 +11,6 @@ export interface TrendLine {
 	valueAt: (x: number) => number;
 }
 
-export interface WedgeParams {
-	minSlope?: number;
-	slopeRatioMinRising?: number;
-	slopeRatioMinFalling?: number;
-	slopeRatioMin?: number;
-	minWeakerSlopeRatio?: number;
-	windowSizeMin?: number;
-	windowSizeMax?: number;
-}
-
-export interface PatternScoreComponents {
-	fitScore: number;
-	convergeScore: number;
-	touchScore: number;
-	alternationScore: number;
-	insideScore: number;
-	durationScore: number;
-}
-
-export interface PatternScoreWeights {
-	fit: number;
-	converge: number;
-	touch: number;
-	alternation: number;
-	inside: number;
-	duration: number;
-}
-
 export interface TouchPoint {
 	index: number;
 	distance: number;
@@ -50,7 +22,6 @@ export interface TouchResult {
 	lowerTouches: TouchPoint[];
 	upperQuality: number;
 	lowerQuality: number;
-	score: number;
 }
 
 export interface DeduplicablePattern {
@@ -130,14 +101,20 @@ export interface AftermathResult {
 }
 
 export interface PatternScoreBreakdown {
-	symmetry?: number;
-	/** symmetry とは別の量（許容幅で正規化）。symmetry の意味を差し替えて流用しない（.claude/rules/tools.md 規約 7）。 */
 	levelMargin?: number;
 	headProminence?: number;
 	timeSymmetry?: number;
 	retracement?: number;
 	breakoutQuality?: number;
-	duration?: number;
+	lineFit?: number;
+	convergence?: number;
+	touches?: number;
+	slopeSymmetry?: number;
+	flatness?: number;
+	pole?: number;
+	parallelism?: number;
+	alternation?: number;
+	containment?: number;
 }
 
 export interface PatternStructureGate {

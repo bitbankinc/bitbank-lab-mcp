@@ -1,4 +1,3 @@
-import { dayjs } from '../../lib/datetime.js';
 import { trueRange } from '../../lib/indicators.js';
 import { priceDecimals } from '../../lib/price.js';
 import { statusScore } from './ranking.js';
@@ -52,43 +51,9 @@ export function calcATR(candles: readonly CandleData[], from: number, to: number
 	return tail.reduce((s, v) => s + v, 0) / tail.length;
 }
 
-// double / H&S は暦日基準のまま。triple と違いこの軸が定数になっておらず、移すと confidence の分布が動く（#199）。
-export function periodScoreDays(startIso?: string, endIso?: string): number {
-	if (!startIso || !endIso) return 0.7;
-	const d = Math.abs(dayjs(endIso).diff(dayjs(startIso), 'day', true));
-	if (d < 5) return 0.6;
-	if (d < 15) return 0.8;
-	if (d < 30) return 0.9;
-	return 0.7;
-}
-
-// 時間足に依らないバー数の境界。時間足別テーブルは #198 で事故になっている。
-export const PERIOD_SCORE_BAR_BUCKETS = [12, 18, 26] as const;
-
-// 暦日版の末尾の 0.7（表の外の中立値が裾に漏れたもの）は引き継がず、単調にする（#199）。
-export function periodScoreBars(bars: number): number {
-	if (!Number.isFinite(bars)) return 0.7;
-	const [b1, b2, b3] = PERIOD_SCORE_BAR_BUCKETS;
-	if (bars < b1) return 0.6;
-	if (bars < b2) return 0.7;
-	if (bars < b3) return 0.8;
-	return 0.9;
-}
-
-export function finalizeConf(base: number, type: string): number {
-	const adj =
-		type === 'head_and_shoulders' || type === 'inverse_head_and_shoulders'
-			? 1.1
-			: type === 'triple_top' || type === 'triple_bottom'
-				? 1.05
-				: type.startsWith('triangle') ||
-						type === 'bull_flag' ||
-						type === 'bear_flag' ||
-						type === 'bull_pennant' ||
-						type === 'bear_pennant'
-					? 0.95
-					: 1.0;
-	const v = Math.min(1, Math.max(0, base * adj));
+// 種別を越えて並べるので、種別ごとの補正は掛けない（#422）。
+export function finalizeConf(base: number): number {
+	const v = Math.min(1, Math.max(0, base));
 	return Math.round(v * 100) / 100;
 }
 

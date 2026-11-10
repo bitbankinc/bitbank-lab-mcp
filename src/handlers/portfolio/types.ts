@@ -75,6 +75,7 @@ export interface RawDeposit {
 	asset: string;
 	amount: string;
 	status: string;
+	category?: string;
 	found_at: number;
 	confirmed_at: number;
 }
@@ -121,7 +122,7 @@ export interface PeriodRealizedPnl {
 	sold_assets: string[];
 	period_start: string;
 	period_end: string;
-	/** 期間内ではなく全履歴の件数。wire の旧名 priced_deposit_count は deprecated な別名（#85）。 */
+	/** 期間内ではなく全履歴の件数（#85）。 */
 	priced_deposit_count_all_time: number;
 	/** 全銘柄の合算。銘柄別の holdings[].unpriced_deposit_count とは別物（#85）。 */
 	unpriced_deposit_count_all_time: number;
@@ -130,15 +131,11 @@ export interface PeriodRealizedPnl {
 	qty_clamp_absorbed_qty: number;
 }
 
-// コスト項は _cost 付きが正（正値で total から引く。#72）。負値で持つ案は、同名で符号が変わると alias で救えないので採らない。
+// コスト項は正値で持ち total から引く。符号を変えると同じ名前のまま意味が反転する（#72）。
 export interface AccountPnl {
 	spot_realized_pnl: number | undefined;
 	/** 信用の決済済み損益合計（JPY、グロス: 利息・手数料控除前） */
 	margin_realized_pnl: number;
-	/** @deprecated margin_interest_cost を使う（#72）。 */
-	margin_interest: number;
-	/** @deprecated margin_fee_cost を使う（#72）。 */
-	margin_fee: number;
 	/** spot が抑止された実行では undefined（信用側だけの合計を口座全体 PnL として出さない）。 */
 	total: number | undefined;
 	margin_interest_cost: number;
@@ -185,6 +182,9 @@ export interface DepositWithdrawalSummary {
 	/** wire 上のキー順は interface や代入順ではなく DepositWithdrawalSummarySchema の宣言順で決まる。 */
 	crypto_deposit_valuation?: FlowValuationBreakdown;
 	crypto_withdrawal_valuation?: FlowValuationBreakdown;
+	staking_reward_count?: number;
+	staking_reward_estimated_jpy?: number;
+	staking_reward_valuation?: FlowValuationBreakdown;
 }
 
 export interface PeriodDWSummary {
@@ -219,6 +219,8 @@ export interface PeriodPerformance {
 	flow_unavailable_reason?: PortfolioFlowUnavailableReason;
 	unpriced_flow_assets?: string[];
 	flow_valuation?: FlowValuationBreakdown;
+	staking_reward_jpy?: number;
+	staking_reward_unpriced_assets?: string[];
 	unpriced_start_assets?: string[];
 	unpriced_current_assets?: string[];
 	change_pct_unavailable_reason?: PortfolioChangePctUnavailableReason;
@@ -247,6 +249,8 @@ export interface PeriodNetFlowResult {
 	/** 資産名だけを申告し、金額は載せない（sensitive-data の HIGH 分類）。該当なしは undefined。 */
 	unpriced_assets?: string[];
 	valuation?: FlowValuationBreakdown;
+	staking_reward_jpy?: number;
+	staking_reward_unpriced_assets?: string[];
 }
 
 export interface MarginStatusData extends z.infer<typeof GetMarginStatusDataSchema> {}

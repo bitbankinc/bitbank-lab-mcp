@@ -1,12 +1,11 @@
 import { EPSILON } from '../../lib/math.js';
 import { generatePatternDiagram, type PatternDiagramData } from '../../lib/pattern-diagrams.js';
 import { roundPriceAtLevel } from '../../lib/price.js';
-import { MIN_CONFIDENCE } from '../patterns/config.js';
 import { patternBarRange } from './bar-thresholds.js';
-import { finalizeConf, periodScoreBars } from './helpers.js';
-import { clamp01, near, relDev } from './regression.js';
+import { finalizeConf } from './helpers.js';
+import { near, relDev } from './regression.js';
 import { applyPostBreakoutGates, applyReversalGate, buildStructureGate } from './reversal-gate.js';
-import { averageDefinedAxes, breakoutQualityScore, retracementScore } from './scoring.js';
+import { averageDefinedAxes, breakoutQualityScore, levelMarginScore, retracementScore } from './scoring.js';
 import {
 	buildPrecedingTrend,
 	findBreakoutIdx,
@@ -65,9 +64,6 @@ const FORMING_MAX_DAYS = 90;
 
 const FORMING_TOLERANCE_MULTIPLIER = 1.2;
 const FORMING_MIN_COMPLETION = 0.4;
-const FORMING_MIN_CONFIDENCE = 0.5;
-// 3 点目が暫定なので、detectPatternsViewsHandler の低信頼ラベル（< 0.6）に入るよう抑える。
-const FORMING_MAX_CONFIDENCE = 0.59;
 // 形成中に validateLevelSpread を入れていないのは不採用の決定で、未配線ではない（#178）。
 const FORMING_LEVEL_SPREAD_FACTOR = 1.0; // tripleTolerancePct × 1.0
 // 完成済みの NECKLINE_SLOPE_LIMIT（2%）ではなく tolerancePct 基準にする。3 点目が暫定で、2% では形成中を拾えないため。
@@ -82,7 +78,6 @@ function stairStepDirection(main1: number, main2: number, main3: number): StairS
 	return null;
 }
 const RELAXED_TOLERANCE_FACTORS = [1.25, 2.0];
-const RELAXED_CONFIDENCE_PENALTY = 0.95;
 
 export function getTripleFormingBarParams(tf: string): { minBars: number; maxBars: number } {
 	return patternBarRange(tf, FORMING_MIN_DAYS, FORMING_MAX_DAYS);
@@ -98,22 +93,16 @@ function levelSpreadDetails(
 	return levelSpreadDetailsFrom(levelSpreadMetrics(mainPoints, allPoints), levelTolerancePct);
 }
 
-// double と違い symmetry ではなく levelMargin を残す。triple の symmetry はほぼ定数で情報が無い（#199）。
-// duration は triple だけバー数基準（periodScoreBars）。暦日版は triple でだけほぼ定数になるため（#199）。
 function buildTripleScore(opts: {
 	points: readonly [number, number, number];
-	levelTolerancePct: number;
+	strictTolerancePct: number;
 	necklinePrice: number;
 	breakoutClose: number;
 	side: ReversalSide;
 	retracementRatio?: number;
-	durationScore: number;
 }): { components: PatternScoreBreakdown; base: number } {
 	const [p1, p2, p3] = opts.points;
-	const devs = [relDev(p1, p2), relDev(p2, p3), relDev(p1, p3)];
-	const levelMargin = clamp01(
-		1 - devs.reduce((s, v) => s + v, 0) / devs.length / Math.max(1e-12, opts.levelTolerancePct),
-	);
+	const levelMargin = levelMarginScore(opts.points, opts.strictTolerancePct);
 	const retracement = retracementScore(opts.retracementRatio);
 	// パターン高さは double と同じく、主構成点の平均とネックラインの距離。
 	const avgLevel = (p1 + p2 + p3) / 3;
@@ -123,10 +112,9 @@ function buildTripleScore(opts: {
 		levelMargin: Number(levelMargin.toFixed(4)),
 		...(retracement !== undefined ? { retracement: Number(retracement.toFixed(4)) } : {}),
 		...(breakoutQuality !== undefined ? { breakoutQuality: Number(breakoutQuality.toFixed(4)) } : {}),
-		duration: Number(opts.durationScore.toFixed(4)),
 	};
 	// levelMargin は常に数値なので averageDefinedAxes は undefined を返さない（?? には届かない）。
-	const base = averageDefinedAxes([levelMargin, retracement, breakoutQuality, opts.durationScore]) ?? levelMargin;
+	const base = averageDefinedAxes([levelMargin, retracement, breakoutQuality]) ?? levelMargin;
 	return { components, base };
 }
 
@@ -339,28 +327,15 @@ function evaluateCompletedTriple(
 	const breakoutPrice = isCompleted ? Number(candles[breakoutIdx]?.close ?? NaN) : NaN;
 
 	// 整合度はブレイク検出の後で算出する。breakoutQuality 軸がブレイク足の終値を要るため（#199）。
-	// relaxed の levelMargin は判定に使った幅で正規化する。strict の幅で測ると、緩めた判定に strict の物差しを当てることになる。
-	const per = periodScoreBars(c.idx - a.idx);
 	const { components: scoreComponents, base } = buildTripleScore({
 		points: [a.price, b.price, c.price],
-		levelTolerancePct: tol,
+		strictTolerancePct: tolerancePct,
 		necklinePrice: nlAvg,
 		breakoutClose: breakoutPrice,
 		side,
 		retracementRatio: gate.retracementRatio,
-		durationScore: per,
 	});
-	const confidence = finalizeConf(relaxed ? base * RELAXED_CONFIDENCE_PENALTY : base, type);
-	if (confidence < (MIN_CONFIDENCE[type] ?? 0)) {
-		pcand({
-			type,
-			accepted: false,
-			reason: `confidence_below_min${suffix}`,
-			idxs: [a.idx, b.idx, c.idx],
-			details: { confidence, threshold: MIN_CONFIDENCE[type] ?? 0, ...scoreComponents },
-		});
-		return null;
-	}
+	const confidence = finalizeConf(base);
 
 	const postGate = isCompleted
 		? applyPostBreakoutGates({
@@ -630,8 +605,6 @@ function tryFormingTriple(ctx: DetectContext, side: ReversalSide): DeduplicableP
 		const height = top ? avgMain - avgNeck : avgNeck - avgMain;
 		const progress = (top ? avgMain - currentPrice : currentPrice - avgMain) / Math.max(1e-12, height);
 		const completion = Math.min(1, 0.66 + Math.min(1, progress) * 0.34);
-		const rawConfidence = Math.round((1 - mainDiff / tripleTolerancePct) * 0.8 * 100) / 100;
-		const confidence = Math.min(rawConfidence, FORMING_MAX_CONFIDENCE);
 
 		const structurePts = () => [
 			{ role: `${spec.mainRole}1`, idx: main1.idx, price: main1.price },
@@ -641,11 +614,11 @@ function tryFormingTriple(ctx: DetectContext, side: ReversalSide): DeduplicableP
 			{ role: 'current', idx: lastIdx, price: currentPrice },
 		];
 
-		if (completion < FORMING_MIN_COMPLETION || confidence < FORMING_MIN_CONFIDENCE) {
+		if (completion < FORMING_MIN_COMPLETION) {
 			pcand({
 				type,
 				accepted: false,
-				reason: completion < FORMING_MIN_COMPLETION ? 'forming_completion_below_min' : 'forming_confidence_below_min',
+				reason: 'forming_completion_below_min',
 				idxs: [...idxs],
 				pts: structurePts(),
 			});
@@ -691,6 +664,17 @@ function tryFormingTriple(ctx: DetectContext, side: ReversalSide): DeduplicableP
 
 		const structureGate = buildStructureGate(gate);
 
+		// 完成済みと同じ物差しで、3 点目に現在値を使って測る。未ブレイクなので breakoutQuality は出ない（#422）。
+		const { components: scoreComponents, base } = buildTripleScore({
+			points: [main1.price, main2.price, currentPrice],
+			strictTolerancePct: tolerancePct,
+			necklinePrice: avgNeck,
+			breakoutClose: Number.NaN,
+			side,
+			retracementRatio: gate.retracementRatio,
+		});
+		const confidence = finalizeConf(base);
+
 		const neckline = [
 			{ x: main1.idx, y: avgNeck },
 			{ x: lastIdx, y: avgNeck },
@@ -714,6 +698,7 @@ function tryFormingTriple(ctx: DetectContext, side: ReversalSide): DeduplicableP
 				{ idx: n2.idx, price: n2.price, kind: spec.neckKind, extremePrice: n2.extremePrice },
 			],
 			neckline,
+			scoreComponents,
 			...(structureGate ? { structureGate } : {}),
 			...(priorTrend.precedingTrend ? { precedingTrend: priorTrend.precedingTrend } : {}),
 			trendlineLabel: 'ネックライン',

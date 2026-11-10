@@ -11,6 +11,7 @@ vi.mock('../tools/analyze_indicators.js', async (importOriginal) => {
 	};
 });
 
+import { toolDef as analyzeIndicatorsToolDef } from '../src/handlers/analyzeIndicatorsHandler.js';
 import analyzeBbSnapshot, { buildBbDefaultText, toolDef } from '../tools/analyze_bb_snapshot.js';
 import analyzeIndicators, { clearIndicatorCache } from '../tools/analyze_indicators.js';
 
@@ -271,14 +272,35 @@ describe('analyze_bb_snapshot', () => {
 		expect(['upper_zone', 'near_middle', 'at_upper']).toContain(position);
 	});
 
-	it('bandwidth_state: フラット相場では squeeze になる', async () => {
+	it('bandwidth_state: 幅がずっと一定なら、過去と比べて標準（50%）', async () => {
 		const rows = makeFlatOhlcvRows(400, 10_000_000);
 		mockFetch(rows);
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
 		assertOk(res);
-		// フラット相場では bandWidthPct ≈ 0 なので squeeze
+		expect(res.data.interpretation.bandwidth_state).toBe('normal');
+		expect(res.data.context.bandWidthPct_percentile).toBe(50);
+	});
+
+	it('bandwidth_state: 直近だけ振れが小さいと、幅の絶対値に依らず squeeze', async () => {
+		// 前半は ±5%（幅 ≈ 20%）、直近 30 本は ±2%（幅 ≈ 8%）。固定の区切りなら 8% は squeeze の境目だが、ここでは過去との比較で決まる
+		const rows = makeAlternatingRows(400, (i) => (i >= 370 ? 0.02 : 0.05));
+		mockFetch(rows);
+
+		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
+		assertOk(res);
 		expect(res.data.interpretation.bandwidth_state).toBe('squeeze');
+		expect(res.data.signals.some((s: string) => s.includes('Band width compressed'))).toBe(true);
+	});
+
+	it('bandwidth_state: 直近だけ振れが大きいと wide', async () => {
+		const rows = makeAlternatingRows(400, (i) => (i >= 370 ? 0.05 : 0.02));
+		mockFetch(rows);
+
+		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
+		assertOk(res);
+		expect(res.data.interpretation.bandwidth_state).toBe('wide');
+		expect(res.data.signals.some((s: string) => s.includes('high volatility phase'))).toBe(true);
 	});
 
 	it('bandwidth_state: トレンド相場では normal/expanding/wide のいずれか', async () => {
@@ -290,7 +312,7 @@ describe('analyze_bb_snapshot', () => {
 		expect(['squeeze', 'normal', 'expanding', 'wide']).toContain(res.data.interpretation.bandwidth_state);
 	});
 
-	it('above_upper_band_risk タグ: 強い上昇で zScore > 1 のとき付与される可能性がある', async () => {
+	it('above_upper_band_risk タグ: 強い上昇で zScore > 2 のとき付与される可能性がある', async () => {
 		const rows = makeStrongUptrendRows(400);
 		mockFetch(rows);
 
@@ -329,7 +351,7 @@ describe('analyze_bb_snapshot', () => {
 	});
 
 	it('Band width around typical levels シグナル: bandwidth_state が normal のとき付与', async () => {
-		// バンド幅 ≈ 12%（normal は 8% 超 18% 以下）
+		// 振れ幅が一定なので、幅の順位は 50%（normal）
 		const rows = makeAlternatingRows(400, () => 0.03);
 		mockFetch(rows);
 
@@ -360,12 +382,13 @@ describe('analyze_bb_snapshot', () => {
 	});
 
 	it('extended mode: close が BB middle 付近なら current_zone が within_1σ', async () => {
-		// 2026 データ: 緩やかなトレンドで zScore ≈ 0.82 → within_1σ
+		// 交互 ±D の後、最終本は平均値 ≈ middle → |zScore| ≈ 0
 		const base = 10_000_000;
-		const { year2026, year2025 } = make2026And2025Rows(
-			(i) => base + i * 20_000, // 緩やかな上昇
-			base,
-		);
+		const D = 500_000;
+		const { year2026, year2025 } = make2026And2025Rows((i) => {
+			if (i === 90) return base;
+			return base + (i % 20 < 10 ? -D : D);
+		}, base);
 		mockFetchByYear(year2026, year2025);
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'extended');
@@ -401,6 +424,81 @@ describe('analyze_bb_snapshot', () => {
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'extended');
 		assertOk(res);
 		expect(res.data).toHaveProperty('extreme_events');
+	});
+
+	it('extended mode: ±1σ・±3σ のバンドと幅も返す（±2σ と同じ中心・同じ σ）', async () => {
+		mockFetch(makeAlternatingRows(400, (i) => (i >= 370 ? 0.05 : 0.02)));
+
+		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'extended');
+		assertOk(res);
+		const bb = res.data.bb as {
+			middle: number;
+			bands: Record<string, number>;
+			bandWidthPct: Record<string, number>;
+		};
+		const { bands, bandWidthPct, middle } = bb;
+		expect(bands['+3σ']).toBeGreaterThan(bands['+2σ']);
+		expect(bands['+2σ']).toBeGreaterThan(bands['+1σ']);
+		expect(bands['+1σ']).toBeGreaterThan(middle);
+		expect(bands['-1σ']).toBeLessThan(middle);
+		expect(bands['-3σ']).toBeLessThan(bands['-2σ']);
+		expect(bandWidthPct['±1σ']).toBeCloseTo(bandWidthPct['±2σ'] / 2, 1);
+		expect(bandWidthPct['±3σ']).toBeCloseTo((bandWidthPct['±2σ'] * 3) / 2, 1);
+		expect((res.data.interpretation as { volatility_state: string }).volatility_state).toBe('wide');
+		expect(res.data.interpretation).not.toHaveProperty('extreme_risk');
+		expect(res.data.extreme_events).not.toHaveProperty('band_walk_detected');
+	});
+
+	it('extended mode: 直近 30 本で ±2σ・±3σ に届いた終値の本数を数え、本文にも数値を出す', async () => {
+		// 最終本だけのスパイクは √19 ≈ 4.36σ なので、±2σ・±3σ ともに 1 本
+		const base = 10_000_000;
+		const { year2026, year2025 } = make2026And2025Rows((i) => (i === 90 ? base + 5_000_000 : base), base);
+		mockFetchByYear(year2026, year2025);
+
+		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'extended');
+		assertOk(res);
+		const events = res.data.extreme_events as Record<string, number | null>;
+		expect(events.touches_2σ_last_30d).toBe(1);
+		expect(events.touches_3σ_last_30d).toBe(1);
+		expect(res.summary).toContain('current_zone: beyond_3σ');
+		expect(res.summary).toMatch(/\+3σ:\d/);
+		expect(res.summary).toContain('直近30本の終値: ±2σ 以上 1本 / ±3σ 以上 1本');
+		expect(res.summary).toContain('above_upper_band_risk');
+	});
+
+	it('extended mode: 到達本数は丸める前の z で数える（1.997σ は ±2σ に届いていない）', async () => {
+		// 直前の 1 本（i=89）を大きく外し、最終本は丸める前で約 1.997σ・小数 2 桁で 2σ になる値にする
+		const base = 10_000_000;
+		const { year2026, year2025 } = make2026And2025Rows(
+			(i) => (i === 89 ? base + 5_000_000 : i === 90 ? base + 2_836_672 : base),
+			base,
+		);
+		mockFetchByYear(year2026, year2025);
+
+		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'extended');
+		assertOk(res);
+		const z = res.data.bb.zScore as number;
+		expect(z).toBeGreaterThan(1.995);
+		expect(z).toBeLessThan(2);
+		const series = (res.meta as { extra?: { timeseries?: { last_30_candles: Array<{ zScore: number }> } } }).extra
+			?.timeseries?.last_30_candles;
+		expect(series?.at(-1)?.zScore).toBe(2);
+		const events = res.data.extreme_events as Record<string, number | null>;
+		// 届いているのは外れ値の 1 本目（i=89）だけ。丸めた値で数えると最終本も数えてしまう
+		expect(events.touches_2σ_last_30d).toBe(1);
+		expect(events.touches_3σ_last_30d).toBe(1);
+	});
+
+	it('extended mode: 直近 30 本のどこかで BB の助走が足りないときは、到達本数を出さない', async () => {
+		// 全部で 40 本しか無いと、直近 30 本のうち最初の数本は BB（20 本）の助走中で z が取れない
+		mockFetch(makeAlternatingRows(40, () => 0.02));
+
+		const res = await analyzeBbSnapshot('btc_jpy', '1day', 40, 'extended');
+		assertOk(res);
+		const events = res.data.extreme_events as Record<string, number | null>;
+		expect(events.touches_2σ_last_30d).toBeNull();
+		expect(events.touches_3σ_last_30d).toBeNull();
+		expect(res.summary).toContain('直近30本の終値: ±2σ 以上 n/a本 / ±3σ 以上 n/a本');
 	});
 
 	it('extended mode: fetch 失敗時は ok: false を返す', async () => {
@@ -650,13 +748,14 @@ describe('analyze_bb_snapshot', () => {
 		expect(['lower_zone', 'near_middle', 'at_lower']).toContain(position);
 	});
 
-	it('bandwidth_state: 高ボラ相場では wide または expanding になる', async () => {
+	it('bandwidth_state: 高ボラでも、ずっと同じ振れ幅なら標準（幅の絶対値では決めない）', async () => {
 		const rows = makeHighVolRows(400);
 		mockFetch(rows);
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
 		assertOk(res);
-		expect(['expanding', 'wide']).toContain(res.data.interpretation.bandwidth_state);
+		expect((res.data.bb as { bandWidthPct: number }).bandWidthPct).toBeGreaterThan(30);
+		expect(res.data.interpretation.bandwidth_state).toBe('normal');
 	});
 
 	it('above_upper_band_risk タグ: zScore > 1 のとき付与される', async () => {
@@ -722,8 +821,8 @@ describe('analyze_bb_snapshot', () => {
 		expect(res.data.signals.length).toBeGreaterThan(0);
 	});
 
-	it('extended mode: zScore ≈ 2.18 → beyond_2σ の zone', async () => {
-		// 2026 年末にスパイク 1 本だけ → zScore ≈ 2.18 → beyond_2σ
+	it('extended mode: 20 本窓で 1 本だけのスパイクは √19 ≈ 4.36σ → beyond_3σ', async () => {
+		// 19 本が同じ値で 1 本だけ d ずれると、平均 d/20・標準偏差 d√19/20 なので (d − d/20) ÷ σ = √19。半幅単位の 2.18 ではない
 		const base = 10_000_000;
 		const { year2026, year2025 } = make2026And2025Rows(
 			(i) => (i === 90 ? base + 5_000_000 : base), // 最終本だけスパイク
@@ -733,63 +832,63 @@ describe('analyze_bb_snapshot', () => {
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'extended');
 		assertOk(res);
-		const zone = res.data.position_analysis?.current_zone;
-		expect(zone).toBe('beyond_2σ');
+		expect(res.data.bb.zScore).toBeCloseTo(Math.sqrt(19), 2);
+		expect(res.data.position_analysis?.current_zone).toBe('beyond_3σ');
 	});
 
-	it('extended mode: zScore ≈ -2.18 → beyond_2σ の zone (下方向)', async () => {
-		// 下方向スパイク → zScore ≈ -2.18 → beyond_2σ
+	it('extended mode: 下方向のスパイクは -√19σ → beyond_3σ', async () => {
 		const base = 10_000_000;
 		const { year2026, year2025 } = make2026And2025Rows((i) => (i === 90 ? base - 5_000_000 : base), base);
 		mockFetchByYear(year2026, year2025);
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'extended');
 		assertOk(res);
-		const zone = res.data.position_analysis?.current_zone;
-		expect(zone).toBe('beyond_2σ');
+		expect(res.data.bb.zScore).toBeCloseTo(-Math.sqrt(19), 2);
+		expect(res.data.position_analysis?.current_zone).toBe('beyond_3σ');
 	});
 
-	it('extended mode: beyond_2σ を狙う（year-aware mock で single spike）', async () => {
-		// 2025 年フラット、2026 年最終本のみスパイク → zScore ≈ 2.18 → beyond_2σ
+	it('extended mode: スパイクの大きさに依らず σ 単位の値は √19 のまま', async () => {
 		const base = 10_000_000;
 		const { year2026, year2025 } = make2026And2025Rows((i) => (i === 90 ? base + 8_000_000 : base), base);
 		mockFetchByYear(year2026, year2025);
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'extended');
 		assertOk(res);
-		const zone = res.data.position_analysis?.current_zone;
-		expect(zone).toBe('beyond_2σ');
+		expect(res.data.bb.zScore).toBeCloseTo(Math.sqrt(19), 2);
+		expect(res.data.position_analysis?.current_zone).toBe('beyond_3σ');
 	});
 
-	it('extended mode: 1σ_to_2σ を狙う（小さな偏差）', async () => {
-		const rows = makeHighZscoreRows(400, 0.6, 1);
-		mockFetch(rows);
+	it('extended mode: 緩やかな上昇トレンドは 1σ_to_2σ', async () => {
+		// 等差で上がる系列の最新値は、20 本窓で中心から約 1.65σ 上にある
+		const base = 10_000_000;
+		const { year2026, year2025 } = make2026And2025Rows((i) => base + i * 20_000, base);
+		mockFetchByYear(year2026, year2025);
 
-		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'extended');
+		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'extended');
 		assertOk(res);
-		const zone = res.data.position_analysis?.current_zone;
-		expect(['within_1σ', '1σ_to_2σ', 'beyond_2σ']).toContain(zone);
+		const z = res.data.bb.zScore as number;
+		expect(z).toBeGreaterThan(1);
+		expect(z).toBeLessThanOrEqual(2);
+		expect(res.data.position_analysis?.current_zone).toBe('1σ_to_2σ');
 	});
 
-	it('default mode: at_upper → zScore >= 1.8 のとき at_upper になる', async () => {
+	it('default mode: at_upper → zScore >= 2（上のバンド以上）のとき at_upper になる', async () => {
 		const rows = makeHighZscoreRows(400, 1, 1);
 		mockFetch(rows);
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
 		assertOk(res);
-		// zScore ≈ 2.18 なので at_upper または upper_zone
-		const position = res.data.interpretation.position;
-		expect(['at_upper', 'upper_zone']).toContain(position);
+		// 1 本だけのスパイクは √19 ≈ 4.36σ
+		expect(res.data.interpretation.position).toBe('at_upper');
 	});
 
-	it('default mode: at_lower → zScore <= -1.8 のとき at_lower になる', async () => {
+	it('default mode: at_lower → zScore <= -2（下のバンド以下）のとき at_lower になる', async () => {
 		const rows = makeHighZscoreRows(400, 1, -1);
 		mockFetch(rows);
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 120, 'default');
 		assertOk(res);
-		const position = res.data.interpretation.position;
-		expect(['at_lower', 'lower_zone']).toContain(position);
+		expect(res.data.interpretation.position).toBe('at_lower');
 	});
 
 	it('context: bandWidthPct_30d_avg は timeseries が十分あれば計算される', async () => {
@@ -886,8 +985,9 @@ describe('analyze_bb_snapshot', () => {
 			baseSummary: 'BTC/JPY summary',
 			position: 'at_upper',
 			bandwidth_state: 'wide',
+			bandWidthRank: { percentile: 97, sampleSize: 120 },
 			volatility_trend: 'increasing',
-			bandWidthPct_percentile: 95,
+			bandWidthPct_percentile: 97,
 			current_vs_avg: '+80.0%',
 			signals: ['Band width expanded (95th percentile) - high volatility phase'],
 			next_steps: {
@@ -1082,8 +1182,7 @@ describe('analyze_bb_snapshot', () => {
 		expect(res.data.interpretation.position).toBe('lower_zone');
 	});
 
-	it('year-aware mock: bandwidth_state normal (8 < bw <= 18)', async () => {
-		// 3% 交互振動 → bw ≈ 12% → normal
+	it('year-aware mock: 振れ幅が一定なら bandwidth_state は normal', async () => {
 		const base = 10_000_000;
 		const D = base * 0.03;
 		const { year2026, year2025 } = make2026And2025Rows((i) => base + (i % 2 === 0 ? D : -D), base);
@@ -1094,28 +1193,18 @@ describe('analyze_bb_snapshot', () => {
 		expect(res.data.interpretation.bandwidth_state).toBe('normal');
 	});
 
-	it('year-aware mock: bandwidth_state expanding (18 < bw <= 30)', async () => {
-		// 5% 交互振動 → bw ≈ 20% → expanding
+	it('year-aware mock: 振れ幅が 3% でも 8% でも、ずっと一定なら同じ normal（幅の水準に依らない）', async () => {
 		const base = 10_000_000;
-		const D = base * 0.05;
-		const { year2026, year2025 } = make2026And2025Rows((i) => base + (i % 2 === 0 ? D : -D), base);
-		mockFetchByYear(year2026, year2025);
+		for (const swing of [0.03, 0.08]) {
+			clearIndicatorCache();
+			const D = base * swing;
+			const { year2026, year2025 } = make2026And2025Rows((i) => base + (i % 2 === 0 ? D : -D), base);
+			mockFetchByYear(year2026, year2025);
 
-		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'default');
-		assertOk(res);
-		expect(res.data.interpretation.bandwidth_state).toBe('expanding');
-	});
-
-	it('year-aware mock: bandwidth_state wide (bw > 30)', async () => {
-		// 8% 交互振動 → bw ≈ 32% → wide
-		const base = 10_000_000;
-		const D = base * 0.08;
-		const { year2026, year2025 } = make2026And2025Rows((i) => base + (i % 2 === 0 ? D : -D), base);
-		mockFetchByYear(year2026, year2025);
-
-		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'default');
-		assertOk(res);
-		expect(res.data.interpretation.bandwidth_state).toBe('wide');
+			const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'default');
+			assertOk(res);
+			expect(res.data.interpretation.bandwidth_state).toBe('normal');
+		}
 	});
 
 	it('year-aware mock: volatility_trend increasing', async () => {
@@ -1214,9 +1303,12 @@ describe('analyze_bb_snapshot', () => {
 	});
 
 	it('extended mode: within_1σ → |zScore| <= 1 のとき within_1σ', async () => {
-		// 緩やかな上昇トレンド → |zScore| ≈ 0.82 → within_1σ
 		const base = 10_000_000;
-		const { year2026, year2025 } = make2026And2025Rows((i) => base + i * 20_000, base);
+		const D = 500_000;
+		const { year2026, year2025 } = make2026And2025Rows((i) => {
+			if (i === 90) return base;
+			return base + (i % 20 < 10 ? -D : D);
+		}, base);
 		mockFetchByYear(year2026, year2025);
 
 		const res = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'extended');
@@ -1258,8 +1350,8 @@ describe('analyze_bb_snapshot', () => {
 		expect(typeof res.data.context.current_vs_avg).toBe('string');
 	});
 
-	it('near_middle + bandwidth normal: Price consolidating + Band width around typical levels', async () => {
-		// near_middle かつ bandwidth_state=normal のときシグナルが 2 つ付く
+	it('near_middle: Price consolidating シグナルが付く', async () => {
+		// 最終本を平均値にすると直近の幅が窓の中で最も小さくなるので、幅の状態はここでは見ない（normal のシグナルは別のテストで見る）
 		const base = 10_000_000;
 		const D = base * 0.03;
 		const { year2026, year2025 } = make2026And2025Rows((i) => {
@@ -1272,8 +1364,6 @@ describe('analyze_bb_snapshot', () => {
 		assertOk(res);
 		expect(res.data.interpretation.position).toBe('near_middle');
 		expect(res.data.signals).toContain('Price consolidating near middle band');
-		expect(res.data.interpretation.bandwidth_state).toBe('normal');
-		expect(res.data.signals).toContain('Band width around typical levels');
 	});
 
 	// 親 describe の afterEach が fetch 復元 + clearIndicatorCache() を実行する。
@@ -1320,5 +1410,21 @@ describe('analyze_bb_snapshot', () => {
 			expect(res.summary).not.toContain('未確定（形成中）');
 			expect((res.meta as { provisional?: boolean }).provisional).toBeUndefined();
 		});
+	});
+
+	it('同じ足で analyze_indicators と同じ σ を返す（半幅単位で半分の値にならない）', async () => {
+		const base = 10_000_000;
+		const { year2026, year2025 } = make2026And2025Rows((i) => (i === 90 ? base + 5_000_000 : base), base);
+		mockFetchByYear(year2026, year2025);
+
+		const bb = await analyzeBbSnapshot('btc_jpy', '1day', 60, 'default');
+		assertOk(bb);
+		const z = Number((bb.data.bb.zScore as number).toFixed(2));
+		clearIndicatorCache();
+		const ind = (await analyzeIndicatorsToolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 60 })) as {
+			content: Array<{ text: string }>;
+		};
+		expect(ind.content[0].text).toContain(`現在位置: ${z}σ → 買われすぎ圏（+2σ以上）`);
+		expect(bb.data.interpretation.position).toBe('at_upper');
 	});
 });

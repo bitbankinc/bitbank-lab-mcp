@@ -7,6 +7,76 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-10
+
+番号は fork（tjackiet/bitbank-lab-mcp）の issue。互換性を壊す変更は「Schema (breaking)」にまとめている（`detect_patterns` の `scoreComponents`、`analyze_bb_snapshot` の `zScore` の単位・`bandwidth_state` の基準・extended の項目、`get_tickers_jpy` の `view` など）。
+
+### Changed
+
+- `analyze_my_portfolio`：ステーキング報酬（入金履歴の `category` が `STAKING` の入庫）を、元本の入金ではなく成果として扱う。`*_performance.net_flow_jpy`、資産推移の `flow_jpy`、`deposit_withdrawal_summary.net_jpy_invested` から外す。そのためステーキング報酬のある口座では、`adjusted_change_jpy` と `account_return_*` が報酬の分だけ大きくなる。数量の復元と取得原価（入庫日の価格）は変わらない。`category` を返さない入庫は従来どおり元本として扱う（issue #177）。
+- `analyze_my_portfolio`：本文の入出金調整後の率に「期初評価額比」と添えた（issue #111）。
+- `detect_patterns`：H&S（三尊）にも、逆 H&S と同じ肩の深さの判定を入れた。左右の肩がそれぞれ、隣の谷から頭の深さの 20% 以上離れていない候補は `shoulder_depth_insufficient` で落とす。肩がネックラインのすぐ上にしか無い V 字の途中を三尊と読まないため。手元の実データ（1hour）では、落ちた 97 件のうち 96 件がブレイク前の `near_completion`、1 件が `invalid` で、ネックラインを抜けた `completed` の H&S は落ちなかった（issue #412）。
+- `detect_patterns`：整合度 `confidence` の計算を見直した（issue #422）。種別ごとの補正（H&S ×1.1、triple ×1.05、triangle・flag・pennant ×0.95）と、relaxed で拾った候補の割引（double ×0.85、triple・H&S ×0.95）をやめた。反転パターン（double / triple / H&S）は、構成点の水準の揃い方 `levelMargin` を strict の許容幅を物差しにして測り（relaxed で拾った候補は、緩めた分だけ低くなる）、測れた軸の単純平均を整合度にする。期間の軸は、完成済みのパターンに期間のゲートが無く物差しが決まらないので外した。そのため triangle・flag・pennant は 1/0.95 倍ほど上がり、H&S は下がり、double は水準の差が許容幅に近いほど下がる。wedge は変わらない。完成済み triple の整合度の下限 0.6（`confidence_below_min`）も外した。手元の実データでは、外しても出力は 1 件も変わらなかった。丸めで同点だった隣接窓の triangle が 0.01 差になり、重複統合で残る候補が替わることがある。
+- `detect_patterns`：triangle・flag・pennant の整合度も、測れた軸の単純平均にした（issue #422）。軸の重み（triangle は 0.25 / 0.25 / 0.3 / 0.2、flag・pennant は 0.3 / 0.25 / 0.2 / 0.25）をやめ、各軸の物差しを検出のゲートから取る。トレンドラインの当てはまりは R² のゲートからの余裕、収束はゲートの収束比、点数はゲートの点数、ポールはゲートの ATR 倍率を基準にする。上昇・下降三角の対称性に置いていた固定値 0.5 は、水平側のラインの平らさに置き換えた。2 点しかない線の R²（常に 1）は当てはまりに数えない。手元の実データでは、triangle が平均 0.85〜0.91 → 0.69〜0.70、flag が 0.94 → 0.71、pennant が 0.89 → 0.63 に下がる。double より下に並ぶことが増え、重複統合で残る窓も替わる。
+- `detect_patterns`：wedge の整合度も、測れた軸の単純平均にした（issue #422）。6 軸の重み（0.25 / 0.25 / 0.35 / 0.07 / 0.05 / 0.03）、収束の点数の中の手置きの係数（頂点 0.35・加速 0.25 など）、期間の軸、ライン内に収まる足の割合（ゲートの無い高安版）をやめた。軸は、収束・タッチ数・タッチの交互さ・終値の包含率の 4 本で、どれも strict の基準（収束比 0.7、6 点、交互率 0.25、包含率 0.85）を物差しにする。検出のゲート（収束比 0.8 未満、5 点）はこれより緩いので、緩いゲートで拾った分だけ低くなる。上限 0.9 は外した。点数での足切り（0.5）も外した。手元の実データでは、この足切りで落ちた候補は 0 件だった。手元の実データでは、wedge が平均 0.70〜0.72 → 0.42〜0.45 に下がる。出力に残った wedge の 44% は収束比が strict のゲート（0.7）を超えていて、収束の軸が 0 になる。
+- `detect_patterns`：形成中の H&S と triple の整合度も、完成済みと同じ軸の単純平均にした（issue #422）。まだブレイクしていないので `breakoutQuality` は出ない。H&S は「0.6 × 肩の近さ + 0.4 × 進み具合」（進み具合は肩の近さと同じ値なので、実際は肩の近さそのもの）に、暫定の右肩なら × 0.9 を掛けていた。triple は「(1 − 確定 2 点の差 ÷ 許容幅の 1.2 倍) × 0.8」に上限 0.59 を掛けていた。どちらも外した。構成点が暫定であることは、整合度ではなく `status: 'forming'` で示す。整合度の下限 0.5（H&S の `confidence_below_min_forming`、triple の `forming_confidence_below_min`）も外した。triple の下限は、実際には「確定 2 点の差が許容幅の 45% 以内」という明示されないゲートとして効いていた。手元の実データでは、H&S の下限を外しても出力は変わらず、triple は 600 回のうち 30 回で形成中の候補が増えた（増えた候補の整合度は多くが 0.2〜0.5）。整合度は、形成中の H&S が平均 0.56〜0.60 → 0.23〜0.24（右肩が strict の肩の許容幅を超え、`levelMargin` が 0 になる）、形成中の triple が 0.50〜0.59 → 0.18〜0.89 に変わる。
+- `detect_patterns`：本文の整合度の帯（0.8 以上 = 理想的 / 0.7〜0.8 = 標準的 / 0.6〜0.7 = やや不明瞭 / 0.6 未満 = 形状不十分）と、0.6 未満・0.3 未満で付けていた「⚠️ 信頼度: 低い / 非常に低い」のラベルをやめた（issue #422）。帯の境目は旧い計算に合わせた手置きの値で、過去の実績で較正するまで決められないため。代わりに、各パターンに「整合度の内訳」行（軸ごとの点数。`view=detailed` は上位 5 件、`view=full` は全件）を出し、0 点の軸（strict の基準ちょうどか、届かない）があるときだけ「⚠️ 余裕が無い軸」として名前を挙げる。プロンプト「中級：BTCのパターン分析をして」の重要度も、整合度の点数ではなくこの警告の有無で分ける。
+- `detect_patterns`：整合度を過去の実績と突き合わせた結果を、本文の説明と `docs/tools.md` に書いた（issue #422 Phase B）。7 ペアの日足・4 時間足（2017〜2026 年）の完成済みパターン 3.8 万件（検出した足から 60 本以内の到達）では、整合度が高いほど目標に届きやすいという関係は無く（全種別をまとめた AUC 0.50。flag・pennant・wedge はむしろ逆向き、反転系は件数不足で未検証）、種別ごとに較正しても予測は良くならなかった。到達を左右したのは目標までの距離だった。整合度は確率に置き換えず、形の良さの比較値のまま扱う。
+- `detect_patterns`：wedge の回帰経路（完成済みの走査）を削除した（issue #429）。実データ（7 ペアの日足・4 時間足）でブレイクした wedge 11,039 件のうち 2 件しか出ていなかった。上下のラインをピボットの終値に最小二乗で引くため、包含率の判定（終値の 85% 以上がライン内）に構造上ほぼ通らなかった（実測の最大 0.83）。wedge はすべて形成中の経路から出る。これに伴い、wedge の構造図（`structureDiagram`）は出なくなり、debug の棄却理由から回帰経路のもの（`r2_below_threshold` / `type_classification_failed` / `containment_violated` など）が消える。`limit` の実効下限の表から「完成済み wedge」の列を外した。形成中の経路の検出と、整合度の物差し（strict の基準）は変えていない。
+
+### Added
+
+- `get_my_deposit_withdrawal`：入金種別 `category` を出力に追加。本文の明細には `NORMAL` 以外の種別を出す（issue #177）。
+- `analyze_my_portfolio`：期間ごとのステーキング報酬の円換算額 `staking_reward_jpy`（換算できない報酬があるときは `staking_reward_unpriced_assets`）と、`deposit_withdrawal_summary` の `staking_reward_count` / `staking_reward_estimated_jpy` / `staking_reward_valuation` を追加（issue #177）。
+- `get_margin_positions`：建玉の `locked_amount`（決済注文に充てている数量）を出力に追加し、正のときは本文にも出す（issue #177）。
+
+### Fixed
+
+- Codex の plugin で、同梱の Skill（`investment-onboarding`）が読み込まれていなかった。Codex は manifest に `skills` が無いと plugin 直下の `skills/` だけを探すが、0.5.2 で plugin 本体を `plugins/bitbank-lab-mcp/` に移していた。Codex と Cursor の manifest に `skills` を足した（issue #408）。
+- `get_margin_positions`：追証などの通知の種別を、API の値（`margin_call` / `debt` / `settled`）のまま出していた。日本語の種別を添える。完了した精算の `settled` には `⚠` を付けず、常に空の金額・期日の代わりに発生日時を出す（issue #177）。
+- `get_margin_status` / `get_margin_positions` / `get_margin_trade_history` と `analyze_my_portfolio` の建玉の行で、金額が「¥100,000 円」のように通貨記号を重ねて出ていた。金額は `formatYenAmount` で「100,000円」の形に揃えた（マイナスの損益も「-5,000円」になる。円未満は四捨五入）。
+- `analyze_indicators` / `analyze_market_signal` / `analyze_ichimoku_snapshot` / `get_candles`：週足・月足・時間足でも「5日前」「26日後の雲」「直近7日間の平均 … /日」のように日で数えていた。日足は「日」、週足は「週」、月足は「か月」、それ以外の足は「本」で数える。移動平均線は「25日線」ではなく「SMA25」と書く。前の足との比較は、時間足・分足では「前足比」にした（4 時間足でも「前時間比」と出ていた）。`get_candles` の「今日」は「最新」に、一目均衡表の「今日の雲」は「現在の雲」にした。`get_candles` で本数が 90 本に満たないとき「90日前」と書いていた最古の足には、実際の本数を付ける。`volumeStats.judgment` の「前週比較不可（前7日間の出来高ゼロ）」は「比較不可（その前7日の出来高ゼロ）」（単位は足の種類による）に変わる（issue #431）。
+- RSI の判定の区切りが、ツールや欄ごとに違っていた。`analyze_indicators` は同じ出力の中で、RSI 37 を総合判定では「中立圏」、モメンタム欄では「弱め（反発余地）」と書いていた。`analyze_market_signal` は 30・70 ちょうどを中立圏にしていた。どちらも、30 以下 = 売られすぎ圏、50 未満 = 中立圏（50未満）、50 以上 = 中立圏（50以上）、70 以上 = 買われすぎ圏 に揃えた。「反発の可能性」「反落の可能性」「反発余地」のような先の値動きを示す言葉は外した。ストキャスティクスは、`analyze_stoch_snapshot` が 80 以上・20 以下で判定しながら「(>80)」「(<20)」と出していたので「買われすぎ圏（80以上）」「売られすぎ圏（20以下）」に直し、`analyze_indicators` にだけあった 10 以下・90 以上の「強い」段を外した（issue #431）。
+- `analyze_indicators`：ボリンジャーバンドの見出しは「±2σ」なのに、±1σ で「売られすぎ / 買われすぎ」と判定していた。±2σ（上下のバンド）に届いたら売られすぎ圏 / 買われすぎ圏、±1σ〜±2σ は中心より上 / 下、±1σ 以内は中心付近と出す。BB 幅の状態の区切り（8% 未満スクイーズ / 20% 超エクスパンション）が `analyze_bb_snapshot`（8 / 18 / 30%）と違っていたので、同じ判定（下の Schema (breaking) の `analyze_bb_snapshot` の項）を使い、本文も「標準（直近120本の幅の中で下から70%）」のように出す（issue #431 / #437）。
+- `analyze_market_signal`：RSI のタグ `oversold_bias` / `overbought_risk` を 35 未満 / 65 超で付けていた。本文の判定と同じ 30 以下 / 70 以上で付ける（issue #431）。
+- `analyze_sma_snapshot` / `analyze_mtf_sma`：`periods` に 5 / 20 / 25 / 50 / 75 / 200 以外の周期（例：6・12）を指定すると、足が足りていても値が `null`（n/a）になっていた。`analyze_indicators` が計算する SMA がこの 6 つだけで、それ以外は黙って捨てていた。どの周期も取得した足から計算する。足が周期より少ない周期は、従来どおり `null` にしたうえで `meta.warnings` に「SMA_N: データ不足」と出す（issue #431）。
+- `analyze_ema_snapshot`：独自の周期（12 / 26 / 50 / 200 以外）で足が周期より少ないとき、値が `null` になるだけで警告が出なかった。`meta.warnings` に「EMA_N: データ不足」と出す（`analyze_sma_snapshot` と同じ。issue #440）。
+- `get_candles`：年単位で取る足（4hour〜1month）で、`limit` に合わせて上流に足の無い 2010 年以前の暦年まで並列に取りに行っていた（月足で `limit` 420 なら 19 年分の空振り）。上流で最も古い足（btc_jpy の 2011 年）より前は取得しない。切り詰めたときは `meta.warning` に「UTC 暦年 2010 以前は bitbank に足が無いため取得していません」と 1 行で出す（これまでは空の年を全部並べていた。issue #439）。
+- `analyze_bb_snapshot`：extended モードは説明で「±1σ/±2σ/±3σ の詳細分析」としていたのに、±1σ・±3σ のバンドと幅、`extreme_events`、`interpretation` が常に `null` で、本文も 1 行の要約とフッターだけだった。±1σ・±3σ のバンドと幅（`analyze_indicators` が計算済みの値）、直近 30 本の終値が ±2σ・±3σ に届いた本数、幅の順位（`squeeze_percentile`）、幅の状態（`volatility_state`）を出し、本文にもバンド・位置・幅・本数・タグを出す（issue #438）。
+
+### Schema (breaking)
+
+- `get_tickers_jpy`：`view`（`ranked` / `items`）を `includeRanked`（真偽値、既定 `true`）に置き換えた。`view=items` と同じ出力は `includeRanked=false` で得られる。`view` は受け付けなくなり、渡しても無視されて既定の `includeRanked=true` になる（issue #415）。
+- 移行期間を置いていた旧い `view` の値を削除した。渡すと入力エラーになる。`get_candles` の `items`（→ `view=full` + `format=json`）、`get_transactions` の `summary`（→ `view=full`）と `items`（→ `view=full` + `format=json`）、`get_flow_metrics` の `compact`（→ `view=full` + `nonZeroOnly=true`）と `buckets`（→ `view=detailed`）。削除予定は 0.4.0 だったが、期日を過ぎても残っていた。
+- `analyze_my_portfolio`：出力から別名フィールドを削除した。`account_pnl` / `yearly_account_pnl` / `monthly_account_pnl` の `margin_interest` / `margin_fee`（→ `margin_interest_cost` / `margin_fee_cost`）と、`yearly_realized_pnl` / `monthly_realized_pnl` の `priced_deposit_count` / `unpriced_deposit_count`（→ `priced_deposit_count_all_time` / `unpriced_deposit_count_all_time`）。`holdings[]` の `priced_deposit_count` / `unpriced_deposit_count` は別名ではないので残している。
+- `detect_patterns`：`scoreComponents` から `symmetry` と `duration` を削除した。double と H&S の水準の揃い方は、triple と同じ `levelMargin`（`1 − 平均 relDev ÷ strict の許容幅`）で出す。`symmetry`（`1 − relDev`）とは物差しが違い、値は小さくなる（issue #422）。
+- `analyze_bb_snapshot`：`zScore`（`data.bb.zScore`、本文と時系列の z）を σ 単位にした。これまではバンドの半幅（= 2σ）を 1 とする単位で、同じ価格でも `analyze_indicators` の σ の半分の値になっていた（+2σ のバンド上で 1.0 → 2.0）。`interpretation.position` の区切りも σ にした。`at_upper` / `at_lower` は ±1.8（約 ±3.6σ。ほぼ出なかった）から ±2σ（バンドに届いたら）に、`near_middle` は ±0.3（約 ±0.6σ）から ±1σ 以内にした。extended の `position_analysis.current_zone` は値を σ と見なして区切っていたので、`within_1σ` が実際には ±2σ 以内を指していた。タグ `above_upper_band_risk` / `below_lower_band_risk`（バンドの外）は意味を変えず、σ 単位の ±2 で付ける。`bandwidth_state` は、幅が取れないときに `squeeze` になっていたので `null` にした（issue #431）。
+- `analyze_bb_snapshot`：`interpretation.bandwidth_state`（`squeeze` / `normal` / `expanding` / `wide`）を、幅の固定の区切り（8 / 18 / 30%）ではなく、直近 120 本の幅の中での順位で決める。下から 20% 未満 = `squeeze`、80% 未満 = `normal`、95% 未満 = `expanding`、それ以上 = `wide`（同じ値は半分ずつ数えるので、幅がずっと一定なら 50% で `normal`）。BB の幅は足の長さで水準が大きく違い（4 時間足は数 %、週足は数十 %）、固定の区切りでは 4 時間足が常にスクイーズ寄り、週足が常に「大きく拡大」寄りになっていた。`context.bandWidthPct_percentile` も同じ 120 本の順位にした（これまでは直近 30 本）。幅の圧縮 / 拡大のシグナルも状態から出す（issue #437）。
+- `analyze_bb_snapshot`（extended）：常に `null` だった `extreme_events.band_walk_detected` と、`interpretation.extreme_risk` / `mean_reversion_potential` を削除した。どれも判定の基準が無く、値を入れていなかった（issue #438）。
+
+### Schema
+
+- `DepositItemSchema` に `category`、`MarginPositionSchema` に `locked_amount`（いずれも optional）を追加。
+- `*_performance` に `staking_reward_jpy` / `staking_reward_unpriced_assets`、`DepositWithdrawalSummarySchema` に `staking_reward_count` / `staking_reward_estimated_jpy` / `staking_reward_valuation`（いずれも optional）を追加。
+- `adjusted_change_pct` の description に、分母が期初評価額でフロー加重の収益率ではないことを明記した（issue #111）。
+- `detect_patterns`：`confidence` に description を付けた（確率ではないこと、過去の実績では整合度が高いほど目標に届きやすいという関係は無かったこと。issue #422）。
+- `detect_patterns`：triangle・flag・pennant にも `scoreComponents` を出す。`lineFit` / `convergence` / `touches` / `slopeSymmetry` / `flatness` / `pole` / `parallelism` を追加（いずれも optional。issue #422）。
+- `detect_patterns`：wedge にも `scoreComponents` を出す。`alternation` / `containment` を追加し、`convergence` / `touches` を wedge でも使う（いずれも optional。issue #422）。
+- `detect_patterns`：形成中の H&S と triple にも `scoreComponents` を出す（既存の軸。issue #422）。
+- `analyze_bb_snapshot`：`zScore` に description を付けた（σ 単位で、±2 が上下のバンド。issue #431）。
+- `analyze_sma_snapshot` / `analyze_mtf_sma`：`periods` を 1〜365 の整数に限った。0 や負の値はこれまで値が `null` になるだけで、`limit` の上限（365）を超える周期は取得本数が `get_candles` の上限を超えて失敗することがあった。どちらも入力エラーになる（issue #431）。
+- `analyze_ema_snapshot`：`periods` を `analyze_sma_snapshot` と同じ 1〜365 の整数に限った。0 や負の周期は終値をそのまま `EMA_N` として返し、大きな周期は取得本数が `get_candles` の上限を超えて失敗していた。どちらも入力エラーになる（issue #440）。
+- `analyze_indicators`：`data.zones`（`rsi` / `stochRsi` / `bbPosition` / `bbWidth`）を追加。本文のラベルと同じ判定を列挙値で出す（optional。値が取れない指標は `null`。issue #436）。
+
+### Internal
+
+- 公式 API docs のミラー（`docs/internal/bitbank-api-fields.md`）と lock を upstream の最新に更新した（issue #177）。
+- `.github/workflows/` のコメントを `.claude/rules/comments.md` の基準で整理した（issue #416）。コメントだけの変更で、動きは変えていない。
+- `tools/patterns/detect_hs.ts`：H&S の上下 × strict / relaxed で 4 つあった判定を、側を引数に取る形にまとめた（issue #412）。検出結果と debug の候補は変えていない。
+- 足の種類から本数の単位を付ける関数を `lib/formatter.ts` に、RSI とストキャスティクスの判定の区切りを `lib/indicator-zones.ts` に置き、各ツールから使う（issue #431）。
+- Security Audit の gitleaks ジョブで、本体のダウンロードが 5xx を返すと、エラーページを保存してチェックサム不一致で落ちていた。`curl` に `-f` と `--retry 5 --retry-all-errors` を付け、一時的な 5xx は再試行し、それでも取れなければ HTTP エラーとして落ちるようにした。
+- BB の σ への換算（`bbZScore`）と、位置・幅の区切りを `lib/indicator-zones.ts` に置き、`analyze_indicators` と `analyze_bb_snapshot` から使う（issue #431）。
+
 ## [0.6.0] - 2026-11-04
 
 番号は fork（tjackiet/bitbank-lab-mcp）の PR。BTC・ETH のように 10 万円以上の価格では、価格の丸めの変更で出力は変わらない。

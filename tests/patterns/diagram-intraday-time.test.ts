@@ -227,7 +227,7 @@ describe('構造図の intraday 時刻ラベル（検出器からの配線。iss
 });
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const DETECTOR_FILES = ['detect_doubles.ts', 'detect_triples.ts', 'detect_hs.ts', 'detect_wedges.ts'];
+const DETECTOR_FILES = ['detect_doubles.ts', 'detect_triples.ts', 'detect_hs.ts'];
 
 function callArguments(source: string, openIdx: number): string {
 	let depth = 0;

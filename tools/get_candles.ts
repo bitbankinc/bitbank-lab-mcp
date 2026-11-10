@@ -25,7 +25,7 @@ import {
 } from '../lib/candle-fetch.js';
 import { formatDateInTz, toIsoTime, toIsoWithTz } from '../lib/datetime.js';
 import { getErrorMessage } from '../lib/error.js';
-import { formatSummary } from '../lib/formatter.js';
+import { barCountLabel, formatSummary } from '../lib/formatter.js';
 import {
 	BITBANK_API_BASE,
 	DEFAULT_RETRIES,
@@ -58,6 +58,9 @@ const TYPES: Set<CandleType | string> = new Set([
 const FETCH_CHUNK_TZ = 'UTC';
 
 const YEARLY_TYPES: Set<string> = new Set(['4hour', '8hour', '12hour', '1day', '1week', '1month']);
+
+// 上流で最も古い足は btc_jpy の 2011 年。それより前の暦年 chunk は success:0 を返すだけなので取りに行かない（#439）。
+const EARLIEST_CANDLE_YEAR = 2011;
 
 const DAILY_TYPES: Set<string> = new Set(['1min', '5min', '15min', '30min', '1hour']);
 
@@ -380,12 +383,18 @@ export default async function getCandles(
 	let json: unknown = null;
 	let fetchWarning: string | undefined;
 	let lastRateLimit: RateLimitInfo | null = null;
+	let yearKeysFetched: number | undefined;
 
 	try {
 		if (useYearlyMultiFetch || useLegacyMultiYear) {
-			const yearKeys = yearlyTzWindowActive
+			const requestedYearKeys = yearlyTzWindowActive
 				? multiYearUtcKeys
 				: Array.from({ length: yearsNeeded }, (_, i) => String(anchorYear - i));
+			const inRangeYearKeys = requestedYearKeys.filter((key) => Number(key) >= EARLIEST_CANDLE_YEAR);
+			// 全部が下限より前なら、上流の応答（エラー）をそのまま返すために絞らない。
+			const yearKeys = inRangeYearKeys.length > 0 ? inRangeYearKeys : requestedYearKeys;
+			const skippedEarlyYears = yearKeys.length < requestedYearKeys.length;
+			yearKeysFetched = yearKeys.length;
 
 			const merged = await mergeChunks(yearKeys, (key) =>
 				fetchCandleChunk(chk.pair, type, key, { timeoutMs: CANDLE_FETCH.chunkTimeoutMs }),
@@ -398,7 +407,10 @@ export default async function getCandles(
 				pendingSuffix: '',
 			});
 			if (!outcome.ok) return outcome;
-			fetchWarning = outcome.warning;
+			const skippedNote = skippedEarlyYears
+				? `ℹ️ UTC 暦年 ${EARLIEST_CANDLE_YEAR - 1} 以前は bitbank に足が無いため取得していません。取得できた期間のみで応答しています。`
+				: undefined;
+			fetchWarning = [outcome.warning, skippedNote].filter(Boolean).join('\n') || undefined;
 
 			ohlcvs = merged.rows;
 			const years = yearKeys.map(Number);
@@ -589,7 +601,7 @@ export default async function getCandles(
 				previous7DaysAvg === 0 ? null : ((recent7DaysAvg - previous7DaysAvg) / previous7DaysAvg) * 100;
 
 			let judgment: string;
-			if (volumeChangePct === null) judgment = '前週比較不可（前7日間の出来高ゼロ）';
+			if (volumeChangePct === null) judgment = `比較不可（その前${barCountLabel(7, String(type))}の出来高ゼロ）`;
 			else if (volumeChangePct > 20) judgment = '活発になっています';
 			else if (volumeChangePct < -20) judgment = '落ち着いています';
 			else judgment = 'ほぼ変わりません';
@@ -689,7 +701,7 @@ export default async function getCandles(
 		if (provisional) metaExtra.provisional = true;
 		if (needsMultiYear) {
 			metaExtra.multiYear = {
-				yearsRequested: yearsNeeded,
+				yearsRequested: yearKeysFetched ?? yearsNeeded,
 				totalFetched: ohlcvs.length,
 				limitApplied: limitCheck.value,
 			};
@@ -740,7 +752,6 @@ export const toolDef: ToolDefinition = {
 		type,
 		date,
 		limit,
-		view,
 		format,
 		tz,
 	}: {
@@ -748,15 +759,12 @@ export const toolDef: ToolDefinition = {
 		type: '1min' | '5min' | '15min' | '30min' | '1hour' | '4hour' | '8hour' | '12hour' | '1day' | '1week' | '1month';
 		date?: string;
 		limit?: number;
-		// 手書きのリテラルにすると enum から items を消しても型が変わらず、下の alias 分岐が黙って生き残る（tools.md §7）。
-		view?: z.infer<typeof GetCandlesInputSchema>['view'];
 		format?: z.infer<typeof GetCandlesInputSchema>['format'];
 		tz?: string;
 	}) => {
 		const result = await getCandles(pair, type, date, limit, tz);
 		if (!result.ok) return result;
-		// alias の正規化はここ 1 箇所だけで行い、以降は format しか見ない。0.4.0 で enum から削除予定。
-		const effectiveFormat: 'text' | 'json' = view === 'items' ? 'json' : (format ?? 'text');
+		const effectiveFormat: 'text' | 'json' = format ?? 'text';
 		if (effectiveFormat === 'json') {
 			const items = result?.data?.normalized ?? [];
 			const content: Array<{ type: 'text'; text: string }> = [{ type: 'text', text: JSON.stringify(items, null, 2) }];
@@ -764,7 +772,7 @@ export const toolDef: ToolDefinition = {
 			const meta = result.meta as { warning?: string; provisional?: boolean } | undefined;
 			if (meta?.warning) content.push({ type: 'text', text: meta.warning });
 			if (meta?.provisional) content.push({ type: 'text', text: PROVISIONAL_BAR_NOTE });
-			// format は content の形式だけを選び、structuredContent の契約は変えない（旧 view=items の消費者は structuredContent.data.normalized に読み替える）。
+			// format は content の形式だけを選び、structuredContent の契約は変えない。
 			return { content, structuredContent: toStructured(result) };
 		}
 		try {

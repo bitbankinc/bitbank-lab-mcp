@@ -97,6 +97,24 @@ describe('analyze_market_signal', () => {
 		vi.clearAllMocks();
 	});
 
+	it.each([
+		[30, ['oversold_bias']],
+		[33, []],
+		[67, []],
+		[70, ['overbought_risk']],
+	] as const)('RSI のタグは analyze_indicators と同じ区切り（30 以下 / 70 以上）: RSI %s', async (rsi, expected) => {
+		mockedGetFlowMetrics.mockResolvedValueOnce(asMockResult(flowOk(0.5, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
+		mockedGetVolatilityMetrics.mockResolvedValueOnce(asMockResult(volOk(0.5)));
+		mockedAnalyzeIndicators.mockResolvedValueOnce(
+			asMockResult(indicatorsOk({ close: 100, rsi, sma25: 100, sma75: 100, sma200: 100 })),
+		);
+
+		const res = await analyzeMarketSignal('btc_jpy');
+		assertOk(res);
+		const rsiTags = res.data.tags.filter((tag: string) => tag === 'oversold_bias' || tag === 'overbought_risk');
+		expect(rsiTags).toEqual(expected);
+	});
+
 	it('inputSchema: flowLimit は整数のみ許可する', () => {
 		const parse = () => toolDef.inputSchema.parse({ pair: 'btc_jpy', flowLimit: 10.5 });
 		expect(parse).toThrow();

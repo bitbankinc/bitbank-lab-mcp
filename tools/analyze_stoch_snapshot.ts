@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import { calendarDateFromIso, dayjs } from '../lib/datetime.js';
 import { formatSummary } from '../lib/formatter.js';
+import { stochZone, stochZoneLabel } from '../lib/indicator-zones.js';
 import { isLatestBarProvisional, prependProvisionalNote } from '../lib/provisional-bar.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
@@ -67,13 +68,6 @@ export function buildStochSnapshotText(input: BuildStochSnapshotTextInput): stri
 	]
 		.filter(Boolean)
 		.join('\n');
-}
-
-function zoneOf(k: number | null): 'overbought' | 'oversold' | 'neutral' {
-	if (k == null) return 'neutral';
-	if (k >= 80) return 'overbought';
-	if (k <= 20) return 'oversold';
-	return 'neutral';
 }
 
 export default async function analyzeStochSnapshot(
@@ -155,7 +149,7 @@ export default async function analyzeStochSnapshot(
 			dSeries = result.dSeries;
 		}
 
-		const zone = zoneOf(stochK);
+		const zone = stochZone(stochK) ?? 'neutral';
 
 		let crossType: 'bullish_cross' | 'bearish_cross' | 'none' = 'none';
 		let crossDesc = 'クロスなし';
@@ -196,7 +190,7 @@ export default async function analyzeStochSnapshot(
 					const ct = curr > 0 ? 'bullish_cross' : 'bearish_cross';
 					const barsAgo = n - 1 - i;
 					const date = calendarDateFromIso(candles[i]?.isoTime) ?? dayjs().tz('Asia/Tokyo').format('YYYY-MM-DD');
-					recentCrosses.push({ type: ct, barsAgo, date, zone: zoneOf(cK) });
+					recentCrosses.push({ type: ct, barsAgo, date, zone: stochZone(cK) ?? 'neutral' });
 				}
 			}
 		}
@@ -232,8 +226,7 @@ export default async function analyzeStochSnapshot(
 
 		const kStr = stochK != null ? stochK.toFixed(2) : 'n/a';
 		const dStr = stochD != null ? stochD.toFixed(2) : 'n/a';
-		const zoneJp =
-			zone === 'overbought' ? '買われすぎ (>80)' : zone === 'oversold' ? '売られすぎ (<20)' : 'ニュートラル';
+		const zoneJp = stochZoneLabel(zone);
 		const baseSummaryText = buildStochSnapshotText({
 			baseSummary: formatSummary({
 				pair: chk.pair,

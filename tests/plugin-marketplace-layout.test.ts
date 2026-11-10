@@ -13,6 +13,7 @@
  *      （食い違うと `Plugin "<name>" not found in marketplace` になる）
  *   3. そのディレクトリに top-level `bin/` が無い
  *   4. `.claude/skills/` のシンボリックリンクが、移動後の skill（`SKILL.md`）を指している
+ *   5. Cursor / Codex の manifest の `skills` が、移動後の skill の置き場所を指している（#408）
  */
 
 import fs from 'node:fs';
@@ -59,6 +60,47 @@ describe('marketplace の plugin の置き場所', () => {
 
 			it('top-level bin/ が無い（claude.ai の組織同期が拒否する）', () => {
 				expect(fs.existsSync(path.join(dir, 'bin')), `${source}/bin が存在する`).toBe(false);
+			});
+		});
+	}
+});
+
+// Codex は manifest に skills が無いと plugin 直下の skills/ だけを探す。直下には無いので、指定が欠けると Skill が 1 つも読み込まれない。
+describe('Cursor / Codex の manifest の skills', () => {
+	const claudeSkillDirs = ENTRIES.map((e) => path.resolve(PACKAGE_ROOT, String(e.source), 'skills'));
+
+	for (const manifestRel of ['.cursor-plugin/plugin.json', '.codex-plugin/plugin.json']) {
+		describe(`manifest: ${manifestRel}`, () => {
+			const manifest = JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, manifestRel), 'utf8')) as {
+				skills?: unknown;
+			};
+			const raw = manifest.skills;
+			const values = typeof raw === 'string' ? [raw] : Array.isArray(raw) ? raw : [];
+
+			it('文字列か文字列の配列で、./ で始まり .. を含まない', () => {
+				expect(values.length, `${manifestRel} に skills が無い`).toBeGreaterThan(0);
+				for (const v of values) {
+					expect(typeof v).toBe('string');
+					expect(v, 'Codex は ./ で始まらないパスを無視する').toMatch(/^\.\/./);
+					expect(String(v).split('/'), 'Codex は .. を含むパスを無視する').not.toContain('..');
+				}
+			});
+
+			it('Claude Code の plugin と同じ skill の置き場所を指し、そこに SKILL.md のある skill がある', () => {
+				const dirs = values.map((v) => path.resolve(PACKAGE_ROOT, String(v)));
+				for (const expected of claudeSkillDirs) {
+					expect(dirs, `${manifestRel} の skills が ${path.relative(PACKAGE_ROOT, expected)} を指していない`).toContain(
+						expected,
+					);
+				}
+				for (const dir of dirs) {
+					const skills = fs
+						.readdirSync(dir, { withFileTypes: true })
+						.filter((d) => d.isDirectory() && fs.existsSync(path.join(dir, d.name, 'SKILL.md')));
+					expect(skills.length, `${path.relative(PACKAGE_ROOT, dir)} に SKILL.md のある skill が無い`).toBeGreaterThan(
+						0,
+					);
+				}
 			});
 		});
 	}

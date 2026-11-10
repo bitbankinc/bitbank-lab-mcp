@@ -2,6 +2,7 @@
 import { formatDateOrTimeInTz } from '../../lib/datetime.js';
 import { formatInt, formatPctFromRatio, formatPriceDecimals } from '../../lib/formatter.js';
 import { toStructured } from '../../lib/result.js';
+import { CONFIDENCE_NOTE, formatScoreBreakdownLines } from '../../tools/patterns/confidence-text.js';
 import { patternPriceDecimals } from '../../tools/patterns/helpers.js';
 import { BREAKOUT_AGAINST_EXPECTATION, levelSpreadMetrics } from '../../tools/patterns/structural.js';
 import { formatStructureGateSkipLine, formatTriplePositionLines } from '../../tools/patterns/structure-diagnostics.js';
@@ -437,15 +438,6 @@ export function formatPatternLine(
 	const range = p?.range ? `${toDateOrTime(p.range.start, tz, type)} ~ ${toDateOrTime(p.range.end, tz, type)}` : 'n/a';
 	const periodLines = buildPeriodLines(p, range, tz, type, decimals);
 
-	const confNum = Number(p?.confidence ?? NaN);
-	let lowConfWarning: string | null = null;
-	if (Number.isFinite(confNum) && confNum < 0.6) {
-		lowConfWarning =
-			confNum < 0.3
-				? '   - ⚠️ 信頼度: 非常に低い（形状不十分・除外候補レベル、単独判断不可）'
-				: '   - ⚠️ 信頼度: 低い（形状不十分・単独判断不可、他指標と必ず併用）';
-	}
-
 	let priceRange: string | null = null;
 	if (Array.isArray(p?.pivots) && p.pivots.length) {
 		const prices = p.pivots.map((v) => Number(v?.price)).filter(Number.isFinite);
@@ -629,7 +621,7 @@ export function formatPatternLine(
 
 	const lines = [
 		`${idx + 1}. ${name} (パターン整合度: ${conf})${fallbackTag}`,
-		lowConfWarning,
+		...formatScoreBreakdownLines(p?.scoreComponents),
 		...periodLines,
 		statusLine,
 		formingTripleNote,
@@ -688,8 +680,7 @@ export function formatFullView(
 	const overlayNote = res?.data?.overlays
 		? '\n\nチャート連携: structuredContent.data.overlays を render_chart_svg.overlays に渡すと注釈/範囲を描画できます。'
 		: '';
-	const trustNote =
-		'\n\nパターン整合度について（構成点の水準の揃い方・戻り率・ブレイク品質・期間から算出。軸の構成は種別で異なる）:\n  0.8以上 = 理想的な形状（教科書的パターン）\n  0.7-0.8 = 標準的な形状（他指標と併用推奨）\n  0.6-0.7 = やや不明瞭（慎重に判断）\n  0.6未満 = 形状不十分\n  ※ status=forming は最終構成点が未確定のため、整合度に関わらず「参考材料」として扱う';
+	const trustNote = `\n\n${CONFIDENCE_NOTE}\n  ※ status=forming は最終構成点が未確定のため、整合度に関わらず「参考材料」として扱う`;
 	const routeLine = buildDetectionRouteLine(pats);
 	const reductionLine = buildReductionLine(meta);
 	const text = `${hdr}（${typeSummary || '分類なし'}）\n${periodBlock ? `${periodBlock}\n` : ''}${effectiveParamsLine ? `${effectiveParamsLine}\n` : ''}${routeLine ? `${routeLine}\n` : ''}${reductionLine ? `${reductionLine}\n` : ''}\n【検出パターン（全件）】\n${body}${overlayNote}${trustNote}`;
@@ -741,8 +732,7 @@ export function formatDetailedView(
 	const overlayNote = res?.data?.overlays
 		? '\n\nチャート連携: structuredContent.data.overlays を render_chart_svg.overlays に渡すと注釈/範囲を描画できます。'
 		: '';
-	const trustNote =
-		'\n\nパターン整合度について（構成点の水準の揃い方・戻り率・ブレイク品質・期間から算出。軸の構成は種別で異なる）:\n  0.8以上 = 理想的な形状（教科書的パターン）\n  0.7-0.8 = 標準的な形状（他指標と併用推奨）\n  0.6-0.7 = やや不明瞭（慎重に判断）\n  0.6未満 = 形状不十分\n  ※ status=forming は最終構成点が未確定のため、整合度に関わらず「参考材料」として扱う';
+	const trustNote = `\n\n${CONFIDENCE_NOTE}\n  ※ status=forming は最終構成点が未確定のため、整合度に関わらず「参考材料」として扱う`;
 	const usage = `\n\nusage_example:\n  step1: detect_patterns を実行\n  step2: structuredContent.data.overlays を取得\n  step3: render_chart_svg の overlays に渡す`;
 	const routeLine = buildDetectionRouteLine(pats);
 	const reductionLine = buildReductionLine(meta);

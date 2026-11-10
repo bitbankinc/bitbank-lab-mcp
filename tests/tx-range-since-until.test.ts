@@ -196,7 +196,7 @@ describe('since/until: 過去の完了済み UTC 日を全件集計する', () =
 			bucketMs: 60_000,
 			since: SINCE_DAY,
 			until: UNTIL_DAY,
-			view: 'buckets',
+			view: 'detailed',
 			bucketsN: 3,
 		})) as { content: Array<{ text: string }> };
 

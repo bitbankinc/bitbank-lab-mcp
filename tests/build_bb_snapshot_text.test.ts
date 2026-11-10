@@ -4,8 +4,9 @@ import { type BuildBbDefaultTextInput, buildBbDefaultText } from '../tools/analy
 function makeInput(overrides?: Partial<BuildBbDefaultTextInput>): BuildBbDefaultTextInput {
 	return {
 		baseSummary: 'BTC/JPY [1day] z=0.5 bw=12.3%',
-		position: 'middle_band',
+		position: 'near_middle',
 		bandwidth_state: 'normal',
+		bandWidthRank: { percentile: 45.4, sampleSize: 120 },
 		volatility_trend: 'expanding',
 		bandWidthPct_percentile: 65,
 		current_vs_avg: 'above',
@@ -28,8 +29,8 @@ describe('buildBbDefaultText', () => {
 	it('基本出力: baseSummary + Position + Band State を含む', () => {
 		const text = buildBbDefaultText(makeInput());
 		expect(text).toContain('BTC/JPY [1day] z=0.5');
-		expect(text).toContain('Position: middle_band');
-		expect(text).toContain('Band State: normal');
+		expect(text).toContain('Position: near_middle / 中心付近（±1σ以内）');
+		expect(text).toContain('Band State: normal / 標準（直近120本の幅の中で下から45%）');
 	});
 
 	it('Volatility Trend が含まれる', () => {
@@ -65,7 +66,7 @@ describe('buildBbDefaultText', () => {
 		expect(text).toContain('BB middle:15000000');
 		expect(text).toContain('upper:15500000');
 		expect(text).toContain('lower:14500000');
-		expect(text).toContain('zScore:0.500');
+		expect(text).toContain('zScore:0.500σ');
 		expect(text).toContain('bw:12.30%');
 	});
 
@@ -78,7 +79,7 @@ describe('buildBbDefaultText', () => {
 				],
 			}),
 		);
-		expect(text).toContain('📋 直近2本のBB推移:');
+		expect(text).toContain('📋 直近2本のBB推移（z は σ 単位）:');
 		expect(text).toContain('2025-01-10 z:0.3 bw:11.5%');
 		expect(text).toContain('2025-01-11 z:0.5 bw:12.3%');
 	});

@@ -30,8 +30,7 @@ jobs:
       - name: npm audit (high/critical)
         run: npm audit --audit-level=high
 
-  # gitleaks-action は organization 利用時にライセンスキーが必要なため、
-  # owner transfer 後も動くようバイナリを直接実行する（バージョン + SHA256 固定）。
+  # gitleaks-action は organization ではライセンスキーが要るので、バイナリを直接実行する。
   gitleaks:
     runs-on: ubuntu-latest
     env:
@@ -46,7 +45,8 @@ jobs:
 
       - name: Install gitleaks
         run: |
-          curl -sSL -o /tmp/gitleaks.tar.gz \
+          # -f が無いと、リリース配布の 5xx のエラーページを保存してチェックサム不一致で落ちる。
+          curl -fsSL --retry 5 --retry-all-errors -o /tmp/gitleaks.tar.gz \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks

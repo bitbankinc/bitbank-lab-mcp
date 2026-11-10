@@ -119,18 +119,33 @@ describe('detect_patterns: data.patterns の実データスナップショット
 			Number(p.breakoutBarIndex) === 280 && String(p.type) === 'inverse_head_and_shoulders';
 		const isPr9HistoryExcluded = (p: Record<string, unknown>) =>
 			Number(p.breakoutBarIndex) === 118 && String(p.type) === 'inverse_head_and_shoulders';
+		// 整合度の計算を変えると dedup で残る窓が替わり、同じ形でもブレイク足やパターン高さが変わる。進捗の計算ではなく選別の差分（#422）。
+		const isDedupSwap422 = (p: Record<string, unknown>) =>
+			String(p.type) === 'triangle_ascending' && [295, 297, 348].includes(Number(p.breakoutBarIndex));
+		expect(
+			res.data.patterns
+				.filter((p) => isDedupSwap422(p))
+				.map((p) => Number(p.breakoutBarIndex))
+				.sort((a, b) => a - b),
+		).toEqual([297, 348]);
+		// 並び順は整合度で決まり進捗とは関係ないので、種別とブレイク足で並べてから比べる。
+		const byTypeAndBreakout = (a: Record<string, unknown>, b: Record<string, unknown>) =>
+			String(a.type).localeCompare(String(b.type)) || Number(a.breakoutBarIndex) - Number(b.breakoutBarIndex);
 		expect(
 			project(
 				res.data.patterns
 					.filter(nonWedge)
 					.filter((p) => !isPr3Reclassification(p))
-					.filter((p) => !isPr9HistoryExcluded(p)),
-			),
+					.filter((p) => !isPr9HistoryExcluded(p))
+					.filter((p) => !isDedupSwap422(p)),
+			).sort(byTypeAndBreakout),
 		).toEqual(
 			targetReachPre288
 				.filter(nonWedge)
 				.filter((p) => !isPr3Reclassification(p))
-				.filter((p) => !isPr9HistoryExcluded(p)),
+				.filter((p) => !isPr9HistoryExcluded(p))
+				.filter((p) => !isDedupSwap422(p))
+				.sort(byTypeAndBreakout),
 		);
 	});
 });

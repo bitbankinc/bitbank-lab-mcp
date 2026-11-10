@@ -403,6 +403,47 @@ describe('detectHeadAndShoulders', () => {
 		).toBe(true);
 	});
 
+	it('H&S の肩が浅すぎる場合も shoulder_depth_insufficient で rejected', () => {
+		// 逆 H&S の判定を上下反転したもの。左右肩は谷から 1、頭は 45 上なので、肩の深さ比は約 2.2%。
+		const { candles, pivots } = buildHS({ leftShoulder: 86, rightShoulder: 86, head: 130 });
+		const ctx = buildCtx({ candles, pivots });
+		const result = detectHeadAndShoulders(ctx);
+
+		expect(result.patterns.filter((p) => p.type === 'head_and_shoulders')).toHaveLength(0);
+		const rejected = ctx.debugCandidates.find(
+			(d) => d.type === 'head_and_shoulders' && d.reason === 'shoulder_depth_insufficient',
+		);
+		const details = rejected?.details as Record<string, unknown> | undefined;
+		expect(details).toMatchObject({ minShoulderDepthRatio: 0.2, headDepth: 45 });
+		expect(Number(details?.leftShoulderDepthRatio)).toBeCloseTo(1 / 45, 3);
+	});
+
+	it('relaxed H&S でも浅い肩を救済しない', () => {
+		// 肩の差は strict の tolerance(4%)を超えるが、relaxed と cap(5%)には収まる。左肩 1 / 45・右肩 5 / 45 はどちらも 20% に届かない。
+		const { candles, pivots } = buildHS({ leftShoulder: 86, rightShoulder: 90, head: 130 });
+		const ctx = buildCtx({ candles, pivots });
+		const result = detectHeadAndShoulders(ctx);
+
+		expect(result.patterns.filter((p) => p.type === 'head_and_shoulders')).toHaveLength(0);
+		expect(
+			ctx.debugCandidates.some((d) => d.type === 'head_and_shoulders' && d.reason === 'shoulder_depth_insufficient'),
+		).toBe(true);
+	});
+
+	it.each([
+		[95, true],
+		[93, false],
+	] as const)('H&S の肩の深さの下限付近: 両肩 %d（谷 85・頭 130）で検出されるのは %s', (shoulder, detected) => {
+		const { candles, pivots } = buildHS({ leftShoulder: shoulder, rightShoulder: shoulder, head: 130 });
+		const ctx = buildCtx({ candles, pivots });
+		const result = detectHeadAndShoulders(ctx);
+
+		expect(result.patterns.some((p) => p.type === 'head_and_shoulders')).toBe(detected);
+		expect(
+			ctx.debugCandidates.some((d) => d.type === 'head_and_shoulders' && d.reason === 'shoulder_depth_insufficient'),
+		).toBe(!detected);
+	});
+
 	it('頭が両肩より低くない → head_not_lower で rejected', () => {
 		// head=97, shoulders=100 → 97 < 100*(1-headProminencePct=0.04)=96? No (97 > 96)（tolerancePct は無関係。issue #149）
 		const { candles, pivots } = buildInverseHS({ head: 97 });
@@ -959,9 +1000,8 @@ describe('detectHeadAndShoulders', () => {
 		expect(forming.precedingTrend).toBeDefined();
 	});
 
-	it('forming inverse H&S: 右肩が左肩から遠く confidence < 0.5 → 結果に含まれない & reject 理由が残る', () => {
-		// closeness = 1 - |107 - 100| / (100 * 0.08) = 0.125、confBase = 0.6 * 0.125 + 0.4 * 0.125 = 0.125、confidence = round(0.125 * 0.9 * 100)/100 = 0.11 → < 0.5
-		// completion = (0.75 + 0.25 * 0.125) * 0.9 = 0.703 → >= 0.4（残るのは confidence 側のみ）
+	it('forming inverse H&S: 右肩が左肩から遠くても整合度の下限では落とさず、strict の物差しで levelMargin が 0 になる（#422）', () => {
+		// 右肩（現在値 107）は左肩 100 から 7%。形成中のゲート 8% は通るが、strict の肩の許容幅を超える。
 		const total = 66;
 		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 90, 95, 85, 90));
 		candles[5] = mkCandle(total - 5, 100, 102, 99, 100);
@@ -992,19 +1032,15 @@ describe('detectHeadAndShoulders', () => {
 		const result = detectHeadAndShoulders(ctx);
 
 		const forming = result.patterns.filter((p) => p.type === 'inverse_head_and_shoulders' && p.status === 'forming');
-		expect(forming).toHaveLength(0);
-
-		const rejected = ctx.debugCandidates.find(
-			(d) =>
-				d.type === 'inverse_head_and_shoulders' && d.accepted === false && d.reason === 'confidence_below_min_forming',
-		);
-		expect(rejected).toBeDefined();
-		const details = rejected?.details as Record<string, unknown> | undefined;
-		expect(Number(details?.threshold)).toBe(0.5);
-		expect(Number(details?.confidence)).toBeLessThan(0.5);
+		expect(forming).toHaveLength(1);
+		expect(forming[0].scoreComponents?.levelMargin).toBe(0);
+		expect(forming[0].scoreComponents?.breakoutQuality).toBeUndefined();
+		const axes = Object.values(forming[0].scoreComponents ?? {}) as number[];
+		expect(forming[0].confidence).toBeCloseTo(axes.reduce((sum, v) => sum + v, 0) / axes.length, 2);
+		expect(ctx.debugCandidates.some((d) => String(d.reason ?? '').startsWith('confidence_below_min'))).toBe(false);
 	});
 
-	it('forming H&S: 右肩が左肩から遠く confidence < 0.5 → 結果に含まれない & reject 理由が残る', () => {
+	it('forming H&S: 右肩が左肩から遠くても整合度の下限では落とさず、strict の物差しで levelMargin が 0 になる（#422）', () => {
 		const total = 66;
 		const candles: CandleData[] = Array.from({ length: total }, (_, i) => mkCandle(total - i, 90, 95, 85, 90));
 		candles[5] = mkCandle(total - 5, 99, 100, 97, 100);
@@ -1035,12 +1071,10 @@ describe('detectHeadAndShoulders', () => {
 		const result = detectHeadAndShoulders(ctx);
 
 		const forming = result.patterns.filter((p) => p.type === 'head_and_shoulders' && p.status === 'forming');
-		expect(forming).toHaveLength(0);
-
-		const rejected = ctx.debugCandidates.find(
-			(d) => d.type === 'head_and_shoulders' && d.accepted === false && d.reason === 'confidence_below_min_forming',
-		);
-		expect(rejected).toBeDefined();
+		expect(forming).toHaveLength(1);
+		expect(forming[0].scoreComponents?.levelMargin).toBe(0);
+		expect(forming[0].scoreComponents?.breakoutQuality).toBeUndefined();
+		expect(ctx.debugCandidates.some((d) => String(d.reason ?? '').startsWith('confidence_below_min'))).toBe(false);
 	});
 
 	it('H&S: 右肩後にネックライン下抜け → status=completed, confirmation=neckline_breakout', () => {
@@ -1913,7 +1947,7 @@ describe('detectHeadAndShoulders: 整合度の多軸化（issue #204）', () => 
 		return a.y + ((b.y - a.y) * (clampedI - a.x)) / (b.x - a.x);
 	}
 
-	it('完成済み H&S は scoreComponents を出し、triple 用の levelMargin は含まない', () => {
+	it('完成済み H&S は levelMargin ほか 5 軸を出し、symmetry と duration は出さない（#422）', () => {
 		const { candles, pivots } = buildHsWithBreakout();
 		const hs = detectHeadAndShoulders(buildCtx({ candles, pivots })).patterns.find(
 			(p) => p.type === 'head_and_shoulders',
@@ -1921,13 +1955,12 @@ describe('detectHeadAndShoulders: 整合度の多軸化（issue #204）', () => 
 		expect(hs?.status).toBe('completed');
 		const sc = hs?.scoreComponents;
 		expect(sc).toBeDefined();
-		// `levelMargin` は triple 専用（正規化した同水準度）。H&S は生の `symmetry` を使う。
-		expect(sc).not.toHaveProperty('levelMargin');
-		expect(sc?.symmetry).toBe(1); // 両肩とも 100
+		expect(sc).not.toHaveProperty('symmetry');
+		expect(sc).not.toHaveProperty('duration');
+		expect(sc?.levelMargin).toBe(1); // 両肩とも 100
 		expect(sc?.headProminence).toBeGreaterThan(0);
 		expect(sc?.timeSymmetry).toBe(1); // 左肩→頭 30 本 / 頭→右肩 30 本
 		expect(sc?.breakoutQuality).toBeGreaterThan(0);
-		expect(sc?.duration).toBeGreaterThan(0);
 	});
 
 	it('未ブレイク（near_completion）では breakoutQuality が付かない', () => {
@@ -1938,7 +1971,22 @@ describe('detectHeadAndShoulders: 整合度の多軸化（issue #204）', () => 
 		);
 		expect(hs?.status).toBe('near_completion');
 		expect(hs?.scoreComponents).not.toHaveProperty('breakoutQuality');
-		expect(hs?.scoreComponents?.symmetry).toBeDefined();
+		expect(hs?.scoreComponents?.levelMargin).toBeDefined();
+	});
+
+	it('levelMargin の物差しは strict の肩の判定と同じ幅（tolerancePct と肩の上限の小さいほう）', () => {
+		// 両肩 100 / 102: relDev = 2 / 102。1day の肩の上限（hsShoulderMaxPct）は tolerancePct 0.04 より広いので、物差しは 0.04。
+		const { candles, pivots } = buildHS({ leftShoulder: 100, rightShoulder: 102 });
+		const ctx = buildCtx({ candles, pivots });
+		expect(ctx.hsShoulderMaxPct).toBeGreaterThan(0.04);
+		const hs = detectHeadAndShoulders(ctx).patterns.find((p) => p.type === 'head_and_shoulders');
+		expect(hs?.scoreComponents?.levelMargin).toBeCloseTo(1 - 2 / 102 / 0.04, 4);
+
+		// 肩の上限のほうが狭いときは、上限が物差しになる。
+		const narrow = buildCtx({ candles, pivots });
+		narrow.hsShoulderMaxPct = 0.03;
+		const narrowHs = detectHeadAndShoulders(narrow).patterns.find((p) => p.type === 'head_and_shoulders');
+		expect(narrowHs?.scoreComponents?.levelMargin).toBeCloseTo(1 - 2 / 102 / 0.03, 4);
 	});
 
 	it('headProminence は突出ゲートに対する余裕（ゲートの 2 倍で 0.5）', () => {
@@ -2060,8 +2108,8 @@ describe('detectHeadAndShoulders: 整合度の多軸化（issue #204）', () => 
 		const tallHs = run(tall);
 		const shallowHs = run(shallow);
 
-		expect(tallHs?.scoreComponents?.symmetry).toBe(shallowHs?.scoreComponents?.symmetry);
-		expect(tallHs?.scoreComponents?.duration).toBe(shallowHs?.scoreComponents?.duration);
+		expect(tallHs?.scoreComponents?.levelMargin).toBeDefined();
+		expect(tallHs?.scoreComponents?.levelMargin).toBe(shallowHs?.scoreComponents?.levelMargin);
 		expect(tallHs?.confidence).toBeGreaterThan(Number(shallowHs?.confidence));
 	});
 });

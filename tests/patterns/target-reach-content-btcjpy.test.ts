@@ -40,8 +40,8 @@ describe('#288 Phase 2 のターゲット行（実データ B / 365 本 / 既定
 
 	it('view=full: 未到達（走査完了）は接近度だけを出す', async () => {
 		const text = await liveContent('full');
-		// ブレイク足 idx=295。系列末尾まで 69 本あるので走査は上限の 60 本で完了。
-		expect(text).toContain(`${TARGET_LABEL}未到達（走査 60 本完了、目標幅の 18% まで接近）`);
+		// ブレイク足 idx=297。系列末尾まで 67 本あるので走査は上限の 60 本で完了。
+		expect(text).toContain(`${TARGET_LABEL}未到達（走査 60 本完了、目標幅の 7% まで接近）`);
 	});
 
 	it('view=full: 期待と逆向きに抜けた wedge は標準ターゲットを出さない', async () => {

@@ -190,21 +190,6 @@ describe('forming double / triple debug candidates (#158)', () => {
 				opts: { swingDepth: 2 },
 			},
 			{
-				reason: 'forming_confidence_below_min',
-				type: 'triple_top',
-				// 2 山は 127 → 130 の順（非単調）。130 → 127 → 125.5 だと単調な切り下がりで `forming_stair_step_down` が先に落とす（#263）。
-				candles: () =>
-					fromCloses(
-						legs(100, [
-							[9, 127],
-							[6, 112],
-							[7, 130],
-							[6, 113],
-							[7, 125.5],
-						]),
-					),
-			},
-			{
 				reason: 'forming_bars_out_of_range',
 				type: 'triple_bottom',
 				candles: () =>
@@ -218,21 +203,6 @@ describe('forming double / triple debug candidates (#158)', () => {
 						]),
 					),
 				opts: { swingDepth: 2 },
-			},
-			{
-				reason: 'forming_confidence_below_min',
-				type: 'triple_bottom',
-				// 2 谷は 102.3 → 100 の順（非単調）。100 → 102.3 → 103.8 だと単調な切り上がりで `forming_stair_step_up` が先に落とす（#263）。
-				candles: () =>
-					fromCloses(
-						legs(132, [
-							[9, 102.3],
-							[6, 118],
-							[7, 100],
-							[6, 118],
-							[7, 103.8],
-						]),
-					),
 			},
 			{
 				reason: 'forming_stair_step_down',

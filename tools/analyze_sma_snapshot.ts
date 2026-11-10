@@ -25,7 +25,7 @@ import {
 	AnalyzeSmaSnapshotOutputSchema,
 } from '../src/schemas.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
-import analyzeIndicators from './analyze_indicators.js';
+import analyzeIndicators, { sma } from './analyze_indicators.js';
 
 export type { CrossStatus, MaLineEntry, RecentCrossEntry };
 
@@ -62,23 +62,35 @@ export default async function analyzeSmaSnapshot(
 				fail(indRes.summary || 'indicators failed', indRes.meta.errorType || 'internal'),
 			);
 
-		const { warning, warnings } = extractUpstreamWarning(indRes.meta);
+		const upstream = extractUpstreamWarning(indRes.meta);
+		const warning = upstream.warning;
 
 		// SMA の最新値・配列・乖離は最新足の終値に依存するので、形成中なら注記を出す。
 		const provisional = isLatestBarProvisional(indRes.data.normalized.at(-1)?.timestamp, String(type));
 
 		const close = indRes.data.normalized.at(-1)?.close ?? null;
-		const map: Record<string, number | null> = {};
+		const closes = indRes.data.normalized.map((c) => c.close);
 		const indRecord = indRes.data.indicators as Record<string, number[] | number | null>;
-		const get = (p: number) => (indRecord[`SMA_${p}`] as number | null) ?? null;
-		for (const p of periods) map[`SMA_${p}`] = get(p);
-
-		const chartInd: Record<string, unknown> = indRes?.data?.chart?.indicators ?? {};
+		const chartInd: Record<string, unknown> = { ...indRes?.data?.chart?.indicators };
 		const candles: Array<{ isoTime?: string | null }> = Array.isArray(indRes?.data?.chart?.candles)
 			? indRes.data.chart.candles
-			: Array.isArray(indRes?.data?.normalized)
-				? indRes.data.normalized
-				: [];
+			: indRes.data.normalized;
+		// analyze_indicators が持つ SMA は 5 / 20 / 25 / 50 / 75 / 200 だけなので、それ以外は取得した足から同じ sma で計算する（#431）。
+		const map: Record<string, number | null> = {};
+		const warningSet = new Set(upstream.warnings ?? []);
+		for (const p of new Set(periods)) {
+			const key = `SMA_${p}`;
+			if (Object.hasOwn(indRecord, key)) {
+				map[key] = (indRecord[key] as number | null) ?? null;
+			} else {
+				const series = sma(closes, p);
+				map[key] = series.at(-1) ?? null;
+				chartInd[key] = series;
+				// analyze_indicators が持つ周期の不足は上流の warnings に既に出る。
+				if (closes.length < p) warningSet.add(`${key}: データ不足`);
+			}
+		}
+		const warnings = warningSet.size > 0 ? [...warningSet] : undefined;
 
 		const crossPairs = generateCrossPairs(periods);
 		const crosses = detectCrossStatuses(crossPairs, map, 'SMA');
@@ -148,7 +160,7 @@ export default async function analyzeSmaSnapshot(
 export const toolDef: ToolDefinition = {
 	name: 'analyze_sma_snapshot',
 	description:
-		'[SMA / Moving Average / Golden Cross] SMA（simple moving average / golden cross / dead cross）の数値スナップショット。最新値・クロス検出・整列状態（bullish/bearish/mixed）。\n\n⚠️ 最新値のみ。時系列チャート描画 → prepare_chart_data（indicators: ["SMA_25","SMA_75"] 等）。',
+		'[SMA / Moving Average / Golden Cross] SMA（simple moving average / golden cross / dead cross）の数値スナップショット。最新値・クロス検出・整列状態（bullish/bearish/mixed）。periods は任意の周期を指定できる（既定: 25/75/200）。\n\n⚠️ 最新値のみ。時系列チャート描画 → prepare_chart_data（indicators: ["SMA_25","SMA_75"] 等）。',
 	inputSchema: AnalyzeSmaSnapshotInputSchema,
 	handler: async ({
 		pair,

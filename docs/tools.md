@@ -46,7 +46,7 @@ API の応答をそのまま、または軽量整形して返す。指標計算�
 | ツール | 概要 |
 |--------|------|
 | `analyze_indicators` | 統合指標（SMA / EMA / RSI / BB / 一目 / MACD / Stochastic / StochRSI） |
-| `analyze_bb_snapshot` | BB の広がりと終値位置（z-score・帯幅・スクイーズ判定） |
+| `analyze_bb_snapshot` | BB の広がりと終値位置（σ 単位の z-score・帯幅・スクイーズ判定） |
 | `analyze_ichimoku_snapshot` | 一目の状態スナップショット（雲との位置関係・転換/基準線・雲の傾き・`lookback` で履歴本数を指定） |
 | `analyze_sma_snapshot` | SMA 整列/クロス分析（bullish/bearish/mixed・傾き） |
 | `analyze_ema_snapshot` | EMA 整列/クロス分析（SMA より直近価格に敏感。デフォルト期間: 12, 26, 50, 200） |
@@ -240,13 +240,13 @@ API の応答をそのまま、または軽量整形して返す。指標計算�
 | `get_volatility_metrics` | **`summary`** / `detailed` / `full` | `beginner` | |
 | `detect_macd_cross` | **`summary`** / `detailed` | — | **`pair` 省略時（複数銘柄スクリーニング）でのみ有効。** `pair` 指定の単一ペア深掘りモードでは無視される |
 
-> `get_tickers_jpy` にも `view`（`ranked` / `items`）がありますが、これは量ではなく**射影**（並び順と `data.ranked` の有無）の指定で、**本節の語彙には含まれません。** `view` という名前自体が誤用のため改名を検討中です。並び順・件数は `sortBy` / `limit` で指定してください。
+> `get_tickers_jpy` は `view` を持ちません。0.6.0 までの `view`（`ranked` / `items`）は量ではなく `data.ranked` の有無の指定だったため、0.7.0 で `includeRanked`（`true` / `false`、既定 `true`）に置き換えました。`structuredContent.data.items` はどちらでも、対応ペア（既定では `lib/validate.ts` の `ALLOWED_PAIRS`）に絞ったあとの全件です。`includeRanked=true` では、`sortBy` / `order` / `limit` で並べた上位を本文と `data.ranked` に出します。`false` では `data.ranked` を返さず、本文は絞ったあとの API 順の先頭 5 件だけになり、`sortBy` / `order` / `limit` は使いません。旧 `view` を渡しても入力エラーにはならず、読み替えもせずに無視するので、`view=items` も既定の `includeRanked=true`（`data.ranked` を含む）の出力になります。`view=items` を使っていた場合は `includeRanked=false` に書き換えてください。
 
-### 非推奨の値（`0.4.0` で削除予定）
+### 0.7.0 で削除した旧い値
 
-移行期間中は受理されますが、下表の**写像先の挙動になります**。新しい指定へ移行してください。
+移行期間を置いていた旧い `view` の値は、0.7.0 で削除しました。渡すと入力エラーになります。
 
-| ツール | 非推奨の値 | 新しい指定 |
+| ツール | 削除した値 | 代わりの指定 |
 |---|---|---|
 | `get_candles` | `items` | `view=full` + `format=json` |
 | `get_transactions` | `summary` | `view=full` |
@@ -254,28 +254,25 @@ API の応答をそのまま、または軽量整形して返す。指標計算�
 | `get_flow_metrics` | `compact` | `view=full` + `nonZeroOnly=true` |
 | `get_flow_metrics` | `buckets` | `view=detailed` |
 
-**`get_transactions` の `summary` は特に注意してください。** 旧既定値で実体は「全件列挙」（＝ `full`）でしたが、`summary` という語は階梯上「集計のみ」を意味します。削除後、別リリースで**集計のみの `summary`**（opt-in 専用。既定にはしない）として再導入される予定があるため、`summary` を渡し続けると将来別の応答になります。全件が必要なら今のうちに `view=full` へ移してください。
-
 設計の経緯と判断根拠は [docs/internal/view-vocabulary-unification.md](internal/view-vocabulary-unification.md) を参照。
 
 ---
 
-## 非推奨の出力フィールド（`0.4.0` で削除予定）
+## 0.7.0 で削除した出力フィールドの別名
 
-`view` の enum 値とは別に、**出力フィールドの別名**にも同じ猶予期間（最低 1 リリース かつ 3 ヶ月）を置いています。旧フィールドは移行期間中も**新フィールドと同じ値**を返すので、読み替えるだけで移行できます。
-
-| ツール | 非推奨のフィールド | 新しいフィールド |
+| ツール | 削除したフィールド | 代わりのフィールド |
 |---|---|---|
 | `analyze_my_portfolio` | `account_pnl.margin_interest`（`yearly_account_pnl` / `monthly_account_pnl` も同様） | `margin_interest_cost` |
 | `analyze_my_portfolio` | `account_pnl.margin_fee`（`yearly_account_pnl` / `monthly_account_pnl` も同様） | `margin_fee_cost` |
+| `analyze_my_portfolio` | `yearly_realized_pnl.priced_deposit_count` / `unpriced_deposit_count`（`monthly_realized_pnl` も同様） | `priced_deposit_count_all_time` / `unpriced_deposit_count_all_time` |
 
-**信用のコスト項は `_cost` サフィックス付きが正です。** どちらの名前でも値は同じ**正値**（コスト = 正値）で、`total` では**減算**されます。
+信用のコスト項は**正値**（コスト = 正値）で、`total` では**減算**されます。
 
 ```text
 total = spot_realized_pnl + margin_realized_pnl − margin_interest_cost − margin_fee_cost
 ```
 
-`structuredContent` を直読みする場合、コスト項を**足すと符号が反転します**。旧名 `margin_interest` / `margin_fee` は名前から符号規約が読み取れず実際に誤加算されていたため、名前に意味を出した `_cost` へ移行してください（値・符号は変わらないので、リネームだけで済みます）。
+`structuredContent` を直読みする場合、コスト項を**足すと符号が反転します**。
 
 ---
 
@@ -550,7 +547,7 @@ total = spot_realized_pnl + margin_realized_pnl − margin_interest_cost − mar
 | 検出器 | `pivots` の中身 | 点数 |
 |---|---|---:|
 | `triangle_*` | 上下トレンドラインの回帰に使った relaxed swing（peaks / valleys） | 可変 |
-| `wedge_*` | 上下トレンドラインの**非ブレイクタッチ点すべて**（ブレイク足は含めない。**ブレイク足以降は線を問わず除外**。#281） | 可変 |
+| `wedge_*` | 形成区間の中の、上下トレンドラインの**非ブレイクタッチ点すべて**（ブレイク足は含まれない。#281） | 可変 |
 
 - **役割ラベルが無い。** 点数が可変で「山1 / 谷 / 山2」のような位置の意味づけができないため、
   `view=full` の content に構成点の明細行は**出ない**（`src/handlers/detectPatternsViewsHandler.ts` の
@@ -562,15 +559,11 @@ total = spot_realized_pnl + margin_realized_pnl − margin_interest_cost − mar
   （`wedge-helpers.ts` の `evaluateTouchesEx`）ので、収束が進んで上下の幅が 0.5% を切った区間では
   ほぼ全バーが構成点になる（BTC/JPY 1hour の実測で 31〜107 点）。**件数を「形の良さ」の
   代理指標に使わないこと**——整合度は `confidence` を見る。
-- **ブレイク足以降は線を問わず除外する**（#281）。`evaluateTouchesEx` は「線を割った / 抜けた」を
-  **線ごとに独立に**判定するので、下方ブレイクの足は下側ラインについてはブレイク扱いでも、
-  高値が上側ラインの 0.5% 以内にあれば**上側の非ブレイクタッチ点として残っていた**
-  （実データで実体 8 / 59、うち 7 件が `rising_wedge`。PR #280 §5-1）。
-  いまは `breakoutBarIndex` 以降の点を上下どちらの線からも落とすので、**`pivots` の
-  `idx` は必ず `breakoutBarIndex` より小さい**。未ブレイクのウェッジには打ち切りが無い。
-  **タッチ数・`confidence`・採否は変わっていない**——除外は出力用の構成点にだけ効く。
-- `wedge_*` の構造図（`structureDiagram`）が描く点は `pivots` とは**別に組んでいる**。
-  図は 6 点まで間引いたうえで `price` に終値を入れているので、**同じ `idx` でも価格が違う**。
+- **ブレイク足は構成点に入らない**（#281）。タッチ点は形成区間の中だけで数え、ブレイクは形成区間の
+  次の足から探すので、**`pivots` の `idx` は必ず `breakoutBarIndex` より小さい**。
+  （以前は `evaluateTouchesEx` が「線を割った / 抜けた」を線ごとに独立に判定するせいで、下方ブレイクの足が
+  上側の非ブレイクタッチ点として残ることがあった。実データで実体 8 / 59。PR #280 §5-1）
+- `wedge_*` には構造図（`structureDiagram`）が付かない。構造図を組んでいた完成済みの回帰経路は #429 で削除した。
 
 ### `pivots[].price` は終値、`extremePrice` が判定値
 
@@ -963,12 +956,13 @@ ATR 比テーブルを掛けたもの。
 `relaxed_*` 接頭辞の同じ 3 つが relaxed フォールバック経路にある（そちらの「許容誤差」は
 `tolerancePct × 段の係数`）。
 
-### 逆 H&S の肩の深さゲート（#297 項目 5）
+### H&S / 逆 H&S の肩の深さゲート（#297 項目 5、#412）
 
-逆 H&S は左右肩が同水準でも、ネックラインからの戻りがほとんど無い肩を受理しない。
-各肩と隣接する山（ネックライン定義点）の深さを、頭の深さ（2 山の平均ネックライン − 頭）と
-比較し、**左右とも頭の深さの 20%以上**を要求する。片側だけが 0.3% 程度しか戻らない
-V 字の途中を逆 H&S と呼ばないための hard gate である。
+H&S と逆 H&S は、左右肩が同水準でも、ネックラインからの戻りがほとんど無い肩を受理しない。
+各肩と隣接するネックライン定義点（H&S は谷、逆 H&S は山）との深さを、頭の深さ
+（H&S は頭 − 2 谷の平均ネックライン、逆 H&S は 2 山の平均ネックライン − 頭）と比較し、
+**左右とも頭の深さの 20%以上**を要求する。片側だけがほとんど戻らない V 字の途中を
+H&S / 逆 H&S と呼ばないための hard gate である。0.6.x までは逆 H&S にだけあり、0.7.0 で H&S にも入れた。
 
 棄却理由は `shoulder_depth_insufficient`。`view=debug` の `details` に左右の深さ、頭の深さ、
 左右の深さ比、最小比率（`minShoulderDepthRatio=0.2`）を出す。strict と relaxed の両方に適用し、
@@ -1053,24 +1047,60 @@ tjackiet/bitbank-lab-mcp#249 の計測記録）。**この状態は
 内訳は `data.patterns[*].scoreComponents`、ゲートが実際に計測した値は
 `data.patterns[*].structureGate` にある。
 
-`scoreComponents` の軸は**種別によって違う**（同じキーが両方に出ることはない）:
+`confidence` は、種別と経路を問わず `scoreComponents` の軸の**単純平均**を小数 2 桁に丸めた値。
+各軸は 0〜1 で、1 が理想、0 が検出のゲートの境目。**物差しは strict のゲートか、測った量どうしの比だけ**で、
+軸の重み・種別ごとの補正・relaxed 経路や暫定の構成点への一律の割引や上限は掛けない。緩いゲートで拾った候補も
+strict の物差しで測るので、緩めた分だけ点が下がる（反転系の relaxed と形成中は `levelMargin`、wedge は
+`convergence` / `touches` が下がる。wedge の strict の基準は、#429 で削除した回帰経路のゲートを教科書的な基準として使い続けているもの）。形成中の H&S / triple は完成済みと同じ軸で測り、まだブレイクしていない
+ので `breakoutQuality` が出ない。構成点が暫定であることは整合度ではなく `status: 'forming'` が示す。
 
 | 軸 | 出る種別 | 意味 |
 |---|---|---|
-| `symmetry` | double 系 | 2 構成点（谷-谷 / 山-山）の同水準度。**正規化していない生の relDev** |
-| `levelMargin` | triple 系 | 3 構成点の同水準度を、その経路の許容幅（`tolerancePct`。relaxed は係数倍）で正規化した値 |
-| `retracement` | 共通 | 中間構成点の戻り率が許容帯の中央にどれだけ近いか |
-| `breakoutQuality` | 共通 | 突破足の終値がネックラインをパターン高さの何割ぶん超えたか。**未ブレイクでは出ない** |
-| `duration` | 共通 | 形成期間スコア。**種別で基準が違う**——triple 系は**バー数基準**（外側 2 構成点の距離。< 12 本 → 0.6 / < 18 → 0.7 / < 26 → 0.8 / 26 本以上 → 0.9）、double 系と H&S 系は**暦日基準**（< 5 日 → 0.6 / < 15 → 0.8 / < 30 → 0.9 / それ以外 → 0.7） |
+| `levelMargin` | 反転系 | 主構成点（double は 2 点、triple は 3 点、H&S は左右の肩）の同水準度。`1 − 平均 relDev ÷ strict の許容幅`（double / triple は `tolerancePct`、H&S は `tolerancePct` と肩の上限の小さいほう） |
+| `headProminence` | H&S 系 | 頭が strict の突出ゲートをどれだけ上回っているか。`1 − ゲート ÷ 実測突出率` |
+| `timeSymmetry` | H&S 系 | 左肩→頭 と 頭→右肩 のバー数の釣り合い（`min ÷ max`） |
+| `retracement` | 反転系 | 中間構成点の戻り率が許容帯の中央にどれだけ近いか |
+| `breakoutQuality` | 反転系 | 突破足の終値がネックラインをパターン高さの何割ぶん超えたか。**未ブレイクでは出ない** |
+| `lineFit` | triangle / flag / pennant | 上下のトレンドラインの当てはまり。線ごとの `(R² − ゲート) ÷ (1 − ゲート)` の平均（ゲートは triangle 0.6、flag / pennant 0.5）。2 点しかない線は R² が 1 に張り付くので除く（wedge は 2 点を通す線で引くので出ない） |
+| `convergence` | triangle / pennant / wedge | 収束の深さ。`1 − 収束比 ÷ ゲート`（収束比は終端の幅 ÷ 始端の幅。ゲートは triangle 0.9、pennant 0.7。wedge は検出のゲート 0.8 より厳しい strict の基準 0.7） |
+| `touches` | triangle / flag / pennant / wedge | ラインに使った高値・安値の点数。`1 − ゲートの点数 ÷ 点数`（ゲートは triangle 4 点、flag / pennant 6 点。wedge は検出のゲート 5 点より厳しい strict の基準 6 点） |
+| `slopeSymmetry` | 対称三角 | 上下の傾きの釣り合い。上下の傾きの大きさの差を和で割り、1 から引いた値（1 = 同じ角度） |
+| `flatness` | 上昇・下降三角 | 水平側のラインの平らさ。`1 − 窓全体での傾き ÷ 水平とみなす上限（3%）` |
+| `pole` | flag / pennant | ポールの強さ。`1 − ゲートの ATR 倍率 ÷ 実測の ATR 倍率`（ゲートは時間足ごとに 2.0〜3.0） |
+| `parallelism` | flag | 保ち合いの幅の一定さ。`(spreadStability − 0.7) ÷ 0.3` |
+| `alternation` | wedge | 上下のラインへのタッチが交互に並ぶ度合い。`(交互率 − 0.25) ÷ 0.75` |
+| `containment` | wedge | 終値が上下のラインの内側（幅の 0.3% までのはみ出しは内側）に収まる足の割合。`(割合 − 0.85) ÷ 0.15` |
 
-`duration` も**種別を跨いで横に並べない**。triple 系だけがバー数基準で、しかも単調な階梯
-（長いほど高い）だが、double / H&S 系の暦日基準は最長バケットだけ 0.7 に下がる非単調な形をしている
-（issue #199 候補 2。triple だけ移したのは、暦日基準では intraday で値が定数に張り付いていたため）。
-
-`symmetry` と `levelMargin` は**別の量**なので数値を横に並べて比較しない
-（`symmetry=0.9` は「10% ずれている」、`levelMargin=0.9` は「許容幅の 10% ぶんしかずれていない」）。
+形成期間は、完成済みのパターンに期間のゲートが無く物差しが決まらないので、平均に入れない。
 算出できなかった軸（未ブレイク時の `breakoutQuality` 等）は**平均から外す**——
 0 として混ぜると欠測が減点になるため。
+
+本文（`content`）には、各パターンに「整合度の内訳」行（軸ごとの点数）を出す。パターンを列挙する
+`view=detailed`（上位 5 件）と `view=full`（全件）だけで、`view=summary` には出ない。全件の内訳と警告を見るには
+`view=full` を使う。「何点以上なら理想的」のような帯や、点数だけで付ける低整合度のラベルは置かない。帯の境目には
+物差しが無く、過去の実績でも整合度が高いほど目標に届きやすいという関係は無かったため（下の「過去の実績との関係」）。代わりに、0 点の軸があるときだけ
+「⚠️ 余裕が無い軸」として名前を挙げる。0 は strict の基準ちょうどでも、基準に届かなくても付く（物差しを 0 で切るため、
+両者を区別しない）ので、「届かない」とは書かない。0 はゲートから決まる値なので、手で決めた閾値を増やさない。
+
+#### 過去の実績との関係（issue #422 Phase B）
+
+7 ペア（btc / eth / xrp / ltc / bcc / mona / xlm）の日足・4 時間足（2017〜2026 年）で、各足までの過去 200 本だけで
+検出し、初めて completed になった時点の整合度と、**その検出した足の次から 60 本以内**に目標価格へ届いたかを 3.8 万件
+集めた。検出した時点で既に目標に届いていたものは除いた（その時点で結果が分かっているため）。出力の `targetReached` は
+**ブレイク足から** 60 本で測り、検出時点で届いているものも含むので、ここの到達率をそのまま `targetReached` の割合として
+読まない。ブレイク足から 60 本で測り直しても（ブレイクから 3 本以内に検出されたものに限る）、結論は同じだった。
+
+- 整合度が高いほど目標に届きやすいという関係は無かった（全種別をまとめた AUC 0.50。件数の足りる 7 種別（flag / pennant / wedge 2 種 / 三角 3 種）では種別ごとに 0.38〜0.51。件数の少ない反転系は double_bottom 0.54、H&S 0.52 など幅があるが判断できない）。
+  flag・pennant・wedge は、整合度が高いほどむしろ届きにくい逆向きの関係。flag・pennant は、強いポールほど目標
+  （ポール高さの投影）が遠くなるため（`pole` の AUC 0.36）。wedge（ポールの軸が無く、目標はパターンの高さ）の逆向きの
+  理由は特定していない（`convergence` / `containment` の AUC が 0.42〜0.48）。反転系（double / H&S / triple）は
+  件数が数十件で、判断できない。
+- 2023 年までで種別ごとに単調な対応（isotonic 回帰）を作り、2024 年以降で確かめても、種別ごとの到達率を一定で使う
+  場合より予測が良くならなかった（Brier −2.8%〜+0.1%）。
+- 到達を左右したのは目標までの距離（ATR の何倍か。AUC 0.58〜0.79）で、距離をそろえると整合度に情報はほぼ残らない。
+- 種別ごとの到達率は大きく違う（wedge 23%、三角（上昇・下降）52%、double 80〜87%。反転系は件数が少ない）。
+
+そのため `confidence` は確率に置き換えず、較正もしない。並べ替えと重複統合に使う「形の良さの比較値」として扱う。
 
 ### `debug` の candidates は `patterns` で絞られる
 
@@ -1174,13 +1204,11 @@ accepted も押し出されうる（`content` はこの 2 つを区別して書�
 |---|---|---|
 | `flag` | `detect_pennants`（分類前の棄却をすべてこのラベルで積む） | `bull_flag` / `bear_flag` / `bull_pennant` / `bear_pennant`（flag / pennant の**両方**） |
 | `triangle` | `detect_triangles`（`poor_trendline_fit` / `classification_failed` はどの三角形になりえたかが決まる前の棄却） | `triangle_ascending` / `triangle_descending` / `triangle_symmetrical` |
-| `wedge` | `detect_wedges`（上下の線の傾きの向きがそろわない窓の棄却。完成済みの走査の `r2_below_threshold` / `type_classification_failed` と、形成中の走査の `slopes_not_same_direction`） | `rising_wedge` / `falling_wedge` |
+| `wedge` | `detect_wedges`（上下の線の傾きの向きがそろわない窓の棄却 `slopes_not_same_direction`） | `rising_wedge` / `falling_wedge` |
 
 `detect_wedges` の棄却の大半は `rising_wedge` / `falling_wedge` に分類済みのラベルで積まれる。
-完成済みの走査の `r2_below_threshold` と `type_classification_failed` は上下の傾きから種別を推定して
-ラベルを付け、向きがそろわない窓だけ `wedge` で積む（`type_classification_failed` の
-`details.failureReason` は `slopes_not_same_direction`）。形成中の走査の `slopes_not_same_direction` は
-常に `wedge`。`wedge` は候補ラベルにだけ使い、入力の `patterns` では受け付けない
+上下の線の傾きの向きがそろわない窓（`slopes_not_same_direction`）だけは種別が決まらないので
+常に `wedge` で積む。`wedge` は候補ラベルにだけ使い、入力の `patterns` では受け付けない
 （ウェッジの候補を見るには `rising_wedge` / `falling_wedge` を指定する）。
 
 **`candidates[].type` は「その候補がどの種別になりえたか」であって、必ずしも確定した種別ではない。**
@@ -1239,32 +1267,36 @@ accepted も押し出されうる（`content` はこの 2 つを区別して書�
 
 > **表の値は閾値そのものではなく「必要なスキャン窓の本数」**（`limit` と同じ単位）。上の式が返すのは
 > パターンの大きさの閾値で、**表はそこに各検出器の走査ループが要求する端点ぶんを足した値**である。
-> 形成中の反転 2 種と完成済み wedge は **+1**（`formationBars` / 窓サイズはいずれも添字の差なので、
-> 本数としては 1 本多く要る）、flag / pennant も **+1**（旗竿と保ち合いの境界の 1 本）、三角形は **+6**。
+> 形成中の反転 2 種は **+1**（`formationBars` は添字の差なので、本数としては 1 本多く要る）、
+> flag / pennant も **+1**（旗竿と保ち合いの境界の 1 本）、三角形は **+6**。
 > 例: `1day` の forming triple は式が `clamp(round(21 × 1), 23, 46) = 23`（= `formationBars` の下限）で、
 > 表は **24**。`12hour` は式が `clamp(round(21 × 2), 21, 42) = 42` で表は **43**。
 > **`limit` を式の値に合わせると 1 本足りない**ので、下限として使うのは表の値のほう。
 > 導出は `tools/patterns/min-bars.ts` の `minBarsForDetector` にあり、端点の根拠も各 case に書いてある。
 
-| 時間足 | forming triple（21日由来） | forming H&S（21日由来） | 完成済み wedge（25日窓由来） | flag / pennant（最小 1+2日由来） |
-|---|---|---|---|---|
-| `1min` | 31 | 31 | 31 | 61 |
-| `5min` | 31 | 31 | 31 | 61 |
-| `15min` | 35 | 35 | 35 | 69 |
-| `30min` | 35 | 35 | 35 | 69 |
-| `1hour` | 35 | 35 | 35 | 59 |
-| `4hour` | 43 | 43 | 43 | 19 |
-| `8hour` | 43 | 43 | 43 | 10 |
-| `12hour` | 43 | 43 | 43 | 7 |
-| `1day` | 24 | 24 | 26 | 6 |
-| `1week` | 26 | 26 | 26 | 6 |
-| `1month` | 30 | 30 | 30 | 6 |
+| 時間足 | forming triple（21日由来） | forming H&S（21日由来） | flag / pennant（最小 1+2日由来） |
+|---|---|---|---|
+| `1min` | 31 | 31 | 61 |
+| `5min` | 31 | 31 | 61 |
+| `15min` | 35 | 35 | 69 |
+| `30min` | 35 | 35 | 69 |
+| `1hour` | 35 | 35 | 59 |
+| `4hour` | 43 | 43 | 19 |
+| `8hour` | 43 | 43 | 10 |
+| `12hour` | 43 | 43 | 7 |
+| `1day` | 24 | 24 | 6 |
+| `1week` | 26 | 26 | 6 |
+| `1month` | 30 | 30 | 6 |
 
 `detect_triangles` も同じ換算に乗っている（最小窓 = 構造的下限。要求本数は `1min` / `5min` が 21、
 `1hour` 以下が 23、`4hour`〜`12hour` が 27、`1day` 29、`1week` 31、`1month` 35）。
 **形成中の反転パターン 2 種（triple / H&S）は同じ換算・同じ形の判定**で、
 形成バー数（triple は `lastIdx - 左ピボット.idx`、H&S は `右肩.idx - 左肩.idx`）を
 バー数レンジと突き合わせる。日数由来が同じ 21 日なので全時間足で同値になる。
+
+**wedge の列は無い。** wedge は最新足にそろえた窓を必ず積み、窓が足りなくても候補が消えないので、
+この種の下限を持たない。完成済みの回帰経路（25 日窓由来の下限を持っていた）は、実データで採用が
+ほぼ 0 件だったので #429 で削除した。
 
 **double の列は無い。** #268 案 C で形成中 double の経路が無くなり、この種別に
 「パターンサイズ由来の下限」が存在しなくなった（完成済み経路＝`near_completion` を含む が

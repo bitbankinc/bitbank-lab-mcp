@@ -1,5 +1,6 @@
 import type { z } from 'zod';
-import { formatExactPrice, formatPriceAtLevel } from '../../lib/formatter.js';
+import { barsAgoLabel, formatExactPrice, formatPriceAtLevel } from '../../lib/formatter.js';
+import { rsiZoneLabel } from '../../lib/indicator-zones.js';
 import { currentCloudSpans } from '../../lib/indicators.js';
 import { extractUpstreamWarning, prependWarnings } from '../../lib/warning-propagation.js';
 import analyzeMarketSignal from '../../tools/analyze_market_signal.js';
@@ -85,18 +86,18 @@ export function buildMarketSignalHandlerText(input: BuildMarketSignalHandlerText
 			const s25 = v.sma25 != null && Number.isFinite(v.sma25) ? formatPriceAtLevel(v.sma25) : 'n/a';
 			const s75 = v.sma75 != null && Number.isFinite(v.sma75) ? formatPriceAtLevel(v.sma75) : 'n/a';
 			const s200 = v.sma200 != null && Number.isFinite(v.sma200) ? formatPriceAtLevel(v.sma200) : 'n/a';
-			lines.push(`- 短期（25日）: ${s25}円（今の価格より ${fmtVs(dev.vs25)} ${dir(dev.vs25)}に位置）`);
-			lines.push(`- 中期（75日）: ${s75}円（今の価格より ${fmtVs(dev.vs75)} ${dir(dev.vs75)}に位置）`);
-			lines.push(`- 長期（200日）: ${s200}円（今の価格より ${fmtVs(dev.vs200)} ${dir(dev.vs200)}に位置）`);
+			lines.push(`- 短期（SMA25）: ${s25}円（今の価格より ${fmtVs(dev.vs25)} ${dir(dev.vs25)}に位置）`);
+			lines.push(`- 中期（SMA75）: ${s75}円（今の価格より ${fmtVs(dev.vs75)} ${dir(dev.vs75)}に位置）`);
+			lines.push(`- 長期（SMA200）: ${s200}円（今の価格より ${fmtVs(dev.vs200)} ${dir(dev.vs200)}に位置）`);
 			const curVal = Number.isFinite(sma.current) ? Number(sma.current) : null;
 			const v25 = Number.isFinite(v.sma25) ? Number(v.sma25) : null;
 			const v75 = Number.isFinite(v.sma75) ? Number(v.sma75) : null;
 			const v200 = Number.isFinite(v.sma200) ? Number(v.sma200) : null;
 			const pts: Array<{ label: string; value: number }> = [];
 			if (curVal != null) pts.push({ label: '価格', value: curVal });
-			if (v25 != null) pts.push({ label: '25日', value: v25 });
-			if (v75 != null) pts.push({ label: '75日', value: v75 });
-			if (v200 != null) pts.push({ label: '200日', value: v200 });
+			if (v25 != null) pts.push({ label: 'SMA25', value: v25 });
+			if (v75 != null) pts.push({ label: 'SMA75', value: v75 });
+			if (v200 != null) pts.push({ label: 'SMA200', value: v200 });
 			if (pts.length >= 3) {
 				const order = [...pts]
 					.sort((a, b) => b.value - a.value)
@@ -112,10 +113,8 @@ export function buildMarketSignalHandlerText(input: BuildMarketSignalHandlerText
 			if (sma.recentCross?.pair === '25/75') {
 				const crossJp = sma.recentCross.type === 'golden_cross' ? 'ゴールデンクロス' : 'デッドクロス';
 				const ago = Number(sma.recentCross.barsAgo ?? 0);
-				const isDaily = String(type || '').includes('day');
-				const unit = isDaily ? '日前' : '本前';
 				const verb = sma.recentCross.type === 'golden_cross' ? '上抜け' : '下抜け';
-				lines.push(`直近クロス: ${ago}${unit} 25日線が75日線を${verb}（${crossJp}）`);
+				lines.push(`直近クロス: ${barsAgoLabel(ago, String(type || '1day'))} SMA25がSMA75を${verb}（${crossJp}）`);
 			}
 		}
 	}
@@ -127,7 +126,7 @@ export function buildMarketSignalHandlerText(input: BuildMarketSignalHandlerText
 		lines.push('【補足指標】');
 		if (rsiVal != null && Number.isFinite(rsiVal)) {
 			const rsiRounded = Number(rsiVal).toFixed(2);
-			const rsiLabel = rsiVal < 30 ? '売られすぎ' : rsiVal > 70 ? '買われすぎ' : '中立圏';
+			const rsiLabel = rsiZoneLabel(rsiVal);
 			lines.push(`RSI(14): ${rsiRounded}（${rsiLabel}）`);
 		}
 		const curPx = sma?.current;
