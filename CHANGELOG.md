@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-10
+
+番号は fork（tjackiet/bitbank-lab-mcp）の issue。互換性を壊す変更は「Schema (breaking)」にまとめている（`detect_patterns` の `scoreComponents`、`analyze_bb_snapshot` の `zScore` の単位・`bandwidth_state` の基準・extended の項目、`get_tickers_jpy` の `view` など）。
+
 ### Changed
 
 - `analyze_my_portfolio`：ステーキング報酬（入金履歴の `category` が `STAKING` の入庫）を、元本の入金ではなく成果として扱う。`*_performance.net_flow_jpy`、資産推移の `flow_jpy`、`deposit_withdrawal_summary.net_jpy_invested` から外す。そのためステーキング報酬のある口座では、`adjusted_change_jpy` と `account_return_*` が報酬の分だけ大きくなる。数量の復元と取得原価（入庫日の価格）は変わらない。`category` を返さない入庫は従来どおり元本として扱う（issue #177）。
