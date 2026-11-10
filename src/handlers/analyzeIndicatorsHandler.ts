@@ -13,8 +13,10 @@ import {
 } from '../../lib/formatter.js';
 import { ICHIMOKU_SHIFT, RSI_MIDLINE } from '../../lib/indicator-config.js';
 import {
+	type BbWidthRank,
 	bbPosition,
 	bbPositionLabel,
+	bbWidthRank,
 	bbWidthState,
 	bbWidthStateLabel,
 	bbZScore,
@@ -61,6 +63,7 @@ export interface BuildIndicatorsTextInput {
 	bbLo: number | null;
 	sigmaZ: number | null;
 	bandWidthPct: number | null;
+	bandWidthRank?: BbWidthRank | null;
 	bwTrend: string | null;
 	sigmaHistory: Array<{ off: number; z: number } | null> | null;
 	tenkan: number | null;
@@ -119,6 +122,7 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 		bbLo,
 		sigmaZ,
 		bandWidthPct,
+		bandWidthRank = null,
 		bwTrend,
 		sigmaHistory,
 		tenkan,
@@ -159,8 +163,8 @@ export function buildIndicatorsText(input: BuildIndicatorsTextInput): string {
 	const trendText =
 		trend === 'strong_downtrend' ? '強い下降トレンド ⚠️' : trend === 'uptrend' ? '上昇トレンド' : '中立/レンジ';
 	const rsiLabel = rsiZoneLabel(rsi) ?? '—';
-	const widthState = bbWidthState(bandWidthPct);
-	const bwState = widthState ? bbWidthStateLabel(widthState) : '—';
+	const widthState = bbWidthState(bandWidthRank);
+	const bwState = widthState && bandWidthRank ? bbWidthStateLabel(widthState, bandWidthRank) : '—';
 	const position = bbPosition(sigmaZ);
 	lines.push(`  トレンド: ${trendText}`);
 	lines.push(`  勢い: RSI=${rsi ?? 'n/a'} → ${rsiLabel}`);
@@ -537,6 +541,7 @@ export const toolDef: ToolDefinition = {
 			middle: series.BB_middle,
 		};
 		const bwTrend = calcBandWidthTrend(bbSeries);
+		const bandWidthRank = bbWidthRank(bbSeries.upper ?? [], bbSeries.middle ?? [], bbSeries.lower ?? []);
 		const sigmaHistory = calcSigmaHistory(candles, bbSeries);
 		const cloudThickness = cloudTop != null && cloudBot != null ? cloudTop - cloudBot : null;
 		const cloudThicknessPct =
@@ -586,6 +591,7 @@ export const toolDef: ToolDefinition = {
 			bbLo,
 			sigmaZ,
 			bandWidthPct,
+			bandWidthRank,
 			bwTrend,
 			sigmaHistory,
 			tenkan,

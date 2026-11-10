@@ -404,17 +404,17 @@ export const AnalyzeBbSnapshotOutputSchema = toolResultSchema(
 	AnalyzeBbSnapshotMetaSchemaOut,
 );
 
-// 周期は取得本数を決めるので limit と同じ上限にし、get_candles が受け付ける本数に収める（#431）。
-const SMA_SNAPSHOT_MAX_BARS = 365;
-const SmaPeriodsSchema = z.array(z.number().int().positive().max(SMA_SNAPSHOT_MAX_BARS));
+// 周期は取得本数を決めるので limit と同じ上限にし、get_candles が受け付ける本数に収める（#431 / #440）。
+const MA_SNAPSHOT_MAX_BARS = 365;
+const MaPeriodsSchema = z.array(z.number().int().positive().max(MA_SNAPSHOT_MAX_BARS));
 
 export const AnalyzeSmaSnapshotInputSchema = BasePairInputSchema.extend({
 	type: CandleTypeEnum.optional().default('1day'),
-	limit: z.number().int().min(200).max(SMA_SNAPSHOT_MAX_BARS).optional().default(220),
-	periods: SmaPeriodsSchema.optional()
+	limit: z.number().int().min(200).max(MA_SNAPSHOT_MAX_BARS).optional().default(220),
+	periods: MaPeriodsSchema.optional()
 		.default([25, 75, 200])
 		.describe(
-			`SMA の周期（本数、1〜${SMA_SNAPSHOT_MAX_BARS}）。どの周期も取得した足から計算する。足が周期より少ないと値は null になり warnings に出る。`,
+			`SMA の周期（本数、1〜${MA_SNAPSHOT_MAX_BARS}）。どの周期も取得した足から計算する。足が周期より少ないと値は null になり warnings に出る。`,
 		),
 });
 
@@ -476,8 +476,10 @@ export const AnalyzeSmaSnapshotOutputSchema = toolResultSchema(
 
 export const AnalyzeEmaSnapshotInputSchema = BasePairInputSchema.extend({
 	type: CandleTypeEnum.optional().default('1day'),
-	limit: z.number().int().min(200).max(365).optional().default(220),
-	periods: z.array(z.number().int()).optional().default([12, 26, 50, 200]),
+	limit: z.number().int().min(200).max(MA_SNAPSHOT_MAX_BARS).optional().default(220),
+	periods: MaPeriodsSchema.optional()
+		.default([12, 26, 50, 200])
+		.describe(`EMA の周期（本数、1〜${MA_SNAPSHOT_MAX_BARS}）。足が周期より少ないと値は null になり warnings に出る。`),
 });
 
 export const AnalyzeEmaSnapshotDataSchemaOut = z
@@ -590,7 +592,7 @@ export const AnalyzeStochSnapshotOutputSchema = toolResultSchema(
 
 export const AnalyzeMtfSmaInputSchema = BasePairInputSchema.extend({
 	timeframes: z.array(CandleTypeEnum).min(1).optional().default(['1hour', '4hour', '1day']),
-	periods: SmaPeriodsSchema.optional().default([25, 75, 200]),
+	periods: MaPeriodsSchema.optional().default([25, 75, 200]),
 });
 
 const MtfSmaPerTimeframeSchema = z

@@ -4,9 +4,11 @@ import { formatSummary } from '../lib/formatter.js';
 import { BB_STDDEV } from '../lib/indicator-config.js';
 import {
 	type BbPosition,
+	type BbWidthRank,
 	type BbWidthState,
 	bbPosition,
 	bbPositionLabel,
+	bbWidthRank,
 	bbWidthState,
 	bbWidthStateLabel,
 	bbZScore,
@@ -23,6 +25,8 @@ import {
 import type { ToolDefinition } from '../src/tool-definition.js';
 import analyzeIndicators from './analyze_indicators.js';
 
+const BB_TOUCH_WINDOW = 30;
+
 export interface BbTimeseriesEntry {
 	time: string;
 	zScore: number | null;
@@ -33,6 +37,7 @@ export interface BuildBbDefaultTextInput {
 	baseSummary: string;
 	position: BbPosition | null;
 	bandwidth_state: BbWidthState | null;
+	bandWidthRank?: BbWidthRank | null;
 	volatility_trend: string | null;
 	bandWidthPct_percentile: number | null;
 	current_vs_avg: string | null;
@@ -55,6 +60,7 @@ export function buildBbDefaultText(input: BuildBbDefaultTextInput): string {
 		baseSummary,
 		position,
 		bandwidth_state,
+		bandWidthRank = null,
 		volatility_trend,
 		bandWidthPct_percentile,
 		current_vs_avg,
@@ -72,7 +78,7 @@ export function buildBbDefaultText(input: BuildBbDefaultTextInput): string {
 			String(baseSummary),
 			'',
 			`Position: ${position ? `${position} / ${bbPositionLabel(position)}` : 'n/a'}`,
-			`Band State: ${bandwidth_state ? `${bandwidth_state} / ${bbWidthStateLabel(bandwidth_state)}` : 'n/a'}`,
+			`Band State: ${bandwidth_state && bandWidthRank ? `${bandwidth_state} / ${bbWidthStateLabel(bandwidth_state, bandWidthRank)}` : 'n/a'}`,
 			`Volatility Trend: ${volatility_trend ?? 'n/a'}`,
 			...(bandWidthPct_percentile != null
 				? [`Band Width Percentile: ${bandWidthPct_percentile}th (${current_vs_avg} vs avg)`]
@@ -103,6 +109,49 @@ export function buildBbDefaultText(input: BuildBbDefaultTextInput): string {
 	);
 }
 
+export interface BuildBbExtendedTextInput {
+	baseSummary: string;
+	middle: number | null;
+	bands: Record<string, number | null>;
+	bandWidthPct: Record<string, number | null>;
+	zScore: number | null;
+	currentZone: string | null;
+	touches2: number | null;
+	touches3: number | null;
+	touchWindow: number;
+	widthState: BbWidthState | null;
+	bandWidthRank: BbWidthRank | null;
+	tags: string[];
+}
+
+const fmtNum = (v: number | null | undefined) => (v == null ? 'n/a' : String(v));
+const fmtPct = (v: number | null | undefined) => (v == null ? 'n/a' : `${v.toFixed(2)}%`);
+
+export function buildBbExtendedText(input: BuildBbExtendedTextInput): string {
+	const { baseSummary, middle, bands, bandWidthPct, zScore, currentZone, touches2, touches3, touchWindow } = input;
+	const { widthState, bandWidthRank, tags } = input;
+	return [
+		String(baseSummary),
+		'',
+		`現在位置: ${zScore != null ? `${zScore.toFixed(3)}σ` : 'n/a'}（current_zone: ${currentZone ?? 'n/a'}）`,
+		`幅の状態: ${widthState && bandWidthRank ? `${widthState} / ${bbWidthStateLabel(widthState, bandWidthRank)}` : 'n/a'}`,
+		'',
+		'📊 バンド:',
+		`+3σ:${fmtNum(bands['+3σ'])} +2σ:${fmtNum(bands['+2σ'])} +1σ:${fmtNum(bands['+1σ'])}`,
+		`middle:${fmtNum(middle)}`,
+		`-1σ:${fmtNum(bands['-1σ'])} -2σ:${fmtNum(bands['-2σ'])} -3σ:${fmtNum(bands['-3σ'])}`,
+		`幅: ±1σ ${fmtPct(bandWidthPct['±1σ'])} / ±2σ ${fmtPct(bandWidthPct['±2σ'])} / ±3σ ${fmtPct(bandWidthPct['±3σ'])}`,
+		'',
+		`直近${touchWindow}本の終値: ±2σ 以上 ${touches2 ?? 'n/a'}本 / ±3σ 以上 ${touches3 ?? 'n/a'}本`,
+		`タグ: ${tags.length > 0 ? tags.join(', ') : 'なし'}`,
+		'',
+		'---',
+		'📌 含まれるもの: ボリンジャーバンド拡張（±1σ/±2σ/±3σ）、Zスコア（σ 単位）、バンド幅、幅の順位、直近の ±2σ・±3σ 到達回数',
+		'📌 含まれないもの: 他のテクニカル指標（RSI・MACD・一目均衡表）、出来高フロー、板情報',
+		'📌 補完ツール: analyze_indicators（他指標）, get_flow_metrics（出来高）, get_volatility_metrics（ボラ詳細）',
+	].join('\n');
+}
+
 export default async function analyzeBbSnapshot(
 	pair: string = 'btc_jpy',
 	type: string = '1day',
@@ -131,6 +180,12 @@ export default async function analyzeBbSnapshot(
 		const zScore = bbZScore(close, mid, upper, lower);
 		let bandWidthPct: number | null = null;
 		if (upper != null && lower != null && mid != null && mid !== 0) bandWidthPct = ((upper - lower) / mid) * 100;
+		const bbSeriesForRank = (
+			indRes?.data?.indicators as { bb2_series?: { upper: number[]; middle: number[]; lower: number[] } }
+		)?.bb2_series;
+		const bandWidthRank = bbSeriesForRank
+			? bbWidthRank(bbSeriesForRank.upper, bbSeriesForRank.middle, bbSeriesForRank.lower)
+			: null;
 
 		const tags: string[] = [];
 		if (zScore != null && zScore > BB_STDDEV) tags.push('above_upper_band_risk');
@@ -145,10 +200,19 @@ export default async function analyzeBbSnapshot(
 		const bbSeries = (
 			indRes?.data?.indicators as { bb2_series?: { upper: number[]; middle: number[]; lower: number[] } }
 		)?.bb2_series;
+		// 到達本数は丸める前の z で数える（丸めると 1.996σ が 2σ に届いたことになる）。
+		const recentRawZ: Array<number | null> = [];
+		let recentBandsMissing = false;
 		const timeseries = (() => {
 			try {
 				if (!candles || !bbSeries) return null;
-				const n = Math.min(30, candles.length, bbSeries.middle.length, bbSeries.upper.length, bbSeries.lower.length);
+				const n = Math.min(
+					BB_TOUCH_WINDOW,
+					candles.length,
+					bbSeries.middle.length,
+					bbSeries.upper.length,
+					bbSeries.lower.length,
+				);
 				const arr: Array<{ time: string; zScore: number | null; bandWidthPct: number | null }> = [];
 				for (let i = n; i >= 1; i--) {
 					const idx = candles.length - i;
@@ -157,6 +221,8 @@ export default async function analyzeBbSnapshot(
 					const u = bbSeries.upper[idx];
 					const l = bbSeries.lower[idx];
 					const z = bbZScore(candles[idx]?.close, m, u, l);
+					recentRawZ.push(z);
+					if (![m, u, l].every((v) => v != null && Number.isFinite(v))) recentBandsMissing = true;
 					const bw = m ? ((u - l) / m) * 100 : null;
 					arr.push({
 						time: t,
@@ -172,12 +238,14 @@ export default async function analyzeBbSnapshot(
 
 		if (mode === 'default') {
 			const position = bbPosition(zScore);
-			const bandwidth_state = bbWidthState(bandWidthPct);
+			const bandwidth_state = bbWidthState(bandWidthRank);
+			// 順位は状態の判定と同じ窓（直近 BB_WIDTH_RANK_WINDOW 本）で出す。平均との差は直近 30 本のまま。
+			const rankPercentile = bandWidthRank ? Math.round(bandWidthRank.percentile) : null;
 			const context = (() => {
 				if (!timeseries || timeseries.length === 0 || bandWidthPct == null) {
 					return {
 						bandWidthPct_30d_avg: null as number | null,
-						bandWidthPct_percentile: null as number | null,
+						bandWidthPct_percentile: rankPercentile,
 						current_vs_avg: null as string | null,
 					};
 				}
@@ -187,21 +255,18 @@ export default async function analyzeBbSnapshot(
 				if (bandWidths.length === 0) {
 					return {
 						bandWidthPct_30d_avg: null as number | null,
-						bandWidthPct_percentile: null as number | null,
+						bandWidthPct_percentile: rankPercentile,
 						current_vs_avg: null as string | null,
 					};
 				}
 
 				const avg = bandWidths.reduce((a, b) => a + b, 0) / bandWidths.length;
-				const sorted = [...bandWidths].sort((a, b) => a - b);
-				const below = sorted.filter((bw) => bw < (bandWidthPct as number)).length;
-				const percentile = Math.round((below / sorted.length) * 100);
 				const diffPct = avg !== 0 ? (((bandWidthPct as number) - avg) / avg) * 100 : 0;
 				const current_vs_avg = `${diffPct > 0 ? '+' : ''}${diffPct.toFixed(1)}%`;
 
 				return {
 					bandWidthPct_30d_avg: Number(avg.toFixed(2)),
-					bandWidthPct_percentile: percentile,
+					bandWidthPct_percentile: rankPercentile,
 					current_vs_avg,
 				};
 			})();
@@ -231,18 +296,17 @@ export default async function analyzeBbSnapshot(
 			if (position === 'near_middle') signals.push('Price consolidating near middle band');
 			if (bandwidth_state === 'normal') signals.push('Band width around typical levels');
 
+			// 状態と食い違わないよう、シグナルも状態から出す。
+			if (bandWidthRank && bandwidth_state === 'squeeze') {
+				signals.push(
+					`Band width compressed (${rankPercentile}th percentile of last ${bandWidthRank.sampleSize} bars) - potential breakout setup`,
+				);
+			} else if (bandWidthRank && (bandwidth_state === 'expanding' || bandwidth_state === 'wide')) {
+				signals.push(
+					`Band width expanded (${rankPercentile}th percentile of last ${bandWidthRank.sampleSize} bars) - high volatility phase`,
+				);
+			}
 			if (context.bandWidthPct_30d_avg != null && context.current_vs_avg != null) {
-				if (context.bandWidthPct_percentile != null) {
-					if (context.bandWidthPct_percentile < 20) {
-						signals.push(
-							`Band width compressed (${context.bandWidthPct_percentile}th percentile) - potential breakout setup`,
-						);
-					} else if (context.bandWidthPct_percentile > 80) {
-						signals.push(
-							`Band width expanded (${context.bandWidthPct_percentile}th percentile) - high volatility phase`,
-						);
-					}
-				}
 				signals.push(`Band width ${context.current_vs_avg} vs 30-day average`);
 			}
 
@@ -271,6 +335,7 @@ export default async function analyzeBbSnapshot(
 				baseSummary: summaryBase,
 				position: interpretation.position,
 				bandwidth_state: interpretation.bandwidth_state,
+				bandWidthRank,
 				volatility_trend: interpretation.volatility_trend,
 				bandWidthPct_percentile: context.bandWidthPct_percentile,
 				current_vs_avg: context.current_vs_avg,
@@ -308,15 +373,31 @@ export default async function analyzeBbSnapshot(
 			return AnalyzeBbSnapshotOutputSchema.parse(ok(summaryLines, data, meta));
 		}
 
+		const ind = indRes.data.indicators as Record<string, unknown>;
+		const num = (key: string) => (typeof ind[key] === 'number' ? (ind[key] as number) : null);
+		const widthPct = (u: number | null, l: number | null) =>
+			u != null && l != null && mid != null && mid !== 0 ? ((u - l) / mid) * 100 : null;
 		const bbBands: Record<string, number | null> = {
-			'+3σ': null,
+			'+3σ': num('BB3_upper'),
 			'+2σ': upper,
-			'+1σ': null,
-			'-1σ': null,
+			'+1σ': num('BB1_upper'),
+			'-1σ': num('BB1_lower'),
 			'-2σ': lower,
-			'-3σ': null,
+			'-3σ': num('BB3_lower'),
 		};
-		const bandWidthAll: Record<string, number | null> = { '±1σ': null, '±2σ': bandWidthPct, '±3σ': null };
+		const bandWidthAll: Record<string, number | null> = {
+			'±1σ': widthPct(bbBands['+1σ'], bbBands['-1σ']),
+			'±2σ': bandWidthPct,
+			'±3σ': widthPct(bbBands['+3σ'], bbBands['-3σ']),
+		};
+		// 直近 BB_TOUCH_WINDOW 本のどこかで BB の助走が足りないと数え漏れになるので、本数を出さない。幅 0（z が無い）の足は届いていないと数える。
+		const fullWindow =
+			recentRawZ.length === BB_TOUCH_WINDOW && !recentBandsMissing
+				? recentRawZ.filter((z): z is number => z != null)
+				: null;
+		const touches2 = fullWindow ? fullWindow.filter((z) => Math.abs(z) >= BB_STDDEV).length : null;
+		const touches3 = fullWindow ? fullWindow.filter((z) => Math.abs(z) >= 3).length : null;
+		const widthState = bbWidthState(bandWidthRank);
 		const current_zone =
 			zScore == null
 				? null
@@ -332,13 +413,13 @@ export default async function analyzeBbSnapshot(
 			price: close ?? null,
 			bb: { middle: mid, bands: bbBands, zScore, bandWidthPct: bandWidthAll },
 			position_analysis: { current_zone },
+			// キー名の 30d は直近 30 本（日足以外でも本数で数える）。
 			extreme_events: {
-				touches_3σ_last_30d: null,
-				touches_2σ_last_30d: null,
-				band_walk_detected: null,
-				squeeze_percentile: null,
+				touches_3σ_last_30d: touches3,
+				touches_2σ_last_30d: touches2,
+				squeeze_percentile: bandWidthRank ? Math.round(bandWidthRank.percentile) : null,
 			},
-			interpretation: { volatility_state: null, extreme_risk: null, mean_reversion_potential: null },
+			interpretation: { volatility_state: widthState },
 			tags,
 		};
 		const meta = createMeta(chk.pair, {
@@ -357,11 +438,20 @@ export default async function analyzeBbSnapshot(
 			...(warnings && warnings.length > 0 ? { warnings } : {}),
 			...(provisional ? { provisional: true } : {}),
 		});
-		const baseExtSummary =
-			summaryBase +
-			`\n\n---\n📌 含まれるもの: ボリンジャーバンド拡張（±1σ/±2σ/±3σ）、Zスコア、バンド幅` +
-			`\n📌 含まれないもの: 他のテクニカル指標（RSI・MACD・一目均衡表）、出来高フロー、板情報` +
-			`\n📌 補完ツール: analyze_indicators（他指標）, get_flow_metrics（出来高）, get_volatility_metrics（ボラ詳細）`;
+		const baseExtSummary = buildBbExtendedText({
+			baseSummary: summaryBase,
+			middle: mid,
+			bands: bbBands,
+			bandWidthPct: bandWidthAll,
+			zScore,
+			currentZone: current_zone,
+			touches2,
+			touches3,
+			touchWindow: BB_TOUCH_WINDOW,
+			widthState,
+			bandWidthRank,
+			tags,
+		});
 		const extSummary = prependWarnings(
 			prependProvisionalNote(baseExtSummary, provisional, { separator: '\n' }),
 			{ warning, warnings },

@@ -225,15 +225,17 @@ describe('buildIndicatorsText', () => {
 		expect(buildIndicatorsText(baseInput({ sigmaZ: 2.3 }))).toContain('現在位置: 2.3σ → 買われすぎ圏（+2σ以上）');
 	});
 
-	it('bandWidthPct < 8 → スクイーズ', () => {
-		const text = buildIndicatorsText(baseInput({ bandWidthPct: 5 }));
-		expect(text).toContain('スクイーズ');
+	it('BB 幅の状態は、幅の絶対値ではなく直近の幅の中での順位で決まる', () => {
+		const at = (bandWidthPct: number, percentile: number) =>
+			buildIndicatorsText(baseInput({ bandWidthPct, bandWidthRank: { percentile, sampleSize: 120 } }));
+		expect(at(50, 10)).toContain('BB幅=50% → スクイーズ（直近120本の幅の中で下から10%）');
+		expect(at(3, 50)).toContain('BB幅=3% → 標準（直近120本の幅の中で下から50%）');
+		expect(at(3, 85)).toContain('BB幅=3% → 拡大（直近120本の幅の中で下から85%）');
+		expect(at(3, 97)).toContain('BB幅=3% → 大きく拡大（直近120本の幅の中で下から97%）');
 	});
 
-	it('BB 幅の区切りは analyze_bb_snapshot と同じ（8 / 18 / 30%）', () => {
-		expect(buildIndicatorsText(baseInput({ bandWidthPct: 12 }))).toContain('BB幅=12% → 標準（8〜18%）');
-		expect(buildIndicatorsText(baseInput({ bandWidthPct: 25 }))).toContain('BB幅=25% → 拡大（18〜30%）');
-		expect(buildIndicatorsText(baseInput({ bandWidthPct: 35 }))).toContain('BB幅=35% → 大きく拡大（30%超）');
+	it('BB 幅の順位が取れないときは状態を出さない', () => {
+		expect(buildIndicatorsText(baseInput({ bandWidthPct: 12 }))).toContain('BB幅=12% → —');
 	});
 
 	it('bbLo >= close で「現在価格に近い」表示', () => {
@@ -384,10 +386,17 @@ describe('buildIndicatorsText', () => {
 	});
 
 	it('strong_downtrend + rsi < 30 + 幅の拡大 → 総合判定が全て反映', () => {
-		const text = buildIndicatorsText(baseInput({ trend: 'strong_downtrend', rsi: 20, bandWidthPct: 25 }));
+		const text = buildIndicatorsText(
+			baseInput({
+				trend: 'strong_downtrend',
+				rsi: 20,
+				bandWidthPct: 25,
+				bandWidthRank: { percentile: 85, sampleSize: 120 },
+			}),
+		);
 		expect(text).toContain('強い下降トレンド');
 		expect(text).toContain('売られすぎ');
-		expect(text).toContain('拡大（18〜30%）');
+		expect(text).toContain('拡大（直近120本の幅の中で下から85%）');
 	});
 
 	it('sigmaZ が ±1σ 以内 → 中心付近', () => {
@@ -594,7 +603,7 @@ describe('toolDef.handler', () => {
 		};
 		const text = res.content[0].text;
 		expect(text).toContain('現在位置: 2σ → 中心より上（+1σ〜+2σ）');
-		expect(text).toContain('BB幅=8% → 標準（8〜18%）');
+		expect(text).toContain('BB幅=8% → 標準（直近20本の幅の中で下から50%）');
 	});
 
 	it('正常データでテキスト content を返す', async () => {

@@ -69,7 +69,7 @@ export default async function analyzeEmaSnapshot(
 		let candles: Array<{ isoTime?: string | null }> = [];
 		let normalizedLen = 0;
 		const map: Record<string, number | null> = {};
-		// hasCustomPeriods=true は getCandles 経由なので warning だけ、false は analyzeIndicators 経由なので warning / warnings の両方を取る。
+		// hasCustomPeriods=true は getCandles 経由なので上流からは warning だけを取り、warnings はここで数えたデータ不足だけにする。
 		let warning: string | undefined;
 		let warnings: string[] | undefined;
 		// 取得 path に依らず最新足 ts で判定できるよう、両 path の中で代入する。
@@ -83,8 +83,6 @@ export default async function analyzeEmaSnapshot(
 				);
 			const upstream = extractUpstreamWarning(candlesResult.meta);
 			warning = upstream.warning;
-			// getCandles path は取得層のみ。計算層 warnings は contract 上出ないため明示的に undefined にする。
-			warnings = undefined;
 			const normalized = candlesResult.data.normalized;
 			const allCloses = normalized.map((c) => c.close);
 			close = allCloses.at(-1) ?? null;
@@ -92,12 +90,15 @@ export default async function analyzeEmaSnapshot(
 			normalizedLen = normalized.length;
 			provisional = isLatestBarProvisional(normalized.at(-1)?.timestamp, String(type));
 
-			for (const p of periods) {
+			const shortages: string[] = [];
+			for (const p of new Set(periods)) {
 				const series = ema(allCloses, p);
 				const key = `EMA_${p}`;
 				map[key] = series.at(-1) ?? null;
 				chartInd[key] = series;
+				if (allCloses.length < p) shortages.push(`${key}: データ不足`);
 			}
+			warnings = shortages.length > 0 ? shortages : undefined;
 		} else {
 			const indRes = await analyzeIndicators(chk.pair, type, fetchLimit);
 			if (!indRes.ok)
