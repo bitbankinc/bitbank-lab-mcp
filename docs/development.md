@@ -43,7 +43,7 @@ npx @modelcontextprotocol/inspector -- tsx src/server.ts
 
 ## Windows でローカル開発する場合
 
-パスの書き方だけが変わります。`node` の場所は `where node` で確認してください：
+パスの書き方だけが変わります。`node` の場所は `where.exe node` で確認してください（PowerShell では `where` だけだと別のコマンドになる）：
 
 ```json
 {

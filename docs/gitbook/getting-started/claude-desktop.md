@@ -113,7 +113,7 @@ Windows でも方式A の `npx` 経由がそのまま使えます。
 }
 ```
 
-`npx` が見つからない場合は `where npx`（Windows 版の `which`）で絶対パスを確認して指定してください。
+`npx` が見つからない場合は `where.exe npx`（Windows 版の `which`。PowerShell では `where` だけだと別のコマンドになる）で絶対パスを確認して指定してください。
 
 ## 表示名のカスタマイズ
 
