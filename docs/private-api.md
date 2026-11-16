@@ -170,7 +170,7 @@ MCP 仕様（SEP-1624 の整理）では `CallToolResult.content` と `structure
    `_meta` に載るのは **elicitation 非対応と判定した経路だけ**なので、elicitation 対応ホストには一切載らない（優先順位は逆転しない）。
 
    ホストが結果 `_meta` を iframe に渡さない場合（2026-11 の Claude Desktop）、iframe は一覧に出さないリソース `bitbank-confirmation://{app}` を読み、本文でトークンを受け取る。渡す条件は `_meta` と同じで、満たさなければ本文は空（ADR-0007 判断事項 C）。
-   Claude Desktop はチャットのツール実行とカードの要求を別々のサーバープロセスで受けるので、オプトイン時は preview の控え・署名鍵に混ぜる乱数・使用済みトークンの印を `~/.bitbank-lab-mcp/confirm`（本人だけが読み書きできるフォルダ）で共有する。トークンが通る範囲は「同じ OS ユーザーで、このフォルダを使うプロセス」に広がる。Windows では共有しない（ADR-0007 判断事項 D）。
+   Claude Desktop はチャットのツール実行とカードの要求を別々のサーバープロセスで受けるので、オプトイン時は preview の控え・署名鍵に混ぜる乱数・使用済みトークンの印を `~/.bitbank-lab-mcp/confirm`（本人だけが読み書きできるフォルダ）で共有する。トークンが通る範囲は「同じ OS ユーザーで、このフォルダを使うプロセス」に広がる。Windows では共有しないので、Claude Desktop ではボタンが出ない見込み（未確認。ADR-0007 判断事項 D）。
    ツール結果通知（`ui/notifications/tool-result`）を配信しないホストでは、iframe が接続成立後に `get_ui_snapshot` を呼んで確認カードを自力で復元する（pull 型 hydration）。この復元は**上限付きリトライ**（初回 2.5 秒待機 → 2 秒 → 4 秒の計 3 回）で行い、**すべて失敗したら「復元できませんでした。内容はチャット本文で確認できます」と明示する**（「復元中」の案内のまま固まらせない）。制御は `src/mcp-apps-hydration.ts` に一本化してあり、iframe のアンマウント時には実行中の取得も含めて停止する。
 3. **フォールバック（どちらの経路も使えないホスト）** — `content` / `structuredContent` / `_meta` のいずれにも `confirmation_token` / `expires_at` を返さない。プレビュー内容だけを返し、「このホストでは取引実行に対応していない」旨を `content[0].text` に明記する。LLM が `create_order` / `cancel_order` / `cancel_orders` を直接呼んでも、MCP ハンドラが `direct_execute_forbidden` で拒否する（加えて token 検証でも拒否される）。
 
