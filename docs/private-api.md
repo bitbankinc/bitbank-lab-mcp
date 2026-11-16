@@ -126,7 +126,7 @@ npx -y bitbank-lab-mcp
 ```
 
 - 確認トークンは HMAC-SHA256 で生成（`BITBANK_API_SECRET` を鍵に使用）
-- 有効期限: 60秒（`ORDER_CONFIRM_TTL_MS` で変更可能）
+- 有効期限: 60秒（`ORDER_CONFIRM_TTL_MS` で変更可能。最長 5 分）
 - パラメータ改ざんを検知（トークン生成時と実行時のパラメータが一致しない場合は拒否）
 - キャンセルにも同様の確認フローを適用（`preview_cancel_order` / `preview_cancel_orders`）
 
@@ -170,7 +170,7 @@ MCP 仕様（SEP-1624 の整理）では `CallToolResult.content` と `structure
    `_meta` に載るのは **elicitation 非対応と判定した経路だけ**なので、elicitation 対応ホストには一切載らない（優先順位は逆転しない）。
 
    ホストが結果 `_meta` を iframe に渡さない場合（2026-11 の Claude Desktop）、iframe は一覧に出さないリソース `bitbank-confirmation://{app}` を読み、本文でトークンを受け取る。渡す条件は `_meta` と同じで、満たさなければ本文は空（ADR-0007 判断事項 C）。
-   Claude Desktop はチャットのツール実行とカードの要求を別々のサーバープロセスで受けるので、オプトイン時は preview の控え・署名鍵に混ぜる乱数・使用済みトークンの印を `~/.bitbank-lab-mcp/confirm`（本人だけが読み書きできるフォルダ）で共有する。トークンが通る範囲は「同じ OS ユーザーで、このフォルダを使うプロセス」に広がる。Windows では共有しない（ADR-0007 判断事項 D）。
+   Claude Desktop はチャットのツール実行とカードの要求を別々のサーバープロセスで受けるので、オプトイン時は preview の控え・署名鍵に混ぜる乱数・使用済みトークンの印を `~/.bitbank-lab-mcp/confirm`（本人だけが読み書きできるフォルダ）で共有する。トークンが通る範囲は「同じ OS ユーザーで、このフォルダを使うプロセス」に広がる。Windows では共有しないので、Claude Desktop ではボタンが出ない見込み（未確認。ADR-0007 判断事項 D）。
    ツール結果通知（`ui/notifications/tool-result`）を配信しないホストでは、iframe が接続成立後に `get_ui_snapshot` を呼んで確認カードを自力で復元する（pull 型 hydration）。この復元は**上限付きリトライ**（初回 2.5 秒待機 → 2 秒 → 4 秒の計 3 回）で行い、**すべて失敗したら「復元できませんでした。内容はチャット本文で確認できます」と明示する**（「復元中」の案内のまま固まらせない）。制御は `src/mcp-apps-hydration.ts` に一本化してあり、iframe のアンマウント時には実行中の取得も含めて停止する。
 3. **フォールバック（どちらの経路も使えないホスト）** — `content` / `structuredContent` / `_meta` のいずれにも `confirmation_token` / `expires_at` を返さない。プレビュー内容だけを返し、「このホストでは取引実行に対応していない」旨を `content[0].text` に明記する。LLM が `create_order` / `cancel_order` / `cancel_orders` を直接呼んでも、MCP ハンドラが `direct_execute_forbidden` で拒否する（加えて token 検証でも拒否される）。
 
@@ -199,7 +199,7 @@ MCP 仕様（SEP-1624 の整理）では `CallToolResult.content` と `structure
 | ワンタイム | 2 回目は `token_already_used`（二重発注しない） |
 | action 束縛 | `cancel_order` のトークンを `create_order` に流用できない |
 
-したがって最悪ケースは **「ユーザーが直前にプレビューしたその注文 1 件、または `preview_cancel_orders` でプレビューした注文 ID 集合 1 セットが、60 秒以内に 1 回だけ実行される」** に限定される。
+したがって最悪ケースは **「ユーザーが直前にプレビューしたその注文 1 件、または `preview_cancel_orders` でプレビューした注文 ID 集合 1 セットが、期限（既定 60 秒、`ORDER_CONFIRM_TTL_MS` で最長 5 分）内に 1 回だけ実行される」** に限定される。
 
 #### 将来の代替案 / 移行計画
 
@@ -221,7 +221,7 @@ MCP 仕様（SEP-1624 の整理）では `CallToolResult.content` と `structure
 | bitbank 本 API の最終バリデーション | — | ✓（暗黙） |
 
 - **preview**: 入力バリデーションをまとめて実施。違反があれば `validation_error` で即停止し、確認トークンを発行しない。LLM がトークンを使い回せないよう、ここで弾くのが第一線。
-- **create**: 確認トークンの検証（HITL）が主目的。preview から発注までの間隔は最大 60 秒程度だが、その間に pair の状態（`stop_order` 等）や市場価格が変化する可能性があるため、`/spot/pairs` 仕様とトリガー価格のみ再検証する。トークンによってパラメータ改ざんは検出済みのため、純粋な入力依存の検証（正/負の数値チェック等）は再実施しない。
+- **create**: 確認トークンの検証（HITL）が主目的。preview から発注までの間隔は確認トークンの期限（既定 60 秒、`ORDER_CONFIRM_TTL_MS` で最長 5 分）以内だが、その間に pair の状態（`stop_order` 等）や市場価格が変化する可能性があるため、`/spot/pairs` 仕様とトリガー価格のみ再検証する。トークンによってパラメータ改ざんは検出済みのため、純粋な入力依存の検証（正/負の数値チェック等）は再実施しない。
 - `/spot/pairs` の取得が失敗した場合は preview と同じく warning に留めて発注を継続する（最終ガードは bitbank 本 API 側の同等のエラーで担保される）。
 - 違反が検出された場合は `validation_error` で発注を停止する。このとき確認トークンは既にワンショット消費済みのため、ユーザーは preview からやり直す必要がある（再 preview で違反原因が表示される）。
 
