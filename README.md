@@ -367,8 +367,8 @@ API キーは [bitbank 設定画面](https://app.bitbank.cc/account/api) で発�
 ### API キーの渡し方
 
 - **Claude Desktop** — `claude_desktop_config.json` の `env` に `BITBANK_API_KEY` と `BITBANK_API_SECRET` を足します（[セクション 1](#1-claude-desktop-に登録推奨) の B / C の例）。
-- **Plugin install** — `/plugin` から該当 plugin の設定を開き、`api_key` / `api_secret` を入力します（手動編集は不要）。
-- **ターミナルから起動する場合** — 環境変数で渡します。
+- **Plugin install（Claude Code）** — `/plugin` から該当 plugin の設定を開き、`api_key` / `api_secret` を入力します（手動編集は不要）。
+- **ターミナルから起動する場合・Cursor / Codex の plugin** — 環境変数で渡します。
 
 ```bash
 export BITBANK_API_KEY="your_api_key"
@@ -377,7 +377,7 @@ export BITBANK_API_SECRET="your_api_secret"
 
 ### 発注・取消の確認
 
-取引操作（発注・キャンセル）は **preview → ユーザーの明示確認**が必須です。確認トークンは `content` / `structuredContent` に載らず、`create_order` / `cancel_order` / `cancel_orders` を MCP `tools/call` から直接呼んでもサーバー側で拒否されます。確認の経路はクライアントによって変わります。
+取引操作（発注・キャンセル）は **preview → ユーザーの明示確認**が必須です。確認トークンは `content` / `structuredContent` に載らず、`create_order` / `cancel_order` / `cancel_orders` を有効な確認トークンなしで直接呼ぶと、サーバー側で拒否されます。`BITBANK_MCP_APPS_EXECUTE=1` のときは、確認カードに渡したトークンを持つ呼び出しは通ります（サーバーはカードからの呼び出しかを区別できないので、トークンが AI に渡らないことが前提です）。確認の経路はクライアントによって変わります。
 
 | クライアント | 実行経路 |
 |---|---|

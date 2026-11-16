@@ -16,22 +16,21 @@ npm ci
 
 ## STDIO モード（Claude Desktop / Claude Code 向け）
 
-ローカルの開発版を Claude Desktop から使いたい場合、`claude_desktop_config.json` に絶対パス指定で登録します：
+ローカルの開発版を Claude Desktop から使いたい場合、`claude_desktop_config.json` に、クローン先の `tsx` とサーバーを絶対パスで登録します。Claude Desktop はサーバーをクローン先以外のフォルダから起動するので、`npx tsx` ではクローン先の `tsx` が使われません：
 
 ```json
 {
   "mcpServers": {
     "bitbank-dev": {
-      "command": "npx",
-      "args": ["tsx", "/ABS/PATH/to/src/server.ts"],
-      "workingDirectory": "/ABS/PATH/to/project",
+      "command": "/ABS/PATH/to/project/node_modules/.bin/tsx",
+      "args": ["/ABS/PATH/to/project/src/server.ts"],
       "env": { "LOG_LEVEL": "debug", "NO_COLOR": "1" }
     }
   }
 }
 ```
 
-`/ABS/PATH/to/` を実際のクローン先パス（`pwd` で確認）に置き換えてください。**npm 公開版（`bitbank-lab`）と区別するため、サーバー名は `bitbank-dev` 等にしておくと両立できます**。
+`/ABS/PATH/to/project` を実際のクローン先パス（`pwd` で確認）に置き換えてください。**npm 公開版（`bitbank-lab`）と区別するため、サーバー名は `bitbank-dev` 等にしておくと両立できます**。
 
 Inspector で動作確認する場合:
 
@@ -52,7 +51,6 @@ npx @modelcontextprotocol/inspector -- tsx src/server.ts
         "C:\\Users\\<USERNAME>\\bitbank-lab-mcp\\node_modules\\tsx\\dist\\cli.mjs",
         "C:\\Users\\<USERNAME>\\bitbank-lab-mcp\\src\\server.ts"
       ],
-      "workingDirectory": "C:\\Users\\<USERNAME>\\bitbank-lab-mcp",
       "env": { "LOG_LEVEL": "debug", "NO_COLOR": "1" }
     }
   }
