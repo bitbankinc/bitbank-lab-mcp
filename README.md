@@ -5,7 +5,7 @@
 [![npm](https://img.shields.io/npm/v/bitbank-lab-mcp.svg)](https://www.npmjs.com/package/bitbank-lab-mcp)
 [![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/tjackiet/bitbank-lab-mcp?utm_source=oss&utm_medium=github&utm_campaign=tjackiet%2Fbitbank-lab-mcp&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
 
-> bitbank API のデータを使った暗号資産市場分析を、Claude / Cursor / Codex / Antigravity CLI など各種 AI クライアントから簡単に実行できる MCP サーバーです。
+> bitbank API のデータで暗号資産の市場分析をする MCP サーバーです。Claude / Cursor / Codex / Antigravity CLI などから使えます。
 
 ## はじめにお読みください
 
@@ -13,73 +13,27 @@
 - ご利用の前に必ず [⚠️ 免責事項](#免責事項) をお読みください。
 - 本リポジトリは **bitbank バグバウンティプログラムの対象範囲外** です。
 
-## 本 MCP サーバーについて
+## できること
 
-bitbank の公開 API から取得した価格・取引データを、指標計算・統合・可視化用データの整形まで行った上で LLM に渡します（必要に応じてサーバー側で SVG 描画も可能）。生データを渡すだけのサーバーとは異なり、各ツールの description に「いつ使うべきか」「他ツールとの使い分け」を明示しているため、LLM が自律的に適切なツールを選択できます。
+- **データ**：ティッカー・板・約定履歴・ローソク足（1 分足〜月足）
+- **分析**：テクニカル指標（SMA / RSI / ボリンジャーバンド / 一目均衡表 / MACD）・フロー・ボラティリティ・板の圧力・パターン検出・総合スコア
+- **可視化**：Claude.ai の Visualizer 向けデータ（`prepare_chart_data` ほか）、SVG / PNG（`render_chart_svg` ほか）
+- **口座（API キーが必要）**：資産・注文・約定・入出金・信用・損益の分析、確認つきの発注・取消
 
-姉妹プロジェクトとして、同じ bitbank API に対する真逆のアプローチを提供する **CLI** ([bitbank-lab-cli](https://github.com/bitbankinc/bitbank-lab-cli)) もあります。
-
-- **この MCP サーバー** はサーバー側で計算済みの結論を LLM に渡す
-- **CLI** は生データを高速に取得し、LLM 自身に計算させる
-
-指標のパラメータやロジックを完全にカスタマイズしたい場合は CLI 側を、すぐに使えるテクニカル分析・可視化を求める場合は MCP サーバー側を選んでください。
-
-## 概要
-bitbank の公開 API から価格・板情報・約定履歴・ローソク足データを取得し、以下の分析を実行できます。  
-→ 全ツールの一覧と使い分けは [docs/tools.md](docs/tools.md) を参照。
-
-#### 取得できるデータ
-- リアルタイム価格（ティッカー）
-- 板情報（オーダーブック）
-- 約定履歴（売買方向・時刻）
-- ローソク足（1分足〜月足）
-
-#### 実行できる分析
-- テクニカル指標（SMA/RSI/ボリンジャーバンド/一目均衡表/MACD）
-- フロー分析（買い/売りの勢い・CVD・スパイク検出）
-- ボラティリティ分析（RV/ATR）
-- 板の圧力分析（価格帯ごとの買い/売り圧力）
-- パターン検出（ダブルトップ/ヘッドアンドショルダーズ等）
-- 総合スコア判定（複数指標を統合した強弱判定）
-  - 長期パターンの現在地関連検出（detect_patterns: requireCurrentInPattern/currentRelevanceDays）
-
-#### 視覚化
-- Claude.ai の Visualizer で描画するためのコンパクトな整形データを返すツール群
-  - `prepare_chart_data`: ローソク足 + 指標の時系列データ
-  - `prepare_depth_data`: 板の累積 volume 階段データ
-- ファイル保存・Cursor 等の非 Visualizer 環境向けに SVG/PNG 形式のチャートも生成可能
-  - `render_chart_svg` / `render_depth_svg` / `render_candle_pattern_diagram`
+指標の計算までサーバーで行い、結果を LLM に渡します。生データを LLM に計算させたいときは、姉妹プロジェクトの [bitbank-lab-cli](https://github.com/bitbankinc/bitbank-lab-cli) を使ってください。ツールの一覧は [docs/tools.md](docs/tools.md)。
 
 ## クイックスタート
 
-### 前提条件
-- **Node.js 22 以上**（24 推奨）
-  - `node -v` で確認できます
-  - [公式サイト](https://nodejs.org/) からインストール
-- npm（Node.js に同梱されています）
-- 対応 OS: macOS / Linux / Windows（WSL 含む）
-- **Claude Desktop** アプリを [Claude 公式サイト](https://claude.com/ja/download) からダウンロードしてください
+Node.js 22 以上（24 推奨）が必要です。npm の [`bitbank-lab-mcp`](https://www.npmjs.com/package/bitbank-lab-mcp) を `npx` で起動するので、clone は要りません。
 
-> 本プロジェクトは npm に [`bitbank-lab-mcp`](https://www.npmjs.com/package/bitbank-lab-mcp) として公開されています。  
-> **ソースコードのクローンは不要**です（開発したい方向けの手順は [docs/development.md](docs/development.md) を参照）。
+### 1. Claude Desktop に登録
 
-### 1. Claude Desktop に登録（推奨）
+設定ファイルに追加し、Claude Desktop を再起動します（macOS は `Cmd+Q`、Windows は完全終了）。
 
-Claude Desktop が最も多くの方が使う想定の MCP クライアントです。  
-`~/Library/Application Support/Claude/claude_desktop_config.json` に設定を追加します。
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
-登録方法は2通りあります。**まず npx 方式を試し、動かない場合に絶対パス方式をお試しください。**
-
-#### npx 方式（推奨）
-
-Node.js のバージョンアップで設定を書き換える必要がないため、こちらを推奨します。  
-nvm/volta などのバージョン管理ツールをお使いの方には特におすすめです。
-
-用途に応じて **A〜C の 3 段階**から選びます。
-
-**A. Public データのみ:**
-
-価格・板・ローソク足などの公開市場データの取得と分析。API キー不要。
+**A. 公開データだけ（API キー不要）**
 
 ```json
 {
@@ -92,9 +46,7 @@ nvm/volta などのバージョン管理ツールをお使いの方には特に�
 }
 ```
 
-**B. Private データ参照系（要 API キー）:**
-
-資産残高・約定履歴・注文照会・ポートフォリオ分析などの読み取り専用。発注はできません。
+**B. 口座の参照（API キーが必要。発注はできない）**
 
 ```json
 {
@@ -111,11 +63,9 @@ nvm/volta などのバージョン管理ツールをお使いの方には特に�
 }
 ```
 
-**C. 取引注文・注文キャンセル実行（要 API キー）:**
+**C. 発注・取消まで（API キーが必要）**
 
-B に加えて、発注・注文キャンセルまで実行。実行前に必ず確認ステップ（preview → ユーザーの明示確認）が入ります。
-
-Claude Desktop では確認カードのボタンから実行するため、B の設定に **`BITBANK_MCP_APPS_EXECUTE=1` を追加**してオプトインします（**既定は無効**。設定する前に下の「⚠️ `BITBANK_MCP_APPS_EXECUTE=1` を設定する前に読んでください」を確認してください）。
+B に `BITBANK_MCP_APPS_EXECUTE=1` を足すと、確認カードのボタンで発注・取消できます（既定は無効）。
 
 ```json
 {
@@ -136,318 +86,95 @@ Claude Desktop では確認カードのボタンから実行するため、B の
 <details>
 <summary><b>⚠️ <code>BITBANK_MCP_APPS_EXECUTE=1</code> を設定する前に読んでください</b></summary>
 
-このオプションは、確認トークンをツール結果の `_meta` と、一覧に出さないリソース `bitbank-confirmation://{app}` の本文に載せて iframe へ渡し、確認カードのボタンからの実行を許可します。安全性は「**ホストが `_meta` をモデル（LLM）に渡さず、MCP リソースもモデルに読ませない**」という前提に依存します。
+確認トークンを、ツール結果の `_meta` と、一覧に出さないリソース `bitbank-confirmation://{app}` に載せてカードへ渡します。安全性は「**ホストが `_meta` をモデルに渡さず、MCP リソースもモデルに読ませない**」ことに依存します。
 
-* **仕様上の保証ではありません。** MCP Apps 仕様の該当記述は "Best Practices" の箇条書きで、MUST / SHOULD を伴いません。適合要件ではなく意図の説明です
-* **ホストのアップデートで壊れても、サーバー側では検知できません。** ホストが `_meta` をモデルコンテキストに含めたり、リソースをモデルに読ませたりするようになった瞬間に前提は崩れますが、その変化はサーバーから観測できません。**壊れ方は静かです**
-* この領域は実装が流動的です（`structuredContent` の喪失回帰など、関連トラッカーに 2026-05〜08 の issue が複数）
+* **仕様上の保証ではありません**（MCP Apps 仕様の "Best Practices" の記述で、MUST / SHOULD ではない）
+* **ホストの更新で前提が崩れても、サーバーは検知できません**
+* 確認の状態（トークンと注文内容）を `~/.bitbank-lab-mcp/confirm` に置きます。**ファイルを読める AI エージェントには、このフォルダを許可しないでください**
+* Windows では、Claude Desktop のボタンが出ない見込みです（未確認）
 
-あわせて、次の 2 点も確認してください。
-
-* オプトインすると、確認の状態（トークンと注文内容）を `~/.bitbank-lab-mcp/confirm` に置きます。Claude Desktop がカードを別のプロセスで扱うためです。**ファイルを読める AI エージェントには、このフォルダを許可しないでください**
-* Windows ではこのフォルダを使わないため、Claude Desktop ではボタンが出ない見込みです（未確認）
-
-万一トークンが漏れた場合でも、被害は **「直前にプレビューした注文 1 件（一括取消ならプレビュー済みの注文 ID 集合 1 セット）が、期限（既定 60 秒、`ORDER_CONFIRM_TTL_MS` で最長 5 分）内に 1 回だけ実行される」** に限定されます。トークンは注文内容に HMAC で束縛されており、攻撃者が金額・数量・ペア・方向を選ぶことはできません。
-
-**以上を理解したうえで有効化してください。既定では無効です。** 詳細は [ADR-0007](docs/adr/0007-hitl-confirmation-token-delivery.md)。
+トークンが漏れた場合の被害は、**直前にプレビューした注文 1 件（一括取消なら 1 セット）が、期限（既定 60 秒、最長 5 分）内に 1 回実行されること**に限られます。金額・数量・ペア・方向は変えられません。詳細は [ADR-0007](docs/adr/0007-hitl-confirmation-token-delivery.md)。
 
 </details>
 
-B / C の API キーの発行と付ける権限（**「出金」は付けない**）は「[API キーの発行と権限](#api-キーの発行と権限)」、発注・取消の確認の流れは「[発注・取消の確認](#発注取消の確認)」を参照してください。
+API キーの権限は「[API キー](#api-キー)」を参照してください（**「出金」は付けない**）。
 
-#### 絶対パス方式（フォールバック）
+### 2. ほかのクライアント
 
-npx 方式で「サーバーに接続できません」エラーが出る場合、Claude Desktop から `npx` コマンドが見つけられていない可能性があります。  
-その場合は、`npx` の絶対パスを指定してください。
+- **Claude Code**：`claude mcp add --transport stdio bitbank-lab -- npx -y bitbank-lab-mcp`
+- **Cursor**（`.cursor/mcp.json`）・**Windsurf** など：上と同じ JSON で登録します。
 
-まずターミナルで自分の環境の `npx` パスを確認します：
+### 3. Plugin として入れる（同梱 Skill も使う）
 
-```bash
-which npx
-```
-
-出力例と対応するインストール方法：
-
-| `which npx` の出力 | インストール方法 |
-|---|---|
-| `/opt/homebrew/bin/npx` | Homebrew（Apple Silicon Mac） |
-| `/usr/local/bin/npx` | Homebrew（Intel Mac）または公式インストーラ |
-| `/Users/XXX/.nvm/versions/node/vXX.XX.X/bin/npx` | nvm |
-| `/Users/XXX/.volta/bin/npx` | volta |
-
-`which npx` の結果を `command` に指定：
-
-```json
-{
-  "mcpServers": {
-    "bitbank-lab": {
-      "command": "<which npx の出力>",
-      "args": ["-y", "bitbank-lab-mcp"]
-    }
-  }
-}
-```
-
-> ⚠️ **nvm/volta ユーザーへの注意**: この方式では Node.js をバージョンアップするたびに `command` のパスの書き換えが必要です（例: `v24.0.0` → `v24.1.0`）。アップデート後に `which npx` を再確認してください。
-
-#### Windows の場合
-
-Windows でも npx 方式がそのまま使えます：
-
-```json
-{
-  "mcpServers": {
-    "bitbank-lab": {
-      "command": "npx",
-      "args": ["-y", "bitbank-lab-mcp"]
-    }
-  }
-}
-```
-
-設定ファイルの場所: `%APPDATA%\Claude\claude_desktop_config.json`
-
-`npx` が見つからない場合は `where.exe npx`（Windows 版の `which`。PowerShell では `where` だけだと別のコマンドになる）で絶対パスを確認して指定してください。
-
-#### 表示名のカスタマイズ
-
-Claude Desktop の UI に表示される名前は `claude_desktop_config.json` のキー名で決まります：
-
-```json
-{
-  "mcpServers": {
-    "bitbank-lab-mcp": {
-      "command": "npx",
-      "args": ["-y", "bitbank-lab-mcp"]
-    }
-  }
-}
-```
-
-> ⚠️ `bitbank-lab-mcp` のような ASCII（英数字）の名前を推奨します。環境によって、日本語などの非 ASCII 名だと Chat でツールが見つからない事例があります。
-
-#### 共通の注意事項
-
-- 追加後、Claude Desktop を `Cmd+Q`（Windows は完全終了）で再起動してください
-- ⚠️ macOS で `claude_desktop_config.json` が見つからない場合は、ホームディレクトリ直下から開いてください
-
-設定ファイルの場所：
-- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
-
-### 2. その他の MCP クライアント（手動 `.json` 編集）
-
-#### Cursor（`.cursor/mcp.json`）
-
-```json
-{
-  "mcpServers": {
-    "bitbank-lab": {
-      "command": "npx",
-      "args": ["-y", "bitbank-lab-mcp"],
-      "env": {
-        "BITBANK_API_KEY": "your_api_key",
-        "BITBANK_API_SECRET": "your_api_secret"
-      }
-    }
-  }
-}
-```
-
-API キーが不要な場合は `env` ブロックごと削除して OK。セクション 1 の A〜C と同様に、取引実行まで使う場合は確認フローに対応したクライアントが必要です。
-
-#### Claude Code（CLI から登録する場合）
+Claude Code では、同梱の Skill（`investment-onboarding` など）も一緒に入ります。Claude Desktop は plugin に未対応です。
 
 ```bash
-claude mcp add --transport stdio bitbank-lab -- npx -y bitbank-lab-mcp
-```
-
-同梱 Skill も一緒に使いたい場合は、[セクション 3](#3-オプションplugin-として-install同梱-skill-を使う) の plugin install が便利です。
-
-#### Windsurf / その他の汎用 MCP クライアント
-
-Cursor と同じ JSON 形式で登録できます。クライアント固有の設定ファイルパスについては各クライアントのドキュメントを参照してください。
-
-### 3. （オプション）Plugin として install（同梱 Skill を使う）
-
-通常の利用はセクション 1〜2 の登録だけで完結します。Plugin install は、**Claude Code などの AI コーディングツールで、MCP サーバーに加えて同梱 Skill（`plugins/bitbank-lab-mcp/skills/` 配下）も使いたい方向け**のオプションです。
-
-- Plugin として install すると、MCP ツールと同時に同梱 Skill（例: `investment-onboarding`）が有効化されます。今後 Skill を追加した場合も、plugin のアップデートでまとめて届きます。
-- Skill を自作してワークフローをカスタマイズしたい方は、[`plugins/bitbank-lab-mcp/skills/INDEX.md`](plugins/bitbank-lab-mcp/skills/INDEX.md) の構成が参考になります。
-- **Claude Desktop は plugin / Skill の読み込みに未対応**です。Claude Desktop で使う場合は[セクション 1](#1-claude-desktop-に登録推奨) の方法で登録してください（MCP ツールの機能は同じで、Skill が使えるかどうかだけの違いです）。
-
-| クライアント | manifest | API キーの渡し方 |
-|---|---|---|
-| Claude Code | `plugins/bitbank-lab-mcp/.claude-plugin/plugin.json` | ✅ **GUI で入力**: `/plugin install` 直後に `userConfig` UI が表示され、OS キーチェーンに保管 |
-| Antigravity CLI（旧 Gemini CLI） | `gemini-extension.json` | ✅ **対話 prompt**: `settings` 配列で対話的に入力、`.env` に保管 |
-| Cursor | `.cursor-plugin/plugin.json` | ⚙️ **シェル環境変数のみ**: `BITBANK_API_KEY` / `BITBANK_API_SECRET` を環境変数に設定（Cursor は plugin 経由の prompt 未対応） |
-| Codex | `.codex-plugin/plugin.json` | ⚙️ **シェル環境変数のみ**: `BITBANK_API_KEY` / `BITBANK_API_SECRET` を環境変数に設定 |
-
-> いずれの manifest も npm registry の [`bitbank-lab-mcp`](https://www.npmjs.com/package/bitbank-lab-mcp) を `npx -y` 経由で起動します。
->
-> Gemini CLI は 2026-06-18 に個人アカウント向け提供を終了し、Antigravity CLI（`agy`）に移行しました。Antigravity CLI は旧 Gemini CLI 拡張（`gemini-extension.json`）を後方互換で読み込みます（`agy plugin import gemini` でネイティブ plugin へ変換も可能）。
-
-**Claude Code の例**:
-
-```bash
-# 1. このリポジトリを marketplace として登録（初回のみ）
 /plugin marketplace add bitbankinc/bitbank-lab-mcp
-
-# 2. plugin を install
 /plugin install bitbank-lab-mcp@bitbank-lab
-
-# 3. plugin を有効化
 /reload-plugins
 ```
 
-`bitbank-lab` はこのリポが提供する marketplace 名（`.claude-plugin/marketplace.json` の `name` フィールド）、`bitbank-lab-mcp` は plugin 名です。
-
-実行後、bitbank API key / API secret の入力 UI が表示されます。**Public ツールだけで使う場合は両方とも空欄で OK** — Private API ツールは API キーを入力したときだけ自動的に有効化されます。
-
-> API キーを後から追加・変更したい場合は `/plugin` から該当 plugin の設定を開き、`api_key` / `api_secret` を更新してください。Claude Code では `sensitive: true` のため OS のキーチェーンに保管されます。
-
-**Cursor / Codex の場合（環境変数経由）**:
-
-`/plugin install` 実行後、シェルで以下のように環境変数を設定してから Cursor / Codex を起動してください（Public ツールだけ使う場合は不要）:
-
-```bash
-export BITBANK_API_KEY="your_api_key"
-export BITBANK_API_SECRET="your_api_secret"
-```
-
-macOS / Linux では `~/.zshrc` や `~/.bashrc` に書いておくと永続化されます。Windows は環境変数の管理画面 or `setx` を使用してください。
+API キーは install 後の画面で入力します（公開データだけなら空欄で OK）。Cursor・Codex・Antigravity CLI 向けの manifest もあります（Cursor・Codex は環境変数でキーを渡します）。
 
 ### 4. 使ってみる
-AI クライアントにそのまま話しかけます:
+
 ```
 BTCの今の市場状況を分析して
 ビットコインは買いと売りどちらが優勢？
 直近 1 週間でテクニカル的に上向きの仮想通貨を 3 つ教えて
 ```
 
-💡 **何を聞けばいいかわからない場合**: [用意されたプロンプト集](docs/prompts-table.md) をご覧ください。初心者向け（🔰）から中級者向けまで、9種類の分析プロンプトを用意しています。
+何を聞けばよいか迷ったら、[プロンプト集](docs/prompts-table.md) を見てください。
 
-🌅 **朝のルーティンに**: 「おはようレポート」で、寝ている間の相場変動をすばやくキャッチアップできます。
+## API キー
 
+キーを設定すると、口座のツールとプロンプトが使えるようになります（未設定なら表示されません）。
 
-## Private API（取引機能）
+[bitbank の設定画面](https://app.bitbank.cc/account/api) で発行し、必要な権限だけを付けてください。可能なら IP 制限も設定してください。
 
-API キーの有無でサーバーが公開する機能が自動的に切り替わります。
-
-| 設定 | ツール数 | プロンプト数 | 使える機能 |
-|------|---------|------------|-----------|
-| キー未設定 | 33（Public のみ） | 8 | 価格取得・テクニカル分析・チャート生成・バックテスト |
-| キー設定済み | 33 + 16 = **49** | 8 + 1 = **9** | 上記 + 資産確認・注文・ポートフォリオ分析 |
-
-キー未設定時、Private ツール・プロンプトは MCP クライアントに一切表示されません（エラーではなく、そもそも登録されません）。公開データの取得・分析だけなら設定不要で、そのまま使えます。
-
-### API キーの発行と権限
-
-API キーは [bitbank 設定画面](https://app.bitbank.cc/account/api) で発行し、**必要最小限の権限のみ**を付与してください（最小権限の原則）。可能なら **IP 制限**も設定してください。
-
-| やりたいこと | 必要な権限 |
+| 使い方 | 権限 |
 |---|---|
-| 資産確認・ポートフォリオ分析（読み取り専用） | **「参照」のみ** ← 最も安全、迷ったらこちら |
-| 上記 + AI に発注・キャンセル操作も任せたい | 「参照」+「取引」 |
+| 資産・注文・損益を見るだけ | 「参照」 |
+| 発注・取消もする | 「参照」+「取引」 |
 
-⚠️ **「出金」権限は絶対に有効化しないでください**。本 MCP サーバーは出金系ツールを実装していないため、この権限を付ける必要は一切ありません。漏洩時の資産流出を避けるためです。
+⚠️ **「出金」権限は付けないでください**。出金のツールはありません。
 
-| カテゴリ | ツール | 説明 | 必要な権限 |
-|---|---|---|---|
-| 口座情報 | `get_my_assets` | 保有資産一覧 | 参照 |
-| 注文照会 | `get_my_orders`, `get_order`, `get_orders_info` | 注文の照会 | 参照 |
-| 約定履歴 | `get_my_trade_history` | 約定履歴の取得 | 参照 |
-| ポートフォリオ | `analyze_my_portfolio` | 損益分析・パフォーマンス | 参照 |
-| 入出金 | `get_my_deposit_withdrawal` | 入出金履歴 | 参照 |
-| 信用取引 | `get_margin_status`, `get_margin_positions`, `get_margin_trade_history` | 証拠金・ポジション・約定履歴 | 参照 |
-| 発注 | `preview_order`（→ ユーザー確認） | ユーザー明示確認後に発注 | 取引 |
-| キャンセル | `preview_cancel_order`（→ ユーザー確認） | ユーザー明示確認後にキャンセル | 取引 |
-| 一括キャンセル | `preview_cancel_orders`（→ ユーザー確認） | ユーザー明示確認後に一括キャンセル | 取引 |
-
-### API キーの渡し方
-
-- **Claude Desktop** — `claude_desktop_config.json` の `env` に `BITBANK_API_KEY` と `BITBANK_API_SECRET` を足します（[セクション 1](#1-claude-desktop-に登録推奨) の B / C の例）。
-- **Plugin install（Claude Code）** — `/plugin` から該当 plugin の設定を開き、`api_key` / `api_secret` を入力します（手動編集は不要）。
-- **ターミナルから起動する場合・Cursor / Codex の plugin** — 環境変数で渡します。
-
-```bash
-export BITBANK_API_KEY="your_api_key"
-export BITBANK_API_SECRET="your_api_secret"
-```
+キーの渡し方：Claude Desktop は設定の `env`（上の B / C）、Claude Code の plugin は install 後の画面、それ以外は環境変数 `BITBANK_API_KEY` / `BITBANK_API_SECRET`。
 
 ### 発注・取消の確認
 
-取引操作（発注・キャンセル）は **preview → ユーザーの明示確認**が必須です。確認トークンは `content` / `structuredContent` に載らず、`create_order` / `cancel_order` / `cancel_orders` を有効な確認トークンなしで直接呼ぶと、サーバー側で拒否されます。`BITBANK_MCP_APPS_EXECUTE=1` のときは、確認カードに渡したトークンを持つ呼び出しは通ります（サーバーはカードからの呼び出しかを区別できないので、トークンが AI に渡らないことが前提です）。確認の経路はクライアントによって変わります。
+発注・取消は、プレビューのあとにユーザーの確認が要ります。確認トークンなしで `create_order` などを呼んでも拒否されます。
 
-| クライアント | 実行経路 |
+| クライアント | 実行のしかた |
 |---|---|
-| elicitation / MRTR 対応 | ネイティブ確認ダイアログで完結（**第一選択**。追加設定不要） |
-| MCP Apps UI 対応（Claude Desktop 等） | `BITBANK_MCP_APPS_EXECUTE=1` を設定した場合のみ、確認カードのボタンで実行（**既定は無効**。設定する前に[セクション 1](#npx-方式推奨) の「⚠️ `BITBANK_MCP_APPS_EXECUTE=1` を設定する前に読んでください」を確認） |
-| どちらも非対応 | プレビューのみ。実行は bitbank アプリ/ウェブで |
+| elicitation 対応 | 確認ダイアログ（追加の設定なし） |
+| MCP Apps UI 対応（Claude Desktop など） | `BITBANK_MCP_APPS_EXECUTE=1` のときだけ、確認カードのボタン |
+| どちらも非対応 | プレビューだけ（実行は bitbank のアプリ・ウェブで） |
 
-詳細: [Private API ガイド](docs/private-api.md) / [ADR-0007](docs/adr/0007-hitl-confirmation-token-delivery.md)
+詳細は [Private API ガイド](docs/private-api.md)。
 
-## 使用例（会話の型）
-- 「今、BTC は買いですか？」→ `analyze_market_signal`: 総合スコア + 寄与度・根拠
-- 「直近で MACD クロスした銘柄は？」→ `detect_macd_cross`: スクリーニング結果
-- 「ここ 30 日のボラ推移を見たい」→ `get_volatility_metrics` + `render_chart_svg`
+## 困ったとき
 
-## チャート表示（SVG）
-- MCP クライアント（Claude）では、アーティファクトとして `data.svg` を表示するようにお願いしてください。
-  - Claude で LLM がうまくアーティファクトを出力できない場合は、以下のプロンプトを加えるのがおすすめです。
-    - 「identifier と title を追加して、アーティファクトとして表示して」 
-  - 既定の描画は「ロウソク足のみ」。ボリンジャーバンド等のオーバーレイは明示指定時に追加されます（BBは `--bb-mode=default` 指定時に ±2σ がデフォルト）。
+- **「サーバーに接続できません」・`spawn npx ENOENT`**：Claude Desktop が `npx` を見つけられていません。`which npx`（Windows は `where.exe npx`）の出力を `command` に書きます。nvm / volta では、Node.js を更新するとこのパスが変わります。
+- **ツールが表示されない**：JSON の構文と再起動を確認します。`mcpServers` のキー（サーバー名）は英数字にしてください（日本語だとツールが見つからないことがあります）。
+- **口座のツールが表示されない**：`BITBANK_API_KEY` と `BITBANK_API_SECRET` の両方を設定しているか確認します。
+- **タイムアウトする**：ネットワークと [bitbank API の状態](https://status.bitbank.cc/) を確認します。
+- **`Cannot find package 'tsx'`**：古い版（v0.1.0）の問題です。`npx -y bitbank-lab-mcp@latest` にします。
+- **チャートが表示されない**：「identifier と title を追加して、アーティファクトとして表示して」と頼んでください。
+- **当日の約定データが少ない**：bitbank の仕様です。日ごとの約定履歴は UTC の 1 日が終わってから（日本時間 9:00 以降）公開されるので、当日分は直近の約 60 件しか取れません（結果に warning が出ます）。公開済みの期間は、`get_flow_metrics` / `analyze_volume_profile` の `since` / `until`（最大 7 日）で全件を集計できます。
+- **ログを見たい**：`env` に `"LOG_LEVEL": "debug"` を足して再起動します。
+- **MCP Inspector で試したい**：`npx @modelcontextprotocol/inspector -- npx -y bitbank-lab-mcp`
 
-## 詳細ドキュメント
-- プロンプト集（初心者〜中級者向け）: [docs/prompts-table.md](docs/prompts-table.md)
-- ツール一覧と使い分け: [docs/tools.md](docs/tools.md)
-- Private API ガイド: [docs/private-api.md](docs/private-api.md)
-- 変更履歴: [CHANGELOG.md](CHANGELOG.md)
-- 開発者向けガイド（ソースから起動・型生成・CI など）: [docs/development.md](docs/development.md) / [CLAUDE.md](CLAUDE.md)
-- 運用・監視（ログ集計／Docker起動 ほか）: [docs/ops.md](docs/ops.md)
+## ドキュメント
 
-## よくある質問（FAQ）
-**Q. 何を聞けばいいかわからない** [プロンプト集](docs/prompts-table.md) を参照してください。初心者向け🔰から中級者向けまで9種類の分析プロンプトを用意しています。
+- [プロンプト集](docs/prompts-table.md)
+- [ツール一覧](docs/tools.md)
+- [Private API ガイド](docs/private-api.md)
+- [変更履歴](CHANGELOG.md)
+- [開発者向け（ソースから起動）](docs/development.md) / [開発コマンド](CLAUDE.md)
+- [運用・監視](docs/ops.md)
 
-**Q. Docker は必須？** いいえ。Node.js 22 以上でローカル実行できます（最短は Claude Desktop 登録）。
-
-**Q. API キーは必要？** 公開データの取得・分析には不要です。自分の資産確認や注文操作（Private API）を使う場合は [Private API ガイド](docs/private-api.md) を参照してください。
-
-**Q. どのツールを使えばよい？** まず `analyze_market_signal` で全体を把握 → 必要に応じて各専門ツールへ。
-
-**Q. 対応銘柄は固定？** 固定ではありません。上流の公開 API が返す銘柄に自動追随します（追加/廃止も自動反映）。参考: [bitbank 公開API仕様](https://github.com/bitbankinc/bitbank-api-docs/blob/master/public-api.md)
-
-**Q. MCP Inspector でも試せる？** はい。次で実行できます（npm 公開版に対する動作確認）。
-```bash
-npx @modelcontextprotocol/inspector -- npx -y bitbank-lab-mcp
-```
-ソースコードから動かす場合は `npx @modelcontextprotocol/inspector -- tsx src/server.ts`（[docs/development.md](docs/development.md) を参照）。
-
-**Q. 当日の約定（フロー）データが少ない・古い時間帯が取れない** bitbank 側の仕様です。約定履歴の日付アーカイブ（`/transactions/{YYYYMMDD}`）は **UTC 暦日単位**で、当該 UTC 日の完了後（日本時間 9:00 以降、さらに公開遅延あり）にのみ公開されます。進行中の UTC 日の約定は直近約 60 件（latest）しか取得できないため、`get_flow_metrics` 等では当日区間のカバレッジが限定的になります（結果に warning として明示されます）。ローソク足（`get_candles`）は進行中の UTC 日でもリアルタイムで取得できます。<br>なお**公開済みの過去区間**であれば、`get_flow_metrics` / `analyze_volume_profile` の `since` / `until`（オフセット付き ISO8601、最大 7 日）でその区間の**全件**を集計できます（例: `since=2026-08-01T00:00:00Z`, `until=2026-08-02T00:00:00Z` で UTC 8/1 の 1 日ぶん）。件数上限による切り捨ては起きません。
-
-## トラブルシューティング
-
-| 症状 | 原因・対処 |
-|------|-----------|
-| Claude Desktop にツールが表示されない | `claude_desktop_config.json` の JSON 構文が壊れている / Claude Desktop を `Cmd+Q`（Windows は完全終了）で再起動していない |
-| 「サーバーに接続できません」エラー（npx 方式） | Claude Desktop から `npx` が見つからない可能性。[絶対パス方式](#絶対パス方式フォールバック)に切り替える |
-| `spawn npx ENOENT` エラー | `which npx` の結果が異なるパスを指している。`command` を正しいパスに書き換える |
-| Node.js アップデート後に MCP が動かなくなった | nvm/volta の場合、Node.js バージョンが変わると絶対パスも変わる。`which npx` を再確認して `command` を更新するか、npx 方式（`npx` 名指し）に切り替える |
-| `Cannot find package 'tsx'` エラー | `bitbank-lab-mcp` の古い版（v0.1.0）でこの問題が発生。`npx -y bitbank-lab-mcp@latest` で最新版に更新するか、設定を再起動 |
-| ツール実行時にタイムアウト | ネットワーク接続を確認 / [bitbank API の状態](https://status.bitbank.cc/)を確認 |
-| Private API ツールが表示されない | `BITBANK_API_KEY` と `BITBANK_API_SECRET` の両方が設定されているか確認（→ [docs/private-api.md](docs/private-api.md)） |
-| ログを確認したい | `env` に `"LOG_LEVEL": "debug"` を追加して再起動 |
-| Plugin install で「Marketplace not found」 | `/plugin marketplace add bitbankinc/bitbank-lab-mcp` を先に実行してから `/plugin install bitbank-lab-mcp@bitbank-lab` |
-
----
-
-## 開発者向け（ソースから起動）
-
-clone からの起動、開発版を Claude Desktop に登録する方法、Inspector での確認は [docs/development.md](docs/development.md) を参照してください。
-
-## フィードバック・バグ報告
-
-バグ報告や機能要望は [GitHub Issues](https://github.com/bitbankinc/bitbank-lab-mcp/issues) からお願いします。Issue テンプレートを用意していますので、用途に合ったものを選択してください。
+バグ報告や要望は [GitHub Issues](https://github.com/bitbankinc/bitbank-lab-mcp/issues) へ。
 
 ## 免責事項
 
