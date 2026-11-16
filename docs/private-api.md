@@ -126,7 +126,7 @@ npx -y bitbank-lab-mcp
 ```
 
 - 確認トークンは HMAC-SHA256 で生成（`BITBANK_API_SECRET` を鍵に使用）
-- 有効期限: 60秒（`ORDER_CONFIRM_TTL_MS` で変更可能）
+- 有効期限: 60秒（`ORDER_CONFIRM_TTL_MS` で変更可能。最長 5 分）
 - パラメータ改ざんを検知（トークン生成時と実行時のパラメータが一致しない場合は拒否）
 - キャンセルにも同様の確認フローを適用（`preview_cancel_order` / `preview_cancel_orders`）
 
@@ -199,7 +199,7 @@ MCP 仕様（SEP-1624 の整理）では `CallToolResult.content` と `structure
 | ワンタイム | 2 回目は `token_already_used`（二重発注しない） |
 | action 束縛 | `cancel_order` のトークンを `create_order` に流用できない |
 
-したがって最悪ケースは **「ユーザーが直前にプレビューしたその注文 1 件、または `preview_cancel_orders` でプレビューした注文 ID 集合 1 セットが、60 秒以内に 1 回だけ実行される」** に限定される。
+したがって最悪ケースは **「ユーザーが直前にプレビューしたその注文 1 件、または `preview_cancel_orders` でプレビューした注文 ID 集合 1 セットが、期限（既定 60 秒、`ORDER_CONFIRM_TTL_MS` で最長 5 分）内に 1 回だけ実行される」** に限定される。
 
 #### 将来の代替案 / 移行計画
 
