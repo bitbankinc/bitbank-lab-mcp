@@ -407,8 +407,8 @@ drift 時に「ミラー要更新」issue を起票する。
 > 実績の手数料・利息はここ（`fee_occurred_amount_quote` + `interest`）が正。見積りは `lib/fees.ts`。
 
 > **実口座で確認した信用約定の挙動（fork の issue #450 / #452）:**
-> - `profit_loss` は**手数料控除後**。BTC/JPY のショート決済で、値動きだけの損益 −6.9867 円・決済行の発生手数料 8.4210 円に対し
->   `profit_loss` は −15.4077 円だった。口座損益の合計で `fee_occurred_amount_quote` を引くと二重控除になる。
+> - `profit_loss` は**手数料控除後**。BTC/JPY のショート決済で、`profit_loss` は値動きだけの損益から決済行の発生手数料を
+>   引いた額と一致した。口座損益の合計で `fee_occurred_amount_quote` を引くと二重控除になる。
 > - 信用の手数料は決済時にまとめて計上される。決済行の `fee_occurred_amount_quote` が新規側と決済側の合計で、新規行は空。
 > - `profit_loss` に `interest` が含まれるかは**未確認**（確認に使えた約定は利息がすべて 0）。
 

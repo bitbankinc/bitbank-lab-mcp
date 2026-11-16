@@ -139,13 +139,13 @@ describe('get_margin_trade_history', () => {
 						side: 'buy',
 						position_side: 'short',
 						type: 'market',
-						amount: '0.0007',
-						price: '12029981',
+						amount: '0.0009',
+						price: '10004321',
 						maker_taker: 'taker',
 						fee_amount_base: '0',
-						fee_amount_quote: '8.4210',
-						fee_occurred_amount_quote: '8.4210',
-						profit_loss: '-15.4077',
+						fee_amount_quote: '9.0040',
+						fee_occurred_amount_quote: '9.0040',
+						profit_loss: '-12.8929',
 						interest: '0.0000',
 						executed_at: 1710000100000,
 					},
@@ -156,8 +156,8 @@ describe('get_margin_trade_history', () => {
 						side: 'sell',
 						position_side: 'short',
 						type: 'limit',
-						amount: '0.0007',
-						price: '12020000',
+						amount: '0.0009',
+						price: '10000000',
 						maker_taker: 'maker',
 						fee_amount_base: '0',
 						fee_amount_quote: '0',
@@ -175,8 +175,8 @@ describe('get_margin_trade_history', () => {
 		const lines = result.summary.split('\n');
 		const closeLine = lines.find((l) => l.includes('ショート買'));
 		const openLine = lines.find((l) => l.includes('ショート売'));
-		expect(closeLine).toContain('損益: -15.4077円（手数料控除後）');
-		expect(closeLine).toContain('発生手数料: 8.421円');
+		expect(closeLine).toContain('損益: -12.8929円（手数料控除後）');
+		expect(closeLine).toContain('発生手数料: 9.004円');
 		expect(closeLine).toContain('利息: 0円');
 		expect(openLine).toContain('手数料: 0円');
 		expect(openLine).not.toContain('損益');
