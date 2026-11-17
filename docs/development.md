@@ -1,6 +1,6 @@
 # 開発者向けガイド（ソースから起動）
 
-このページは「自分で MCP サーバーをいじりたい」「PR を送りたい」という開発者向けです。**通常の利用者は [README のセクション 1](../README.md#1-claude-desktop-に登録推奨) の `npx -y bitbank-lab-mcp` 方式で OK** です（こちらは clone 不要）。
+このページは「自分で MCP サーバーをいじりたい」「PR を送りたい」という開発者向けです。**通常の利用者は [README のセクション 1](../README.md#1-claude-desktop-に登録) の `npx -y bitbank-lab-mcp` 方式で OK** です（こちらは clone 不要）。
 
 ## セットアップ
 
