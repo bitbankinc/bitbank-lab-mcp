@@ -46,7 +46,9 @@ Node.js 22 以上（24 推奨）が必要です。npm の [`bitbank-lab-mcp`](ht
 }
 ```
 
-**B. 口座の参照（API キーが必要。発注はできない）**
+**B. 口座の参照（API キーが必要）**
+
+キーの権限を「参照」だけにすれば、発注はできません。
 
 ```json
 {
@@ -155,7 +157,7 @@ BTCの今の市場状況を分析して
 
 ## 困ったとき
 
-- **「サーバーに接続できません」・`spawn npx ENOENT`**：Claude Desktop が `npx` を見つけられていません。`which npx`（Windows は `where.exe npx`）の出力を `command` に書きます。nvm / volta では、Node.js を更新するとこのパスが変わります。
+- **「サーバーに接続できません」・`spawn npx ENOENT`**：Claude Desktop が `npx` を見つけられていません。`which npx`（Windows は `where.exe npx`）の出力を `command` に書きます。nvm / volta では `node` も見つからないことがあるので、`env` に `"PATH": "<which node のフォルダ>:/usr/bin:/bin"` も足します（Node.js を更新するとパスが変わります）。
 - **ツールが表示されない**：JSON の構文と再起動を確認します。`mcpServers` のキー（サーバー名）は英数字にしてください（日本語だとツールが見つからないことがあります）。
 - **口座のツールが表示されない**：`BITBANK_API_KEY` と `BITBANK_API_SECRET` の両方を設定しているか確認します。
 - **タイムアウトする**：ネットワークと [bitbank API の状態](https://status.bitbank.cc/) を確認します。
