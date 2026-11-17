@@ -275,6 +275,12 @@ export function formatExactPrice(value: number): string {
 	return formatPriceDecimals(value, fractionDigits(value));
 }
 
+// 約定履歴の手数料・損益・利息は円未満まで計上されるので、formatYenAmount のように円の整数に丸めない。
+export function formatYenExact(value: number | null | undefined): string {
+	if (value == null || !Number.isFinite(Number(value))) return 'n/a';
+	return `${formatExactPrice(Number(value))}円`;
+}
+
 // 円の整数に丸めると、数円のペアでは価格や値幅が潰れる。値幅は値幅自体ではなく価格の水準（refPrice）で桁を決める。
 export function formatPriceAtLevel(value: number, refPrice: number = value): string {
 	return formatPriceDecimals(value, priceDecimals(refPrice));

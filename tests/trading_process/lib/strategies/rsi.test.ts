@@ -90,13 +90,13 @@ describe('rsiStrategy', () => {
 	it('name / type / requiredBars が正しい', () => {
 		expect(rsiStrategy.name).toBe('RSI');
 		expect(rsiStrategy.type).toBe('rsi');
-		expect(rsiStrategy.requiredBars).toBe(20);
-		expect(rsiStrategy.computeRequiredBars({})).toBe(20);
+		expect(rsiStrategy.requiredBars).toBe(109);
+		expect(rsiStrategy.computeRequiredBars({})).toBe(109);
 	});
 
 	describe('computeRequiredBars', () => {
-		it('period を増やすと必要バー数が増える（period=50 → 56）', () => {
-			expect(rsiStrategy.computeRequiredBars({ period: 50 })).toBe(56);
+		it('period を増やすと必要バー数が増える（period=50 → 50 + 1 + 342）', () => {
+			expect(rsiStrategy.computeRequiredBars({ period: 50 })).toBe(393);
 		});
 	});
 

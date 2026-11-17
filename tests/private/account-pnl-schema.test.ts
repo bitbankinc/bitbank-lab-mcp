@@ -32,13 +32,15 @@ const PERIOD_KEYS = [
 ];
 
 describe('AccountPnl スキーマ（#72: 信用コスト項の命名）', () => {
-	it('新フィールドの description に符号規約（コスト = 正値 / total では減算）が書いてある', () => {
+	it('新フィールドの description に符号規約（コスト = 正値。利息は total で減算、手数料は控除済みで引かない）が書いてある', () => {
 		const shape = shapeOf('account_pnl');
 		for (const key of ['margin_interest_cost', 'margin_fee_cost'] as const) {
-			const description = shape[key].description ?? '';
-			expect(description, `${key} の description`).toContain('コスト = 正値');
-			expect(description, `${key} の description`).toContain('減算');
+			expect(shape[key].description ?? '', `${key} の description`).toContain('コスト = 正値');
 		}
+		expect(shape.margin_interest_cost.description ?? '').toContain('減算');
+		// profit_loss は手数料控除後なので、手数料を total から引くと二重控除になる（issue 450）
+		expect(shape.margin_fee_cost.description ?? '').toContain('引かない');
+		expect(shape.margin_realized_pnl.description ?? '').toContain('手数料控除後');
 	});
 
 	it('total の description に計算式が書いてあり、コスト項を新フィールド名で参照している', () => {

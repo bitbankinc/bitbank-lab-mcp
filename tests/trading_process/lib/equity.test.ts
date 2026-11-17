@@ -134,6 +134,47 @@ describe('calculateEquityAndDrawdown', () => {
 	});
 });
 
+describe('calculateEquityAndDrawdown - 確定トレードの手数料の計上時点（issue 445 項目 1）', () => {
+	// 片道 1%（往復 fee_pct=2、net_return = 1 - 2f）。価格は全バー 100 で不変。
+	const flatCandles = makeCandles(['t0', 't1', 't2', 't3', 't4'], [100, 100, 100, 100, 100]);
+	const roundTrip: Trade = {
+		entry_time: 't1',
+		entry_price: 100,
+		exit_time: 't3',
+		exit_price: 100,
+		pnl_pct: -2,
+		fee_pct: 2,
+		net_return: 0.98,
+	};
+
+	it('保有中のエクイティは建てた時点で片道ぶん引かれ、未決済ポジションと同じ扱いになる', () => {
+		const closed = calculateEquityAndDrawdown([roundTrip], flatCandles);
+		expect(closed.equity_curve[1].equity_pct).toBeCloseTo(-1, 6);
+		expect(closed.equity_curve[2].equity_pct).toBeCloseTo(-1, 6);
+
+		const open = calculateEquityAndDrawdown([], flatCandles, {
+			entry_time: 't1',
+			entry_price: 100,
+			entry_fee_multiplier: 0.99,
+		});
+		expect(closed.equity_curve[2].equity_pct).toBeCloseTo(open.equity_curve[2].equity_pct, 6);
+	});
+
+	it('決済バーの段差は片道ぶん（2f ではない）で、確定値は net_return のまま', () => {
+		const { equity_curve, max_drawdown } = calculateEquityAndDrawdown([roundTrip], flatCandles);
+		expect(equity_curve[3].equity_pct).toBeCloseTo(-2, 6);
+		expect(equity_curve[3].confirmed_pct).toBeCloseTo(-2, 6);
+		expect(equity_curve[3].equity_pct - equity_curve[2].equity_pct).toBeCloseTo(-1, 6);
+		expect(max_drawdown).toBeCloseTo(2, 6);
+	});
+
+	it('確定エクイティ（confirmed_pct）は保有中に動かない', () => {
+		const { equity_curve } = calculateEquityAndDrawdown([roundTrip], flatCandles);
+		expect(equity_curve[1].confirmed_pct).toBe(0);
+		expect(equity_curve[2].confirmed_pct).toBe(0);
+	});
+});
+
 describe('calculateEquityAndDrawdown - openPosition', () => {
 	it('openPosition を渡すと entry_time 以降が含み損益で延長される', () => {
 		const candles = makeCandles(['t0', 't1', 't2', 't3'], [100, 100, 150, 200]);

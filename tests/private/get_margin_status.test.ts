@@ -148,7 +148,7 @@ describe('get_margin_status', () => {
 		expect(result.summary).toContain('fetch failed');
 	});
 
-	it('サマリーに維持保証金・建玉評価額・新規建て可能額を含む', async () => {
+	it('サマリーに維持保証金・建玉合計・新規建て可能額を含む', async () => {
 		setupFetchMock(mockBitbankSuccess(rawMarginStatusResponse));
 
 		const { default: getMarginStatus } = await import('../../tools/private/get_margin_status.js');
@@ -158,8 +158,20 @@ describe('get_margin_status', () => {
 		expect(result.summary).toContain('維持保証金合計');
 		expect(result.summary).toContain('ロング');
 		expect(result.summary).toContain('ショート');
-		expect(result.summary).toContain('建玉総評価額');
 		expect(result.summary).toContain('新規建て可能額');
+	});
+
+	it('建玉の金額は時価ではないので「評価額」と書かず、保有分が建値ベースであることを書く', async () => {
+		setupFetchMock(mockBitbankSuccess(rawMarginStatusResponse));
+
+		const { default: getMarginStatus } = await import('../../tools/private/get_margin_status.js');
+		const result = await getMarginStatus({});
+
+		assertOk(result);
+		expect(result.summary).toMatch(/建玉合計（時価ではない）: 400,000/);
+		expect(result.summary).toMatch(/ {2}保有分（建値ベース）: 300,000/);
+		expect(result.summary).toMatch(/ {2}新規注文中: 100,000/);
+		expect(result.summary).not.toContain('評価額');
 	});
 
 	it('金額は「¥」を付けずに円で出す（¥ と 円 を重ねない）', async () => {

@@ -313,6 +313,63 @@ describe('calculateSummary', () => {
 	});
 });
 
+describe('calculateSummary - Buy & Hold の手数料（issue 445 項目 2）', () => {
+	const candles: Candle[] = [
+		{ time: 't0', open: 50, high: 60, low: 40, close: 50 },
+		{ time: 't1', open: 100, high: 110, low: 90, close: 100 }, // tradableStartIdx
+		{ time: 't2', open: 100, high: 120, low: 100, close: 110 }, // B&H 起点 open=100
+		{ time: 't3', open: 110, high: 210, low: 110, close: 200 }, // 終点 close=200
+	];
+	const flatEquity = candles.map((c) => ({ time: c.time, equity_pct: 0, confirmed_pct: 0 }));
+
+	it('起点で買いの片道手数料を引き、最終バーは終値で評価して売りの手数料は引かない', () => {
+		// (200 / 100) × (1 - 0.01) - 1 = +98%
+		const summary = calculateSummary([], 0, candles, flatEquity, '1D', 1, 100);
+		expect(summary.buy_hold_pnl_pct).toBe(98);
+	});
+
+	it('戦略が B&H と同じ足で買って持ち続けた場合、excess_return_pct は 0 になる', () => {
+		const equity = flatEquity.map((p, i) => (i === 3 ? { ...p, equity_pct: 98 } : p));
+		const summary = calculateSummary([], 0, candles, equity, '1D', 1, 100);
+		expect(summary.excess_return_pct).toBe(0);
+	});
+
+	it('runBacktestEngine は input.fee_bp を B&H に渡す', () => {
+		const strategy = {
+			name: 'hold',
+			type: 'sma_cross' as const,
+			requiredBars: 1,
+			defaultParams: {},
+			computeRequiredBars: () => 1,
+			generate: (c: Candle[]): Signal[] => c.map(() => ({ action: 'hold' as const, reason: '', time: '' })),
+			getOverlays: () => [],
+			validate: (params: Record<string, number>) => ({ valid: true, errors: [], normalizedParams: { ...params } }),
+		};
+		const result = runBacktestEngine(candles, strategy, makeEngineInput(candles, { fee_bp: 100 }));
+		expect(result.summary.buy_hold_pnl_pct).toBe(98);
+	});
+});
+
+describe('calculateSummary - profit_factor の null（issue 445 項目 3）', () => {
+	const candles = makeCandles(4);
+	const flatEquity = candles.map((c) => ({ time: c.time, equity_pct: 0, confirmed_pct: 0 }));
+	const trade = (pnl: number): Trade => ({
+		entry_time: 't1',
+		entry_price: 100,
+		exit_time: 't2',
+		exit_price: 100,
+		pnl_pct: pnl,
+		fee_pct: 0,
+		net_return: 1 + pnl / 100,
+	});
+
+	it('トレード 0 件、全勝、全トレード 0% のどれも null', () => {
+		expect(calculateSummary([], 0, candles, flatEquity, '1D').profit_factor).toBeNull();
+		expect(calculateSummary([trade(5), trade(3)], 0, candles, flatEquity, '1D').profit_factor).toBeNull();
+		expect(calculateSummary([trade(0)], 0, candles, flatEquity, '1D').profit_factor).toBeNull();
+	});
+});
+
 describe('calculateSummary - sharpe_ratio timeframe annualization', () => {
 	// 単調変動するエクイティカーブ（stdev > 0 を担保）
 	function makeEquityCurve(length: number) {
@@ -821,6 +878,45 @@ describe('runBacktestEngine - open position entry fee', () => {
 		expect(result.summary.trade_count).toBe(0);
 		expect(result.equity_curve[result.equity_curve.length - 1].equity_pct).toBeCloseTo(-1, 4);
 		expect(result.summary.total_pnl_pct).toBeCloseTo(-1, 2);
+	});
+
+	it('未決済ポジションを open_position に出す（建値・建てた時刻・評価に使った終値・含み損益、issue 444）', () => {
+		// entry at candles[3].open=100、last close=70、片道 1% → 0.7 × 0.99 - 1 = -30.7%
+		const candles: Candle[] = [
+			{ time: 't0', open: 90, high: 95, low: 85, close: 90 },
+			{ time: 't1', open: 95, high: 100, low: 90, close: 95 },
+			{ time: 't2', open: 100, high: 105, low: 95, close: 100 },
+			{ time: 't3', open: 100, high: 105, low: 95, close: 100 },
+			{ time: 't4', open: 90, high: 95, low: 80, close: 85 },
+			{ time: 't5', open: 80, high: 85, low: 65, close: 70 },
+		];
+		const strategy = makeBuyOnceStrategy(2, candles.length, 2);
+		const result = runBacktestEngine(candles, strategy, makeEngineInput(candles, { fee_bp: 100 }));
+		expect(result.summary.trade_count).toBe(0);
+		expect(result.open_position).toEqual({
+			entry_time: 't3',
+			entry_price: 100,
+			mark_time: 't5',
+			mark_price: 70,
+			unrealized_pnl_pct: expect.closeTo(-30.7, 6),
+		});
+		expect(result.summary.total_pnl_pct).toBeCloseTo(-30.7, 2);
+	});
+
+	it('全トレードが決済済みなら open_position は null', () => {
+		const candles = makeFlatCandles(8, 100);
+		const strategy = {
+			...makeBuyOnceStrategy(2, candles.length, 2),
+			generate: (): Signal[] =>
+				Array.from({ length: candles.length }, (_, i) => ({
+					action: i === 2 ? ('buy' as const) : i === 4 ? ('sell' as const) : ('hold' as const),
+					reason: '',
+					time: '',
+				})),
+		};
+		const result = runBacktestEngine(candles, strategy, makeEngineInput(candles));
+		expect(result.summary.trade_count).toBe(1);
+		expect(result.open_position).toBeNull();
 	});
 
 	it('fee_bp=0、entry=close=同値の未決済は従来通り fee 影響なし', () => {

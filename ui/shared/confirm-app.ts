@@ -2,7 +2,14 @@
 
 import { App as McpApp, applyDocumentTheme, getDocumentTheme } from '@modelcontextprotocol/ext-apps';
 import { type RefObject, useEffect, useRef, useState } from 'react';
-import { type SnapshotHydrationPhase, startSnapshotHydration } from '../../src/mcp-apps-hydration.js';
+import {
+	confirmationResourceToSnapshot,
+	keepConfirmationMeta,
+	pullConfirmationIfMissing,
+	type SnapshotHydrationPhase,
+	startSnapshotHydration,
+} from '../../src/mcp-apps-hydration.js';
+import { confirmationResourceUri, readConfirmationMeta } from '../../src/mcp-apps-meta.js';
 import { applyHostStyles } from './host-styles';
 
 const CONNECT_TIMEOUT_MS = 7_000;
@@ -34,15 +41,76 @@ export function useConfirmApp(
 		const mcpApp = new McpApp({ name: appName, version: '0.1.0' });
 		appRef.current = mcpApp;
 
-		const applyPreviewResult = (structured: unknown, meta: unknown) => {
-			if (applyToolResult(structured, meta, hasPreviewRef.current)) {
-				hasPreviewRef.current = true;
-				setHydrationPhase('waiting');
-			}
+		let withToken: { structured: unknown; meta: unknown } | null = null;
+		// 取り込んだときは、実際に使った `_meta`（受け取り済みのトークンを持ち越したもの）を返す。
+		const applyPreviewResult = (structured: unknown, meta: unknown): { meta: unknown } | undefined => {
+			const effectiveMeta = keepConfirmationMeta(withToken, structured, meta);
+			if (!applyToolResult(structured, effectiveMeta, hasPreviewRef.current)) return undefined;
+			withToken = readConfirmationMeta(effectiveMeta) ? { structured, meta: effectiveMeta } : null;
+			acknowledge(effectiveMeta);
+			hasPreviewRef.current = true;
+			setHydrationPhase('waiting');
+			return { meta: effectiveMeta };
+		};
+
+		const fetchSnapshot = () =>
+			mcpApp.callServerTool(
+				{ name: 'get_ui_snapshot', arguments: { resource_uri: resourceUri } },
+				{ timeout: SNAPSHOT_TIMEOUT_MS },
+			);
+		const tokenResourceUri = confirmationResourceUri(resourceUri);
+		const fetchConfirmationResource = async () =>
+			tokenResourceUri
+				? confirmationResourceToSnapshot(
+						await mcpApp.readServerResource({ uri: tokenResourceUri }, { timeout: SNAPSHOT_TIMEOUT_MS }),
+					)
+				: undefined;
+		// connect() が pending のままアンマウントされると .then() は cleanup の後に走るので、破棄済みなら hydration を開始しない（#29）。
+		let disposed = false;
+		const connecting = mcpApp.connect();
+		let acknowledgedToken: string | undefined;
+		// 受け取ったトークンを知らせて、共有ファイルから消させる（ADR-0007 判断事項 D）。届かなくても期限と掃除で消える。
+		const acknowledge = (meta: unknown): void => {
+			const token = readConfirmationMeta(meta)?.confirmation_token;
+			if (!token || token === acknowledgedToken) return;
+			acknowledgedToken = token;
+			void connecting
+				.then(() =>
+					mcpApp.callServerTool(
+						{ name: 'get_ui_snapshot', arguments: { resource_uri: resourceUri, confirmation_token: token } },
+						{ timeout: SNAPSHOT_TIMEOUT_MS },
+					),
+				)
+				.catch(() => undefined);
+		};
+		// 取り直しの途中で新しい preview が届いたら、古い取り直しの結果を捨てる。
+		let previewSeq = 0;
+		const recoverConfirmation = (
+			structured: unknown,
+			meta: unknown,
+			sources: ReadonlyArray<() => Promise<unknown>>,
+		): void => {
+			const seq = ++previewSeq;
+			void connecting.then(
+				() =>
+					pullConfirmationIfMissing({
+						structured,
+						meta,
+						sources,
+						apply: (result) => {
+							const snapshot = result as { structuredContent?: unknown; _meta?: unknown };
+							applyPreviewResult(snapshot.structuredContent, snapshot._meta);
+						},
+						isAborted: () => disposed || seq !== previewSeq,
+					}),
+				() => undefined,
+			);
 		};
 
 		mcpApp.ontoolresult = (params) => {
-			applyPreviewResult(params?.structuredContent, params?._meta);
+			const applied = applyPreviewResult(params?.structuredContent, params?._meta);
+			if (!applied) return;
+			recoverConfirmation(params?.structuredContent, applied.meta, [fetchSnapshot, fetchConfirmationResource]);
 		};
 
 		mcpApp.onhostcontextchanged = (ctx) => {
@@ -54,11 +122,8 @@ export function useConfirmApp(
 			setConnState((s) => (s === 'connecting' ? 'failed' : s));
 		}, CONNECT_TIMEOUT_MS);
 		let stopHydration: (() => void) | undefined;
-		// connect() が pending のままアンマウントされると .then() は cleanup の後に走るので、破棄済みなら hydration を開始しない（#29）。
-		let disposed = false;
 
-		mcpApp
-			.connect()
+		connecting
 			.then(() => {
 				clearTimeout(connectTimeoutId);
 				setConnState('connected');
@@ -68,20 +133,18 @@ export function useConfirmApp(
 				if (disposed) return;
 				// 一部ホストは ui/notifications/tool-result を配信しないので、get_ui_snapshot から直近の preview 応答を取得して復元する。
 				stopHydration = startSnapshotHydration({
-					fetchSnapshot: () =>
-						mcpApp.callServerTool(
-							{ name: 'get_ui_snapshot', arguments: { resource_uri: resourceUri } },
-							{ timeout: SNAPSHOT_TIMEOUT_MS },
-						),
+					fetchSnapshot,
 					isHydrated: () => hasPreviewRef.current,
 					apply: (result) => {
 						// get_ui_snapshot も同じ `_meta` 契約でトークンを返す（有効化ゲートはサーバー側で再判定される）。
 						const snapshot = result as { structuredContent?: unknown; _meta?: unknown };
-						applyPreviewResult(snapshot.structuredContent, snapshot._meta);
+						const applied = applyPreviewResult(snapshot.structuredContent, snapshot._meta);
 						// 取り込めなかったら失敗として throw する。resolve したまま終わるとリトライも failed 表示も起きず「復元中」のまま固まる（#29）。
 						if (!hasPreviewRef.current) {
 							throw new Error('snapshot did not contain a usable preview');
 						}
+						// スナップショットは取り直したばかりなので、トークンが無ければ残りの経路（リソース）だけを試す。
+						if (applied) recoverConfirmation(snapshot.structuredContent, applied.meta, [fetchConfirmationResource]);
 					},
 					onPhase: setHydrationPhase,
 				});

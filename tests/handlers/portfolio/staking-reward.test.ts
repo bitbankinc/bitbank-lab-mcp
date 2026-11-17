@@ -68,14 +68,14 @@ describe('calcPeriodNetFlow — ステーキング報酬', () => {
 		expect('staking_reward_jpy' in result).toBe(false);
 	});
 
-	it('1 件でも換算できなければ額を出さず資産名を申告する。純入出金には影響しない', () => {
+	it('換算できない報酬があっても、通常の入出庫と同じく換算できた分の部分合計を出して資産名を併記する。純入出金には影響しない（issue 448）', () => {
 		const dw = dwOf([
 			deposit({ uuid: 'eth-staking', amount: '1', category: 'STAKING', confirmed_at: AT }),
 			deposit({ uuid: 'dot-staking', asset: 'dot', amount: '3', category: 'STAKING', confirmed_at: AT }),
 		]);
 		const result = calcPeriodNetFlow(dw, AT - 1, currentPriceOnly(ETH_PRICE));
 
-		expect(result.staking_reward_jpy).toBeUndefined();
+		expect(result.staking_reward_jpy).toBe(400_000);
 		expect(result.staking_reward_unpriced_assets).toEqual(['dot']);
 		expect(result.net_flow_jpy).toBe(0);
 		expect(result.unpriced_assets).toBeUndefined();

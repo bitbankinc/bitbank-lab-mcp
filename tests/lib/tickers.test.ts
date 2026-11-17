@@ -2,19 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BITBANK_API_BASE } from '../../lib/http.js';
 import { fetchTickerPricesMap } from '../../lib/tickers.js';
 
-const ORIGINAL_TICKERS_JPY_URL = process.env.TICKERS_JPY_URL;
-
 function mockTickerResponse(body: unknown, status = 200) {
 	return vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(body), { status }));
 }
 
 afterEach(() => {
 	vi.restoreAllMocks();
-	if (ORIGINAL_TICKERS_JPY_URL === undefined) {
-		delete process.env.TICKERS_JPY_URL;
-	} else {
-		process.env.TICKERS_JPY_URL = ORIGINAL_TICKERS_JPY_URL;
-	}
+	delete process.env.TICKERS_JPY_URL;
 });
 
 describe('fetchTickerPricesMap', () => {
@@ -103,8 +97,7 @@ describe('fetchTickerPricesMap', () => {
 		expect(result.error).toBe('fetch failed');
 	});
 
-	it('TICKERS_JPY_URL 未設定時は BITBANK_API_BASE/tickers_jpy で fetch される', async () => {
-		delete process.env.TICKERS_JPY_URL;
+	it('BITBANK_API_BASE/tickers_jpy で fetch される', async () => {
 		const spy = mockTickerResponse({ success: 1, data: [] });
 
 		await fetchTickerPricesMap();
@@ -113,13 +106,13 @@ describe('fetchTickerPricesMap', () => {
 		expect(String(spy.mock.calls[0]?.[0])).toBe(`${BITBANK_API_BASE}/tickers_jpy`);
 	});
 
-	it('process.env.TICKERS_JPY_URL を設定するとその URL で fetch される', async () => {
+	it('環境変数 TICKERS_JPY_URL を設定しても取得先は変わらない（評価額の価格を差し替えさせない）', async () => {
 		process.env.TICKERS_JPY_URL = 'http://test.local/custom_tickers';
 		const spy = mockTickerResponse({ success: 1, data: [] });
 
 		await fetchTickerPricesMap();
 
 		expect(spy).toHaveBeenCalledTimes(1);
-		expect(String(spy.mock.calls[0]?.[0])).toBe('http://test.local/custom_tickers');
+		expect(String(spy.mock.calls[0]?.[0])).toBe(`${BITBANK_API_BASE}/tickers_jpy`);
 	});
 });

@@ -102,21 +102,21 @@ describe('macdCrossStrategy', () => {
 	it('name / type / requiredBars が正しい', () => {
 		expect(macdCrossStrategy.name).toBe('MACD Crossover');
 		expect(macdCrossStrategy.type).toBe('macd_cross');
-		expect(macdCrossStrategy.requiredBars).toBe(35);
-		expect(macdCrossStrategy.computeRequiredBars({})).toBe(35);
+		expect(macdCrossStrategy.requiredBars).toBe(156);
+		expect(macdCrossStrategy.computeRequiredBars({})).toBe(156);
 	});
 
 	describe('computeRequiredBars', () => {
 		it('slow / signal を増やすと必要バー数が増える', () => {
-			expect(macdCrossStrategy.computeRequiredBars({ slow: 100, signal: 20 })).toBe(120);
+			expect(macdCrossStrategy.computeRequiredBars({ slow: 100, signal: 20 })).toBe(100 + 20 + 346 + 70);
 		});
 
 		it('sma_filter_period が slow + signal より大きいと sma_filter_period - 1 で支配される', () => {
 			expect(macdCrossStrategy.computeRequiredBars({ sma_filter_period: 200 })).toBe(199);
 		});
 
-		it('rsi_filter_period が支配的なケースは period + 1', () => {
-			expect(macdCrossStrategy.computeRequiredBars({ slow: 5, signal: 3, rsi_filter_period: 50 })).toBe(51);
+		it('rsi_filter_period が支配的なケースは period + 1 + Wilder 平滑の収束本数', () => {
+			expect(macdCrossStrategy.computeRequiredBars({ slow: 5, signal: 3, rsi_filter_period: 50 })).toBe(50 + 1 + 342);
 		});
 	});
 

@@ -61,6 +61,7 @@ content テキスト末尾に equity_curve / drawdown_curve の JSON を含む
 					input: res.data.input,
 					summary: res.data.summary,
 					trade_count: res.data.trades.length,
+					open_position: res.data.open_position,
 				},
 				artifactHint: res.svg
 					? {

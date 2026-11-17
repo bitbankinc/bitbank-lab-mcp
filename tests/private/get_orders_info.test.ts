@@ -77,8 +77,8 @@ describe('get_orders_info', () => {
 		expect(result.summary).toContain('PARTIALLY_FILLED');
 	});
 
-	it('一部の注文が取得できなかった場合に警告メッセージを含む', async () => {
-		// 3件リクエストしたが1件のみ返却（2件は3ヶ月以上前）
+	// 返ってこない理由はドキュメント上「3ヶ月以上前に約定・キャンセルされた注文」だけだが、存在しない ID でも同じ形になりうるので断定しない（issue 458）。
+	it('一部の注文が返ってこなかったら、その ID を挙げ、理由を断定しない', async () => {
 		setupFetchMock(
 			mockBitbankSuccess({
 				orders: [orderData(4001)],
@@ -89,7 +89,23 @@ describe('get_orders_info', () => {
 		const result = await getOrdersInfo({ pair: 'btc_jpy', order_ids: [4001, 4002, 4003] });
 
 		assertOk(result);
-		expect(result.summary).toContain('2件は3ヶ月以上前');
+		expect(result.summary).toContain('2件は返ってきませんでした（注文 ID: 4002, 4003）');
+		expect(result.summary).toContain('3ヶ月以上前に約定・キャンセルされた注文は、API がエラーにせず結果から除きます');
+		expect(result.summary).not.toContain('3ヶ月以上前の注文のため');
+	});
+
+	it('同じ ID を重ねて指定しても、返ってきた注文を欠けたとは数えない', async () => {
+		setupFetchMock(
+			mockBitbankSuccess({
+				orders: [orderData(4001)],
+			}),
+		);
+
+		const { default: getOrdersInfo } = await import('../../tools/private/get_orders_info.js');
+		const result = await getOrdersInfo({ pair: 'btc_jpy', order_ids: [4001, 4001] });
+
+		assertOk(result);
+		expect(result.summary).not.toContain('返ってきませんでした');
 	});
 
 	it('タイムスタンプが ISO8601 に変換される', async () => {
@@ -127,7 +143,7 @@ describe('get_orders_info', () => {
 		const result = await getOrdersInfo({ pair: 'btc_jpy', order_ids: [4001, 4002] });
 
 		assertOk(result);
-		expect(result.summary).not.toContain('3ヶ月以上前');
+		expect(result.summary).not.toContain('返ってきませんでした');
 	});
 
 	it('非 PrivateApiError の例外で upstream_error を返す', async () => {

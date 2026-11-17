@@ -1,4 +1,4 @@
-import { isInputRequiredResult } from '@modelcontextprotocol/server';
+import { CLIENT_CAPABILITIES_META_KEY, isInputRequiredResult } from '@modelcontextprotocol/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ok } from '../../lib/result.js';
 import { CONFIRMATION_META_KEY } from '../../src/mcp-apps-meta.js';
@@ -110,7 +110,7 @@ function initCtx(elicitation: unknown): Record<string, unknown> {
 }
 
 function envelopeElicitCtx(elicitation: unknown): Record<string, unknown> {
-	return { mcpReq: { envelope: { clientCapabilities: { elicitation } } } };
+	return { mcpReq: { envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation } } } };
 }
 
 describe('clientSupportsElicitation', () => {
@@ -138,14 +138,14 @@ describe('clientSupportsElicitation', () => {
 
 	it('per-request envelope の clientCapabilities.elicitation でも true（2026-07-28 系）', () => {
 		const extra = {
-			mcpReq: { envelope: { clientCapabilities: { elicitation: {} } } },
+			mcpReq: { envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } } },
 		};
 		expect(clientSupportsElicitation(extra)).toBe(true);
 	});
 
 	it('envelope の clientCapabilities に elicitation が無ければ false', () => {
 		const extra = {
-			mcpReq: { envelope: { clientCapabilities: { sampling: {} } } },
+			mcpReq: { envelope: { [CLIENT_CAPABILITIES_META_KEY]: { sampling: {} } } },
 		};
 		expect(clientSupportsElicitation(extra)).toBe(false);
 	});
@@ -168,7 +168,7 @@ describe('clientSupportsElicitation', () => {
 		it('initialize が form / envelope に宣言なし → true', () => {
 			const extra = {
 				server: { getClientCapabilities: () => ({ elicitation: { form: {} } }) },
-				mcpReq: { envelope: { clientCapabilities: { sampling: {} } } },
+				mcpReq: { envelope: { [CLIENT_CAPABILITIES_META_KEY]: { sampling: {} } } },
 			};
 			expect(clientSupportsElicitation(extra)).toBe(true);
 		});
@@ -176,7 +176,7 @@ describe('clientSupportsElicitation', () => {
 		it('initialize に宣言なし / envelope が url のみ → false', () => {
 			const extra = {
 				server: { getClientCapabilities: () => ({ sampling: {} }) },
-				mcpReq: { envelope: { clientCapabilities: { elicitation: { url: {} } } } },
+				mcpReq: { envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: { url: {} } } } },
 			};
 			expect(clientSupportsElicitation(extra)).toBe(false);
 		});
@@ -184,7 +184,7 @@ describe('clientSupportsElicitation', () => {
 		it('initialize が url のみ / envelope が form → true（OR なので広い側に倒れる）', () => {
 			const extra = {
 				server: { getClientCapabilities: () => ({ elicitation: { url: {} } }) },
-				mcpReq: { envelope: { clientCapabilities: { elicitation: { form: {} } } } },
+				mcpReq: { envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: { form: {} } } } },
 			};
 			expect(clientSupportsElicitation(extra)).toBe(true);
 		});
@@ -236,7 +236,7 @@ describe('withElicitedConfirmation', () => {
 		});
 
 		it('2026 系 envelope capabilities のみのホストでも input_required を返す', async () => {
-			const extra = { mcpReq: { envelope: { clientCapabilities: { elicitation: {} } } } };
+			const extra = { mcpReq: { envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } } } };
 			const result = await withElicitedConfirmation({
 				...baseOpts,
 				extra,
@@ -274,7 +274,7 @@ describe('withElicitedConfirmation', () => {
 			const onConfirmed = vi.fn();
 			const result = (await withElicitedConfirmation({
 				...baseOpts,
-				extra: { mcpReq: { envelope: { clientCapabilities: { elicitation: { url: {} } } } } },
+				extra: { mcpReq: { envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: { url: {} } } } } },
 				onConfirmed,
 				fallback: {
 					content: [{ type: 'text', text: 'FALLBACK_TEXT' }],
@@ -306,7 +306,7 @@ describe('withElicitedConfirmation', () => {
 				extra: {
 					mcpReq: {
 						envelope: {
-							clientCapabilities: {
+							[CLIENT_CAPABILITIES_META_KEY]: {
 								elicitation: { url: {} },
 								extensions: { [MCP_APPS_UI_EXTENSION_ID]: { mimeTypes: [APP_RESOURCE_MIME_TYPE] } },
 							},

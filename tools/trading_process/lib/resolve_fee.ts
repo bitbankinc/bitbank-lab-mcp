@@ -1,8 +1,8 @@
-// エンジンは t+1 open 執行（taker 相当）なので taker レートだけを動的に解決する。取得失敗やペア未発見では公称 taker に落として機能を止めない。
+// エンジンは t+1 open 執行（taker 相当）なので taker レートだけを動的に解決する。取得失敗・ペア未発見・率の欠落では公称 taker に落として機能を止めない。
 // TODO: エンジンが maker 約定を表現できるようになったら、指値戦略は feeRole / maker レートへ切り替える。
 
 import { getErrorMessage } from '../../../lib/error.js';
-import { DEFAULT_TAKER_FALLBACK, resolveFeeRate } from '../../../lib/fees.js';
+import { DEFAULT_TAKER_FALLBACK, specFeeRate } from '../../../lib/fees.js';
 import { fetchPairsSpec } from '../../../lib/pairs.js';
 
 const BP_PER_RATE = 10000;
@@ -34,8 +34,14 @@ export async function resolveBacktestFeeBp(pair: string, explicitFeeBp?: number)
 				warning: `手数料: ペア '${pair}' が /spot/pairs に見つからないため公称 ${DEFAULT_FEE_BP} bp で概算します。`,
 			};
 		}
-		// taker レートを解決（spec の taker_fee_rate_quote 欠損時は lib/fees.ts が公称率に落とす）。
-		const rate = resolveFeeRate(spec, 'taker');
+		const rate = specFeeRate(spec, 'taker');
+		if (rate == null) {
+			return {
+				fee_bp: DEFAULT_FEE_BP,
+				source: 'fallback',
+				warning: `手数料: ペア '${pair}' の taker_fee_rate_quote が /spot/pairs に無いため公称 ${DEFAULT_FEE_BP} bp で概算します。`,
+			};
+		}
 		return { fee_bp: rate * BP_PER_RATE, source: 'dynamic' };
 	} catch (err) {
 		return {

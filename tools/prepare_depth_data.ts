@@ -3,7 +3,7 @@
 import { toIsoTime } from '../lib/datetime.js';
 import { buildCumulativeSteps } from '../lib/depth-analysis.js';
 import getDepth from '../lib/get-depth.js';
-import { roundMidPrice, roundSpread } from '../lib/price.js';
+import { CROSSED_BOOK_WARNING, isCrossedQuote, roundMidPrice, roundSpread } from '../lib/price.js';
 import { fail, failFromError, failFromValidation, ok, parseAsResult, toStructured } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import type { FailResult, OkResult, Pair } from '../src/schemas.js';
@@ -105,8 +105,10 @@ export default async function prepareDepthData(
 
 		const bestBid = bidStepsRaw[0]?.[0] ?? null;
 		const bestAsk = askStepsRaw[0]?.[0] ?? null;
-		const mid = bestBid != null && bestAsk != null ? (bestBid + bestAsk) / 2 : null;
-		const spread = bestBid != null && bestAsk != null ? bestAsk - bestBid : null;
+		const crossed = isCrossedQuote(bestBid, bestAsk);
+		const hasQuote = bestBid != null && bestAsk != null && !crossed;
+		const mid = hasQuote ? (bestBid + bestAsk) / 2 : null;
+		const spread = hasQuote ? bestAsk - bestBid : null;
 		const spreadPct = mid != null && spread != null && mid !== 0 ? Number((spread / mid).toFixed(6)) : null;
 
 		const totalBidVolume = bidStepsRaw.at(-1)?.[1] ?? 0;
@@ -130,8 +132,8 @@ export default async function prepareDepthData(
 			asks: askSteps,
 			bestBid,
 			bestAsk,
-			mid: bestBid != null && bestAsk != null ? roundMidPrice(bestBid, bestAsk) : null,
-			spread: bestBid != null && bestAsk != null ? roundSpread(bestBid, bestAsk) : null,
+			mid: hasQuote ? roundMidPrice(bestBid, bestAsk) : null,
+			spread: hasQuote ? roundSpread(bestBid, bestAsk) : null,
 			spreadPct,
 			totalBidVolume: roundVolume(totalBidVolume),
 			totalAskVolume: roundVolume(totalAskVolume),
@@ -147,10 +149,12 @@ export default async function prepareDepthData(
 
 		const volumeUnit = chk.pair.split('_')[0].toUpperCase();
 		const totalDropped = bidsDropped + asksDropped;
-		const warning =
+		const droppedWarning =
 			totalDropped > 0
 				? `⚠️ 上流レスポンスから ${totalDropped}件 の不正な板レベルを除外しました（bids: ${bidsDropped}件 / asks: ${asksDropped}件、price/size が数値変換不能）`
 				: undefined;
+		const warning =
+			[droppedWarning, crossed ? CROSSED_BOOK_WARNING : undefined].filter(Boolean).join('\n') || undefined;
 
 		const meta: PrepareDepthDataMeta = {
 			...createMeta(chk.pair),

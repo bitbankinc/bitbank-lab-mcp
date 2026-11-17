@@ -130,7 +130,6 @@ describe('PR5 audit / 1. public tool ↔ impl file mapping', () => {
 
 describe('PR5 audit / 2. JSON safety (NaN / Infinity / -Infinity 再帰検査)', () => {
 	beforeEach(() => {
-		delete process.env.TICKERS_JPY_URL;
 		delete process.env.BITBANK_PAIRS_MODE;
 		process.env.BITBANK_PAIRS_MODE = 'off';
 	});
@@ -138,7 +137,6 @@ describe('PR5 audit / 2. JSON safety (NaN / Infinity / -Infinity 再帰検査)',
 	afterEach(() => {
 		vi.restoreAllMocks();
 		delete process.env.BITBANK_PAIRS_MODE;
-		delete process.env.TICKERS_JPY_URL;
 	});
 
 	it('get_ticker: 正常系 → NaN/Infinity を含まない', async () => {
@@ -253,7 +251,6 @@ describe('PR5 audit / 2. JSON safety (NaN / Infinity / -Infinity 再帰検査)',
 
 	it('get_tickers_jpy: 全 JPY ペア → NaN/Infinity を含まない（vol*last の overflow も含めて）', async () => {
 		// 故意に巨大な vol を仕込んで vol*last が Infinity になるケースもテスト
-		process.env.TICKERS_JPY_URL = 'http://test/tickers_jpy';
 		mockFetchJson({
 			success: 1,
 			data: [
@@ -295,7 +292,6 @@ describe('PR5 audit / 3. JSON round-trip preservation', () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		delete process.env.BITBANK_PAIRS_MODE;
-		delete process.env.TICKERS_JPY_URL;
 	});
 
 	function assertRoundTrip<T>(res: T, schema: { parse: (v: unknown) => unknown }, invariants: (parsed: T) => void) {
@@ -383,7 +379,6 @@ describe('PR5 audit / 3. JSON round-trip preservation', () => {
 	});
 
 	it('get_tickers_jpy: roundtrip 後も schema parse 成功', async () => {
-		process.env.TICKERS_JPY_URL = 'http://test/tickers_jpy';
 		mockFetchJson({
 			success: 1,
 			data: [
@@ -523,7 +518,6 @@ describe('PR5 audit / 5. content visibility (warning / drop / count / timestamp 
 	afterEach(() => {
 		vi.restoreAllMocks();
 		delete process.env.BITBANK_PAIRS_MODE;
-		delete process.env.TICKERS_JPY_URL;
 	});
 
 	it('get_ticker: 📸 timestamp 行が content (summary) に出る', async () => {
@@ -625,7 +619,6 @@ describe('PR5 audit / 5. content visibility (warning / drop / count / timestamp 
 	});
 
 	it('get_tickers_jpy (ranked): 件数とランキング表記が content text に出る', async () => {
-		process.env.TICKERS_JPY_URL = 'http://test/tickers_jpy';
 		mockFetchJson({
 			success: 1,
 			data: [

@@ -3,7 +3,7 @@ import { toNum } from './conversions.js';
 import { estimateZones } from './depth-analysis.js';
 import { formatExactPrice, formatSummary, formatTimestampJST } from './formatter.js';
 import { BITBANK_API_BASE, DEFAULT_RETRIES, fetchJsonWithRateLimit } from './http.js';
-import { roundMidPrice } from './price.js';
+import { CROSSED_BOOK_WARNING, isCrossedQuote, roundMidPrice } from './price.js';
 import { fail, failFromError, failFromValidation, ok } from './result.js';
 import { createMeta, ensurePair } from './validate.js';
 
@@ -79,7 +79,8 @@ export default async function getDepth(pair: string, { timeoutMs = 3000, maxLeve
 		// best 気配は finite な数値のみ採用し、mid を NaN 化させない。
 		const bestAsk = toNum(asks[0]?.[0]);
 		const bestBid = toNum(bids[0]?.[0]);
-		const mid = bestBid != null && bestAsk != null ? roundMidPrice(bestBid, bestAsk) : null;
+		const crossed = isCrossedQuote(bestBid, bestAsk);
+		const mid = bestBid != null && bestAsk != null && !crossed ? roundMidPrice(bestBid, bestAsk) : null;
 		const summary = formatSummary({
 			pair: chk.pair,
 			latest: mid ?? undefined,
@@ -113,9 +114,13 @@ export default async function getDepth(pair: string, { timeoutMs = 3000, maxLeve
 		};
 
 		// LLM は structuredContent.data を読めないので全板データを含める。
-		const textWithBoundary = buildDepthText({ timestamp: data.timestamp, summary, bids, asks, mid });
+		const depthText = buildDepthText({ timestamp: data.timestamp, summary, bids, asks, mid });
+		const textWithBoundary = crossed ? `${CROSSED_BOOK_WARNING}\n\n${depthText}` : depthText;
 
-		const meta = createMeta(chk.pair, rateLimit ? { rateLimit } : {});
+		const meta = createMeta(chk.pair, {
+			...(rateLimit ? { rateLimit } : {}),
+			...(crossed ? { warning: CROSSED_BOOK_WARNING } : {}),
+		});
 		return GetDepthOutputSchema.parse(
 			ok(textWithBoundary, data as Record<string, unknown>, meta as Record<string, unknown>),
 		);

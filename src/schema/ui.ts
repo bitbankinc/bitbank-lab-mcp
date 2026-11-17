@@ -7,4 +7,8 @@ export const GetUiSnapshotInputSchema = z.object({
 	resource_uri: z
 		.enum(UI_SNAPSHOT_RESOURCE_URIS)
 		.describe('スナップショットを取得する MCP Apps リソース URI（ウィジェット自身の URI を指定する）'),
+	confirmation_token: z
+		.string()
+		.optional()
+		.describe('[Internal] 確認 UI が受け取り済みであることをサーバーに伝えるための値。LLM は指定しない'),
 });

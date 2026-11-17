@@ -1,4 +1,4 @@
-// 末尾未決済ポジションは entry_time 以降を最終バーまで含み損益で延長し、confirmed_pct には反映しない（entry 側の片道手数料だけを即時反映する）。
+// 建てた時点で片道手数料を引き、確定トレードは決済時に net_return（往復手数料込み）で確定する。末尾未決済は最終バーまで含み損益で延長し、confirmed_pct には反映しない。
 
 import type { Candle, DrawdownPoint, EquityPoint, Trade } from '../types.js';
 
@@ -12,14 +12,13 @@ export interface EquityResult {
 export interface OpenPosition {
 	entry_time: string;
 	entry_price: number;
-	/** 確定トレードは exit 時に往復手数料をまとめて控除するので、同型のフィールドは未決済ポジションだけが持つ。 */
 	entry_fee_multiplier: number;
 }
 
 interface PositionInfo {
-	isLong: boolean;
 	entryPrice: number;
-	entryEquity: number; // エントリー時点の確定エクイティ
+	confirmedAtEntry: number;
+	equityAfterEntryFee: number;
 }
 
 export function calculateEquityAndDrawdown(
@@ -45,25 +44,25 @@ export function calculateEquityAndDrawdown(
 	for (const candle of candles) {
 		const entryTrade = tradeByEntryTime.get(candle.time);
 		if (entryTrade && !position) {
+			// fee_pct は往復 2f なので、建てた時の片道ぶんはその半分（executeTradesFromSignals の 1 - 2f を対称に分けたもの）。
 			position = {
-				isLong: true,
 				entryPrice: entryTrade.entry_price,
-				entryEquity: confirmedEquity,
+				confirmedAtEntry: confirmedEquity,
+				equityAfterEntryFee: confirmedEquity * (1 - entryTrade.fee_pct / 200),
 			};
 		}
 
 		if (openPosition && !position && candle.time === openPosition.entry_time) {
 			position = {
-				isLong: true,
 				entryPrice: openPosition.entry_price,
-				entryEquity: confirmedEquity * openPosition.entry_fee_multiplier,
+				confirmedAtEntry: confirmedEquity,
+				equityAfterEntryFee: confirmedEquity * openPosition.entry_fee_multiplier,
 			};
 		}
 
 		let currentEquity: number;
 		if (position) {
-			const unrealizedReturn = candle.close / position.entryPrice;
-			currentEquity = position.entryEquity * unrealizedReturn;
+			currentEquity = position.equityAfterEntryFee * (candle.close / position.entryPrice);
 		} else {
 			currentEquity = confirmedEquity;
 		}
@@ -71,7 +70,7 @@ export function calculateEquityAndDrawdown(
 		// エグジットチェック（エクイティ計算後に処理）
 		const exitTrade = tradeByExitTime.get(candle.time);
 		if (exitTrade && position) {
-			confirmedEquity = position.entryEquity * exitTrade.net_return;
+			confirmedEquity = position.confirmedAtEntry * exitTrade.net_return;
 			currentEquity = confirmedEquity; // 決済時は確定値を使用
 			position = null;
 		}

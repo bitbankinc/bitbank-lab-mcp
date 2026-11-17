@@ -1,10 +1,16 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { dayjs, formatDateInTz } from '../../lib/datetime.js';
+import { formatPrice } from '../../lib/formatter.js';
 import { DEFAULT_CHART_OUTPUT_DIR, ensureAllowedOutputDir } from '../../lib/validate.js';
 import { prependWarnings } from '../../lib/warning-propagation.js';
-import { type BacktestEngineInput, type BacktestEngineResult, runBacktestEngine } from './lib/backtest_engine.js';
-import { fetchCandlesForBacktest } from './lib/fetch_candles.js';
+import {
+	type BacktestEngineInput,
+	type BacktestEngineResult,
+	type BacktestOpenPosition,
+	runBacktestEngine,
+} from './lib/backtest_engine.js';
+import { fetchCandlesForBacktest, getPeriodBars } from './lib/fetch_candles.js';
 import { type FeeSource, resolveBacktestFeeBp } from './lib/resolve_fee.js';
 import { getAvailableStrategies, getStrategy, type StrategyConfig, type StrategyType } from './lib/strategies/index.js';
 import { generateBacktestChartFilename, svgToPng } from './lib/svg_to_png.js';
@@ -115,6 +121,7 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 			start_date && end_date
 				? { type: 'absolute', start: start_date, end: end_date }
 				: { type: 'period', value: period };
+		const periodLabel = range.type === 'absolute' ? `${range.start} ~ ${range.end}` : range.value;
 
 		const [candles, resolvedFee] = await Promise.all([
 			fetchCandlesForBacktest(pair, timeframe, range, requiredBars),
@@ -131,7 +138,7 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 		const engineInput: BacktestEngineInput = {
 			pair,
 			timeframe,
-			period,
+			period: periodLabel,
 			strategy: { type: strategyConfig.type, params },
 			fee_bp: resolvedFee.fee_bp,
 			execution,
@@ -145,7 +152,7 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 		const chartInput = {
 			pair,
 			timeframe,
-			period,
+			period: periodLabel,
 			strategyName: strategy.name,
 			strategyParams: params,
 			fee_bp: resolvedFee.fee_bp,
@@ -166,24 +173,24 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 			svg = renderBacktestChartGeneric(chartData, chartDetail);
 		}
 
-		const summaryBody = result
-			? generateSummaryText(
-					{
-						candles,
-						overlays: result.overlays,
-						trades: result.trades,
-						equity_curve: result.equity_curve,
-						drawdown_curve: result.drawdown_curve,
-						input: chartInput,
-						summary: result.summary,
-					},
-					chartDetail,
-				)
-			: '';
+		const summaryBody = generateSummaryText(
+			{
+				candles,
+				overlays: result.overlays,
+				trades: result.trades,
+				equity_curve: result.equity_curve,
+				drawdown_curve: result.drawdown_curve,
+				input: chartInput,
+				summary: result.summary,
+			},
+			chartDetail,
+			result.open_position,
+		);
 
-		const summaryText = prependWarnings(summaryBody, resolvedFee.warning ? { warning: resolvedFee.warning } : null, {
-			separator: '\n\n',
-		});
+		const warning = [resolvedFee.warning, evaluationShortfallWarning(range, timeframe, result.summary.evaluation_bars)]
+			.filter((w): w is string => w != null)
+			.join('\n');
+		const summaryText = prependWarnings(summaryBody, warning ? { warning } : null, { separator: '\n\n' });
 
 		const output: RunBacktestOutput = {
 			ok: true,
@@ -218,6 +225,18 @@ export default async function runBacktest(input: RunBacktestInput): Promise<RunB
 	}
 }
 
+// 取得上限（MAX_FETCHABLE_BARS）かペアの履歴に届かないと、ウォームアップを確保したぶん評価区間が削られる。
+function evaluationShortfallWarning(
+	range: BacktestRange,
+	timeframe: Timeframe,
+	evaluationBars: number,
+): string | undefined {
+	if (range.type !== 'period') return undefined;
+	const periodBars = getPeriodBars(timeframe, range.value);
+	if (evaluationBars >= periodBars) return undefined;
+	return `評価区間が指定期間より短い: ${evaluationBars} 本（${range.value} は ${periodBars} 本）。取得できる本数の上限か、ペアの履歴の長さに届かなかったため。`;
+}
+
 /** trade / candle の time フィールド自体は UTC ISO のまま（表示だけ JST の暦日にする）。 */
 function isoDateForDisplay(time: string | undefined): string {
 	if (!time) return '';
@@ -244,6 +263,15 @@ function sampleCurve<T>(curve: T[], maxPoints: number): T[] {
 	return result;
 }
 
+function formatSignedPct(pct: number): string {
+	return `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+}
+
+function formatProfitFactor(profitFactor: number | null, tradeCount: number): string {
+	if (profitFactor != null) return profitFactor.toFixed(2);
+	return tradeCount === 0 ? 'N/A (no trades)' : 'N/A (no losses)';
+}
+
 function roundBp(bp: number): number {
 	return Number(bp.toFixed(2));
 }
@@ -253,13 +281,17 @@ function feeSourceLabel(source: FeeSource | undefined): string {
 		case 'dynamic':
 			return 'dynamic: /spot/pairs taker レート由来';
 		case 'fallback':
-			return 'fallback: 公称 12bp 概算（pairs 取得失敗）';
+			return 'fallback: 公称 12bp 概算（/spot/pairs から taker レートを取得できず）';
 		default:
 			return 'explicit: 明示指定';
 	}
 }
 
-function generateSummaryText(data: GenericBacktestChartData, chartDetail: ChartDetail): string {
+function generateSummaryText(
+	data: GenericBacktestChartData,
+	chartDetail: ChartDetail,
+	openPosition: BacktestOpenPosition | null,
+): string {
 	const { candles, input, summary, trades, equity_curve, drawdown_curve } = data;
 	const lines: string[] = [];
 
@@ -285,20 +317,35 @@ function generateSummaryText(data: GenericBacktestChartData, chartDetail: ChartD
 	);
 	lines.push('');
 	lines.push(`--- Summary (Compound) ---`);
-	lines.push(`Total P&L: ${summary.total_pnl_pct >= 0 ? '+' : ''}${summary.total_pnl_pct.toFixed(2)}%`);
+	const unrealizedNote = openPosition ? ' (incl. unrealized P&L of the open position)' : '';
+	lines.push(`Total P&L: ${formatSignedPct(summary.total_pnl_pct)}${unrealizedNote}`);
 	const bhStartIdx = summary.warmup_bars + 1;
 	const bhStartDate = isoDateForDisplay(candles[bhStartIdx]?.time);
 	const bhEndDate = isoDateForDisplay(summary.evaluation_end);
 	lines.push(
-		`Buy & Hold: ${summary.buy_hold_pnl_pct >= 0 ? '+' : ''}${summary.buy_hold_pnl_pct.toFixed(2)}% (${bhStartDate} open → ${bhEndDate} close)`,
+		`Buy & Hold: ${formatSignedPct(summary.buy_hold_pnl_pct)} (${bhStartDate} open → ${bhEndDate} close, buy fee included)`,
 	);
 	lines.push(`Excess Return: ${summary.excess_return_pct >= 0 ? '+' : ''}${summary.excess_return_pct.toFixed(2)}%`);
-	lines.push(`Trades: ${summary.trade_count}`);
+	lines.push(`Trades: ${summary.trade_count}${openPosition ? ' (closed trades only)' : ''}`);
 	lines.push(`Win Rate: ${(summary.win_rate * 100).toFixed(1)}%`);
 	lines.push(`Avg P&L/Trade: ${summary.avg_pnl_pct >= 0 ? '+' : ''}${summary.avg_pnl_pct.toFixed(2)}%`);
 	lines.push(`Max Drawdown: -${summary.max_drawdown_pct.toFixed(2)}%`);
-	lines.push(`Profit Factor: ${summary.profit_factor != null ? summary.profit_factor.toFixed(2) : 'N/A (no losses)'}`);
+	lines.push(`Profit Factor: ${formatProfitFactor(summary.profit_factor, summary.trade_count)}`);
 	lines.push(`Sharpe Ratio: ${summary.sharpe_ratio != null ? summary.sharpe_ratio.toFixed(2) : 'N/A'}`);
+
+	if (openPosition) {
+		lines.push('');
+		lines.push('--- Open Position ---');
+		lines.push(
+			`Entry: ${isoDateForDisplay(openPosition.entry_time)} open ${formatPrice(openPosition.entry_price, input.pair)} → Mark: ${isoDateForDisplay(openPosition.mark_time)} close ${formatPrice(openPosition.mark_price, input.pair)}`,
+		);
+		lines.push(
+			`Unrealized P&L: ${formatSignedPct(openPosition.unrealized_pnl_pct)} (entry fee deducted, exit fee not deducted)`,
+		);
+		lines.push(
+			'※ Total P&L / Max Drawdown / Sharpe Ratio / Equity Curve は未決済ポジションの含み損益込み。Trades / Win Rate / Avg P&L/Trade / Profit Factor は決済済みトレードのみ。',
+		);
+	}
 
 	if (trades.length > 0) {
 		lines.push('');

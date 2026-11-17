@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { AddRejectReason } from '../../lib/bounded-expiring-set.js';
 import { BoundedExpiringSet } from '../../lib/bounded-expiring-set.js';
+import { recordSharedTokenUse, sharedNonce } from './shared-confirm-state.js';
 
 const DEFAULT_TTL_MS = 60_000;
 
@@ -72,7 +73,7 @@ function getSecret(): string {
 /** 守りたい単位は OS プロセスなので `globalThis` に置く。モジュールスコープだと `vi.resetModules()` などで再評価されるたびに値が変わり、同じプロセスで発行したトークンを検証できなくなる。 */
 const PROCESS_NONCE_KEY = Symbol.for('bitbank-lab-mcp.confirmation.processNonce');
 
-/** 署名鍵に混ぜてトークンをプロセスへ束縛する。使用済み記録はプロセス内メモリにしか無いので、無いと再起動後や同じ secret を持つ別プロセスで使用済みトークンがもう一度通る（ADR-0007）。 */
+/** 署名鍵に混ぜてトークンをプロセスへ束縛する。使用済み記録はプロセス内メモリにしか無いので、無いと再起動後や同じ secret を持つ別プロセスで使用済みトークンがもう一度通る（ADR-0007）。共有を有効にしたときは、使用済みの印も共有するので共有の乱数を使う（判断事項 D）。 */
 function getProcessNonce(): string {
 	const store = globalThis as unknown as Record<symbol, unknown>;
 	const existing = store[PROCESS_NONCE_KEY];
@@ -84,7 +85,7 @@ function getProcessNonce(): string {
 
 /** 区切りに `\0` を使い、secret 末尾と nonce 先頭の連結違いが同じ鍵にならないようにする。 */
 function getSigningKey(): string {
-	return `${getSecret()}\0${getProcessNonce()}`;
+	return `${getSecret()}\0${sharedNonce() ?? getProcessNonce()}`;
 }
 
 export function _rotateProcessNonce(): void {
@@ -132,6 +133,8 @@ const TOKEN_INVALID_MESSAGE =
 /** トークン本文は含めない（`.claude/rules/sensitive-data.md` の CRITICAL 分類）。 */
 const TOKEN_STORE_FULL_MESSAGE =
 	'確認を一時的に受け付けられません（処理中の確認が上限に達しています）。しばらく時間をおいてから preview をやり直してください';
+const SHARED_STORE_UNAVAILABLE_MESSAGE =
+	'確認を一時的に受け付けられません（使用済みの記録を書き込めませんでした）。しばらく時間をおいてから preview をやり直してください';
 
 /** `Record` にしているので、lib 側に理由が増えたら typecheck が落ちる（fail-closed のまま気づける）。 */
 const ADD_REJECTION_ERRORS: Record<AddRejectReason, TokenValidationError> = {
@@ -186,6 +189,11 @@ export function validateToken(
 	if (!recorded.added) {
 		return { ...ADD_REJECTION_ERRORS[recorded.reason] };
 	}
+
+	// 共有の印を置けないまま通すと、もう一方のプロセスで同じトークンがもう一度通る。
+	const shared = recordSharedTokenUse(token, expiresAt, nowMs);
+	if (shared === 'already_used') return { message: TOKEN_ALREADY_USED_MESSAGE, code: 'token_already_used' };
+	if (shared === 'unavailable') return { message: SHARED_STORE_UNAVAILABLE_MESSAGE, code: 'token_store_full' };
 
 	return null;
 }

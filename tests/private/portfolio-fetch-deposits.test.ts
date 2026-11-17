@@ -1,4 +1,4 @@
-// 100 件バッチの末尾が未確認入金（confirmed_at 欠落）でも、found_at にフォールバックしてページネーションが早期終了しないこと。
+// 100 件バッチのいちばん古い末尾が未確認入金（confirmed_at 欠落）でも、found_at にフォールバックしてページネーションが早期終了しないこと。API は新しい順に返す。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchDepositWithdrawal } from '../../src/handlers/portfolio/fetch.js';
@@ -18,7 +18,7 @@ afterEach(() => {
 
 describe('portfolio/fetch paginateDeposits — confirmed_at 欠落フォールバック', () => {
 	it('末尾が未確認入金(confirmed_at 欠落)でも break せず found_at で次ページを取得する', async () => {
-		const depositSinceValues: string[] = [];
+		const depositEndValues: string[] = [];
 		let depositCall = 0;
 
 		const fetcher = vi.fn(async (url: string | URL | Request) => {
@@ -26,8 +26,8 @@ describe('portfolio/fetch paginateDeposits — confirmed_at 欠落フォール�
 
 			if (urlStr.includes('deposit_history')) {
 				depositCall++;
-				const since = new URL(urlStr).searchParams.get('since');
-				if (since) depositSinceValues.push(since);
+				const end = new URL(urlStr).searchParams.get('end');
+				if (end) depositEndValues.push(end);
 				if (depositCall <= 2) {
 					// 暗号資産 + JPY の 2 チャネルそれぞれ 1 ページ目: 100 件、末尾は未確認入金。
 					const deposits = Array.from({ length: 100 }, (_, i) => {
@@ -37,20 +37,20 @@ describe('portfolio/fetch paginateDeposits — confirmed_at 欠落フォール�
 							asset: depositCall === 2 ? 'jpy' : 'btc',
 							amount: '1.0',
 							status: isLast ? 'FOUND' : 'DONE',
-							found_at: 1709900000000 + i * 1000,
-							...(isLast ? {} : { confirmed_at: 1709900000000 + i * 1000 + 100 }),
+							found_at: 1709900000000 + (99 - i) * 1000,
+							...(isLast ? {} : { confirmed_at: 1709900000000 + (99 - i) * 1000 + 100 }),
 						};
 					});
 					return new Response(JSON.stringify(mockBitbankSuccess({ deposits })), { status: 200 });
 				}
-				// 2 ページ目: 10 件 → 完了
+				// 2 ページ目: それより古い 10 件 → 完了
 				const deposits = Array.from({ length: 10 }, (_, i) => ({
 					uuid: `dep-${depositCall}-p2-${i}`,
 					asset: depositCall === 4 ? 'jpy' : 'btc',
 					amount: '1.0',
 					status: 'DONE',
-					found_at: 1709990000000 + i * 1000,
-					confirmed_at: 1709990000000 + i * 1000 + 100,
+					found_at: 1709800000000 - i * 1000,
+					confirmed_at: 1709800000000 - i * 1000 + 100,
 				}));
 				return new Response(JSON.stringify(mockBitbankSuccess({ deposits })), { status: 200 });
 			}
@@ -67,8 +67,8 @@ describe('portfolio/fetch paginateDeposits — confirmed_at 欠落フォール�
 		// 各入金チャネルが 2 ページずつ（1 ページ目で break しない）→ 暗号資産/JPY 各 110 件
 		expect(result?.deposits.length).toBe(220);
 		expect(result?.isComplete).toBe(true);
-		// カーソルが末尾レコードの found_at にフォールバックして前進している
-		expect(depositSinceValues).toContain(String(1709900000000 + 99 * 1000));
+		// 次の end がいちばん古い末尾レコードの found_at にフォールバックしてさかのぼっている
+		expect(depositEndValues).toContain(String(1709900000000));
 	});
 
 	it('全件 confirmed_at ありの既存ケースが回帰しない', async () => {

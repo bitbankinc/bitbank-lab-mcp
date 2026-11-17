@@ -51,6 +51,24 @@ function richDepthPayload() {
 	};
 }
 
+// サーキットブレイク中で予想価格があるときは、買いと売りの価格が交差しうる（public-api.md の Depth）。
+function crossedDepthPayload() {
+	return {
+		success: 1,
+		data: {
+			asks: [
+				['4999900', '0.2'],
+				['5000200', '0.4'],
+			],
+			bids: [
+				['5000000', '0.3'],
+				['4999800', '0.5'],
+			],
+			timestamp: 1_700_000_000_000,
+		},
+	};
+}
+
 function mockFetch(payload: unknown) {
 	globalThis.fetch = vi.fn().mockResolvedValue({
 		ok: true,
@@ -89,6 +107,34 @@ describe('get_orderbook', () => {
 		expect(d(res).normalized.bestAsk).toBe(5_000_100);
 		expect(d(res).normalized.spread).toBe(100);
 		expect(d(res).normalized.mid).toBe(5_000_050);
+	});
+
+	it('summary: 板が交差していたら中値・スプレッドを出さず、warning を本文の先頭と meta に出す', async () => {
+		mockFetch(crossedDepthPayload());
+		const res = await getOrderbook({ pair: 'btc_jpy', mode: 'summary' });
+		assertOk(res);
+		expect(d(res).normalized.mid).toBeNull();
+		expect(d(res).normalized.spread).toBeNull();
+		expect(res.summary.split('\n')[0]).toContain('板が交差しています');
+		expect(res.summary).toContain('中値: N/A');
+		expect(res.meta.warning).toContain('板が交差しています');
+	});
+
+	it('statistics: 板が交差していたら現在価格（中値）・スプレッドを出さない', async () => {
+		mockFetch(crossedDepthPayload());
+		const res = await getOrderbook({ pair: 'btc_jpy', mode: 'statistics' });
+		assertOk(res);
+		expect(d(res).basic.currentPrice).toBeNull();
+		expect(d(res).basic.spread).toBeNull();
+		expect(res.summary.split('\n')[0]).toContain('板が交差しています');
+	});
+
+	it('pressure: 板が交差していたら中値を基準にした帯域を計算しない', async () => {
+		mockFetch(crossedDepthPayload());
+		const res = await getOrderbook({ pair: 'btc_jpy', mode: 'pressure' });
+		assertOk(res);
+		for (const band of d(res).bands) expect(band.baseMid).toBeNull();
+		expect(res.summary.split('\n')[0]).toContain('板が交差しています');
 	});
 
 	it('summary: cumSize が累積される', async () => {
@@ -468,13 +514,13 @@ describe('get_orderbook', () => {
 		});
 
 		it('statistics: ask 側枯渇 (askVolume=0 && bidVolume>0) で ratio=null、買い優勢 strong を維持し JSON 往復後も schema 一致', async () => {
-			// best bid と best ask が同価で ask の size が 0 のとき ratio = Infinity になるが、MCP wire format で表現できないので実装は ratio: null に正規化し、意味（買い優勢 / strong / 売り板=0）は interpretation / summary / content text 側で保持する。
+			// 範囲内の ask の size が 0 のとき ratio = Infinity になるが、MCP wire format で表現できないので実装は ratio: null に正規化し、意味（買い優勢 / strong / 売り板=0）は interpretation / summary / content text 側で保持する。
 			mockFetch({
 				success: 1,
 				data: {
 					asks: [
-						['5000000', '0'],
 						['5000100', '0'],
+						['5000200', '0'],
 					],
 					bids: [
 						['5000000', '1.0'],

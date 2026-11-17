@@ -3,7 +3,7 @@ import { toIsoTime } from '../lib/datetime.js';
 import { estimateZones } from '../lib/depth-analysis.js';
 import { formatExactPrice, formatPriceDecimals, formatSummary, formatTimestampJST } from '../lib/formatter.js';
 import { BITBANK_API_BASE, DEFAULT_RETRIES, fetchJsonWithRateLimit } from '../lib/http.js';
-import { midPriceDecimals, roundMidPrice, roundSpread } from '../lib/price.js';
+import { CROSSED_BOOK_WARNING, isCrossedQuote, midPriceDecimals, roundMidPrice, roundSpread } from '../lib/price.js';
 import { fail, failFromError, failFromValidation, ok, parseAsResult } from '../lib/result.js';
 import { createMeta, ensurePair, validateLimit } from '../lib/validate.js';
 import type { GetOrderbookData, GetOrderbookMeta, OrderbookLevelWithCum } from '../src/schemas.js';
@@ -50,14 +50,22 @@ function toLevelsWithCum(levels: NumLevel[], n: number): OrderbookLevelWithCum[]
 	return out;
 }
 
-function buildSummary(pair: string, bidsNum: NumLevel[], asksNum: NumLevel[], topN: number, timestamp: number) {
+function buildSummary(
+	pair: string,
+	bidsNum: NumLevel[],
+	asksNum: NumLevel[],
+	topN: number,
+	timestamp: number,
+	crossed: boolean,
+) {
 	const bids = toLevelsWithCum(bidsNum, topN);
 	const asks = toLevelsWithCum(asksNum, topN);
 
 	const bestAsk = asks[0]?.price ?? null;
 	const bestBid = bids[0]?.price ?? null;
-	const spread = bestAsk != null && bestBid != null ? roundSpread(bestBid, bestAsk) : null;
-	const mid = bestAsk != null && bestBid != null ? roundMidPrice(bestBid, bestAsk) : null;
+	const hasQuote = bestAsk != null && bestBid != null && !crossed;
+	const spread = hasQuote ? roundSpread(bestBid, bestAsk) : null;
+	const mid = hasQuote ? roundMidPrice(bestBid, bestAsk) : null;
 
 	const summary = formatSummary({
 		pair,
@@ -104,12 +112,19 @@ function buildSummary(pair: string, bidsNum: NumLevel[], asksNum: NumLevel[], to
 	return { text, data, mid };
 }
 
-function buildPressure(pair: string, bidsRaw: RawLevel[], asksRaw: RawLevel[], bandsPct: number[], timestamp: number) {
+function buildPressure(
+	pair: string,
+	bidsRaw: RawLevel[],
+	asksRaw: RawLevel[],
+	bandsPct: number[],
+	timestamp: number,
+	crossed: boolean,
+) {
 	const baseCcy = pair.split('_')[0]?.toUpperCase() ?? '';
 	const bestAsk = Number(asksRaw?.[0]?.[0] ?? NaN);
 	const bestBid = Number(bidsRaw?.[0]?.[0] ?? NaN);
 	// 帯域境界の計算には丸め前の生 mid を使い、出力（baseMidOut）のみ共通の丸め規約に通す。
-	const baseMid = Number.isFinite(bestAsk) && Number.isFinite(bestBid) ? (bestAsk + bestBid) / 2 : null;
+	const baseMid = Number.isFinite(bestAsk) && Number.isFinite(bestBid) && !crossed ? (bestAsk + bestBid) / 2 : null;
 	const baseMidOut = baseMid != null ? roundMidPrice(bestBid, bestAsk) : null;
 
 	function sumInBand(levels: RawLevel[], low: number, high: number) {
@@ -210,19 +225,21 @@ function buildStatistics(
 	ranges: number[],
 	priceZones: number,
 	timestamp: number,
+	crossed: boolean,
 ) {
 	const baseCcy = pair.split('_')[0]?.toUpperCase() ?? '';
 	const bestBid = bidsNum.length ? Math.max(...bidsNum.map(([p]) => p)) : null;
 	const bestAsk = asksNum.length ? Math.min(...asksNum.map(([p]) => p)) : null;
-	const mid = bestBid != null && bestAsk != null ? (bestBid + bestAsk) / 2 : null;
-	const zoneDecimals = bestBid != null && bestAsk != null ? midPriceDecimals(bestBid, bestAsk) : 0;
+	const hasQuote = bestBid != null && bestAsk != null && !crossed;
+	const mid = hasQuote ? (bestBid + bestAsk) / 2 : null;
+	const zoneDecimals = hasQuote ? midPriceDecimals(bestBid, bestAsk) : 0;
 
 	const basic = {
-		currentPrice: bestBid != null && bestAsk != null ? roundMidPrice(bestBid, bestAsk) : null,
+		currentPrice: hasQuote ? roundMidPrice(bestBid, bestAsk) : null,
 		bestBid: bestBid != null ? Number(bestBid) : null,
 		bestAsk: bestAsk != null ? Number(bestAsk) : null,
-		spread: bestBid != null && bestAsk != null ? roundSpread(bestBid, bestAsk) : null,
-		spreadPct: bestBid != null && bestAsk != null && mid ? (Number(bestAsk) - Number(bestBid)) / Number(mid) : null,
+		spread: hasQuote ? roundSpread(bestBid, bestAsk) : null,
+		spreadPct: hasQuote && mid ? (Number(bestAsk) - Number(bestBid)) / Number(mid) : null,
 	};
 
 	function sumWithinPct(levels: NumLevel[], pct: number, side: 'bid' | 'ask') {
@@ -386,10 +403,11 @@ function buildRaw(
 	bidsRaw: RawLevel[],
 	asksRaw: RawLevel[],
 	timestamp: number,
+	crossed: boolean,
 ) {
 	const bestAsk = asksRaw[0]?.[0] != null ? Number(asksRaw[0][0]) : null;
 	const bestBid = bidsRaw[0]?.[0] != null ? Number(bidsRaw[0][0]) : null;
-	const mid = bestBid != null && bestAsk != null ? roundMidPrice(bestBid, bestAsk) : null;
+	const mid = bestBid != null && bestAsk != null && !crossed ? roundMidPrice(bestBid, bestAsk) : null;
 
 	const bidsNum: NumLevel[] = bidsRaw.map(([p, s]) => [Number(p), Number(s)]);
 	const asksNum: NumLevel[] = asksRaw.map(([p, s]) => [Number(p), Number(s)]);
@@ -495,19 +513,20 @@ export default async function getOrderbook(params: GetOrderbookParams | string =
 		const asksNum: NumLevel[] = rawAsks.map(([p, s]) => [Number(p), Number(s)]);
 
 		let result: { text: string; data: Record<string, unknown>; mid: number | null };
+		const crossed = isCrossedQuote(bidsNum[0]?.[0], asksNum[0]?.[0]);
 
 		switch (mode) {
 			case 'pressure':
-				result = buildPressure(chk.pair, rawBids, rawAsks, bandsPct, timestamp);
+				result = buildPressure(chk.pair, rawBids, rawAsks, bandsPct, timestamp, crossed);
 				break;
 			case 'statistics':
-				result = buildStatistics(chk.pair, bidsNum, asksNum, ranges, priceZones, timestamp);
+				result = buildStatistics(chk.pair, bidsNum, asksNum, ranges, priceZones, timestamp, crossed);
 				break;
 			case 'raw':
-				result = buildRaw(chk.pair, d, rawBids, rawAsks, timestamp);
+				result = buildRaw(chk.pair, d, rawBids, rawAsks, timestamp, crossed);
 				break;
 			default:
-				result = buildSummary(chk.pair, bidsNum, asksNum, topN, timestamp);
+				result = buildSummary(chk.pair, bidsNum, asksNum, topN, timestamp, crossed);
 				break;
 		}
 
@@ -523,14 +542,15 @@ export default async function getOrderbook(params: GetOrderbookParams | string =
 			totalDropped > 0
 				? `⚠️ 上流レスポンスから ${totalDropped}件 の不正な板レベルを除外しました（bids: ${bidsDropped}件 / asks: ${asksDropped}件、price/size が数値変換不能）`
 				: undefined;
-		if (droppedWarning) result.text = `${droppedWarning}\n\n${result.text}`;
+		const warning = [droppedWarning, crossed ? CROSSED_BOOK_WARNING : undefined].filter(Boolean).join('\n');
+		if (warning) result.text = `${warning}\n\n${result.text}`;
 
 		const meta = createMeta(chk.pair, {
 			mode,
 			topN,
 			...(rateLimit ? { rateLimit } : {}),
 			...(totalDropped > 0 ? { droppedRows: { bids: bidsDropped, asks: asksDropped } } : {}),
-			...(droppedWarning ? { warning: droppedWarning } : {}),
+			...(warning ? { warning } : {}),
 		});
 		return parseAsResult<GetOrderbookData, GetOrderbookMeta>(
 			GetOrderbookOutputSchema,

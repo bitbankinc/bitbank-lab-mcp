@@ -1,6 +1,8 @@
 // サーバーと UI バンドルの両方から import されるので、Node 依存（`node:*` / `process`）も重い依存も持たせない。
 // `fetchSnapshot` の結果は `apply` へ渡すだけで、内容を読まず、ログにも出さない（確認トークンを含む `_meta` が流れる）。
 
+import { CONFIRMATION_META_KEY, readConfirmationMeta } from './mcp-apps-meta.js';
+
 export type SnapshotHydrationPhase = 'waiting' | 'restoring' | 'failed';
 
 export const DEFAULT_INITIAL_DELAY_MS = 2_500;
@@ -112,4 +114,76 @@ export function startSnapshotHydration(opts: SnapshotHydrationOptions): () => vo
 			timerId = undefined;
 		}
 	};
+}
+
+export interface ConfirmationPullOptions {
+	structured: unknown;
+	meta: unknown;
+	/** 順に試す。どれも `{ structuredContent, _meta }`（スナップショットと同じ形）を返す。 */
+	sources: ReadonlyArray<() => Promise<unknown>>;
+	apply: (result: unknown) => void;
+	isAborted: () => boolean;
+}
+
+function canonicalJson(value: unknown): string {
+	return JSON.stringify(value, (_key, v: unknown) =>
+		v && typeof v === 'object' && !Array.isArray(v)
+			? Object.fromEntries(
+					Object.entries(v as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+				)
+			: v,
+	);
+}
+
+// ホストが tool-result の `_meta` を iframe に渡さないとトークンが届かないので、`get_ui_snapshot` の結果 `_meta` から 1 回だけ取り直す（ゲートはサーバーが再判定する）。
+// スナップショットはセッション内で最後の preview に置き換わるので、このカードが受け取った内容と同じときだけ取り込む。別の注文の表示とトークンに差し替えない。
+export async function pullConfirmationIfMissing(opts: ConfirmationPullOptions): Promise<boolean> {
+	const { structured, meta, sources, apply, isAborted } = opts;
+	if (readConfirmationMeta(meta)) return false;
+	for (const fetchSource of sources) {
+		let result: unknown;
+		try {
+			result = await fetchSource();
+		} catch {
+			continue;
+		}
+		if (isAborted()) return false;
+		const snapshot = result as { structuredContent?: unknown; _meta?: unknown } | undefined;
+		if (!readConfirmationMeta(snapshot?._meta)) continue;
+		// 別の preview に置き換わっていたら、ほかの経路も同じスナップショットを返すので打ち切る。
+		if (canonicalJson(snapshot?.structuredContent) !== canonicalJson(structured)) return false;
+		apply(result);
+		return true;
+	}
+	return false;
+}
+
+// トークンは共有ファイルから 1 回しか渡さないので、同じ preview がトークン無しで届き直しても、受け取り済みのトークンを消さない（ADR-0007 判断事項 D）。
+export function keepConfirmationMeta(
+	previous: { structured: unknown; meta: unknown } | null,
+	structured: unknown,
+	meta: unknown,
+	nowMs: number = Date.now(),
+): unknown {
+	if (readConfirmationMeta(meta) || !previous) return meta;
+	// 期限切れを持ち越すと、取り直し（pullConfirmationIfMissing）がトークンありと見て走らない。
+	const retained = readConfirmationMeta(previous.meta);
+	if (!retained || nowMs > retained.expires_at) return meta;
+	return canonicalJson(previous.structured) === canonicalJson(structured) ? previous.meta : meta;
+}
+
+export function confirmationResourceToSnapshot(
+	result: unknown,
+): { structuredContent: unknown; _meta: Record<string, unknown> } | undefined {
+	const text = (result as { contents?: Array<{ text?: unknown }> } | undefined)?.contents?.[0]?.text;
+	if (typeof text !== 'string') return undefined;
+	let body: unknown;
+	try {
+		body = JSON.parse(text);
+	} catch {
+		return undefined;
+	}
+	const { structuredContent, confirmation } = (body ?? {}) as { structuredContent?: unknown; confirmation?: unknown };
+	const meta = { [CONFIRMATION_META_KEY]: confirmation };
+	return readConfirmationMeta(meta) ? { structuredContent, _meta: meta } : undefined;
 }

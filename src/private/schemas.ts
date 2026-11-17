@@ -47,7 +47,13 @@ export const GetMyAssetsOutputSchema = z.union([
 
 export const GetMyTradeHistoryInputSchema = z.object({
 	pair: z.string().optional().describe('通貨ペア（例: btc_jpy）。省略で全ペア'),
-	count: z.number().max(10000).default(100).describe('取得件数（最大10000、1000超は自動ページネーション）'),
+	count: z
+		.number()
+		.max(10000)
+		.default(100)
+		.describe(
+			'取得件数（最大10000）。約定履歴 API は信用約定も混ぜて返すので、現物に絞った件数が届くまで自動でページ送りする',
+		),
 	order: z.enum(['asc', 'desc']).default('desc').describe('ソート順（asc: 古い順, desc: 新しい順）'),
 	since: z.string().optional().describe('開始日時（ISO8601、例: 2025-01-01T00:00:00+09:00）'),
 	end: z.string().optional().describe('終了日時（ISO8601、例: 2025-12-31T23:59:59+09:00）'),
@@ -91,6 +97,12 @@ export const GetMyTradeHistoryMetaSchema = z.object({
 		.optional()
 		.describe(
 			'期間内全件を取得できたか。count 制限で打ち切られた場合や MAX_PAGES 到達時は false（取得範囲外に未取得レコードがある可能性）',
+		),
+	scanBoundary: z
+		.string()
+		.optional()
+		.describe(
+			'件数に届かずページの上限などで取得を打ち切ったとき、最後に調べた約定の時刻（ISO8601）。続きは order=desc なら end、asc なら since にこの値を指定する。全件取得できたときと、件数に届いて止めたときは無い',
 		),
 });
 
@@ -210,6 +222,8 @@ export const PortfolioChangePctUnavailableReasonEnum = z.enum([
 	'start_value_negligible',
 	'start_boundary_unpriced',
 	'current_value_unpriced',
+	'trades_truncated',
+	'margin_trades_incomplete',
 ]);
 
 export type PortfolioChangePctUnavailableReason = z.infer<typeof PortfolioChangePctUnavailableReasonEnum>;
@@ -264,7 +278,7 @@ const HoldingPnlSchema = z.object({
 		.number()
 		.optional()
 		.describe(
-			'取得原価合計（JPY）。全履歴の約定に加え、暗号資産入庫を入庫日（confirmed_at）の 1day 始値 × 数量で算入し、暗号資産出庫を平均単価で按分減少させた移動平均法ベース。入庫ぶんは「入庫時点の相場で取得した」という仮定であり真の取得原価ではない。入庫日の始値を解決できなかった入庫は算入しないので、unpriced_deposit_count が 0 でない銘柄では本値はその分だけ過小',
+			'取得原価合計（JPY）。全履歴の約定に加え、暗号資産入庫を入庫日（confirmed_at）の 1day 始値 × 数量で算入し、暗号資産出庫を平均単価で按分減少させた移動平均法ベース。入庫ぶんは「入庫時点の相場で取得した」という仮定であり真の取得原価ではない。入庫日の始値を解決できなかった入庫は算入しないので、unpriced_deposit_count が 0 でない銘柄では本値はその分だけ過小。ステーキング報酬も受取時の評価額で原価に入るので、報酬の評価額は実現損益・評価損益に現れない（別建ては staking_reward_*）。総平均法（税務署に届出が無い場合の既定）で申告する場合、取得原価と実現損益はこの値と一致しない',
 		),
 	unrealized_pnl: z.number().optional().describe('評価損益（JPY）'),
 	unrealized_pnl_pct: z.number().optional().describe('評価損益率（%）'),
@@ -411,6 +425,12 @@ const DepositWithdrawalSummarySchema = z
 		staking_reward_valuation: FlowValuationSchema.optional().describe(
 			'staking_reward_estimated_jpy の換算方式の内訳。ステーキング報酬が無い / 全件で価格を解決できなかった場合は undefined',
 		),
+		unpriced_flow_assets: z
+			.array(z.string())
+			.optional()
+			.describe(
+				'入出庫日の価格でも現在価格でも JPY 換算できなかった暗号資産の入出庫（ステーキング報酬を除く）の資産シンボル一覧（小文字・昇順）。該当する入出庫は crypto_*_estimated_jpy と net_jpy_invested から漏れているので、設定されているときは account_return_pct / account_return_jpy を出さない（漏れた分だけリターンがずれるため）。ステーキング報酬は入庫の換算額からも報酬の額からも同じく漏れて純投入額はずれないので数えない。資産名のみ出し金額は出さない。該当なしは undefined',
+			),
 	})
 	.optional()
 	.describe(
@@ -439,6 +459,22 @@ const PeriodDWSummarySchema = z
 		),
 		crypto_withdrawal_valuation: FlowValuationSchema.optional().describe(
 			'crypto_withdrawal_estimated_jpy の換算方式の内訳。該当なしのときは undefined',
+		),
+		staking_reward_count: z
+			.number()
+			.int()
+			.optional()
+			.describe(
+				'crypto_deposit_count のうち期間中のステーキング報酬（入金種別 STAKING）の件数。0 件のときは undefined',
+			),
+		staking_reward_estimated_jpy: z
+			.number()
+			.optional()
+			.describe(
+				'crypto_deposit_estimated_jpy のうち期間中のステーキング報酬の分（価格を解決できた報酬だけの合計）。報酬は元本ではなく成果なので、元本の入庫として読むときはこの額を除く（*_performance.staking_reward_jpy と同じ額）。ステーキング報酬が無い / 全件で価格を解決できなかった場合は undefined',
+			),
+		staking_reward_valuation: FlowValuationSchema.optional().describe(
+			'staking_reward_estimated_jpy の換算方式の内訳。該当なしのときは undefined',
 		),
 	})
 	.optional()
@@ -484,12 +520,16 @@ const accountPnlCoreShape = {
 		.describe(
 			'現物の実現損益（JPY、全銘柄 = 現在保有中の銘柄 + 売り切り銘柄）。対象期間は本オブジェクトのスコープに従う（account_pnl=全履歴、yearly_account_pnl / monthly_account_pnl=period_start〜period_end）。全履歴版は total_realized_pnl と同値で、内訳は Σ holdings[].realized_pnl + closed_position_realized_pnl。**入庫日価格の取得失敗・打ち切りで銘柄を抑止した実行では undefined**（理由は spot_realized_pnl_unavailable_reason）——抑止した銘柄を除いた部分和は出さない',
 		),
-	margin_realized_pnl: z.number().describe('信用の決済済み損益（JPY、グロス: 利息・手数料控除前）'),
+	margin_realized_pnl: z
+		.number()
+		.describe(
+			'信用の決済済み損益（JPY、API の profit_loss の合計）。**手数料控除後**の値（手数料は margin_fee_cost に内訳として出る）。利息を含むかは未確認で、利息は margin_interest_cost として別に total から引いている',
+		),
 	total: z
 		.number()
 		.optional()
 		.describe(
-			'口座全体 PnL = spot_realized_pnl + margin_realized_pnl − margin_interest_cost − margin_fee_cost。コスト項は正値で入っているので**減算**する（足すと符号が反転する）。spot_realized_pnl が抑止された実行では本値も undefined（信用側だけの合計を口座全体 PnL として出さない）。信用側の内訳は margin_realized_pnl / margin_interest_cost / margin_fee_cost に残るので、そこから読むこと',
+			'口座全体 PnL = spot_realized_pnl + margin_realized_pnl − margin_interest_cost。margin_realized_pnl は手数料控除後なので **margin_fee_cost は引かない**（引くと手数料を二重に控除する。issue #450）。利息は正値で入っているので**減算**する（足すと符号が反転する）。spot_realized_pnl が抑止された実行では本値も undefined（信用側だけの合計を口座全体 PnL として出さない）。信用側の内訳は margin_realized_pnl / margin_interest_cost / margin_fee_cost に残るので、そこから読むこと',
 		),
 };
 
@@ -502,7 +542,7 @@ const marginCostShape = {
 	margin_fee_cost: z
 		.number()
 		.describe(
-			'信用の発生手数料合計（JPY、fee_occurred_amount_quote の合算）。**コスト = 正値**で保持し、total では**減算**される',
+			'信用の発生手数料合計（JPY、fee_occurred_amount_quote の合算）。**コスト = 正値**で保持する。margin_realized_pnl（profit_loss）に控除済みの内訳なので、total では**引かない**（issue #450）',
 		),
 };
 
@@ -538,7 +578,7 @@ const PeriodPerformanceSchema = z
 			.number()
 			.optional()
 			.describe(
-				'単純増減率（%）= change_jpy / start_value_jpy。**期初評価額が小さすぎて率が意味を持たない場合は undefined**（理由は change_pct_unavailable_reason）: (1) start_value_jpy が 0、(2) start_value_jpy が current_value_jpy の 1% 未満、(3) 期初の始値を解決できなかった暗号資産があり start_value_jpy が過小（当該期間のみ欠損・boundaryPrices 未登録・3 境界すべて欠損のいずれも含む）、(4) 現在 ticker 価格を解決できなかった保有があり current_value_jpy が過小（#109）。(2) は年初にほぼ空だった口座に入金して運用を始めた場合に起き、率は運用成績ではなく「期初がほぼ空だった」ことを表す数になるため出さない。(3) は過小な分母では率が運用成績を表さないため出さない（資産名は unpriced_start_assets）。(4) は分母ではなく分子が壊れており、率は「口座が消し飛んだ」ように見える偽の数になるため出さない（資産名は unpriced_current_assets）。いずれも増減額 change_jpy は出すが、**(3)(4) では分子も同じ欠損の影響を受ける**ので成績として読めない（ずれの向きが確定する場合は (3) で change_jpy_overstated=true、(4) で change_jpy_understated=true）。(1)(2) の増減額は正しい。undefined は「率がゼロ」ではない',
+				'単純増減率（%）= change_jpy / start_value_jpy。**期初評価額が小さすぎて率が意味を持たない場合は undefined**（理由は change_pct_unavailable_reason）: (1) start_value_jpy が 0、(2) start_value_jpy が current_value_jpy の 1% 未満、(3) 期初の始値を解決できなかった暗号資産があり start_value_jpy が過小（当該期間のみ欠損・boundaryPrices 未登録・3 境界すべて欠損のいずれも含む）、(4) 現在 ticker 価格を解決できなかった保有があり current_value_jpy が過小（#109）、(5) 現物の約定履歴の取得が打ち切られ、直近の約定を巻き戻せず期初の保有がずれている（trades_truncated、issue #447）、(6) 信用の約定履歴を取得しきれず、信用の決済損益を巻き戻せていない可能性がある（margin_trades_incomplete、issue #446）。(2) は年初にほぼ空だった口座に入金して運用を始めた場合に起き、率は運用成績ではなく「期初がほぼ空だった」ことを表す数になるため出さない。(3) は過小な分母では率が運用成績を表さないため出さない（資産名は unpriced_start_assets）。(4) は分母ではなく分子が壊れており、率は「口座が消し飛んだ」ように見える偽の数になるため出さない（資産名は unpriced_current_assets）。いずれも増減額 change_jpy は出すが、**(3)〜(6) では分子も同じ欠損の影響を受ける**ので成績として読めない（ずれの向きが確定する場合は (3) で change_jpy_overstated=true、(4) で change_jpy_understated=true）。(1)(2) の増減額は正しい。undefined は「率がゼロ」ではない',
 			),
 		net_flow_jpy: z
 			.number()
@@ -563,7 +603,7 @@ const PeriodPerformanceSchema = z
 			.nullable()
 			.optional()
 			.describe(
-				'調整後増減率（%）= adjusted_change_jpy / start_value_jpy。**分母は期初評価額のままで、期中に入った資金は分母に入らない**。そのため期初評価額に比べて期中の入金が大きい期間では、投下資本あたりの運用成績よりずっと大きな率になる（フロー加重の収益率ではない。#111）。null=純入出金が未計測で算出不能。undefined=change_pct と同じ理由で率を出せない（start_value_jpy が 0、current_value_jpy の 1% 未満、期初始値の解決欠損で start_value_jpy が過小、または現在価格の解決欠損で current_value_jpy が過小。理由は change_pct_unavailable_reason）。change_pct と抑止条件が共通なので必ず両方同時に起きる',
+				'調整後増減率（%）= adjusted_change_jpy / start_value_jpy。**分母は期初評価額のままで、期中に入った資金は分母に入らない**。そのため期初評価額に比べて期中の入金が大きい期間では、投下資本あたりの運用成績よりずっと大きな率になる（フロー加重の収益率ではない。#111）。null=純入出金が未計測で算出不能。undefined=change_pct と同じ理由で率を出せない（start_value_jpy が 0、current_value_jpy の 1% 未満、期初始値の解決欠損で start_value_jpy が過小、現在価格の解決欠損で current_value_jpy が過小、または現物・信用の約定の取得の不足で期初の保有がずれている。理由は change_pct_unavailable_reason）。change_pct と抑止条件が共通なので必ず両方同時に起きる',
 			),
 		period_start: z.string().describe('期間の開始日時（ISO8601 JST）'),
 		period_end: z.string().describe('期間の終了日時（ISO8601 JST）'),
@@ -589,13 +629,13 @@ const PeriodPerformanceSchema = z
 			.number()
 			.optional()
 			.describe(
-				'期間中に入庫したステーキング報酬（入金種別 STAKING の DONE 入庫）の JPY 換算額。入庫日（confirmed_at）の 1day open で換算し、日次価格を解決できなかった分のみ現在価格で仮評価する。net_flow_jpy には含めず、adjusted_change_jpy の内数（報酬を受け取った後の値動きは含まない）。期間中にステーキング報酬が無い場合、純入出金が未計測の場合、1 件でも換算できなかった場合（資産名は staking_reward_unpriced_assets）は undefined。税務上の所得額の確定値ではない',
+				'期間中に入庫したステーキング報酬（入金種別 STAKING の DONE 入庫）の JPY 換算額。入庫日（confirmed_at）の 1day open で換算し、日次価格を解決できなかった分のみ現在価格で仮評価する。net_flow_jpy には含めず、adjusted_change_jpy の内数（報酬を受け取った後の値動きは含まない）。換算できなかった報酬があるときは、net_flow_jpy と同じく換算できた分だけの部分合計を出し、資産名を staking_reward_unpriced_assets に併記する（issue #448）。期間中にステーキング報酬が無い場合と純入出金が未計測の場合は undefined。報酬の受取時の評価額は実現損益・評価損益には含まれないので、所得として数えるときは実現損益と足して読む。税務上の所得額の確定値ではない',
 			),
 		staking_reward_unpriced_assets: z
 			.array(z.string())
 			.optional()
 			.describe(
-				'ステーキング報酬を入庫日価格・現在価格のいずれでも換算できなかった暗号資産シンボル一覧（小文字・昇順）。この場合 staking_reward_jpy は出さない。報酬は net_flow_jpy に入らないので純入出金はずれない。ただし現在価格も無いので、保有中なら current_value_jpy からも抜けており（unpriced_current_assets に載る）、その分 change_jpy / adjusted_change_jpy に報酬が入っていない。該当なしは undefined',
+				'ステーキング報酬を入庫日価格・現在価格のいずれでも換算できなかった暗号資産シンボル一覧（小文字・昇順）。この場合 staking_reward_jpy は換算できた分だけの部分合計になる。報酬は net_flow_jpy に入らないので純入出金はずれない。ただし現在価格も無いので、保有中なら current_value_jpy からも抜けており（unpriced_current_assets に載る）、その分 change_jpy / adjusted_change_jpy に報酬が入っていない。該当なしは undefined',
 			),
 		unpriced_start_assets: z
 			.array(z.string())
@@ -610,7 +650,7 @@ const PeriodPerformanceSchema = z
 				'現在評価額（current_value_jpy）の算出時に現在 ticker 価格を解決できなかった暗号資産シンボル一覧（小文字・昇順・重複なし、#109）。該当資産は current_value_jpy に含まれていない（過小）ので、change_jpy = current_value_jpy - start_value_jpy も同じ額だけ過小になる。現在価格は tickers_jpy を 1 回叩いて全銘柄ぶんを取るため、**このリストに保有暗号資産が全て並んでいる場合は ticker 取得そのものが失敗している**（現在評価額が JPY 残高だけに縮退し、増減額は「口座が消し飛んだ」ように見える偽の巨額損失になる）。同じ銘柄集合は total_unrealized_pnl / total_cost_basis からも除外される（現在価格を引けた銘柄だけを積むガード）。3 期間で同じ値になる（現在価格は期間に依存しない）。JPY のみ保有・全て解決できた場合は undefined。資産名のみ出し金額は出さない（unpriced_start_assets / unpriced_flow_assets と同じ粒度）',
 			),
 		change_pct_unavailable_reason: PortfolioChangePctUnavailableReasonEnum.optional().describe(
-			'change_pct / adjusted_change_pct を出せなかった理由。start_value_zero=期初評価額が 0、start_value_negligible=期初評価額が現在評価額の 1% 未満（相対基準。絶対額固定は口座規模に依存するため採らない）、start_boundary_unpriced=期初の始値を解決できなかった暗号資産があり期初評価額が過小（unpriced_start_assets を参照。start_value_negligible とは原因が異なる）、current_value_unpriced=現在 ticker 価格を解決できなかった保有があり現在評価額が過小（unpriced_current_assets を参照。分母ではなく分子が壊れる系統）。設定されている場合 change_pct は undefined で、adjusted_change_pct は undefined（純入出金が未計測なら null が優先）。増減額 change_jpy / adjusted_change_jpy はどの理由でも出るが、**成績として読めるのは start_value_zero / start_value_negligible のときだけ**（期初評価額が本当に小さいだけで分子は正しい）。start_boundary_unpriced / current_value_unpriced では分子も同じ欠損の影響を受けるため読めない（ずれの向きが確定する期間には change_jpy_overstated=true / change_jpy_understated=true が付く。付かない期間は「正しい」ではなく「向きが確定しない」）。複数の理由が同時に成立しうるため優先順位は start_boundary_unpriced > current_value_unpriced > start_value_zero > start_value_negligible で固定してある（増減額へ誘導しない系を必ず先に選ぶ。詳細は PortfolioChangePctUnavailableReasonEnum の doc）。率を出せている場合は undefined',
+			'change_pct / adjusted_change_pct を出せなかった理由。trades_truncated=現物の約定履歴の取得が打ち切られ（tradesTruncated=true）、直近の約定を巻き戻せず期初の保有がずれている（start_value_jpy / change_jpy / adjusted_change_jpy も読めず、ずれの向きは確定しないので change_jpy_overstated / change_jpy_understated は付かない）、margin_trades_incomplete=信用の約定履歴を取得しきれず（marginTradesTruncated / marginFetchFailed）、期間中の信用の決済損益を JPY 残高から巻き戻せていない可能性がある（読めない範囲とフラグの扱いは trades_truncated と同じ。issue #446）、start_value_zero=期初評価額が 0、start_value_negligible=期初評価額が現在評価額の 1% 未満（相対基準。絶対額固定は口座規模に依存するため採らない）、start_boundary_unpriced=期初の始値を解決できなかった暗号資産があり期初評価額が過小（unpriced_start_assets を参照。start_value_negligible とは原因が異なる）、current_value_unpriced=現在 ticker 価格を解決できなかった保有があり現在評価額が過小（unpriced_current_assets を参照。分母ではなく分子が壊れる系統）。設定されている場合 change_pct は undefined で、adjusted_change_pct は undefined（純入出金が未計測なら null が優先）。増減額 change_jpy / adjusted_change_jpy はどの理由でも出るが、**成績として読めるのは start_value_zero / start_value_negligible のときだけ**（期初評価額が本当に小さいだけで分子は正しい）。trades_truncated / margin_trades_incomplete / start_boundary_unpriced / current_value_unpriced では分子も同じ欠損の影響を受けるため読めない（ずれの向きが確定する期間には change_jpy_overstated=true / change_jpy_understated=true が付く。付かない期間は「正しい」ではなく「向きが確定しない」）。複数の理由が同時に成立しうるため優先順位は trades_truncated > margin_trades_incomplete > start_boundary_unpriced > current_value_unpriced > start_value_zero > start_value_negligible で固定してある（増減額へ誘導しない系を必ず先に選ぶ。詳細は PortfolioChangePctUnavailableReasonEnum の doc）。率を出せている場合は undefined',
 		),
 		change_jpy_overstated: z
 			.boolean()
@@ -623,6 +663,12 @@ const PeriodPerformanceSchema = z
 			.optional()
 			.describe(
 				'change_jpy / adjusted_change_jpy が**過小**であることの申告（#109。change_jpy_overstated の対称形）。true になるのは change_pct_unavailable_reason=current_value_unpriced のうち、現在 ticker 価格を解決できず current_value_jpy から脱落した資産（資産名は unpriced_current_assets）が**期初評価額には正しく載っている**場合だけで、脱落した現在評価額がそのまま増減額の過小分になる。期初の始値も解決できず期初評価額からも落ちる保有があると（unpriced_start_assets）その資産の値動きが両端に入らずずれの向きが確定しないため本フラグは付かない（その構成では理由コードが start_boundary_unpriced になる）。**フラグが無いことは「増減額が正しい」の意味ではない**——unpriced_current_assets がある期間の増減額は、向きが確定するかによらず運用成績として読めない。change_jpy_overstated と同時に true になることは無い（片方が立つのは他方の欠損が無いときだけ）。値を null にせず出したうえでフラグを立てる理由は change_jpy_overstated と同じ（両端の評価額から消費者が再計算できるので、null 化は契約を壊すだけで隠蔽にならない）。該当しない場合は undefined（false は返さない）',
+			),
+		negative_start_assets: z
+			.array(z.string())
+			.optional()
+			.describe(
+				'現在の保有から期間中の約定・入出金を巻き戻したとき、残高が負になった資産のシンボル一覧（小文字・昇順。jpy を含みうる）。負の残高は履歴の欠落（取得できなかった約定・入出金、販売所の取引など）の証拠で、該当資産は 0 として期初評価額から外している。そのため start_value_jpy / change_jpy は実態とずれている可能性がある（ずれの向きは欠けた履歴による）。資産名のみ出し数量は出さない。該当なしは undefined',
 			),
 	})
 	.optional();
@@ -695,7 +741,7 @@ export const AnalyzeMyPortfolioDataSchema = z.object({
 		.number()
 		.optional()
 		.describe(
-			'合計実現損益（JPY、全履歴・全銘柄 = 現在保有中の銘柄 + 売り切り銘柄）。現物単独で、信用の決済損益・利息・手数料は含まない（それらを含む口座全体は account_pnl）。account_pnl.spot_realized_pnl と同値。0 のときは undefined。恒久的に価格を解決できない入庫（上場前・当日足の欠損）で原価に算入できなかった分がある銘柄は除外せず含めるため、該当があると本値は過大側にずれる（銘柄名と件数は meta.warnings / summary の警告行、銘柄別の件数は holdings[].unpriced_deposit_count）。一方 total_realized_pnl_unavailable_reason が載る実行では**本値は undefined**——抑止した銘柄を含めても除いても口座の実現損益にはならないため、部分和を確定値として出さない',
+			'合計実現損益（JPY、全履歴・全銘柄 = 現在保有中の銘柄 + 売り切り銘柄）。現物単独で、信用の決済損益・利息・手数料は含まない（それらを含む口座全体は account_pnl）。account_pnl.spot_realized_pnl と同値。0 のときは undefined。恒久的に価格を解決できない入庫（上場前・当日足の欠損）で原価に算入できなかった分がある銘柄は除外せず含めるため、該当があると本値は過大側にずれる（銘柄名と件数は meta.warnings / summary の警告行、銘柄別の件数は holdings[].unpriced_deposit_count）。一方 total_realized_pnl_unavailable_reason が載る実行では**本値は undefined**——抑止した銘柄を含めても除いても口座の実現損益にはならないため、部分和を確定値として出さない。移動平均法で算出しており、総平均法（税務署に届出が無い場合の既定）で申告する場合はこの値と一致しない。ステーキング報酬の受取時の評価額は含まない（staking_reward_* に別建て）',
 		),
 	closed_position_realized_pnl: z
 		.number()
@@ -781,17 +827,17 @@ export const AnalyzeMyPortfolioMetaSchema = z.object({
 	tradesTruncated: z
 		.boolean()
 		.describe(
-			'現物約定履歴の取得が不完全（paginateTrades が MAX_PAGES / API エラー / lastTs 欠損などで途中終了）。true のとき損益計算が不正確な可能性。',
+			'現物約定履歴の取得が不完全（約定履歴の取得 paginateAllTrades が MAX_PAGES / API エラー / lastTs 欠損などで途中終了）。true のとき損益計算が不正確な可能性。古い順に取得するので欠けるのは直近の約定で、期初の保有の巻き戻しから漏れる。そのため *_performance は change_pct_unavailable_reason=trades_truncated（率を出さず、start_value_jpy / change_jpy / adjusted_change_jpy もずれの向きが確定しない）になり、*_equity_series も各点の保有がずれる（成績として読まないこと）。',
 		),
 	marginTradesTruncated: z
 		.boolean()
 		.describe(
-			'信用約定履歴の取得が不完全（paginateMarginTrades が MAX_PAGES / API エラー / lastTs 欠損などで途中終了）。true のとき信用 PnL が不正確な可能性。',
+			'信用約定履歴の取得が不完全（約定履歴の取得 paginateAllTrades が MAX_PAGES / API エラー / lastTs 欠損などで途中終了）。true のとき信用 PnL が不正確な可能性。現物と信用は同じ一覧から振り分けるので tradesTruncated と同じ値になり、*_performance の理由は現物の trades_truncated が優先される。*_equity_series もずれうる（issue #446）。',
 		),
 	marginFetchFailed: z
 		.boolean()
 		.describe(
-			'信用約定 API（type=margin）が途中で失敗した。true のとき margin_realized_pnl=0 が「信用未使用」ではなく「取得失敗による欠落」を意味する点に注意。',
+			'約定履歴の取得が途中で失敗した（現物と信用は同じ一覧から振り分けるので、現物も欠ける）。true のとき margin_realized_pnl=0 が「信用未使用」ではなく「取得失敗による欠落」を意味する点に注意。期間成績は率を出さず、理由は現物の trades_truncated が優先される。',
 		),
 	marginStatusFetchFailed: z
 		.boolean()
@@ -865,7 +911,7 @@ export const AnalyzeMyPortfolioMetaSchema = z.object({
 		.array(z.enum(['daily', 'monthly', 'yearly']))
 		.optional()
 		.describe(
-			'増減率（change_pct / adjusted_change_pct）を出さなかった期間の一覧。期初評価額が 0、現在評価額の 1% 未満、期初始値の解決欠損、または現在価格の解決欠損で率が意味を持たない期間が対象で、期間ごとの理由コードは *_performance.change_pct_unavailable_reason に載る。理由が start_boundary_unpriced / current_value_unpriced の期間では増減額（change_jpy / adjusted_change_jpy）も同じ欠損の影響を受けるので、代わりに増減額を読むことはできない（ずれの向きは *_performance.change_jpy_overstated / change_jpy_understated を参照）。該当なしのときは undefined（「全期間で率が出ている」の意味であり、率がゼロという意味ではない）。',
+			'増減率（change_pct / adjusted_change_pct）を出さなかった期間の一覧。期初評価額が 0、現在評価額の 1% 未満、期初始値の解決欠損、現在価格の解決欠損、または現物・信用の約定の取得の不足で率が意味を持たない期間が対象で、期間ごとの理由コードは *_performance.change_pct_unavailable_reason に載る。理由が trades_truncated / margin_trades_incomplete / start_boundary_unpriced / current_value_unpriced の期間では増減額（change_jpy / adjusted_change_jpy）も同じ欠損の影響を受けるので、代わりに増減額を読むことはできない（ずれの向きは *_performance.change_jpy_overstated / change_jpy_understated を参照）。該当なしのときは undefined（「全期間で率が出ている」の意味であり、率がゼロという意味ではない）。',
 		),
 	warnings: z
 		.array(z.string())
@@ -966,9 +1012,9 @@ export const GetMarginStatusDataSchema = z.object({
 	total_margin_balance_percentage: z.string().nullable().describe('保証金率（%、建玉なし時は null）'),
 	margin_position_profit_loss: z.string().describe('建玉含み損益'),
 	unrealized_cost: z.string().describe('未実現コスト（未収手数料・未収利息）'),
-	total_margin_position_product: z.string().describe('建玉総評価額'),
-	open_margin_position_product: z.string().describe('保有建玉評価額'),
-	open_margin_order_product: z.string().describe('注文中建玉評価額'),
+	total_margin_position_product: z.string().describe('建玉合計（保有分 + 新規注文中。時価ではない）'),
+	open_margin_position_product: z.string().describe('建玉の保有分（建値ベース。建玉ごとの product の合計）'),
+	open_margin_order_product: z.string().describe('建玉の新規注文中の分'),
 	total_position_maintenance_margin: z.string().describe('維持保証金合計'),
 	total_long_position_maintenance_margin: z.string().describe('ロング維持保証金'),
 	total_short_position_maintenance_margin: z.string().describe('ショート維持保証金'),
@@ -1020,10 +1066,10 @@ const MarginPositionSchema = z.object({
 		.describe(
 			'建玉ロック数量（アクティブな信用決済注文の remaining_amount の合計）。open_amount のうち決済注文に充てられている分。API が返さない場合は undefined',
 		),
-	product: z.string().describe('建玉評価額'),
-	average_price: z.string().describe('平均取得価格'),
-	unrealized_fee_amount: z.string().describe('未収手数料'),
-	unrealized_interest_amount: z.string().describe('未収利息'),
+	product: z.string().describe('建玉金額（建値ベース。average_price × open_amount の quote 量で、現在の時価ではない）'),
+	average_price: z.string().describe('平均約定価格（product / open_amount）'),
+	unrealized_fee_amount: z.string().describe('未実現手数料'),
+	unrealized_interest_amount: z.string().describe('未実現利息'),
 });
 
 const MarginNoticeSchema = z
@@ -1071,7 +1117,13 @@ export const GetMarginPositionsOutputSchema = z.union([
 
 export const GetMarginTradeHistoryInputSchema = z.object({
 	pair: z.string().optional().describe('通貨ペア（例: btc_jpy）。省略で全ペア'),
-	count: z.number().max(10000).default(20).describe('取得件数（最大10000、1000超は自動ページネーション）'),
+	count: z
+		.number()
+		.max(10000)
+		.default(20)
+		.describe(
+			'取得件数（最大10000）。約定履歴 API は現物約定も混ぜて返すので、信用に絞った件数が届くまで自動でページ送りする',
+		),
 	order: z.enum(['asc', 'desc']).default('desc').describe('ソート順（asc: 古い順, desc: 新しい順）'),
 	since: z.string().optional().describe('開始日時（ISO8601、例: 2025-01-01T00:00:00+09:00）'),
 	end: z.string().optional().describe('終了日時（ISO8601、例: 2025-12-31T23:59:59+09:00）'),
@@ -1092,8 +1144,13 @@ const MarginTradeItemSchema = z.object({
 	fee_occurred_amount_quote: z
 		.string()
 		.optional()
-		.describe('実際に発生した決済通貨手数料（現物では fee_amount_quote と同値、信用で乖離する可能性）'),
-	profit_loss: z.string().optional().describe('実現損益（決済時のみ）'),
+		.describe(
+			'実際に発生した決済通貨手数料。信用の手数料は決済時にまとめて計上され、決済行の値が新規側と決済側の合計になる（新規行は空）',
+		),
+	profit_loss: z
+		.string()
+		.optional()
+		.describe('実現損益（決済時のみ）。手数料（fee_occurred_amount_quote）控除後の値。利息を含むかは未確認'),
 	interest: z.string().optional().describe('利息（決済時のみ）'),
 	executed_at: z.string().describe('約定日時（ISO8601）'),
 });
@@ -1111,6 +1168,12 @@ export const GetMarginTradeHistoryMetaSchema = z.object({
 		.boolean()
 		.optional()
 		.describe('期間内全件を取得できたか。count 制限で打ち切られた場合や MAX_PAGES 到達時、cursor 進捗停止時は false'),
+	scanBoundary: z
+		.string()
+		.optional()
+		.describe(
+			'件数に届かずページの上限などで取得を打ち切ったとき、最後に調べた約定の時刻（ISO8601）。続きは order=desc なら end、asc なら since にこの値を指定する。全件取得できたときと、件数に届いて止めたときは無い',
+		),
 });
 
 export const GetMarginTradeHistoryOutputSchema = z.union([
@@ -1168,18 +1231,25 @@ const OrderResponseSchema = z.object({
 
 export type OrderResponse = z.infer<typeof OrderResponseSchema>;
 
+// 指数表記・16 進・前後の空白は Number() では通るが、確認カードと bitbank に生の文字列のまま渡るので弾く（issue 449）。
+const OrderDecimalStringSchema = z
+	.string()
+	.regex(/^\d+(\.\d+)?$/, '通常の 10 進表記（例: 0.001）で指定してください（指数表記・符号・空白は不可）');
+
 export const PreviewOrderInputSchema = z
 	.object({
 		pair: z.string().describe('通貨ペア（例: btc_jpy）'),
-		amount: z.string().describe('注文数量'),
-		price: z.string().optional().describe('指値価格。limit / stop_limit で必須'),
+		amount: OrderDecimalStringSchema.describe('注文数量（通常の 10 進表記。例: 0.001）'),
+		price: OrderDecimalStringSchema.optional().describe('指値価格（通常の 10 進表記）。limit / stop_limit で必須'),
 		side: z.enum(['buy', 'sell']).describe('売買方向'),
 		type: SpotOrderTypeEnum.describe(
 			'注文タイプ（limit / market / stop / stop_limit）。' +
 				'※ take_profit / stop_loss / losscut は本実装では未対応（公式 docs の動作仕様が曖昧なため意図的に除外）。',
 		),
 		post_only: z.boolean().optional().describe('Post Only（limit のみ有効。Maker 手数料を確保）'),
-		trigger_price: z.string().optional().describe('トリガー価格。stop / stop_limit で必須'),
+		trigger_price: OrderDecimalStringSchema.optional().describe(
+			'トリガー価格（通常の 10 進表記）。stop / stop_limit で必須',
+		),
 		position_side: PositionSideEnum.optional().describe(
 			'信用取引の建玉方向。指定時は信用注文として扱う。' +
 				'ロング新規=buy+long, ロング決済=sell+long, ショート新規=sell+short, ショート決済=buy+short。' +
@@ -1243,15 +1313,17 @@ export const PreviewOrderOutputSchema = z.union([
 export const CreateOrderInputSchema = z
 	.object({
 		pair: z.string().describe('通貨ペア（例: btc_jpy）'),
-		amount: z.string().describe('注文数量'),
-		price: z.string().optional().describe('指値価格。limit / stop_limit で必須'),
+		amount: OrderDecimalStringSchema.describe('注文数量（通常の 10 進表記）'),
+		price: OrderDecimalStringSchema.optional().describe('指値価格（通常の 10 進表記）。limit / stop_limit で必須'),
 		side: z.enum(['buy', 'sell']).describe('売買方向'),
 		type: SpotOrderTypeEnum.describe(
 			'注文タイプ（limit / market / stop / stop_limit）。' +
 				'※ take_profit / stop_loss / losscut は本実装では未対応（公式 docs の動作仕様が曖昧なため意図的に除外）。',
 		),
 		post_only: z.boolean().optional().describe('Post Only（limit のみ有効。Maker 手数料を確保）'),
-		trigger_price: z.string().optional().describe('トリガー価格。stop / stop_limit で必須'),
+		trigger_price: OrderDecimalStringSchema.optional().describe(
+			'トリガー価格（通常の 10 進表記）。stop / stop_limit で必須',
+		),
 		position_side: PositionSideEnum.optional().describe('信用取引の建玉方向。preview_order で指定した値をそのまま渡す'),
 		confirmation_token: z.string().describe('preview_order が発行した確認トークン'),
 		token_expires_at: z

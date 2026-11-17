@@ -82,8 +82,10 @@ describe('smaCrossStrategy', () => {
 			expect(smaCrossStrategy.computeRequiredBars({ sma_filter_period: 200 })).toBe(209);
 		});
 
-		it('rsi_filter_period が支配的なケースは period + 1 + 10', () => {
-			expect(smaCrossStrategy.computeRequiredBars({ short: 3, long: 5, rsi_filter_period: 50 })).toBe(61);
+		it('rsi_filter_period が支配的なケースは period + 1 + Wilder 平滑の収束本数 + 10', () => {
+			expect(smaCrossStrategy.computeRequiredBars({ short: 3, long: 5, rsi_filter_period: 50 })).toBe(
+				50 + 1 + 342 + 10,
+			);
 		});
 	});
 

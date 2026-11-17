@@ -1,6 +1,11 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { CLIENT_CAPABILITIES_META_KEY } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CONFIRMATION_META_KEY } from '../src/mcp-apps-meta.js';
 import { clientSupportsElicitation, isAppUiExecuteAllowed } from '../src/private/elicitation.js';
+import { disableSharedConfirmState, enableSharedConfirmState } from '../src/private/shared-confirm-state.js';
 import {
 	APP_RESOURCE_MIME_TYPE,
 	appResourceRegistry,
@@ -122,7 +127,7 @@ describe('handler', () => {
 		const extra = {
 			mcpReq: {
 				envelope: {
-					clientCapabilities: {
+					[CLIENT_CAPABILITIES_META_KEY]: {
 						elicitation: { url: {} },
 						extensions: { [MCP_APPS_UI_EXTENSION_ID]: { mimeTypes: [APP_RESOURCE_MIME_TYPE] } },
 					},
@@ -137,5 +142,89 @@ describe('handler', () => {
 		// snapshot 側の判定: 同じ述語を使っているので `_meta` を返す
 		const result = (await toolDef.handler({ resource_uri: URI }, extra)) as { _meta?: Record<string, unknown> };
 		expect(result._meta).toEqual(meta);
+	});
+});
+
+// 共有ファイルのトークンは、カードが受け取ったと知らせたら消す。読んだだけで消すと、ホストが `_meta` を落としたときにリソースから取り直せない（ADR-0007 判断事項 D）。
+describe.skipIf(process.platform === 'win32')('handler（プロセス間で共有するとき）', () => {
+	const extra = {
+		server: {
+			getClientCapabilities: () => ({
+				extensions: { [MCP_APPS_UI_EXTENSION_ID]: { mimeTypes: [APP_RESOURCE_MIME_TYPE] } },
+			}),
+		},
+	};
+	let root: string;
+
+	function sharedText(): string {
+		const dir = path.join(root, 'confirm', 'snapshots');
+		return fs
+			.readdirSync(dir)
+			.map((n) => fs.readFileSync(path.join(dir, n), 'utf8'))
+			.join('');
+	}
+
+	function storeFromOtherProcess(token: string) {
+		const expiresAt = Date.now() + 60_000;
+		storeUiSnapshot(
+			URI,
+			{ ok: true, summary: 'preview' },
+			{},
+			{ [CONFIRMATION_META_KEY]: { confirmation_token: token, expires_at: expiresAt } },
+			expiresAt,
+		);
+		_resetUiSnapshots();
+	}
+
+	afterEach(() => {
+		disableSharedConfirmState();
+		fs.rmSync(root, { recursive: true, force: true });
+	});
+
+	it('読んだだけではファイルのトークンを消さない（ホストが `_meta` を落としても、カードが取り直せる）', async () => {
+		root = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-snapshot-shared-'));
+		enableSharedConfirmState(path.join(root, 'confirm'));
+		vi.stubEnv('BITBANK_MCP_APPS_EXECUTE', '1');
+		storeFromOtherProcess('tok-once');
+
+		const first = (await toolDef.handler({ resource_uri: URI }, extra)) as { _meta?: Record<string, unknown> };
+		expect(first._meta?.[CONFIRMATION_META_KEY]).toMatchObject({ confirmation_token: 'tok-once' });
+		const second = (await toolDef.handler({ resource_uri: URI }, extra)) as { _meta?: Record<string, unknown> };
+		expect(second._meta?.[CONFIRMATION_META_KEY]).toMatchObject({ confirmation_token: 'tok-once' });
+	});
+
+	it('カードが受け取ったトークンを知らせたら、ファイルから消す', async () => {
+		root = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-snapshot-shared-'));
+		enableSharedConfirmState(path.join(root, 'confirm'));
+		vi.stubEnv('BITBANK_MCP_APPS_EXECUTE', '1');
+		storeFromOtherProcess('tok-once');
+
+		await toolDef.handler({ resource_uri: URI, confirmation_token: 'tok-once' }, extra);
+
+		expect(sharedText()).not.toContain('tok-once');
+		const after = (await toolDef.handler({ resource_uri: URI }, extra)) as {
+			_meta?: Record<string, unknown>;
+			structuredContent?: unknown;
+		};
+		expect(after._meta).toBeUndefined();
+		expect(after.structuredContent).toEqual({ ok: true, summary: 'preview' });
+	});
+
+	it('知らせたトークンが今のトークンと違えば消さない', async () => {
+		root = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-snapshot-shared-'));
+		enableSharedConfirmState(path.join(root, 'confirm'));
+		vi.stubEnv('BITBANK_MCP_APPS_EXECUTE', '1');
+		storeFromOtherProcess('tok-current');
+
+		await toolDef.handler({ resource_uri: URI, confirmation_token: 'tok-other' }, extra);
+
+		expect(sharedText()).toContain('tok-current');
+	});
+});
+
+describe('GetUiSnapshotInputSchema（受け取りの知らせ）', () => {
+	it('confirmation_token は省略でき、渡すなら文字列', () => {
+		expect(GetUiSnapshotInputSchema.safeParse({ resource_uri: URI, confirmation_token: 'x' }).success).toBe(true);
+		expect(GetUiSnapshotInputSchema.safeParse({ resource_uri: URI, confirmation_token: 1 }).success).toBe(false);
 	});
 });

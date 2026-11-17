@@ -1,6 +1,6 @@
 import { toNum } from '../../lib/conversions.js';
 import { nowIso, toIsoMs } from '../../lib/datetime.js';
-import { formatPair, formatPrice, formatYenAmount } from '../../lib/formatter.js';
+import { formatPair, formatPrice, formatYenAmount, formatYenExact } from '../../lib/formatter.js';
 import { normalizePairCodes } from '../../lib/pair-code.js';
 import { ok } from '../../lib/result.js';
 import { normalizePair } from '../../lib/validate.js';
@@ -49,20 +49,14 @@ export default async function getMarginPositions(args: { pair?: string }) {
 	const client = getDefaultClient();
 
 	try {
-		const params: Record<string, string> = {};
-		if (pair) params.pair = pair;
-
-		const raw = await client.get<RawMarginPositionsResponse>(
-			'/v1/user/margin/positions',
-			Object.keys(params).length > 0 ? params : undefined,
-		);
+		const raw = await client.get<RawMarginPositionsResponse>('/v1/user/margin/positions');
 
 		const timestamp = nowIso();
 
 		// 下のフィルタの `===` 比較と JPY 判定（`p.pair.includes('jpy')`）が小文字前提なので、取得境界で揃える。
 		const allPositions = normalizePairCodes(raw.positions);
 
-		// API がペアのフィルタに対応していない場合に備えたクライアント側フィルタ。
+		// API にペアで絞るパラメータが無い（Parameters: None）ので、ここで絞る。
 		const positions = pair ? allPositions.filter((p) => p.pair === pair) : allPositions;
 
 		const hasNotice = raw.notice != null && raw.notice.what != null;
@@ -102,15 +96,22 @@ export default async function getMarginPositions(args: { pair?: string }) {
 				const isJpy = p.pair.includes('jpy');
 				const avgPrice = isJpy ? formatPrice(Number(p.average_price)) : p.average_price;
 				const lockedText = (toNum(p.locked_amount) ?? 0) > 0 ? `, 決済注文中: ${p.locked_amount}` : '';
-				lines.push(
-					`${formatPair(p.pair)} ${sideLabel} ${p.open_amount} @ ${avgPrice} (評価額: ${formatYenAmount(Number(p.product))}${lockedText})`,
-				);
+				// product は average_price × open_amount（建値ベース）で、現在の時価ではない（#456）。
+				const amounts = [
+					`建玉金額（建値ベース）: ${formatYenExact(Number(p.product))}`,
+					`未実現手数料: ${formatYenExact(Number(p.unrealized_fee_amount))}`,
+					`未実現利息: ${formatYenExact(Number(p.unrealized_interest_amount))}`,
+				].join(', ');
+				lines.push(`${formatPair(p.pair)} ${sideLabel} ${p.open_amount} @ ${avgPrice} (${amounts}${lockedText})`);
 			}
 
 			const longCount = positions.filter((p) => p.position_side === 'long').length;
 			const shortCount = positions.filter((p) => p.position_side === 'short').length;
 			lines.push('');
 			lines.push(`集計: ロング ${longCount}件 / ショート ${shortCount}件`);
+			lines.push(
+				'※ 建玉金額は建値ベースで、現在の時価ではありません。建玉ごとの時価は API にありません。含み損益は get_margin_status の margin_position_profit_loss（口座全体）を参照してください。',
+			);
 		} else {
 			lines.push('建玉はありません');
 		}
@@ -144,7 +145,7 @@ export default async function getMarginPositions(args: { pair?: string }) {
 export const toolDef: ToolDefinition = {
 	name: 'get_margin_positions',
 	description:
-		'[Margin Positions / 信用建玉一覧] 信用取引の保有建玉一覧（通貨ペア・方向・数量・決済注文中の数量・評価額・平均取得価格）を取得。追証・不足金がある場合はアラート表示。通貨ペアでフィルタ可能。Private API。',
+		'[Margin Positions / 信用建玉一覧] 信用取引の保有建玉一覧（通貨ペア・方向・数量・決済注文中の数量・平均取得価格・建玉金額（建値ベース。時価ではない）・未実現手数料・未実現利息）を取得。含み損益は get_margin_status（口座全体）。追証・不足金がある場合はアラート表示。通貨ペアでフィルタ可能。Private API。',
 	inputSchema: GetMarginPositionsInputSchema,
 	handler: async (args: { pair?: string }) => getMarginPositions(args),
 };

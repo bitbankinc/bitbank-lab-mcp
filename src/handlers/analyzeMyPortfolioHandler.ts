@@ -31,6 +31,7 @@ import {
 	dominantUnresolvedDepositReason,
 	flowUnavailableReasonFor,
 	getJstPeriodBoundaries,
+	isStakingReward,
 	MIN_START_VALUE_RATIO,
 	type PeriodPerformanceKey,
 	type PeriodSpec,
@@ -49,8 +50,7 @@ import {
 	fetchTickerPrices,
 	MAX_DEPOSIT_FLOW_PRICE_YEAR_CHUNKS,
 	MAX_WITHDRAWAL_FLOW_PRICE_YEAR_CHUNKS,
-	paginateMarginTrades,
-	paginateTrades,
+	paginateAllTrades,
 } from './portfolio/fetch.js';
 import {
 	assetCountLabel,
@@ -76,8 +76,6 @@ import type {
 	PeriodPerformance,
 	PeriodRealizedPnl,
 	RawAsset,
-	RawMarginTrade,
-	RawTrade,
 	TechnicalSummary,
 } from './portfolio/types.js';
 
@@ -110,7 +108,9 @@ function buildMarginPositionsBlock(info: MarginAccountInfo): string[] {
 	lines.push('信用建玉:');
 	for (const p of openPositions) {
 		const sideLabel = positionSideLabel(p.position_side);
-		lines.push(`  ${formatPair(p.pair)} ${sideLabel} ${p.open_amount} (評価額: ${formatYenAmount(Number(p.product))})`);
+		lines.push(
+			`  ${formatPair(p.pair)} ${sideLabel} ${p.open_amount} (建玉金額（建値ベース）: ${formatYenAmount(Number(p.product))})`,
+		);
 	}
 	const longCount = openPositions.filter((p) => p.position_side === 'long').length;
 	const shortCount = openPositions.filter((p) => p.position_side === 'short').length;
@@ -150,6 +150,10 @@ const FLOW_UNAVAILABLE_NOTE: Record<PortfolioFlowUnavailableReason, string> = {
 };
 
 const CHANGE_PCT_UNAVAILABLE_NOTE: Record<PortfolioChangePctUnavailableReason, string> = {
+	trades_truncated:
+		'現物の約定履歴の取得が打ち切られ、直近の約定を巻き戻せず期初の保有がずれているため。欠けた約定が期間内にあると率は運用成績を表さない',
+	margin_trades_incomplete:
+		'信用の約定履歴を取得しきれず、期間中の信用の決済損益を JPY 残高から巻き戻せていない可能性があるため',
 	start_value_zero: '期初評価額が 0 で率を定義できないため',
 	start_value_negligible: `期初評価額が現在評価額の ${MIN_START_VALUE_RATIO * 100}% 未満で、率が運用成績ではなく「期初がほぼ空だった」ことを表す数になるため`,
 	start_boundary_unpriced:
@@ -160,6 +164,10 @@ const CHANGE_PCT_UNAVAILABLE_NOTE: Record<PortfolioChangePctUnavailableReason, s
 
 // 価格の解決欠損 2 種では増減額へ誘導せず、代替（資産推移シリーズ）も示さない。シリーズも同じ始値に依存し、欠けた期間は現在価格で埋まっている（#105, #109）。
 const CHANGE_JPY_GUIDANCE_LINE: Record<PortfolioChangePctUnavailableReason, string> = {
+	trades_truncated:
+		'期初評価額と増減額（change_jpy / adjusted_change_jpy）も欠けた約定の分だけずれており、向きも確定できないので、成績として読まないでください。この期間の値動きはこの結果からは算出できません',
+	margin_trades_incomplete:
+		'期初評価額と増減額（change_jpy / adjusted_change_jpy）も信用の決済損益の分だけずれうるので、成績として読まないでください。この期間の値動きはこの結果からは算出できません',
 	start_value_zero: '増減額で読んでください',
 	start_value_negligible: '増減額で読んでください',
 	start_boundary_unpriced:
@@ -174,6 +182,10 @@ const CHANGE_JPY_DIRECTION_UNKNOWN_LINE =
 
 // warning は LLM が最初に読む行なので、代替として資産推移シリーズを持ち出さないことまで明示する。
 const CHANGE_JPY_GUIDANCE_WARNING: Record<PortfolioChangePctUnavailableReason, string> = {
+	trades_truncated:
+		'期初評価額と増減額（change_jpy / adjusted_change_jpy）も欠けた約定の分だけずれており、欠けたのが買いか売りかで向きが変わるため向きも確定できません。成績として読まないこと。該当期間の値動きはこの結果からは算出できません（資産推移シリーズも同じ巻き戻しを使うため代替になりません）',
+	margin_trades_incomplete:
+		'期初評価額と増減額（change_jpy / adjusted_change_jpy）も、巻き戻せなかった信用の決済損益の分だけずれている可能性があり、向きも確定できません。成績として読まないこと。該当期間の値動きはこの結果からは算出できません（資産推移シリーズも同じ巻き戻しを使うため代替になりません）',
 	start_value_zero: '増減額（change_jpy / adjusted_change_jpy）は出しているので成績はそちらで読むこと',
 	start_value_negligible: '増減額（change_jpy / adjusted_change_jpy）は出しているので成績はそちらで読むこと',
 	start_boundary_unpriced:
@@ -276,6 +288,11 @@ function buildPerformanceLines(label: string, p: PeriodPerformance): string[] {
 			`  ※ 上の現在評価額は過小: ${p.unpriced_current_assets.map((a) => a.toUpperCase()).join(', ')} の現在価格を解決できず含めていません${understatedNote}`,
 		);
 	}
+	if (p.negative_start_assets && p.negative_start_assets.length > 0) {
+		lines.push(
+			`  ※ 期初の保有を巻き戻すと ${p.negative_start_assets.map((a) => a.toUpperCase()).join(', ')} の残高が負になりました（約定・入出金の履歴が欠けている可能性）。負の残高は 0 として期初評価額から外しているため、期初評価額と増減額は実態とずれている可能性があります`,
+		);
+	}
 
 	// flow_measured=false のとき 3 フィールドはすべて null。型の絞り込みも兼ねて null で分岐する。
 	if (p.net_flow_jpy == null || p.withdrawal_fee_jpy == null || p.adjusted_change_jpy == null) {
@@ -298,12 +315,11 @@ function buildPerformanceLines(label: string, p: PeriodPerformance): string[] {
 		}
 	}
 	if (p.staking_reward_jpy != null) {
+		const unpricedNote = p.staking_reward_unpriced_assets
+			? `。${p.staking_reward_unpriced_assets.map((a) => a.toUpperCase()).join(', ')} の報酬は入庫日の価格も現在価格も解決できず含めていません（保有中なら現在評価額にも含まれておらず、増減にも入っていない可能性があります）`
+			: '';
 		lines.push(
-			`  ステーキング報酬: +${formatYenAmount(p.staking_reward_jpy)}（入庫日の価格で換算し、取得できない分は現在価格で仮評価。元本ではなく成果として増減に含む）`,
-		);
-	} else if (p.staking_reward_unpriced_assets) {
-		lines.push(
-			`  ステーキング報酬: ${p.staking_reward_unpriced_assets.map((a) => a.toUpperCase()).join(', ')} の入庫日の価格も現在価格も解決できず額を出せません（保有中なら現在評価額にも含まれておらず、増減にも入っていない可能性があります）`,
+			`  ステーキング報酬: +${formatYenAmount(p.staking_reward_jpy)}（入庫日の価格で換算し、取得できない分は現在価格で仮評価。元本ではなく成果として増減に含む${unpricedNote}）`,
 		);
 	}
 	return lines;
@@ -375,6 +391,8 @@ function buildPerformanceSectionLines(input: {
 	yearlyEquitySeries: EquityPoint[] | undefined;
 	equitySeriesQuality: 'complete' | 'partial_fallback' | 'fallback_only' | 'jpy_only' | undefined;
 	equitySeriesFallbackAssets: readonly string[];
+	tradesTruncated: boolean;
+	marginTradesIncomplete: boolean;
 }): string[] {
 	const {
 		dailyPerformance,
@@ -385,6 +403,8 @@ function buildPerformanceSectionLines(input: {
 		yearlyEquitySeries,
 		equitySeriesQuality,
 		equitySeriesFallbackAssets,
+		tradesTruncated,
+		marginTradesIncomplete,
 	} = input;
 	const lines: string[] = [];
 	if (dailyPerformance) lines.push(...buildPerformanceLines('前日比', dailyPerformance));
@@ -395,6 +415,9 @@ function buildPerformanceSectionLines(input: {
 		lines.push(
 			'※ 期初評価額は約定・入出金を逆算して復元、期初始値で評価。暗号資産入出庫は入出庫日（入庫: confirmed_at / 出庫: requested_at）の始値で JPY 換算',
 		);
+		lines.push(
+			'※ 信用の決済損益（手数料控除後。利息は別に差し引く）は JPY 残高に反映されるので巻き戻し、増減に含める。信用建玉の含み損益は期初・現在の評価額のどちらにも含めない',
+		);
 		lines.push('※ 出金元本は外部フローとして除外、出金手数料はコストとして performance に含む');
 		// 上の 2 行が復元前提を語っているので、前提が満たせていないことをその直後に置く。
 		if (flowUnavailableReason != null) {
@@ -402,6 +425,17 @@ function buildPerformanceSectionLines(input: {
 				`※ ただし今回は${FLOW_UNAVAILABLE_CAUSE[flowUnavailableReason]}ため入出金を巻き戻せていません。期初評価額・資産推移シリーズは入出金があった期間で実態と乖離します`,
 			);
 		}
+	}
+	const hasSeries = (monthlyEquitySeries?.length ?? 0) > 0 || (yearlyEquitySeries?.length ?? 0) > 0;
+	if (tradesTruncated && hasSeries) {
+		lines.push(
+			'※ 資産推移シリーズ: 現物の約定履歴の取得が打ち切られ、直近の約定を巻き戻せていません。各点の保有と評価額がずれているので、成績として読まないでください（tradesTruncated=true）',
+		);
+	}
+	if (marginTradesIncomplete && hasSeries) {
+		lines.push(
+			'※ 資産推移シリーズ: 信用の約定履歴を取得しきれず、信用の決済損益を JPY 残高から巻き戻せていない可能性があります。各点の評価額がずれうるので、成績として読まないでください',
+		);
 	}
 	if (monthlyEquitySeries && monthlyEquitySeries.length > 0) {
 		if (equitySeriesQuality === 'jpy_only') {
@@ -439,6 +473,10 @@ function periodDWLine(label: '年初来' | '月初来', d: PeriodDWSummary): str
 	if (d.crypto_deposit_count > 0)
 		parts.push(
 			`暗号資産入庫 ${d.crypto_deposit_count}件${d.crypto_deposit_estimated_jpy ? `（概算 ${formatYenAmount(d.crypto_deposit_estimated_jpy)}）` : ''}`,
+		);
+	if (d.staking_reward_count != null)
+		parts.push(
+			`うちステーキング報酬 ${d.staking_reward_count}件${d.staking_reward_estimated_jpy ? `（概算 ${formatYenAmount(d.staking_reward_estimated_jpy)}、元本ではなく成果）` : ''}`,
 		);
 	if (d.crypto_withdrawal_count > 0)
 		parts.push(
@@ -508,65 +546,76 @@ function buildAccountReturnLines(dwSummary: DepositWithdrawalSummary): string[] 
 		return `  ステーキング報酬 ${count}件（暗号資産入庫の内数）: ${amount}${unvalued}。${treatment}`;
 	};
 
-	if (dwSummary.account_return_jpy != null) {
-		const sign = dwSummary.account_return_jpy >= 0 ? '+' : '';
-		const approxLabel = dwSummary.is_complete ? '' : '（概算）';
-		lines.push(
-			`口座全体リターン${approxLabel}: ${sign}${formatYenAmount(dwSummary.account_return_jpy)} (${formatPercent(dwSummary.account_return_pct, { sign: true })})`,
-		);
-		lines.push(`  JPY入金合計: ${formatYenAmount(dwSummary.total_jpy_deposited)}`);
+	const breakdownLines = (returnShown: boolean): string[] => {
+		const out: string[] = [];
+		out.push(`  JPY入金合計: ${formatYenAmount(dwSummary.total_jpy_deposited)}`);
 		if (dwSummary.total_jpy_withdrawn > 0) {
-			lines.push(`  JPY出金合計: ${formatYenAmount(dwSummary.total_jpy_withdrawn)}`);
+			out.push(`  JPY出金合計: ${formatYenAmount(dwSummary.total_jpy_withdrawn)}`);
 		}
 		const netJpyDeposit = dwSummary.total_jpy_deposited - dwSummary.total_jpy_withdrawn;
-		lines.push(`  JPY純入金: ${formatYenAmount(Math.round(netJpyDeposit))}`);
+		out.push(`  JPY純入金: ${formatYenAmount(Math.round(netJpyDeposit))}`);
 		if (dwSummary.crypto_deposit_estimated_jpy) {
-			lines.push(
+			out.push(
 				`  暗号資産入庫の評価: ${formatYenAmount(dwSummary.crypto_deposit_estimated_jpy)}（${valuedDepositCount}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_deposit_valuation?.basis ?? 'current_price_fallback']}）`,
 			);
 		}
 		if (dwSummary.crypto_withdrawal_estimated_jpy) {
-			lines.push(
+			out.push(
 				`  暗号資産出庫の評価: -${formatYenAmount(dwSummary.crypto_withdrawal_estimated_jpy)}（${valuedWithdrawalCount}件、${FLOW_VALUATION_LABEL[dwSummary.crypto_withdrawal_valuation?.basis ?? 'current_price_fallback']}）`,
 			);
 		}
-		const stakingLine = stakingRewardLine(true);
-		if (stakingLine) lines.push(stakingLine);
+		const stakingLine = stakingRewardLine(returnShown);
+		if (stakingLine) out.push(stakingLine);
 		// 内訳の式は実際に載っている項だけを並べる（0 円の項を書くと読み手が総額を追えない）。
 		const netInvestedTerms = [
 			dwSummary.crypto_deposit_estimated_jpy ? '+ 暗号資産入庫の評価額' : '',
 			dwSummary.staking_reward_estimated_jpy ? '- ステーキング報酬の評価額' : '',
 			dwSummary.crypto_withdrawal_estimated_jpy ? '- 暗号資産出庫の評価額' : '',
 		].filter(Boolean);
-		lines.push(
+		out.push(
 			`  純投入額: ${formatYenAmount(dwSummary.net_jpy_invested)}${netInvestedTerms.length > 0 ? `（JPY純入金 ${netInvestedTerms.join(' ')}）` : ''}`,
 		);
 		if (!dwSummary.is_complete) {
-			lines.push('  ※ 入出金履歴が多く全件取得できなかったため、概算値です');
+			out.push('  ※ 入出金履歴が多く全件取得できなかったため、概算値です');
 		}
 		if (unvaluedDepositCount > 0) {
-			lines.push(`  ※ 暗号資産入庫 ${unvaluedDepositCount}件の価格が取得できず評価額に含まれていません`);
+			out.push(`  ※ 暗号資産入庫 ${unvaluedDepositCount}件の価格が取得できず評価額に含まれていません`);
 		}
 		const depositFallbackCount = dwSummary.crypto_deposit_valuation?.current_price_fallback_count ?? 0;
 		if (depositFallbackCount > 0) {
-			lines.push(
+			out.push(
 				`  ※ うち ${depositFallbackCount}件は入庫日の価格を取得できず現在価格で仮評価（この分だけ相場変動で評価額が動きます）`,
 			);
 		}
 		if (unvaluedWithdrawalCount > 0) {
-			lines.push(`  ※ 暗号資産出庫 ${unvaluedWithdrawalCount}件は評価額を算出できず純投入額に反映されていません`);
+			out.push(`  ※ 暗号資産出庫 ${unvaluedWithdrawalCount}件は評価額を算出できず純投入額に反映されていません`);
 		}
 		const withdrawalFallbackCount = dwSummary.crypto_withdrawal_valuation?.current_price_fallback_count ?? 0;
 		if (withdrawalFallbackCount > 0) {
-			lines.push(
+			out.push(
 				`  ※ うち ${withdrawalFallbackCount}件は出庫日の価格を取得できず現在価格で仮評価（この分だけ相場変動で評価額が動きます）`,
 			);
 		}
 		if (valuedWithdrawalCount > 0) {
-			lines.push(
+			out.push(
 				`  ※ 暗号資産出庫 ${valuedWithdrawalCount}件は JPY 出金と同じ「元本の回収」として純投入額から差し引いています（外部ウォレットへ移して保有を続けている場合でも、口座外の値動きは測定対象外です）`,
 			);
 		}
+		return out;
+	};
+
+	if (dwSummary.account_return_jpy != null) {
+		const sign = dwSummary.account_return_jpy >= 0 ? '+' : '';
+		const approxLabel = dwSummary.is_complete ? '' : '（概算）';
+		lines.push(
+			`口座全体リターン${approxLabel}: ${sign}${formatYenAmount(dwSummary.account_return_jpy)} (${formatPercent(dwSummary.account_return_pct, { sign: true })})`,
+		);
+		lines.push(...breakdownLines(true));
+	} else if (dwSummary.unpriced_flow_assets) {
+		lines.push(
+			`口座全体リターン: 算出不可（${dwSummary.unpriced_flow_assets.map((a) => a.toUpperCase()).join(', ')} の入出庫を入出庫日の価格でも現在価格でも JPY 換算できず、純投入額から漏れているため。漏れた分だけリターンがずれます）`,
+		);
+		lines.push(...breakdownLines(false));
 	} else if (dwSummary.net_jpy_invested <= 0) {
 		// 黙ってブロックごと消すと「計算されたのに表示されていない」と読まれるので、出せない理由を 1 行で出す。
 		const withdrawalCause =
@@ -601,8 +650,8 @@ function buildAccountPnlLines(input: {
 	const spotRealized = accountPnl.spot_realized_pnl;
 	const hasMargin =
 		accountPnl.margin_realized_pnl !== 0 || accountPnl.margin_interest_cost !== 0 || accountPnl.margin_fee_cost !== 0;
-	// data 側はコスト = 正値なので、表示は total への寄与として - を前置する（#72）。
-	const marginPart = `Margin: ${accountPnl.margin_realized_pnl >= 0 ? '+' : ''}${formatYenAmount(accountPnl.margin_realized_pnl)} / Interest cost: -${formatYenAmount(accountPnl.margin_interest_cost)} / Fee cost: -${formatYenAmount(accountPnl.margin_fee_cost)}`;
+	// data 側はコスト = 正値なので、利息は total への寄与として - を前置する（#72）。手数料は Margin に控除済みなので引く項として並べない（issue 450）。
+	const marginPart = `Margin: ${accountPnl.margin_realized_pnl >= 0 ? '+' : ''}${formatYenAmount(accountPnl.margin_realized_pnl)}（手数料控除後。発生手数料 ${formatYenAmount(accountPnl.margin_fee_cost)} は控除済み） / Interest cost: -${formatYenAmount(accountPnl.margin_interest_cost)}`;
 	if (spotRealized == null && totalRealizedPnlUnavailableReason != null) {
 		// 抑止した銘柄を除いた部分和を見出しに載せない。数字を出した時点で口座の実現損益として読まれる（#80）。
 		lines.push(
@@ -645,6 +694,13 @@ function buildAccountPnlLines(input: {
 	return lines;
 }
 
+// 報酬は受取時の評価額を取得原価に入れるので、売却しても保有を続けても報酬額は損益に現れない（issue 448）。
+const STAKING_REWARD_PNL_NOTE =
+	'※ ステーキング報酬の受取時の評価額は実現損益・評価損益に含めず、staking_reward_estimated_jpy（全期間）/ staking_reward_jpy（期間別）に別建てで出しています（報酬は受取時の評価額を取得原価に入れるため、売却時の実現損益は受取時からの差額だけになります）。所得として数えるときは、報酬の評価額と実現損益を足して読んでください';
+
+const COST_METHOD_NOTE =
+	'※ 取得原価・実現損益は移動平均法で算出しています。総平均法（税務署に届出が無い場合の既定）で申告する場合、実現損益と取得原価はこの値と一致しません';
+
 function buildCostNoteLines(input: {
 	flowUnavailableReason: PortfolioFlowUnavailableReason | undefined;
 	totalUnrealizedPnl: number | undefined;
@@ -654,6 +710,8 @@ function buildCostNoteLines(input: {
 	unpricedDepositLabel: string;
 	suppressedRealizedLabel: string;
 	qtyClampLabel: string;
+	pnlIncluded: boolean;
+	hasStakingRewards: boolean;
 }): string[] {
 	const {
 		flowUnavailableReason,
@@ -664,6 +722,8 @@ function buildCostNoteLines(input: {
 		unpricedDepositLabel,
 		suppressedRealizedLabel,
 		qtyClampLabel,
+		pnlIncluded,
+		hasStakingRewards,
 	} = input;
 	const lines: string[] = [];
 	if (flowUnavailableReason != null) {
@@ -679,6 +739,12 @@ function buildCostNoteLines(input: {
 		lines.push(
 			'※ 評価損益は全履歴の約定・暗号資産入出庫から移動平均法で算出した取得原価ベース。暗号資産入庫は入庫日（confirmed_at）の始値で取得したとみなして原価に算入（真の取得原価ではなく入庫時点の相場という仮定）。入庫日の価格を取得できなかった入庫は原価に算入しないため、その分だけ取得原価は過小になります（復元数量が実残高と乖離した銘柄は取得原価を出しません）',
 		);
+	}
+	if (pnlIncluded && hasStakingRewards) {
+		lines.push(STAKING_REWARD_PNL_NOTE);
+	}
+	if (pnlIncluded) {
+		lines.push(COST_METHOD_NOTE);
 	}
 	if (qtyMismatchAssets.length > 0) {
 		lines.push(
@@ -1030,13 +1096,9 @@ export default async function analyzeMyPortfolioHandler(args: {
 		const boundaries = getJstPeriodBoundaries();
 
 		// 損益計算は全履歴で移動平均を回すので全期間を取得する。期間集計は各関数の sinceMs で絞る。
-		const tradePromise = include_pnl
-			? paginateTrades(client)
-			: Promise.resolve({ trades: [] as RawTrade[], truncated: false });
-
-		const marginTradePromise = include_pnl
-			? paginateMarginTrades(client)
-			: Promise.resolve({ trades: [] as RawMarginTrade[], truncated: false, fetchFailed: false });
+		const tradeHistoryPromise = include_pnl
+			? paginateAllTrades(client)
+			: Promise.resolve({ spotTrades: [], marginTrades: [], truncated: false, fetchFailed: false });
 
 		// 入出金履歴は表示セクションの有無ではなく損益計算に要るかで取得する（include_pnl=true なら必須の入力）。
 		const dwPromise =
@@ -1045,17 +1107,18 @@ export default async function analyzeMyPortfolioHandler(args: {
 		// 信用約定の取得とは独立して失敗しうるので別フラグで持つ。
 		const marginAccountInfoPromise = fetchMarginAccountInfo();
 
-		const [tradeResult, marginTradeResult, dwData, marginAccountInfo] = await Promise.all([
-			tradePromise,
-			marginTradePromise,
+		const [tradeHistory, dwData, marginAccountInfo] = await Promise.all([
+			tradeHistoryPromise,
 			dwPromise,
 			marginAccountInfoPromise,
 		]);
-		const allTrades = tradeResult.trades;
-		const tradesTruncated = tradeResult.truncated;
-		const allMarginTrades = marginTradeResult.trades;
-		const marginTradesTruncated = marginTradeResult.truncated;
-		const marginFetchFailed = marginTradeResult.fetchFailed;
+		// 現物と信用は同じ一覧から振り分けるので、打ち切りも取得失敗も両方に同じく効く。
+		const allTrades = tradeHistory.spotTrades;
+		const tradesTruncated = tradeHistory.truncated;
+		const allMarginTrades = tradeHistory.marginTrades;
+		const marginTradesTruncated = tradeHistory.truncated;
+		const marginFetchFailed = tradeHistory.fetchFailed;
+		const marginTradesIncomplete = marginTradesTruncated || marginFetchFailed;
 		const marginStatusFetchFailed = marginAccountInfo.statusFetchFailed;
 		const marginPositionsFetchFailed = marginAccountInfo.positionsFetchFailed;
 
@@ -1243,6 +1306,9 @@ export default async function analyzeMyPortfolioHandler(args: {
 				currentValue: currentJpyValueRounded,
 				nowIso: boundaries.nowIso,
 				flowUnavailableReason,
+				tradesTruncated,
+				marginTrades: allMarginTrades,
+				marginTradesIncomplete,
 			};
 			const performanceSpecs: PeriodSpec[] = [
 				{ key: 'yearly', startMs: boundaries.yearStartMs, startIso: boundaries.yearStartIso },
@@ -1271,6 +1337,7 @@ export default async function analyzeMyPortfolioHandler(args: {
 					boundaries.nowIso,
 					prices,
 					flowPricing,
+					allMarginTrades,
 				);
 			monthlyEquitySeries = equitySeriesOver(monthDates);
 			yearlyEquitySeries = equitySeriesOver(yearDates);
@@ -1352,6 +1419,8 @@ export default async function analyzeMyPortfolioHandler(args: {
 				yearlyEquitySeries,
 				equitySeriesQuality,
 				equitySeriesFallbackAssets,
+				tradesTruncated,
+				marginTradesIncomplete,
 			}),
 		);
 
@@ -1404,6 +1473,8 @@ export default async function analyzeMyPortfolioHandler(args: {
 				unpricedDepositLabel,
 				suppressedRealizedLabel,
 				qtyClampLabel,
+				pnlIncluded: accountPnl != null,
+				hasStakingRewards: dwData?.deposits.some((d) => d.status === 'DONE' && isStakingReward(d)) ?? false,
 			}),
 		);
 		lines.push('');

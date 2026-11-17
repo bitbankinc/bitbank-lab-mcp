@@ -271,6 +271,8 @@ drift 時に「ミラー要更新」issue を起票する。
 > 強制決済率は `losscut_percentage`、保証金率は `total_margin_balance_percentage`。
 > `*_percentage` 系は建玉なし時に `null`（schema は `.nullable()`）。
 
+> **実口座で確認した建玉合計の中身:** `open_margin_position_product`（建玉の保有分）は、`margin/positions` の建玉ごとの `product`（建値ベース。時価ではない）の合計と、円未満の端数を除いて一致した。`total_margin_position_product` は保有分と新規発注中の合計なので、時価で評価した額ではない。`open_margin_order_product` の基準（注文価格かどうか）は未確認。
+
 ### 公式 JSON 例（verbatim, `:807-838`）
 
 ```json
@@ -377,6 +379,10 @@ drift 時に「ミラー要更新」issue を起票する。
 確度: **verbatim**（表 `:956-972` / JSON `:995-1019`）。パラメータ `pair` / `count`(≤1000) / `order_id` /
 `since`(ms) / `end`(ms) / `order`(`asc`/`desc`、既定 `desc`)（`:945-952`）。
 
+> **live 確認済み（2026-11-10, fork の issue #458 項目 7）: `since` / `end` はどちらも境界の時刻を含む。**
+> 約定時刻ちょうどを `since` にして `asc`、`end` にして `desc` で呼ぶと、その約定が先頭に来た。docs には記載が無い。
+> ページ送りはこの前提で、境目の時刻をそのまま次のカーソルにして取り直し、`trade_id` で重複を除く。
+
 | フィールド | 型 | 備考 | docs 行 |
 |---|---|---|---|
 | `trade_id` | number | trade id | `:958` |
@@ -399,6 +405,12 @@ drift 時に「ミラー要更新」issue を起票する。
 > （`:995-1019`）には無い。** コードは正しく表に従い `fee_occurred_amount_quote` を採用する
 > （`src/private/schemas.ts:83`, `src/handlers/portfolio/types.ts:56,73`, `calc.ts:301`）。
 > 実績の手数料・利息はここ（`fee_occurred_amount_quote` + `interest`）が正。見積りは `lib/fees.ts`。
+
+> **実口座で確認した信用約定の挙動（fork の issue #450 / #452）:**
+> - `profit_loss` は**手数料控除後**。BTC/JPY のショート決済で、`profit_loss` は値動きだけの損益から決済行の発生手数料を
+>   引いた額と一致した。口座損益の合計で `fee_occurred_amount_quote` を引くと二重控除になる。
+> - 信用の手数料は決済時にまとめて計上される。決済行の `fee_occurred_amount_quote` が新規側と決済側の合計で、新規行は空。
+> - `profit_loss` に `interest` が含まれるかは**未確認**（確認に使えた約定は利息がすべて 0）。
 
 ### 公式 JSON 例（verbatim, `:995-1019`。`fee_occurred_amount_quote` は表のみで JSON 例には未掲載）
 
@@ -436,13 +448,18 @@ drift 時に「ミラー要更新」issue を起票する。
 確度: **verbatim**（表 `:1040-1051` / JSON `:1080-1098`）。パラメータ `asset` / `count`(≤100) /
 `since`(ms) / `end`(ms)（`:1031-1036`）。
 
+> **live 確認済み（2026-11-10, fork の issue #458 項目 1）: 期間（`since` / `end`）の中で新しい順に `count` 件を返す。**
+> docs には `order` パラメータも並び順の記載も無い。`since` に古い日付を渡しても、返るのは `since` に近い古い分ではなく
+> いちばん新しい `count` 件。ページ送り（`src/handlers/portfolio/pagination.ts`）は `since` を下限に残し、各ページの
+> いちばん古い時刻を次の `end` にしてさかのぼる。`end` が境界を含むこと（項目 7）は約定履歴で確認した前提に合わせている。
+
 | フィールド | 型 | 備考 | docs 行 |
 |---|---|---|---|
 | `uuid` | string | 入金識別 uuid | `:1042` |
 | `address` | string | 入金 address（暗号資産入金のみ）。**公式は表のみ・JSON 例には未掲載**だが live 確認済み（2026-06-08, `deposits[]` キーに `address` あり / jpy 入金は無し） | `:1043` |
 | `asset` | string | アセット名 | `:1044` |
 | `network` | string | ネットワーク名 | `:1045` |
-| `amount` | number（表）/ "string"（JSON 例） | 入金数量。**表は `number`・JSON 例は `"string"` で不一致（記録）** | `:1046` |
+| `amount` | number（表）/ "string"（JSON 例） | 入金数量。**表は `number`・JSON 例は `"string"` で不一致（記録）**。live 確認済み（2026-11-10, fork の issue #458 項目 6）: 文字列で返る（`z.string()` の出力検証を通った） | `:1046` |
 | `txid` | string \| null | 入金トランザクションID（暗号資産のみ） | `:1047` |
 | `status` | string | `FOUND` / `CONFIRMED` / `DONE` | `:1048` |
 | `category` | string | 入金種別 `NORMAL` / `MANUAL` / `STAKING`。**`MANUAL` の意味は docs に無い**。live 確認済み（2026-11-05, 暗号資産入金の `deposits[]` に `category` あり。値は `NORMAL` / `MANUAL` を観測、`STAKING` は未観測） | `:1049` |
@@ -484,6 +501,8 @@ drift 時に「ミラー要更新」issue を起票する。
 
 確度: **verbatim**（表 `:1529-1547` / JSON `:1575-1605`）。パラメータ `asset` / `count`(≤100) /
 `since`(ms) / `end`(ms)（`:1520-1525`）。
+
+> **live 確認済み（2026-11-10, fork の issue #458 項目 1）: 入金履歴と同じく、期間の中で新しい順に `count` 件を返す。**
 
 | フィールド | 型 | 備考 | docs 行 |
 |---|---|---|---|
@@ -719,10 +738,9 @@ drift 時に「ミラー要更新」issue を起票する。
 
 | 境界 | 対象 |
 |---|---|
-| `src/handlers/portfolio/fetch.ts` `paginateTrades` / `paginateMarginTrades` | `trades[].pair` |
+| `src/handlers/portfolio/fetch.ts` `paginateAllTrades` | `trades[].pair` |
 | `lib/tickers.ts` `fetchTickerPricesMap` | `tickers_jpy` の `data[].pair`（価格マップのキー源） |
-| `tools/private/get_my_trade_history.ts` | 単発リクエスト経路の `trades[].pair`（ページネーション経路は `paginateTrades` 側） |
-| `tools/private/get_margin_trade_history.ts` | 単発・ページネーション両経路の `trades[].pair` |
+| `src/private/trade-history.ts` `fetchFilteredTradeHistory`（`get_my_trade_history` / `get_margin_trade_history`） | `trades[].pair` |
 | `tools/private/get_my_orders.ts` | `active_orders` の `orders[].pair` |
 | `tools/private/get_margin_positions.ts` | `margin/positions` の `positions[].pair` |
 | `tools/private/get_margin_status.ts` | `margin/status` の `available_balances[].pair` |
@@ -733,7 +751,7 @@ drift 時に「ミラー要更新」issue を起票する。
 
 `src/handlers/portfolio/fetch.ts` の `fetchCandlePriceData` は API レスポンスの受け口ではなく
 **呼び出し元由来の pair を受けるだけ**なので正規化しない（`analyzeMyPortfolioHandler` は正規化済み
-asset から組んだ `${asset}_jpy` と `paginateTrades` が正規化した `t.pair` のみを渡す）。
+asset から組んだ `${asset}_jpy` と `paginateAllTrades` が正規化した `t.pair` のみを渡す）。
 
 ### 取得境界でやらないこと
 
@@ -759,7 +777,7 @@ API レスポンスの受け口である本ルールと混ぜない。ただし*
 
 | 経路 | 扱い |
 |---|---|
-| `get_margin_positions` のクライアント側フィルタ（`p.pair === pair`） | 入力を `normalizePair` に通す。`ensurePair` は使わない（ALLOWED_PAIRS に無い上場廃止ペアの建玉を照会できなくなる）。形式不正は `?? args.pair` で素通しし API の判断に委ねる。**この経路は正規化後の値を API リクエストの `pair` パラメータにも使う**（bitbank は小文字を期待するため改善方向） |
+| `get_margin_positions` のクライアント側フィルタ（`p.pair === pair`） | 入力を `normalizePair` に通す。`ensurePair` は使わない（ALLOWED_PAIRS に無い上場廃止ペアの建玉を照会できなくなる）。形式不正は `?? args.pair` で素通しし、一致する建玉が無ければ 0 件になる。`GET /user/margin/positions` は Parameters: None なので、`pair` は API に送らない（fork の issue #458 項目 3） |
 | `get_order` / `get_orders_info` / `create_order` / `cancel_order` / `cancel_orders` / `preview_order` / `preview_cancel_order` の JPY 建て判定 | `lib/pair-code.ts` の `isJpyQuotedPair`（内部で `normalizePairCode` を通す）を使う。**API リクエストに送る `pair` はユーザー入力のまま**で、正規化するのは判定と応答側のみ |
 
 `isJpyQuotedPair` は「消費側に `.toLowerCase()` を撒く」ことにはあたらない。撒くのが禁物なのは

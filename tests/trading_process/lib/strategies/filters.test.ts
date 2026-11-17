@@ -25,11 +25,12 @@ describe('describeEntryFilters', () => {
 });
 
 describe('entryFilterStartIdx', () => {
-	it('SMA は period - 1、RSI は period + 1 本目から使え、大きい方を返す', () => {
+	it('SMA は period - 1、RSI は period + 1 + Wilder 平滑の収束本数から使え、大きい方を返す', () => {
 		expect(entryFilterStartIdx(NO_FILTER)).toBe(0);
 		expect(entryFilterStartIdx({ ...NO_FILTER, sma_filter_period: 20 })).toBe(19);
-		expect(entryFilterStartIdx({ ...NO_FILTER, rsi_filter_period: 14 })).toBe(15);
-		expect(entryFilterStartIdx({ ...NO_FILTER, sma_filter_period: 10, rsi_filter_period: 14 })).toBe(15);
+		expect(entryFilterStartIdx({ ...NO_FILTER, rsi_filter_period: 14 })).toBe(15 + 94);
+		expect(entryFilterStartIdx({ ...NO_FILTER, sma_filter_period: 10, rsi_filter_period: 14 })).toBe(15 + 94);
+		expect(entryFilterStartIdx({ ...NO_FILTER, sma_filter_period: 200, rsi_filter_period: 14 })).toBe(199);
 	});
 });
 

@@ -2,7 +2,9 @@ import { estimateOrderFee } from '../../lib/fees.js';
 import { formatPair, formatPrice } from '../../lib/formatter.js';
 import { isJpyQuotedPair } from '../../lib/pair-code.js';
 import { fetchPairsSpec, type PairSpec, validateOrderConstraints } from '../../lib/pairs.js';
+import { isCrossedQuote } from '../../lib/price.js';
 import { fail, ok } from '../../lib/result.js';
+import { fetchPairTicker, type PairTicker } from '../../lib/tickers.js';
 import { validateTriggerPrice } from '../../lib/trigger-price.js';
 import { confirmationTtlSeconds, generateToken } from '../../src/private/confirmation.js';
 import { confirmPreview } from '../../src/private/preview-confirmation.js';
@@ -44,9 +46,21 @@ function validateOrderParams(args: {
 	return null;
 }
 
-function isPositiveNumericString(s: string): boolean {
+// スキーマと同じ形式。previewOrder を直接呼ぶ経路（テスト・内部呼び出し）でも同じく弾く。
+function isPositiveDecimalString(s: string): boolean {
 	const n = Number(s);
-	return Number.isFinite(n) && n > 0;
+	return /^\d+(\.\d+)?$/.test(s) && Number.isFinite(n) && n > 0;
+}
+
+function decimalFormatError(field: 'amount' | 'price' | 'trigger_price'): string {
+	return `${field} は正の数値を通常の 10 進表記（例: 0.001）で指定してください（指数表記・符号・空白は不可）`;
+}
+
+// 最終価格では板を跨ぐかは決まらない（該当する側が空なら指値は跨げない）ので、best ask / bid が無ければ undefined（maker 想定のまま）。
+function limitCrossesBook(ticker: PairTicker | null, side: 'buy' | 'sell', price: number): boolean | undefined {
+	const quote = side === 'buy' ? ticker?.bestAsk : ticker?.bestBid;
+	if (quote == null) return undefined;
+	return side === 'buy' ? price >= quote : price <= quote;
 }
 
 function formatRatePercent(rate: number): string {
@@ -71,20 +85,23 @@ export default async function previewOrder(args: {
 		return PreviewOrderOutputSchema.parse(fail(paramError, 'validation_error'));
 	}
 
-	if (!isPositiveNumericString(amount)) {
-		return PreviewOrderOutputSchema.parse(fail('amount は正の数値を指定してください', 'validation_error'));
+	if (!isPositiveDecimalString(amount)) {
+		return PreviewOrderOutputSchema.parse(fail(decimalFormatError('amount'), 'validation_error'));
 	}
-	if (price && !isPositiveNumericString(price)) {
-		return PreviewOrderOutputSchema.parse(fail('price は正の数値を指定してください', 'validation_error'));
+	if (price && !isPositiveDecimalString(price)) {
+		return PreviewOrderOutputSchema.parse(fail(decimalFormatError('price'), 'validation_error'));
 	}
-	if (trigger_price && !isPositiveNumericString(trigger_price)) {
-		return PreviewOrderOutputSchema.parse(fail('trigger_price は正の数値を指定してください', 'validation_error'));
+	if (trigger_price && !isPositiveDecimalString(trigger_price)) {
+		return PreviewOrderOutputSchema.parse(fail(decimalFormatError('trigger_price'), 'validation_error'));
 	}
 
 	// /spot/pairs の取得に失敗しても warning に留めて続行する（後段の bitbank 側で必ず検証されるため）。
 	const warnings: string[] = [];
 	// 手数料見積りでも spec を使うため try の外に保持する（pairs を二重 fetch しない）。
 	let spec: PairSpec | undefined;
+	// 板を跨ぐかの判定は見積りの精度のためだけなので、再試行せず短く切り、pairs の取得と並行して取りに行く（失敗時は null で reject しない）。
+	const tickerPromise =
+		type === 'limit' && !post_only && price ? fetchPairTicker(pair, { timeoutMs: 2500, retries: 0 }) : null;
 	try {
 		const pairsMap = await fetchPairsSpec();
 		spec = pairsMap.get(pair.toLowerCase());
@@ -110,6 +127,16 @@ export default async function previewOrder(args: {
 		if (triggerError) {
 			return PreviewOrderOutputSchema.parse(fail(triggerError, 'validation_error'));
 		}
+	}
+
+	// 確認トークンの有効期限を待ち時間で食わないよう、トークンを作る前に待ち終える。
+	const ticker = tickerPromise ? await tickerPromise : null;
+	const quoteCrossed = ticker != null && isCrossedQuote(ticker.bestBid, ticker.bestAsk);
+	const crossesBook = price && !quoteCrossed ? limitCrossesBook(ticker, side, Number(price)) : undefined;
+	if (quoteCrossed) {
+		warnings.push(
+			'気配が交差しています（最良売り ≤ 最良買い）。サーキットブレイク中など連続取引ではない可能性があり、指値が板を跨ぐかを判定できないため maker 想定で見積もっています',
+		);
 	}
 
 	const tokenParams: Record<string, unknown> = { pair, amount, side, type };
@@ -159,6 +186,7 @@ export default async function previewOrder(args: {
 		amount,
 		postOnly: post_only,
 		positionSide: position_side,
+		crossesBook,
 	});
 
 	let feeKindLabel: string = feeEstimate.role;

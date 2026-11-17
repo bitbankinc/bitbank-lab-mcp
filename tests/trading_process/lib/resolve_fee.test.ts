@@ -64,6 +64,26 @@ describe('resolveBacktestFeeBp', () => {
 		expect(res.warning).toContain('見つからない');
 	});
 
+	it('ペアはあるが taker_fee_rate_quote が欠けている → dynamic ではなく fallback＋warning（issue 445 項目 7）', async () => {
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+			jsonResponse(mockSpotPairsResponse([{ name: 'xrp_jpy', taker_fee_rate_quote: null }])),
+		);
+		const res = await resolveBacktestFeeBp('xrp_jpy');
+		expect(res.source).toBe('fallback');
+		expect(res.fee_bp).toBe(DEFAULT_FEE_BP);
+		expect(res.warning).toContain('xrp_jpy');
+		expect(res.warning).toContain('taker_fee_rate_quote');
+	});
+
+	it('taker_fee_rate_quote が 0（キャンペーン）なら dynamic の 0bp', async () => {
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+			jsonResponse(mockSpotPairsResponse([{ name: 'xrp_jpy', taker_fee_rate_quote: '0' }])),
+		);
+		const res = await resolveBacktestFeeBp('xrp_jpy');
+		expect(res.source).toBe('dynamic');
+		expect(res.fee_bp).toBe(0);
+	});
+
 	it('DEFAULT_FEE_BP は公称 12bp である', () => {
 		expect(DEFAULT_FEE_BP).toBe(12);
 	});

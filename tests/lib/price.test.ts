@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { priceDecimals, roundAtDecimalDigits, roundPriceAtLevel } from '../../lib/price.js';
+import { isCrossedQuote, priceDecimals, roundAtDecimalDigits, roundPriceAtLevel } from '../../lib/price.js';
 
 describe('priceDecimals', () => {
 	it('10 万円以上は小数 0 桁', () => {
@@ -65,5 +65,26 @@ describe('roundPriceAtLevel', () => {
 	it('有限でない値はそのまま返す', () => {
 		expect(roundPriceAtLevel(Number.NaN)).toBeNaN();
 		expect(roundPriceAtLevel(Number.POSITIVE_INFINITY)).toBe(Number.POSITIVE_INFINITY);
+	});
+});
+
+// 連続取引以外（サーキットブレイク中など）は最良気配が交差しうる（public-api.md の Depth / Ticker）。
+describe('isCrossedQuote', () => {
+	it('最良売りが最良買いより低ければ交差', () => {
+		expect(isCrossedQuote(5_000_100, 5_000_000)).toBe(true);
+	});
+
+	it('最良売りと最良買いが同値でも交差として扱う（sell <= buy）', () => {
+		expect(isCrossedQuote(5_000_000, 5_000_000)).toBe(true);
+	});
+
+	it('通常の板（売り > 買い）は交差していない', () => {
+		expect(isCrossedQuote(5_000_000, 5_000_100)).toBe(false);
+	});
+
+	it('片側が無い・数値でないときは判定しない', () => {
+		expect(isCrossedQuote(null, 5_000_000)).toBe(false);
+		expect(isCrossedQuote(5_000_000, undefined)).toBe(false);
+		expect(isCrossedQuote(Number.NaN, 5_000_000)).toBe(false);
 	});
 });

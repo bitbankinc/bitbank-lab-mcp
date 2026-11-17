@@ -60,7 +60,8 @@ describe('get_margin_positions', () => {
 		expect(result.summary).toContain('建玉はありません');
 	});
 
-	it('pair 指定でフィルタされる', async () => {
+	// GET /user/margin/positions は Parameters: None（issue 458 項目 3）。全建玉を取ってクライアント側で絞る。
+	it('pair 指定でフィルタされ、API には pair を送らない', async () => {
 		setupFetchMock(mockBitbankSuccess(rawMarginPositionsResponse));
 
 		const { default: getMarginPositions } = await import('../../tools/private/get_margin_positions.js');
@@ -70,6 +71,9 @@ describe('get_margin_positions', () => {
 		expect(result.data.positions).toHaveLength(1);
 		expect(result.data.positions[0].pair).toBe('btc_jpy');
 		expect(result.meta.pair).toBe('btc_jpy');
+		const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+		const calledUrl = fetchMock.mock.calls[0][0] as string;
+		expect(calledUrl).toMatch(/\/v1\/user\/margin\/positions$/);
 	});
 
 	it('pair 指定なしで「全ペア」ラベルが表示される', async () => {
@@ -313,7 +317,7 @@ describe('get_margin_positions', () => {
 		const lines = result.summary.split('\n');
 		expect(lines.find((l) => l.startsWith('BTC/JPY'))).not.toContain('決済注文中');
 		expect(lines.find((l) => l.startsWith('ETH/JPY'))).toContain('決済注文中: 0.4');
-		expect(lines.find((l) => l.startsWith('ETH/JPY'))).toContain('評価額: 400,000円');
+		expect(lines.find((l) => l.startsWith('ETH/JPY'))).toContain('建玉金額（建値ベース）: 400,000円');
 		expect(result.summary).not.toMatch(/¥[\d,.-]+ ?円/);
 	});
 
@@ -345,15 +349,67 @@ describe('get_margin_positions', () => {
 		expect(result.summary).not.toContain('⚠');
 	});
 
-	it('建玉の評価額・平均取得価格をサマリーに含む', async () => {
-		setupFetchMock(mockBitbankSuccess(rawMarginPositionsResponse));
+	// product は average_price × open_amount の建値ベースの金額で、建玉ごとの時価は API に無い（#456）。
+	it('product を「評価額」ではなく建玉金額（建値ベース）として出し、含み損益の取得先を本文で案内する', async () => {
+		const moved = {
+			...rawMarginPositionsResponse,
+			positions: [
+				{
+					...rawMarginPositionsResponse.positions[0],
+					open_amount: '0.02',
+					product: '300000.5',
+					average_price: '15000025',
+				},
+			],
+		};
+		setupFetchMock(mockBitbankSuccess(moved));
 
 		const { default: getMarginPositions } = await import('../../tools/private/get_margin_positions.js');
 		const result = await getMarginPositions({});
 
 		assertOk(result);
-		expect(result.summary).toContain('15,000,000');
-		expect(result.summary).toContain('評価額');
+		const line = result.summary.split('\n').find((l) => l.startsWith('BTC/JPY'));
+		expect(line).toContain('@ ¥15,000,025');
+		expect(line).toContain('建玉金額（建値ベース）: 300,000.5円');
+		expect(result.summary).not.toContain('評価額');
+		expect(result.summary).toContain('含み損益は get_margin_status');
+	});
+
+	it('未実現手数料・未実現利息を建玉ごとに本文へ出す（LLM は structuredContent を読めない）', async () => {
+		const withFractions = {
+			...rawMarginPositionsResponse,
+			positions: [
+				{
+					...rawMarginPositionsResponse.positions[0],
+					unrealized_fee_amount: '18.25',
+					unrealized_interest_amount: '0.4',
+				},
+				rawMarginPositionsResponse.positions[1],
+			],
+		};
+		setupFetchMock(mockBitbankSuccess(withFractions));
+
+		const { default: getMarginPositions } = await import('../../tools/private/get_margin_positions.js');
+		const result = await getMarginPositions({});
+
+		assertOk(result);
+		const lines = result.summary.split('\n');
+		const btc = lines.find((l) => l.startsWith('BTC/JPY'));
+		expect(btc).toContain('未実現手数料: 18.25円');
+		expect(btc).toContain('未実現利息: 0.4円');
+		const eth = lines.find((l) => l.startsWith('ETH/JPY'));
+		expect(eth).toContain('未実現手数料: 400円');
+		expect(eth).toContain('未実現利息: 80円');
+	});
+
+	it('建玉ゼロなら含み損益の案内を出さない', async () => {
+		setupFetchMock(mockBitbankSuccess({ ...rawMarginPositionsResponse, positions: [] }));
+
+		const { default: getMarginPositions } = await import('../../tools/private/get_margin_positions.js');
+		const result = await getMarginPositions({});
+
+		assertOk(result);
+		expect(result.summary).not.toContain('get_margin_status');
 	});
 });
 

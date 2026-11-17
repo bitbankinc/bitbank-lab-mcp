@@ -2,12 +2,16 @@
 
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import {
+	confirmationResourceToSnapshot,
 	DEFAULT_INITIAL_DELAY_MS,
 	DEFAULT_RETRY_DELAYS_MS,
+	keepConfirmationMeta,
+	pullConfirmationIfMissing,
 	type SnapshotHydrationOptions,
 	type SnapshotHydrationPhase,
 	startSnapshotHydration,
 } from '../src/mcp-apps-hydration.js';
+import { CONFIRMATION_META_KEY } from '../src/mcp-apps-meta.js';
 
 /** テスト用の短い既定値（既定値そのものは別テストで確認する） */
 const INITIAL_DELAY_MS = 2_500;
@@ -416,5 +420,231 @@ describe('タイマー注入', () => {
 		await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
 
 		expect(apply).toHaveBeenCalledTimes(1);
+	});
+});
+
+// Claude Desktop の更新後、ホストが ui/notifications/tool-result の `_meta` を iframe に渡さず、確認トークンが届かなくなった（確認カードのボタンが出ない）。
+describe('pullConfirmationIfMissing（push にトークンが無いときの取り直し）', () => {
+	const TOKEN_META = { [CONFIRMATION_META_KEY]: { confirmation_token: 'tok', expires_at: 1_900_000_000_000 } };
+	const PREVIEW = {
+		ok: true,
+		data: { preview: { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit', price: '100' } },
+	};
+
+	it('push の `_meta` にトークンがあれば取り直さない', async () => {
+		const fetchSnapshot = vi.fn(async () => ({ _meta: TOKEN_META }));
+		const apply = vi.fn();
+		const applied = await pullConfirmationIfMissing({
+			structured: PREVIEW,
+			meta: TOKEN_META,
+			sources: [fetchSnapshot],
+			apply,
+			isAborted: () => false,
+		});
+		expect(applied).toBe(false);
+		expect(fetchSnapshot).not.toHaveBeenCalled();
+		expect(apply).not.toHaveBeenCalled();
+	});
+
+	it('push にトークンが無く、スナップショットにあれば、その結果を 1 回だけ apply する', async () => {
+		const snapshot = { structuredContent: structuredClone(PREVIEW), _meta: TOKEN_META };
+		const fetchSnapshot = vi.fn(async () => snapshot);
+		const apply = vi.fn();
+		const applied = await pullConfirmationIfMissing({
+			structured: PREVIEW,
+			meta: undefined,
+			sources: [fetchSnapshot],
+			apply,
+			isAborted: () => false,
+		});
+		expect(applied).toBe(true);
+		expect(fetchSnapshot).toHaveBeenCalledTimes(1);
+		expect(apply).toHaveBeenCalledTimes(1);
+		expect(apply).toHaveBeenCalledWith(snapshot);
+	});
+
+	it('スナップショットにもトークンが無ければ apply しない（ボタンは出さないまま）', async () => {
+		const fetchSnapshot = vi.fn(async () => ({ structuredContent: PREVIEW }));
+		const apply = vi.fn();
+		const applied = await pullConfirmationIfMissing({
+			structured: PREVIEW,
+			meta: {},
+			sources: [fetchSnapshot],
+			apply,
+			isAborted: () => false,
+		});
+		expect(applied).toBe(false);
+		expect(fetchSnapshot).toHaveBeenCalledTimes(1);
+		expect(apply).not.toHaveBeenCalled();
+	});
+
+	it('スナップショットが別の preview に置き換わっていたら、トークンがあっても apply しない', async () => {
+		const other = { ok: true, data: { preview: { ...PREVIEW.data.preview, amount: '0.5' } } };
+		const fetchSnapshot = vi.fn(async () => ({ structuredContent: other, _meta: TOKEN_META }));
+		const apply = vi.fn();
+		const applied = await pullConfirmationIfMissing({
+			structured: PREVIEW,
+			meta: undefined,
+			sources: [fetchSnapshot],
+			apply,
+			isAborted: () => false,
+		});
+		expect(applied).toBe(false);
+		expect(apply).not.toHaveBeenCalled();
+	});
+
+	it('キーの並びが違うだけなら同じ preview とみなす', async () => {
+		const reordered = {
+			data: { preview: { price: '100', type: 'limit', side: 'buy', amount: '0.001', pair: 'btc_jpy' } },
+			ok: true,
+		};
+		const fetchSnapshot = vi.fn(async () => ({ structuredContent: reordered, _meta: TOKEN_META }));
+		const apply = vi.fn();
+		const applied = await pullConfirmationIfMissing({
+			structured: PREVIEW,
+			meta: undefined,
+			sources: [fetchSnapshot],
+			apply,
+			isAborted: () => false,
+		});
+		expect(applied).toBe(true);
+	});
+
+	it('1 つ目の取り直しにトークンが無ければ、2 つ目（確認トークンのリソース）を試す', async () => {
+		const snapshotWithoutToken = vi.fn(async () => ({ structuredContent: PREVIEW }));
+		const fromResource = { structuredContent: PREVIEW, _meta: TOKEN_META };
+		const resource = vi.fn(async () => fromResource);
+		const apply = vi.fn();
+		const applied = await pullConfirmationIfMissing({
+			structured: PREVIEW,
+			meta: undefined,
+			sources: [snapshotWithoutToken, resource],
+			apply,
+			isAborted: () => false,
+		});
+		expect(applied).toBe(true);
+		expect(snapshotWithoutToken).toHaveBeenCalledTimes(1);
+		expect(resource).toHaveBeenCalledTimes(1);
+		expect(apply).toHaveBeenCalledWith(fromResource);
+	});
+
+	it('1 つ目の取り直しが失敗しても、2 つ目を試す', async () => {
+		const failing = vi.fn(async () => {
+			throw new Error('timeout');
+		});
+		const resource = vi.fn(async () => ({ structuredContent: PREVIEW, _meta: TOKEN_META }));
+		const apply = vi.fn();
+		const applied = await pullConfirmationIfMissing({
+			structured: PREVIEW,
+			meta: undefined,
+			sources: [failing, resource],
+			apply,
+			isAborted: () => false,
+		});
+		expect(applied).toBe(true);
+		expect(apply).toHaveBeenCalledTimes(1);
+	});
+
+	it('1 つ目で取れたら 2 つ目は呼ばない', async () => {
+		const snapshot = vi.fn(async () => ({ structuredContent: PREVIEW, _meta: TOKEN_META }));
+		const resource = vi.fn(async () => ({ structuredContent: PREVIEW, _meta: TOKEN_META }));
+		const apply = vi.fn();
+		await pullConfirmationIfMissing({
+			structured: PREVIEW,
+			meta: undefined,
+			sources: [snapshot, resource],
+			apply,
+			isAborted: () => false,
+		});
+		expect(resource).not.toHaveBeenCalled();
+		expect(apply).toHaveBeenCalledTimes(1);
+	});
+
+	it('取り直しに失敗しても例外を投げず、apply しない', async () => {
+		const fetchSnapshot = vi.fn(async () => {
+			throw new Error('timeout');
+		});
+		const apply = vi.fn();
+		await expect(
+			pullConfirmationIfMissing({
+				structured: PREVIEW,
+				meta: undefined,
+				sources: [fetchSnapshot],
+				apply,
+				isAborted: () => false,
+			}),
+		).resolves.toBe(false);
+		expect(apply).not.toHaveBeenCalled();
+	});
+
+	it('取り直しの途中で iframe が破棄された（または新しい push が届いた）ら apply しない', async () => {
+		let aborted = false;
+		const fetchSnapshot = vi.fn(async () => {
+			aborted = true;
+			return { structuredContent: PREVIEW, _meta: TOKEN_META };
+		});
+		const apply = vi.fn();
+		const applied = await pullConfirmationIfMissing({
+			structured: PREVIEW,
+			meta: undefined,
+			sources: [fetchSnapshot],
+			apply,
+			isAborted: () => aborted,
+		});
+		expect(applied).toBe(false);
+		expect(apply).not.toHaveBeenCalled();
+	});
+});
+
+describe('confirmationResourceToSnapshot（確認トークンのリソースの本文を読む）', () => {
+	const CONFIRMATION = { confirmation_token: 'tok', expires_at: 1_900_000_000_000 };
+	const resourceResult = (text: string) => ({ contents: [{ uri: 'bitbank-confirmation://order', text }] });
+
+	it('本文の内容とトークンを、スナップショットと同じ形（structuredContent + `_meta`）にして返す', () => {
+		const structured = { ok: true, data: { preview: { pair: 'btc_jpy' } } };
+		const result = confirmationResourceToSnapshot(
+			resourceResult(JSON.stringify({ structuredContent: structured, confirmation: CONFIRMATION })),
+		);
+		expect(result).toEqual({ structuredContent: structured, _meta: { [CONFIRMATION_META_KEY]: CONFIRMATION } });
+	});
+
+	it('トークンが無い本文（条件を満たさないときの `{}`）は undefined', () => {
+		expect(confirmationResourceToSnapshot(resourceResult('{}'))).toBeUndefined();
+	});
+
+	it('JSON として読めない本文や、contents が無い結果は undefined', () => {
+		expect(confirmationResourceToSnapshot(resourceResult('not json'))).toBeUndefined();
+		expect(confirmationResourceToSnapshot({})).toBeUndefined();
+		expect(confirmationResourceToSnapshot(undefined)).toBeUndefined();
+	});
+});
+
+// トークンは共有ファイルから 1 回しか渡さないので、同じ preview がトークン無しで届き直しても、受け取り済みのトークンを消さない（ADR-0007 判断事項 D）。
+describe('keepConfirmationMeta', () => {
+	const structured = { ok: true, data: { preview: { pair: 'btc_jpy', amount: '0.001' } } };
+	const withToken = { [CONFIRMATION_META_KEY]: { confirmation_token: 'tok-keep', expires_at: Date.now() + 60_000 } };
+
+	it('同じ内容がトークン無しで届いたら、受け取り済みの `_meta` を返す', () => {
+		const sameButReordered = { data: { preview: { amount: '0.001', pair: 'btc_jpy' } }, ok: true };
+		expect(keepConfirmationMeta({ structured, meta: withToken }, sameButReordered, undefined)).toBe(withToken);
+	});
+
+	it('別の内容なら、受け取り済みのトークンを持ち越さない', () => {
+		const other = { ok: true, data: { preview: { pair: 'btc_jpy', amount: '1' } } };
+		expect(keepConfirmationMeta({ structured, meta: withToken }, other, {})).toEqual({});
+	});
+
+	it('届いた結果にトークンがあれば、それを使う', () => {
+		const fresh = { [CONFIRMATION_META_KEY]: { confirmation_token: 'tok-new', expires_at: Date.now() + 60_000 } };
+		expect(keepConfirmationMeta({ structured, meta: withToken }, structured, fresh)).toBe(fresh);
+	});
+
+	it('受け取り済みのトークンが期限切れなら持ち越さない（取り直しに進ませる）', () => {
+		const expired = { [CONFIRMATION_META_KEY]: { confirmation_token: 'tok-old', expires_at: 1_000 } };
+		expect(keepConfirmationMeta({ structured, meta: expired }, structured, undefined, 2_000)).toBeUndefined();
+	});
+
+	it('受け取り済みのトークンが無ければ、届いた `_meta` のまま', () => {
+		expect(keepConfirmationMeta(null, structured, undefined)).toBeUndefined();
 	});
 });

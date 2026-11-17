@@ -86,6 +86,18 @@ describe('resolveFeeRate', () => {
 });
 
 describe('feeRole', () => {
+	it('板を跨ぐ指値（post_only なし）は taker、跨がない・判定できないときは maker（issue 449）', () => {
+		expect(feeRole('limit', false, true)).toBe('taker');
+		expect(feeRole('limit', undefined, true)).toBe('taker');
+		expect(feeRole('limit', false, false)).toBe('maker');
+		expect(feeRole('limit', false, undefined)).toBe('maker');
+	});
+
+	it('post_only は跨いでも maker。stop_limit は発動時の板が分からないので maker のまま', () => {
+		expect(feeRole('limit', true, true)).toBe('maker');
+		expect(feeRole('stop_limit', false, true)).toBe('maker');
+	});
+
 	it('limit は maker', () => {
 		expect(feeRole('limit')).toBe('maker');
 	});

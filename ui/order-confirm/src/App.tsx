@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { type ConfirmationMetaPayload, readConfirmationMeta } from '../../../src/mcp-apps-meta.js';
 import { executeConfirmed, type Status, TERMINAL_STATUSES, useConfirmApp } from '../../shared/confirm-app';
-import { formatAmount, formatPair, formatPrice, formatQuote, sideLabel, typeLabel } from '../../shared/format';
+import { formatAmount, formatPair, formatPrice, formatQuote, orderIdNote, sideLabel, typeLabel } from '../../shared/format';
 import { CardTitle, ConfirmActions, PendingView, Row, StatusMessage } from '../../shared/views';
 
 type Side = 'buy' | 'sell';
@@ -130,6 +130,7 @@ export function App() {
 	const side = sideLabel(preview.side, preview.position_side);
 	const total = estimateTotal(preview);
 	const isTerminal = TERMINAL_STATUSES.has(status);
+	const idNote = orderIdNote(message, orderId);
 
 	return (
 		<div className="app">
@@ -153,10 +154,10 @@ export function App() {
 					status={status}
 					message={message}
 					successExtra={
-						orderId != null && (
+						idNote != null && (
 							<>
 								<br />
-								注文ID: {orderId}
+								{idNote}
 							</>
 						)
 					}

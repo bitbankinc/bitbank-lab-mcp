@@ -77,6 +77,40 @@ describe('getDepth', () => {
 		expect(res.data.sequenceId).toBe(12345);
 	});
 
+	// サーキットブレイク中で予想価格があるときは、買いと売りの価格が交差しうる（public-api.md の Depth）。
+	it('板が交差していたら中値を出さず、連続取引ではない可能性を本文の先頭と meta.warning に出す', async () => {
+		const crossed = depthApiResponse();
+		crossed.data.asks = [
+			['4999900', '0.2'],
+			['5000200', '0.4'],
+		];
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify(crossed), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+			);
+
+		const res = await getDepth('btc_jpy');
+		assertOk(res);
+		expect(res.summary.split('\n')[0]).toContain('板が交差しています');
+		expect(res.summary).not.toContain('中値:');
+		expect(res.meta.warning).toContain('板が交差しています');
+	});
+
+	it('通常の板では meta.warning を付けない', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify(depthApiResponse()), {
+				status: 200,
+				headers: { 'Content-Type': 'application/json' },
+			}),
+		);
+
+		const res = await getDepth('btc_jpy');
+		assertOk(res);
+		expect(res.meta.warning).toBeUndefined();
+		expect(res.summary).toContain('中値');
+	});
+
 	it('正常系: maxLevels で板の層数を制限できる', async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify(depthApiResponse()), {

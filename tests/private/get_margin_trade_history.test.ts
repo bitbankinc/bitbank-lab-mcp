@@ -47,7 +47,7 @@ function generateMarginTrades(
 		amount: '0.01',
 		price: '15000000',
 		maker_taker: 'maker',
-		fee_amount_base: '0.00001',
+		fee_amount_base: '0',
 		fee_amount_quote: '0',
 		executed_at: baseTimestamp + i * 1000,
 	}));
@@ -62,9 +62,9 @@ function generateSpotTrades(n: number, baseId = 1, baseTimestamp = 1710000000000
 		type: 'limit',
 		amount: '0.01',
 		price: '15000000',
-		maker_taker: 'maker',
-		fee_amount_base: '0.00001',
-		fee_amount_quote: '0',
+		maker_taker: 'taker',
+		fee_amount_base: '0',
+		fee_amount_quote: '180',
 		executed_at: baseTimestamp + i * 1000,
 	}));
 }
@@ -81,7 +81,8 @@ describe('get_margin_trade_history', () => {
 		expect(result.meta.tradeCount).toBe(3);
 	});
 
-	it('type=margin パラメータを API に渡す', async () => {
+	// trade_history のパラメータ表に type は無い（issue 458 項目 3）。信用だけに絞るのは position_side で行う。
+	it('ドキュメントに無い type パラメータを送らない', async () => {
 		setupFetchMock(mockBitbankSuccess({ trades: [] }));
 
 		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
@@ -89,7 +90,7 @@ describe('get_margin_trade_history', () => {
 
 		const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
 		const calledUrl = fetchMock.mock.calls[0][0] as string;
-		expect(calledUrl).toContain('type=margin');
+		expect(calledUrl).not.toMatch(/[?&]type=/);
 	});
 
 	it('executed_at を ISO8601 に変換する', async () => {
@@ -125,6 +126,61 @@ describe('get_margin_trade_history', () => {
 		expect(result.summary).toContain('損益');
 		expect(result.summary).toContain('5,000');
 		expect(result.summary).not.toMatch(/¥[\d,.-]+ ?円/);
+	});
+
+	it('決済行に手数料控除後の損益（丸めない）・発生手数料・利息を、新規行に手数料を出す（issue 452）', async () => {
+		setupFetchMock(
+			mockBitbankSuccess({
+				trades: [
+					{
+						trade_id: 701,
+						pair: 'btc_jpy',
+						order_id: 7001,
+						side: 'buy',
+						position_side: 'short',
+						type: 'market',
+						amount: '0.0009',
+						price: '10004321',
+						maker_taker: 'taker',
+						fee_amount_base: '0',
+						fee_amount_quote: '9.0040',
+						fee_occurred_amount_quote: '9.0040',
+						profit_loss: '-12.8929',
+						interest: '0.0000',
+						executed_at: 1710000100000,
+					},
+					{
+						trade_id: 700,
+						pair: 'btc_jpy',
+						order_id: 7000,
+						side: 'sell',
+						position_side: 'short',
+						type: 'limit',
+						amount: '0.0009',
+						price: '10000000',
+						maker_taker: 'maker',
+						fee_amount_base: '0',
+						fee_amount_quote: '0',
+						fee_occurred_amount_quote: '',
+						executed_at: 1710000000000,
+					},
+				],
+			}),
+		);
+
+		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
+		const result = await getMarginTradeHistory({});
+
+		assertOk(result);
+		const lines = result.summary.split('\n');
+		const closeLine = lines.find((l) => l.includes('ショート買'));
+		const openLine = lines.find((l) => l.includes('ショート売'));
+		expect(closeLine).toContain('損益: -12.8929円（手数料控除後）');
+		expect(closeLine).toContain('発生手数料: 9.004円');
+		expect(closeLine).toContain('利息: 0円');
+		expect(openLine).toContain('手数料: 0円');
+		expect(openLine).not.toContain('損益');
+		expect(result.summary).toContain('※ 損益（profit_loss）は手数料控除後の値です');
 	});
 
 	it('pair 指定を API に渡す', async () => {
@@ -191,64 +247,39 @@ describe('get_margin_trade_history', () => {
 		expect(result.summary).toContain('ショート 1件');
 	});
 
-	it('10 件超の trades で省略表示される', async () => {
-		const manyTrades = {
-			trades: Array.from({ length: 15 }, (_, i) => ({
-				trade_id: 400 + i,
-				pair: 'btc_jpy',
-				order_id: 4000 + i,
-				side: 'buy',
-				position_side: 'long',
-				type: 'limit',
-				amount: '0.01',
-				price: '15000000',
-				maker_taker: 'maker',
-				fee_amount_base: '0.00001',
-				fee_amount_quote: '0',
-				executed_at: 1710000000000 + i * 1000,
-			})),
-		};
-		setupFetchMock(mockBitbankSuccess(manyTrades));
+	it('100 件を超えた分は本文に出さず、件数と明細を取るときの end を書く', async () => {
+		setupFetchMock(mockBitbankSuccess({ trades: generateMarginTrades(120, 400).reverse() }));
 
 		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
-		const result = await getMarginTradeHistory({});
+		const result = await getMarginTradeHistory({ count: 120 });
 
 		assertOk(result);
-		expect(result.data.trades).toHaveLength(15);
-		expect(result.meta.tradeCount).toBe(15);
-		expect(result.summary).toContain('他 5件');
+		expect(result.data.trades).toHaveLength(120);
+		expect(result.meta.tradeCount).toBe(120);
+		expect(result.summary.match(/\[trade: /g)).toHaveLength(100);
+		expect(result.summary).toContain('[trade: 420 /');
+		expect(result.summary).not.toContain('[trade: 419 /');
+		const oldestShown = new Date(1710000000000 + 20 * 1000).toISOString();
+		expect(result.summary).toContain(
+			`... 他 20件（本文の明細は新しいほうから 100件まで。残りの 20件は ${oldestShown} 以前の約定です。`,
+		);
 	});
 
-	it('order=asc 時は末尾 10 件を表示する', async () => {
-		const manyTrades = {
-			trades: Array.from({ length: 12 }, (_, i) => ({
-				trade_id: 500 + i,
-				pair: 'btc_jpy',
-				order_id: 5000 + i,
-				side: 'buy',
-				position_side: 'long',
-				type: 'limit',
-				amount: '0.01',
-				price: '15000000',
-				maker_taker: 'maker',
-				fee_amount_base: '0.00001',
-				fee_amount_quote: '0',
-				executed_at: 1710000000000 + i * 1000,
-			})),
-		};
-		setupFetchMock(mockBitbankSuccess(manyTrades));
+	it('order=asc でも本文には新しいほうの 100 件を出す', async () => {
+		setupFetchMock(mockBitbankSuccess({ trades: generateMarginTrades(105, 500) }));
 
 		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
-		const result = await getMarginTradeHistory({ order: 'asc' });
+		const result = await getMarginTradeHistory({ order: 'asc', count: 105 });
 
 		assertOk(result);
-		// asc 時は末尾 10 件（trade_id 502〜511）が表示される
-		expect(result.summary).toContain('trade: 502');
-		expect(result.summary).not.toContain('trade: 500]');
-		expect(result.summary).not.toContain('trade: 501]');
+		expect(result.summary).toContain('... 他 5件');
+		expect(result.summary).toContain('[trade: 505 /');
+		expect(result.summary).not.toContain('[trade: 504 /');
+		const oldestShown = new Date(1710000000000 + 5 * 1000).toISOString();
+		expect(result.summary).toContain(`end に ${oldestShown} を指定して取得してください`);
 	});
 
-	it('count がデフォルト値 (20) の場合はパラメータを送らない', async () => {
+	it('order が既定値 (desc) でも API に明示して送る', async () => {
 		setupFetchMock(mockBitbankSuccess({ trades: [] }));
 
 		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
@@ -256,18 +287,7 @@ describe('get_margin_trade_history', () => {
 
 		const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
 		const calledUrl = fetchMock.mock.calls[0][0] as string;
-		expect(calledUrl).not.toContain('count=');
-	});
-
-	it('order がデフォルト値 (desc) の場合はパラメータを送らない', async () => {
-		setupFetchMock(mockBitbankSuccess({ trades: [] }));
-
-		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
-		await getMarginTradeHistory({});
-
-		const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
-		const calledUrl = fetchMock.mock.calls[0][0] as string;
-		expect(calledUrl).not.toContain('order=');
+		expect(calledUrl).toContain('order=desc');
 	});
 
 	it('order=asc を API に渡す', async () => {
@@ -294,7 +314,7 @@ describe('get_margin_trade_history', () => {
 					amount: '0.01',
 					price: '15000000',
 					maker_taker: 'maker',
-					fee_amount_base: '0.00001',
+					fee_amount_base: '0',
 					fee_amount_quote: '0',
 					executed_at: 1710000000000,
 				},
@@ -380,7 +400,7 @@ describe('get_margin_trade_history', () => {
 	});
 
 	it('現物 (position_side 欠損) が混在しても信用のみを返し集計もフィルタ後の値', async () => {
-		// type=margin が API に無視されて現物約定が混入しても、信用だけが残り「ロング X件 / ショート Y件」の集計もフィルタ後の値になること。
+		// 約定履歴 API は現物と信用を混ぜて返すので、信用だけが残り「ロング X件 / ショート Y件」の集計もフィルタ後の値になること。
 		const mixed = {
 			trades: [
 				{
@@ -393,7 +413,7 @@ describe('get_margin_trade_history', () => {
 					amount: '0.01',
 					price: '15000000',
 					maker_taker: 'maker',
-					fee_amount_base: '0.00001',
+					fee_amount_base: '0',
 					fee_amount_quote: '0',
 					executed_at: 1710000000000,
 				},
@@ -406,10 +426,10 @@ describe('get_margin_trade_history', () => {
 					type: 'limit',
 					amount: '0.01',
 					price: '15000000',
-					maker_taker: 'maker',
-					fee_amount_base: '0.00001',
-					fee_amount_quote: '0',
-					fee_occurred_amount_quote: '500', // 現物の手数料が margin_fee に混入してはいけない
+					maker_taker: 'taker',
+					fee_amount_base: '0',
+					fee_amount_quote: '180',
+					fee_occurred_amount_quote: '180', // 現物の手数料が margin_fee に混入してはいけない
 					executed_at: 1710000001000,
 				},
 				{
@@ -422,7 +442,7 @@ describe('get_margin_trade_history', () => {
 					amount: '1.0',
 					price: '400000',
 					maker_taker: 'maker',
-					fee_amount_base: '0.001',
+					fee_amount_base: '0',
 					fee_amount_quote: '0',
 					executed_at: 1710000002000,
 				},
@@ -459,9 +479,9 @@ describe('get_margin_trade_history', () => {
 					type: 'limit',
 					amount: '0.01',
 					price: '15000000',
-					maker_taker: 'maker',
-					fee_amount_base: '0.00001',
-					fee_amount_quote: '0',
+					maker_taker: 'taker',
+					fee_amount_base: '0',
+					fee_amount_quote: '180',
 					executed_at: 1710000000000,
 				},
 			],
@@ -527,22 +547,137 @@ describe('get_margin_trade_history — ページネーション', () => {
 		expect(result.summary).toContain('全件ではなく一部のみ取得されています');
 	});
 
-	it('単発リクエストで現物混入をフィルタしても isComplete は生 batch.length で判定する', async () => {
-		// 生 batch.length=20 は count と等しいので isComplete=false が正しい
+	it('1 ページ目が満杯で、絞った後の件数が count に届かなければ続きを取りに行く', async () => {
+		// 生 batch.length=20 は count と等しいので続きがありうる。続きが空なら、そこで全件取得済み。
 		const margin = generateMarginTrades(12, 1, 1710000000000);
 		const spot = generateSpotTrades(8, 100, 1710000020000);
-		const trades = [...margin.slice(0, 6), ...spot.slice(0, 4), ...margin.slice(6), ...spot.slice(4)];
-		setupFetchMock(mockBitbankSuccess({ trades }));
+		const trades = [...margin.slice(0, 6), ...spot.slice(0, 4), ...margin.slice(6), ...spot.slice(4)].reverse();
+		const mockFn = setupSequentialFetchMock([mockBitbankSuccess({ trades }), mockBitbankSuccess({ trades: [] })]);
 
 		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
 		const result = await getMarginTradeHistory({ count: 20 });
 
 		assertOk(result);
+		expect(mockFn).toHaveBeenCalledTimes(2);
 		expect(result.data.trades).toHaveLength(12);
 		for (const t of result.data.trades) {
 			expect(t.position_side).toBeDefined();
 		}
+		expect(result.meta.isComplete).toBe(true);
+	});
+
+	// 約定履歴 API は現物と信用を混ぜて返し、分けるパラメータが無い（issue 455）。
+	it('直近 count 件がすべて現物でも、古いページを取りに行って信用約定を返す', async () => {
+		const page1 = generateSpotTrades(20, 101, 1710000100000).reverse();
+		const boundary = page1[page1.length - 1];
+		const margin = generateMarginTrades(5, 1, 1710000000000).reverse();
+		const mockFn = setupSequentialFetchMock([
+			mockBitbankSuccess({ trades: page1 }),
+			mockBitbankSuccess({ trades: [boundary, ...margin] }),
+		]);
+
+		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
+		const result = await getMarginTradeHistory({});
+
+		assertOk(result);
+		expect(mockFn).toHaveBeenCalledTimes(2);
+		const firstUrl = mockFn.mock.calls[0][0] as string;
+		expect(firstUrl).toContain('count=20');
+		const secondUrl = mockFn.mock.calls[1][0] as string;
+		expect(secondUrl).toContain('count=1000');
+		expect(secondUrl).toContain('order=desc');
+		expect(secondUrl).toContain(`end=${boundary.executed_at}`);
+		expect(result.data.trades.map((t) => t.trade_id)).toEqual([5, 4, 3, 2, 1]);
+		expect(result.meta.isComplete).toBe(true);
+		expect(result.meta.scanBoundary).toBeUndefined();
+		expect(result.summary).toContain('信用約定履歴: 全ペア 5件');
+		expect(result.summary).not.toContain('全件ではなく');
+	});
+
+	it('絞った後の件数が count に届いたらページ送りを止める', async () => {
+		const page1 = [
+			...generateSpotTrades(10, 301, 1710000300000).reverse(),
+			...generateMarginTrades(10, 201, 1710000200000).reverse(),
+		];
+		const page2 = generateMarginTrades(1000, 1, 1709999000000).reverse();
+		const mockFn = setupSequentialFetchMock([
+			mockBitbankSuccess({ trades: page1 }),
+			mockBitbankSuccess({ trades: page2 }),
+		]);
+
+		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
+		const result = await getMarginTradeHistory({ count: 20 });
+
+		assertOk(result);
+		expect(mockFn).toHaveBeenCalledTimes(2);
+		const ids = result.data.trades.map((t) => t.trade_id);
+		expect(ids).toHaveLength(20);
+		expect(ids.slice(0, 10)).toEqual([210, 209, 208, 207, 206, 205, 204, 203, 202, 201]);
+		expect(ids.slice(10)).toEqual([1000, 999, 998, 997, 996, 995, 994, 993, 992, 991]);
 		expect(result.meta.isComplete).toBe(false);
+		// 止めた理由は API の上限ではなく指定した件数。続きを取る時刻（取得した最後の約定）も出す。
+		const last = new Date(1709999990000).toISOString();
+		expect(result.summary).toContain(
+			'※ 全件ではなく一部のみ取得されています。指定した件数（20件）に達したので取得を止めました。これより古い信用約定もある可能性があります',
+		);
+		expect(result.summary).toContain(
+			`続きは end に ${last}（取得した最後の約定の時刻）を指定し、count を今回より大きくして取得してください。境界の時刻は含まれるので、同じ時刻の約定は重複して返ります（trade_id で除いてください）`,
+		);
+		expect(result.summary).not.toContain('API件数上限');
+	});
+
+	it('上限ページ数まで取りに行っても信用約定が無ければ 0 件で、取得した約定がすべて現物だったと本文に書く', async () => {
+		const pages = [mockBitbankSuccess({ trades: generateSpotTrades(20, 100001, 1720000000000).reverse() })];
+		for (let i = 0; i < 9; i++) {
+			pages.push(
+				mockBitbankSuccess({
+					trades: generateSpotTrades(1000, 90001 - i * 1000, 1719000000000 - i * 1000000).reverse(),
+				}),
+			);
+		}
+		const mockFn = setupSequentialFetchMock(pages);
+
+		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
+		const result = await getMarginTradeHistory({});
+
+		assertOk(result);
+		expect(mockFn).toHaveBeenCalledTimes(10);
+		expect(result.data.trades).toHaveLength(0);
+		expect(result.meta.isComplete).toBe(false);
+		expect(result.summary).toContain('信用約定履歴: 全ペア 0件');
+		expect(result.summary).toContain('取得した約定 9020件はすべて現物で、信用約定はありませんでした');
+		expect(result.summary).toContain('取得するページ数の上限（10 ページ）まで調べて打ち切りました');
+		expect(result.summary).toContain('これより古い約定は取得していません');
+		// 続きを取れるよう、最後に調べた約定の時刻（最終ページの末尾）を end に渡す値として出す。
+		const boundary = new Date(1718992000000).toISOString();
+		expect(result.summary).toContain(`続きは end に ${boundary}（最後に調べた約定の時刻）を指定して取得してください`);
+		expect(result.meta.scanBoundary).toBe(boundary);
+	});
+
+	it('一部だけ信用約定が見つかったときは、取得件数と現物の件数を本文に書く（asc）', async () => {
+		const pages = [
+			mockBitbankSuccess({
+				trades: [...generateMarginTrades(3, 1, 1700000000000), ...generateSpotTrades(17, 11, 1700000010000)],
+			}),
+		];
+		for (let i = 0; i < 9; i++) {
+			pages.push(
+				mockBitbankSuccess({ trades: generateSpotTrades(1000, 1001 + i * 1000, 1701000000000 + i * 1000000) }),
+			);
+		}
+		setupSequentialFetchMock(pages);
+
+		const { default: getMarginTradeHistory } = await import('../../tools/private/get_margin_trade_history.js');
+		const result = await getMarginTradeHistory({ order: 'asc' });
+
+		assertOk(result);
+		expect(result.data.trades).toHaveLength(3);
+		expect(result.meta.isComplete).toBe(false);
+		expect(result.summary).toContain('取得した約定 9020件のうち 9017件は現物で、信用約定は 3件でした');
+		expect(result.summary).toContain('これより新しい約定は取得していません');
+		const boundary = new Date(1701008999000).toISOString();
+		expect(result.summary).toContain(`続きは since に ${boundary}（最後に調べた約定の時刻）を指定して取得してください`);
+		expect(result.meta.scanBoundary).toBe(boundary);
 	});
 
 	it('asc: count > 1000 で複数ページを自動取得する（2 ページで完了）', async () => {
@@ -653,7 +788,7 @@ describe('get_margin_trade_history — ページネーション', () => {
 			amount: '0.01',
 			price: '15000000',
 			maker_taker: 'maker',
-			fee_amount_base: '0.00001',
+			fee_amount_base: '0',
 			fee_amount_quote: '0',
 			executed_at: i < 999 ? 1710000000000 + i * 1000 : sameLastTs,
 		}));
@@ -667,7 +802,7 @@ describe('get_margin_trade_history — ページネーション', () => {
 			amount: '0.01',
 			price: '15000000',
 			maker_taker: 'maker',
-			fee_amount_base: '0.00001',
+			fee_amount_base: '0',
 			fee_amount_quote: '0',
 			executed_at: sameLastTs,
 		}));
@@ -740,7 +875,7 @@ describe('get_margin_trade_history — ページネーション', () => {
 		const firstUrl = mockFn.mock.calls[0][0] as string;
 		expect(firstUrl).toContain('order=asc');
 		expect(firstUrl).toContain('count=1000');
-		expect(firstUrl).toContain('type=margin');
+		expect(firstUrl).not.toMatch(/[?&]type=/);
 	});
 
 	it('desc + count > 1000 で最新側 count 件が返る（CodeRabbit #458 指摘 2 の回帰防止）', async () => {
@@ -782,7 +917,7 @@ describe('get_margin_trade_history — ページネーション', () => {
 		const firstUrl = mockFn.mock.calls[0][0] as string;
 		expect(firstUrl).toContain('order=desc');
 		expect(firstUrl).toContain('count=1000');
-		expect(firstUrl).toContain('type=margin');
+		expect(firstUrl).not.toMatch(/[?&]type=/);
 		// 初回は end カーソル未設定（ユーザーが end を渡していない）
 		expect(firstUrl).not.toMatch(/[?&]end=/);
 	});

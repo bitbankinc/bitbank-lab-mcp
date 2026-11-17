@@ -107,6 +107,18 @@ describe('get_my_orders', () => {
 		expect(result.summary).toContain('fetch failed');
 	});
 
+	// count の既定値はドキュメントに無いので、既定の件数でも省略しない（issue 458 項目 2）。
+	it('count が既定値 (100) でも API に送る', async () => {
+		setupFetchMock(mockBitbankSuccess({ orders: [] }));
+
+		const { default: getMyOrders } = await import('../../tools/private/get_my_orders.js');
+		await getMyOrders({});
+
+		const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+		const calledUrl = fetchMock.mock.calls[0][0] as string;
+		expect(calledUrl).toContain('count=100');
+	});
+
 	it('count パラメータを API に渡す', async () => {
 		setupFetchMock(mockBitbankSuccess({ orders: [] }));
 

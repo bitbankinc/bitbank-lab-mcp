@@ -84,6 +84,21 @@ describe('runBacktestHandler', () => {
 		expect(text).toContain('バックテスト完了');
 	});
 
+	it('structuredContent.data に open_position を入れる（issue 444）', async () => {
+		const ok = makeOkResult();
+		const openPosition = {
+			entry_time: '2024-01-10T00:00:00.000Z',
+			entry_price: 100,
+			mark_time: '2024-01-31T00:00:00.000Z',
+			mark_price: 70,
+			unrealized_pnl_pct: -30.12,
+		};
+		mockedRunBacktest.mockResolvedValueOnce({ ...ok, data: { ...ok.data, open_position: openPosition } } as never);
+		const res = await toolDef.handler({ pair: 'btc_jpy', strategy: { type: 'sma_cross' } });
+		const data = asMcp<{ data: Record<string, unknown> }>(res).structuredContent.data;
+		expect(data.open_position).toEqual(openPosition);
+	});
+
 	it('成功時（SVG あり）: content に --- Backtest Chart (SVG) --- が含まれる', async () => {
 		mockedRunBacktest.mockResolvedValueOnce(makeOkResult({ svg: '<svg><polyline/></svg>' }) as never);
 		const res = await toolDef.handler({

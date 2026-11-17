@@ -1,10 +1,16 @@
 import { nowIso, parseIso8601, toIsoMs } from '../../lib/datetime.js';
-import { formatPair, formatPrice, formatYenAmount } from '../../lib/formatter.js';
-import { normalizePairCodes } from '../../lib/pair-code.js';
+import { formatPair, formatPrice, formatYenExact } from '../../lib/formatter.js';
 import { fail, ok } from '../../lib/result.js';
-import { type BitbankPrivateClient, getDefaultClient } from '../../src/private/client.js';
+import { getDefaultClient } from '../../src/private/client.js';
 import { GetMarginTradeHistoryInputSchema, GetMarginTradeHistoryOutputSchema } from '../../src/private/schemas.js';
 import { failPrivateToolError } from '../../src/private/tool-error.js';
+import {
+	completenessNote,
+	fetchFilteredTradeHistory,
+	hiddenTradesNote,
+	scanBoundaryIso,
+	tradesToDisplay,
+} from '../../src/private/trade-history.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
 interface RawMarginTrade {
@@ -25,58 +31,22 @@ interface RawMarginTrade {
 	executed_at: number;
 }
 
-const PAGE_SIZE = 1000;
-const MAX_PAGES = 10;
+function hasValue(v: string | undefined): v is string {
+	return v != null && v !== '';
+}
 
-async function paginateMarginTrades(
-	client: BitbankPrivateClient,
-	baseParams: Record<string, string>,
-	limit: number,
-	order: 'asc' | 'desc',
-): Promise<{ trades: RawMarginTrade[]; isComplete: boolean }> {
-	const all: RawMarginTrade[] = [];
-	const seenIds = new Set<number>();
-	const cursorKey: 'since' | 'end' = order === 'desc' ? 'end' : 'since';
-	let cursor: string | undefined = baseParams[cursorKey];
+// 信用の手数料は決済時にまとめて計上され、決済行の fee_occurred_amount_quote が新規側と決済側の合計になる。
+function closeCostInfo(t: { profit_loss?: string; fee_occurred_amount_quote?: string; interest?: string }): string {
+	const parts: string[] = [];
+	if (hasValue(t.profit_loss)) parts.push(`損益: ${formatYenExact(Number(t.profit_loss))}（手数料控除後）`);
+	if (hasValue(t.fee_occurred_amount_quote))
+		parts.push(`発生手数料: ${formatYenExact(Number(t.fee_occurred_amount_quote))}`);
+	if (hasValue(t.interest)) parts.push(`利息: ${formatYenExact(Number(t.interest))}`);
+	return parts.length > 0 ? ` ${parts.join(' / ')}` : '';
+}
 
-	for (let page = 0; page < MAX_PAGES; page++) {
-		const params: Record<string, string> = {
-			...baseParams,
-			type: 'margin',
-			count: String(PAGE_SIZE),
-			order,
-			...(cursor ? { [cursorKey]: cursor } : {}),
-		};
-		const rawData = await client.get<{ trades: RawMarginTrade[] }>('/v1/user/spot/trade_history', params);
-		// JPY 建て判定と価格フォーマットが小文字前提なので、取得境界で pair を揃える。
-		const batch = normalizePairCodes(rawData.trades || []);
-		// type=margin が無視された場合に備え、position_side != null で margin 約定のみに絞る。
-		const marginOnly = batch.filter((t) => t.position_side != null);
-		const newRecords = marginOnly.filter((t) => !seenIds.has(t.trade_id));
-		for (const t of newRecords) seenIds.add(t.trade_id);
-		all.push(...newRecords);
-
-		// 終了判定はフィルタ前の生 batch.length を使う。フィルタ後の長さで判定すると、現物比率が高いとき早期終了して次ページの margin 約定を取り逃がす。
-		const exhausted = batch.length < PAGE_SIZE;
-		if (all.length >= limit) {
-			return { trades: all.slice(0, limit), isComplete: exhausted && all.length === limit };
-		}
-		if (exhausted) {
-			return { trades: all.slice(0, limit), isComplete: true };
-		}
-
-		// 次ページ: batch 末尾の executed_at をカーソルに（同一 ts のレコードを次ページに含めて再取得し、dedup する）
-		const lastTs = batch[batch.length - 1]?.executed_at;
-		if (!lastTs) break;
-		const nextCursor = String(lastTs);
-		// カーソル停滞検知: cursor が前進/後退しない（API が同じ範囲を返し続ける）と無限ループになるので打ち切る
-		if (nextCursor === cursor) {
-			return { trades: all.slice(0, limit), isComplete: false };
-		}
-		cursor = nextCursor;
-	}
-
-	return { trades: all.slice(0, limit), isComplete: false };
+function openCostInfo(t: { fee_amount_quote: string }): string {
+	return hasValue(t.fee_amount_quote) ? ` 手数料: ${formatYenExact(Number(t.fee_amount_quote))}` : '';
 }
 
 export default async function getMarginTradeHistory(args: {
@@ -110,22 +80,14 @@ export default async function getMarginTradeHistory(args: {
 			baseParams.end = String(parsed.valueOf());
 		}
 
-		let rawTrades: RawMarginTrade[];
-		let isComplete: boolean;
-
-		if (count <= PAGE_SIZE) {
-			const params: Record<string, string> = { ...baseParams, type: 'margin' };
-			if (count !== 20) params.count = String(count);
-			if (order !== 'desc') params.order = order;
-			const rawData = await client.get<{ trades: RawMarginTrade[] }>('/v1/user/spot/trade_history', params);
-			const rawBatch = normalizePairCodes(rawData.trades);
-			rawTrades = rawBatch.filter((t) => t.position_side != null);
-			isComplete = rawBatch.length < count;
-		} else {
-			const result = await paginateMarginTrades(client, baseParams, count, order);
-			rawTrades = result.trades;
-			isComplete = result.isComplete;
-		}
+		const fetched = await fetchFilteredTradeHistory<RawMarginTrade>(client, {
+			baseParams,
+			order,
+			limit: count,
+			keep: (t) => t.position_side != null,
+		});
+		const rawTrades = fetched.trades;
+		const isComplete = fetched.isComplete;
 
 		const timestamp = nowIso();
 
@@ -150,27 +112,34 @@ export default async function getMarginTradeHistory(args: {
 		const lines: string[] = [];
 		const pairLabel = pair ? formatPair(pair) : '全ペア';
 		lines.push(`信用約定履歴: ${pairLabel} ${trades.length}件`);
-		if (!isComplete) {
-			lines.push('※ 全件ではなく一部のみ取得されています。API件数上限に達した可能性があります');
-		}
+		const note = completenessNote(fetched, { kept: '信用', excluded: '現物', order, limit: count });
+		if (note) lines.push(note);
 
 		if (trades.length > 0) {
 			lines.push('');
 
-			const displayTrades = order === 'asc' ? trades.slice(-10) : trades.slice(0, 10);
+			const displayTrades = tradesToDisplay(trades, order);
+			let shownClose = false;
 			for (const t of displayTrades) {
 				const sideLabel = t.side === 'buy' ? '買' : '売';
 				const posLabel = t.position_side === 'long' ? 'ロング' : t.position_side === 'short' ? 'ショート' : '';
 				const isJpy = t.pair.includes('jpy');
 				const price = isJpy ? formatPrice(Number(t.price)) : t.price;
-				const plInfo = t.profit_loss ? ` 損益: ${formatYenAmount(Number(t.profit_loss))}` : '';
+				const isClose =
+					(t.side === 'sell' && t.position_side === 'long') || (t.side === 'buy' && t.position_side === 'short');
+				const costInfo = isClose ? closeCostInfo(t) : openCostInfo(t);
+				if (isClose && t.profit_loss) shownClose = true;
 				lines.push(
-					`[trade: ${t.trade_id} / order: ${t.order_id}] ${t.executed_at} ${formatPair(t.pair)} ${posLabel}${sideLabel} ${t.amount} @ ${price} (${t.maker_taker})${plInfo}`,
+					`[trade: ${t.trade_id} / order: ${t.order_id}] ${t.executed_at} ${formatPair(t.pair)} ${posLabel}${sideLabel} ${t.amount} @ ${price} (${t.maker_taker})${costInfo}`,
 				);
 			}
 
-			if (trades.length > 10) {
-				lines.push(`... 他 ${trades.length - 10}件`);
+			const hiddenNote = hiddenTradesNote(trades.length, displayTrades, order);
+			if (hiddenNote) lines.push(hiddenNote);
+			if (shownClose) {
+				lines.push(
+					'※ 損益（profit_loss）は手数料控除後の値です。発生手数料は新規側と決済側の合計で、決済行にまとめて計上されます。利息（interest）は別に出しています（損益に含まれるかは確認できていません）',
+				);
 			}
 
 			const longCount = trades.filter((t) => t.position_side === 'long').length;
@@ -191,6 +160,7 @@ export default async function getMarginTradeHistory(args: {
 			tradeCount: trades.length,
 			pair: pair || undefined,
 			isComplete,
+			scanBoundary: scanBoundaryIso(fetched),
 			...(client.lastRateLimit ? { rateLimit: client.lastRateLimit } : {}),
 		};
 
@@ -205,7 +175,7 @@ export default async function getMarginTradeHistory(args: {
 export const toolDef: ToolDefinition = {
 	name: 'get_margin_trade_history',
 	description:
-		'[Margin Trades / 信用約定履歴] 信用取引の約定履歴（新規建て・決済）を取得。通貨ペア・期間・件数でフィルタ可能。決済時の実現損益・利息を含む。注意: since を信用新規建て後に指定すると決済約定のみが返る場合があります。Private API。',
+		'[Margin Trades / 信用約定履歴] 信用取引の約定履歴（新規建て・決済）を取得。通貨ペア・期間・件数でフィルタ可能。決済時の実現損益・利息を含む。本文に出す明細は新しいほうから 100 件まで（超えた分は件数と、明細を取るときに end に渡す時刻を書く）。注意: since を信用新規建て後に指定すると決済約定のみが返る場合があります。Private API。',
 	inputSchema: GetMarginTradeHistoryInputSchema,
 	handler: async (args: { pair?: string; count?: number; order?: 'asc' | 'desc'; since?: string; end?: string }) =>
 		getMarginTradeHistory(args),

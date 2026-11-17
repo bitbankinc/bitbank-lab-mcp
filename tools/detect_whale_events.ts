@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { TtlCache } from '../lib/cache.js';
 import { nowIso } from '../lib/datetime.js';
 import getDepth from '../lib/get-depth.js';
+import { CROSSED_BOOK_WARNING, isCrossedQuote } from '../lib/price.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import type { Result } from '../src/schemas.js';
@@ -53,7 +54,8 @@ export default async function detectWhaleEvents(
 		const bids: Array<[number, number]> = rawBids.map(([p, s]) => [Number(p), Number(s)]);
 		const bestBid = bids.length ? Math.max(...bids.map(([p]) => p)) : null;
 		const bestAsk = asks.length ? Math.min(...asks.map(([p]) => p)) : null;
-		const mid = bestBid != null && bestAsk != null ? (bestBid + bestAsk) / 2 : null;
+		const crossed = isCrossedQuote(bestBid, bestAsk);
+		const mid = bestBid != null && bestAsk != null && !crossed ? (bestBid + bestAsk) / 2 : null;
 
 		const lbMap: Record<Lookback, { type: string; limit: number }> = {
 			'30min': { type: '5min', limit: 6 },
@@ -113,6 +115,7 @@ export default async function detectWhaleEvents(
 		// 数量の単位は pair の base 通貨から導出する（規約元6ツールと同じ書式）。
 		const baseCcy = chk.pair.split('_')[0]?.toUpperCase() ?? '';
 		const text = [
+			...(crossed ? [CROSSED_BOOK_WARNING, ''] : []),
 			`=== ${chk.pair.toUpperCase()} 大口動向分析（過去${lookback}）===`,
 			'',
 			`🐋 検出された大口: ${events.length}件`,

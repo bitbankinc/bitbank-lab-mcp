@@ -7,6 +7,67 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-17
+
+番号は fork（tjackiet/bitbank-lab-mcp）の issue。
+
+### Changed
+
+- `run_backtest`：確定トレードの手数料を、建てた時点で片道ぶん、決済時に残りの片道ぶん引く。保有中のエクイティが手数料ぶん高く、決済バーで往復 2 回ぶんの段差が出ていたので、`max_drawdown_pct` / `sharpe_ratio` が最大 0.24%（既定の 12 bp）ずれていた。未決済ポジションと同じ扱いになる。確定トレードの損益（`net_return`）と `total_pnl_pct` は変わらない（issue #445）。
+- `run_backtest`：Buy & Hold に買いの片道手数料を入れる。起点（ウォームアップ直後の t+1 始値）で引き、最終バーは終値で評価して売りの手数料は引かない（未決済ポジションと同じ扱い）。`buy_hold_pnl_pct` は手数料ぶん下がり、`excess_return_pct` は手数料込みどうしの比較になる。本文の Buy & Hold 行に「buy fee included」と書く（issue #445）。
+- `analyze_my_portfolio`：期間別の純入出金で、ステーキング報酬に換算できない分があると報酬の額（`staking_reward_jpy`）を出していなかった。通常の入出庫（`net_flow_jpy`）と同じく、換算できた分の部分合計を出し、換算できない資産名を `staking_reward_unpriced_assets` に併記する（issue #448）。
+- `analyze_my_portfolio`：同じ時刻の約定と入出庫は、入庫 → 約定 → 出庫の順で処理する。入庫と同時刻の売りが、原価ゼロの売りとして実現損益を過大に出していた（issue #448）。
+- `preview_order`：指値（`post_only` なし）が現在の板を跨ぐとき（買いは best ask 以上、売りは best bid 以下）は、即時約定するので taker の率で手数料を見積る。maker が -0.02% のペアで 0.01 BTC を 1,500 万円で買うと「推定手数料 -30 円（リベート）」と出ていたが、即時約定すれば実際は taker の +180 円だった。`/ticker` を取得できないとき、該当する側の best ask / bid が無いときは従来どおり maker 想定（issue #449）。
+- `preview_order`：円建ての推定手数料は円未満を四捨五入した概算であることを備考に書く。約定履歴の手数料は円未満まで計上される（issue #449）。
+- `get_orderbook` / `prepare_depth_data` / `detect_whale_events` / `get_depth`（内部）：板の最良売りが最良買い以下（交差）のときは、中値・スプレッド（`get_orderbook` の pressure は中値を基準にした帯域、`detect_whale_events` は中値からの距離）を出さず、「板が交差しています。サーキットブレイク中など連続取引ではない可能性」という warning を本文の先頭と `meta.warning` に出す。ドキュメント（public-api.md の Depth）は、サーキットブレイク中で予想価格があるときは買いと売りの価格が交差しうるとしている。`preview_order`：ticker の `sell <= buy` のとき（Ticker のドキュメント: 連続取引以外では起こりうる）は、指値が板を跨ぐかを判定せず maker 想定で見積もり、その旨を本文に出す（issue #458 項目 5）。
+- `get_margin_trade_history` / `analyze_my_portfolio`：約定履歴の取得で、ドキュメントのパラメータ表に無い `type=margin` を送るのをやめる。`get_margin_positions`：`GET /user/margin/positions` は Parameters: None なので、`pair` を API に送るのをやめ、全建玉を取ってから絞る。どちらも従来からクライアント側で絞り直していたので結果は変わらない。API が未知のパラメータを拒否するようになったときに取得が失敗するのを防ぐ（issue #458 項目 3）。
+- `get_my_orders`：`count` を既定値（100）でも API に送る。`active_orders` の `count` の既定値はドキュメントに無い（issue #458 項目 2）。
+- `get_my_trade_history` / `get_margin_trade_history`：取得が全件でないときの注記を「全件ではなく一部のみ取得されています。API件数上限に達した可能性があります」から、止めた理由ごとの文面に変える。指定した `count` に届いて止めたときは「指定した件数（N件）に達したので取得を止めました。これより古い（`asc` なら新しい）約定もある可能性があります」と書き、続きを取るときに `end`（`asc` なら `since`）に渡す時刻（取得した最後の約定の時刻）と、境界の時刻は含まれるので `count` を増やして `trade_id` で重複を除くことを書く。ページの上限などで打ち切ったときは、これまでの「取得した約定 N件のうち…」の行に同じ前置きと打ち切った理由（ページ数の上限 / 同じ時刻の約定が 1 ページ分を超えて先へ進めない / 約定時刻の無い行がある）を付けて 1 行にまとめる。同じ時刻で先へ進めないときは、渡しても同じ結果が返る続きの時刻を本文にも `meta.scanBoundary` にも出さない。原因が API の上限であるかのように読め、指定した件数に届いただけでも出ていた（issue #458 の確認で見つかった）。
+- `get_my_trade_history` / `get_margin_trade_history`：本文に出す明細を 10 件から、新しいほうから 100 件までに増やす。超えた分は件数と、明細を取るときに `end` に渡す時刻（本文に出した中でいちばん古い約定の時刻）を書く。これまでは 10 件を超えた明細が「他 N件」としか出ず、LLM が読めなかった。
+- `get_my_deposit_withdrawal`：取得が全件でないときの注記を「全件ではなく一部のみ取得されています。API件数上限に達した可能性があります」から、止まった履歴ごとに理由を書く形に変える。理由は、取得の失敗 / 指定した `count` に達した / ページ数の上限（10 ページ）/ 同じ時刻の履歴が 1 ページ分を超えて先へ進めない / 時刻の無い履歴がある、のいずれか。続きを取れるときは `end` に渡す時刻（取得したいちばん古い時刻）と、境界の時刻を含むので `uuid` で重複を除くことを書く。指定した `count` に達したときは、同じ時刻の行だけを取り直して先へ進まないことがあるので、`count` が上限（100）未満なら増やすよう書く。原因が API の上限であるかのように読め、指定した件数に届いただけでも出ていた。
+- `analyze_my_portfolio`：約定履歴を現物用と信用用に 2 回取得していたのを、1 回の取得で `position_side` の有無により振り分けるようにする。約定履歴 API は現物と信用を混ぜて返し、分けるパラメータが無いので、2 回とも同じページを取っていた。約定履歴 API の呼び出しが半分になる（最大 10 回減る）。現物と信用は同じ一覧から振り分けるので、`meta.marginTradesTruncated` は `meta.tradesTruncated` と同じ値になり、取得に失敗したときは現物も欠ける（`meta.marginTradesTruncated` / `meta.marginFetchFailed` の説明をこれに合わせた）。
+- `get_my_deposit_withdrawal`：本文に出す明細を、種類（JPY 入金・暗号資産入庫・JPY 出金・暗号資産出庫）ごとに先頭 5 件から新しいほうの 100 件までに増やす。超えた分は件数と、明細を取るときに `end` に渡す時刻（本文に出した中でいちばん古い時刻）を書く。これまでは、取得が全件でないときの続きの案内（取得したいちばん古い時刻）に従うと、本文に出なかった明細を飛ばしていた。
+- `get_margin_status`：建玉の金額の見出しを「建玉総評価額 / 保有建玉 / 注文中建玉」から「建玉合計（時価ではない）/ 保有分（建値ベース）/ 新規注文中」に変える。保有分は建玉ごとの `product`（建値ベース）の合計と一致することを実口座で確認しており、時価で評価した額ではないのに「評価額」と書いていた。ドキュメントの呼び方（建玉合計・建玉の保有分・建玉の新規発注中）に合わせた。新規注文中の分の基準は確認できていないので書かない。
+- `get_tickers_jpy` / `get_my_assets` / `analyze_my_portfolio`：価格一覧（`tickers_jpy`）の取得先を、環境変数 `TICKERS_JPY_URL` で差し替えられないようにする。起動したフォルダの `.env` にこの変数があると、評価額や損益が別の価格で計算され、本物の数字として表示されていた。使っていたのはテストだけ（`file://` でローカルの JSON を読む、`about:timeout` で応答が返らない状態をまねる）で、テストは fetch のモックに置き換えた。
+- 確認トークンのリソース（`bitbank-confirmation://{app}`）：渡さなかったときの理由（`reason`：`unknown_app` / `apps_execute_disabled` / `no_app_ui` / `elicitation` / `no_snapshot` / `no_token`）をログ（`confirmation_resource_read`）に残す。preview 側でもトークンを載せたかをログ（`confirmation_meta`）に残す。どちらも、判定に使った宣言の出どころ（per-request envelope / initialize）、セッション ID のハッシュの先頭 8 桁、接続時のクライアント名、プロセス ID を添える（トークンとセッション ID そのものは残さない）。Claude Desktop でリソースが `delivered: false` を返し、理由が分からなかったため
+
+### Added
+
+- `run_backtest`：期間の終わりに残った未決済のロングを `data.open_position`（建値・建てた時刻・評価に使った最終バーの終値・含み損益）に出す。本文にも `--- Open Position ---` の節を出し、Total P&L が含み損益込みで、Trades / Win Rate / Avg P&L/Trade / Profit Factor は決済済みトレードだけであることを書く。含み損 30% の未決済 1 件だけのとき「Trades: 0、Total P&L: -30.00%」と出て、差の理由が分からなかった（issue #444）。
+- `analyze_my_portfolio`：期間の入出金サマリー（`yearly_dw_summary` / `monthly_dw_summary`）に、ステーキング報酬の `staking_reward_count` / `staking_reward_estimated_jpy` / `staking_reward_valuation` を追加。期間サマリーだけを読むと報酬を元本の入庫として数えていた（issue #448）。
+- `analyze_my_portfolio`：期初の保有を巻き戻して残高が負になった資産を `*_performance.negative_start_assets` に出し、本文にも注記する。履歴の欠落の証拠なのに、黙って 0 にして期初評価額から外していた（issue #448）。
+- `analyze_my_portfolio`：ステーキング報酬の受取時の評価額は実現損益・評価損益に含めず `staking_reward_*` に別建てで出していること（所得として数えるときは足して読む）と、取得原価・実現損益は移動平均法で、総平均法（届出が無い場合の既定）で申告するとこの値と一致しないことを、本文とスキーマに注記する（issue #448）。
+
+### Fixed
+
+- 確認カード（注文と取消）：最新の Claude Desktop で「注文を確定する」などのボタンが出なくなっていた。Desktop は、モデルが呼んだツールの結果をカードへ渡すときに `_meta`（確認トークン）を落とす。カードはトークン無しで内容を受け取ったら `get_ui_snapshot` を呼び、その結果の `_meta` からトークンを取り直す。その `_meta` も落とすホスト向けに、一覧に出さないリソース `bitbank-confirmation://{app}` を足し、本文でトークンを渡す（モデルが MCP リソースを自分で読めないことを前提にする。ADR-0007 判断事項 C）。どの経路も、トークンを渡す条件（`BITBANK_MCP_APPS_EXECUTE=1`、MCP Apps UI の宣言、elicitation 非対応、同じセッション、期限内）は変わらない。
+- 確認カード（注文と取消）：同じ件のもう 1 つの原因。Claude Desktop は、設定に 1 つ登録したサーバーを 2 つ起動し、チャットのツール実行（preview）とカードの要求（控えの取得・確認トークンのリソース・ボタンの発注）を別々のプロセスで受ける。preview の控え・署名鍵に混ぜる乱数・使用済みトークンの記録がプロセスの中にしか無かったので、カード側のプロセスはトークンを渡せず、渡せても発注の検証に通らなかった。オプトイン（`BITBANK_MCP_APPS_EXECUTE=1`）時だけ、この 3 つを `~/.bitbank-lab-mcp/confirm`（本人だけが読み書きできるフォルダ）で共有する。使用済みの印は排他作成で置き、同じトークンは 2 つのプロセスでも 1 回しか通らない。トークンが通る範囲は「同じ OS ユーザーで、このフォルダを使うプロセス」に広がる。Windows では共有しないので、Claude Desktop ではボタンが出ない見込み（未確認）（ADR-0007 判断事項 D）。
+- 確認カード（注文と取消）：共有フォルダに置いたトークンは、カードが受け取ったと知らせたら消す（カードは受け取ったトークンを添えて `get_ui_snapshot` を呼ぶ）。30 秒ごとの掃除で、TTL（5 分）を過ぎた控えも消す。本人の権限でファイルを読める AI エージェントがトークンを読んで使える時間を、カードが知らせるまで（数秒）に縮める。知らせが無ければ、トークンは期限（既定 60 秒）まで使える（ADR-0007 判断事項 D）。
+- `preview_order` / `preview_cancel_order` / `preview_cancel_orders`：確認カードの案内の最後に「カードが表示されない場合は、もう一度プレビューを頼むと表示されます。」を添える。Claude Desktop は、ToolSearch で読み込んだ直後の呼び出しだとカードを作らず、モデルはそれに気づけないまま「カードを表示した」と答えていた（読み込み済みなら 1 回目から出ることを実機で確認）。
+- 確認カード（注文）：発注完了の表示で、注文 ID が 2 回出ていた。`create_order` の完了メッセージに入っているので、入っていないとき（既定の文言のとき）だけカードが足す。
+- MCP Apps の実行経路（`BITBANK_MCP_APPS_EXECUTE=1`）と elicitation の判定が、2026-07-28 版のクライアントが送るリクエストごとの capability（per-request envelope）を読めていなかった。SDK は envelope を `_meta` のキー名（`io.modelcontextprotocol/clientCapabilities`）のまま渡すのに、`clientCapabilities` という名前で読んでいたため、そのクライアントでは確認カード（MCP Apps UI）も elicitation も常に「非対応」と判定されていた。2025 系のクライアント（`initialize` で宣言する。現行の Claude Desktop）は影響を受けない。
+- `run_backtest`：戦略が持たない `params` のキー（例: `sma_cross` の `short_period`）が検証を通り、既定値で実行されていた。未知のキーはエラーにする。期間系のパラメータ（`short` / `long` / `period` / `fast` / `slow` / `signal` / `sma_filter_period` / `rsi_filter_period`）に小数を渡すと、指標が全 NaN になって「0 トレード」を返すか、内部の例外がエラーとして返っていた。整数だけを通す（issue #443）。
+- `run_backtest`：`rsi` と `macd_cross` のウォームアップが「指標が NaN でなくなる本数」ぎりぎりで、Wilder 平滑・EMA の初期値の影響が評価区間の先頭に残っていた。同じ評価区間でも、取得開始位置（`period` の長さなど）で売買と損益が変わっていた。初期値の重みが 0.1% を切るまでをウォームアップに含める（既定パラメータで rsi は 20 → 109 本、macd_cross は 35 → 156 本）。sma_cross / macd_cross の RSI フィルタ（`rsi_filter_period`）も同じ。取得本数の上限や履歴の長さに届かず、評価区間が `period` の本数より短くなったときは warning を出す（issue #442）。
+- `run_backtest`：Profit Factor が null のとき、トレード 0 件でも本文に `N/A (no losses)` と出て、全勝と区別できなかった。0 件は `N/A (no trades)` と出す。値は従来どおり null（issue #445）。
+- `run_backtest`：`start_date` / `end_date` を指定しても、本文の `Period:` 行と `data.input.period` に `period` の既定値 `3M` が出ていた。指定した日付範囲（`2024-01-01 ~ 2024-03-31` の形）を出す（issue #445）。
+- `run_backtest`：`/spot/pairs` にペアはあるが `taker_fee_rate_quote` が無いとき、公称の 12 bp に落ちても手数料の出所を `dynamic` と表示していた。`fallback` にして、理由を warning に出す。`fallback` の文言を「pairs 取得失敗」固定から「/spot/pairs から taker レートを取得できず」に直した（取得失敗・ペア未発見・率の欠落の理由は warning 側に出る）（issue #445）。
+- `run_backtest`：出力スキーマの説明を実装に合わせた。`sharpe_ratio` は日次リターン × √365 ではなく、バーごとのリターンを時間足に合わせて年率化している。`evaluation_start` はシグナルを出す最初のバーで、最初の約定と Buy & Hold の起点はその次のバーの始値（issue #445）。
+- `analyze_my_portfolio`：期間成績（`yearly` / `monthly` / `daily`）と資産推移シリーズの期初の保有の巻き戻しに、信用取引が入っていなかった。信用の決済損益・利息・手数料は JPY 残高に反映されるので、期間中の信用の実現益が期初評価額に乗ったまま増減から消えていた（月初の JPY 100 万円・今月の実現益 +10 万円で「増減 0」）。決済行の `profit_loss`（手数料控除後）から `interest` を引いた額を JPY から巻き戻す（口座損益の合計と同じ扱い。利息が `profit_loss` に含まれるかは未確認）。信用建玉の含み損益は期初・現在の評価額のどちらにも含めない。信用の約定履歴を取得しきれなかったとき（`marginTradesTruncated` / `marginFetchFailed`）は `change_pct_unavailable_reason=margin_trades_incomplete` を付けて率を出さない（issue #446）。
+- `analyze_my_portfolio`：口座損益の合計（`account_pnl.total`、`yearly_account_pnl` / `monthly_account_pnl` の `total`）で、信用の手数料を二重に引いていた。API の `profit_loss` は手数料控除後の値だった（実口座の BTC/JPY 信用決済で、`profit_loss` が値動きだけの損益から発生手数料を引いた額と一致した）。`total` から `margin_fee_cost` を引かない。`margin_fee_cost` は内訳として残し、本文の Account PnL 行は「Margin: …（手数料控除後。発生手数料 … は控除済み）」と出す。`margin_realized_pnl` の説明の「グロス: 利息・手数料控除前」も直した。利息が `profit_loss` に含まれるかは未確認なので、利息の扱いは変えない（issue #450）。
+- `get_margin_trade_history` / `get_my_trade_history`：約定履歴 API は現物と信用の約定を混ぜて返すのに、`count` 件だけ取得して絞り、絞った後の件数が `count` に届かなくても続きを取りに行かなかった。直近 20 件がすべて現物だと、それより古い信用約定があっても「信用約定履歴: 0件」と出ていた（`get_my_trade_history` は逆向き）。絞った後の件数が `count` に届くまで、2 ページ目以降は 1,000 件ずつ取り直す（上限 10 ページ）。上限で打ち切ったときは、取得した件数と反対側の約定の件数（「取得した約定 N 件はすべて現物で、信用約定はありませんでした」）と、続きを取るときに `end`（desc）/ `since`（asc）に渡す時刻（最後に調べた約定の時刻。`meta.scanBoundary` にも出す）を本文に書く。2 ページ目以降の API エラーは途中までの結果を返さず fail にする。`count` と `order` は既定値でも API に送る（issue #455）。
+- `get_margin_positions` / `analyze_my_portfolio`：建玉ごとの `product` を「評価額」と表示していた。API の `product` は建玉の quote 量（`average_price` × `open_amount`）で、建値ベースの金額であり現在の時価ではない。LLM が時価として説明し、建値と比べると含み損益が常に 0 になる。ラベルを「建玉金額（建値ベース）」に変え、`get_margin_positions` の本文に建玉ごとの未実現手数料（`unrealized_fee_amount`）・未実現利息（`unrealized_interest_amount`）と、含み損益は `get_margin_status`（口座全体）を見るよう案内する行を出す。建玉ごとの時価は API に無い（issue #456）。
+- `get_margin_trade_history`：約定ごとの手数料と利息が LLM の読む本文に出ず、損益は円の整数に丸めていた（-12.8929 円が「-13円」）。決済行に手数料控除後の損益（丸めない）・発生手数料（`fee_occurred_amount_quote`、新規側と決済側の合計）・利息（`interest`）を、新規行に手数料（`fee_amount_quote`）を出し、損益が手数料控除後であることを注記する。`get_my_trade_history`（現物）も手数料を本文に出していなかったので、約定行に手数料を出す（JPY 以外の建てのペアは、その通貨で出す）（issue #452）。
+- `preview_order` / `create_order`：`amount` / `price` / `trigger_price` に指数表記（`1e-3`）・16 進（`0x1`）・前後の空白を含む文字列が通り、確認カードと bitbank に生の文字列のまま渡っていた（`1e-3` は小数 0 桁と数えて桁数の検証もすり抜けていた）。通常の 10 進表記だけを通す（issue #449）。
+- `analyze_my_portfolio`：コメントの「現物の手数料は買いが base で発生する」が実態と違っていた。現物の手数料は売買とも quote（JPY）で引かれる（実約定で確認）。計算は base / quote の両方に対応していたので結果は変わらない。`.claude/rules/fees.md` にもこの前提を書いた（issue #449）。
+- `analyze_my_portfolio`：全期間の入出金サマリーで、入出庫日の価格でも現在価格でも換算できない暗号資産の入出庫を、純投入額から黙って落としていた（JPY 入金 10 万円と換算できない入庫 1 件、評価額 30 万円で `account_return_pct` +200%）。資産名を `deposit_withdrawal_summary.unpriced_flow_assets` に出し、その場合は `account_return_pct` / `account_return_jpy` を出さない。ステーキング報酬は換算できなくても純投入額はずれないので数えない（issue #448）。
+- `analyze_my_portfolio`：現物の約定履歴の取得が打ち切られると（件数上限・途中の API エラー）、欠けるのは直近の約定なのに、期間成績（`yearly` / `monthly` / `daily`）は欠けた約定を巻き戻さないまま確定値を出していた。期間中の売買が無かったことになり、`start_value_jpy` / `change_jpy` / `change_pct` がずれる（期間中に 800 万円で 1 BTC を買った月が「+0 円 / 0%」になる）。打ち切り時は `change_pct_unavailable_reason=trades_truncated` を付けて率を出さず、増減額も成績として読まないよう本文とスキーマに書く。どの期間も現在で終わるので、取得済みの最後の約定が期間開始より前でも同じ扱いにする。資産推移シリーズにも同じ申告を出す（issue #447）。
+- `get_orders_info`：返ってこなかった注文を「3ヶ月以上前の注文のため取得できませんでした」と断定していた。ドキュメントが返らないと書いているのは 3ヶ月以上前に約定・キャンセルされた注文だけで、存在しない ID でも同じ形になりうる。返ってこなかった注文 ID を挙げ、3ヶ月以上前の注文は API がエラーにせず結果から除くこと、それ以外なら ID とペアを確認することを書く。同じ ID を重ねて指定したときに、欠けたと数えていたのも直した（issue #458）。
+- `analyze_my_portfolio` / `get_my_deposit_withdrawal`：入出金履歴のページ送りが、API は古い順に返すという前提で、ページの最後の行の時刻を次の `since` にして進んでいた。実口座では、API は期間の中で新しい順に `count` 件を返していた（`since` に古い日付を渡しても、返るのはいちばん新しい分）。そのため 2 ページ目も同じ新しい分が返り、入金または出金が 100 件を超える口座では、履歴が常に不完全（`dw_history_incomplete`）になって期間成績を未計測にしていた。`since` を下限に残し、各ページのいちばん古い時刻を次の `end` にしてさかのぼる（`end` は境界の時刻を含むので 1ms 引かず、同じ時刻の行は取り直して `uuid` で重複を除く）（issue #458 項目 1）。
+
+### Internal
+
+- テストの約定履歴のフィクスチャを実 API の形に直した。現物の買いの手数料を base 建て（`fee_amount_base` に値、`fee_amount_quote` は 0）にしていたが、実口座では現物の手数料は売買とも quote（JPY）建てだった。テストがコードのコメントに合わせたデータで通り、実 API との食い違いを検知できなかった。共有フィクスチャ（`tests/fixtures/private-api.ts`）と各テストの約定の生成関数を、`fee_amount_base: '0'`・`fee_amount_quote` / `fee_occurred_amount_quote` に約定代金の 0.12%（taker）の形にし、残高のフィクスチャと期待値を合わせた。信用の新規約定の `fee_amount_base` も 0 にした（信用の手数料は決済時に円でまとめて計上される）。base 建ての手数料を扱う分岐のテストは、実 API では現状起きない防御的な分岐の確認であることを明記して残した。計算コードは変えていない（issue #457）。
+
 ## [0.7.0] - 2026-11-10
 
 番号は fork（tjackiet/bitbank-lab-mcp）の issue。互換性を壊す変更は「Schema (breaking)」にまとめている（`detect_patterns` の `scoreComponents`、`analyze_bb_snapshot` の `zScore` の単位・`bandwidth_state` の基準・extended の項目、`get_tickers_jpy` の `view` など）。

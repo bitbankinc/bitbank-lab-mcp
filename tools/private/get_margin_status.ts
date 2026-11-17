@@ -73,9 +73,10 @@ export default async function getMarginStatus(_args: Record<string, unknown>) {
 		lines.push(`建玉含み損益: ${formatYenAmount(Number(raw.margin_position_profit_loss))}`);
 		lines.push(`未実現コスト: ${formatYenAmount(Number(raw.unrealized_cost))}`);
 		lines.push('');
-		lines.push(`建玉総評価額: ${formatYenAmount(Number(raw.total_margin_position_product))}`);
-		lines.push(`  保有建玉: ${formatYenAmount(Number(raw.open_margin_position_product))}`);
-		lines.push(`  注文中建玉: ${formatYenAmount(Number(raw.open_margin_order_product))}`);
+		// 保有分は建玉ごとの product（建値ベース）の合計と一致する（実口座で確認）。注文中の分の基準は未確認なので書かない。
+		lines.push(`建玉合計（時価ではない）: ${formatYenAmount(Number(raw.total_margin_position_product))}`);
+		lines.push(`  保有分（建値ベース）: ${formatYenAmount(Number(raw.open_margin_position_product))}`);
+		lines.push(`  新規注文中: ${formatYenAmount(Number(raw.open_margin_order_product))}`);
 		lines.push('');
 		lines.push(`維持保証金合計: ${formatYenAmount(Number(raw.total_position_maintenance_margin))}`);
 		lines.push(`  ロング: ${formatYenAmount(Number(raw.total_long_position_maintenance_margin))}`);
@@ -158,7 +159,7 @@ export default async function getMarginStatus(_args: Record<string, unknown>) {
 export const toolDef: ToolDefinition = {
 	name: 'get_margin_status',
 	description:
-		'[Margin Status / 信用取引ステータス] 信用取引の口座状況（保証金・建玉評価額・維持保証金・ロスカット率・新規建て可能額）を取得。追証（CALL）・強制決済（LOSSCUT）・不足金（DEBT）発生時はアラート付き。Private API。',
+		'[Margin Status / 信用取引ステータス] 信用取引の口座状況（保証金・建玉合計（時価ではない）・維持保証金・ロスカット率・新規建て可能額）を取得。追証（CALL）・強制決済（LOSSCUT）・不足金（DEBT）発生時はアラート付き。Private API。',
 	inputSchema: GetMarginStatusInputSchema,
 	handler: async (args: Record<string, unknown>) => getMarginStatus(args),
 };

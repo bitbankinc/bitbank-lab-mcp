@@ -1,16 +1,34 @@
 import { nowIso, parseIso8601, toIsoMs } from '../../lib/datetime.js';
-import { formatPair, formatPrice } from '../../lib/formatter.js';
-import { normalizePairCodes } from '../../lib/pair-code.js';
+import { formatPair, formatPrice, formatYenExact } from '../../lib/formatter.js';
+import { isJpyQuotedPair } from '../../lib/pair-code.js';
 import { fail, ok } from '../../lib/result.js';
-import { paginateTrades } from '../../src/handlers/portfolio/fetch.js';
 import type { RawTrade } from '../../src/handlers/portfolio/types.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import { GetMyTradeHistoryInputSchema, GetMyTradeHistoryOutputSchema } from '../../src/private/schemas.js';
 import { failPrivateToolError } from '../../src/private/tool-error.js';
+import {
+	completenessNote,
+	fetchFilteredTradeHistory,
+	hiddenTradesNote,
+	scanBoundaryIso,
+	tradesToDisplay,
+} from '../../src/private/trade-history.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
 
-// `paginateTrades` 内の `TRADE_PAGE_SIZE` と同値（bitbank API の 1 リクエスト上限）。
-const PAGE_SIZE = 1000;
+// 現物の手数料は売買とも quote 建て。base 建てが非ゼロのときだけ併記する。
+function spotFeeInfo(t: { pair: string; fee_amount_quote: string; fee_amount_base: string }): string {
+	const [baseAsset, quoteAsset] = t.pair.split('_').map((a) => a.toUpperCase());
+	const hasQuote = t.fee_amount_quote !== '' && t.fee_amount_quote != null;
+	const quote = !hasQuote
+		? null
+		: isJpyQuotedPair(t.pair)
+			? formatYenExact(Number(t.fee_amount_quote))
+			: `${t.fee_amount_quote} ${quoteAsset}`;
+	const baseNum = Number(t.fee_amount_base);
+	const base = Number.isFinite(baseNum) && baseNum !== 0 ? `${t.fee_amount_base} ${baseAsset}` : null;
+	const parts = [quote, base].filter((p): p is string => p != null);
+	return parts.length > 0 ? ` 手数料: ${parts.join(' + ')}` : '';
+}
 
 export default async function getMyTradeHistory(args: {
 	pair?: string;
@@ -41,26 +59,14 @@ export default async function getMyTradeHistory(args: {
 			baseParams.end = String(parsed.valueOf());
 		}
 
-		let rawTrades: RawTrade[];
-		let isComplete: boolean;
-
-		if (count <= PAGE_SIZE) {
-			const params = { ...baseParams, count: String(count), order };
-			const rawData = await client.get<{ trades: RawTrade[] }>(
-				'/v1/user/spot/trade_history',
-				Object.keys(params).length > 0 ? params : undefined,
-			);
-			// 下の JPY 判定（`t.pair.includes('jpy')`）が価格フォーマットを決めるので、単発経路でも取得境界で正規化する（ページネーション経路は paginateTrades 側で正規化済み）。
-			const rawBatch = normalizePairCodes(rawData.trades ?? []);
-			// 信用約定（position_side 付き）の混入を防御的に除外（paginateTrades と対称）。
-			rawTrades = rawBatch.filter((t) => t.position_side == null);
-			// isComplete はフィルタ前の API レスポンス件数で判定する（フィルタ後だと信用比率が高いときに全件取得済みと誤判定する）。
-			isComplete = rawBatch.length < count;
-		} else {
-			const result = await paginateTrades(client, { baseParams, order, limit: count });
-			rawTrades = result.trades;
-			isComplete = !result.truncated;
-		}
+		const fetched = await fetchFilteredTradeHistory<RawTrade>(client, {
+			baseParams,
+			order,
+			limit: count,
+			keep: (t) => t.position_side == null,
+		});
+		const rawTrades = fetched.trades;
+		const isComplete = fetched.isComplete;
 
 		const timestamp = nowIso();
 
@@ -84,26 +90,24 @@ export default async function getMyTradeHistory(args: {
 		const lines: string[] = [];
 		const pairLabel = pair ? formatPair(pair) : '全ペア';
 		lines.push(`約定履歴: ${pairLabel} ${trades.length}件`);
-		if (!isComplete) {
-			lines.push('※ 全件ではなく一部のみ取得されています。API件数上限に達した可能性があります');
-		}
+		const note = completenessNote(fetched, { kept: '現物', excluded: '信用', order, limit: count });
+		if (note) lines.push(note);
 
 		if (trades.length > 0) {
 			lines.push('');
 
-			const displayTrades = order === 'asc' ? trades.slice(-10) : trades.slice(0, 10);
+			const displayTrades = tradesToDisplay(trades, order);
 			for (const t of displayTrades) {
 				const sideLabel = t.side === 'buy' ? '買' : '売';
 				const isJpy = t.pair.includes('jpy');
 				const price = isJpy ? formatPrice(Number(t.price)) : t.price;
 				lines.push(
-					`[trade: ${t.trade_id} / order: ${t.order_id}] ${t.executed_at} ${formatPair(t.pair)} ${sideLabel} ${t.amount} @ ${price} (${t.maker_taker})`,
+					`[trade: ${t.trade_id} / order: ${t.order_id}] ${t.executed_at} ${formatPair(t.pair)} ${sideLabel} ${t.amount} @ ${price} (${t.maker_taker})${spotFeeInfo(t)}`,
 				);
 			}
 
-			if (trades.length > 10) {
-				lines.push(`... 他 ${trades.length - 10}件`);
-			}
+			const hiddenNote = hiddenTradesNote(trades.length, displayTrades, order);
+			if (hiddenNote) lines.push(hiddenNote);
 
 			const buyCount = trades.filter((t) => t.side === 'buy').length;
 			const sellCount = trades.filter((t) => t.side === 'sell').length;
@@ -123,6 +127,7 @@ export default async function getMyTradeHistory(args: {
 			tradeCount: trades.length,
 			pair: pair || undefined,
 			isComplete,
+			scanBoundary: scanBoundaryIso(fetched),
 			...(client.lastRateLimit ? { rateLimit: client.lastRateLimit } : {}),
 		};
 
@@ -137,7 +142,7 @@ export default async function getMyTradeHistory(args: {
 export const toolDef: ToolDefinition = {
 	name: 'get_my_trade_history',
 	description:
-		'[My Trades / Trade History / Fills] 自分の現物約定履歴（my trades / trade history / fills / executions）を取得。通貨ペア・期間・件数でフィルタ可能。Private API。' +
+		'[My Trades / Trade History / Fills] 自分の現物約定履歴（my trades / trade history / fills / executions）を取得。通貨ペア・期間・件数でフィルタ可能。本文に出す明細は新しいほうから 100 件まで（超えた分は件数と、明細を取るときに end に渡す時刻を書く）。Private API。' +
 		'※ 本ツールは現物約定専用。信用約定の取得は `get_margin_trade_history` を使う。',
 	inputSchema: GetMyTradeHistoryInputSchema,
 	handler: async (args: { pair?: string; count?: number; order?: 'asc' | 'desc'; since?: string; end?: string }) =>

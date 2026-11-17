@@ -1,6 +1,7 @@
 import { bollingerBands } from '../../../../lib/indicators.js';
 import { roundPriceAtLevel } from '../../../../lib/price.js';
 import type { Candle } from '../../types.js';
+import { checkParamShape } from './params.js';
 import type { Overlay, ParamValidationResult, Signal, Strategy } from './types.js';
 
 const DEFAULT_PARAMS = {
@@ -8,8 +9,10 @@ const DEFAULT_PARAMS = {
 	stddev: 2,
 };
 
+const INTEGER_KEYS = ['period'] as const;
+
 export function validateParams(params: Record<string, number>): ParamValidationResult {
-	const errors: string[] = [];
+	const errors: string[] = checkParamShape(params, DEFAULT_PARAMS, INTEGER_KEYS);
 	const normalized = { ...DEFAULT_PARAMS, ...params };
 
 	if (normalized.period < 5) {

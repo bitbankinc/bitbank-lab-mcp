@@ -17,3 +17,15 @@ export function readConfirmationMeta(meta: unknown): ConfirmationMetaPayload | u
 	if (typeof expires_at !== 'number' || !Number.isFinite(expires_at)) return undefined;
 	return { confirmation_token, expires_at };
 }
+
+// ホストが結果 `_meta` を iframe に渡さないときの代わりの経路。一覧に出さないテンプレートで、`{app}` は確認 UI `ui://{app}/confirm.html` の名前。
+export const CONFIRMATION_RESOURCE_TEMPLATE = 'bitbank-confirmation://{app}';
+
+export function confirmationResourceUri(appResourceUri: string): string | undefined {
+	const app = /^ui:\/\/([a-z-]+)\/confirm\.html$/.exec(appResourceUri)?.[1];
+	return app ? `bitbank-confirmation://${app}` : undefined;
+}
+
+export function appResourceUriFor(app: string): string {
+	return `ui://${app}/confirm.html`;
+}

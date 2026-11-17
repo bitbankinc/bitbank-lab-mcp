@@ -19,7 +19,7 @@ interface FakePromptEntry {
 }
 interface FakeResourceEntry {
 	name: string;
-	uri: string;
+	uri: string | { uriTemplate: { toString(): string }; listCallback: unknown };
 	config: Record<string, unknown>;
 	read: (uri: URL) => Promise<unknown> | unknown;
 }
@@ -88,7 +88,7 @@ vi.mock('@modelcontextprotocol/server', async (importOriginal) => {
 
 		registerResource(
 			name: string,
-			uri: string,
+			uri: FakeResourceEntry['uri'],
 			config: Record<string, unknown>,
 			read: (uri: URL) => Promise<unknown> | unknown,
 		) {
@@ -227,7 +227,14 @@ describe('server.ts smoke', () => {
 		// MRTR requestState の HMAC / 期限検証フックが ServerOptions に接続されている
 		const requestState = server.options?.requestState as { verify?: unknown } | undefined;
 		expect(typeof requestState?.verify).toBe('function');
-		expect(server.resources.map((r) => r.uri)).toEqual(['ui://order/confirm.html', 'ui://cancel/confirm.html']);
+		expect(server.resources.filter((r) => typeof r.uri === 'string').map((r) => r.uri)).toEqual([
+			'ui://order/confirm.html',
+			'ui://cancel/confirm.html',
+		]);
+		// 確認トークンのリソースは一覧に出さないテンプレートで登録する（resources/list に出すと、トークン入りの本文を会話へ添付できてしまう）。
+		const templates = server.resources.flatMap((r) => (typeof r.uri === 'string' ? [] : [r.uri]));
+		expect(templates.map((t) => t.uriTemplate.toString())).toEqual(['bitbank-confirmation://{app}']);
+		expect(templates[0]?.listCallback).toBeUndefined();
 		expect(server.connections).toHaveLength(1);
 		expect(server.connections[0].kind).toBe('stdio');
 		expect(runtime.stdioTransports).toHaveLength(1);
@@ -272,7 +279,8 @@ describe('server.ts smoke', () => {
 			},
 		]);
 
-		expect(server.resources.map((r) => ({ uri: r.uri, name: r.name, ...r.config }))).toEqual([
+		const staticResources = server.resources.filter((r) => typeof r.uri === 'string');
+		expect(staticResources.map((r) => ({ uri: r.uri, name: r.name, ...r.config }))).toEqual([
 			{
 				uri: 'ui://order/confirm.html',
 				name: 'Order Confirmation',

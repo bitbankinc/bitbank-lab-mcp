@@ -339,7 +339,9 @@ export const GetDepthDataSchemaOut = z.object({
 		})
 		.optional(),
 });
-export const GetDepthMetaSchemaOut = BaseMetaSchema;
+export const GetDepthMetaSchemaOut = BaseMetaSchema.extend({
+	warning: z.string().optional().describe('板が交差しているとき（連続取引ではない可能性）の注意'),
+});
 export const GetDepthOutputSchema = toolResultSchema(GetDepthDataSchemaOut, GetDepthMetaSchemaOut);
 
 export const FlowBucketSchema = z.object({

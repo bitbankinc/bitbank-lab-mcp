@@ -112,6 +112,7 @@ function buildEngineResult(): BacktestEngineResult {
 				net_return: 1.0123,
 			},
 		],
+		open_position: null,
 		equity_curve: [],
 		drawdown_curve: [],
 		overlays: [],
@@ -202,6 +203,7 @@ describe('run_backtest', () => {
 		});
 		mocks.getPeriodBars.mockReturnValue(90);
 		mocks.fetchCandlesForBacktest.mockResolvedValue(buildCandles(40));
+		mocks.runBacktestEngine.mockReturnValue(buildEngineResult());
 
 		const res = await runBacktest({
 			pair: 'btc_jpy',
@@ -244,6 +246,72 @@ describe('run_backtest', () => {
 		expect(res.summary).toContain('Evaluation: 2024-01-15 ~ 2024-03-31');
 		expect(res.summary).toContain('warmup: 14 bars');
 		expect(res.summary).toContain('Buy & Hold:');
+	});
+
+	it('start_date / end_date 指定時、Period 行と data.input.period は既定の 3M ではなく日付範囲になる（issue 445 項目 4）', async () => {
+		setupRsiStrategy();
+
+		const res = await runBacktest({
+			pair: 'btc_jpy',
+			strategy: { type: 'rsi', params: {} },
+			start_date: '2024-01-01',
+			end_date: '2024-03-31',
+			savePng: false,
+			includeSvg: false,
+		});
+
+		assertOk(res);
+		expect(res.summary).toContain('Period: 2024-01-01 ~ 2024-03-31 (1D)');
+		expect(res.summary).not.toContain('Period: 3M');
+		const engineInput = mocks.runBacktestEngine.mock.calls[0][2];
+		expect(engineInput.period).toBe('2024-01-01 ~ 2024-03-31');
+	});
+
+	it('period 指定時は Period 行に期間を出す', async () => {
+		setupRsiStrategy();
+
+		const res = await runBacktest({
+			pair: 'btc_jpy',
+			period: '6M',
+			strategy: { type: 'rsi', params: {} },
+			savePng: false,
+			includeSvg: false,
+		});
+
+		assertOk(res);
+		expect(res.summary).toContain('Period: 6M (1D)');
+		expect(mocks.runBacktestEngine.mock.calls[0][2].period).toBe('6M');
+	});
+
+	it('Buy & Hold 行に買いの手数料込みであることを書く（issue 445 項目 2）', async () => {
+		setupRsiStrategy();
+
+		const res = await runBacktest({
+			pair: 'btc_jpy',
+			strategy: { type: 'rsi', params: {} },
+			savePng: false,
+			includeSvg: false,
+		});
+
+		assertOk(res);
+		expect(res.summary).toMatch(/Buy & Hold: \+0\.90% \(.* open → .* close, buy fee included\)/);
+	});
+
+	it('Profit Factor が null のとき、トレード 0 件は no trades、損失なしは no losses と出す（issue 445 項目 3）', async () => {
+		setupRsiStrategy();
+		const noTrades = buildEngineResult();
+		noTrades.trades = [];
+		noTrades.summary.trade_count = 0;
+		mocks.runBacktestEngine.mockReturnValue(noTrades);
+
+		const res0 = await runBacktest({ pair: 'btc_jpy', strategy: { type: 'rsi', params: {} } });
+		assertOk(res0);
+		expect(res0.summary).toContain('Profit Factor: N/A (no trades)');
+
+		mocks.runBacktestEngine.mockReturnValue(buildEngineResult());
+		const res1 = await runBacktest({ pair: 'btc_jpy', strategy: { type: 'rsi', params: {} } });
+		assertOk(res1);
+		expect(res1.summary).toContain('Profit Factor: N/A (no losses)');
 	});
 
 	it('content text の summary に equity_curve / drawdown_curve の JSON が含まれる', async () => {
@@ -674,9 +742,102 @@ describe('run_backtest', () => {
 		expect(warnIdx).toBeGreaterThanOrEqual(0);
 		expect(warnIdx).toBeLessThan(titleIdx);
 		expect(res.summary).toContain('取得失敗');
-		expect(res.summary).toContain('fallback: 公称 12bp 概算');
+		expect(res.summary).toContain('fallback: 公称 12bp 概算（/spot/pairs から taker レートを取得できず）');
+		expect(res.summary).not.toContain('pairs 取得失敗）');
 		const engineInput = mocks.runBacktestEngine.mock.calls[0][2];
 		expect(engineInput.fee_bp).toBe(12);
+	});
+
+	it('未決済ポジションがあると、建値・含み損益と、Total P&L が含み損益込みであることを本文に出す（issue 444）', async () => {
+		setupRsiStrategy();
+		const engineResult = buildEngineResult();
+		engineResult.trades = [];
+		engineResult.summary.trade_count = 0;
+		engineResult.summary.win_rate = 0;
+		engineResult.summary.avg_pnl_pct = 0;
+		engineResult.summary.total_pnl_pct = -30;
+		engineResult.open_position = {
+			entry_time: '2024-01-10T00:00:00.000Z',
+			entry_price: 10_000_000,
+			mark_time: '2024-01-31T00:00:00.000Z',
+			mark_price: 7_008_400,
+			unrealized_pnl_pct: -30,
+		};
+		mocks.runBacktestEngine.mockReturnValue(engineResult);
+
+		const res = await runBacktest({
+			pair: 'btc_jpy',
+			strategy: { type: 'rsi', params: {} },
+			savePng: false,
+			includeSvg: false,
+		});
+
+		assertOk(res);
+		expect(res.summary).toContain('Total P&L: -30.00% (incl. unrealized P&L of the open position)');
+		expect(res.summary).toContain('Trades: 0 (closed trades only)');
+		expect(res.summary).toContain('--- Open Position ---');
+		expect(res.summary).toContain('Entry: 2024-01-10 open ¥10,000,000 → Mark: 2024-01-31 close ¥7,008,400');
+		expect(res.summary).toContain('Unrealized P&L: -30.00% (entry fee deducted, exit fee not deducted)');
+		expect(res.summary).toContain('決済済みトレードのみ');
+		expect(res.data.open_position).toEqual(engineResult.open_position);
+	});
+
+	it('未決済ポジションが無ければ Open Position の節も注記も出さない', async () => {
+		setupRsiStrategy();
+
+		const res = await runBacktest({
+			pair: 'btc_jpy',
+			strategy: { type: 'rsi', params: {} },
+			savePng: false,
+			includeSvg: false,
+		});
+
+		assertOk(res);
+		expect(res.summary).not.toContain('Open Position');
+		expect(res.summary).not.toContain('unrealized');
+		expect(res.summary).toContain('Trades: 1\n');
+	});
+
+	it('評価区間が period の本数に届かないと warning を出す（取得上限・履歴不足、issue 442）', async () => {
+		setupRsiStrategy();
+		mocks.getPeriodBars.mockReturnValue(4380);
+		const engineResult = buildEngineResult();
+		engineResult.summary.evaluation_bars = 4200;
+		mocks.runBacktestEngine.mockReturnValue(engineResult);
+
+		const res = await runBacktest({
+			pair: 'btc_jpy',
+			timeframe: '4H',
+			period: '2Y',
+			strategy: { type: 'rsi', params: {} },
+			savePng: false,
+			includeSvg: false,
+		});
+
+		assertOk(res);
+		expect(mocks.getPeriodBars).toHaveBeenCalledWith('4H', '2Y');
+		const titleIdx = res.summary.indexOf('=== RSI Backtest Result ===');
+		const warnIdx = res.summary.indexOf('⚠️ 評価区間が指定期間より短い: 4200 本（2Y は 4380 本）');
+		expect(warnIdx).toBeGreaterThanOrEqual(0);
+		expect(warnIdx).toBeLessThan(titleIdx);
+	});
+
+	it('評価区間が period の本数以上なら warning を出さない', async () => {
+		setupRsiStrategy();
+		mocks.getPeriodBars.mockReturnValue(90);
+		const engineResult = buildEngineResult();
+		engineResult.summary.evaluation_bars = 100;
+		mocks.runBacktestEngine.mockReturnValue(engineResult);
+
+		const res = await runBacktest({
+			pair: 'btc_jpy',
+			strategy: { type: 'rsi', params: {} },
+			savePng: false,
+			includeSvg: false,
+		});
+
+		assertOk(res);
+		expect(res.summary).not.toContain('評価区間が指定期間より短い');
 	});
 
 	it('回帰: 同一 fee_bp 入力なら engine に渡る fee_bp は従来通り（数値再現性）', async () => {

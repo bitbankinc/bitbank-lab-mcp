@@ -1,4 +1,4 @@
-// bitbank の現物手数料は、買いは base 通貨（fee_amount_base > 0）、売りは quote 通貨（fee_amount_quote > 0）で発生する。売り側 fee_amount_base は API 仕様上ゼロだが、防御的に保有量・保有復元の両方で対称に扱う。
+// bitbank の現物手数料は売買とも quote 通貨（fee_amount_quote）で引かれる（issue 449）。fee_amount_base を使うフィクスチャは、base 建ての手数料が来ても保有量・保有復元の両方で対称に扱えることを確かめる防御的なもの。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dayjs } from '../../../lib/datetime.js';
@@ -23,6 +23,8 @@ import {
 	PERFORMANCE_NOTE_CHANGE_DIRECTION_UNKNOWN,
 	PERFORMANCE_NOTE_CHANGE_OVERSTATED,
 	PERFORMANCE_NOTE_CHANGE_UNDERSTATED,
+	PERFORMANCE_NOTE_MARGIN_TRADES_INCOMPLETE,
+	PERFORMANCE_NOTE_TRADES_TRUNCATED,
 	type PortfolioPerformanceContext,
 	qtyInvariantHolds,
 	qtyInvariantTolerance,
@@ -87,6 +89,7 @@ function makeDeposit(overrides: Partial<RawDeposit> = {}): RawDeposit {
 	};
 }
 
+// fee_amount_base を非ゼロにするテストは防御的な分岐の確認。実 API の現物の手数料は売買とも quote 建てで、base 建ては現状返らない（issue 457）。
 describe('calcPnl', () => {
 	it('買い 1 件、fee_amount_base > 0 で保有量が減少し平均取得単価が上昇する', () => {
 		// 1 BTC を 10_000_000 JPY で買い、手数料 0.001 BTC（base 側）→ holdingCost = 10_000_000、holdingQty = 0.999、avg_buy_price = 10_000_000 / 0.999 ≈ 10_010_010.0100
@@ -1018,7 +1021,7 @@ describe('reconstructHoldingsAtDate', () => {
 				side: 'buy',
 				amount: 'NaN', // qty=NaN → スキップ
 				price: '10000000',
-				fee_amount_base: '0.001',
+				fee_amount_quote: '12000',
 			}),
 			makeTrade({
 				trade_id: 2,
@@ -1290,7 +1293,7 @@ function definedAmount(value: number | undefined, label: string): number {
 }
 
 describe('buildAccountPnl', () => {
-	it('total = spot + margin - interest - fee を返す', () => {
+	it('total = spot + margin - interest。profit_loss は手数料控除後なので手数料は引かない（issue 450）', () => {
 		const result = buildAccountPnl(1000, {
 			margin_realized_pnl: 500,
 			margin_interest_cost: 100,
@@ -1300,7 +1303,24 @@ describe('buildAccountPnl', () => {
 		expect(result.margin_realized_pnl).toBe(500);
 		expect(result.margin_interest_cost).toBe(100);
 		expect(result.margin_fee_cost).toBe(50);
-		expect(result.total).toBe(1350); // 1000 + 500 - 100 - 50
+		expect(result.total).toBe(1400); // 1000 + 500 - 100
+	});
+
+	it('実口座の検算: ロングの決済（0.0348 BTC の行と残り 3 行の合計。実現損益 -1,587.74 円、発生手数料 997.42 円）で手数料を二重に引かない（issue 450）', () => {
+		const margin = calcMarginPnl([
+			makeMarginTrade({
+				side: 'sell',
+				profit_loss: '-1319.8607',
+				fee_occurred_amount_quote: '822.5094',
+				interest: '0',
+			}),
+			makeMarginTrade({ side: 'sell', profit_loss: '-267.8793', fee_occurred_amount_quote: '174.9106', interest: '0' }),
+		]);
+		expect(margin.margin_realized_pnl).toBe(-1588);
+		expect(margin.margin_fee_cost).toBe(997);
+		const result = buildAccountPnl(0, margin);
+		expect(result.total).toBe(-1588);
+		expect(result.total).not.toBe(-1588 - 997);
 	});
 
 	it('信用約定なし（margin=0, interest=0, fee=0）のとき total === spot_realized_pnl', () => {
@@ -1324,18 +1344,18 @@ describe('buildAccountPnl', () => {
 		expect(result.margin_fee_cost).toBe(50);
 	});
 
-	/** JSON を直読みする消費者が `_cost` を引き算して total を再現できること。足し込むと符号が反転する（#72 の症状）ので、その向きも固定する。 */
-	it('total は新フィールドで検算できる（コスト項は減算）', () => {
+	/** JSON を直読みする消費者が total を再現できること。利息は減算、手数料は margin_realized_pnl に控除済みなので引かない（#72 / issue 450）。 */
+	it('total は spot + margin_realized_pnl - margin_interest_cost で検算できる', () => {
 		const result = buildAccountPnl(-2000, {
 			margin_realized_pnl: 8000,
 			margin_interest_cost: 1,
 			margin_fee_cost: 149,
 		});
 		const spot = definedAmount(result.spot_realized_pnl, 'spot_realized_pnl');
-		expect(result.total).toBe(spot + result.margin_realized_pnl - result.margin_interest_cost - result.margin_fee_cost);
-		expect(result.total).toBe(5850);
-		// 足し込むと 150 円ぶんずれる = 符号規約を取り違えたときの誤差
-		expect(spot + result.margin_realized_pnl + result.margin_interest_cost + result.margin_fee_cost).toBe(6150);
+		expect(result.total).toBe(spot + result.margin_realized_pnl - result.margin_interest_cost);
+		expect(result.total).toBe(5999);
+		// 利息を足し込むと 2 円ずれる = 符号規約を取り違えたときの誤差
+		expect(spot + result.margin_realized_pnl + result.margin_interest_cost).toBe(6001);
 	});
 });
 
@@ -1357,7 +1377,7 @@ describe('buildAccountPnl — 現物側の抑止（#80）', () => {
 	it('spot が 0 円のときは抑止と区別して確定値を出す', () => {
 		const result = buildAccountPnl(0, marginPnl, 'deposit_price_fetch_failed');
 		expect(result.spot_realized_pnl).toBe(0);
-		expect(result.total).toBe(350);
+		expect(result.total).toBe(400);
 		expect(result.spot_realized_pnl_unavailable_reason).toBeUndefined();
 	});
 
@@ -1382,7 +1402,7 @@ describe('buildAccountPnl — 現物側の抑止（#80）', () => {
 });
 
 describe('buildPeriodAccountPnl', () => {
-	it('期間版でも新旧フィールドが同じ値で並び、total を新フィールドで検算できる', () => {
+	it('期間版でも total を spot + margin_realized_pnl - margin_interest_cost で検算できる（手数料は控除済み）', () => {
 		const result = buildPeriodAccountPnl(
 			300,
 			{ margin_realized_pnl: 200, margin_interest_cost: 15, margin_fee_cost: 75 },
@@ -1392,8 +1412,8 @@ describe('buildPeriodAccountPnl', () => {
 		expect(result.margin_interest_cost).toBe(15);
 		expect(result.margin_fee_cost).toBe(75);
 		const spot = definedAmount(result.spot_realized_pnl, 'spot_realized_pnl');
-		expect(result.total).toBe(spot + result.margin_realized_pnl - result.margin_interest_cost - result.margin_fee_cost);
-		expect(result.total).toBe(410);
+		expect(result.total).toBe(spot + result.margin_realized_pnl - result.margin_interest_cost);
+		expect(result.total).toBe(485);
 		expect(result.period_start).toBe('2026-01-01T00:00:00+09:00');
 		expect(result.period_end).toBe('2026-08-23T00:00:00+09:00');
 	});
@@ -2345,6 +2365,155 @@ describe('buildPeriodPerformance', () => {
 	});
 
 	// 分母がゼロでさえなければ通すガードでは、年初にほぼ空だった口座に入金して運用を始めると 5 桁の百分率が出るので、期初評価額が現在評価額の 1% 未満（`MIN_START_VALUE_RATIO`）なら率を抑止する（#71）。
+	describe('信用の決済損益の巻き戻し（issue 446）', () => {
+		// 月初の JPY 100 万円、今月の信用の実現益 +10 万円、現物約定と入出金は無し、現在の JPY 110 万円。
+		const spec = { key: 'monthly' as const, startMs: 1000, startIso: '2026-05-01T00:00:00+09:00' };
+		const closeTrade = makeMarginTrade({
+			side: 'sell',
+			position_side: 'long',
+			profit_loss: '100000',
+			interest: '0',
+			fee_occurred_amount_quote: '120',
+			executed_at: 5000,
+		});
+		function ctxWith(overrides: Partial<PortfolioPerformanceContext>) {
+			return makeCtx({
+				currentHoldings: [{ asset: 'jpy', amount: '1100000' }],
+				dwData: makeEmptyDw(),
+				currentValue: 1_100_000,
+				...overrides,
+			});
+		}
+
+		it('期間中の信用の決済損益を JPY から巻き戻し、期初 100 万円・増減 +10 万円にする', () => {
+			const result = buildPeriodPerformance(spec, ctxWith({ marginTrades: [closeTrade] }));
+			expect(result.start_value_jpy).toBe(1_000_000);
+			expect(result.change_jpy).toBe(100_000);
+			expect(result.change_pct).toBe(10);
+		});
+
+		it('回帰の逆側: 信用約定を渡さないと期初に実現益が乗ったまま増減 0 になる', () => {
+			const result = buildPeriodPerformance(spec, ctxWith({}));
+			expect(result.start_value_jpy).toBe(1_100_000);
+			expect(result.change_jpy).toBe(0);
+		});
+
+		it('手数料は profit_loss に控除済みなので引かず、利息は口座損益と同じく別に引く（issue 450 に合わせる）', () => {
+			const withInterest = { ...closeTrade, interest: '1000' };
+			const result = buildPeriodPerformance(
+				spec,
+				ctxWith({
+					currentHoldings: [{ asset: 'jpy', amount: '1099000' }],
+					currentValue: 1_099_000,
+					marginTrades: [withInterest],
+				}),
+			);
+			expect(result.start_value_jpy).toBe(1_000_000);
+			expect(result.change_jpy).toBe(99_000);
+		});
+
+		it('損失も同じく巻き戻す（損が消えない）', () => {
+			const loss = { ...closeTrade, profit_loss: '-50000' };
+			const result = buildPeriodPerformance(
+				spec,
+				ctxWith({ currentHoldings: [{ asset: 'jpy', amount: '950000' }], currentValue: 950_000, marginTrades: [loss] }),
+			);
+			expect(result.start_value_jpy).toBe(1_000_000);
+			expect(result.change_jpy).toBe(-50_000);
+		});
+
+		it('期間開始より前の決済と、新規（profit_loss が無い）の約定は巻き戻さない', () => {
+			const before = { ...closeTrade, executed_at: 500 };
+			const open = makeMarginTrade({ side: 'buy', position_side: 'long', executed_at: 6000 });
+			const result = buildPeriodPerformance(spec, ctxWith({ marginTrades: [before, open] }));
+			expect(result.start_value_jpy).toBe(1_100_000);
+		});
+
+		it('信用約定を取りきれなかったときは率を出さず margin_trades_incomplete を付ける', () => {
+			const result = buildPeriodPerformance(
+				spec,
+				ctxWith({ marginTrades: [closeTrade], marginTradesIncomplete: true }),
+			);
+			expect(result.change_pct).toBeUndefined();
+			expect(result.change_pct_unavailable_reason).toBe('margin_trades_incomplete');
+			expect(result.note).toBe(`${PERFORMANCE_NOTE}${PERFORMANCE_NOTE_MARGIN_TRADES_INCOMPLETE}`);
+		});
+
+		it('現物の打ち切りと重なったら trades_truncated を優先する', () => {
+			const result = buildPeriodPerformance(
+				spec,
+				ctxWith({ marginTrades: [closeTrade], marginTradesIncomplete: true, tradesTruncated: true }),
+			);
+			expect(result.change_pct_unavailable_reason).toBe('trades_truncated');
+		});
+	});
+
+	describe('現物約定の取得が打ち切られたとき（issue 447）', () => {
+		// 期間中に 1 BTC を 800 万円で購入。月初の始値と現在価格はどちらも 1,000 万円。現在の保有は 1 BTC、JPY 0 円。
+		const buy = makeTrade({
+			pair: 'btc_jpy',
+			side: 'buy',
+			amount: '1',
+			price: '8000000',
+			fee_amount_base: '0',
+			fee_amount_quote: '0',
+			executed_at: 5000,
+		});
+		function ctxWith(trades: RawTrade[], tradesTruncated?: boolean) {
+			return makeCtx({
+				currentHoldings: [{ asset: 'btc', amount: '1' }],
+				trades,
+				dwData: makeEmptyDw(),
+				candlePriceData: {
+					boundaryPrices: makeBoundaryPrices([['btc', { monthStart: 10_000_000 }]]),
+					dailyPrices: new Map(),
+				},
+				flowPricing: currentPriceOnly(new Map([['btc', 10_000_000]])),
+				currentValue: 10_000_000,
+				tradesTruncated,
+			});
+		}
+		const spec = { key: 'monthly' as const, startMs: 1000, startIso: '2026-05-01T00:00:00+09:00' };
+
+		it('約定履歴が完全なら、期初は JPY 800 万円で +200 万円 / +25%', () => {
+			const result = buildPeriodPerformance(spec, ctxWith([buy]));
+			expect(result.start_value_jpy).toBe(8_000_000);
+			expect(result.change_jpy).toBe(2_000_000);
+			expect(result.change_pct).toBe(25);
+			expect(result.change_pct_unavailable_reason).toBeUndefined();
+		});
+
+		it('買いが欠けて打ち切られていると、率を出さず trades_truncated を付ける（増減 0 / 0% の確定値にしない）', () => {
+			const result = buildPeriodPerformance(spec, ctxWith([], true));
+			expect(result.start_value_jpy).toBe(10_000_000);
+			expect(result.change_jpy).toBe(0);
+			expect(result.change_pct).toBeUndefined();
+			expect(result.adjusted_change_pct).toBeUndefined();
+			expect(result.change_pct_unavailable_reason).toBe('trades_truncated');
+			expect(result.note).toBe(`${PERFORMANCE_NOTE}${PERFORMANCE_NOTE_TRADES_TRUNCATED}`);
+		});
+
+		it('ずれの向きは確定しないので、overstated / understated のフラグは付けない', () => {
+			const result = buildPeriodPerformance(
+				spec,
+				makeCtx({
+					...ctxWith([], true),
+					candlePriceData: { boundaryPrices: new Map(), dailyPrices: new Map() },
+				}),
+			);
+			expect(result.change_pct_unavailable_reason).toBe('trades_truncated');
+			expect(result.unpriced_start_assets).toEqual(['btc']);
+			expect(result.change_jpy_overstated).toBeUndefined();
+			expect(result.change_jpy_understated).toBeUndefined();
+		});
+
+		it('取得済みの最後の約定が期間開始より前でも、欠けた約定が期間内にありうるので同じ扱いにする', () => {
+			const old = { ...buy, executed_at: 500 };
+			const result = buildPeriodPerformance(spec, ctxWith([old], true));
+			expect(result.change_pct_unavailable_reason).toBe('trades_truncated');
+		});
+	});
+
 	describe('増減率の抑止（期初評価額が現在評価額に対して極小）', () => {
 		/** 期初評価額 = currentValue - depositAmount（入金を巻き戻した値）。価格解決を挟まないので期初評価額を 1 円単位で狙える。 */
 		function jpyDepositCtx(currentValue: number, depositAmount: number): PortfolioPerformanceContext {
@@ -3194,6 +3363,8 @@ describe('buildPeriodPerformance', () => {
 		const result = buildPeriodPerformance({ key: 'yearly', startMs: 1000, startIso: 's' }, ctx);
 		expect(result.unpriced_flow_assets).toEqual(['doge']);
 		expect(result.net_flow_jpy).toBe(0);
+		// 入庫した DOGE を現在保有していないので、巻き戻すと期初が負になる（履歴の欠落として申告される）
+		expect(result.negative_start_assets).toEqual(['doge']);
 		// 追加キーは末尾。既存キーの並びは変わらない
 		expect(Object.keys(result)).toEqual([
 			'start_value_jpy',
@@ -3209,6 +3380,7 @@ describe('buildPeriodPerformance', () => {
 			'note',
 			'flow_measured',
 			'unpriced_flow_assets',
+			'negative_start_assets',
 		]);
 	});
 
@@ -3403,6 +3575,29 @@ describe('buildEquitySeries — 入出金フローマーカー', () => {
 	) {
 		return buildEquitySeries(dates, currentHoldings, [], dw, new Map(), currentValueJpy, NOW_ISO, new Map(), pricing);
 	}
+
+	it('信用の決済損益も各点の JPY から巻き戻す（issue 446）', () => {
+		const close = makeMarginTrade({
+			side: 'sell',
+			position_side: 'long',
+			profit_loss: '100000',
+			interest: '0',
+			executed_at: jstMs(2026, 8, 2, 10),
+		});
+		const series = buildEquitySeries(
+			dailyPoints(2026, 8, 1, 3),
+			[{ asset: 'jpy', amount: '1100000' }],
+			[],
+			makeDwData(),
+			new Map(),
+			1_100_000,
+			NOW_ISO,
+			new Map(),
+			currentPriceOnly(),
+			[close],
+		);
+		expect(series.map((p) => p.value_jpy)).toEqual([1_000_000, 1_000_000, 1_100_000, 1_100_000]);
+	});
 
 	it('JPY 入金があった日の点に flow_jpy が付く', () => {
 		// 8/1〜8/3 の日次点 + 現在。8/2 に 500,000 円入金。

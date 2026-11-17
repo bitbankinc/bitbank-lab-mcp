@@ -1,6 +1,7 @@
 import type { Candle } from '../../types.js';
 import { calculateSMA } from '../sma.js';
 import { describeEntryFilters, entryFilterStartIdx, isEntryBlockedBySmaRsi } from './filters.js';
+import { checkParamShape } from './params.js';
 import { calculateRSI } from './rsi.js';
 import type { Overlay, ParamValidationResult, Signal, Strategy } from './types.js';
 
@@ -13,8 +14,10 @@ const DEFAULT_PARAMS: Record<string, number> = {
 	rsi_filter_max: 100, // RSI < この値 の場合のみ買い（100=フィルター無効）
 };
 
+const INTEGER_KEYS = ['short', 'long', 'sma_filter_period', 'rsi_filter_period'] as const;
+
 export function validateParams(params: Record<string, number>): ParamValidationResult {
-	const errors: string[] = [];
+	const errors: string[] = checkParamShape(params, DEFAULT_PARAMS, INTEGER_KEYS);
 	const normalized = { ...DEFAULT_PARAMS, ...params };
 
 	if (normalized.short >= normalized.long) {

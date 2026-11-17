@@ -624,6 +624,9 @@ describe('preview_order', () => {
 				if (url.includes('/spot/pairs')) {
 					return new Response(JSON.stringify(mockSpotPairsResponse()), { status: 200 });
 				}
+				if (url.includes('/ticker')) {
+					return new Response(JSON.stringify(mockBitbankSuccess({ last: '15000000' })), { status: 200 });
+				}
 				throw new Error(`Unexpected fetch in decline test: ${url}`);
 			}) as unknown as typeof fetch;
 			globalThis.fetch = fetchMock;
@@ -649,10 +652,11 @@ describe('preview_order', () => {
 			expect(result.content[0]?.text).toContain('キャンセル');
 			expect(result.structuredContent?.data?.confirmation_token).toBeUndefined();
 			expect(result.structuredContent?.data?.expires_at).toBeUndefined();
-			// limit はトリガー価格検証も注文 API も呼ばれない（/spot/pairs のみ）
-			const calls = (fetchMock as unknown as { mock: { calls: Array<[unknown]> } }).mock.calls;
-			expect(calls).toHaveLength(1);
-			expect(String(calls[0]?.[0])).toContain('/spot/pairs');
+			// 注文 API は呼ばれない（/spot/pairs と、板を跨ぐかを見る /ticker だけ）
+			const calls = (fetchMock as unknown as { mock: { calls: Array<[unknown]> } }).mock.calls.map((c) => String(c[0]));
+			expect(calls).toHaveLength(2);
+			expect(calls.some((u) => u.includes('/spot/pairs'))).toBe(true);
+			expect(calls.some((u) => u.includes('/ticker'))).toBe(true);
 		});
 
 		it('elicitation 対応ホストの round 1 では input_required が返り token は載らない', async () => {
@@ -964,6 +968,243 @@ describe('preview_order', () => {
 	});
 
 	// /spot/pairs フィクスチャの maker は -0.0002（リベート）。
+	describe('数量・価格の文字列形式（issue 449 項目 2）', () => {
+		it.each([
+			['amount', { amount: '1e-3' }],
+			['amount', { amount: '0x1' }],
+			['amount', { amount: ' 0.001 ' }],
+			['amount', { amount: '.5' }],
+			['price', { price: '1e7' }],
+			['price', { price: '1.5e7' }],
+			['price', { price: '+14000000' }],
+		])('%s の指数表記・16 進・空白などは validation_error（%o）', async (field, override) => {
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.001',
+				side: 'buy',
+				type: 'limit',
+				price: '14000000',
+				...override,
+			});
+			assertFail(result);
+			expect(result.meta?.errorType).toBe('validation_error');
+			expect(result.summary).toContain(`${field} は正の数値を通常の 10 進表記`);
+		});
+
+		it('Number に収まらない桁数（Infinity になる）は、/spot/pairs を取れなくても validation_error', async () => {
+			globalThis.fetch = vi.fn(async () => new Response('boom', { status: 500 })) as unknown as typeof fetch;
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '9'.repeat(310),
+				side: 'buy',
+				type: 'market',
+			});
+			assertFail(result);
+			expect(result.summary).toContain('amount は正の数値を通常の 10 進表記');
+		});
+
+		it('trigger_price の指数表記も validation_error', async () => {
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.001',
+				side: 'sell',
+				type: 'stop',
+				trigger_price: '1.4e7',
+			});
+			assertFail(result);
+			expect(result.summary).toContain('trigger_price は正の数値を通常の 10 進表記');
+		});
+
+		it('inputSchema も通常の 10 進表記だけを通す', async () => {
+			const { PreviewOrderInputSchema } = await import('../../src/private/schemas.js');
+			const base = { pair: 'btc_jpy', side: 'buy', type: 'limit', price: '14000000' };
+			expect(PreviewOrderInputSchema.safeParse({ ...base, amount: '0.001' }).success).toBe(true);
+			expect(PreviewOrderInputSchema.safeParse({ ...base, amount: '1e-3' }).success).toBe(false);
+			expect(PreviewOrderInputSchema.safeParse({ ...base, amount: '0.001', price: '1e7' }).success).toBe(false);
+			expect(PreviewOrderInputSchema.safeParse({ ...base, amount: '0.001', trigger_price: '0x10' }).success).toBe(
+				false,
+			);
+		});
+	});
+
+	describe('板を跨ぐ指値の手数料区分（issue 449 項目 3）', () => {
+		/** maker -0.02% / taker 0.12% の既定 fixture に、best ask / best bid を持つ /ticker を返す。 */
+		function installTickerMock(ticker: Record<string, string> | null): void {
+			globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : String(input);
+				if (url.includes('/spot/pairs')) {
+					return new Response(JSON.stringify(mockSpotPairsResponse()), { status: 200 });
+				}
+				if (url.includes('/ticker')) {
+					if (ticker == null) return new Response('boom', { status: 500 });
+					return new Response(JSON.stringify(mockBitbankSuccess(ticker)), { status: 200 });
+				}
+				return new Response(JSON.stringify({ success: 1, data: {} }), { status: 200 });
+			}) as unknown as typeof fetch;
+		}
+
+		it('best ask 以上の指値買いは即時約定するので taker で見積る（-30 円のリベートと出さない）', async () => {
+			installTickerMock({ last: '14995000', sell: '14990000', buy: '14980000' });
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'limit',
+				price: '15000000',
+			});
+			assertOk(result);
+			const fee = result.data.preview.fee_estimate;
+			expect(fee?.role).toBe('taker');
+			expect(fee?.rate).toBe(0.0012);
+			expect(fee?.estimated_fee_quote).toBe(180);
+			expect(fee?.estimated_cost_quote).toBe(150180);
+			expect(fee?.note).toContain('taker 想定（指値が現在の板を跨ぐため即時約定）');
+			expect(result.summary).toContain('手数料区分: taker');
+		});
+
+		it('best bid 以下の指値売りも taker', async () => {
+			installTickerMock({ last: '14995000', sell: '14990000', buy: '14980000' });
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'sell',
+				type: 'limit',
+				price: '14980000',
+			});
+			assertOk(result);
+			expect(result.data.preview.fee_estimate?.role).toBe('taker');
+		});
+
+		it('板を跨がない指値は maker のまま', async () => {
+			installTickerMock({ last: '14995000', sell: '14990000', buy: '14980000' });
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'limit',
+				price: '14985000',
+			});
+			assertOk(result);
+			const fee = result.data.preview.fee_estimate;
+			expect(fee?.role).toBe('maker');
+			expect(fee?.note).toContain('maker 想定（板を跨ぐと taker）');
+		});
+
+		it('post_only は跨いでも maker（跨ぐ注文は取引所が拒否する）', async () => {
+			installTickerMock({ last: '14995000', sell: '14990000', buy: '14980000' });
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'limit',
+				price: '15000000',
+				post_only: true,
+			});
+			assertOk(result);
+			expect(result.data.preview.fee_estimate?.role).toBe('maker');
+		});
+
+		it('該当する側の best ask / bid が無ければ、最終価格では判定せず maker 想定のままにする', async () => {
+			installTickerMock({ last: '14995000', buy: '14980000' });
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'limit',
+				price: '15000000',
+			});
+			assertOk(result);
+			const fee = result.data.preview.fee_estimate;
+			expect(fee?.role).toBe('maker');
+			expect(fee?.note).toContain('maker 想定（板を跨ぐと taker）');
+		});
+
+		it('/ticker が 429（Retry-After: 30）でも待たずに maker 想定で返す（確認トークンの有効期限を食わない）', async () => {
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : String(input);
+				if (url.includes('/spot/pairs')) {
+					return new Response(JSON.stringify(mockSpotPairsResponse()), { status: 200 });
+				}
+				if (url.includes('/ticker')) {
+					return new Response('rate limited', { status: 429, headers: { 'Retry-After': '30' } });
+				}
+				return new Response(JSON.stringify({ success: 1, data: {} }), { status: 200 });
+			});
+			globalThis.fetch = fetchMock as unknown as typeof fetch;
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const startedAt = Date.now();
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'limit',
+				price: '15000000',
+			});
+			assertOk(result);
+			expect(Date.now() - startedAt).toBeLessThan(3000);
+			expect(result.data.preview.fee_estimate?.role).toBe('maker');
+			const tickerCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes('/ticker'));
+			expect(tickerCalls).toHaveLength(1);
+		});
+
+		// 連続取引以外（サーキットブレイク中など）は sell <= buy になりうる（public-api.md の Ticker）。
+		it('気配が交差していたら板を跨ぐかを判定せず maker で見積り、その旨を本文に出す', async () => {
+			installTickerMock({ last: '14995000', sell: '14980000', buy: '14990000' });
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'limit',
+				price: '15000000',
+			});
+			assertOk(result);
+			const fee = result.data.preview.fee_estimate;
+			expect(fee?.role).toBe('maker');
+			expect(result.summary).toContain('気配が交差しています');
+		});
+
+		it('/ticker の取得に失敗したら従来どおり maker で見積る', async () => {
+			installTickerMock(null);
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.01',
+				side: 'buy',
+				type: 'limit',
+				price: '15000000',
+			});
+			assertOk(result);
+			const fee = result.data.preview.fee_estimate;
+			expect(fee?.role).toBe('maker');
+			expect(fee?.note).toContain('maker 想定（板を跨ぐと taker）');
+		});
+	});
+
+	describe('手数料の端数（issue 449 項目 4）', () => {
+		it('円建ての推定手数料は円未満を四捨五入した概算であることを備考に書く', async () => {
+			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			const result = await previewOrder({
+				pair: 'btc_jpy',
+				amount: '0.0001',
+				side: 'buy',
+				type: 'limit',
+				price: '3000000',
+			});
+			assertOk(result);
+			expect(result.data.preview.fee_estimate?.note).toContain('推定手数料は円未満を四捨五入した概算');
+			expect(result.summary).toContain('推定手数料は円未満を四捨五入した概算');
+		});
+	});
+
 	describe('手数料見積り（fee_estimate）', () => {
 		// maker 正レートでの買い/売りを明示検証するため、maker_fee_rate_quote を正値に上書きする。
 		const POSITIVE_MAKER_PAIR = {
@@ -1020,18 +1261,20 @@ describe('preview_order', () => {
 		it('limit 売り → maker。notional-fee で推定コストを算出する', async () => {
 			installDefaultFetchMock([POSITIVE_MAKER_PAIR]);
 			const { default: previewOrder } = await import('../../tools/private/preview_order.js');
+			// 現在価格（15,000,000）より上の売り指値なので板を跨がない
 			const result = await previewOrder({
 				pair: 'btc_jpy',
 				amount: '0.01',
 				side: 'sell',
 				type: 'limit',
-				price: '14000000',
+				price: '16000000',
 			});
 			assertOk(result);
 			const fee = result.data.preview.fee_estimate;
 			expect(fee?.role).toBe('maker');
-			expect(fee?.estimated_fee_quote).toBe(14);
-			expect(fee?.estimated_cost_quote).toBe(139986);
+			// notional = 160,000 / fee = 160,000 * 0.0001 = 16
+			expect(fee?.estimated_fee_quote).toBe(16);
+			expect(fee?.estimated_cost_quote).toBe(159984);
 		});
 
 		it('負のリベート（maker -0.0002）はコストを減らす方向に効く', async () => {
@@ -1172,7 +1415,7 @@ describe('preview_order', () => {
 				amount: '0.01',
 				side: 'sell',
 				type: 'limit',
-				price: '14000000',
+				price: '16000000',
 				position_side: 'long',
 			});
 			assertOk(result);

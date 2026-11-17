@@ -51,6 +51,27 @@ describe('detect_whale_events', () => {
 		vi.clearAllMocks();
 	});
 
+	// サーキットブレイク中で予想価格があるときは、買いと売りの価格が交差しうる（public-api.md の Depth）。
+	it('板が交差していたら中値からの距離を出さず、warning を本文の先頭に出す', async () => {
+		mockedGetDepth.mockResolvedValueOnce(
+			asMockResult(
+				depthOk({
+					asks: [
+						[98.5, 0.8],
+						[102, 1.2],
+					],
+				}),
+			),
+		);
+		mockedGetCandles.mockResolvedValueOnce(asMockResult(candlesOk([{ close: 100 }, { close: 101 }])));
+		// 結果は pair・lookback・minSize でキャッシュされるので、他のテストと重ならない minSize にする。
+		const res = await detectWhaleEvents('btc_jpy', '1hour', 0.47);
+		assertOk(res);
+		expect(res.data.events.length).toBeGreaterThan(0);
+		expect(res.summary.split('\n')[0]).toContain('板が交差しています');
+		for (const o of res.data.events) expect(o.distancePct).toBeNull();
+	});
+
 	it('inputSchema: lookback は定義済み enum のみ許可する', () => {
 		const parse = () => toolDef.inputSchema.parse({ pair: 'btc_jpy', lookback: '3hour' });
 		expect(parse).toThrow();

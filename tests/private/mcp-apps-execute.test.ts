@@ -1,6 +1,6 @@
 // ADR-0007「テストで固定する不変条件」1〜8 の回帰。最重要は content / structuredContent にトークンが出ないこと（LLM が読めない `_meta` にしか載らないことが認可の根拠）。
 
-import { isInputRequiredResult } from '@modelcontextprotocol/server';
+import { CLIENT_CAPABILITIES_META_KEY, isInputRequiredResult } from '@modelcontextprotocol/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { APP_RESOURCE_MIME_TYPE, MCP_APPS_UI_EXTENSION_ID } from '../../src/resources/app-resources.js';
 import { mockBitbankSuccess, mockSpotPairsResponse } from '../fixtures/private-api.js';
@@ -32,7 +32,7 @@ function appUiCtx(mimeTypes: unknown = [APP_RESOURCE_MIME_TYPE]): Record<string,
 function envelopeCtx(clientCapabilities: unknown, initCapabilities?: unknown): Record<string, unknown> {
 	return {
 		...(initCapabilities !== undefined ? { server: { getClientCapabilities: () => initCapabilities } } : {}),
-		mcpReq: { envelope: { clientCapabilities } },
+		mcpReq: { envelope: { [CLIENT_CAPABILITIES_META_KEY]: clientCapabilities } },
 	};
 }
 
@@ -628,12 +628,26 @@ describe('`_meta` 経路の案内文言', () => {
 		});
 	}
 
+	// ToolSearch で読み込んだ直後の呼び出しなどで、ホストがカードを作らないことがある。モデルからは見えないので、ユーザーに出し直し方を伝える。
+	for (const c of PREVIEW_CASES) {
+		it(`${c.name}: カードが表示されないときの出し直し方を案内の最後に添える`, async () => {
+			process.env.BITBANK_MCP_APPS_EXECUTE = '1';
+			const { toolDef } = await c.load();
+			const result = (await toolDef.handler(c.args as never, appUiCtx())) as HandlerResult;
+			const text = result.content?.[0]?.text ?? '';
+			expect(text.trimEnd().endsWith('カードが表示されない場合は、もう一度プレビューを頼むと表示されます。')).toBe(
+				true,
+			);
+		});
+	}
+
 	it('ゲート off では従来どおり「実行に対応していません」を案内する', async () => {
 		const { toolDef } = await import('../../tools/private/preview_order.js');
 		const result = (await toolDef.handler(ORDER_ARGS as never, appUiCtx())) as HandlerResult;
 		const text = result.content?.[0]?.text ?? '';
 		expect(text).toContain('このホストでは取引実行に対応していません');
 		expect(text).not.toContain('ボタンを押さない限り');
+		expect(text).not.toContain('もう一度プレビューを頼むと表示されます');
 	});
 });
 

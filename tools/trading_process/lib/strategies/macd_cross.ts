@@ -4,8 +4,10 @@ import { macd as sharedMacd } from '../../../../lib/indicators.js';
 import type { Candle } from '../../types.js';
 import { calculateSMA } from '../sma.js';
 import { describeEntryFilters, entryFilterStartIdx, isEntryBlockedBySmaRsi } from './filters.js';
+import { checkParamShape } from './params.js';
 import { calculateRSI } from './rsi.js';
 import type { Overlay, ParamValidationResult, Signal, Strategy } from './types.js';
+import { emaConvergenceBars } from './warmup.js';
 
 const DEFAULT_PARAMS: Record<string, number> = {
 	fast: 12,
@@ -18,6 +20,8 @@ const DEFAULT_PARAMS: Record<string, number> = {
 	rsi_filter_max: 100, // RSI < この値 の場合のみ買い（100=フィルター無効）
 };
 
+const INTEGER_KEYS = ['fast', 'slow', 'signal', 'sma_filter_period', 'rsi_filter_period'] as const;
+
 function calculateMACD(
 	closes: number[],
 	fastPeriod: number,
@@ -29,7 +33,7 @@ function calculateMACD(
 }
 
 export function validateParams(params: Record<string, number>): ParamValidationResult {
-	const errors: string[] = [];
+	const errors: string[] = checkParamShape(params, DEFAULT_PARAMS, INTEGER_KEYS);
 	const normalized = { ...DEFAULT_PARAMS, ...params };
 
 	if (normalized.fast >= normalized.slow) {
@@ -67,10 +71,11 @@ function zeroLineFilterParts(params: Record<string, number>): string[] {
 	return [];
 }
 
-// signal 線は index >= slow + signal - 2 で有効で、クロス判定に prev / curr が要るので最低 slow + signal 本。
+// signal 線は index slow + signal - 2 から出るが、slow の EMA と signal の EMA の初期値が抜けるまで待つ。
 function computeRequiredBarsImpl(params: Record<string, number>): number {
 	const p = { ...DEFAULT_PARAMS, ...params };
-	return Math.max(p.slow + p.signal, entryFilterStartIdx(p));
+	const macdBars = p.slow + p.signal + emaConvergenceBars(p.slow) + emaConvergenceBars(p.signal);
+	return Math.max(macdBars, entryFilterStartIdx(p));
 }
 
 export const macdCrossStrategy: Strategy = {

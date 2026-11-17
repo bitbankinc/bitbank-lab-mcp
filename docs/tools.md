@@ -157,7 +157,7 @@ API の応答をそのまま、または軽量整形して返す。指標計算�
 | ツール | 概要 |
 |--------|------|
 | `get_margin_status` | 信用取引のステータス（証拠金率・維持率等） |
-| `get_margin_positions` | 信用ポジション一覧（建玉・評価損益） |
+| `get_margin_positions` | 信用ポジション一覧（建玉・建玉金額（建値ベース）・未実現手数料 / 利息。含み損益は `get_margin_status`） |
 | `get_margin_trade_history` | 信用取引の約定履歴 |
 
 ---
@@ -1366,6 +1366,18 @@ accepted も押し出されうる（`content` はこの 2 つを区別して書�
 | macd_cross | MACDクロスオーバー | fast, slow, signal + フィルター |
 | bb_breakout | ボリンジャーバンドブレイクアウト | period, stddev |
 
+`params` に戦略が持たないキー（例: sma_cross の `short_period`）を渡すとエラーになります。
+期間系のパラメータ（`short` / `long` / `period` / `fast` / `slow` / `signal` / `sma_filter_period` / `rsi_filter_period`）は整数だけを受け付けます。
+
+### ウォームアップ
+
+評価区間の前に、指標の計算用の足（ウォームアップ）を取得します。RSI（Wilder 平滑）と MACD（EMA）は初期値の影響が長く残るので、
+初期値の重みが 0.1% を切るまでをウォームアップに含めます（既定パラメータで rsi は 109 本、macd_cross は 156 本）。
+sma_cross / macd_cross の RSI フィルタ（`rsi_filter_period`）も同じです。これで、同じ評価区間なら取得開始位置（`period` の長さなど）によらず同じ売買になります。
+
+`period` 指定で、取得できる本数の上限（1D / 4H は 5,000 本、1H は 10,000 本）やペアの履歴に届かないと、
+ウォームアップを確保したぶん評価区間が指定期間より短くなります。そのときは本文の先頭に warning を出します。
+
 ### sma_cross エントリーフィルター
 
 買いシグナル（ゴールデンクロス）にのみフィルターが適用されます。売り（デッドクロス）はフィルターなしで常に通します。
@@ -1471,8 +1483,19 @@ accepted も押し出されうる（`content` はこの 2 つを区別して書�
 | win_rate | 勝率 [%] |
 | max_drawdown_pct | 最大ドローダウン [%] |
 | avg_pnl_pct | 1トレードあたり平均損益 [%] |
-| profit_factor | Profit Factor（総利益 / 総損失）。全勝時は null |
-| sharpe_ratio | 年率換算 Sharpe Ratio（日次リターン × √365） |
+| buy_hold_pnl_pct | Buy & Hold の損益 [%]。評価開始の次のバーの始値で買い、最終バーの終値で評価する。買いの片道手数料を引き、売りの手数料は引かない |
+| excess_return_pct | total_pnl_pct − buy_hold_pnl_pct（どちらも手数料込み） |
+| profit_factor | Profit Factor（総利益 / 総損失、決済済みトレード）。損失トレードが無いときは null（本文はトレード 0 件なら `N/A (no trades)`、それ以外は `N/A (no losses)`） |
+| sharpe_ratio | 年率換算 Sharpe Ratio（評価区間のバーごとのリターン。1 年のバー数は 1D = 365、4H = 365 × 6、1H = 365 × 24） |
+| evaluation_start / evaluation_bars | 評価区間の開始（シグナルを出す最初のバー）と本数。最初の約定と Buy & Hold の起点はその次のバーの始値なので、約定できるバーは evaluation_bars より 1 本少ない |
+| open_position | 期間の終わりに残った未決済のロング（建値・建てた時刻・評価に使った最終バーの終値・含み損益）。無ければ null |
+
+`total_pnl_pct` / `max_drawdown_pct` / `sharpe_ratio` / equity_curve は未決済ポジションの含み損益込み、
+`trades` / `win_rate` / `avg_pnl_pct` / `profit_factor` は決済済みトレードだけを数えます。
+未決済ポジションがあるときは、本文に `--- Open Position ---` の節と、この違いの注記を出します。
+
+手数料は、確定トレード・未決済ポジション・Buy & Hold のどれも、建てた時点で片道ぶんを引きます。確定トレードは決済時に残りの片道ぶんを引きます。
+`start_date` / `end_date` を指定したときは、本文の `Period:` 行と `data.input.period` に指定した日付範囲を出します。
 
 ### チャート出力先（savePng / outputDir）
 

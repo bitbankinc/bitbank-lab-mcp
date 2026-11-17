@@ -17,14 +17,20 @@ function resolveRate(raw: unknown, override?: number): number {
 	return override ?? toNum(raw) ?? DEFAULT_TAKER_FALLBACK;
 }
 
-export function resolveFeeRate(spec: PairSpec | undefined, role: FeeRole, override?: number): number {
+// 公称率に落とす前の値。null は「API が率を返していない」。
+export function specFeeRate(spec: PairSpec | undefined, role: FeeRole): number | null {
 	const raw = spec == null ? undefined : role === 'maker' ? spec.maker_fee_rate_quote : spec.taker_fee_rate_quote;
-	return resolveRate(raw, override);
+	return toNum(raw);
 }
 
-// post_only は板を跨げず拒否されるので必ず maker。
-export function feeRole(type: OrderType, postOnly?: boolean): FeeRole {
+export function resolveFeeRate(spec: PairSpec | undefined, role: FeeRole, override?: number): number {
+	return override ?? specFeeRate(spec, role) ?? DEFAULT_TAKER_FALLBACK;
+}
+
+// post_only は板を跨げず拒否されるので必ず maker。板を跨ぐ指値は即時約定するので taker（stop_limit は発動時の板が分からないので maker のまま）。
+export function feeRole(type: OrderType, postOnly?: boolean, crossesBook?: boolean): FeeRole {
 	if (postOnly === true) return 'maker';
+	if (type === 'limit' && crossesBook === true) return 'taker';
 	if (type === 'limit' || type === 'stop_limit') return 'maker';
 	return 'taker';
 }
@@ -47,6 +53,8 @@ export interface OrderFeeInput {
 	amount: string | number;
 	postOnly?: boolean;
 	positionSide?: 'long' | 'short';
+	/** 現在の板と比べた結果。undefined は「比べられなかった」で、maker 想定のまま見積る。 */
+	crossesBook?: boolean;
 }
 
 export interface OrderFeeEstimate {
@@ -63,10 +71,12 @@ function isJpyQuote(spec: PairSpec | undefined): boolean {
 
 const MARGIN_RATE_MISSING_NOTE = '信用手数料率が API 未提供のため概算';
 const MARGIN_INTEREST_NOTE = '利息（interest）は見積りに含めない（実績は trade_history）';
+// 約定履歴の手数料は円未満まで計上されるが、端数処理の規則は確認できていないので概算と明記する（issue 449）。
+const JPY_ROUNDING_NOTE = '推定手数料は円未満を四捨五入した概算（実際の手数料は円未満まで計上される）';
 
 // 信用レートが null なら公称 taker で概算して note に「API 未提供」を付け、利息は見積りに含めない旨を常に note に付ける（誤った確定値を出さない）。
 export function estimateOrderFee(spec: PairSpec | undefined, order: OrderFeeInput): OrderFeeEstimate {
-	const role = feeRole(order.type, order.postOnly);
+	const role = feeRole(order.type, order.postOnly, order.crossesBook);
 	const isMargin = order.positionSide != null;
 
 	let rate: number;
@@ -94,7 +104,11 @@ export function estimateOrderFee(spec: PairSpec | undefined, order: OrderFeeInpu
 		if (isJpyQuote(spec)) fee = Math.round(fee);
 		estimatedFeeQuote = fee;
 		estimatedCostQuote = order.side === 'buy' ? notional + fee : notional - fee;
-		baseNote = order.postOnly ? 'maker 確定' : 'maker 想定（板を跨ぐと taker）';
+		baseNote = order.postOnly
+			? 'maker 確定'
+			: role === 'taker'
+				? 'taker 想定（指値が現在の板を跨ぐため即時約定）'
+				: 'maker 想定（板を跨ぐと taker）';
 	} else if (order.type === 'market' || order.type === 'stop') {
 		baseNote = '成行/逆指値: 約定価格依存で JPY 見積りは省略';
 	} else {
@@ -102,6 +116,7 @@ export function estimateOrderFee(spec: PairSpec | undefined, order: OrderFeeInpu
 	}
 
 	const notes: string[] = [baseNote];
+	if (estimatedFeeQuote != null && isJpyQuote(spec)) notes.push(JPY_ROUNDING_NOTE);
 	if (spec === undefined) {
 		notes.push('spec 不明のため公称 taker で概算');
 	}

@@ -123,6 +123,41 @@ describe('E2E: MCP Apps `_meta` 経由の確認トークン配送', () => {
 		expect(JSON.stringify(snapshot.structuredContent)).not.toContain(payload?.confirmation_token as string);
 	}, 30_000);
 
+	// ホストが結果 `_meta` を iframe に渡さないとき（Claude Desktop の更新後）、確認カードは本文でトークンを受け取るリソースを読む。
+	it('確認トークンのリソースは、preview と同じ内容とトークンを本文で返す（resources/list には出ない）', async () => {
+		client = createAppUiClient();
+		await client.connect(createTransport({ BITBANK_MCP_APPS_EXECUTE: '1' }));
+
+		const preview = (await client.callTool({ name: 'preview_order', arguments: ORDER_ARGS })) as CallResult;
+		const resource = await client.readResource({ uri: 'bitbank-confirmation://order' });
+		const body = JSON.parse((resource.contents[0] as { text?: string }).text ?? '{}') as {
+			structuredContent?: unknown;
+			confirmation?: { confirmation_token?: string; expires_at?: number };
+		};
+
+		const pushed = preview._meta?.[CONFIRMATION_META_KEY] as { confirmation_token?: string } | undefined;
+		expect((preview.structuredContent as { ok?: boolean } | undefined)?.ok).toBe(true);
+		expect(pushed?.confirmation_token).toEqual(expect.any(String));
+		expect(pushed?.confirmation_token).not.toBe('');
+		// カードは expires_at が有限の数でないトークンを読み捨てるので、ここまで確かめる。
+		expect(Number.isFinite(body.confirmation?.expires_at)).toBe(true);
+		expect(body.confirmation?.confirmation_token).toBe(pushed?.confirmation_token);
+		expect(body.structuredContent).toEqual(preview.structuredContent);
+
+		const listed = await client.listResources();
+		expect(listed.resources.map((r) => r.uri)).not.toContain('bitbank-confirmation://order');
+	}, 30_000);
+
+	it('確認トークンのリソースは、MCP Apps 未宣言のホストには何も返さない', async () => {
+		client = createPlainClient();
+		await client.connect(createTransport({ BITBANK_MCP_APPS_EXECUTE: '1' }));
+
+		await client.callTool({ name: 'preview_order', arguments: ORDER_ARGS });
+		const resource = await client.readResource({ uri: 'bitbank-confirmation://order' });
+
+		expect((resource.contents[0] as { text?: string }).text).toBe('{}');
+	}, 30_000);
+
 	it('トークン無しの create_order 直接呼び出しは direct_execute_forbidden', async () => {
 		client = createAppUiClient();
 		await client.connect(createTransport({ BITBANK_MCP_APPS_EXECUTE: '1' }));

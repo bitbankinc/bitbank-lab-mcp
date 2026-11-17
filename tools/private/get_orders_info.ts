@@ -46,9 +46,13 @@ export default async function getOrdersInfo(args: { pair: string; order_ids: num
 			}
 		}
 
-		if (orders.length < order_ids.length) {
+		const returnedIds = new Set(orders.map((o) => o.order_id));
+		const missingIds = [...new Set(order_ids)].filter((id) => !returnedIds.has(id));
+		if (missingIds.length > 0) {
 			lines.push('');
-			lines.push(`※ ${order_ids.length - orders.length}件は3ヶ月以上前の注文のため取得できませんでした`);
+			lines.push(
+				`※ ${missingIds.length}件は返ってきませんでした（注文 ID: ${missingIds.join(', ')}）。3ヶ月以上前に約定・キャンセルされた注文は、API がエラーにせず結果から除きます。それ以外なら ID とペアの指定を確認してください`,
+			);
 		}
 
 		const summary = lines.join('\n');

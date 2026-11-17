@@ -28,7 +28,7 @@ import type {
 	RawWithdrawal,
 } from './types.js';
 
-// 現物の手数料は買いが base、売りが quote で発生する（API 仕様）。両方が非ゼロでも正しくなるよう両方を参照する。
+// 現物の手数料は売買とも quote（JPY）で引かれる（実約定で確認。issue 449）。fee_amount_base が非ゼロでも正しくなるよう両方を参照する。
 
 export interface DepositCostBasisInput {
 	deposits: RawDeposit[];
@@ -108,6 +108,16 @@ function parseTradeForReplay(t: RawTrade): ParsedTrade | null {
 	const price = Number(t.price);
 	if (!Number.isFinite(qty) || !Number.isFinite(price)) return null;
 	return { qty, price, feeQuote: Number(t.fee_amount_quote) || 0, feeBase: Number(t.fee_amount_base) || 0 };
+}
+
+// 同時刻なら入庫を約定より先に処理する。後にすると入庫と同時刻の売りが原価ゼロの売りになる（issue 448）。
+const REPLAY_EVENT_ORDER = { deposit: 0, trade: 1, withdrawal: 2 } as const;
+
+function compareReplayEvents(
+	a: { ts: number; type: keyof typeof REPLAY_EVENT_ORDER },
+	b: { ts: number; type: keyof typeof REPLAY_EVENT_ORDER },
+): number {
+	return a.ts - b.ts || REPLAY_EVENT_ORDER[a.type] - REPLAY_EVENT_ORDER[b.type];
 }
 
 function applyDeposit(h: CostBasis, qty: number, cost: number): void {
@@ -199,7 +209,7 @@ export function calcPnl(
 				amount: Number(w.amount) + (Number(w.fee) || 0), // 出庫量 + 出庫手数料 = 口座から減った総量
 			}),
 		),
-	].sort((a, b) => a.ts - b.ts);
+	].sort(compareReplayEvents);
 
 	// costQty はゼロ床でクランプし、netQty はしない（#89）。costQty を代数和にすると次の買いで平均単価の分母が縮み、実現損益と原価が動く。
 	// netQty の負値は取得漏れの証拠なので握り潰さない（#89）。
@@ -354,7 +364,7 @@ export function calcPeriodRealizedPnl(
 		if (!Number.isFinite(wdQty) || wdQty <= 0) continue;
 		events.push({ type: 'withdrawal', ts: w.requested_at, asset: w.asset, amount: wdQty });
 	}
-	events.sort((a, b) => a.ts - b.ts);
+	events.sort(compareReplayEvents);
 
 	// costQty は calcPnl と同じくゼロ床でクランプする。復元数量は出す先が無いので netQty は持たない（クランプの発火だけは申告する。#89）。
 	const holdings = new Map<string, CostBasis>();
@@ -414,7 +424,7 @@ export interface MarginPnlTotals {
 	margin_fee_cost: number;
 }
 
-// profit_loss は手数料・利息控除前のグロスなので interest と手数料を別に足し上げる。手数料は fee_amount_quote ではなく per-trade の発生額の fee_occurred_amount_quote を使う。
+// profit_loss は手数料控除後（実口座で確認。issue 450）なので、手数料は内訳として足し上げるだけで total からは引かない。利息を含むかは未確認なので別に足し上げて引く。手数料は per-trade の発生額の fee_occurred_amount_quote を使う。
 export function calcMarginPnl(trades: RawMarginTrade[]): MarginPnlTotals & { close_trade_count: number } {
 	let realized = 0;
 	let interest = 0;
@@ -471,7 +481,7 @@ export function buildAccountPnl(
 		total:
 			spotRealizedPnl == null
 				? undefined
-				: spotRealizedPnl + marginPnl.margin_realized_pnl - marginPnl.margin_interest_cost - marginPnl.margin_fee_cost,
+				: spotRealizedPnl + marginPnl.margin_realized_pnl - marginPnl.margin_interest_cost,
 		margin_interest_cost: marginPnl.margin_interest_cost,
 		margin_fee_cost: marginPnl.margin_fee_cost,
 		spot_realized_pnl_unavailable_reason: spotRealizedPnl == null ? suppressedReason : undefined,
@@ -610,11 +620,16 @@ export function calcDepositWithdrawalSummary(
 	let stakingEstimatedJpy = 0;
 	let hasStakingEstimate = false;
 	const stakingValuation = new FlowValuationCounter();
+	// ステーキング報酬は入庫からも報酬からも同じく落ちて純投入額はずれないので、元本の入出庫だけを数える。
+	const unpricedFlowAssets = new Set<string>();
 	for (const d of cryptoDeposits) {
 		const amount = Number(d.amount);
 		if (!Number.isFinite(amount) || amount <= 0) continue;
 		const resolved = resolveFlowPrice(pricing, d.asset, d.confirmed_at);
-		if (!resolved) continue;
+		if (!resolved) {
+			if (!isStakingReward(d)) unpricedFlowAssets.add(d.asset);
+			continue;
+		}
 		cryptoDepositEstimatedJpy += amount * resolved.price;
 		depositValuation.count(resolved.basis);
 		hasEstimate = true;
@@ -633,7 +648,10 @@ export function calcDepositWithdrawalSummary(
 		const amount = Number(w.amount);
 		if (!Number.isFinite(amount) || amount <= 0) continue;
 		const resolved = resolveFlowPrice(pricing, w.asset, w.requested_at);
-		if (!resolved) continue;
+		if (!resolved) {
+			unpricedFlowAssets.add(w.asset);
+			continue;
+		}
 		cryptoWithdrawalEstimatedJpy += amount * resolved.price;
 		withdrawalValuation.count(resolved.basis);
 		hasWithdrawalEstimate = true;
@@ -647,7 +665,8 @@ export function calcDepositWithdrawalSummary(
 
 	let accountReturnPct: number | undefined;
 	let accountReturnJpy: number | undefined;
-	if (netJpyInvested > 0) {
+	// 換算できない入出庫を落とした純投入額では、リターンがその額だけずれる。
+	if (netJpyInvested > 0 && unpricedFlowAssets.size === 0) {
 		accountReturnJpy = Math.round(totalJpyValue - netJpyInvested);
 		accountReturnPct = Math.round(((totalJpyValue - netJpyInvested) / netJpyInvested) * 10000) / 100;
 	}
@@ -666,6 +685,7 @@ export function calcDepositWithdrawalSummary(
 		analysis_basis: 'deposit_withdrawal',
 	};
 	// 該当なしのときはキーごと省き、暗号資産入出庫が無い口座の出力を従来と JSON 一致させる。
+	if (unpricedFlowAssets.size > 0) summary.unpriced_flow_assets = [...unpricedFlowAssets].sort();
 	if (stakingCount > 0) summary.staking_reward_count = stakingCount;
 	if (hasStakingEstimate) summary.staking_reward_estimated_jpy = Math.round(stakingEstimatedJpy);
 	const stakingBreakdown = stakingValuation.toBreakdown();
@@ -696,6 +716,10 @@ export function calcPeriodDWSummary(
 	let cryptoDepJpy = 0;
 	let hasDepEstimate = false;
 	const depValuation = new FlowValuationCounter();
+	const stakingCount = cryptoDep.filter(isStakingReward).length;
+	let stakingJpy = 0;
+	let hasStakingEstimate = false;
+	const stakingValuation = new FlowValuationCounter();
 	for (const d of cryptoDep) {
 		const amount = Number(d.amount);
 		if (!Number.isFinite(amount) || amount <= 0) continue;
@@ -704,6 +728,11 @@ export function calcPeriodDWSummary(
 		cryptoDepJpy += amount * resolved.price;
 		depValuation.count(resolved.basis);
 		hasDepEstimate = true;
+		if (isStakingReward(d)) {
+			stakingJpy += amount * resolved.price;
+			stakingValuation.count(resolved.basis);
+			hasStakingEstimate = true;
+		}
 	}
 
 	const cryptoWd = completedWithdrawals.filter((w) => w.asset !== 'jpy');
@@ -735,6 +764,10 @@ export function calcPeriodDWSummary(
 	if (depBreakdown) summary.crypto_deposit_valuation = depBreakdown;
 	const wdBreakdown = wdValuation.toBreakdown();
 	if (wdBreakdown) summary.crypto_withdrawal_valuation = wdBreakdown;
+	if (stakingCount > 0) summary.staking_reward_count = stakingCount;
+	if (hasStakingEstimate) summary.staking_reward_estimated_jpy = Math.round(stakingJpy);
+	const stakingBreakdown = stakingValuation.toBreakdown();
+	if (stakingBreakdown) summary.staking_reward_valuation = stakingBreakdown;
 	return summary;
 }
 
@@ -761,7 +794,29 @@ export function reconstructHoldingsAtDate(
 	trades: RawTrade[],
 	sinceMs: number,
 	dw: DepositWithdrawalData | null,
+	marginTrades: RawMarginTrade[] = [],
 ): Map<string, number> {
+	return reconstructHoldingsWithNegatives(currentHoldings, trades, sinceMs, dw, marginTrades).holdings;
+}
+
+// 信用の決済で JPY 残高が動く額。profit_loss は手数料控除後（issue 450）で、利息は口座損益の total と同じく別に引く。
+function marginJpyDelta(t: RawMarginTrade): number {
+	const pl = Number(t.profit_loss);
+	const interest = Number(t.interest);
+	return (Number.isFinite(pl) ? pl : 0) - (Number.isFinite(interest) ? interest : 0);
+}
+
+// amount_precision の最小単位（8 桁）より細かい負値は、浮動小数点の誤差として負とみなさない。
+const NEGATIVE_BALANCE_EPSILON = 1e-8;
+
+// 負の残高は履歴の欠落の証拠なので、評価からは外しつつ資産名を返す（issue 448）。
+export function reconstructHoldingsWithNegatives(
+	currentHoldings: Array<{ asset: string; amount: string }>,
+	trades: RawTrade[],
+	sinceMs: number,
+	dw: DepositWithdrawalData | null,
+	marginTrades: RawMarginTrade[] = [],
+): { holdings: Map<string, number>; negativeAssets: string[] } {
 	const holdings = new Map<string, number>();
 	for (const h of currentHoldings) {
 		const amount = Number(h.amount);
@@ -793,6 +848,13 @@ export function reconstructHoldingsAtDate(
 		}
 	}
 
+	// 信用の決済損益・利息・手数料は JPY 残高に反映される（issue 446）。新規の約定は JPY を動かさない。
+	for (const t of marginTrades) {
+		if (t.executed_at < sinceMs) continue;
+		const delta = marginJpyDelta(t);
+		if (delta !== 0) holdings.set('jpy', (holdings.get('jpy') ?? 0) - delta);
+	}
+
 	if (dw) {
 		const completedDeposits = dw.deposits.filter((d) => d.status === 'DONE' && d.confirmed_at >= sinceMs);
 		const completedWithdrawals = dw.withdrawals.filter((w) => w.status === 'DONE' && w.requested_at >= sinceMs);
@@ -810,11 +872,13 @@ export function reconstructHoldingsAtDate(
 		}
 	}
 
+	const negativeAssets: string[] = [];
 	for (const [asset, amount] of holdings) {
+		if (amount < -NEGATIVE_BALANCE_EPSILON) negativeAssets.push(asset);
 		if (amount < 1e-12) holdings.delete(asset);
 	}
 
-	return holdings;
+	return { holdings, negativeAssets: negativeAssets.sort() };
 }
 
 export function calcPortfolioValue(holdings: Map<string, number>, priceMap: Map<string, number>): number {
@@ -900,6 +964,7 @@ export function buildEquitySeries(
 	currentIso: string,
 	fallbackPrices?: Map<string, number>,
 	flowPricing?: FlowPricing,
+	marginTrades: RawMarginTrade[] = [],
 ): EquityPoint[] {
 	const series: EquityPoint[] = [];
 	const flowByPoint = flowPricing
@@ -912,7 +977,7 @@ export function buildEquitySeries(
 
 	for (const date of dates) {
 		const dateMs = date.valueOf();
-		const holdings = reconstructHoldingsAtDate(currentHoldings, allTrades, dateMs, dwData);
+		const holdings = reconstructHoldingsAtDate(currentHoldings, allTrades, dateMs, dwData, marginTrades);
 
 		// dailyPrices ではなく holdings を起点に回す。candle が全失敗すると priceMap が空になり、最終点とスケールが合わなくなる。
 		const priceMap = new Map<string, number>();
@@ -1043,14 +1108,14 @@ export function calcPeriodNetFlow(
 	if (unpricedAssets.size > 0) result.unpriced_assets = [...unpricedAssets].sort();
 	const breakdown = valuation.toBreakdown();
 	if (breakdown) result.valuation = breakdown;
-	// 1 件でも換算できなければ額は出さない。部分集合の合計を確定値として出さない。
+	// 通常の入出庫と同じく、換算できた分の部分合計を出し、換算できない資産名を併記する（issue 448）。
 	if (unpricedStakingAssets.size > 0) result.staking_reward_unpriced_assets = [...unpricedStakingAssets].sort();
-	else if (stakingCount > 0) result.staking_reward_jpy = Math.round(stakingReward);
+	if (stakingCount > 0) result.staking_reward_jpy = Math.round(stakingReward);
 	return result;
 }
 
 export const PERFORMANCE_NOTE =
-	'期初評価額は現在の保有状態から約定・入出金を逆算して復元し、期初時点の始値（1day candle open）で評価。暗号資産の入出庫は入出庫日（入庫: confirmed_at / 出庫: requested_at）の始値で JPY 換算し、その日の価格を取得できなかった分のみ現在価格で仮評価する（内訳は flow_valuation）。純入出金は元本移動のみ（出金手数料を含まない。ステーキング報酬（入金種別 STAKING）は元本ではなく成果として扱い、純入出金に含めない。額は staking_reward_jpy）。調整後増減 = 単純増減 - 純入出金（市場変動 + 出金手数料コスト）。増減率（change_pct / adjusted_change_pct）は期初評価額が 0、現在評価額の 1% 未満、期初の始値を解決できなかった暗号資産があり期初評価額が過小、または現在価格を解決できなかった保有があり現在評価額が過小のときは出さない（分母が小さすぎて率が運用成績を表さない、過小な分母になる、または分子が過小になるため。理由は change_pct_unavailable_reason、資産名は unpriced_start_assets / unpriced_current_assets、増減額は通常どおり出る）。期初評価額・現在評価額そのものは過小である場合でも金額を出すが、過小であることは unpriced_start_assets / unpriced_current_assets と理由コードで申告する（黙って出さない）。';
+	'期初評価額は現在の保有状態から約定・入出金を逆算して復元し、期初時点の始値（1day candle open）で評価。信用の決済損益（手数料控除後の profit_loss から利息を引いた額）は JPY 残高に反映されるので巻き戻して増減に含め、信用建玉の含み損益は期初・現在の評価額のどちらにも含めない。暗号資産の入出庫は入出庫日（入庫: confirmed_at / 出庫: requested_at）の始値で JPY 換算し、その日の価格を取得できなかった分のみ現在価格で仮評価する（内訳は flow_valuation）。純入出金は元本移動のみ（出金手数料を含まない。ステーキング報酬（入金種別 STAKING）は元本ではなく成果として扱い、純入出金に含めない。額は staking_reward_jpy）。調整後増減 = 単純増減 - 純入出金（市場変動 + 出金手数料コスト）。増減率（change_pct / adjusted_change_pct）は期初評価額が 0、現在評価額の 1% 未満、期初の始値を解決できなかった暗号資産があり期初評価額が過小、または現在価格を解決できなかった保有があり現在評価額が過小のときは出さない（分母が小さすぎて率が運用成績を表さない、過小な分母になる、または分子が過小になるため。理由は change_pct_unavailable_reason、資産名は unpriced_start_assets / unpriced_current_assets、増減額は通常どおり出る）。期初評価額・現在評価額そのものは過小である場合でも金額を出すが、過小であることは unpriced_start_assets / unpriced_current_assets と理由コードで申告する（黙って出さない）。';
 
 export const PERFORMANCE_NOTE_CHANGE_OVERSTATED =
 	'この期間は期初の始値を解決できなかった暗号資産があり（change_pct_unavailable_reason=start_boundary_unpriced）、期初評価額から脱落した分がそのまま増減額に乗るため change_jpy / adjusted_change_jpy も同じ額だけ過大（change_jpy_overstated=true）。増減額を運用成績として読まないこと。この期間の値動きはこの結果からは算出できない（資産推移シリーズも同じ日次価格に依存するため代替にならない）。';
@@ -1060,6 +1125,13 @@ export const PERFORMANCE_NOTE_CHANGE_DIRECTION_UNKNOWN =
 
 export const PERFORMANCE_NOTE_CHANGE_UNDERSTATED =
 	'この期間は現在価格を解決できなかった暗号資産の保有があり（change_pct_unavailable_reason=current_value_unpriced）、現在評価額から脱落した分がそのまま増減額から欠けるため change_jpy / adjusted_change_jpy は同じ額だけ過小（change_jpy_understated=true）。保有暗号資産が全て脱落している場合は現在評価額が JPY 残高だけに縮退しており、増減額は口座の損失ではなく価格取得の失敗を表す数になる。増減額を運用成績として読まないこと。この期間の値動きはこの結果からは算出できない（資産推移シリーズも最終点に同じ現在評価額を使うため代替にならない）。';
+
+// 欠けるのは直近の約定で、どの期間も現在で終わるので、取得済みの最後の約定が期間開始より前でも期間内の約定が欠けうる。
+export const PERFORMANCE_NOTE_TRADES_TRUNCATED =
+	'今回は現物の約定履歴の取得が打ち切られ（change_pct_unavailable_reason=trades_truncated）、直近の約定が欠けている。欠けた約定は巻き戻せないので期初の保有がずれ、start_value_jpy / change_jpy / adjusted_change_jpy も同じだけずれる（欠けたのが買いか売りかで向きが変わるため、向きは確定しない）。増減額を運用成績として読まないこと。資産推移シリーズも同じ巻き戻しを使うので代替にならない。';
+
+export const PERFORMANCE_NOTE_MARGIN_TRADES_INCOMPLETE =
+	'今回は信用の約定履歴を取得しきれず（取得失敗・打ち切り。change_pct_unavailable_reason=margin_trades_incomplete）、期間中の信用の決済損益を JPY 残高から巻き戻せていない可能性がある。そのため start_value_jpy / change_jpy / adjusted_change_jpy も信用の決済損益の分だけずれうる（向きは確定しない）。増減額を運用成績として読まないこと。資産推移シリーズも同じ巻き戻しを使うので代替にならない。';
 
 export type PeriodPerformanceKey = 'daily' | 'monthly' | 'yearly';
 
@@ -1081,6 +1153,9 @@ export interface PortfolioPerformanceContext {
 	nowIso: string;
 	/** 設定されていれば dwData の中身に関わらず未計測として扱う（失敗時の空の中身を集計するとフローゼロの確定値になる）。 */
 	flowUnavailableReason?: PortfolioFlowUnavailableReason;
+	tradesTruncated?: boolean;
+	marginTrades?: RawMarginTrade[];
+	marginTradesIncomplete?: boolean;
 }
 
 // 現在評価額に対する比なので口座規模に依存しない。1% なら増減率は +9,900% を超えない。
@@ -1155,6 +1230,8 @@ function unpricedCurrentAssets(ctx: PortfolioPerformanceContext): string[] | und
 
 // start_value_zero / start_value_negligible は期初評価額が本当に小さいだけで増減額は正しく読めるので追記しない。
 function performanceNote(reason: PortfolioChangePctUnavailableReason | undefined, changeOverstated: boolean): string {
+	if (reason === 'trades_truncated') return `${PERFORMANCE_NOTE}${PERFORMANCE_NOTE_TRADES_TRUNCATED}`;
+	if (reason === 'margin_trades_incomplete') return `${PERFORMANCE_NOTE}${PERFORMANCE_NOTE_MARGIN_TRADES_INCOMPLETE}`;
 	if (reason === 'start_boundary_unpriced') {
 		return `${PERFORMANCE_NOTE}${changeOverstated ? PERFORMANCE_NOTE_CHANGE_OVERSTATED : PERFORMANCE_NOTE_CHANGE_DIRECTION_UNKNOWN}`;
 	}
@@ -1164,7 +1241,13 @@ function performanceNote(reason: PortfolioChangePctUnavailableReason | undefined
 
 // 出力フィールド順・桁丸めは JSON.stringify の結果を変えないよう旧実装とそろえている。後から足したフィールドは既存キーの後ろに置く。
 export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerformanceContext): PeriodPerformance {
-	const startHoldings = reconstructHoldingsAtDate(ctx.currentHoldings, ctx.trades, spec.startMs, ctx.dwData);
+	const { holdings: startHoldings, negativeAssets } = reconstructHoldingsWithNegatives(
+		ctx.currentHoldings,
+		ctx.trades,
+		spec.startMs,
+		ctx.dwData,
+		ctx.marginTrades,
+	);
 	const priceMap = new Map<string, number>();
 	for (const [asset, pp] of ctx.candlePriceData.boundaryPrices) {
 		const v = pickBoundaryPrice(spec.key, pp);
@@ -1177,15 +1260,22 @@ export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerforman
 	const change = ctx.currentValue - startValue;
 	const unpricedStart = unpricedStartAssets(startHoldings, ctx.candlePriceData.boundaryPrices, spec.key);
 	const unpricedCurrent = unpricedCurrentAssets(ctx);
-	// 片端だけが欠けているときだけ向きが確定する。両端で欠けるとその資産の値動きがどちらにも入らない。
-	const changeOverstated = unpricedStart != null && unpricedCurrent == null;
-	const changeUnderstated = unpricedCurrent != null && unpricedStart == null;
-	// 価格の解決欠損 2 種は増減額を読ませない系なので、増減額で読むよう誘導する start_value_* より必ず先に選ぶ。
-	const pctUnavailableReason: PortfolioChangePctUnavailableReason | undefined = unpricedStart
-		? 'start_boundary_unpriced'
-		: unpricedCurrent
-			? 'current_value_unpriced'
-			: changePctUnavailableReasonFor(startValue, ctx.currentValue);
+	const tradesTruncated = ctx.tradesTruncated === true;
+	const marginIncomplete = ctx.marginTradesIncomplete === true;
+	const historyIncomplete = tradesTruncated || marginIncomplete;
+	// 片端だけが欠けているときだけ向きが確定する。両端で欠けるとその資産の値動きがどちらにも入らない。約定が欠けると向きは確定しない。
+	const changeOverstated = !historyIncomplete && unpricedStart != null && unpricedCurrent == null;
+	const changeUnderstated = !historyIncomplete && unpricedCurrent != null && unpricedStart == null;
+	// 期初の保有そのものが壊れる約定の欠落 2 種、価格の解決欠損 2 種の順に、増減額で読むよう誘導する start_value_* より必ず先に選ぶ。
+	const pctUnavailableReason: PortfolioChangePctUnavailableReason | undefined = tradesTruncated
+		? 'trades_truncated'
+		: marginIncomplete
+			? 'margin_trades_incomplete'
+			: unpricedStart
+				? 'start_boundary_unpriced'
+				: unpricedCurrent
+					? 'current_value_unpriced'
+					: changePctUnavailableReasonFor(startValue, ctx.currentValue);
 	const adjusted = flow.net_flow_jpy != null ? change - flow.net_flow_jpy : null;
 	// dwData が null なのは取得が落ちたときだけなので dw_fetch_failed に落とす（損益を出す構成では常に取得する）。
 	const unavailableReason = flow.measured ? undefined : (ctx.flowUnavailableReason ?? 'dw_fetch_failed');
@@ -1216,5 +1306,6 @@ export function buildPeriodPerformance(spec: PeriodSpec, ctx: PortfolioPerforman
 	// 起点は率の抑止と同じ unpricedStart。別条件にすると率と増減額の申告が食い違う。
 	if (changeOverstated) performance.change_jpy_overstated = true;
 	if (changeUnderstated) performance.change_jpy_understated = true;
+	if (negativeAssets.length > 0) performance.negative_start_assets = negativeAssets;
 	return performance;
 }

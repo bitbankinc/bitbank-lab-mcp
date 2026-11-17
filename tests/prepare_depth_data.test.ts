@@ -41,6 +41,26 @@ describe('prepare_depth_data', () => {
 		vi.restoreAllMocks();
 	});
 
+	// サーキットブレイク中で予想価格があるときは、買いと売りの価格が交差しうる（public-api.md の Depth）。
+	it('板が交差していたら中値・スプレッド・帯域の比率を出さず、warning を出す', async () => {
+		mockedGetDepth.mockResolvedValueOnce(
+			asMockResult(
+				depthOk({
+					asks: [
+						['9850', '0.2'],
+						['10200', '0.5'],
+					],
+				}),
+			),
+		);
+		const res = await prepareDepthData({ pair: 'btc_jpy' });
+		assertOk(res);
+		expect(res.data.mid).toBeNull();
+		expect(res.data.spread).toBeNull();
+		expect(res.summary).toContain('板が交差しています');
+		expect(res.meta.warning).toContain('板が交差しています');
+	});
+
 	it('inputSchema: levels < 10 を拒否', () => {
 		expect(() => toolDef.inputSchema.parse({ pair: 'btc_jpy', levels: 9 })).toThrow();
 	});

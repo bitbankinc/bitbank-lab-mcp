@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_MAX_ENTRIES } from '../../lib/bounded-expiring-set.js';
 import {
@@ -13,6 +16,11 @@ import {
 	stopCleanupTimer,
 	validateToken,
 } from '../../src/private/confirmation.js';
+import {
+	_forgetSharedNonce,
+	disableSharedConfirmState,
+	enableSharedConfirmState,
+} from '../../src/private/shared-confirm-state.js';
 
 beforeEach(() => {
 	process.env.BITBANK_API_SECRET = 'test_secret_for_hmac';
@@ -514,5 +522,70 @@ describe('validateToken — 非有限の expiresAt', () => {
 		const error = validateToken(token, 'create_order', params, expiresAt, NOW + 1000);
 		expect(error?.code).toBe('token_invalid');
 		expect(_usedTokenCount()).toBe(0);
+	});
+});
+
+// Claude Desktop は preview とカードのボタンを別プロセスで受けるので、オプトイン時は署名鍵の乱数と使用済みの印を共有する（ADR-0007 判断事項 D）。
+describe.skipIf(process.platform === 'win32')('プロセス間で共有するとき', () => {
+	const now = 1700000000000;
+	const params = { pair: 'btc_jpy', amount: '0.001', side: 'buy', type: 'limit' };
+	let root: string;
+
+	beforeEach(() => {
+		root = fs.mkdtempSync(path.join(os.tmpdir(), 'confirm-shared-'));
+		enableSharedConfirmState(path.join(root, 'confirm'));
+		_forgetSharedNonce();
+	});
+
+	afterEach(() => {
+		disableSharedConfirmState();
+		_forgetSharedNonce();
+		fs.rmSync(root, { recursive: true, force: true });
+	});
+
+	function asOtherProcess(): void {
+		_rotateProcessNonce();
+		_resetUsedTokens();
+		_forgetSharedNonce();
+	}
+
+	it('別プロセスで発行したトークンも検証できる', () => {
+		const { token, expiresAt } = generateToken('create_order', params, now);
+		asOtherProcess();
+		expect(validateToken(token, 'create_order', params, expiresAt, now + 1000)).toBeNull();
+	});
+
+	it('別プロセスで使用済みのトークンは通らない', () => {
+		const { token, expiresAt } = generateToken('create_order', params, now);
+		expect(validateToken(token, 'create_order', params, expiresAt, now + 1000)).toBeNull();
+		asOtherProcess();
+		expect(validateToken(token, 'create_order', params, expiresAt, now + 2000)?.code).toBe('token_already_used');
+	});
+
+	it('引数を変えたトークンは別プロセスでも通らない', () => {
+		const { token, expiresAt } = generateToken('create_order', params, now);
+		asOtherProcess();
+		const changed = { ...params, amount: '1' };
+		expect(validateToken(token, 'create_order', changed, expiresAt, now + 1000)?.code).toBe('token_invalid');
+	});
+
+	it('使用済みの印を書けなければ実行させない', () => {
+		const { token, expiresAt } = generateToken('create_order', params, now);
+		fs.rmSync(path.join(root, 'confirm', 'used'), { recursive: true });
+		fs.writeFileSync(path.join(root, 'confirm', 'used'), 'not a dir');
+		const result = validateToken(token, 'create_order', params, expiresAt, now + 1000);
+		expect(result?.code).toBe('token_store_full');
+		expect(result?.message).not.toContain(token);
+	});
+
+	it('共有の乱数を読めなければ、プロセスごとの乱数に戻す（別プロセスでは通らない）', () => {
+		fs.writeFileSync(path.join(root, 'confirm', 'nonce'), 'broken');
+		const { token, expiresAt } = generateToken('create_order', params, now);
+		expect(validateToken(token, 'create_order', params, expiresAt, now + 1000)).toBeNull();
+		const second = generateToken('create_order', params, now + 10);
+		asOtherProcess();
+		expect(validateToken(second.token, 'create_order', params, second.expiresAt, now + 1000)?.code).toBe(
+			'token_invalid',
+		);
 	});
 });

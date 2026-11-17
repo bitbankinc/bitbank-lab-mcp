@@ -48,3 +48,9 @@ export function typeLabel(type: string): string {
 			return type;
 	}
 }
+
+// create_order の summary は注文 ID を含むので、無いとき（既定の文言にしたとき）だけカードが足す。
+export function orderIdNote(message: string, orderId: number | null): string | null {
+	if (orderId == null) return null;
+	return new RegExp(`注文ID: ${orderId}(?!\\d)`).test(message) ? null : `注文ID: ${orderId}`;
+}

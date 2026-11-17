@@ -48,3 +48,12 @@ export function roundMidPrice(bestBid: number, bestAsk: number): number {
 export function roundSpread(bestBid: number, bestAsk: number): number {
 	return roundAtDecimalDigits(bestAsk - bestBid, Math.max(fractionDigits(bestBid), fractionDigits(bestAsk)));
 }
+
+// 連続取引以外（サーキットブレイク中など）は最良気配が交差しうる（public-api.md の Depth / Ticker）。交差中の中値・スプレッドは意味を持たない。
+export function isCrossedQuote(bestBid: number | null | undefined, bestAsk: number | null | undefined): boolean {
+	if (bestBid == null || bestAsk == null || !Number.isFinite(bestBid) || !Number.isFinite(bestAsk)) return false;
+	return bestAsk <= bestBid;
+}
+
+export const CROSSED_BOOK_WARNING =
+	'⚠️ 板が交差しています（最良売り ≤ 最良買い）。サーキットブレイク中など連続取引ではない可能性があり、中値・スプレッドは意味を持たないため出していません';

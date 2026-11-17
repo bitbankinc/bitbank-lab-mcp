@@ -82,7 +82,7 @@ describe('lab/start.ts（E2E）', () => {
 		expect(result.isError).not.toBe(true);
 		expect(fake.received).toHaveLength(1);
 		expect(fake.received[0].method).toBe('GET');
-		expect(fake.received[0].url).toBe('/v1/user/spot/active_orders?pair=btc_jpy');
+		expect(fake.received[0].url).toBe('/v1/user/spot/active_orders?count=100&pair=btc_jpy');
 		expect(fake.received[0].headers['access-key']).toBe('e2e_key');
 		expect(fake.received[0].headers['access-signature']).toMatch(/^[0-9a-f]{64}$/);
 	}, 30_000);

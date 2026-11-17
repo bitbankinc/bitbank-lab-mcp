@@ -1,6 +1,9 @@
+import { wilderConvergenceBars } from './warmup.js';
+
 export function entryFilterStartIdx(params: Record<string, number>): number {
 	const smaStart = params.sma_filter_period > 0 ? params.sma_filter_period - 1 : 0;
-	const rsiStart = params.rsi_filter_period > 0 ? params.rsi_filter_period + 1 : 0;
+	const rsiStart =
+		params.rsi_filter_period > 0 ? params.rsi_filter_period + 1 + wilderConvergenceBars(params.rsi_filter_period) : 0;
 	return Math.max(smaStart, rsiStart);
 }
 

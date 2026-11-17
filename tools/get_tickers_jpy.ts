@@ -1,5 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { TtlCache } from '../lib/cache.js';
 import { toNum } from '../lib/conversions.js';
 import { nowIso } from '../lib/datetime.js';
@@ -127,50 +125,12 @@ export default async function getTickersJpy(opts?: { bypassCache?: boolean }) {
 		}
 	}
 
-	const url = String(process.env.TICKERS_JPY_URL || `${BITBANK_API_BASE}/tickers_jpy`);
+	const url = `${BITBANK_API_BASE}/tickers_jpy`;
 	const timeoutMs = Number(process.env.TICKERS_JPY_TIMEOUT_MS ?? 2000);
 	const retries = Number(process.env.TICKERS_JPY_RETRIES ?? 1);
 	const retryWaitMs = Number(process.env.TICKERS_JPY_RETRY_WAIT_MS ?? 500);
 	const t0 = Date.now();
 	try {
-		// テスト用: about:timeout を指定すると擬似タイムアウト
-		if (url === 'about:timeout') {
-			await new Promise((r) => setTimeout(r, Math.min(timeoutMs + 10, 1000)));
-			throw new Error('AbortError: simulated timeout');
-		}
-
-		// テスト用: file:// を指定するとローカルJSONを読み込む
-		if (url.startsWith('file://')) {
-			const filePath = url.replace('file://', '');
-			const abs = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath);
-			const buf = fs.readFileSync(abs, 'utf8');
-			const raw = JSON.parse(buf);
-			if (raw?.success !== 1 || !Array.isArray(raw.data)) {
-				return GetTickersJpyOutputSchema.parse(
-					fail('UPSTREAM_ERROR: unexpected response from bitbank API', 'upstream'),
-				);
-			}
-			const dataRaw: Item[] = raw.data as Item[];
-			const { data: filtered, filterInfo } = await filterByMode(dataRaw, timeoutMs, retries, retryWaitMs);
-			const data = filtered.map((it) => {
-				const openN = toNum(it.open);
-				const lastN = toNum(it.last);
-				const change =
-					openN != null && openN > 0 && lastN != null ? Number((((lastN - openN) / openN) * 100).toFixed(2)) : null;
-				return { ...it, change24h: change, change24hPct: change };
-			});
-			tickerCache.set(CACHE_KEY, data);
-			const ms = Date.now() - t0;
-			const payloadBytes = Buffer.byteLength(JSON.stringify(dataRaw));
-			const summaryText = buildTickerText(
-				`tickers_jpy fetched in ${ms}ms (${data.length}/${dataRaw.length} items after filter, ${payloadBytes} bytes raw, mode=${filterInfo.mode}/${filterInfo.source})`,
-				data,
-			);
-			return GetTickersJpyOutputSchema.parse(
-				ok(summaryText, data, { cache: { hit: false, key: 'tickers_jpy' }, ts: nowIso(), latencyMs: ms, payloadBytes }),
-			);
-		}
-
 		let lastErr: unknown;
 		let raw: { success?: number; data?: Item[] } | undefined;
 		for (let i = 0; i <= retries; i++) {

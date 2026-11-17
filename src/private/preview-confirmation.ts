@@ -14,6 +14,9 @@ export interface PreviewConfirmationTexts {
 
 type PreviewOk = { summary: string; data: { confirmation_token?: string; expires_at?: number } };
 
+// Claude Desktop は ToolSearch で読み込んだ直後の呼び出しではカードを作らず、モデルはそれに気づけないので、ユーザーに出し直し方を伝える。
+const APP_UI_RETRY_HINT = '  カードが表示されない場合は、もう一度プレビューを頼むと表示されます。';
+
 export async function confirmPreview<A extends object, F>(opts: {
 	extra: ToolHandlerExtra | undefined;
 	action: string;
@@ -40,7 +43,7 @@ export async function confirmPreview<A extends object, F>(opts: {
 		'※ このホストでは取引実行に対応していません。',
 		texts.unsupportedHostGuide,
 	].join('\n');
-	const appUiFallbackText = [result.summary, '', ...texts.appUiGuide].join('\n');
+	const appUiFallbackText = [result.summary, '', ...texts.appUiGuide, APP_UI_RETRY_HINT].join('\n');
 
 	return withElicitedConfirmation({
 		extra,

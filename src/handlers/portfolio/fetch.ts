@@ -24,85 +24,53 @@ import {
 // 約定履歴は公式上限 1000。
 const TRADE_PAGE_SIZE = 1000;
 
-export interface PaginateTradesOptions {
-	baseParams?: Record<string, string>;
-	order?: 'asc' | 'desc';
-	limit?: number;
+export interface PortfolioTradeHistory {
+	spotTrades: RawTrade[];
+	marginTrades: RawMarginTrade[];
+	truncated: boolean;
+	// API エラーで途中終了したときだけ true。信用未利用（marginTrades=[] で完了）と取得失敗を上位で区別するため truncated とは別に持つ。
+	fetchFailed: boolean;
 }
 
-export async function paginateTrades(
-	client: BitbankPrivateClient,
-	options: PaginateTradesOptions = {},
-): Promise<{ trades: RawTrade[]; truncated: boolean }> {
-	const baseParams = options.baseParams ?? {};
-	const order = options.order ?? 'asc';
-	const limit = options.limit ?? Number.POSITIVE_INFINITY;
-	const cursorKey: 'since' | 'end' = order === 'desc' ? 'end' : 'since';
-
-	const all: RawTrade[] = [];
+// 約定履歴 API は現物と信用を混ぜて返し、分けるパラメータが無いので、1 回の取得で position_side の有無により振り分ける。
+export async function paginateAllTrades(client: BitbankPrivateClient): Promise<PortfolioTradeHistory> {
+	const spotTrades: RawTrade[] = [];
+	const marginTrades: RawMarginTrade[] = [];
 	const seenIds = new Set<number>();
-	let cursor: string | undefined = baseParams[cursorKey];
+	let cursor: string | undefined;
+	const done = (truncated: boolean, fetchFailed = false): PortfolioTradeHistory => ({
+		spotTrades,
+		marginTrades,
+		truncated,
+		fetchFailed,
+	});
 
 	for (let page = 0; page < MAX_PAGES; page++) {
 		const params: Record<string, string> = {
-			...baseParams,
 			count: String(TRADE_PAGE_SIZE),
-			order,
-			...(cursor ? { [cursorKey]: cursor } : {}),
+			order: 'asc',
+			...(cursor ? { since: cursor } : {}),
 		};
-		const result = await tryGet<{ trades: RawTrade[] }>(client, '/v1/user/spot/trade_history', params);
-		if (!result.ok) break;
+		const result = await tryGet<{ trades: RawMarginTrade[] }>(client, '/v1/user/spot/trade_history', params);
+		if (!result.ok) return done(true, true);
 		const batch = normalizePairCodes(result.data.trades || []);
-		// API の挙動変更で信用約定が混ざると calcMarginPnl 側と二重計上になるので、現物だけに絞る。
-		const spotOnly = batch.filter((t) => t.position_side == null);
-		const newRecords = spotOnly.filter((t) => !seenIds.has(t.trade_id));
-		for (const t of newRecords) seenIds.add(t.trade_id);
-		all.push(...newRecords);
-		// truncated 判定はフィルタ前の件数で行う。フィルタ後だと信用比率が高いとき早期終了し、次ページの現物約定を取り逃がす。
-		if (batch.length < TRADE_PAGE_SIZE) return { trades: all.slice(0, limit), truncated: false };
-		if (all.length >= limit) return { trades: all.slice(0, limit), truncated: true };
-		// 進捗の判定は件数ではなくカーソルの前進で行う。件数だと満杯の信用ページに当たった時点で後続の現物約定を取り逃がす。
+		for (const t of batch) {
+			if (seenIds.has(t.trade_id)) continue;
+			seenIds.add(t.trade_id);
+			// 片方に反対側が混ざると calcPnl と calcMarginPnl で二重計上し、信用側は現物の手数料まで margin_fee_cost に入れる。
+			if (t.position_side == null) spotTrades.push(t);
+			else marginTrades.push(t);
+		}
+		if (batch.length < TRADE_PAGE_SIZE) return done(false);
+		// 進捗の判定は件数ではなくカーソルの前進で行う。片側だけの満杯ページで止めると、後続の反対側の約定を取り逃がす。
 		const lastTs = batch[batch.length - 1]?.executed_at;
 		if (!lastTs) break;
 		const nextCursor = String(lastTs);
-		if (nextCursor === cursor) return { trades: all.slice(0, limit), truncated: true };
+		if (nextCursor === cursor) return done(true);
 		cursor = nextCursor;
 	}
 	// dedup で件数がページ幅の倍数にならないので、ループを抜けたら件数によらず未完了として返す。
-	return { trades: all.slice(0, limit), truncated: true };
-}
-
-// fetchFailed は API エラーで途中終了したときだけ true。信用未利用（trades=[] で完了）と取得失敗を上位で区別するため truncated とは別に持つ。
-export async function paginateMarginTrades(
-	client: BitbankPrivateClient,
-	sinceMs?: number,
-): Promise<{ trades: RawMarginTrade[]; truncated: boolean; fetchFailed: boolean }> {
-	const all: RawMarginTrade[] = [];
-	const seenIds = new Set<number>();
-	let since: string | undefined = sinceMs != null ? String(sinceMs) : undefined;
-	let fetchFailed = false;
-	for (let page = 0; page < MAX_PAGES; page++) {
-		const params: Record<string, string> = { type: 'margin', count: String(TRADE_PAGE_SIZE), order: 'asc' };
-		if (since) params.since = since;
-		const result = await tryGet<{ trades: RawMarginTrade[] }>(client, '/v1/user/spot/trade_history', params);
-		if (!result.ok) {
-			fetchFailed = true;
-			break;
-		}
-		const batch = normalizePairCodes(result.data.trades || []);
-		// type=margin は docs に無く無視されうる。現物が混ざると calcMarginPnl が現物の手数料まで margin_fee_cost として控除する。
-		const marginOnly = batch.filter((t) => t.position_side != null);
-		const newRecords = marginOnly.filter((t) => !seenIds.has(t.trade_id));
-		for (const t of newRecords) seenIds.add(t.trade_id);
-		all.push(...newRecords);
-		if (batch.length < TRADE_PAGE_SIZE) return { trades: all, truncated: false, fetchFailed: false };
-		const lastTs = batch[batch.length - 1]?.executed_at;
-		if (!lastTs) break;
-		const nextSince = String(lastTs);
-		if (nextSince === since) return { trades: all, truncated: true, fetchFailed: false };
-		since = nextSince;
-	}
-	return { trades: all, truncated: true, fetchFailed };
+	return done(true);
 }
 
 export async function fetchDepositWithdrawal(

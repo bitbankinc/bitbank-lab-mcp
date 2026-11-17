@@ -1,10 +1,23 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { BITBANK_API_BASE } from '../lib/http.js';
 import getTickersJpy from '../tools/get_tickers_jpy.js';
 import { assertFail, assertOk } from './_assertResult.js';
 
+function fixture(name: string): unknown {
+	return JSON.parse(readFileSync(path.join(process.cwd(), 'tests/fixtures', name), 'utf8'));
+}
+
+// Response の本文は 1 回しか読めないので、呼ばれるたびに作り直す。
+function respondWith(body: unknown) {
+	return vi
+		.spyOn(globalThis, 'fetch')
+		.mockImplementation(async () => new Response(JSON.stringify(body), { status: 200 }));
+}
+
 describe('getTickersJpy', () => {
 	beforeEach(() => {
-		delete process.env.TICKERS_JPY_URL;
 		delete process.env.TICKERS_JPY_TIMEOUT_MS;
 		delete process.env.TICKERS_JPY_RETRIES;
 	});
@@ -15,38 +28,52 @@ describe('getTickersJpy', () => {
 		delete process.env.BITBANK_PAIRS_MODE;
 		delete process.env.BITBANK_PAIRS_TTL_MS;
 		delete process.env.TICKERS_JPY_RETRY_WAIT_MS;
+		delete process.env.TICKERS_JPY_URL;
 	});
 
-	it('ファイルフィクスチャから正常取得できる', async () => {
-		process.env.TICKERS_JPY_URL = 'file://tests/fixtures/tickers_jpy_sample.json';
+	it('bitbank の tickers_jpy から取得できる', async () => {
+		const spy = respondWith(fixture('tickers_jpy_sample.json'));
 		const res = await getTickersJpy({ bypassCache: true });
 		assertOk(res);
+		expect(String(spy.mock.calls[0]?.[0])).toBe(`${BITBANK_API_BASE}/tickers_jpy`);
+	});
+
+	it('環境変数 TICKERS_JPY_URL を設定しても取得先は変わらない', async () => {
+		process.env.TICKERS_JPY_URL = 'http://test.local/custom_tickers';
+		const spy = respondWith(fixture('tickers_jpy_sample.json'));
+		const res = await getTickersJpy({ bypassCache: true });
+		assertOk(res);
+		expect(String(spy.mock.calls[0]?.[0])).toBe(`${BITBANK_API_BASE}/tickers_jpy`);
 	});
 
 	it('タイムアウト時は ok: false を返す', async () => {
-		process.env.TICKERS_JPY_URL = 'about:timeout';
 		process.env.TICKERS_JPY_TIMEOUT_MS = '50';
 		process.env.TICKERS_JPY_RETRIES = '0';
+		// 応答を返さず、打ち切られたら失敗する fetch。
+		vi.spyOn(globalThis, 'fetch').mockImplementation(
+			(_url, init) =>
+				new Promise((_resolve, reject) => {
+					init?.signal?.addEventListener('abort', () => reject(new Error('AbortError: aborted')));
+				}),
+		);
 		const res = await getTickersJpy({ bypassCache: true });
 		assertFail(res);
 	});
 
 	it('キャッシュフォールバックが機能する', async () => {
 		// 1) キャッシュにシード
-		process.env.TICKERS_JPY_URL = 'file://tests/fixtures/tickers_jpy_sample.json';
+		respondWith(fixture('tickers_jpy_sample.json'));
 		const ok1 = await getTickersJpy({ bypassCache: true });
 		assertOk(ok1);
 
 		// 2) 障害をシミュレートし、キャッシュからフォールバック
-		process.env.TICKERS_JPY_URL = 'about:timeout';
-		process.env.TICKERS_JPY_TIMEOUT_MS = '10';
 		process.env.TICKERS_JPY_RETRIES = '0';
+		vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('fetch failed'));
 		const res = await getTickersJpy({ bypassCache: false });
 		assertOk(res);
 	});
 
 	it('ネットワークエラーは TIMEOUT_OR_NETWORK に分類されるべき', async () => {
-		process.env.TICKERS_JPY_URL = 'https://public.bitbank.cc/tickers_jpy';
 		process.env.TICKERS_JPY_RETRIES = '0';
 
 		vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('fetch failed'));
@@ -59,7 +86,7 @@ describe('getTickersJpy', () => {
 
 	describe('getPairsMode', () => {
 		it('既定（strict）は ALLOWED_PAIRS で絞り込み、fixture の mkr_jpy は落ちる', async () => {
-			process.env.TICKERS_JPY_URL = 'file://tests/fixtures/tickers_jpy_sample.json';
+			respondWith(fixture('tickers_jpy_sample.json'));
 			const res = await getTickersJpy({ bypassCache: true });
 			assertOk(res);
 			expect(res.summary).toContain('mode=strict/static');
@@ -69,7 +96,7 @@ describe('getTickersJpy', () => {
 
 		it('BITBANK_STRICT_PAIRS=0 → mode off (フィルタなし)', async () => {
 			process.env.BITBANK_STRICT_PAIRS = '0';
-			process.env.TICKERS_JPY_URL = 'file://tests/fixtures/tickers_jpy_sample.json';
+			respondWith(fixture('tickers_jpy_sample.json'));
 			const res = await getTickersJpy({ bypassCache: true });
 			assertOk(res);
 			expect(res.summary).toContain('mode=off');
@@ -79,16 +106,9 @@ describe('getTickersJpy', () => {
 
 		it('BITBANK_PAIRS_MODE=auto → mode auto', async () => {
 			process.env.BITBANK_PAIRS_MODE = 'auto';
-			process.env.TICKERS_JPY_URL = 'file://tests/fixtures/tickers_jpy_sample.json';
 			process.env.TICKERS_JPY_RETRIES = '0';
-			// fetchOfficialJpyPairs が呼ばれる。mock してok応答を返す
-			vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-				ok: true,
-				json: async () => ({
-					success: 1,
-					data: [{ pair: 'btc_jpy' }, { pair: 'mkr_jpy' }],
-				}),
-			} as unknown as Response);
+			// 価格一覧とペア一覧（fetchOfficialJpyPairs）は同じ tickers_jpy から取る。
+			respondWith(fixture('tickers_jpy_sample.json'));
 			const res = await getTickersJpy({ bypassCache: true });
 			assertOk(res);
 			expect(res.summary).toContain('mode=auto');
@@ -96,7 +116,7 @@ describe('getTickersJpy', () => {
 
 		it('BITBANK_PAIRS_MODE=off → mode off (フィルタなし)', async () => {
 			process.env.BITBANK_PAIRS_MODE = 'off';
-			process.env.TICKERS_JPY_URL = 'file://tests/fixtures/tickers_jpy_sample.json';
+			respondWith(fixture('tickers_jpy_sample.json'));
 			const res = await getTickersJpy({ bypassCache: true });
 			assertOk(res);
 			expect(res.summary).toContain('mode=off');
@@ -107,7 +127,7 @@ describe('getTickersJpy', () => {
 
 	describe('buildTickerText change24hPct', () => {
 		it('change24hPct が正の場合に + 符号が付く', async () => {
-			process.env.TICKERS_JPY_URL = 'file://tests/fixtures/tickers_jpy_sample.json';
+			respondWith(fixture('tickers_jpy_sample.json'));
 			// fixture の btc_jpy: open=95, last=100 → +5.26%
 			const res = await getTickersJpy({ bypassCache: true });
 			assertOk(res);
@@ -115,16 +135,16 @@ describe('getTickersJpy', () => {
 		});
 
 		it('change24hPct が null の場合は chg: が含まれない', async () => {
-			process.env.TICKERS_JPY_URL = 'file://tests/fixtures/tickers_jpy_zero_open.json';
+			respondWith(fixture('tickers_jpy_zero_open.json'));
 			const res = await getTickersJpy({ bypassCache: true });
 			assertOk(res);
 			expect(res.summary).not.toMatch(/chg:/);
 		});
 	});
 
-	describe('change calculation edge cases (file path)', () => {
+	describe('change calculation edge cases', () => {
 		it('open=0 のとき change24hPct は null になる', async () => {
-			process.env.TICKERS_JPY_URL = 'file://tests/fixtures/tickers_jpy_zero_open.json';
+			respondWith(fixture('tickers_jpy_zero_open.json'));
 			const res = await getTickersJpy({ bypassCache: true });
 			assertOk(res);
 			const item = res.data?.[0] as { change24hPct?: unknown };
@@ -132,7 +152,7 @@ describe('getTickersJpy', () => {
 		});
 
 		it('open が非数値のとき change24hPct は null になる', async () => {
-			process.env.TICKERS_JPY_URL = 'file://tests/fixtures/tickers_jpy_nan_open.json';
+			respondWith(fixture('tickers_jpy_nan_open.json'));
 			const res = await getTickersJpy({ bypassCache: true });
 			assertOk(res);
 			const item = res.data?.[0] as { change24hPct?: unknown };
@@ -140,27 +160,8 @@ describe('getTickersJpy', () => {
 		});
 	});
 
-	describe('file:// absolute path', () => {
-		it('絶対パスの file:// でも読み込める', async () => {
-			const abs = `${process.cwd()}/tests/fixtures/tickers_jpy_sample.json`;
-			process.env.TICKERS_JPY_URL = `file://${abs}`;
-			const res = await getTickersJpy({ bypassCache: true });
-			assertOk(res);
-		});
-	});
-
-	describe('file:// upstream error', () => {
-		it('success !== 1 のファイルを渡すと UPSTREAM_ERROR を返す', async () => {
-			process.env.TICKERS_JPY_URL = 'file://tests/fixtures/tickers_jpy_bad.json';
-			const res = await getTickersJpy({ bypassCache: true });
-			assertFail(res);
-			expect(res.summary).toContain('UPSTREAM_ERROR');
-		});
-	});
-
 	describe('HTTP fetch path', () => {
 		it('fetch が成功すると ok を返す', async () => {
-			process.env.TICKERS_JPY_URL = 'https://public.bitbank.cc/tickers_jpy';
 			process.env.TICKERS_JPY_RETRIES = '0';
 			vi.spyOn(globalThis, 'fetch').mockResolvedValue({
 				ok: true,
@@ -186,7 +187,6 @@ describe('getTickersJpy', () => {
 		});
 
 		it('最初の fetch が失敗しリトライで成功する', async () => {
-			process.env.TICKERS_JPY_URL = 'https://public.bitbank.cc/tickers_jpy';
 			process.env.TICKERS_JPY_RETRIES = '1';
 			process.env.TICKERS_JPY_RETRY_WAIT_MS = '0';
 			const fetchSpy = vi.spyOn(globalThis, 'fetch');
@@ -215,7 +215,6 @@ describe('getTickersJpy', () => {
 		});
 
 		it('HTTP 5xx レスポンスで全リトライ消費後にエラーを返す', async () => {
-			process.env.TICKERS_JPY_URL = 'https://public.bitbank.cc/tickers_jpy';
 			process.env.TICKERS_JPY_RETRIES = '0';
 			vi.spyOn(globalThis, 'fetch').mockResolvedValue({
 				ok: false,
@@ -226,7 +225,6 @@ describe('getTickersJpy', () => {
 		});
 
 		it('fetch 成功だが success !== 1 のとき UPSTREAM_ERROR を返す', async () => {
-			process.env.TICKERS_JPY_URL = 'https://public.bitbank.cc/tickers_jpy';
 			process.env.TICKERS_JPY_RETRIES = '0';
 			vi.spyOn(globalThis, 'fetch').mockResolvedValue({
 				ok: true,
@@ -238,7 +236,6 @@ describe('getTickersJpy', () => {
 		});
 
 		it('change が負の場合に + 符号がつかない (HTTP path)', async () => {
-			process.env.TICKERS_JPY_URL = 'https://public.bitbank.cc/tickers_jpy';
 			process.env.TICKERS_JPY_RETRIES = '0';
 			vi.spyOn(globalThis, 'fetch').mockResolvedValue({
 				ok: true,
@@ -266,7 +263,6 @@ describe('getTickersJpy', () => {
 		});
 
 		it('open=0 のとき HTTP path でも change24hPct は null (chg: なし)', async () => {
-			process.env.TICKERS_JPY_URL = 'https://public.bitbank.cc/tickers_jpy';
 			process.env.TICKERS_JPY_RETRIES = '0';
 			vi.spyOn(globalThis, 'fetch').mockResolvedValue({
 				ok: true,
@@ -304,7 +300,6 @@ describe('getTickersJpy', () => {
 
 		for (const { label, msg } of patterns) {
 			it(`"${label}" を含むエラーは TIMEOUT_OR_NETWORK に分類される`, async () => {
-				process.env.TICKERS_JPY_URL = 'https://public.bitbank.cc/tickers_jpy';
 				process.env.TICKERS_JPY_RETRIES = '0';
 				vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error(msg));
 				const res = await getTickersJpy({ bypassCache: true });
@@ -315,7 +310,6 @@ describe('getTickersJpy', () => {
 		}
 
 		it('その他のエラーは UPSTREAM_ に分類される', async () => {
-			process.env.TICKERS_JPY_URL = 'https://public.bitbank.cc/tickers_jpy';
 			process.env.TICKERS_JPY_RETRIES = '0';
 			vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected JSON parse error'));
 			const res = await getTickersJpy({ bypassCache: true });
@@ -330,9 +324,11 @@ describe('getTickersJpy', () => {
 	describe('auto mode: fetch fails but result is still ok', () => {
 		it('fetchOfficialJpyPairs が失敗しても ok を返す (dynamic or static fallback)', async () => {
 			process.env.BITBANK_PAIRS_MODE = 'auto';
-			process.env.TICKERS_JPY_URL = 'file://tests/fixtures/tickers_jpy_sample.json';
 			process.env.TICKERS_JPY_RETRIES = '0';
-			vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ENOTFOUND'));
+			// 1 回目（価格一覧）は成功し、2 回目（ペア一覧）だけ失敗させる。
+			vi.spyOn(globalThis, 'fetch')
+				.mockRejectedValue(new Error('ENOTFOUND'))
+				.mockImplementationOnce(async () => new Response(JSON.stringify(fixture('tickers_jpy_sample.json'))));
 			const res = await getTickersJpy({ bypassCache: true });
 			assertOk(res);
 			expect(res.summary).toContain('mode=auto');
@@ -343,8 +339,28 @@ describe('getTickersJpy', () => {
 	describe('auto mode: ペア一覧の取得と TTL の経路', () => {
 		const TTL_MS = 60_000;
 		const T0 = Date.UTC(2026, 9, 1);
+		const SAMPLE = fixture('tickers_jpy_sample.json');
 		const pairsResponse = (pairs: string[]) =>
-			({ ok: true, json: async () => ({ success: 1, data: pairs.map((pair) => ({ pair })) }) }) as unknown as Response;
+			new Response(JSON.stringify({ success: 1, data: pairs.map((pair) => ({ pair })) }), { status: 200 });
+
+		// 価格一覧とペア一覧は同じ tickers_jpy から取るので、呼ばれる順に応答を積む（各実行の 1 回目が価格一覧、2 回目がペア一覧）。
+		// 積んだ分を超えて呼ばれたら本物の API へ出ないよう失敗させる。
+		function queueFetch() {
+			const spy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected fetch'));
+			const queue = {
+				spy,
+				tickers() {
+					spy.mockImplementationOnce(async () => new Response(JSON.stringify(SAMPLE), { status: 200 }));
+					return queue;
+				},
+				pairs(pairs: string[] | Error) {
+					if (pairs instanceof Error) spy.mockRejectedValueOnce(pairs);
+					else spy.mockImplementationOnce(async () => pairsResponse(pairs));
+					return queue;
+				},
+			};
+			return queue;
+		}
 
 		// dynamicPairs はモジュール状態なので、毎回読み直して前のテストの一覧を持ち込まない。
 		async function loadFresh() {
@@ -361,7 +377,6 @@ describe('getTickersJpy', () => {
 		beforeEach(() => {
 			process.env.BITBANK_PAIRS_MODE = 'auto';
 			process.env.BITBANK_PAIRS_TTL_MS = String(TTL_MS);
-			process.env.TICKERS_JPY_URL = 'file://tests/fixtures/tickers_jpy_sample.json';
 			process.env.TICKERS_JPY_RETRIES = '0';
 			vi.useFakeTimers({ toFake: ['Date'] });
 			vi.setSystemTime(T0);
@@ -372,7 +387,7 @@ describe('getTickersJpy', () => {
 		});
 
 		it('初回の取得に成功すると、取れた一覧で絞り込む', async () => {
-			vi.spyOn(globalThis, 'fetch').mockResolvedValue(pairsResponse(['mkr_jpy']));
+			queueFetch().tickers().pairs(['mkr_jpy']);
 			const get = await loadFresh();
 			const r = await run(get);
 			expect(r.summary).toContain('mode=auto/dynamic');
@@ -380,19 +395,20 @@ describe('getTickersJpy', () => {
 		});
 
 		it('TTL 内の 2 回目は取り直さず、前回の一覧を使う', async () => {
-			const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(pairsResponse(['mkr_jpy']));
+			const q = queueFetch().tickers().pairs(['mkr_jpy']);
 			const get = await loadFresh();
 			await run(get);
 			vi.setSystemTime(T0 + TTL_MS - 1_000);
-			fetchSpy.mockResolvedValue(pairsResponse(['btc_jpy']));
+			q.tickers();
 			const r = await run(get);
-			expect(fetchSpy).toHaveBeenCalledTimes(1);
+			// 価格一覧 2 回 + ペア一覧 1 回。
+			expect(q.spy).toHaveBeenCalledTimes(3);
 			expect(r.summary).toContain('mode=auto/dynamic');
 			expect(r.pairs).toEqual(['mkr_jpy']);
 		});
 
 		it('初回の取得に失敗すると、静的な一覧で絞り込む', async () => {
-			vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ENOTFOUND'));
+			queueFetch().tickers().pairs(new Error('ENOTFOUND'));
 			const get = await loadFresh();
 			const r = await run(get);
 			expect(r.summary).toContain('mode=auto/static');
@@ -400,37 +416,37 @@ describe('getTickersJpy', () => {
 		});
 
 		it('TTL 切れの取り直しに成功すると、新しい一覧に替える', async () => {
-			const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(pairsResponse(['mkr_jpy']));
+			const q = queueFetch().tickers().pairs(['mkr_jpy']);
 			const get = await loadFresh();
 			await run(get);
 			vi.setSystemTime(T0 + TTL_MS);
-			fetchSpy.mockResolvedValue(pairsResponse(['btc_jpy']));
+			q.tickers().pairs(['btc_jpy']);
 			const r = await run(get);
-			expect(fetchSpy).toHaveBeenCalledTimes(2);
+			expect(q.spy).toHaveBeenCalledTimes(4);
 			expect(r.summary).toContain('mode=auto/dynamic');
 			expect(r.pairs).toEqual(['btc_jpy']);
 		});
 
 		it('TTL 切れの取り直しに失敗しても、前回の一覧があればそれを使う', async () => {
-			const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(pairsResponse(['mkr_jpy']));
+			const q = queueFetch().tickers().pairs(['mkr_jpy']);
 			const get = await loadFresh();
 			await run(get);
 			vi.setSystemTime(T0 + TTL_MS);
-			fetchSpy.mockRejectedValue(new Error('ENOTFOUND'));
+			q.tickers().pairs(new Error('ENOTFOUND'));
 			const r = await run(get);
-			expect(fetchSpy).toHaveBeenCalledTimes(2);
+			expect(q.spy).toHaveBeenCalledTimes(4);
 			expect(r.summary).toContain('mode=auto/dynamic');
 			expect(r.pairs).toEqual(['mkr_jpy']);
 		});
 
 		it('TTL 切れの取り直しに失敗し、前回の一覧が空なら静的な一覧に戻す', async () => {
-			const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(pairsResponse(['btc_usdt']));
+			const q = queueFetch().tickers().pairs(['btc_usdt']);
 			const get = await loadFresh();
 			const first = await run(get);
 			expect(first.summary).toContain('mode=auto/dynamic');
 			expect(first.pairs).toEqual([]);
 			vi.setSystemTime(T0 + TTL_MS);
-			fetchSpy.mockRejectedValue(new Error('ENOTFOUND'));
+			q.tickers().pairs(new Error('ENOTFOUND'));
 			const r = await run(get);
 			expect(r.summary).toContain('mode=auto/static');
 			expect(r.pairs).toEqual(['btc_jpy']);

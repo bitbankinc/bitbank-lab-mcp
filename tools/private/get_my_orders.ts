@@ -32,9 +32,9 @@ export default async function getMyOrders(args: { pair?: string; count?: number;
 	const client = getDefaultClient();
 
 	try {
-		const params: Record<string, string> = {};
+		// count の既定値はドキュメントに無いので、既定の件数でも送る。
+		const params: Record<string, string> = { count: String(count) };
 		if (pair) params.pair = pair;
-		if (count !== 100) params.count = String(count);
 
 		if (since) {
 			const parsed = parseIso8601(since);
@@ -51,10 +51,7 @@ export default async function getMyOrders(args: { pair?: string; count?: number;
 			params.end = String(parsed.valueOf());
 		}
 
-		const rawData = await client.get<{ orders: RawOrder[] }>(
-			'/v1/user/spot/active_orders',
-			Object.keys(params).length > 0 ? params : undefined,
-		);
+		const rawData = await client.get<{ orders: RawOrder[] }>('/v1/user/spot/active_orders', params);
 
 		const timestamp = nowIso();
 
