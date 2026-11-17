@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-17
+
+番号は fork（tjackiet/bitbank-lab-mcp）の issue。
+
 ### Changed
 
 - `run_backtest`：確定トレードの手数料を、建てた時点で片道ぶん、決済時に残りの片道ぶん引く。保有中のエクイティが手数料ぶん高く、決済バーで往復 2 回ぶんの段差が出ていたので、`max_drawdown_pct` / `sharpe_ratio` が最大 0.24%（既定の 12 bp）ずれていた。未決済ポジションと同じ扱いになる。確定トレードの損益（`net_return`）と `total_pnl_pct` は変わらない（issue #445）。
