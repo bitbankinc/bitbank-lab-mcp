@@ -14,6 +14,32 @@ npm ci
 
 ビルドステップは不要です（tsx で TypeScript を直接実行します）。
 
+⚠️ **最初の commit の前に** [CONTRIBUTING.md](../CONTRIBUTING.md) を読んでください。pre-commit フックが **gitleaks のインストールを必須**にしています（未導入だと commit が失敗します）。環境によっては `npm ci` がフックを自動導入しません（`CI` 環境変数が真のとき、依存パッケージの install script を実行しない npm 設定・バージョンなど）。`npm ci` の後に `npx lefthook install` を一度実行しておくと確実です。
+
+## ディレクトリマップ
+
+| 場所 | 役割 |
+|---|---|
+| `src/` | サーバー本体（server / registry / handlers / schema / private） |
+| `tools/` | MCP ツールの実装（`toolDef` を export し、`src/tool-registry.ts` に import と `allToolDefs` への追加が必要） |
+| `lib/` | 共通ユーティリティ（ツールをまたぐ処理はここに置く） |
+| `tests/` | vitest（`tests/e2e/` は別コマンド） |
+| `docs/` | ドキュメント（[索引](README.md)） |
+| `plugins/` / `skills/` | Claude Code / claude.ai 向け plugin の配布物 |
+| `lab/` | 研究用の起動口（npm には同梱されない。ADR-0008） |
+| `ui/` | 注文/取消の確認カード（vite ビルド。`dist/` はコミット対象） |
+| `assets/`, `cache/`, `logs/`, `output/`, `reports/`, `coverage/` | 実行時に生成（git 対象外。`assets/lightweight-charts.standalone.js` のみ同梱） |
+
+## よくある変更の手順
+
+- **コマンド一覧とアーキテクチャ境界の正本**: [CLAUDE.md](../CLAUDE.md)
+- **ツールの追加・修正**（`toolDef` を export → `src/tool-registry.ts` に import と `allToolDefs` 追加、content 可視性、view 規約）: [.claude/rules/tools.md](../.claude/rules/tools.md)
+- **スキーマ変更**: `src/schema/` の Zod 定義が単一ソース。変更後に `npm run gen:types`
+- **テストの書き方**（エッジケース優先順位・fetch モック規約）: [.claude/rules/testing.md](../.claude/rules/testing.md)
+- **手数料を扱うコード**: [.claude/rules/fees.md](../.claude/rules/fees.md)
+
+`.claude/rules/` はコーディングエージェント向けの規約置き場ですが、人間が読んでも同じ内容が正本です。
+
 ## STDIO モード（Claude Desktop / Claude Code 向け）
 
 ローカルの開発版を Claude Desktop から使いたい場合、`claude_desktop_config.json` に、`node` とクローン先の `tsx`・サーバーを絶対パスで登録します。Claude Desktop はサーバーをクローン先以外のフォルダから、ターミナルとは違う `PATH` で起動するので、`npx tsx` ではクローン先の `tsx` が使われず、`node` が見つからないこともあります：
