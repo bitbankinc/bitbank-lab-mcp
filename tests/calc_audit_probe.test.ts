@@ -81,6 +81,15 @@ describe('probe D: macd signal は NaN ギャップでセグメントごとに�
 		expect(Number.isNaN(m.signal[resume + 7])).toBe(true);
 		expect(Number.isFinite(m.signal[resume + 8])).toBe(true);
 	});
+
+	it('ギャップ後の line/signal/hist はギャップ以降だけを独立に計算した結果と数値一致する', () => {
+		const closes = [...varied(40), NaN, ...varied(40, 140)];
+		const m = macd(closes, 12, 26, 9);
+		const m2 = macd(closes.slice(41), 12, 26, 9);
+		expect(m.line.slice(41)).toEqual(m2.line);
+		expect(m.signal.slice(41)).toEqual(m2.signal);
+		expect(m.hist.slice(41)).toEqual(m2.hist);
+	});
 });
 
 describe('probe E: buildWarnings 閾値と lib の実要求本数の一致（off-by-one なし）', () => {
@@ -105,9 +114,9 @@ describe('probe E: buildWarnings 閾値と lib の実要求本数の一致（off
 		expect(Number.isFinite(stochastic(h18, l18, c18, 14, 3, 3).dSeries.at(-1) as number)).toBe(true);
 	});
 
-	it('StochRSI(14,14,3,3): 33 本で全 NaN、34 本で %D 最終値が有効', () => {
-		expect(stochRSI(varied(33), 14, 14, 3, 3).dSeries.every((v) => Number.isNaN(v))).toBe(true);
-		expect(Number.isFinite(stochRSI(varied(34), 14, 14, 3, 3).dSeries.at(-1) as number)).toBe(true);
+	it('StochRSI(14,14,3,3): 31 本で全 NaN、32 本で %D 最終値が有効', () => {
+		expect(stochRSI(varied(31), 14, 14, 3, 3).dSeries.every((v) => Number.isNaN(v))).toBe(true);
+		expect(Number.isFinite(stochRSI(varied(32), 14, 14, 3, 3).dSeries.at(-1) as number)).toBe(true);
 	});
 
 	it('Ichimoku: 51 本で null、52 本で snapshot が返る', () => {

@@ -408,7 +408,8 @@ function buildWarnings(dataLength: number, candleCount: number): string[] {
 	if (dataLength < 52) warnings.push('Ichimoku: データ不足');
 	// classic Stochastic の最新 %D は kPeriod + smoothK + smoothD - 2 = 18 本目で確定する（lib/indicators.ts の早期 return 条件と一致）。
 	if (dataLength < 18) warnings.push('Stochastic: データ不足');
-	if (dataLength < 34) warnings.push('StochRSI: データ不足');
+	// StochRSI の最新 %D は rsiPeriod + stochPeriod + smoothK + smoothD - 2 = 32 本目で確定する（lib/indicators.ts の guard と一致）。
+	if (dataLength < 32) warnings.push('StochRSI: データ不足');
 	if (candleCount < 2) warnings.push('OBV: データ不足');
 	return warnings;
 }

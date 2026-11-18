@@ -377,7 +377,8 @@ export function stochRSI(
 	const n = rsiValues.length;
 
 	const validCount = rsiValues.filter((v) => Number.isFinite(v)).length;
-	if (validCount < stochPeriod + smoothK + smoothD) {
+	// %D の確定に要る有効 RSI は stochastic() の n 条件と同じ -2 付き（抜けると 32〜33 本時の有効な %D を潰す）。
+	if (validCount < stochPeriod + smoothK + smoothD - 2) {
 		return { kSeries: nanArray(n), dSeries: nanArray(n) };
 	}
 
