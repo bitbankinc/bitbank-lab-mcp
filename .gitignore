@@ -27,6 +27,10 @@ coverage/
 docs/market-data-accuracy-log.md
 docs/market-data-accuracy-checklist.md.local.bak
 
+# 手元作業用メモの命名慣行（docs/README.md 参照）
+*.local.md
+*.local.bak
+
 # Security/chaos tests — local only, not published to public repo
 tests/chaos/
 tests/private/security.test.ts

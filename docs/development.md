@@ -14,14 +14,14 @@ npm ci
 
 ビルドステップは不要です（tsx で TypeScript を直接実行します）。
 
-⚠️ **最初の commit の前に** [CONTRIBUTING.md](../CONTRIBUTING.md) を読んでください。pre-commit フックが **gitleaks のインストールを必須**にしています（未導入だと commit が失敗します）。
+⚠️ **最初の commit の前に** [CONTRIBUTING.md](../CONTRIBUTING.md) を読んでください。pre-commit フックが **gitleaks のインストールを必須**にしています（未導入だと commit が失敗します）。なお `npm ci` は `CI` 環境変数が真でないときだけフックを自動導入するので、`CI` が設定された環境では `npx lefthook install` を実行してください。
 
 ## ディレクトリマップ
 
 | 場所 | 役割 |
 |---|---|
 | `src/` | サーバー本体（server / registry / handlers / schema / private） |
-| `tools/` | MCP ツールの実装（`toolDef` を export すると自動登録） |
+| `tools/` | MCP ツールの実装（`toolDef` を export し、`src/tool-registry.ts` に import と `allToolDefs` への追加が必要） |
 | `lib/` | 共通ユーティリティ（ツールをまたぐ処理はここに置く） |
 | `tests/` | vitest（`tests/e2e/` は別コマンド） |
 | `docs/` | ドキュメント（[索引](README.md)） |
@@ -33,7 +33,7 @@ npm ci
 ## よくある変更の手順
 
 - **コマンド一覧とアーキテクチャ境界の正本**: [CLAUDE.md](../CLAUDE.md)
-- **ツールの追加・修正**（toolDef → registry 自動登録、content 可視性、view 規約）: [.claude/rules/tools.md](../.claude/rules/tools.md)
+- **ツールの追加・修正**（`toolDef` を export → `src/tool-registry.ts` に import と `allToolDefs` 追加、content 可視性、view 規約）: [.claude/rules/tools.md](../.claude/rules/tools.md)
 - **スキーマ変更**: `src/schema/` の Zod 定義が単一ソース。変更後に `npm run gen:types`
 - **テストの書き方**（エッジケース優先順位・fetch モック規約）: [.claude/rules/testing.md](../.claude/rules/testing.md)
 - **手数料を扱うコード**: [.claude/rules/fees.md](../.claude/rules/fees.md)
