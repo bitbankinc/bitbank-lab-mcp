@@ -175,6 +175,7 @@ BTCの今の市場状況を分析して
 - [変更履歴](CHANGELOG.md)
 - [開発者向け（ソースから起動）](docs/development.md) / [開発コマンド](CLAUDE.md)
 - [運用・監視](docs/ops.md)
+- [docs/ の索引](docs/README.md)（どのファイルが誰向けかの地図）
 
 バグ報告や要望は [GitHub Issues](https://github.com/bitbankinc/bitbank-lab-mcp/issues) へ。
 
