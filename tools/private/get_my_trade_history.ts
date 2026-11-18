@@ -1,4 +1,4 @@
-import { nowIso, parseIso8601, toIsoMs } from '../../lib/datetime.js';
+import { nowIso } from '../../lib/datetime.js';
 import { formatPair, formatPrice, formatYenExact } from '../../lib/formatter.js';
 import { isJpyQuotedPair } from '../../lib/pair-code.js';
 import { fail, ok } from '../../lib/result.js';
@@ -8,8 +8,10 @@ import { GetMyTradeHistoryInputSchema, GetMyTradeHistoryOutputSchema } from '../
 import { failPrivateToolError } from '../../src/private/tool-error.js';
 import {
 	completenessNote,
+	epochRangeParams,
 	fetchFilteredTradeHistory,
 	hiddenTradesNote,
+	normalizeTradeRow,
 	scanBoundaryIso,
 	tradesToDisplay,
 } from '../../src/private/trade-history.js';
@@ -41,23 +43,11 @@ export default async function getMyTradeHistory(args: {
 	const client = getDefaultClient();
 
 	try {
-		const baseParams: Record<string, string> = {};
-		if (pair) baseParams.pair = pair;
-
-		if (since) {
-			const parsed = parseIso8601(since);
-			if (!parsed) {
-				return GetMyTradeHistoryOutputSchema.parse(fail(`since の日時形式が不正です: ${since}`, 'validation_error'));
-			}
-			baseParams.since = String(parsed.valueOf());
+		const range = epochRangeParams({ since, end });
+		if (!range.ok) {
+			return GetMyTradeHistoryOutputSchema.parse(fail(range.message, 'validation_error'));
 		}
-		if (end) {
-			const parsed = parseIso8601(end);
-			if (!parsed) {
-				return GetMyTradeHistoryOutputSchema.parse(fail(`end の日時形式が不正です: ${end}`, 'validation_error'));
-			}
-			baseParams.end = String(parsed.valueOf());
-		}
+		const baseParams: Record<string, string> = { ...(pair ? { pair } : {}), ...range.params };
 
 		const fetched = await fetchFilteredTradeHistory<RawTrade>(client, {
 			baseParams,
@@ -70,22 +60,7 @@ export default async function getMyTradeHistory(args: {
 
 		const timestamp = nowIso();
 
-		const trades = rawTrades.map((t) => ({
-			trade_id: t.trade_id,
-			pair: t.pair,
-			order_id: t.order_id,
-			side: t.side,
-			// 上流で信用約定は除外済みなので通常は undefined だが、`position_side` の有無で現物 / 信用を識別する下流契約のためフィールドは残す。
-			position_side: t.position_side,
-			type: t.type,
-			amount: t.amount,
-			price: t.price,
-			maker_taker: t.maker_taker,
-			fee_amount_base: t.fee_amount_base,
-			fee_amount_quote: t.fee_amount_quote,
-			fee_occurred_amount_quote: t.fee_occurred_amount_quote,
-			executed_at: toIsoMs(t.executed_at) ?? String(t.executed_at),
-		}));
+		const trades = rawTrades.map(normalizeTradeRow);
 
 		const lines: string[] = [];
 		const pairLabel = pair ? formatPair(pair) : '全ペア';

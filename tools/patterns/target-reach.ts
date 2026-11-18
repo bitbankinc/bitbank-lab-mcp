@@ -1,17 +1,15 @@
-// src/schema/patterns.ts が閾値を読むので、実行時の依存を持たない単位に分けてある（import は型だけにする）。
+// 閾値は lib/pattern-target-config.ts（葉）に置き、schema もそこを読む。ここは lib と型以外に依存せず、schema→tools の実行時依存と循環を作らない。
+import {
+	MIN_TARGET_DISTANCE_HEIGHT_RATIO,
+	TARGET_REACH_MAX_BARS,
+	TARGET_REACHED_PCT_CAP,
+} from '../../lib/pattern-target-config.js';
 import type { TargetProgressOmittedReason } from '../../src/schema/patterns.js';
 import type { TargetBreakoutConfounder } from './target-confounders.js';
 import type { CandleData } from './types.js';
 
-// 上限が無いと値が問い合わせ時点で動くので置く。取りこぼしを防ぐ走査幅であって、到達率の窓として読ませない（#288）。
-// 時間足別のテーブルにしない。時間足別テーブルの流用は #198 で事故になっている。
-export const TARGET_REACH_MAX_BARS = 60;
-
-// 高さ相対（無次元）にして時間足別テーブルを持たない。分母が潰れるのはネックラインから投影する検出器だけ。
-export const MIN_TARGET_DISTANCE_HEIGHT_RATIO = 0.15;
-
-// この値ちょうどは「以上」を意味する。上の 2 つをすり抜けた場合の安全網。
-export const TARGET_REACHED_PCT_CAP = 999;
+// 既存の参照元（検出器・テスト）の import 経路を保つための再エクスポート。
+export { MIN_TARGET_DISTANCE_HEIGHT_RATIO, TARGET_REACH_MAX_BARS, TARGET_REACHED_PCT_CAP };
 
 // targetReached* は走査窓の極値の足、targetFirstReach* は初到達の足を指す。別の量なので混ぜない（#288）。
 export interface TargetReachInfo {

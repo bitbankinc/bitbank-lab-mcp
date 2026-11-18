@@ -1,10 +1,10 @@
 import { z } from 'zod';
-// target 進捗系の description は閾値を書き写さず実装から読む（書き写すと振る舞いと宣言が黙ってずれる）。
+// target 進捗系の description は閾値を書き写さず、実装（target-reach）と同じ葉モジュールから読む（書き写すと振る舞いと宣言が黙ってずれる）。
 import {
 	MIN_TARGET_DISTANCE_HEIGHT_RATIO,
 	TARGET_REACH_MAX_BARS,
 	TARGET_REACHED_PCT_CAP,
-} from '../../tools/patterns/target-reach.js';
+} from '../../lib/pattern-target-config.js';
 import {
 	BaseMetaSchema,
 	BasePairInputSchema,
