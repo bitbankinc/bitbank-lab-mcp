@@ -79,7 +79,8 @@ export function createCloudPaths(
 		const da = a1 - a0;
 		const db = b1 - b0;
 		const denom = da - db;
-		const t = denom === 0 ? 0 : (a0 - b0) / denom;
+		// 交点は a0 + t*da = b0 + t*db の解 t = (b0 - a0) / (da - db)。符号を誤ると交点がセグメント端に clamp される。
+		const t = denom === 0 ? 0 : (b0 - a0) / denom;
 		const tClamped = Math.max(0, Math.min(1, t));
 		const xi = i + tClamped;
 		const yi = a0 + tClamped * da;

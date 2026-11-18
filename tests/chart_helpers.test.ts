@@ -112,10 +112,10 @@ describe('createCloudPaths', () => {
 		expect(r.redCloudPath).toBe('');
 	});
 
-	it('span が交差すると交点で分割して緑と赤の両方を生成する', () => {
+	it('span が交差すると交点（t=0.5 → x=5, y=80）で分割して緑と赤の両方を生成する', () => {
 		const r = createCloudPaths([1, 3], [3, 1], 0, ctx);
-		expect(r.greenCloudPath).toContain('Z');
-		expect(r.redCloudPath).toContain('Z');
+		expect(r.redCloudPath).toBe('M 0,70 L 5,80 L 5,80 L 0,90 Z');
+		expect(r.greenCloudPath).toBe('M 5,80 L 10,70 L 10,90 L 5,80 Z');
 	});
 
 	it('null ギャップで雲を区切る（ギャップ後の区間だけ描く）', () => {
@@ -181,10 +181,11 @@ describe('renderSubPanels', () => {
 		expect(r.svg).not.toContain('<path');
 	});
 
-	it('全出来高ゼロの Volume パネルはバーを描かない', () => {
+	it('全出来高ゼロの Volume パネルはデータバーを描かない（凡例 8px スウォッチのみ）', () => {
 		const items = baseCtx.displayItems.map((d) => ({ ...d, volume: 0 }));
 		const r = renderSubPanels(['volume'], { ...baseCtx, displayItems: items });
 		expect(r.svg).toContain('Volume');
-		expect(r.svg).not.toContain('rgba(34,197,94,0.5)"/><rect');
+		// データバーは barW=6（width="6"）、凡例は width="8" なので幅で区別できる
+		expect(r.svg.match(/width="6"/g)).toBeNull();
 	});
 });

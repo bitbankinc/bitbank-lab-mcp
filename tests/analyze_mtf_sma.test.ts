@@ -270,7 +270,7 @@ describe('analyze_mtf_sma: 表示分岐とエラー経路', () => {
 		};
 		const text = res.content?.[0]?.text ?? '';
 		expect(text).toContain('SMA200=n/a =');
-		expect(text).not.toContain('(%');
+		expect(text).not.toContain('%');
 	});
 
 	it('pricePosition / distancePct / recentCrosses があれば ▲・乖離・recent を表示する', async () => {
