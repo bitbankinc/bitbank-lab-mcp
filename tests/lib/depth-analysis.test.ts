@@ -1,5 +1,47 @@
 import { describe, expect, it } from 'vitest';
-import { estimateZones } from '../../lib/depth-analysis.js';
+import { estimateZones, toFiniteRawLevels } from '../../lib/depth-analysis.js';
+
+describe('toFiniteRawLevels', () => {
+	it('正常な string tuple と "0" を保持する', () => {
+		const { rows, dropped } = toFiniteRawLevels([
+			['10100', '0.2'],
+			['10200', '0'],
+		]);
+		expect(rows).toHaveLength(2);
+		expect(dropped).toBe(0);
+	});
+
+	it('数値変換不能な値を含む行は drop する', () => {
+		const { rows, dropped } = toFiniteRawLevels([
+			['10100', '0.2'],
+			['abc', '0.3'],
+			['10300', 'NaN'],
+		]);
+		expect(rows).toEqual([['10100', '0.2']]);
+		expect(dropped).toBe(2);
+	});
+
+	it('空文字・空白のみ・null は Number() で 0 に化けるが drop する', () => {
+		const { rows, dropped } = toFiniteRawLevels([
+			['10100', ''],
+			[' ', '0.2'],
+			[null as unknown as string, '0.3'],
+		]);
+		expect(rows).toEqual([]);
+		expect(dropped).toBe(3);
+	});
+
+	it('2 要素配列でない行（オブジェクト・要素数違い）は drop する', () => {
+		const { rows, dropped } = toFiniteRawLevels([
+			{ 0: '10100', 1: '0.2' } as unknown as [string, string],
+			['10100', '0.2', 'extra'] as unknown as [string, string],
+			['10200'] as unknown as [string, string],
+			['10300', '0.4'],
+		]);
+		expect(rows).toEqual([['10300', '0.4']]);
+		expect(dropped).toBe(3);
+	});
+});
 
 describe('estimateZones', () => {
 	it('空配列は空配列を返す', () => {

@@ -1,5 +1,6 @@
 // render_depth_svg と同じ累積計算（lib/depth-analysis）を共有する。
 
+import { toNum } from '../lib/conversions.js';
 import { toIsoTime } from '../lib/datetime.js';
 import { buildCumulativeSteps } from '../lib/depth-analysis.js';
 import getDepth from '../lib/get-depth.js';
@@ -22,9 +23,10 @@ function toFiniteTuples(raw: Array<[unknown, unknown]>): {
 	let dropped = 0;
 	const rows: Array<[number, number]> = [];
 	for (const [p, s] of raw) {
-		const pn = Number(p);
-		const sn = Number(s);
-		if (Number.isFinite(pn) && Number.isFinite(sn)) {
+		// toNum は ""（Number("")===0）の 0 化も防ぐ（lib/depth-analysis の toFiniteRawLevels と同じ基準）。
+		const pn = toNum(p);
+		const sn = toNum(s);
+		if (pn != null && sn != null) {
 			rows.push([pn, sn]);
 		} else {
 			dropped++;

@@ -152,6 +152,23 @@ describe('probe D: lib/get-depth の不正レベル', () => {
 		expect(r.meta.warning).toContain('不正な板レベルを除外');
 	});
 
+	it('空文字 size・非配列行も drop され分割代入 throw → network 誤分類に戻らない（PR 476 レビュー）', async () => {
+		mockFetchJson({
+			success: 1,
+			data: {
+				asks: [['10100', '0.2'], ['10200', ''], { 0: '10300', 1: '0.4' }],
+				bids: [['9900', '0.3']],
+				timestamp: TS,
+			},
+		});
+		const res = await getDepth('btc_jpy');
+		expect(res.ok).toBe(true);
+		// biome-ignore lint/suspicious/noExplicitAny: probe assertion
+		const r = res as any;
+		expect(r.data.asks).toEqual([['10100', '0.2']]);
+		expect(r.meta.droppedRows).toEqual({ bids: 0, asks: 2 });
+	});
+
 	it('drop で片側が全滅したら upstream fail する', async () => {
 		mockFetchJson({
 			success: 1,
