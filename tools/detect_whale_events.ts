@@ -1,10 +1,12 @@
 import { z } from 'zod';
 import { TtlCache } from '../lib/cache.js';
-import { nowIso } from '../lib/datetime.js';
+import { toIsoTime } from '../lib/datetime.js';
+import { formatTimestampJST } from '../lib/formatter.js';
 import getDepth from '../lib/get-depth.js';
 import { CROSSED_BOOK_WARNING, isCrossedQuote } from '../lib/price.js';
 import { fail, failFromError, failFromValidation, ok } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
+import { collectUpstreamWarnings, prependWarnings } from '../lib/warning-propagation.js';
 import type { Result } from '../src/schemas.js';
 import type { ToolDefinition } from '../src/tool-definition.js';
 import getCandles from './get_candles.js';
@@ -41,7 +43,11 @@ export default async function detectWhaleEvents(
 
 	const cacheKey = `${chk.pair}:${lookback}:${minSize}`;
 	const hit = cache.get(cacheKey);
-	if (hit) return hit;
+	// 60 秒キャッシュのヒットを黙って返すと古い板スナップショットが最新に見えるので、meta で開示する（📸 の時刻は text 側に残る）。
+	if (hit) {
+		const hitMeta = (hit.meta ?? {}) as Record<string, unknown>;
+		return { ...hit, meta: { ...hitMeta, cache: { hit: true, key: cacheKey } } } as typeof hit;
+	}
 
 	try {
 		const dep = await getDepth(chk.pair, { maxLevels: 200 });
@@ -112,10 +118,17 @@ export default async function detectWhaleEvents(
 		const avgBuyDist = avg(buyDists);
 		const avgSellDist = avg(sellDists);
 
+		const upstreamWarning = collectUpstreamWarnings([
+			{ source: 'depth', warning: (dep.meta as { warning?: string } | undefined)?.warning },
+			{ source: 'candles', warning: (candlesRes.meta as { warning?: string } | undefined)?.warning },
+		]);
+		const snapshotTs = Number((dep.data as { timestamp?: unknown }).timestamp);
+
 		// 数量の単位は pair の base 通貨から導出する（規約元6ツールと同じ書式）。
 		const baseCcy = chk.pair.split('_')[0]?.toUpperCase() ?? '';
 		const text = [
 			...(crossed ? [CROSSED_BOOK_WARNING, ''] : []),
+			...(Number.isFinite(snapshotTs) ? [`📸 ${formatTimestampJST(snapshotTs)} 時点の板スナップショット`, ''] : []),
 			`=== ${chk.pair.toUpperCase()} 大口動向分析（過去${lookback}）===`,
 			'',
 			`🐋 検出された大口: ${events.length}件`,
@@ -161,8 +174,11 @@ export default async function detectWhaleEvents(
 			meta: { lookback, minSize },
 		};
 
-		const meta = createMeta(chk.pair, { fetchedAt: nowIso() });
-		const out = ok(text, data, meta);
+		const meta = createMeta(chk.pair, {
+			...(Number.isFinite(snapshotTs) ? { snapshotAt: toIsoTime(snapshotTs) } : {}),
+			...(upstreamWarning ? { warning: upstreamWarning } : {}),
+		});
+		const out = ok(prependWarnings(text, upstreamWarning ? { warning: upstreamWarning } : undefined), data, meta);
 		cache.set(cacheKey, out);
 		return out;
 	} catch (e: unknown) {

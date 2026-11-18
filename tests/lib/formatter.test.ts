@@ -183,6 +183,11 @@ describe('formatVolumeJPY', () => {
 	});
 	it('1億未満は万円表記', () => {
 		expect(formatVolumeJPY(50_000_000)).toBe('5000万円');
+		expect(formatVolumeJPY(10_000)).toBe('1万円');
+	});
+	it('1万円未満は 0万円 に潰さず円表記', () => {
+		expect(formatVolumeJPY(4_999)).toBe('4,999円');
+		expect(formatVolumeJPY(0)).toBe('0円');
 	});
 	it('null は n/a を返す', () => {
 		expect(formatVolumeJPY(null)).toBe('n/a');
