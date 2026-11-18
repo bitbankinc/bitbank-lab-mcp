@@ -376,7 +376,8 @@ describe('prepare_depth_data', () => {
 		);
 		const res = await prepareDepthData({ pair: 'btc_jpy' });
 		assertOk(res);
-		// summary に warning が含まれる（合計 3 件）
+		// summary に warning が含まれる（合計 3 件）。warning は content 先頭に置く（.claude/rules/tools.md）
+		expect(res.summary.startsWith('⚠️')).toBe(true);
 		expect(res.summary).toContain('3件');
 		expect(res.summary).toContain('bids: 1件');
 		expect(res.summary).toContain('asks: 2件');

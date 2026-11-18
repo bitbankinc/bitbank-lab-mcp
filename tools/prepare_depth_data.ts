@@ -172,7 +172,8 @@ export default async function prepareDepthData(
 
 		const ratioText = bandRatio == null ? 'n/a' : bandRatio.toFixed(2);
 		const baseSummary = `${chk.pair} depth data (bids: ${bidSteps.length}, asks: ${askSteps.length}, mid: ${data.mid ?? 'n/a'}, ±${(bandPct * 100).toFixed(2)}% ratio: ${ratioText})`;
-		const summary = warning ? `${baseSummary}\n${warning}` : baseSummary;
+		// warning は先頭に置く（.claude/rules/tools.md: LLM が不完全性に先に気づけるよう content 先頭に出す）。
+		const summary = warning ? `${warning}\n${baseSummary}` : baseSummary;
 		return parseAsResult<PrepareDepthDataResult, PrepareDepthDataMeta>(
 			PrepareDepthDataOutputSchema,
 			ok(summary, data, meta),

@@ -31,6 +31,16 @@ describe('toFiniteRawLevels', () => {
 		expect(dropped).toBe(3);
 	});
 
+	it('非 string 要素（boolean・number）は Number() で数値に化けるが drop する', () => {
+		const { rows, dropped } = toFiniteRawLevels([
+			['10200', true] as unknown as [string, string],
+			[10100, 0.2] as unknown as [string, string],
+			['10300', '0.4'],
+		]);
+		expect(rows).toEqual([['10300', '0.4']]);
+		expect(dropped).toBe(2);
+	});
+
 	it('2 要素配列でない行（オブジェクト・要素数違い）は drop する', () => {
 		const { rows, dropped } = toFiniteRawLevels([
 			{ 0: '10100', 1: '0.2' } as unknown as [string, string],

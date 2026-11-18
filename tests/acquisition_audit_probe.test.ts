@@ -156,7 +156,7 @@ describe('probe D: lib/get-depth の不正レベル', () => {
 		mockFetchJson({
 			success: 1,
 			data: {
-				asks: [['10100', '0.2'], ['10200', ''], { 0: '10300', 1: '0.4' }],
+				asks: [['10100', '0.2'], ['10200', ''], { 0: '10300', 1: '0.4' }, ['10400', true]],
 				bids: [['9900', '0.3']],
 				timestamp: TS,
 			},
@@ -166,7 +166,7 @@ describe('probe D: lib/get-depth の不正レベル', () => {
 		// biome-ignore lint/suspicious/noExplicitAny: probe assertion
 		const r = res as any;
 		expect(r.data.asks).toEqual([['10100', '0.2']]);
-		expect(r.meta.droppedRows).toEqual({ bids: 0, asks: 2 });
+		expect(r.meta.droppedRows).toEqual({ bids: 0, asks: 3 });
 	});
 
 	it('drop で片側が全滅したら upstream fail する', async () => {
