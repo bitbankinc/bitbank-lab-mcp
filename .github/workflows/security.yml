@@ -27,8 +27,13 @@ jobs:
       - name: Install deps
         run: npm ci
 
-      - name: npm audit (high/critical)
-        run: npm audit --audit-level=high
+      - name: npm audit (dependencies, high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+      # devDependencies 含む全体。修正版未リリースの advisory だけ
+      # .github/npm-audit-allowlist.json で期限付きの例外にできる。
+      - name: npm audit (full tree, allowlist)
+        run: npx tsx scripts/audit_gate.ts
 
   # gitleaks-action は organization ではライセンスキーが要るので、バイナリを直接実行する。
   gitleaks:
