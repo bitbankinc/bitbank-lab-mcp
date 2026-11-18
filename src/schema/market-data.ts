@@ -340,7 +340,11 @@ export const GetDepthDataSchemaOut = z.object({
 		.optional(),
 });
 export const GetDepthMetaSchemaOut = BaseMetaSchema.extend({
-	warning: z.string().optional().describe('板が交差しているとき（連続取引ではない可能性）の注意'),
+	droppedRows: z.object({ bids: z.number(), asks: z.number() }).optional(),
+	warning: z
+		.string()
+		.optional()
+		.describe('不正な板レベルを除外したとき・板が交差しているとき（連続取引ではない可能性）の注意'),
 });
 export const GetDepthOutputSchema = toolResultSchema(GetDepthDataSchemaOut, GetDepthMetaSchemaOut);
 

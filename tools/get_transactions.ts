@@ -128,10 +128,16 @@ export default async function getTransactions(
 		effectiveLimit = lim.value;
 	}
 
-	const url =
-		date && /^\d{8}$/.test(String(date))
-			? `${BITBANK_API_BASE}/${chk.pair}/transactions/${date}`
-			: `${BITBANK_API_BASE}/${chk.pair}/transactions`;
+	// 形式不正の date を黙って latest に落とすと、別日のデータが meta.source='by_date' のまま返ってしまう。
+	if (date != null && !/^\d{8}$/.test(String(date))) {
+		return GetTransactionsOutputSchema.parse(
+			fail(`date は YYYYMMDD 形式で指定してください（指定値: ${String(date)}）`, 'user'),
+		);
+	}
+
+	const url = date
+		? `${BITBANK_API_BASE}/${chk.pair}/transactions/${date}`
+		: `${BITBANK_API_BASE}/${chk.pair}/transactions`;
 
 	try {
 		const { data: json, rateLimit } = await fetchJsonWithRateLimit(url, { timeoutMs: 4000, retries: DEFAULT_RETRIES });
@@ -154,7 +160,8 @@ export default async function getTransactions(
 				const amount = toNum(t.amount ?? t.size);
 				const side = normalizeSide(t.side);
 				const ms = toMs(t.executed_at ?? t.timestamp ?? t.date);
-				const isoTime = toIsoMs(ms);
+				// 0・負の timestamp は epoch 近傍の約定として表示されてしまうので、欠損と同じく行ごと drop する。
+				const isoTime = ms != null && ms > 0 ? toIsoMs(ms) : null;
 				if (price == null || amount == null || side == null || isoTime == null) {
 					droppedCount++;
 					return null;
@@ -258,10 +265,8 @@ export default async function getTransactions(
 			});
 		}
 		const baseMsg = e instanceof Error && e.message ? e.message : typeof e === 'string' ? e : 'ネットワークエラー';
-		// YYYYMMDD でない date は latest にフォールバックしているので、その 404 にアーカイブ未公開のヒントを付けない（URL 生成と同じ形式判定に揃える）。
-		const isDateArchiveRequest = date != null && /^\d{8}$/.test(String(date));
 		const archiveHint =
-			isDateArchiveRequest && /404/.test(baseMsg) && !isArchiveExpectedPublished(String(date))
+			date != null && /404/.test(baseMsg) && !isArchiveExpectedPublished(String(date))
 				? `（/transactions/{YYYYMMDD} は UTC 暦日アーカイブで、date=${date} は UTC ではまだ完了していないため未公開です。直近の約定は date 省略の latest を使用してください）`
 				: '';
 		const wrapped = new Error(`${baseMsg} [url: ${url}]${archiveHint}`);

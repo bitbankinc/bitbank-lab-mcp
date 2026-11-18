@@ -20,6 +20,22 @@ export function buildCumulativeSteps(levels: ReadonlyArray<PriceSize>, side: 'bi
 	return out;
 }
 
+// /depth は値を string で返すので、壊れた値は NaN になって Math.max/min・Zod parse・表示まで伝播する。/depth を読む全ツールの入口で drop する。
+export function toFiniteRawLevels<T extends readonly [unknown, unknown]>(
+	raw: readonly T[],
+): { rows: T[]; dropped: number } {
+	let dropped = 0;
+	const rows: T[] = [];
+	for (const lvl of raw) {
+		if (Number.isFinite(Number(lvl?.[0])) && Number.isFinite(Number(lvl?.[1]))) {
+			rows.push(lvl);
+		} else {
+			dropped++;
+		}
+	}
+	return { rows, dropped };
+}
+
 export function estimateZones(levels: ReadonlyArray<[number, number]>, side: 'bid' | 'ask'): DepthZone[] {
 	if (!levels.length) return [];
 	const qtys = levels.map(([, s]) => s);

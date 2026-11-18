@@ -90,8 +90,12 @@ export default async function prepareDepthData(
 			return fail('板データが不足しています（asks/bids の両方が必要です）', 'upstream');
 		}
 
-		const { rows: bidsNum, dropped: bidsDropped } = toFiniteTuples(bidsRaw);
-		const { rows: asksNum, dropped: asksDropped } = toFiniteTuples(asksRaw);
+		// getDepth が入口で drop した分も合算して申告する（上流の除外件数を落とさない）。
+		const upstreamDropped = depth.meta?.droppedRows ?? { bids: 0, asks: 0 };
+		const { rows: bidsNum, dropped: bidsOwnDropped } = toFiniteTuples(bidsRaw);
+		const { rows: asksNum, dropped: asksOwnDropped } = toFiniteTuples(asksRaw);
+		const bidsDropped = bidsOwnDropped + upstreamDropped.bids;
+		const asksDropped = asksOwnDropped + upstreamDropped.asks;
 
 		if (!bidsNum.length || !asksNum.length) {
 			return fail('板データの数値変換に失敗しました（有効な bids/asks が存在しません）', 'upstream');

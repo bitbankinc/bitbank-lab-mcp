@@ -1,6 +1,6 @@
 import { toNum } from '../lib/conversions.js';
 import { toIsoTime } from '../lib/datetime.js';
-import { estimateZones } from '../lib/depth-analysis.js';
+import { estimateZones, toFiniteRawLevels } from '../lib/depth-analysis.js';
 import { formatExactPrice, formatPriceDecimals, formatSummary, formatTimestampJST } from '../lib/formatter.js';
 import { BITBANK_API_BASE, DEFAULT_RETRIES, fetchJsonWithRateLimit } from '../lib/http.js';
 import { CROSSED_BOOK_WARNING, isCrossedQuote, midPriceDecimals, roundMidPrice, roundSpread } from '../lib/price.js';
@@ -25,20 +25,6 @@ export interface GetOrderbookParams {
 
 type RawLevel = [string, string]; // [price, size] from API
 type NumLevel = [number, number]; // [price, size] parsed
-
-// /depth は値を string で返すので、壊れた値は NaN になって Math.max/min・Zod parse・表示まで伝播する。prepare_depth_data の toFiniteTuples と同じ防御を全 mode の入口で行う。
-function toFiniteRawLevels(raw: RawLevel[]): { rows: RawLevel[]; dropped: number } {
-	let dropped = 0;
-	const rows: RawLevel[] = [];
-	for (const lvl of raw) {
-		if (Number.isFinite(Number(lvl?.[0])) && Number.isFinite(Number(lvl?.[1]))) {
-			rows.push(lvl);
-		} else {
-			dropped++;
-		}
-	}
-	return { rows, dropped };
-}
 
 function toLevelsWithCum(levels: NumLevel[], n: number): OrderbookLevelWithCum[] {
 	const out = levels.slice(0, n).map(([price, size]) => ({ price, size, cumSize: 0 }));

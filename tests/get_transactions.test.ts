@@ -131,13 +131,15 @@ describe('get_transactions', () => {
 		expect(url).toBe('https://public.bitbank.cc/btc_jpy/transactions/20240315');
 	});
 
-	it('URL: date が 8 桁以外（部分一致しない長さ）の場合は /transactions に当たる', async () => {
+	it('date が 8 桁以外（部分一致しない長さ）の場合は fetch せず user エラーを返す', async () => {
 		const fetchMock = mockFetchOk({ success: 1, data: { transactions: buildTransactions(1) } });
 		globalThis.fetch = fetchMock;
-		// 内部の正規表現が /^\d{8}$/ に締まっているため 9 桁では date URL を組まない
-		await getTransactions('btc_jpy', 10, '202403150');
-		const url = (fetchMock as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0] as string;
-		expect(url).toBe('https://public.bitbank.cc/btc_jpy/transactions');
+		// 黙って latest にフォールバックすると別日のデータが meta.source='by_date' のまま返るので、形式不正は入口で弾く
+		const res = await getTransactions('btc_jpy', 10, '202403150');
+		assertFail(res);
+		expect(res.meta?.errorType).toBe('user');
+		expect(res.summary).toContain('YYYYMMDD');
+		expect((fetchMock as unknown as { mock: { calls: unknown[][] } }).mock.calls).toHaveLength(0);
 	});
 
 	it('API異常系: success:0 を upstream エラーとして明示分類する', async () => {
