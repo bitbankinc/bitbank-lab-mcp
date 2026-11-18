@@ -49,7 +49,8 @@ function loadAllowlist(): AllowlistEntry[] {
 			entry.reason.length > 0 &&
 			typeof entry.expires === 'string' &&
 			/^\d{4}-\d{2}-\d{2}$/.test(entry.expires) &&
-			dayjs(entry.expires).isValid();
+			// dayjs は 02-30 を 03-02 に正規化して isValid が true になるので、往復一致で実在日だけ通す
+			dayjs(entry.expires).format('YYYY-MM-DD') === entry.expires;
 		if (!valid) {
 			fail([
 				`${ALLOWLIST_PATH}: 不正なエントリ: ${JSON.stringify(entry)}`,
