@@ -235,3 +235,61 @@ describe('analyze_mtf_sma', () => {
 		expect(text.startsWith('⚠️ [1hour] partial fetch')).toBe(true);
 	});
 });
+
+describe('analyze_mtf_sma: 表示分岐とエラー経路', () => {
+	const mockedAnalyzeSmaSnapshot = vi.mocked(analyzeSmaSnapshot);
+
+	afterEach(() => {
+		vi.clearAllMocks();
+	});
+
+	function snapshotOk(smas: Record<string, unknown>, recentCrosses: unknown[] = []): SmaSnapshotResult {
+		return {
+			ok: true,
+			summary: 'ok',
+			data: {
+				alignment: 'mixed',
+				summary: { close: 100, align: 'mixed', position: 'between' },
+				latest: { close: 100 },
+				sma: { SMA_200: null },
+				smas,
+				crosses: [],
+				recentCrosses,
+				tags: [],
+			},
+			meta: { pair: 'btc_jpy', fetchedAt: '2026-01-01T00:00:00.000Z' },
+		} as unknown as SmaSnapshotResult;
+	}
+
+	it('SMA 値が null のときは n/a・位置 =・乖離なしで表示する', async () => {
+		mockedAnalyzeSmaSnapshot.mockResolvedValueOnce(
+			snapshotOk({ '200': { value: null, distancePct: null, slope: 'flat' } }),
+		);
+		const res = (await toolDef.handler({ pair: 'btc_jpy', timeframes: ['1day'], periods: [200] })) as {
+			content: Array<{ text: string }>;
+		};
+		const text = res.content?.[0]?.text ?? '';
+		expect(text).toContain('SMA200=n/a =');
+		expect(text).not.toContain('%');
+	});
+
+	it('pricePosition / distancePct / recentCrosses があれば ▲・乖離・recent を表示する', async () => {
+		mockedAnalyzeSmaSnapshot.mockResolvedValueOnce(
+			snapshotOk({ '200': { value: 95, distancePct: 5.26, slope: 'rising', pricePosition: 'above' } }, [
+				{ type: 'golden_cross', pair: [25, 75], barsAgo: 3, date: '2026-01-10' },
+			]),
+		);
+		const res = (await toolDef.handler({ pair: 'btc_jpy', timeframes: ['1day'], periods: [200] })) as {
+			content: Array<{ text: string }>;
+		};
+		const text = res.content?.[0]?.text ?? '';
+		expect(text).toContain('SMA200=95 ▲ (+5.26%) slope=rising');
+		expect(text).toContain('recent: golden_cross(25/75, 3ago)');
+	});
+
+	it('snapshot が例外を投げたら fail を返す（catch 経路）', async () => {
+		mockedAnalyzeSmaSnapshot.mockRejectedValueOnce(new Error('boom'));
+		const res = await analyzeMtfSma('btc_jpy', ['1day']);
+		expect(res.ok).toBe(false);
+	});
+});

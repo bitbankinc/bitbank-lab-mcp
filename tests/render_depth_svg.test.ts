@@ -332,4 +332,11 @@ describe('render_depth_svg', () => {
 		const res = (await toolDef.handler({ pair: 'btc_jpy' })) as { ok: boolean };
 		expect(res.ok).toBe(false);
 	});
+
+	it('getDepth が例外を投げたら fail を返す（catch 経路）', async () => {
+		vi.mocked(getDepth).mockRejectedValueOnce(new Error('boom'));
+		const res = await renderDepthSvg({ pair: 'btc_jpy' });
+		assertFail(res);
+		expect(res.summary).toContain('boom');
+	});
 });
