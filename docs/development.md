@@ -14,7 +14,7 @@ npm ci
 
 ビルドステップは不要です（tsx で TypeScript を直接実行します）。
 
-⚠️ **最初の commit の前に** [CONTRIBUTING.md](../CONTRIBUTING.md) を読んでください。pre-commit フックが **gitleaks のインストールを必須**にしています（未導入だと commit が失敗します）。なお `npm ci` は `CI` 環境変数が真でないときだけフックを自動導入するので、`CI` が設定された環境では `npx lefthook install` を実行してください。
+⚠️ **最初の commit の前に** [CONTRIBUTING.md](../CONTRIBUTING.md) を読んでください。pre-commit フックが **gitleaks のインストールを必須**にしています（未導入だと commit が失敗します）。環境によっては `npm ci` がフックを自動導入しません（`CI` 環境変数が真のとき、依存パッケージの install script を実行しない npm 設定・バージョンなど）。`npm ci` の後に `npx lefthook install` を一度実行しておくと確実です。
 
 ## ディレクトリマップ
 
