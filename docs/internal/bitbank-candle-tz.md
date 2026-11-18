@@ -136,7 +136,7 @@ bitbank の BTC/JPY 取引開始（2017 年）より前の日付。レスポン�
 |---|---|
 | bitbank API | `/candlestick/<type>/<UTC-key>` で OHLCV chunk を返す |
 | `fetchCandleChunk` / multi-day merge | 必要な UTC キー集合だけ並列 fetch |
-| `computeAnchorEndMs(date, type, tz)` | `date` を **tz 暦日終端**（`23:59:59.999 in tz`）に変換 |
+| `computeAnchorSpan(date, type, tz)` | `date` を tz 暦日の span に解決（anchor は **tz 暦日終端** `23:59:59.999 in tz` の `endMs`） |
 | filter + `slice(-limit)` | anchor 以前の足だけ残し、本数 `limit` で切る |
 | 表示 | `isoTime` = UTC ISO、`isoTimeLocal` / `keyPoints.date` / summary 日付 = `tz` |
 
@@ -144,7 +144,7 @@ bitbank の BTC/JPY 取引開始（2017 年）より前の日付。レスポン�
 
 ### コード参照
 
-- `computeAnchorEndMs`: `tools/get_candles.ts`（tz 暦日終端）
+- `computeAnchorSpan`: `tools/get_candles.ts`（tz 暦日終端の `endMs` を anchor に使う）
 - sub-day の UTC key 導出と fetch: `tools/get_candles.ts` 付近（`sub-day` / multi-day 経路）
 - スキーマ・利用者向け説明: `src/schema/market-data.ts`, `docs/tools.md`
 
@@ -229,7 +229,7 @@ JST 1 年の窓は UTC 年 chunk 2 本に割れる（JST 年頭は UTC 前年）
 
 ## 関連
 
-- 実装: `tools/get_candles.ts` (`computeAnchorEndMs`, sub-day fetch window)
+- 実装: `tools/get_candles.ts` (`computeAnchorSpan`, sub-day fetch window)
 - テスト: `tests/get_candles.test.ts`（tz anchor・UTC API key・multi-day window）
 - 利用者向け: `docs/tools.md`, `src/schema/market-data.ts`
 - 公式ドキュメント (`bitbankinc/bitbank-api-docs/master/public-api.md`) はタイムゾーンを明記していないため、本実測ログを社内一次ソースとする。

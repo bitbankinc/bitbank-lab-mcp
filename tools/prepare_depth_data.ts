@@ -1,5 +1,6 @@
 // render_depth_svg と同じ累積計算（lib/depth-analysis）を共有する。
 
+import { toNum } from '../lib/conversions.js';
 import { toIsoTime } from '../lib/datetime.js';
 import { buildCumulativeSteps } from '../lib/depth-analysis.js';
 import getDepth from '../lib/get-depth.js';
@@ -22,9 +23,10 @@ function toFiniteTuples(raw: Array<[unknown, unknown]>): {
 	let dropped = 0;
 	const rows: Array<[number, number]> = [];
 	for (const [p, s] of raw) {
-		const pn = Number(p);
-		const sn = Number(s);
-		if (Number.isFinite(pn) && Number.isFinite(sn)) {
+		// toNum は ""（Number("")===0）の 0 化も防ぐ（lib/depth-analysis の toFiniteRawLevels と同じ基準）。
+		const pn = toNum(p);
+		const sn = toNum(s);
+		if (pn != null && sn != null) {
 			rows.push([pn, sn]);
 		} else {
 			dropped++;
@@ -90,8 +92,12 @@ export default async function prepareDepthData(
 			return fail('板データが不足しています（asks/bids の両方が必要です）', 'upstream');
 		}
 
-		const { rows: bidsNum, dropped: bidsDropped } = toFiniteTuples(bidsRaw);
-		const { rows: asksNum, dropped: asksDropped } = toFiniteTuples(asksRaw);
+		// getDepth が入口で drop した分も合算して申告する（上流の除外件数を落とさない）。
+		const upstreamDropped = depth.meta?.droppedRows ?? { bids: 0, asks: 0 };
+		const { rows: bidsNum, dropped: bidsOwnDropped } = toFiniteTuples(bidsRaw);
+		const { rows: asksNum, dropped: asksOwnDropped } = toFiniteTuples(asksRaw);
+		const bidsDropped = bidsOwnDropped + upstreamDropped.bids;
+		const asksDropped = asksOwnDropped + upstreamDropped.asks;
 
 		if (!bidsNum.length || !asksNum.length) {
 			return fail('板データの数値変換に失敗しました（有効な bids/asks が存在しません）', 'upstream');
@@ -166,7 +172,8 @@ export default async function prepareDepthData(
 
 		const ratioText = bandRatio == null ? 'n/a' : bandRatio.toFixed(2);
 		const baseSummary = `${chk.pair} depth data (bids: ${bidSteps.length}, asks: ${askSteps.length}, mid: ${data.mid ?? 'n/a'}, ±${(bandPct * 100).toFixed(2)}% ratio: ${ratioText})`;
-		const summary = warning ? `${baseSummary}\n${warning}` : baseSummary;
+		// warning は先頭に置く（.claude/rules/tools.md: LLM が不完全性に先に気づけるよう content 先頭に出す）。
+		const summary = warning ? `${warning}\n${baseSummary}` : baseSummary;
 		return parseAsResult<PrepareDepthDataResult, PrepareDepthDataMeta>(
 			PrepareDepthDataOutputSchema,
 			ok(summary, data, meta),
