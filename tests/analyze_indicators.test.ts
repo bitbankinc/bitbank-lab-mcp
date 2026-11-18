@@ -556,7 +556,7 @@ describe('analyze_indicators', () => {
 	});
 
 	it('各警告の分岐: StochRSI → データ不足 の警告を含む（16 本）', async () => {
-		// 16 行 < 34 → StochRSI 警告
+		// 16 行 < 32 → StochRSI 警告
 		const rows = makeOhlcvRows(16);
 		globalThis.fetch = vi.fn().mockResolvedValue({
 			ok: true,
