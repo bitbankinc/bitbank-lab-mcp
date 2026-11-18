@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import validateCandleData from '../tools/validate_candle_data.js';
+import validateCandleData, { toolDef } from '../tools/validate_candle_data.js';
 import { assertFail, assertOk } from './_assertResult.js';
 
 function makeOhlcv(n: number, baseTs = 1704067200000) {
@@ -115,5 +115,52 @@ describe('validateCandleData', () => {
 		assertOk(res);
 
 		expect(res.summary).toContain('major');
+	});
+
+	it('出来高ゼロ・スパイク・価格異常の明細行がレポートに出る', async () => {
+		const rows = makeOhlcv(60);
+		rows[20][4] = '0';
+		rows[40][4] = '500';
+		rows[50] = ['150', '260', '140', '250', '6', rows[50][5]];
+		globalThis.fetch = mockFetchOk(rows) as unknown as typeof fetch;
+
+		const res = await validateCandleData('btc_jpy', '1day', '2024', 60);
+		assertOk(res);
+		expect(res.data.volumeAnomalies.zeroCount).toBe(1);
+		expect(res.data.volumeAnomalies.spikeCount).toBeGreaterThanOrEqual(1);
+		expect(res.data.priceAnomalies.anomalyCount).toBeGreaterThanOrEqual(1);
+		expect(res.summary).toContain('(ゼロ)');
+		expect(res.summary).toMatch(/x\)/);
+		expect(res.summary).toMatch(/σ\)/);
+	});
+});
+
+describe('validate_candle_data: handler', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('content テキストにレポートと JSON（meta/data）を含める', async () => {
+		globalThis.fetch = mockFetchOk(makeOhlcv(50)) as unknown as typeof fetch;
+		const res = (await toolDef.handler({
+			pair: 'btc_jpy',
+			type: '1day',
+			date: '2024',
+			limit: 50,
+			tz: 'Asia/Tokyo',
+		})) as {
+			content: Array<{ text: string }>;
+		};
+		const text = res.content?.[0]?.text ?? '';
+		expect(text).toContain('データ品質レポート');
+		expect(text).toContain('"qualityScore"');
+	});
+
+	it('取得失敗はそのまま fail を返す', async () => {
+		globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed')) as unknown as typeof fetch;
+		const res = (await toolDef.handler({ pair: 'btc_jpy', type: '1day', limit: 50, tz: 'Asia/Tokyo' })) as {
+			ok: boolean;
+		};
+		expect(res.ok).toBe(false);
 	});
 });
