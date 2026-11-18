@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { APP_RESOURCE_MIME_TYPE, appResourceRegistry } from '../src/resources/app-resources.js';
 
 describe('appResourceRegistry', () => {
@@ -18,5 +18,22 @@ describe('appResourceRegistry', () => {
 			const second = await r.read();
 			expect(second).toBe(first);
 		}
+	});
+});
+
+describe('appResourceRegistry: 読み込み失敗', () => {
+	afterEach(() => {
+		vi.doUnmock('node:fs/promises');
+		vi.resetModules();
+	});
+
+	it('失敗時はビルド案内付きで throw し、キャッシュされず次の read で復帰する', async () => {
+		vi.resetModules();
+		const readFile = vi.fn().mockRejectedValueOnce(new Error('ENOENT')).mockResolvedValueOnce('<html>ok</html>');
+		vi.doMock('node:fs/promises', () => ({ readFile }));
+		const mod = await import('../src/resources/app-resources.js');
+		const r = mod.appResourceRegistry[0];
+		await expect(r.read()).rejects.toThrow('npm run build:ui');
+		await expect(r.read()).resolves.toBe('<html>ok</html>');
 	});
 });

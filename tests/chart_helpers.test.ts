@@ -123,10 +123,12 @@ describe('createCloudPaths', () => {
 		expect((r.greenCloudPath.match(/Z/g) ?? []).length).toBe(1);
 	});
 
-	it('表示範囲外の区間はスキップする', () => {
+	it('表示範囲外の区間はスキップする（maxPosIndex=displayLength+forwardShift+1 まで描く）', () => {
 		const narrow = { ...ctx, displayLength: 1 };
 		const r = createCloudPaths([2, 2, 2, 2, 2, 2], [1, 1, 1, 1, 1, 1], 0, narrow);
-		expect(typeof r.greenCloudPath).toBe('string');
+		expect(r.greenCloudPath).toContain('30,80');
+		expect(r.greenCloudPath).not.toContain('40,80');
+		expect(r.greenCloudPath).not.toContain('50,80');
 	});
 });
 
@@ -168,11 +170,19 @@ describe('renderSubPanels', () => {
 		expect(r.svg).toContain('Volume');
 		expect(r.svg).toContain('>Up</text>');
 		expect(r.svg).toContain('>Down</text>');
-		// hist が正負両方あるので 0 ラインの破線が出る
+	});
+
+	it('MACD 単独パネル: hist 正負で 0 ラインの破線が出て、hist バー（width=4.2）が null 以外の本数だけ描かれる', () => {
+		const r = renderSubPanels(['macd'], baseCtx);
+		// RSI パネルの midline も "4 4" を出すので、MACD 単独で検証する
 		expect(r.svg).toContain('stroke-dasharray="4 4"');
-		// 上昇/下降バーの両色
-		expect(r.svg).toContain('rgba(34,197,94,0.5)');
-		expect(r.svg).toContain('rgba(239,68,68,0.5)');
+		expect(r.svg.match(/width="4.2"/g)).toHaveLength(4);
+	});
+
+	it('Volume 単独パネル: データバー（width=6）は出来高ゼロを除く本数だけ描かれる', () => {
+		const r = renderSubPanels(['volume'], baseCtx);
+		// volumes [10, 5, 0, 7] → ゼロの 1 本を除く 3 本
+		expect(r.svg.match(/width="6"/g)).toHaveLength(3);
 	});
 
 	it('indicators が無い MACD パネルは凡例だけ描く（値ブロックをスキップ）', () => {
