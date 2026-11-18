@@ -1,10 +1,10 @@
 import { nowIso } from '../../lib/datetime.js';
 import { formatPair, formatPrice, formatYenExact } from '../../lib/formatter.js';
 import { fail, ok } from '../../lib/result.js';
+import type { RawMarginTrade } from '../../src/handlers/portfolio/types.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import { GetMarginTradeHistoryInputSchema, GetMarginTradeHistoryOutputSchema } from '../../src/private/schemas.js';
 import { failPrivateToolError } from '../../src/private/tool-error.js';
-import type { RawMarginTrade } from '../../src/handlers/portfolio/types.js';
 import {
 	completenessNote,
 	epochRangeParams,
