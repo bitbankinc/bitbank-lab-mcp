@@ -1,6 +1,58 @@
-import { toIsoMs } from '../../lib/datetime.js';
+import { parseIso8601, toIsoMs } from '../../lib/datetime.js';
 import { normalizePairCodes } from '../../lib/pair-code.js';
 import type { BitbankPrivateClient } from './client.js';
+
+export interface RawTradeHistoryRow {
+	trade_id: number;
+	pair: string;
+	order_id: number;
+	side: string;
+	position_side?: string;
+	type: string;
+	amount: string;
+	price: string;
+	maker_taker: string;
+	fee_amount_base: string;
+	fee_amount_quote: string;
+	fee_occurred_amount_quote?: string;
+	executed_at: number;
+}
+
+// 現物（get_my_trade_history）と信用（get_margin_trade_history）で同じ射影を共有する（片方だけの修正で乖離させない）。
+export function normalizeTradeRow(t: RawTradeHistoryRow) {
+	return {
+		trade_id: t.trade_id,
+		pair: t.pair,
+		order_id: t.order_id,
+		side: t.side,
+		// 現物側は上流で信用約定を除外済みのため通常 undefined だが、position_side の有無で現物 / 信用を識別する下流契約のためフィールドは残す。
+		position_side: t.position_side,
+		type: t.type,
+		amount: t.amount,
+		price: t.price,
+		maker_taker: t.maker_taker,
+		fee_amount_base: t.fee_amount_base,
+		fee_amount_quote: t.fee_amount_quote,
+		fee_occurred_amount_quote: t.fee_occurred_amount_quote,
+		executed_at: toIsoMs(t.executed_at) ?? String(t.executed_at),
+	};
+}
+
+// since / end は ISO で受けて epoch ms のクエリに変換する。形式不正は呼び出し側で validation_error に落とす。
+export function epochRangeParams(args: {
+	since?: string;
+	end?: string;
+}): { ok: true; params: Record<string, string> } | { ok: false; message: string } {
+	const params: Record<string, string> = {};
+	for (const key of ['since', 'end'] as const) {
+		const v = args[key];
+		if (!v) continue;
+		const parsed = parseIso8601(v);
+		if (!parsed) return { ok: false, message: `${key} の日時形式が不正です: ${v}` };
+		params[key] = String(parsed.valueOf());
+	}
+	return { ok: true, params };
+}
 
 const TRADE_HISTORY_PAGE_SIZE = 1000;
 const MAX_PAGES = 10;
