@@ -1,11 +1,4 @@
 {
 	"comment": "npm audit（devDependencies 含む全体）gate の例外。scripts/audit_gate.ts が読む。修正版が未リリースの advisory だけを、理由と期限付きで登録する。修正版が出たら依存を更新してエントリを削除する（残すと gate が落ちる）。",
-	"allowlist": [
-		{
-			"id": "GHSA-fc5q-39xc-vjpf",
-			"package": "picomatch",
-			"reason": "picomatch の ReDoS（単一分岐の繰り返し extglob）。全リリース（<=4.0.7）が該当し、修正版が未リリース（2026-11-18 時点）。経路は vite / vitest 系の devDependencies のみで、npm 配布物の dependencies には含まれない。",
-			"expires": "2027-02-16"
-		}
-	]
+	"allowlist": []
 }
