@@ -7,6 +7,25 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-19
+
+番号は fork（tjackiet/bitbank-lab-mcp）の PR。
+
+### Fixed
+
+- 板の取得（`get_orderbook` / `prepare_depth_data` / `render_depth_svg` / `detect_whale_events` が使う内部 `get_depth`）：数値に変換できない・string でない・2 要素の配列でない板レベルを入口で除外し、除外した件数を本文の warning と `meta.droppedRows` に出す。除外で片側が全滅したときは失敗にする。これまで `get_depth` だけが素通しで、本文に `NaN` が出たり、壁ゾーン推定に入った NaN がスキーマ検証で落ちて network エラーに化けたりしていた（#476）。
+- `get_transactions`：日付（`date`）が YYYYMMDD でないとき、黙って直近（latest）に切り替えたうえ `meta.source` を `by_date` のまま返していた。入力エラーとして返す。約定時刻が 0 以下の行は欠損と同じく除外して warning に件数を出す（これまで 1970 年ごろの約定が当日の時刻として本文に出ていた）（#476）。
+- `get_ticker`：`timestamp` が 0 以下のとき「📸 1970/01/01 09:00 時点」と出ていた。欠損と同じ扱い（時点行なし・`isoTime` は null）にする（#476）。
+- 指標計算：入力に NaN があるときの扱いを揃えた。RSI は最初の窓に NaN があると以降すべて NaN のまま戻らず、途中の NaN は「変化なし」として黙って通していたので、EMA・ATR と同じ「リセット後、期間ぶん連続して有効なら再開」にする（StochRSI にも効く）。OBV は出来高の NaN 1 本で以降すべて NaN になっていたので「変化なし」として前の値を引き継ぐ。MACD のシグナル線は NaN の区間を詰めて計算していたので、区間ごとに再シードする。あわせて StochRSI は 32 本で %D が確定するのに 34 本未満を無効にしていたので 32 本に揃える（データ不足の警告も同じ閾値に）。通常の取得経路では NaN の行は届かない（取得側で失敗にする）ため、既存の値は変わらない（#478）。
+- `detect_whale_events`：取得側の warning（板レベルの除外・ローソク足の部分取得）を本文の先頭と `meta.warning` に通し、板スナップショットの時点を本文（📸）と `meta.snapshotAt` に出す。60 秒キャッシュに当たったときは `meta.cache` で分かるようにする。これまで warning が消え、古いスナップショットが最新のように見えた（#479）。
+- JPY 換算出来高の表示（`get_tickers_jpy` / `analyze_currency_strength`）：1 万円未満が「0万円」と出ていた。円のまま出す（#479）。
+- チャートの一目均衡表：雲の色が入れ替わる位置が、スパンの交点ではなく足の境界に寄っていた（交点計算の符号誤り）（#480）。
+
+### Changed
+
+- 開発：Security Audit（npm audit）を 2 段にする。本番依存は従来どおり即失敗、開発依存は期限付きの許容リスト（`scripts/audit_gate.ts`）を通す。修正版が未リリースの picomatch の advisory で全 PR の CI が止まっていた。あわせて開発依存を更新（#477）。
+- 開発：テストのカバレッジ閾値を実測に合わせて引き上げ（statements/branches/functions/lines = 80/70/80/80 → 94/84/95/95）。テストの追加（UI の金額表示・チャート描画ヘルパー・異常系ほか約 50 件）、挙動を変えないリファクタリング（schema→tools の依存解消・約定履歴の正規化の共通化）、docs の索引と開発者ガイドの拡充を含む（#480 / #481 / #482）。
+
 ## [0.8.0] - 2026-11-17
 
 番号は fork（tjackiet/bitbank-lab-mcp）の issue。
