@@ -79,36 +79,40 @@ export function ema(prices: number[], period: number): number[] {
 }
 
 // 変動なし区間（avgGain=0 かつ avgLoss=0）は中立値 50 を返す（業界標準）。
+// 非有限の変化は ema/wilderAtr と同じく状態リセット→period 連続有限で再シードする（シード汚染と「NaN を変化なし扱い」の両方を防ぐ）。
 export function rsi(closes: number[], period: number): number[] {
 	const result: number[] = nanArray(closes.length);
+	if (period < 1) return result;
 
-	if (closes.length < period + 1) {
-		return result;
-	}
-
-	let avgGain = 0;
+	let avgGain: number | undefined;
 	let avgLoss = 0;
-	for (let i = 1; i <= period; i++) {
-		const change = closes[i] - closes[i - 1];
-		if (change > 0) avgGain += change;
-		else avgLoss += Math.abs(change);
-	}
-	avgGain /= period;
-	avgLoss /= period;
+	let seedGain = 0;
+	let seedLoss = 0;
+	let seedCount = 0;
 
-	if (avgLoss === 0) {
-		result[period] = avgGain === 0 ? 50 : 100;
-	} else {
-		result[period] = 100 - 100 / (1 + avgGain / avgLoss);
-	}
-
-	for (let i = period + 1; i < closes.length; i++) {
+	for (let i = 1; i < closes.length; i++) {
 		const change = closes[i] - closes[i - 1];
+		if (!Number.isFinite(change)) {
+			avgGain = undefined;
+			seedGain = 0;
+			seedLoss = 0;
+			seedCount = 0;
+			continue;
+		}
 		const gain = change > 0 ? change : 0;
-		const loss = change < 0 ? Math.abs(change) : 0;
+		const loss = change < 0 ? -change : 0;
 
-		avgGain = (avgGain * (period - 1) + gain) / period;
-		avgLoss = (avgLoss * (period - 1) + loss) / period;
+		if (avgGain === undefined) {
+			seedGain += gain;
+			seedLoss += loss;
+			seedCount++;
+			if (seedCount < period) continue;
+			avgGain = seedGain / period;
+			avgLoss = seedLoss / period;
+		} else {
+			avgGain = (avgGain * (period - 1) + gain) / period;
+			avgLoss = (avgLoss * (period - 1) + loss) / period;
+		}
 
 		if (avgLoss === 0) {
 			result[i] = avgGain === 0 ? 50 : 100;
@@ -192,18 +196,18 @@ export function macd(
 		}
 	}
 
-	// Signal EMA — 有効な MACD 値のみでシードする
-	const validStart = line.findIndex((v) => Number.isFinite(v));
+	// Signal EMA — 連続有限セグメントごとに計算する（ギャップを跨いで圧縮すると前後の値が隣接扱いになり、ema のリセット・再シード意味論と食い違う）。
 	const signalLine: number[] = nanArray(n);
-
-	if (validStart >= 0) {
-		const validLine = line.slice(validStart).filter((v) => Number.isFinite(v));
-		const sigEma = ema(validLine, signal);
-		let idx = 0;
-		for (let i = validStart; i < n; i++) {
-			if (Number.isFinite(line[i])) {
-				signalLine[i] = sigEma[idx++];
+	let segStart = -1;
+	for (let i = 0; i <= n; i++) {
+		const finite = i < n && Number.isFinite(line[i]);
+		if (finite && segStart < 0) segStart = i;
+		if (!finite && segStart >= 0) {
+			const sigEma = ema(line.slice(segStart, i), signal);
+			for (let j = 0; j < sigEma.length; j++) {
+				signalLine[segStart + j] = sigEma[j];
 			}
+			segStart = -1;
 		}
 	}
 
@@ -373,7 +377,8 @@ export function stochRSI(
 	const n = rsiValues.length;
 
 	const validCount = rsiValues.filter((v) => Number.isFinite(v)).length;
-	if (validCount < stochPeriod + smoothK + smoothD) {
+	// %D の確定に要る有効 RSI は stochastic() の n 条件と同じ -2 付き（抜けると 32〜33 本時の有効な %D を潰す）。
+	if (validCount < stochPeriod + smoothK + smoothD - 2) {
 		return { kSeries: nanArray(n), dSeries: nanArray(n) };
 	}
 
@@ -484,7 +489,10 @@ export function obv(closes: number[], volumes: number[]): number[] {
 	const result: number[] = [0];
 	for (let i = 1; i < n; i++) {
 		const prev = result[i - 1];
-		if (closes[i] > closes[i - 1]) {
+		// 非有限の volume/close は累積を恒久汚染する（累積系はリセット不能）ので「変化なし」として prev を引き継ぐ。
+		if (!Number.isFinite(volumes[i]) || !Number.isFinite(closes[i]) || !Number.isFinite(closes[i - 1])) {
+			result.push(prev);
+		} else if (closes[i] > closes[i - 1]) {
 			result.push(prev + volumes[i]);
 		} else if (closes[i] < closes[i - 1]) {
 			result.push(prev - volumes[i]);

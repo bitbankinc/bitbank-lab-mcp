@@ -121,6 +121,8 @@ export function formatPercent(
 export function formatVolumeJPY(value: number | null | undefined): string {
 	if (value == null || !Number.isFinite(value)) return 'n/a';
 	if (value >= 100_000_000) return `${(value / 100_000_000).toFixed(1)}億円`;
+	// 1 万円未満を万円に丸めると「0万円」になり、小型ペアの出来高をゼロと誤読させるので円のまま出す。
+	if (value < 10_000) return `${Math.round(value).toLocaleString('ja-JP')}円`;
 	return `${Math.round(value / 10_000)}万円`;
 }
 

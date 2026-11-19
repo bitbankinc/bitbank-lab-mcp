@@ -1,35 +1,20 @@
-import { nowIso, parseIso8601, toIsoMs } from '../../lib/datetime.js';
+import { nowIso } from '../../lib/datetime.js';
 import { formatPair, formatPrice, formatYenExact } from '../../lib/formatter.js';
 import { fail, ok } from '../../lib/result.js';
+import type { RawMarginTrade } from '../../src/handlers/portfolio/types.js';
 import { getDefaultClient } from '../../src/private/client.js';
 import { GetMarginTradeHistoryInputSchema, GetMarginTradeHistoryOutputSchema } from '../../src/private/schemas.js';
 import { failPrivateToolError } from '../../src/private/tool-error.js';
 import {
 	completenessNote,
+	epochRangeParams,
 	fetchFilteredTradeHistory,
 	hiddenTradesNote,
+	normalizeTradeRow,
 	scanBoundaryIso,
 	tradesToDisplay,
 } from '../../src/private/trade-history.js';
 import type { ToolDefinition } from '../../src/tool-definition.js';
-
-interface RawMarginTrade {
-	trade_id: number;
-	pair: string;
-	order_id: number;
-	side: string;
-	position_side?: string;
-	type: string;
-	amount: string;
-	price: string;
-	maker_taker: string;
-	fee_amount_base: string;
-	fee_amount_quote: string;
-	fee_occurred_amount_quote?: string;
-	profit_loss?: string;
-	interest?: string;
-	executed_at: number;
-}
 
 function hasValue(v: string | undefined): v is string {
 	return v != null && v !== '';
@@ -60,25 +45,11 @@ export default async function getMarginTradeHistory(args: {
 	const client = getDefaultClient();
 
 	try {
-		const baseParams: Record<string, string> = {};
-		if (pair) baseParams.pair = pair;
-
-		if (since) {
-			const parsed = parseIso8601(since);
-			if (!parsed) {
-				return GetMarginTradeHistoryOutputSchema.parse(
-					fail(`since の日時形式が不正です: ${since}`, 'validation_error'),
-				);
-			}
-			baseParams.since = String(parsed.valueOf());
+		const range = epochRangeParams({ since, end });
+		if (!range.ok) {
+			return GetMarginTradeHistoryOutputSchema.parse(fail(range.message, 'validation_error'));
 		}
-		if (end) {
-			const parsed = parseIso8601(end);
-			if (!parsed) {
-				return GetMarginTradeHistoryOutputSchema.parse(fail(`end の日時形式が不正です: ${end}`, 'validation_error'));
-			}
-			baseParams.end = String(parsed.valueOf());
-		}
+		const baseParams: Record<string, string> = { ...(pair ? { pair } : {}), ...range.params };
 
 		const fetched = await fetchFilteredTradeHistory<RawMarginTrade>(client, {
 			baseParams,
@@ -92,21 +63,9 @@ export default async function getMarginTradeHistory(args: {
 		const timestamp = nowIso();
 
 		const trades = rawTrades.map((t) => ({
-			trade_id: t.trade_id,
-			pair: t.pair,
-			order_id: t.order_id,
-			side: t.side,
-			position_side: t.position_side,
-			type: t.type,
-			amount: t.amount,
-			price: t.price,
-			maker_taker: t.maker_taker,
-			fee_amount_base: t.fee_amount_base,
-			fee_amount_quote: t.fee_amount_quote,
-			fee_occurred_amount_quote: t.fee_occurred_amount_quote,
+			...normalizeTradeRow(t),
 			profit_loss: t.profit_loss,
 			interest: t.interest,
-			executed_at: toIsoMs(t.executed_at) ?? String(t.executed_at),
 		}));
 
 		const lines: string[] = [];

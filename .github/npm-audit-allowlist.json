@@ -1,0 +1,4 @@
+{
+	"comment": "npm audit（devDependencies 含む全体）gate の例外。scripts/audit_gate.ts が読む。修正版が未リリースの advisory だけを、理由と期限付きで登録する。修正版が出たら依存を更新してエントリを削除する（残すと gate が落ちる）。",
+	"allowlist": []
+}

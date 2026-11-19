@@ -1,3 +1,4 @@
+import { toNum } from './conversions.js';
 import { avg as mathAvg, stddev } from './math.js';
 
 export type DepthZone = { low: number; high: number; label: string; color?: string };
@@ -18,6 +19,30 @@ export function buildCumulativeSteps(levels: ReadonlyArray<PriceSize>, side: 'bi
 		out.push([p, cum]);
 	}
 	return out;
+}
+
+// /depth は値を string で返すので、壊れた値は NaN になって Math.max/min・Zod parse・表示まで伝播する。/depth を読む全ツールの入口で drop する。
+export function toFiniteRawLevels<T extends readonly [unknown, unknown]>(
+	raw: readonly T[],
+): { rows: T[]; dropped: number } {
+	let dropped = 0;
+	const rows: T[] = [];
+	for (const lvl of raw) {
+		// 2 要素配列・string 要素まで検証する（緩めると下流の分割代入・string tuple スキーマで throw し network 誤分類に戻る。""/true は Number() で 0/1 に化ける）。
+		if (
+			Array.isArray(lvl) &&
+			lvl.length === 2 &&
+			typeof lvl[0] === 'string' &&
+			typeof lvl[1] === 'string' &&
+			toNum(lvl[0]) != null &&
+			toNum(lvl[1]) != null
+		) {
+			rows.push(lvl);
+		} else {
+			dropped++;
+		}
+	}
+	return { rows, dropped };
 }
 
 export function estimateZones(levels: ReadonlyArray<[number, number]>, side: 'bid' | 'ask'): DepthZone[] {

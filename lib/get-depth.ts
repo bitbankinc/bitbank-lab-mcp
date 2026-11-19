@@ -1,6 +1,6 @@
 import { GetDepthOutputSchema } from '../src/schemas.js';
 import { toNum } from './conversions.js';
-import { estimateZones } from './depth-analysis.js';
+import { estimateZones, toFiniteRawLevels } from './depth-analysis.js';
 import { formatExactPrice, formatSummary, formatTimestampJST } from './formatter.js';
 import { BITBANK_API_BASE, DEFAULT_RETRIES, fetchJsonWithRateLimit } from './http.js';
 import { CROSSED_BOOK_WARNING, isCrossedQuote, roundMidPrice } from './price.js';
@@ -67,8 +67,18 @@ export default async function getDepth(pair: string, { timeoutMs = 3000, maxLeve
 		if (!Array.isArray(d.asks) || !Array.isArray(d.bids)) {
 			return GetDepthOutputSchema.parse(fail('上流レスポンスに bids/asks が含まれていません', 'upstream'));
 		}
-		const asks = (d.asks as Array<[unknown, unknown]>).slice(0, maxLevels);
-		const bids = (d.bids as Array<[unknown, unknown]>).slice(0, maxLevels);
+		const { rows: asks, dropped: asksDropped } = toFiniteRawLevels(
+			(d.asks as Array<[unknown, unknown]>).slice(0, maxLevels),
+		);
+		const { rows: bids, dropped: bidsDropped } = toFiniteRawLevels(
+			(d.bids as Array<[unknown, unknown]>).slice(0, maxLevels),
+		);
+		// 元々片側が空の板は許容するが、drop で片側が全滅したら上流データ品質の問題として upstream fail に倒す。
+		if ((asksDropped > 0 && asks.length === 0) || (bidsDropped > 0 && bids.length === 0)) {
+			return GetDepthOutputSchema.parse(
+				fail('板データの数値変換に失敗しました（有効な bids/asks が存在しません）', 'upstream'),
+			);
+		}
 
 		// timestamp が欠損したら受信時刻で偽装せず upstream fail に倒す（古いデータを最新に見せない）。
 		const tsNum = Number(d.timestamp ?? d.timestamp_ms);
@@ -115,11 +125,19 @@ export default async function getDepth(pair: string, { timeoutMs = 3000, maxLeve
 
 		// LLM は structuredContent.data を読めないので全板データを含める。
 		const depthText = buildDepthText({ timestamp: data.timestamp, summary, bids, asks, mid });
-		const textWithBoundary = crossed ? `${CROSSED_BOOK_WARNING}\n\n${depthText}` : depthText;
+		const totalDropped = bidsDropped + asksDropped;
+		const droppedWarning =
+			totalDropped > 0
+				? `⚠️ 上流レスポンスから ${totalDropped}件 の不正な板レベルを除外しました（bids: ${bidsDropped}件 / asks: ${asksDropped}件、price/size が数値変換不能）`
+				: undefined;
+		const warning =
+			[droppedWarning, crossed ? CROSSED_BOOK_WARNING : undefined].filter(Boolean).join('\n') || undefined;
+		const textWithBoundary = warning ? `${warning}\n\n${depthText}` : depthText;
 
 		const meta = createMeta(chk.pair, {
 			...(rateLimit ? { rateLimit } : {}),
-			...(crossed ? { warning: CROSSED_BOOK_WARNING } : {}),
+			...(totalDropped > 0 ? { droppedRows: { bids: bidsDropped, asks: asksDropped } } : {}),
+			...(warning ? { warning } : {}),
 		});
 		return GetDepthOutputSchema.parse(
 			ok(textWithBoundary, data as Record<string, unknown>, meta as Record<string, unknown>),

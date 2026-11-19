@@ -56,7 +56,7 @@ function formatTickerSummary(pair: string, d: Record<string, unknown>): string {
 	lines.push(`Bid: ${fmtPx(buy)} / Ask: ${fmtPx(sell)}${spreadStr ? `（スプレッド: ${spreadStr}）` : ''}`);
 
 	const tsNum = toNum(d.timestamp);
-	const timeStr = tsNum != null ? toDisplayTime(tsNum) : null;
+	const timeStr = tsNum != null && tsNum > 0 ? toDisplayTime(tsNum) : null;
 	if (timeStr) lines.push(`📸 ${timeStr} 時点`);
 
 	return lines.join('\n');
@@ -82,7 +82,9 @@ export default async function getTicker(
 		const d = jsonObj.data;
 		const summary = formatTickerSummary(chk.pair, d);
 
-		const tsNum = toNum(d.timestamp);
+		// 0・負の timestamp は epoch 近傍の時点表示に化けるので、欠損と同じ null に倒す（schema 上 nullable が既存契約）。
+		const tsRaw = toNum(d.timestamp);
+		const tsNum = tsRaw != null && tsRaw > 0 ? tsRaw : null;
 		const data: GetTickerData = {
 			raw: json,
 			normalized: {
