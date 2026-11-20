@@ -1,3 +1,5 @@
+import { MA_SERIES } from '../../lib/indicator-series.js';
+
 export function niceTicks(min: number, max: number, count = 5): number[] {
 	if (max < min) [min, max] = [max, min];
 	const range = max - min;
@@ -59,21 +61,13 @@ export function sanitizeSvg(s: string): string {
 		.replace(/\son[a-z]+='[^']*'/gi, '');
 }
 
-export const smaColors: Record<number, string> = {
-	5: '#f472b6',
-	20: '#a78bfa',
-	25: '#3b82f6',
-	50: '#22d3ee',
-	75: '#f59e0b',
-	200: '#10b981',
-};
+export const smaColors: Record<number, string> = Object.fromEntries(
+	MA_SERIES.filter((s) => s.kind === 'sma').map((s) => [s.period, s.color]),
+);
 
-export const emaColors: Record<number, string> = {
-	12: '#ff6b35',
-	26: '#ffd166',
-	50: '#ef476f',
-	200: '#06d6a0',
-};
+export const emaColors: Record<number, string> = Object.fromEntries(
+	MA_SERIES.filter((s) => s.kind === 'ema').map((s) => [s.period, s.color]),
+);
 
 export const bbColors = {
 	bandFill2: 'rgba(59, 130, 246, 0.10)',
