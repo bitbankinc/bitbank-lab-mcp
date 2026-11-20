@@ -172,7 +172,7 @@ describe('formatDebugView: status / breakoutDirection の解決規則', () => {
 	// biome-ignore lint/suspicious/noExplicitAny: test fixture
 	const meta = (candidates: any[]) => ({ debug: { swings: [], candidates } });
 
-	it('top-level と details のどちらに置かれていても同じ書式で出る', () => {
+	it('最上位の status / breakoutDirection が候補行に出て、details 配下だけの値は読まない', () => {
 		const text = formatDebugView(
 			'hdr',
 			meta([
@@ -189,10 +189,13 @@ describe('formatDebugView: status / breakoutDirection の解決規則', () => {
 		).content[0].text;
 
 		expect(text).toContain('rising_wedge status=forming breakoutDirection=up');
-		expect(text).toContain('triangle_ascending (detected) status=completed breakoutDirection=down');
+		const header = text.split('\n').find((l) => l.includes('triangle_ascending')) ?? '';
+		expect(header).toContain('triangle_ascending (detected)');
+		expect(header).not.toContain('status=');
+		expect(header).not.toContain('breakoutDirection=');
 	});
 
-	it('top-level が details より優先される（両方あるとき 1 回だけ出る）', () => {
+	it('最上位と details のミラーが食い違っても最上位だけが出る（1 回だけ）', () => {
 		const text = formatDebugView(
 			'hdr',
 			meta([
@@ -216,7 +219,7 @@ describe('formatDebugView: status / breakoutDirection の解決規則', () => {
 		expect(header.match(/status=/g)).toHaveLength(1);
 	});
 
-	it('top-level の breakoutDirection: null は details 側で上書きされない', () => {
+	it('最上位の breakoutDirection: null は details に向きがあっても行を出さない', () => {
 		const text = formatDebugView(
 			'hdr',
 			meta([
@@ -246,6 +249,8 @@ describe('formatDebugView: status / breakoutDirection の解決規則', () => {
 					type: 'bull_pennant',
 					accepted: true,
 					reason: 'detected',
+					status: 'forming',
+					breakoutDirection: null,
 					details: { status: 'forming', breakout: null, touchCount: 6 },
 				},
 				// details 自体が無い候補でも落ちない
