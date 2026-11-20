@@ -18,7 +18,7 @@ export interface SwingDebug {
 	isoTime?: string;
 }
 
-/** status / breakoutDirection の置き場所は検出器によって top-level と details 配下に割れているので、読む側（candLines）で 1 回だけ解決する（#160）。 */
+/** status / breakoutDirection は最上位が正（#414）。details 配下だけに置く旧形式の候補も読めるよう、読む側（candLines）で 1 回だけ解決する（#160）。 */
 export interface CandidateDebug {
 	type: string;
 	accepted: boolean;
