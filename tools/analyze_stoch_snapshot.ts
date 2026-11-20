@@ -199,11 +199,20 @@ export default async function analyzeStochSnapshot(
 		let divDesc = 'ダイバージェンスなし';
 		const divWindow = 14;
 		if (n >= divWindow && close != null) {
-			const recentCloses = candles.slice(-divWindow).map((c) => c.close);
-			const recentK = kSeries.slice(-divWindow).filter((v): v is number => v != null);
-			if (recentCloses.length >= 2 && recentK.length >= 2) {
-				const priceSlope = recentCloses[recentCloses.length - 1] - recentCloses[0];
-				const kSlope = recentK[recentK.length - 1] - recentK[0];
+			// 価格と %K の傾きは同じ 2 本（窓内で %K が有限な最初と最後の足）で取る。起点を別々にすると無関係な区間の比較になる。
+			let firstIdx = -1;
+			let lastIdx = -1;
+			for (let i = n - divWindow; i < n; i++) {
+				const v = kSeries[i];
+				if (v == null || !Number.isFinite(v)) continue;
+				if (firstIdx < 0) firstIdx = i;
+				lastIdx = i;
+			}
+			const firstK = firstIdx >= 0 ? kSeries[firstIdx] : null;
+			const lastK = lastIdx >= 0 ? kSeries[lastIdx] : null;
+			if (firstIdx >= 0 && lastIdx > firstIdx && firstK != null && lastK != null) {
+				const priceSlope = candles[lastIdx].close - candles[firstIdx].close;
+				const kSlope = lastK - firstK;
 				if (priceSlope > 0 && kSlope < -5) {
 					divType = 'bearish';
 					divDesc = '価格は上昇しているが %K は下降 → 上昇勢力の弱まりを示唆';

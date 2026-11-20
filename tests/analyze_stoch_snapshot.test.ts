@@ -38,6 +38,7 @@ function buildIndicatorsOk(
 		prevK: number | null;
 		prevD: number | null;
 		closes: number[];
+		kSeries: (number | null)[];
 	}>,
 ) {
 	const closes = overrides?.closes ?? Array.from({ length: 40 }, (_, i) => 100 + i);
@@ -56,7 +57,7 @@ function buildIndicatorsOk(
 				STOCH_D: overrides?.stochD ?? 50,
 				STOCH_prevK: overrides?.prevK ?? 45,
 				STOCH_prevD: overrides?.prevD ?? 48,
-				stoch_k_series: Array.from({ length: closes.length }, () => 50),
+				stoch_k_series: overrides?.kSeries ?? Array.from({ length: closes.length }, () => 50),
 				stoch_d_series: Array.from({ length: closes.length }, () => 50),
 			},
 			chart: {
@@ -202,6 +203,19 @@ describe('analyze_stoch_snapshot', () => {
 		expect(res.data.tags).toContain('stoch_bearish_cross');
 		expect(res.data.tags).toContain('stoch_strong_sell');
 		expect(res.data.crossover.description).toContain('買われすぎ圏からの反転');
+	});
+
+	it('ダイバージェンスの価格傾きは %K が有限な同じ 2 本で取るべき（warmup null が窓に混ざる場合）', async () => {
+		// 窓の起点を別々に取る実装だと、価格傾きが warmup 区間（150）から始まり負になってダイバージェンスを取り逃す。
+		const len = 40;
+		const closes = Array.from({ length: len }, (_, i) => (i < 30 ? 150 : 100 + (i - 30) * 2));
+		const kSeries = Array.from({ length: len }, (_, i) => (i < 30 ? null : 60 - (i - 30) * 2));
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(buildIndicatorsOk({ closes, kSeries })));
+
+		const res = await analyzeStochSnapshot('btc_jpy', '1day', 120);
+
+		assertOk(res);
+		expect(res.data.divergence.type).toBe('bearish');
 	});
 
 	it('bearish ダイバージェンスを検出するべき', async () => {
