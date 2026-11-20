@@ -59,6 +59,7 @@ export interface CandDebugEntry {
 	indices?: number[];
 	points?: Array<{ role: string; idx: number; price: number; isoTime?: string }>;
 	details?: unknown;
+	/** status / breakoutDirection は最上位に置く（details 内は残してよいがミラー扱い。#414）。breakoutDirection の null は「判定したが未ブレイク」、キー省略は「判定なし」。 */
 	status?: string;
 	breakoutDirection?: string | null;
 }

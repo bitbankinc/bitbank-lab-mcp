@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { dayjs } from '../../lib/datetime.js';
 import { asMockResult, assertOk } from '../_assertResult.js';
 
 vi.mock('../../tools/analyze_indicators.js', () => ({
@@ -15,7 +16,7 @@ type Candle = { isoTime: string; open: number; high: number; low: number; close:
 /** close に対して high/low を等幅にずらす（本テストは価格構造そのものを見ない）。 */
 function makeCandle(dayOffset: number, close: number): Candle {
 	return {
-		isoTime: new Date(Date.UTC(2026, 0, 1 + dayOffset)).toISOString(),
+		isoTime: dayjs.utc('2026-01-01').add(dayOffset, 'day').toISOString(),
 		open: close,
 		high: close + 3,
 		low: close - 3,
@@ -80,7 +81,12 @@ describe('debug candidates: status / breakoutDirection の配線（issue #160）
 		const cands = (res.meta.debug?.candidates ?? []) as Candidate[];
 		const detected = cands.filter((c) => c.accepted && c.reason === 'detected');
 		expect(detected.length).toBeGreaterThan(0);
-		for (const c of detected) expect(typeof c.details?.status).toBe('string');
+		for (const c of detected) {
+			expect(typeof c.details?.status).toBe('string');
+			expect(c.status).toBe(c.details?.status);
+			const breakout = (c.details?.breakout ?? null) as { direction?: string | null } | null;
+			expect(c.breakoutDirection).toBe(breakout ? (breakout.direction ?? null) : null);
+		}
 
 		const text = debugText(res);
 		const headers = candidateHeaderLines(text, 'triangle_symmetrical').filter((l) => l.includes('(detected)'));
@@ -92,13 +98,14 @@ describe('debug candidates: status / breakoutDirection の配線（issue #160）
 		for (const l of text.split('\n')) expect(l.match(/status=/g)?.length ?? 0).toBeLessThanOrEqual(1);
 	});
 
-	it('triangle の breakoutDirection が候補行に出る（details.breakout.direction 由来）', async () => {
+	it('triangle の breakoutDirection は最上位に出て、details.breakout.direction と一致する', async () => {
 		const res = await run(fromCloses(BREAKOUT_TRIANGLE_CLOSES), { patterns: ['triangle'] });
 		assertOk(res);
 		const cands = (res.meta.debug?.candidates ?? []) as Candidate[];
 		const withBreakout = cands.filter((c) => (c.details?.breakout as { direction?: string } | null)?.direction != null);
 		expect(withBreakout.length).toBeGreaterThan(0);
-		for (const c of withBreakout) expect(c.breakoutDirection).toBeUndefined();
+		for (const c of withBreakout)
+			expect(c.breakoutDirection).toBe((c.details?.breakout as { direction?: string } | undefined)?.direction);
 
 		const text = debugText(res);
 		const dirLines = text.split('\n').filter((l) => /^\d+\. .* breakoutDirection=(up|down)\b/.test(l));
@@ -111,6 +118,11 @@ describe('debug candidates: status / breakoutDirection の配線（issue #160）
 		const cands = (res.meta.debug?.candidates ?? []) as Candidate[];
 		const detected = cands.filter((c) => c.accepted && c.reason === 'detected');
 		expect(detected.length).toBeGreaterThan(0);
+		for (const c of detected) {
+			expect(c.status).toBe(c.details?.status);
+			const breakout = (c.details?.breakout ?? null) as { direction?: string | null } | null;
+			expect(c.breakoutDirection).toBe(breakout ? (breakout.direction ?? null) : null);
+		}
 
 		const text = debugText(res);
 		const headers = candidateHeaderLines(text, 'bull_pennant').filter((l) => l.includes('(detected)'));
