@@ -242,7 +242,8 @@ export const toolDef: ToolDefinition = {
 	name: 'analyze_currency_strength',
 	description:
 		'[Currency Strength / Ranking / Screening] 通貨強弱ランキング（currency strength / relative strength / ranking / screening）。' +
-		'全JPYペアを複合スコア（変化率・RSI・SMA乖離・出来高）で判定。注目銘柄の発見・スクリーニングに。',
+		'全JPYペアから出来高（JPY 換算）上位 topN 銘柄を抽出し、複合スコア（変化率・RSI・SMA乖離・出来高）で判定。注目銘柄の発見・スクリーニングに（topN 外の低出来高ペアはスコア対象外）。\n\n' +
+		'使い分け: 指標計算なしの生ティッカー一覧・単純ランキング（変化率・出来高順）だけなら get_tickers_jpy（軽量・API 1 回）。',
 	inputSchema: AnalyzeCurrencyStrengthInputSchema,
 	handler: async ({ topN, type }: { topN?: number; type?: string }) => analyzeCurrencyStrength(Number(topN), type),
 };

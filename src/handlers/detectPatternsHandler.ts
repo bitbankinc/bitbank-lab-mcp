@@ -39,6 +39,7 @@ export const toolDef: ToolDefinition = {
 	name: 'detect_patterns',
 	description:
 		'[Chart Patterns / Double Top / Head and Shoulders / Triangle] チャートパターン検出（chart patterns / double top / double bottom / head and shoulders / triangle / wedge / flag）。形成中+完成済みを統合検出。表示日時は tz（既定 Asia/Tokyo）で整形。\n\n' +
+		'使い分け: 本ツールは複数バーで形成されるチャートパターン。1〜3 本のローソク足パターン（doji / engulfing / hammer）は analyze_candle_patterns。\n\n' +
 		'検出の意味論:\n' +
 		'- 直近の一方向トレンド（上げ続け / 下げ続け）はパターンを構成しないため検出対象に入らない。「直近の値動きが結果に出ない」は多くの場合これであってデータ欠落ではない。実際に走査した範囲は meta.scan（content の「スキャン範囲」行）で確認すること。\n' +
 		'- ピボットの確定には前後 swingDepth 本が要るため、スキャン窓の両端 swingDepth 本はピボットにならない（swingDepth は時間足ごとに自動スケールする。例: 1hour の実効値は 3）。\n' +

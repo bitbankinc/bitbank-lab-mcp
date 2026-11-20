@@ -6,6 +6,7 @@ import { toolDef as analyzeEmaSnapshot } from '../tools/analyze_ema_snapshot.js'
 import { toolDef as analyzeIchimokuSnapshot } from '../tools/analyze_ichimoku_snapshot.js';
 import { toolDef as analyzeMtfFibonacci } from '../tools/analyze_mtf_fibonacci.js';
 import { toolDef as analyzeMtfSma } from '../tools/analyze_mtf_sma.js';
+import { toolDef as analyzeRsiSnapshot } from '../tools/analyze_rsi_snapshot.js';
 import { toolDef as analyzeSmaSnapshot } from '../tools/analyze_sma_snapshot.js';
 import { toolDef as analyzeStochSnapshot } from '../tools/analyze_stoch_snapshot.js';
 import { toolDef as analyzeSupportResistance } from '../tools/analyze_support_resistance.js';
@@ -51,6 +52,7 @@ export const allToolDefs: ToolDefinition[] = [
 	analyzeIchimokuSnapshot,
 	analyzeSmaSnapshot,
 	analyzeEmaSnapshot,
+	analyzeRsiSnapshot,
 	analyzeStochSnapshot,
 	analyzeMtfSma,
 	analyzeSupportResistance,
