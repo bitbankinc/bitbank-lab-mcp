@@ -105,7 +105,7 @@ describe('debug candidates: status / breakoutDirection の配線（issue #160）
 		const withBreakout = cands.filter((c) => (c.details?.breakout as { direction?: string } | null)?.direction != null);
 		expect(withBreakout.length).toBeGreaterThan(0);
 		for (const c of withBreakout)
-			expect(c.breakoutDirection).toBe((c.details?.breakout as { direction?: string }).direction);
+			expect(c.breakoutDirection).toBe((c.details?.breakout as { direction?: string } | undefined)?.direction);
 
 		const text = debugText(res);
 		const dirLines = text.split('\n').filter((l) => /^\d+\. .* breakoutDirection=(up|down)\b/.test(l));
