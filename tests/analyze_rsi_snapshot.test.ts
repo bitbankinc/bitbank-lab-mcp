@@ -109,6 +109,7 @@ describe('analyze_rsi_snapshot', () => {
 		expect(res.data.tags).toContain('rsi_overbought');
 		expect(res.data.midlineCross.type).toBe('none');
 		expect(res.summary).toContain('RSI(14): 75.00');
+		expect(res.summary).toContain('期間: 1day × 40 本');
 		expect(res.summary).toContain('📌 含まれるもの');
 	});
 
@@ -164,6 +165,19 @@ describe('analyze_rsi_snapshot', () => {
 		expect(res.data.recentCrosses).toEqual([]);
 	});
 
+	it('ダイバージェンスの価格傾きは RSI が有限な同じ 2 本で取るべき（warmup null が窓に混ざる場合）', async () => {
+		// 窓の起点を別々に取る実装だと、価格傾きが warmup 区間（150）から始まり負になってダイバージェンスを取り逃す。
+		const len = 40;
+		const closes = Array.from({ length: len }, (_, i) => (i < 30 ? 150 : 100 + (i - 30) * 2));
+		const rsiSeries = Array.from({ length: len }, (_, i) => (i < 30 ? null : 60 - (i - 30) * 2));
+		mockedAnalyzeIndicators.mockResolvedValueOnce(asMockResult(buildIndicatorsOk({ closes, rsiSeries })));
+
+		const res = await analyzeRsiSnapshot('btc_jpy', '1day', 120);
+
+		assertOk(res);
+		expect(res.data.divergence.type).toBe('bearish');
+	});
+
 	it('bearish ダイバージェンスを検出するべき', async () => {
 		// price rising but RSI falling
 		const len = 40;
@@ -217,6 +231,27 @@ describe('analyze_rsi_snapshot', () => {
 		expect(res.data.rsi.value).toBe(100);
 		expect(res.data.zone).toBe('overbought');
 		expect((res.meta as { params?: { period?: number } }).params?.period).toBe(5);
+	});
+
+	it('カスタム period が取得本数に対して大きすぎる場合、ok のまま計算層 warning を出す', async () => {
+		mockedGetCandles.mockResolvedValueOnce(
+			asMockResult({
+				ok: true,
+				summary: 'ok',
+				data: {
+					normalized: makeRisingCandles(40),
+					raw: {},
+				},
+				meta: { pair: 'btc_jpy', type: '1day', count: 40 },
+			}),
+		);
+
+		const res = await analyzeRsiSnapshot('btc_jpy', '1day', 40, 50);
+
+		assertOk(res);
+		expect(res.data.rsi.value).toBeNull();
+		expect(res.meta.warnings).toEqual(['RSI_50: データ不足（最新値の確定に 51 本必要、取得 40 本）']);
+		expect(res.summary.split('\n')[0]).toContain('⚠️ RSI_50: データ不足');
 	});
 
 	it('カスタム period 時に getCandles が失敗したら ok: false を返す', async () => {

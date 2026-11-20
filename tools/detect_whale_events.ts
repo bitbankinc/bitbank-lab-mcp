@@ -189,7 +189,7 @@ export default async function detectWhaleEvents(
 export const toolDef: ToolDefinition = {
 	name: 'detect_whale_events',
 	description:
-		'[Whale / Large Orders / Big Players] 大口投資家の動向検出（whale / large orders / big players / smart money）。板×ローソク足で大口注文を簡易検出。推測ベース。\n\n使い分け: 現在の板にある大口注文・流動性ゾーンの静的スナップショットだけなら get_orderbook（mode=statistics）。本ツールは lookback 期間の価格・出来高の変化と組み合わせて「動き」を推測する。',
+		'[Whale / Large Orders / Big Players] 大口投資家の動向検出（whale / large orders / big players / smart money）。板×ローソク足で大口注文を簡易検出。推測ベース。\n\n使い分け: 現在の板にある大口注文・流動性ゾーンの静的スナップショットの列挙だけなら get_orderbook（mode=statistics）。本ツールは同じ板の大口 bid/ask バランスから動向（accumulation / distribution）を判定し、lookback 期間の価格変化を参考情報として併記する（時系列の出来高分析は行わない）。',
 	inputSchema: z.object({
 		pair: z.string().default('btc_jpy'),
 		lookback: z.enum(['30min', '1hour', '2hour']).default('1hour'),

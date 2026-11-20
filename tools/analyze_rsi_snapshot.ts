@@ -22,6 +22,10 @@ export interface BuildRsiSnapshotTextInput {
 	prevStr: string;
 	zoneJp: string;
 	period: number;
+	typeStr: string;
+	count: number;
+	rangeStart: string | null;
+	rangeEnd: string | null;
 	crossDesc: string;
 	divType: 'bullish' | 'bearish' | 'none';
 	divDesc: string;
@@ -34,7 +38,21 @@ export interface BuildRsiSnapshotTextInput {
 }
 
 export function buildRsiSnapshotText(input: BuildRsiSnapshotTextInput): string {
-	const { baseSummary, rsiStr, prevStr, zoneJp, period, crossDesc, divType, divDesc, recentCrosses } = input;
+	const {
+		baseSummary,
+		rsiStr,
+		prevStr,
+		zoneJp,
+		period,
+		typeStr,
+		count,
+		rangeStart,
+		rangeEnd,
+		crossDesc,
+		divType,
+		divDesc,
+		recentCrosses,
+	} = input;
 	const recentLines = recentCrosses
 		.slice(-5)
 		.reverse()
@@ -47,6 +65,7 @@ export function buildRsiSnapshotText(input: BuildRsiSnapshotTextInput): string {
 		'',
 		`RSI(${period}): ${rsiStr}（前バー: ${prevStr}）`,
 		`ゾーン: ${zoneJp}`,
+		`期間: ${typeStr} × ${count} 本${rangeStart && rangeEnd ? `（${rangeStart} 〜 ${rangeEnd}）` : ''}`,
 		'',
 		`${RSI_MIDLINE} ラインクロス: ${crossDesc}`,
 		...(divType !== 'none' ? [`ダイバージェンス: ${divDesc}`] : []),
@@ -109,7 +128,7 @@ export default async function analyzeRsiSnapshot(
 				);
 			const upstream = extractUpstreamWarning(candlesResult.meta);
 			warning = upstream.warning;
-			// getCandles path は取得層のみ。計算層 warnings は contract 上出ないため明示的に undefined にする。
+			// getCandles path は上流の計算層 warnings を継承せず、下のデータ不足判定で自前生成する。
 			warnings = undefined;
 			const normalized = candlesResult.data.normalized;
 			const closes = normalized.map((c) => c.close);
@@ -118,6 +137,9 @@ export default async function analyzeRsiSnapshot(
 			normalizedLen = normalized.length;
 			provisional = isLatestBarProvisional(normalized.at(-1)?.timestamp, String(type));
 			rsiSeries = rsi(closes, period);
+			if (normalizedLen < period + 1) {
+				warnings = [`RSI_${period}: データ不足（最新値の確定に ${period + 1} 本必要、取得 ${normalizedLen} 本）`];
+			}
 		}
 
 		const rsiValue = rsiSeries.at(-1) ?? null;
@@ -168,11 +190,20 @@ export default async function analyzeRsiSnapshot(
 		let divDesc = 'ダイバージェンスなし';
 		const divWindow = 14;
 		if (n >= divWindow && close != null) {
-			const recentCloses = candles.slice(-divWindow).map((c) => c.close);
-			const recentRsi = rsiSeries.slice(-divWindow).filter((v): v is number => v != null);
-			if (recentCloses.length >= 2 && recentRsi.length >= 2) {
-				const priceSlope = recentCloses[recentCloses.length - 1] - recentCloses[0];
-				const rsiSlope = recentRsi[recentRsi.length - 1] - recentRsi[0];
+			// 価格と RSI の傾きは同じ 2 本（窓内で RSI が有限な最初と最後の足）で取る。起点を別々にすると無関係な区間の比較になる。
+			let firstIdx = -1;
+			let lastIdx = -1;
+			for (let i = n - divWindow; i < n; i++) {
+				const v = rsiSeries[i];
+				if (v == null || !Number.isFinite(v)) continue;
+				if (firstIdx < 0) firstIdx = i;
+				lastIdx = i;
+			}
+			const firstRsi = firstIdx >= 0 ? rsiSeries[firstIdx] : null;
+			const lastRsi = lastIdx >= 0 ? rsiSeries[lastIdx] : null;
+			if (firstIdx >= 0 && lastIdx > firstIdx && firstRsi != null && lastRsi != null) {
+				const priceSlope = candles[lastIdx].close - candles[firstIdx].close;
+				const rsiSlope = lastRsi - firstRsi;
 				if (priceSlope > 0 && rsiSlope < -5) {
 					divType = 'bearish';
 					divDesc = '価格は上昇しているが RSI は下降 → 上昇勢力の弱まりを示唆';
@@ -197,6 +228,7 @@ export default async function analyzeRsiSnapshot(
 		const baseSummaryText = buildRsiSnapshotText({
 			baseSummary: formatSummary({
 				pair: chk.pair,
+				timeframe: String(type),
 				latest: close ?? undefined,
 				extra: `RSI(${period})=${rsiStr} zone=${zone ?? 'n/a'}`,
 			}),
@@ -204,6 +236,10 @@ export default async function analyzeRsiSnapshot(
 			prevStr,
 			zoneJp,
 			period,
+			typeStr: String(type),
+			count: normalizedLen,
+			rangeStart: calendarDateFromIso(candles[0]?.isoTime) ?? null,
+			rangeEnd: calendarDateFromIso(candles.at(-1)?.isoTime) ?? null,
 			crossDesc,
 			divType,
 			divDesc,
