@@ -556,7 +556,9 @@ export const toolDef: ToolDefinition = {
 	name: 'get_orderbook',
 	description: `[Order Book / Depth / Spread] 板情報（order book / depth / bid-ask spread）の統合ツール。
 
-【mode】summary（デフォルト）: 上位N層+spread / pressure: 帯域別の買い/売り圧力 / statistics: 流動性ゾーン+大口注文 / raw: 生bids/asks+壁ゾーン推定。`,
+【mode】summary（デフォルト）: 上位N層+spread / pressure: 帯域別の買い/売り圧力 / statistics: 流動性ゾーン+大口注文 / raw: 生bids/asks+壁ゾーン推定。
+
+使い分け: statistics の大口注文は現在の板の静的スナップショット。時間変化を含む大口動向の推測は detect_whale_events。`,
 	inputSchema: GetOrderbookInputSchema,
 	handler: async ({
 		pair,
