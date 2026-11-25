@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-25
+
 番号は fork（tjackiet/bitbank-lab-mcp）の PR。
 
 ### Added
