@@ -7,6 +7,24 @@
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-26
+
+番号は fork（tjackiet/bitbank-lab-mcp）の PR。
+
+### Added
+
+- `analyze_rsi_snapshot`：RSI 単体のスナップショットを返すツールを追加（全 50 ツール：Public 34 + Private 16）。スナップショット系（BB / 一目 / SMA / EMA / Stochastic）のうち RSI だけが無かった。最新値と前バーの値、ゾーン（売られすぎ 30 以下 / 中立 50 未満 / 中立 50 以上 / 買われすぎ 70 以上）、50 ラインのクロス、直近 14 本のダイバージェンス、直近 30 本のクロス履歴を返す。`period` は 2〜50（既定 14）。既定の 14 は `analyze_indicators` と計算・キャッシュを共有し、それ以外は取得したローソク足から計算する。取得本数が `period + 1` に届かないときは warning を出す（#485）。
+
+### Changed
+
+- 役割が重なりやすいツールの説明文に「使い分け:」を足す。`detect_whale_events` と `get_orderbook`（`mode=statistics`）、`detect_patterns` と `analyze_candle_patterns`、`analyze_currency_strength` と `get_tickers_jpy` の 3 組。あわせて `analyze_currency_strength` の説明が「全JPYペアを複合スコアで判定」となっていたのを、出来高（JPY 換算）上位 `topN` 銘柄だけをスコアの対象にするという実装どおりの説明に直す（#485）。
+- `detect_patterns`（`view=debug`）：候補（`data.candidates`）の `status` とブレイクの向き（`breakoutDirection`）を、すべての検出器で候補の最上位に置く。triangles / pennants だけが `details.status` / `details.breakout.direction` に置いていて、構造化データを読むクライアントは検出器ごとに 2 か所を見分ける必要があった。`details` 側は互換のため同じ値で残す。`breakoutDirection` の `null` は「判定したが未ブレイク」。本文の候補行、検出結果、候補の件数は変わらない（issue #414、#487 / #488）。
+- 開発：指標系列の定義（移動平均の期間・キー・描画色、単一指標の確定に要る本数・取得バッファ）を `lib/indicator-series.ts` にまとめ、`analyze_indicators`・取得バッファ・チャートの色をここから導出する。指標を 1 本足すのに 8 か所を手で直す必要があった。公開スキーマとの一致はテスト（`tests/indicator-series-parity.test.ts`）で固定する。挙動は変わらない（#484）。
+
+### Fixed
+
+- `analyze_stoch_snapshot`：ダイバージェンスの判定で、価格の傾きは直近 14 本の先頭の足から、%K の傾きは %K が出ている最初の足から取っていた。14 本の中に %K がまだ出ない足（計算に必要な本数に届く前）があると、別々の区間を比べていた。%K が出ている最初と最後の足にそろえて、価格と %K を同じ 2 本で比べる（#486）。
+
 ## [0.8.1] - 2026-11-19
 
 番号は fork（tjackiet/bitbank-lab-mcp）の PR。

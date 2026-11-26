@@ -16,6 +16,7 @@ const expectedToolNames = [
 	'analyze_sma_snapshot',
 	'analyze_ema_snapshot',
 	'analyze_stoch_snapshot',
+	'analyze_rsi_snapshot',
 	'analyze_mtf_sma',
 	'analyze_support_resistance',
 	'analyze_candle_patterns',
@@ -57,10 +58,10 @@ function extractCatalogToolNames(docs: string): string[] {
 }
 
 describe('tool-registry', () => {
-	it('期待する 33 ツール名セットと一致する', () => {
+	it('期待する 34 ツール名セットと一致する', () => {
 		const actualNames = allToolDefs.map((toolDef) => toolDef.name);
 
-		expect(actualNames).toHaveLength(33);
+		expect(actualNames).toHaveLength(34);
 		expect([...actualNames].sort()).toEqual([...expectedToolNames].sort());
 	});
 
@@ -68,7 +69,7 @@ describe('tool-registry', () => {
 		const actualNames = allToolDefs.map((toolDef) => toolDef.name);
 		const docsToolNames = extractCatalogToolNames(docsMarkdown);
 
-		expect(docsToolNames).toHaveLength(33);
+		expect(docsToolNames).toHaveLength(34);
 		expect(new Set(docsToolNames).size).toBe(docsToolNames.length);
 		expect([...docsToolNames].sort()).toEqual([...actualNames].sort());
 	});
@@ -84,7 +85,7 @@ describe('tool-registry', () => {
 	it('見出し末尾のツール数が変わっても抽出は変わらない', () => {
 		const recounted = docsMarkdown.replace(
 			/^## カテゴリ別ツール.*$/m,
-			'## カテゴリ別ツール（全 50 ツール：Public 34 + Private 16）',
+			'## カテゴリ別ツール（全 99 ツール：Public 83 + Private 16）',
 		);
 
 		expect(recounted).not.toBe(docsMarkdown);
@@ -100,8 +101,8 @@ describe('tool-registry', () => {
 
 		expect(withGhost).not.toBe(docsMarkdown);
 		expect(names).toContain('get_ghost_tool');
-		// 上の突き合わせテストが集合比較で落とせること（件数も 33 からずれる）。
-		expect(names).toHaveLength(34);
+		// 上の突き合わせテストが集合比較で落とせること（件数も 34 からずれる）。
+		expect(names).toHaveLength(35);
 	});
 
 	it('ツール名の重複がない', () => {

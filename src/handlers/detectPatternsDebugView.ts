@@ -200,11 +200,6 @@ function formatDetailValue(v: unknown): string {
 	}
 }
 
-function breakDirectionFromDetails(details?: Record<string, unknown>): string | null | undefined {
-	if (!details || !('breakout' in details)) return undefined;
-	return (details.breakout as { direction?: string | null } | null | undefined)?.direction ?? null;
-}
-
 /** tests/detectPatternsViewsHandler.test.ts / tests/view-content-superset.test.ts が抽出に使うので、変えるならテスト側も直す。 */
 export const CANDIDATE_BREAKDOWN_LABEL = '▼ 候補の内訳';
 export const REJECTION_SUMMARY_LABEL = '▼ 棄却理由の内訳';
@@ -334,13 +329,10 @@ export function formatDebugView(
 	const candLines = cands.map((c, i: number) => {
 		const tag = c.accepted ? '✅' : '❌';
 		const reason = c.accepted ? (c.reason ? ` (${c.reason})` : '') : c.reason ? ` [${c.reason}]` : '';
-		// ここが status / breakoutDirection の唯一の解決点（formatCandidateDetails 側では出さない）。
-		const status = c.status ?? (c.details?.status as string | undefined);
-		// null は「未ブレイクと判定した」という答えなので、?? ではなくキーの有無だけで分岐する。
-		const dir = c.breakoutDirection !== undefined ? c.breakoutDirection : breakDirectionFromDetails(c.details);
-		const statusStr = status ? ` status=${status}` : '';
-		// 方向が無いときは null と書いても情報が増えないので行ごと出さない。
-		const dirStr = dir ? ` breakoutDirection=${dir}` : '';
+		// ここが status / breakoutDirection の唯一の解決点（formatCandidateDetails 側では出さない）。最上位のみ読み、details 配下は見ない（#414）。
+		const statusStr = c.status ? ` status=${c.status}` : '';
+		// 方向が無い（null=未ブレイクと判定 / キー省略=判定なし）ときは行ごと出さない。
+		const dirStr = c.breakoutDirection ? ` breakoutDirection=${c.breakoutDirection}` : '';
 		const pts = Array.isArray(c.points) ? c.points.map((p) => `${p.role}@${p.idx}:${yen(p.price)}`).join(', ') : '';
 		const indices = Array.isArray(c.indices) ? ` indices=[${c.indices.join(',')}]` : '';
 		const detailsStr = formatCandidateDetails(c, detailPrice);

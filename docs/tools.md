@@ -10,9 +10,9 @@
 
 ---
 
-## カテゴリ別ツール（全 49 ツール：Public 33 + Private 16）
+## カテゴリ別ツール（全 50 ツール：Public 34 + Private 16）
 
-> Private ツール（16）は `BITBANK_API_KEY` + `BITBANK_API_SECRET` 設定時のみ表示されます。未設定時は Public 33 ツールのみが利用可能です。
+> Private ツール（16）は `BITBANK_API_KEY` + `BITBANK_API_SECRET` 設定時のみ表示されます。未設定時は Public 34 ツールのみが利用可能です。
 
 ### データ取得 — 生データ（Raw）：4 ツール
 
@@ -39,7 +39,7 @@ API の応答をそのまま、または軽量整形して返す。指標計算�
 | `get_flow_metrics` | CVD / アグレッサー比 / スパイク検知でフロー優勢度を把握 |
 | `get_volatility_metrics` | RV / ATR / Parkinson / GK / RS でボラティリティ算出・比較 |
 
-### テクニカル分析：13 ツール
+### テクニカル分析：14 ツール
 
 ローソク足・板データから指標計算・スナップショットを生成。
 
@@ -52,6 +52,7 @@ API の応答をそのまま、または軽量整形して返す。指標計算�
 | `analyze_ema_snapshot` | EMA 整列/クロス分析（SMA より直近価格に敏感。デフォルト期間: 12, 26, 50, 200） |
 | `analyze_mtf_sma` | 複数タイムフレーム SMA 一括取得・方向の合流（confluence）判定。analyze_sma_snapshot の個別呼び出し不要 |
 | `analyze_stoch_snapshot` | Classic Stochastic Oscillator（%K/%D のゾーン判定・クロス・ダイバージェンス。レンジ相場向き。デフォルト: 14,3,3） |
+| `analyze_rsi_snapshot` | RSI 単体のスナップショット（ゾーン判定・50 ラインクロス・ダイバージェンス。デフォルト期間: 14） |
 | `analyze_volume_profile` | 約定データから VWAP・Volume Profile・約定サイズ分布を算出 |
 | `analyze_currency_strength` | 通貨強弱分析（JPYペア横断で相対的な強さを比較） |
 | `analyze_fibonacci` | フィボナッチ・リトレースメント／エクステンション水準を自動計算（スイング検出・最寄り水準・反応実績を含む） |

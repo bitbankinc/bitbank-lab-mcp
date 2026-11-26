@@ -293,6 +293,8 @@ function buildTriangleResult(c: TriangleCandidateCtx): { pattern: PatternEntry; 
 		accepted: true,
 		reason: 'detected',
 		indices: [winStart, resultEndIdx],
+		status,
+		breakoutDirection: hasBreakout ? breakoutDirection : null,
 		details: {
 			convergenceRatio: Number(convergenceRatio.toFixed(3)),
 			r2Upper: Number(upperLine.r2.toFixed(3)),

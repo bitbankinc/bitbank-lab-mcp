@@ -33,7 +33,7 @@ bitbank の公開データをもとに、AI が次のようなことを行えま
 
 ## ツールの種類（参考）
 
-舞台裏では、目的別に用意された **48 のツール**（Public 32 + Private 16）から最適なものが自動的に選ばれています。以下は「どんな道具があるのか」を知りたい方向けの参考一覧です。**暗記する必要はありません。**（Private ツールは `BITBANK_API_KEY` + `BITBANK_API_SECRET` 設定時のみ有効）
+舞台裏では、目的別に用意された **50 のツール**（Public 34 + Private 16）から最適なものが自動的に選ばれています。以下は「どんな道具があるのか」を知りたい方向けの参考一覧です。**暗記する必要はありません。**（Private ツールは `BITBANK_API_KEY` + `BITBANK_API_SECRET` 設定時のみ有効）
 
 ### データ取得 — 生データ（Raw）：4
 
@@ -56,7 +56,7 @@ API の応答をそのまま、または軽量整形して返します。指標�
 | `get_flow_metrics` | CVD / アグレッサー比 / スパイク検知でフロー優勢度を把握 |
 | `get_volatility_metrics` | RV / ATR / Parkinson / GK / RS でボラティリティ算出・比較 |
 
-### テクニカル分析：13
+### テクニカル分析：14
 
 ローソク足・板データから指標計算・スナップショットを生成します。
 
@@ -69,6 +69,7 @@ API の応答をそのまま、または軽量整形して返します。指標�
 | `analyze_ema_snapshot` | EMA 整列/クロス分析（既定期間: 12, 26, 50, 200） |
 | `analyze_mtf_sma` | 複数タイムフレーム SMA 一括取得・方向の合流（confluence）判定 |
 | `analyze_stoch_snapshot` | Classic Stochastic（%K/%D のゾーン・クロス・ダイバージェンス。レンジ向き） |
+| `analyze_rsi_snapshot` | RSI 単体のスナップショット（ゾーン・50 ラインクロス・ダイバージェンス。既定期間: 14） |
 | `analyze_volume_profile` | 約定データから VWAP・Volume Profile・約定サイズ分布を算出 |
 | `analyze_currency_strength` | 通貨強弱分析（JPY ペア横断で相対的な強さを比較） |
 | `analyze_fibonacci` | フィボナッチ水準を自動計算（スイング検出・最寄り水準・反応実績） |
@@ -111,13 +112,14 @@ API の応答をそのまま、または軽量整形して返します。指標�
 | `render_depth_svg` | 板の深度チャート（累積 bid/ask カーブ）。描画可能なら `prepare_depth_data` を優先 |
 | `render_candle_pattern_diagram` | ローソク足パターン教育図（`analyze_candle_patterns` の結果を図解） |
 
-### その他（データ品質 / バックテスト / メンテナンス）：各1
+### その他（データ品質 / バックテスト / メンテナンス / 確認カード）：各1
 
 | ツール | 概要 |
 | --- | --- |
 | `validate_candle_data` | OHLCV データの品質検証（完全性・重複・整合性・異常値。0-100品質スコア） |
 | `run_backtest` | 汎用バックテスト（SMA クロス / RSI / MACD / BB ブレイクアウト。P&L + チャート SVG 一括返却） |
 | `refresh_pairs_cache` | `/spot/pairs` 手数料レートの TTL キャッシュを強制再取得（キャンペーン境界などで最新レートを即時反映） |
+| `get_ui_snapshot` | 注文・取消の確認カードが表示内容を取り直すための内部ツール。AI が回答のために呼ぶことはありません |
 
 ### Private API（要 API キー）：16
 

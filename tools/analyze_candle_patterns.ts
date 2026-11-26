@@ -681,7 +681,7 @@ export default async function analyzeCandlePatterns(
 export const toolDef: ToolDefinition = {
 	name: 'analyze_candle_patterns',
 	description:
-		'[Candlestick Patterns / Doji / Engulfing] ローソク足パターン検出（candle patterns / doji / engulfing / hammer / harami）。1〜3本足パターンを検出し文脈と過去統計を付けて解説。',
+		'[Candlestick Patterns / Doji / Engulfing] ローソク足パターン検出（candle patterns / doji / engulfing / hammer / harami）。1〜3本足パターンを検出し文脈と過去統計を付けて解説。\n\n使い分け: 本ツールは 1〜3 本のローソク足パターン。複数バーで形成されるチャートパターン（double top / head and shoulders / triangle）は detect_patterns。',
 	inputSchema: AnalyzeCandlePatternsInputSchema,
 	handler: async (args: {
 		pair?: string;

@@ -68,7 +68,7 @@ const InputSchema = z.object({
 export const toolDef: ToolDefinition = {
 	name: 'get_tickers_jpy',
 	description:
-		'[All Tickers / Market Overview] 全JPYペアのティッカー一覧（tickers / ranking / market overview）を取得。変化率・出来高でランキング表示可能。',
+		'[All Tickers / Market Overview] 全JPYペアのティッカー一覧（tickers / ranking / market overview）を取得。変化率・出来高でランキング表示可能。\n\n使い分け: 本ツールは生ティッカーの軽量一覧。RSI・SMA乖離等を加味した複合スコアのランキングは analyze_currency_strength。',
 	inputSchema: InputSchema,
 	handler: async (args: Record<string, unknown>) => {
 		const parsed = InputSchema.parse(args);

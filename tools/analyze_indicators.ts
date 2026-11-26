@@ -20,6 +20,7 @@ import {
 	STOCH_SMOOTH_D,
 	STOCH_SMOOTH_K,
 } from '../lib/indicator-config.js';
+import { FIXED_MIN_BARS, MA_SERIES, type MaSeriesFieldKey, type MaSeriesKey } from '../lib/indicator-series.js';
 import { indicatorZones } from '../lib/indicator-zones.js';
 import {
 	ichimokuSnapshot,
@@ -245,16 +246,10 @@ function createChartData(
 	return {
 		candles: normalized,
 		indicators: {
-			SMA_5: indicators.sma_5_series ?? [],
-			SMA_20: indicators.sma_20_series ?? [],
-			SMA_25: indicators.sma_25_series ?? [],
-			SMA_50: indicators.sma_50_series ?? [],
-			SMA_75: indicators.sma_75_series ?? [],
-			SMA_200: indicators.sma_200_series ?? [],
-			EMA_12: indicators.ema_12_series ?? [],
-			EMA_26: indicators.ema_26_series ?? [],
-			EMA_50: indicators.ema_50_series ?? [],
-			EMA_200: indicators.ema_200_series ?? [],
+			...(Object.fromEntries(MA_SERIES.map((s) => [s.key, indicators[s.seriesKey] ?? []])) as Record<
+				MaSeriesKey,
+				NumericSeries
+			>),
 			RSI_14: indicators.RSI_14,
 			BB1_upper: indicators.bb1_series?.upper ?? [],
 			BB1_middle: indicators.bb1_series?.middle ?? [],
@@ -307,16 +302,13 @@ export function computeAllIndicators(normalized: Candle[]): GetIndicatorsData['i
 	const bb2Val = bollingerBands(allCloses, BB_PERIOD, BB_STDDEV);
 	const bb3 = bollingerBands(allCloses, BB_PERIOD, 3);
 	const ichi = ichimokuSeries(allHighs, allLows, allCloses);
-	const sma_5_series = sma(allCloses, 5);
-	const sma_20_series = sma(allCloses, 20);
-	const sma_25_series = sma(allCloses, 25);
-	const sma_50_series = sma(allCloses, 50);
-	const sma_75_series = sma(allCloses, 75);
-	const sma_200_series = sma(allCloses, 200);
-	const ema_12_series = ema(allCloses, 12);
-	const ema_26_series = ema(allCloses, 26);
-	const ema_50_series = ema(allCloses, 50);
-	const ema_200_series = ema(allCloses, 200);
+	const maSeries = Object.fromEntries(
+		MA_SERIES.map((s) => [s.seriesKey, (s.kind === 'sma' ? sma : ema)(allCloses, s.period)]),
+	) as Record<MaSeriesFieldKey, NumericSeries>;
+	const maLatest = Object.fromEntries(MA_SERIES.map((s) => [s.key, maSeries[s.seriesKey].at(-1)])) as Record<
+		MaSeriesKey,
+		number | null | undefined
+	>;
 
 	const ichiSimple = ichimoku(allHighs, allLows, allCloses);
 	const stoch = computeClassicStochastic(allHighs, allLows, allCloses, STOCH_PERIOD, STOCH_SMOOTH_K, STOCH_SMOOTH_D);
@@ -324,12 +316,8 @@ export function computeAllIndicators(normalized: Candle[]): GetIndicatorsData['i
 	const obvResult = computeOBV(normalized, OBV_SMA_PERIOD);
 
 	return {
-		SMA_5: sma_5_series.at(-1),
-		SMA_20: sma_20_series.at(-1),
-		SMA_25: sma_25_series.at(-1),
-		SMA_50: sma_50_series.at(-1),
-		SMA_75: sma_75_series.at(-1),
-		SMA_200: sma_200_series.at(-1),
+		...maLatest,
+		...maSeries,
 		RSI_14: rsi14_series.at(-1),
 		RSI_14_series: rsi14_series,
 		BB_upper: bb2Val.upper.at(-1),
@@ -349,20 +337,6 @@ export function computeAllIndicators(normalized: Candle[]): GetIndicatorsData['i
 		bb3_series: bb3,
 		ichi_series: ichi,
 		macd_series: macdSeries,
-		sma_5_series,
-		sma_20_series,
-		sma_25_series,
-		sma_50_series,
-		sma_75_series,
-		sma_200_series,
-		EMA_12: ema_12_series.at(-1),
-		EMA_26: ema_26_series.at(-1),
-		EMA_50: ema_50_series.at(-1),
-		EMA_200: ema_200_series.at(-1),
-		ema_12_series,
-		ema_26_series,
-		ema_50_series,
-		ema_200_series,
 		MACD_line: macdSeries.line.at(-1),
 		MACD_signal: macdSeries.signal.at(-1),
 		MACD_hist: macdSeries.hist.at(-1),
@@ -393,39 +367,20 @@ export function computeAllIndicators(normalized: Candle[]): GetIndicatorsData['i
 
 function buildWarnings(dataLength: number, candleCount: number): string[] {
 	const warnings: string[] = [];
-	if (dataLength < 5) warnings.push('SMA_5: データ不足');
-	if (dataLength < 20) warnings.push('SMA_20: データ不足');
-	if (dataLength < 25) warnings.push('SMA_25: データ不足');
-	if (dataLength < 50) warnings.push('SMA_50: データ不足');
-	if (dataLength < 75) warnings.push('SMA_75: データ不足');
-	if (dataLength < 200) warnings.push('SMA_200: データ不足');
-	if (dataLength < 12) warnings.push('EMA_12: データ不足');
-	if (dataLength < 26) warnings.push('EMA_26: データ不足');
-	if (dataLength < 50) warnings.push('EMA_50: データ不足');
-	if (dataLength < 200) warnings.push('EMA_200: データ不足');
-	if (dataLength < 15) warnings.push('RSI_14: データ不足');
-	if (dataLength < 20) warnings.push('Bollinger_Bands: データ不足');
-	if (dataLength < 52) warnings.push('Ichimoku: データ不足');
-	// classic Stochastic の最新 %D は kPeriod + smoothK + smoothD - 2 = 18 本目で確定する（lib/indicators.ts の早期 return 条件と一致）。
-	if (dataLength < 18) warnings.push('Stochastic: データ不足');
-	// StochRSI の最新 %D は rsiPeriod + stochPeriod + smoothK + smoothD - 2 = 32 本目で確定する（lib/indicators.ts の guard と一致）。
-	if (dataLength < 32) warnings.push('StochRSI: データ不足');
+	for (const s of MA_SERIES) {
+		if (dataLength < s.period) warnings.push(`${s.key}: データ不足`);
+	}
+	for (const { label, minBars } of FIXED_MIN_BARS) {
+		if (dataLength < minBars) warnings.push(`${label}: データ不足`);
+	}
+	// OBV は本数でなくローソク足の件数（2 本の差分）で決まるので dataLength とは別に見る。
 	if (candleCount < 2) warnings.push('OBV: データ不足');
 	return warnings;
 }
 
 function padSeriesLengths(chartIndicators: Record<string, unknown>, targetLength: number): void {
 	const keys = [
-		'SMA_5',
-		'SMA_20',
-		'SMA_25',
-		'SMA_50',
-		'SMA_75',
-		'SMA_200',
-		'EMA_12',
-		'EMA_26',
-		'EMA_50',
-		'EMA_200',
+		...MA_SERIES.map((s) => s.key),
 		'BB_upper',
 		'BB_middle',
 		'BB_lower',
@@ -590,22 +545,7 @@ export default async function analyzeIndicators(
 
 	const displayCount = limit || 60;
 
-	const indicatorKeys = [
-		'SMA_5',
-		'SMA_20',
-		'SMA_25',
-		'SMA_50',
-		'SMA_75',
-		'SMA_200',
-		'EMA_12',
-		'EMA_26',
-		'EMA_50',
-		'EMA_200',
-		'RSI_14',
-		'BB_20',
-		'STOCH',
-		'ICHIMOKU',
-	] as const;
+	const indicatorKeys = [...MA_SERIES.map((s) => s.key), 'RSI_14', 'BB_20', 'STOCH', 'ICHIMOKU'] as const;
 	const fetchCount = getFetchCount(displayCount, indicatorKeys);
 
 	// 終端アンカーと暦日解釈はデータ集合を変えるのでキャッシュキーに含める。tz 省略時は getCandles の既定値と揃え、明示した Asia/Tokyo とキャッシュを共有する。

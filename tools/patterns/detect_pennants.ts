@@ -546,6 +546,8 @@ export function detectPennantsFlags(ctx: DetectContext): DetectResult {
 			accepted: true,
 			reason: 'detected',
 			indices: [pole.poleStart, patternEndIdx],
+			status,
+			breakoutDirection: hasBreakout ? breakoutDirection : null,
 			details: {
 				poleATRMult: Number(pole.atrMult.toFixed(2)),
 				polePerBarImpulse: Number(pole.perBarImpulse.toFixed(2)),

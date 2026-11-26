@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { RSI_ZONES } from '../../lib/indicator-zones.js';
 import {
 	BaseMetaSchema,
 	BasePairInputSchema,
@@ -588,6 +589,54 @@ export const AnalyzeStochSnapshotMetaSchemaOut = BaseMetaSchema.extend({
 export const AnalyzeStochSnapshotOutputSchema = toolResultSchema(
 	AnalyzeStochSnapshotDataSchemaOut,
 	AnalyzeStochSnapshotMetaSchemaOut,
+);
+
+export const AnalyzeRsiSnapshotInputSchema = BasePairInputSchema.extend({
+	type: CandleTypeEnum.optional().default('1day'),
+	limit: z.number().int().min(40).max(365).optional().default(120),
+	period: z.number().int().min(2).max(50).optional().default(14),
+});
+
+export const AnalyzeRsiSnapshotDataSchemaOut = z
+	.object({
+		latest: z.object({ close: z.number().nullable() }),
+		rsi: z.object({
+			value: z.number().nullable(),
+			prev: z.number().nullable(),
+		}),
+		zone: z.enum(RSI_ZONES).nullable(),
+		midlineCross: z.object({
+			type: z.enum(['bullish_cross', 'bearish_cross', 'none']),
+			description: z.string(),
+		}),
+		recentCrosses: z.array(
+			z.object({
+				type: z.enum(['bullish_cross', 'bearish_cross']),
+				barsAgo: z.number().int(),
+				date: z.string(),
+				rsi: z.number(),
+			}),
+		),
+		divergence: z.object({
+			type: z.enum(['bullish', 'bearish', 'none']),
+			description: z.string(),
+		}),
+		tags: z.array(z.string()),
+	})
+	.passthrough();
+
+export const AnalyzeRsiSnapshotMetaSchemaOut = BaseMetaSchema.extend({
+	type: CandleTypeEnum,
+	count: z.number().int(),
+	params: z.object({ period: z.number().int() }),
+	...warningField,
+	...warningsField,
+	...provisionalField,
+});
+
+export const AnalyzeRsiSnapshotOutputSchema = toolResultSchema(
+	AnalyzeRsiSnapshotDataSchemaOut,
+	AnalyzeRsiSnapshotMetaSchemaOut,
 );
 
 export const AnalyzeMtfSmaInputSchema = BasePairInputSchema.extend({
